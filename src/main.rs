@@ -1,43 +1,67 @@
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
-use arrow_flight::{Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket};
-use opentelemetry_proto::{
-    tonic::collector::logs::v1::logs_service_server::LogsServiceServer,
-    tonic::collector::metrics::v1::metrics_service_server::MetricsServiceServer,
-    tonic::collector::trace::v1::trace_service_server::TraceServiceServer
+use arrow_flight::{
+    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
+    HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
-use opentelemetry_proto::tonic::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
-use opentelemetry_proto::tonic::collector::logs::v1::logs_service_server::LogsService;
-use opentelemetry_proto::tonic::collector::metrics::v1::{ExportMetricsServiceRequest, ExportMetricsServiceResponse};
-use opentelemetry_proto::tonic::collector::metrics::v1::metrics_service_server::MetricsService;
-use opentelemetry_proto::tonic::collector::trace::v1::{ExportTraceServiceRequest, ExportTraceServiceResponse};
-use opentelemetry_proto::tonic::collector::trace::v1::trace_service_server::TraceService;
-use tonic::{async_trait, Request, Response, Status, Streaming};
 use futures::stream::BoxStream;
+use opentelemetry_proto::tonic::collector::{
+    logs::v1::logs_service_server::LogsServiceServer,
+    metrics::v1::metrics_service_server::MetricsServiceServer,
+    trace::v1::trace_service_server::TraceServiceServer,
+};
+use opentelemetry_proto::tonic::collector::{
+    logs::v1::{
+        logs_service_server::LogsService, ExportLogsServiceRequest, ExportLogsServiceResponse,
+    },
+    metrics::v1::{
+        metrics_service_server::MetricsService, ExportMetricsServiceRequest,
+        ExportMetricsServiceResponse,
+    },
+    trace::v1::{
+        trace_service_server::TraceService, ExportTraceServiceRequest, ExportTraceServiceResponse,
+    },
+};
+use tonic::{async_trait, Request, Response, Status, Streaming};
 
 struct LogsAcceptor;
 #[async_trait]
 impl LogsService for LogsAcceptor {
-    async fn export(&self, request: Request<ExportLogsServiceRequest>) -> Result<Response<ExportLogsServiceResponse>, Status> {
+    async fn export(
+        &self,
+        request: Request<ExportLogsServiceRequest>,
+    ) -> Result<Response<ExportLogsServiceResponse>, Status> {
         println!("Got a request: {:?}", request);
-        Ok(Response::new(ExportLogsServiceResponse { partial_success: None }))
+        Ok(Response::new(ExportLogsServiceResponse {
+            partial_success: None,
+        }))
     }
 }
 
 struct TraceAcceptor;
 #[async_trait]
 impl TraceService for TraceAcceptor {
-    async fn export(&self, request: Request<ExportTraceServiceRequest>) -> Result<Response<ExportTraceServiceResponse>, Status> {
+    async fn export(
+        &self,
+        request: Request<ExportTraceServiceRequest>,
+    ) -> Result<Response<ExportTraceServiceResponse>, Status> {
         println!("Got a request: {:?}", request);
-        Ok(Response::new(ExportTraceServiceResponse { partial_success: None }))
+        Ok(Response::new(ExportTraceServiceResponse {
+            partial_success: None,
+        }))
     }
 }
 
 struct MetricsAcceptor;
 #[async_trait]
 impl MetricsService for MetricsAcceptor {
-    async fn export(&self, request: Request<ExportMetricsServiceRequest>) -> Result<Response<ExportMetricsServiceResponse>, Status> {
+    async fn export(
+        &self,
+        request: Request<ExportMetricsServiceRequest>,
+    ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
         println!("Got a request: {:?}", request);
-        Ok(Response::new(ExportMetricsServiceResponse { partial_success: None }))
+        Ok(Response::new(ExportMetricsServiceResponse {
+            partial_success: None,
+        }))
     }
 }
 
@@ -46,55 +70,85 @@ struct SignalDBFlightService;
 impl FlightService for SignalDBFlightService {
     type HandshakeStream = BoxStream<'static, Result<HandshakeResponse, Status>>;
 
-    async fn handshake(&self, _request: Request<Streaming<HandshakeRequest>>) -> Result<Response<Self::HandshakeStream>, Status> {
+    async fn handshake(
+        &self,
+        _request: Request<Streaming<HandshakeRequest>>,
+    ) -> Result<Response<Self::HandshakeStream>, Status> {
         todo!()
     }
 
     type ListFlightsStream = BoxStream<'static, Result<FlightInfo, Status>>;
 
-    async fn list_flights(&self, _request: Request<Criteria>) -> Result<Response<Self::ListFlightsStream>, Status> {
+    async fn list_flights(
+        &self,
+        _request: Request<Criteria>,
+    ) -> Result<Response<Self::ListFlightsStream>, Status> {
         todo!()
     }
 
-    async fn get_flight_info(&self, _request: Request<FlightDescriptor>) -> Result<Response<FlightInfo>, Status> {
+    async fn get_flight_info(
+        &self,
+        _request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
         todo!()
     }
 
-    async fn poll_flight_info(&self, _request: Request<FlightDescriptor>) -> Result<Response<PollInfo>, Status> {
+    async fn poll_flight_info(
+        &self,
+        _request: Request<FlightDescriptor>,
+    ) -> Result<Response<PollInfo>, Status> {
         todo!()
     }
 
-    async fn get_schema(&self, _request: Request<FlightDescriptor>) -> Result<Response<SchemaResult>, Status> {
+    async fn get_schema(
+        &self,
+        _request: Request<FlightDescriptor>,
+    ) -> Result<Response<SchemaResult>, Status> {
         todo!()
     }
 
     type DoGetStream = BoxStream<'static, Result<FlightData, Status>>;
 
-    async fn do_get(&self, _request: Request<Ticket>) -> Result<Response<Self::DoGetStream>, Status> {
+    async fn do_get(
+        &self,
+        _request: Request<Ticket>,
+    ) -> Result<Response<Self::DoGetStream>, Status> {
         todo!()
     }
 
     type DoPutStream = BoxStream<'static, Result<PutResult, Status>>;
 
-    async fn do_put(&self, _request: Request<Streaming<FlightData>>) -> Result<Response<Self::DoPutStream>, Status> {
+    async fn do_put(
+        &self,
+        _request: Request<Streaming<FlightData>>,
+    ) -> Result<Response<Self::DoPutStream>, Status> {
         todo!()
     }
 
     type DoExchangeStream = BoxStream<'static, Result<FlightData, Status>>;
 
-    async fn do_exchange(&self, _request: Request<Streaming<FlightData>>) -> Result<Response<Self::DoExchangeStream>, Status> {
+    async fn do_exchange(
+        &self,
+        _request: Request<Streaming<FlightData>>,
+    ) -> Result<Response<Self::DoExchangeStream>, Status> {
         todo!()
     }
 
     type DoActionStream = BoxStream<'static, Result<arrow_flight::Result, Status>>;
 
-    async fn do_action(&self, _request: Request<Action>) -> Result<Response<Self::DoActionStream>, Status> {
+    async fn do_action(
+        &self,
+        _request: Request<Action>,
+    ) -> Result<Response<Self::DoActionStream>, Status> {
         todo!()
     }
 
     type ListActionsStream = BoxStream<'static, Result<ActionType, Status>>;
 
-    async fn list_actions(&self, _request: Request<Empty>) -> Result<Response<Self::ListActionsStream>, Status> {
+    async fn list_actions(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<Self::ListActionsStream>, Status> {
         todo!()
     }
 }
