@@ -12,3 +12,15 @@ updates:
     rebase-strategy: "disabled"
     assignees:
       - cedricziel
+  - package-ecosystem: "devcontainers"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    assignees:
+      - cedricziel
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    assignees:
+      - cedricziel
