@@ -31,7 +31,18 @@
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	"forwardPorts": [
 		9000
-	]
+	],
+	"portsAttributes": {
+		"4317": {
+			"label": "otlp/gRPC"
+		},
+		"4318": {
+			"label": "otlp/HTTP"
+		},
+		"9000": {
+			"label": "api"
+		}
+	}
 
 	// Use 'postCreateCommand' to run commands after the container is created.
 	// "postCreateCommand": "rustc --version",

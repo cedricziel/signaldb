@@ -9,10 +9,7 @@ publish = false
 [dependencies]
 acceptor = { path = "src/acceptor" }
 
-futures.workspace = true
-
 arrow.workspace = true
-arrow-flight.workspace = true
 arrow-schema.workspace = true
 datafusion.workspace = true
 parquet.workspace = true
@@ -25,6 +22,8 @@ tokio.workspace = true
 
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+log.workspace = true
 
 [workspace]
 members = ["src/acceptor", "src/common"]
@@ -55,3 +54,8 @@ tokio = { version = "1.41.0", features = ["full"] }
 
 tracing = "0.1"
 tracing-subscriber = "0.3"
+
+log = "0.4"
+anyhow = "1.0.92"
+
+axum = "0.7.7"
