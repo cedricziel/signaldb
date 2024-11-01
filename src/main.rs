@@ -1,3 +1,6 @@
+use acceptor::services::otlp_log_service::LogAcceptorService;
+use acceptor::services::otlp_metric_service::MetricsAcceptorService;
+use acceptor::services::otlp_trace_service::TraceAcceptorService;
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
@@ -9,61 +12,7 @@ use opentelemetry_proto::tonic::collector::{
     metrics::v1::metrics_service_server::MetricsServiceServer,
     trace::v1::trace_service_server::TraceServiceServer,
 };
-use opentelemetry_proto::tonic::collector::{
-    logs::v1::{
-        logs_service_server::LogsService, ExportLogsServiceRequest, ExportLogsServiceResponse,
-    },
-    metrics::v1::{
-        metrics_service_server::MetricsService, ExportMetricsServiceRequest,
-        ExportMetricsServiceResponse,
-    },
-    trace::v1::{
-        trace_service_server::TraceService, ExportTraceServiceRequest, ExportTraceServiceResponse,
-    },
-};
 use tonic::{async_trait, Request, Response, Status, Streaming};
-
-struct LogsAcceptor;
-#[async_trait]
-impl LogsService for LogsAcceptor {
-    async fn export(
-        &self,
-        request: Request<ExportLogsServiceRequest>,
-    ) -> Result<Response<ExportLogsServiceResponse>, Status> {
-        println!("Got a request: {:?}", request);
-        Ok(Response::new(ExportLogsServiceResponse {
-            partial_success: None,
-        }))
-    }
-}
-
-struct TraceAcceptor;
-#[async_trait]
-impl TraceService for TraceAcceptor {
-    async fn export(
-        &self,
-        request: Request<ExportTraceServiceRequest>,
-    ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        println!("Got a request: {:?}", request);
-        Ok(Response::new(ExportTraceServiceResponse {
-            partial_success: None,
-        }))
-    }
-}
-
-struct MetricsAcceptor;
-#[async_trait]
-impl MetricsService for MetricsAcceptor {
-    async fn export(
-        &self,
-        request: Request<ExportMetricsServiceRequest>,
-    ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
-        println!("Got a request: {:?}", request);
-        Ok(Response::new(ExportMetricsServiceResponse {
-            partial_success: None,
-        }))
-    }
-}
 
 struct SignalDBFlightService;
 #[async_trait]
@@ -157,9 +106,9 @@ impl FlightService for SignalDBFlightService {
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let log_server = LogsServiceServer::new(LogsAcceptor);
-    let trace_server = TraceServiceServer::new(TraceAcceptor);
-    let metric_server = MetricsServiceServer::new(MetricsAcceptor);
+    let log_server = LogsServiceServer::new(LogAcceptorService);
+    let trace_server = TraceServiceServer::new(TraceAcceptorService);
+    let metric_server = MetricsServiceServer::new(MetricsAcceptorService);
 
     let flight_server = FlightServiceServer::new(SignalDBFlightService);
 

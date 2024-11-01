@@ -1,14 +1,26 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+pub mod services;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+use std::sync::Arc;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+use arrow_schema::{DataType, Field, Schema};
+use parquet::{
+    arrow::AsyncArrowWriter,
+    file::properties::{WriterProperties, WriterVersion},
+};
+
+pub fn get_parquet_writer() -> AsyncArrowWriter<Vec<u8>> {
+    let writer = Vec::new();
+    let schema = Schema::new(vec![
+        Field::new("c1", DataType::Int32, false),
+        Field::new("c2", DataType::Utf8, false),
+        Field::new("c3", DataType::Float64, false),
+    ]);
+
+    println!("get_parquet_writer");
+    let props = WriterProperties::builder()
+        .set_writer_version(WriterVersion::PARQUET_2_0)
+        .build();
+
+    AsyncArrowWriter::try_new(writer, Arc::new(schema), Some(props))
+        .expect("Error creating parquet writer")
 }
