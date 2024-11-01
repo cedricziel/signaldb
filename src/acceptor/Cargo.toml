@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+common.workspace = true
+
 arrow-flight.workspace = true
 arrow-schema.workspace = true
 parquet.workspace = true
@@ -21,3 +23,5 @@ log.workspace = true
 anyhow.workspace = true
 
 axum.workspace = true
+
+serde_json.workspace = true
