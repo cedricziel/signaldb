@@ -34,10 +34,10 @@
 	],
 	"portsAttributes": {
 		"4317": {
-			"label": "otlp/gRPC"
+			"label": "OTLP/gRPC"
 		},
 		"4318": {
-			"label": "otlp/HTTP"
+			"label": "OTLP/HTTP"
 		},
 		"9000": {
 			"label": "api"
