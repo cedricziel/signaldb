@@ -24,6 +24,8 @@ async fn main() {
         .install_simple()
         .unwrap();
 
+    global::set_tracer_provider(tracer_provider);
+
     let tracer = global::tracer("readme_example");
 
     tracer.in_span("doing_work", |cx| {
@@ -32,9 +34,8 @@ async fn main() {
         span.set_attribute(KeyValue::new("question", "what is the answer?"));
     });
 
-    // Shutdown trace pipeline
-    tracer_provider.force_flush();
-    tracer_provider.shutdown().unwrap();
+    // Shutdown exporter
+    global::shutdown_tracer_provider();
 
     tokio::time::sleep(Duration::from_secs(3)).await;
 }
