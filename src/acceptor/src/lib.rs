@@ -22,15 +22,11 @@ use services::{
 };
 use tokio::sync::oneshot;
 
-pub fn get_parquet_writer() -> AsyncArrowWriter<Vec<u8>> {
+pub fn get_parquet_writer(schema: Schema) -> AsyncArrowWriter<Vec<u8>> {
     let writer = Vec::new();
-    let schema = Schema::new(vec![
-        Field::new("c1", DataType::Int32, false),
-        Field::new("c2", DataType::Utf8, false),
-        Field::new("c3", DataType::Float64, false),
-    ]);
 
-    println!("get_parquet_writer");
+    log::info!("get_parquet_writer");
+
     let props = WriterProperties::builder()
         .set_writer_version(WriterVersion::PARQUET_2_0)
         .build();

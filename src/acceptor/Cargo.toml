@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 common.workspace = true
 
+arrow-array.workspace = true
 arrow-flight.workspace = true
 arrow-schema.workspace = true
 parquet.workspace = true
@@ -25,3 +26,5 @@ anyhow.workspace = true
 axum.workspace = true
 
 serde_json.workspace = true
+
+opentelemetry.workspace = true
