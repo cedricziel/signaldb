@@ -6,7 +6,7 @@ use std::{sync::Arc, time::SystemTime};
 use anyhow::Ok;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_schema::{DataType, Field, Schema};
-use axum::{extract::path, routing::get, Router};
+use axum::{routing::get, Router};
 use common::dataset::DataSet;
 use opentelemetry_proto::tonic::collector::{
     logs::v1::logs_service_server::LogsServiceServer,
@@ -25,6 +25,7 @@ use tokio::{
     fs::{create_dir_all, File},
     sync::oneshot,
 };
+use tonic_reflection::server::{Builder, ServerReflectionServer};
 
 pub async fn get_parquet_writer(data_set: DataSet, schema: Schema) -> AsyncArrowWriter<File> {
     log::info!("get_parquet_writer");

@@ -17,7 +17,7 @@ use crate::get_parquet_writer;
 
 #[tracing::instrument]
 pub async fn handle_grpc_otlp_traces(request: ExportTraceServiceRequest) {
-    println!("Got a request: {:?}", request);
+    log::info!("Got a request: {:?}", request);
 
     let ds = DataSet::new(DataSetType::Traces, DataStore::Disk);
 
@@ -79,7 +79,8 @@ pub async fn handle_grpc_otlp_traces(request: ExportTraceServiceRequest) {
                         TraceId::from_bytes(span.trace_id.try_into().unwrap()).to_string();
                     let span_id = SpanId::from_bytes(span.span_id.try_into().unwrap()).to_string();
                     let parent_span_id =
-                        SpanId::from_bytes(span.parent_span_id.try_into().unwrap()).to_string();
+                        SpanId::from_bytes(span.parent_span_id.try_into().unwrap_or([0; 8]))
+                            .to_string();
 
                     let span = Span {
                         trace_id: trace_id.clone(),

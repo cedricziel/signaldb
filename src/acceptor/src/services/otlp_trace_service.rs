@@ -13,7 +13,7 @@ impl TraceService for TraceAcceptorService {
         &self,
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        println!("Got a request: {:?}", request);
+        log::info!("Got a request: {:?}", request);
 
         handle_grpc_otlp_traces(request.into_inner()).await;
 
