@@ -1,0 +1,13 @@
+[package]
+name = "signal-producer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["full"] }
+
+opentelemetry.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["async-std", "trace"] }
+opentelemetry-stdout = { workspace = true, features = ["trace"] }
+opentelemetry-otlp = { workspace = true, features = ["tonic"] }
