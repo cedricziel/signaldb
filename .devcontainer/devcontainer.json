@@ -13,7 +13,8 @@
 			"extensions": [
 				"rust-lang.rust-analyzer",
 				"dustypomerleau.rust-syntax",
-				"github.vscode-github-actions"
+				"github.vscode-github-actions",
+				"AdamViola.parquet-explorer"
 			]
 		}
 	},
