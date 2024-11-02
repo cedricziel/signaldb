@@ -20,19 +20,23 @@ use services::{
     flight::SignalDBFlightService, otlp_log_service::LogAcceptorService,
     otlp_metric_service::MetricsAcceptorService, otlp_trace_service::TraceAcceptorService,
 };
-use tokio::sync::oneshot;
+use tokio::{fs::File, sync::oneshot};
 
-pub fn get_parquet_writer(schema: Schema) -> AsyncArrowWriter<Vec<u8>> {
-    let writer = Vec::new();
-
+pub async fn get_parquet_writer(schema: Schema) -> AsyncArrowWriter<File> {
     log::info!("get_parquet_writer");
 
     let props = WriterProperties::builder()
         .set_writer_version(WriterVersion::PARQUET_2_0)
         .build();
 
-    AsyncArrowWriter::try_new(writer, Arc::new(schema), Some(props))
-        .expect("Error creating parquet writer")
+    AsyncArrowWriter::try_new(
+        File::create("test.parquet")
+            .await
+            .expect("Error creating parquet file"),
+        Arc::new(schema),
+        Some(props),
+    )
+    .expect("Error creating parquet writer")
 }
 
 pub async fn init_acceptor(

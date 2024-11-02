@@ -1,7 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use arrow_array::RecordBatch;
-use arrow_schema::{DataType, Field, Fields, Schema};
+use arrow_schema::{DataType, Field, Fields};
 use common::{
     dataset::{DataSet, DataSetType, DataStore},
     model::span::{Span, SpanKind, SpanStatus},
@@ -99,35 +98,19 @@ pub async fn handle_grpc_otlp_traces(request: ExportTraceServiceRequest) {
         }
     }
 
-    for _span in spans {}
+    let mut batches = vec![];
+    for span in spans {
+        let batch = span.to_record_batch();
+        log::warn!("Batch: {:?}", batch.clone());
 
-    let fields = vec![
-        Field::new("trace_id", DataType::Utf8, false),
-        Field::new("span_id", DataType::Utf8, false),
-        Field::new("parent_span_id", DataType::Utf8, true),
-        Field::new("status", DataType::Utf8, false),
-        Field::new("is_root", DataType::Boolean, false),
-        Field::new("name", DataType::Utf8, false),
-        Field::new("service_name", DataType::Utf8, false),
-        Field::new("span_kind", DataType::Utf8, false),
-        Field::new(
-            "attributes",
-            DataType::Struct(Fields::from(Vec::<Field>::new())),
-            false,
-        ),
-        Field::new(
-            "resource",
-            DataType::Struct(Fields::from(Vec::<Field>::new())),
-            false,
-        ),
-    ];
-    let schema = Schema::new(fields);
-    let batch = RecordBatch::new_empty(Arc::new(schema.clone()));
+        batches.push(batch);
+    }
 
-    let writer = get_parquet_writer(schema.clone())
-        .write(&batch)
-        .await
-        .expect("Cant write to parquet");
+    for batch in batches {
+        let mut writer = get_parquet_writer((*batch.schema()).clone()).await;
+        writer.write(&batch).await.expect("Cant write to parquet");
+        writer.close().await.expect("Cant close parquet writer");
+    }
 }
 
 /// Rewrites OTLPs `AnyValue` into a `JsonValue`
@@ -177,7 +160,13 @@ fn extract_type(value: JsonValue) -> DataType {
     }
 }
 
-mod test {
+#[cfg(test)]
+mod tests {
+    use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
+    use opentelemetry_proto::tonic::resource::v1::Resource;
+    use opentelemetry_proto::tonic::trace::v1::span::SpanKind;
+    use opentelemetry_proto::tonic::trace::v1::ResourceSpans;
+
     use super::*;
 
     #[test]
@@ -274,5 +263,52 @@ mod test {
             )),
             DataType::Struct(Fields::from(Vec::<Field>::new()))
         );
+    }
+
+    #[tokio::test]
+    async fn test_handle_grpc_otlp_traces() {
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: Some(opentelemetry_proto::tonic::resource::v1::Resource {
+                    attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                        key: "service.name".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("test".to_string())),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                }),
+                scope_spans: vec![opentelemetry_proto::tonic::trace::v1::ScopeSpans {
+                    spans: vec![opentelemetry_proto::tonic::trace::v1::Span {
+                        trace_id: vec![0; 16],
+                        span_id: vec![0; 8],
+                        parent_span_id: vec![0; 8],
+                        name: "test".to_string(),
+                        kind: SpanKind::Internal as i32,
+                        start_time_unix_nano: 0,
+                        end_time_unix_nano: 0,
+                        attributes: vec![],
+                        events: vec![],
+                        links: vec![],
+                        status: None,
+                        trace_state: "".to_string(),
+                        flags: 0,
+                        dropped_attributes_count: 0,
+                        dropped_events_count: 0,
+                        dropped_links_count: 0,
+                    }],
+                    scope: Some(InstrumentationScope {
+                        name: "test".to_string(),
+                        version: "0.1.0".to_string(),
+                        attributes: vec![],
+                        dropped_attributes_count: 0,
+                    }),
+                    schema_url: "my.schema.url".to_string(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        handle_grpc_otlp_traces(request).await;
     }
 }

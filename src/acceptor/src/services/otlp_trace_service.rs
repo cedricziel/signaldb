@@ -15,7 +15,7 @@ impl TraceService for TraceAcceptorService {
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
         println!("Got a request: {:?}", request);
 
-        handle_grpc_otlp_traces(request.into_inner());
+        handle_grpc_otlp_traces(request.into_inner()).await;
 
         Ok(Response::new(ExportTraceServiceResponse {
             partial_success: None,
