@@ -2,8 +2,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{DataType, Field, Fields};
 use common::{
-    dataset::{DataSet, DataSetType, DataStore},
-    model::span::{Span, SpanKind, SpanStatus},
+    dataset::{self, DataSet, DataSetType, DataStore},
+    model::span::{Span, SpanBatch, SpanKind, SpanStatus},
 };
 use opentelemetry::trace::{SpanId, TraceId};
 use opentelemetry_proto::tonic::{
@@ -19,11 +19,13 @@ use crate::get_parquet_writer;
 pub async fn handle_grpc_otlp_traces(request: ExportTraceServiceRequest) {
     println!("Got a request: {:?}", request);
 
-    let _ds = DataSet::new(DataSetType::Traces, DataStore::InMemory);
+    let ds = DataSet::new(DataSetType::Traces, DataStore::Disk);
 
     let resource_spans = request.resource_spans;
 
     let mut spans = vec![];
+
+    let mut span_batch = SpanBatch::new();
 
     for resource_span in resource_spans {
         if let Some(resource) = resource_span.resource {
@@ -93,24 +95,19 @@ pub async fn handle_grpc_otlp_traces(request: ExportTraceServiceRequest) {
                     };
 
                     spans.push(span.clone());
+                    span_batch.add_span(span.clone());
                 }
             }
         }
     }
 
-    let mut batches = vec![];
-    for span in spans {
-        let batch = span.to_record_batch();
-        log::warn!("Batch: {:?}", batch.clone());
-
-        batches.push(batch);
-    }
-
-    for batch in batches {
-        let mut writer = get_parquet_writer((*batch.schema()).clone()).await;
-        writer.write(&batch).await.expect("Cant write to parquet");
-        writer.close().await.expect("Cant close parquet writer");
-    }
+    let record_batch = span_batch.to_record_batch();
+    let mut writer = get_parquet_writer(ds, (*record_batch.schema()).clone()).await;
+    writer
+        .write(&record_batch)
+        .await
+        .expect("Cant write to parquet");
+    writer.close().await.expect("Cant close parquet writer");
 }
 
 /// Rewrites OTLPs `AnyValue` into a `JsonValue`
@@ -162,12 +159,12 @@ fn extract_type(value: JsonValue) -> DataType {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
     use opentelemetry_proto::tonic::resource::v1::Resource;
     use opentelemetry_proto::tonic::trace::v1::span::SpanKind;
     use opentelemetry_proto::tonic::trace::v1::ResourceSpans;
-
-    use super::*;
 
     #[test]
     fn test_extract_value() {

@@ -1,12 +1,13 @@
 mod handler;
 pub mod services;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::SystemTime};
 
 use anyhow::Ok;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_schema::{DataType, Field, Schema};
-use axum::{routing::get, Router};
+use axum::{extract::path, routing::get, Router};
+use common::dataset::DataSet;
 use opentelemetry_proto::tonic::collector::{
     logs::v1::logs_service_server::LogsServiceServer,
     metrics::v1::metrics_service_server::MetricsServiceServer,
@@ -20,19 +21,35 @@ use services::{
     flight::SignalDBFlightService, otlp_log_service::LogAcceptorService,
     otlp_metric_service::MetricsAcceptorService, otlp_trace_service::TraceAcceptorService,
 };
-use tokio::{fs::File, sync::oneshot};
+use tokio::{
+    fs::{create_dir_all, File},
+    sync::oneshot,
+};
 
-pub async fn get_parquet_writer(schema: Schema) -> AsyncArrowWriter<File> {
+pub async fn get_parquet_writer(data_set: DataSet, schema: Schema) -> AsyncArrowWriter<File> {
     log::info!("get_parquet_writer");
 
     let props = WriterProperties::builder()
         .set_writer_version(WriterVersion::PARQUET_2_0)
         .build();
 
+    let path = format!(".data/ds/{}", data_set.data_type);
+    create_dir_all(path)
+        .await
+        .expect("Error creating directory");
+
     AsyncArrowWriter::try_new(
-        File::create("test.parquet")
-            .await
-            .expect("Error creating parquet file"),
+        File::create(format!(
+            ".data/ds/{}/{}.parquet",
+            data_set.data_type,
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                .to_string()
+        ))
+        .await
+        .expect("Error creating parquet file"),
         Arc::new(schema),
         Some(props),
     )

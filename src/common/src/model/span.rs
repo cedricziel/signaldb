@@ -1,7 +1,9 @@
 use std::{collections::HashMap, ptr::null, sync::Arc};
 
 use arrow_array::{ArrayRef, BooleanArray, RecordBatch, StringArray, StructArray};
-use arrow_schema::{DataType, Field, Fields, Schema};
+use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
+
+use super::schema;
 
 #[derive(Clone)]
 pub enum SpanKind {
@@ -134,6 +136,46 @@ impl Span {
             ],
         )
         .unwrap()
+    }
+}
+
+/// A batch of spans.
+///
+/// Supposedly making it easier to convert to a record batch.
+pub struct SpanBatch {
+    pub spans: Vec<Span>,
+}
+
+impl SpanBatch {
+    pub fn new() -> Self {
+        SpanBatch { spans: vec![] }
+    }
+
+    pub fn add_span(&mut self, span: Span) {
+        self.spans.push(span);
+    }
+
+    /// Create a new span batch from a request.
+    pub fn from_request(
+        _request: &opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest,
+    ) -> Self {
+        SpanBatch { spans: vec![] }
+    }
+
+    /// Convert the span batch to a record batch.
+    pub fn to_record_batch(&self) -> RecordBatch {
+        let schema = Span::to_schema();
+        let mut columns = vec![];
+
+        for span in &self.spans {
+            let record_batch = span.to_record_batch();
+
+            for i in 0..record_batch.num_columns() {
+                columns.push(record_batch.column(i).clone());
+            }
+        }
+
+        RecordBatch::try_new(Arc::new(schema), columns).unwrap()
     }
 }
 
