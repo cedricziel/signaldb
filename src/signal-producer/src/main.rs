@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{thread::sleep, time::Duration};
 
 use opentelemetry::{
     global,
@@ -6,6 +6,7 @@ use opentelemetry::{
     KeyValue,
 };
 use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_semantic_conventions::trace::{HTTP_REQUEST_METHOD, URL_FULL};
 
 /// produce a couple of signals and send it to a destination
 #[tokio::main]
@@ -32,6 +33,22 @@ async fn main() {
         let span = cx.span();
 
         span.set_attribute(KeyValue::new("question", "what is the answer?"));
+
+        tracer.in_span("doing_work_inside", |cx| {
+            let span = cx.span();
+
+            span.set_attribute(KeyValue::new("question", "what is the answer?"));
+        });
+    });
+
+    // write an http span
+    tracer.in_span("GET /products/{id}", |cx| {
+        let span = cx.span();
+
+        span.set_attribute(KeyValue::new(HTTP_REQUEST_METHOD, "GET"));
+        span.set_attribute(KeyValue::new(URL_FULL, "https://www.rust-lang.org/"));
+
+        sleep(Duration::from_secs(3));
     });
 
     // Shutdown exporter
