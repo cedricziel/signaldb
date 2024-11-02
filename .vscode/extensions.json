@@ -1,3 +1,8 @@
 {
-  "recommendations": ["rust-lang.rust-analyzer", "dustypomerleau.rust-syntax"]
+  "recommendations": [
+    "rust-lang.rust-analyzer",
+    "dustypomerleau.rust-syntax",
+    "github.vscode-github-actions",
+    "adamviola.parquet-explorer"
+  ]
 }
