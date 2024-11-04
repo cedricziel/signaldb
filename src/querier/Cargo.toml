@@ -1,0 +1,12 @@
+[package]
+name = "querier"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+anyhow.workspace = true
+tower.workspace = true
+tokio.workspace = true
+log.workspace = true
