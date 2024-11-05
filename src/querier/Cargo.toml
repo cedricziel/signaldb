@@ -5,8 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+common = { path = "../common" }
+
 axum.workspace = true
 anyhow.workspace = true
 tower.workspace = true
 tokio.workspace = true
 log.workspace = true
+datafusion.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
