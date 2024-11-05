@@ -82,12 +82,22 @@ pub async fn handle_grpc_otlp_traces(request: ExportTraceServiceRequest) {
                         SpanId::from_bytes(span.parent_span_id.try_into().unwrap_or([0; 8]))
                             .to_string();
 
+                    let span_status = match span.status {
+                        Some(status) => match status.code {
+                            0 => SpanStatus::Unspecified,
+                            1 => SpanStatus::Error,
+                            2 => SpanStatus::Ok,
+                            _ => SpanStatus::Unspecified,
+                        },
+                        None => SpanStatus::Unspecified,
+                    };
+
                     let span = Span {
                         trace_id: trace_id.clone(),
                         span_id: span_id.clone(),
                         parent_span_id: parent_span_id.clone(),
-                        status: SpanStatus::Ok,
-                        is_root: false,
+                        status: span_status,
+                        is_root: parent_span_id == "0000000000000000".to_string(),
                         name: span.name,
                         service_name: service_name.clone(),
                         span_kind: SpanKind::Internal,

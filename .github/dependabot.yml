@@ -12,6 +12,20 @@ updates:
     rebase-strategy: "disabled"
     assignees:
       - cedricziel
+    groups:
+      arrow:
+        patterns:
+          - "arrow*"
+      datafusion:
+        patterns:
+          - "datafusion*"
+      serde:
+        patterns:
+          - "serde*"
+      opentelemetry:
+        patterns:
+          - "opentelemetry*"
+
   - package-ecosystem: "devcontainers"
     directory: "/"
     schedule:
