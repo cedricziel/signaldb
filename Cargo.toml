@@ -30,7 +30,7 @@ log.workspace = true
 serde_json.workspace = true
 
 [workspace]
-members = ["src/acceptor", "src/common", "src/querier", "src/signal-producer"]
+members = ["src/acceptor", "src/common", "src/querier", "src/signal-producer", "src/tempo-api"]
 
 [workspace.package]
 version = "0.1.0"
