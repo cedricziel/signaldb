@@ -2,8 +2,23 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+pub mod v2;
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SearchQueryParams {
+    q: Option<String>,
+    tags: Option<String>,
+    min_duration: Option<i32>,
+    max_duration: Option<i32>,
+    limit: Option<i32>,
+    start: Option<i32>,
+    end: Option<i32>,
+    spss: Option<i32>,
+}
+
 /// Result of GET /api/search
 /// See https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search
+#[derive(Serialize, Deserialize)]
 pub struct SearchResult {
     pub traces: Vec<Trace>,
     pub metrics: HashMap<String, u16>,
@@ -87,6 +102,45 @@ pub enum Value {
     BoolValue(bool),
     #[serde(rename = "doubleValue")]
     DoubleValue(f64),
+}
+
+/// GET /api/search/tags?scope=<resource|span|intrinsic>
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub enum TagScope {
+    Resource,
+    Span,
+    Intrinsic,
+}
+
+impl TagScope {
+    pub fn as_str(&self) -> &str {
+        match self {
+            TagScope::Resource => "resource",
+            TagScope::Span => "span",
+            TagScope::Intrinsic => "intrinsic",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "resource" => Some(TagScope::Resource),
+            "span" => Some(TagScope::Span),
+            "intrinsic" => Some(TagScope::Intrinsic),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct TagSearchResponse {
+    #[serde(rename = "tagNames")]
+    pub tag_names: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct TagValuesResponse {
+    #[serde(rename = "tagValues")]
+    pub tag_values: Vec<String>,
 }
 
 mod tests {
