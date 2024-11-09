@@ -30,7 +30,13 @@ log.workspace = true
 serde_json.workspace = true
 
 [workspace]
-members = ["src/acceptor", "src/common", "src/querier", "src/signal-producer", "src/tempo-api"]
+members = [
+    "src/acceptor",
+    "src/common",
+    "src/querier",
+    "src/signal-producer",
+    "src/tempo-api",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -70,6 +76,7 @@ log = "0.4"
 anyhow = "1.0.92"
 
 axum = "0.7.7"
+tower-http = "0.6.1"
 
 serde = "1.0.214"
 serde_json = "1.0.132"
