@@ -36,7 +36,7 @@ mod tests {
     #[test]
     fn test_serde_tag_values_response() {
         let tag_values_response = TagValuesResponse {
-            tag_values: HashMap::new(),
+            tag_values: Vec::new(),
         };
 
         let json = serde_json::to_string(&tag_values_response).unwrap();

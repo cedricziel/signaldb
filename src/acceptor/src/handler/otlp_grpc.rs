@@ -1,8 +1,8 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, vec};
 
 use arrow_schema::{DataType, Field, Fields};
 use common::{
-    dataset::{self, DataSet, DataSetType, DataStore},
+    dataset::{DataSet, DataSetType, DataStore},
     model::span::{Span, SpanBatch, SpanKind, SpanStatus},
 };
 use opentelemetry::trace::{SpanId, TraceId};
@@ -103,6 +103,7 @@ pub async fn handle_grpc_otlp_traces(request: ExportTraceServiceRequest) {
                         span_kind: SpanKind::Internal,
                         attributes: span_attributes,
                         resource: resource_attributes.clone(),
+                        children: vec![],
                     };
 
                     spans.push(span.clone());

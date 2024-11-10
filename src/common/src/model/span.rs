@@ -78,6 +78,8 @@ pub struct Span {
 
     pub attributes: HashMap<String, serde_json::Value>,
     pub resource: HashMap<String, serde_json::Value>,
+
+    pub children: Vec<Span>,
 }
 
 impl Span {
@@ -235,6 +237,7 @@ impl SpanBatch {
                 span_kind: SpanKind::from_str(span_kind.value(i)),
                 attributes: HashMap::new(),
                 resource: HashMap::new(),
+                children: vec![],
             };
 
             span_batch.add_span(span);
@@ -244,7 +247,21 @@ impl SpanBatch {
     }
 }
 
+impl From<arrow_array::RecordBatch> for SpanBatch {
+    fn from(batch: RecordBatch) -> Self {
+        SpanBatch::from_record_batch(&batch)
+    }
+}
+
+impl From<&arrow_array::RecordBatch> for SpanBatch {
+    fn from(batch: &RecordBatch) -> Self {
+        SpanBatch::from_record_batch(&batch)
+    }
+}
+
 mod tests {
+    use std::vec;
+
     #[allow(unused_imports)]
     use super::*;
 
@@ -261,6 +278,7 @@ mod tests {
             span_kind: SpanKind::Client,
             attributes: HashMap::new(),
             resource: HashMap::new(),
+            children: vec![],
         };
 
         let record_batch = span.to_record_batch();
@@ -282,6 +300,7 @@ mod tests {
             span_kind: SpanKind::Client,
             attributes: HashMap::new(),
             resource: HashMap::new(),
+            children: vec![],
         });
 
         let record_batch = span_batch.to_record_batch();
@@ -347,6 +366,7 @@ mod tests {
             span_kind: SpanKind::Client,
             attributes: HashMap::new(),
             resource: HashMap::new(),
+            children: vec![],
         };
 
         let record_batch = span.to_record_batch();

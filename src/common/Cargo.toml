@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tempo-api = { path = "../tempo-api" }
+
 arrow-array.workspace = true
 arrow-schema.workspace = true
 serde.workspace = true
