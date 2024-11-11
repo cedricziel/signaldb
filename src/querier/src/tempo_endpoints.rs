@@ -138,3 +138,38 @@ pub async fn search_tag_values_v2(
 
     Ok(axum::Json(response))
 }
+
+mod tests {
+    #[allow(unused_imports)]
+    use super::*;
+
+    #[test]
+    fn test_search_result() {
+        let traces = vec![tempo_api::Trace {
+            trace_id: "2f3e0cee77ae5dc9c17ade3689eb2e54".to_string(),
+            root_service_name: "shop-backend".to_string(),
+            root_trace_name: "GET /api/orders".to_string(),
+            start_time_unix_nano: "1684778327699392724".to_string(),
+            duration_ms: 557,
+            span_sets: vec![tempo_api::SpanSet {
+                spans: vec![tempo_api::Span {
+                    span_id: "563d623c76514f8e".to_string(),
+                    start_time_unix_nano: "1684778327699392724".to_string(),
+                    duration_nanos: "1234".to_string(),
+                    attributes: HashMap::new(),
+                }],
+                matched: 123,
+            }],
+        }];
+
+        let search_result = tempo_api::SearchResult {
+            traces,
+            metrics: HashMap::new(),
+        };
+
+        let json = serde_json::to_string(&search_result).unwrap();
+        let deserialized: tempo_api::SearchResult = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(search_result, deserialized);
+    }
+}
