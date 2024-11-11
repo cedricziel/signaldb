@@ -8,7 +8,8 @@
     "ghcr.io/devcontainers/features/rust:1": {},
     "ghcr.io/devcontainers-extra/features/grpcurl-asdf:2": {},
     "ghcr.io/eitsupi/devcontainer-features/jq-likes:2": {},
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers-extra/features/protoc-asdf:1": {}
   },
   "customizations": {
     "vscode": {
