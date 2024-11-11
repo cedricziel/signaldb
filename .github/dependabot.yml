@@ -22,6 +22,9 @@ updates:
       serde:
         patterns:
           - "serde*"
+      prost:
+        patterns:
+          - "prost*"
       opentelemetry:
         patterns:
           - "opentelemetry*"

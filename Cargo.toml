@@ -83,3 +83,7 @@ serde = "1.0.214"
 serde_json = "1.0.132"
 
 tower = "0.5.1"
+
+prost = "0.13"
+prost-types = "0.13"
+prost-build = "0.13"
