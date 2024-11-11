@@ -18,7 +18,7 @@ pub struct SearchQueryParams {
 
 /// Result of GET /api/search
 /// See https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct SearchResult {
     pub traces: Vec<Trace>,
     pub metrics: HashMap<String, u16>,
@@ -53,7 +53,7 @@ pub struct SearchResult {
 ///       "matched": 1
 ///     }
 ///   ]
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Trace {
     #[serde(rename = "traceID")]
     pub trace_id: String,
@@ -69,13 +69,13 @@ pub struct Trace {
     pub span_sets: Vec<SpanSet>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct SpanSet {
     pub spans: Vec<Span>,
     pub matched: u16,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Span {
     #[serde(rename = "spanID")]
     pub span_id: String,
@@ -86,7 +86,7 @@ pub struct Span {
     pub attributes: HashMap<String, Attribute>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Attribute {
     pub key: String,
     pub value: Value,
