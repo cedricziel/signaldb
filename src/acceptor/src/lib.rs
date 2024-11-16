@@ -5,7 +5,7 @@ use std::{sync::Arc, time::SystemTime};
 
 use anyhow::Ok;
 use arrow_flight::flight_service_server::FlightServiceServer;
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::Schema;
 use axum::{routing::get, Router};
 use common::dataset::DataSet;
 use opentelemetry_proto::tonic::collector::{
