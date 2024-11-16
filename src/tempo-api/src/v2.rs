@@ -1,12 +1,10 @@
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 
 /// GET /api/v2/search/tag/.service.name/values
 ///
 /// Todo: Add types to values
 ///
-/// See https://grafana.com/docs/tempo/latest/api_docs/#search-tag-values-v2
+/// See <https://grafana.com/docs/tempo/latest/api_docs/#search-tag-values-v2>
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct TagValuesResponse {
     #[serde(rename = "tagValues")]
@@ -31,6 +29,7 @@ pub struct TagSearchScope {
 }
 
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
 
     #[test]

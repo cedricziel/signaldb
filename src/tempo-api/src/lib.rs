@@ -17,7 +17,7 @@ pub struct SearchQueryParams {
 }
 
 /// Result of GET /api/search
-/// See https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search
+/// See <https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search>
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct SearchResult {
     pub traces: Vec<Trace>,
