@@ -19,6 +19,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - uses: arduino/setup-protoc@v1
       - name: Set up cargo cache
         uses: actions/cache@v4
         continue-on-error: false
