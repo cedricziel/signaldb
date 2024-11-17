@@ -2,33 +2,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+pub mod tempopb;
 pub mod v2;
-
-pub mod tempopb {
-    pub mod proto {
-        pub mod common {
-            pub mod v1 {
-                include!(concat!(
-                    env!("OUT_DIR"),
-                    "/opentelemetry.proto.common.v1.rs"
-                ));
-            }
-        }
-        pub mod resource {
-            pub mod v1 {
-                include!(concat!(
-                    env!("OUT_DIR"),
-                    "/opentelemetry.proto.resource.v1.rs"
-                ));
-            }
-        }
-        pub mod trace {
-            pub mod v1 {
-                include!(concat!(env!("OUT_DIR"), "/opentelemetry.proto.trace.v1.rs"));
-            }
-        }
-    }
-}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SearchQueryParams {
