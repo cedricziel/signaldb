@@ -9,7 +9,7 @@ extern crate prost_build;
 fn main() {
     let binding = std::env::var_os("CARGO_MANIFEST_DIR").unwrap();
     let crate_path = Path::new(&binding).join("proto");
-    let out_path = Path::new(&binding).join("src/tempopb");
+    let out_path = Path::new(&binding).join("src/generated");
 
     let otel_proto_path = Path::new(&std::env::var_os("CARGO_MANIFEST_DIR").unwrap())
         .join("../../opentelemetry-proto");
