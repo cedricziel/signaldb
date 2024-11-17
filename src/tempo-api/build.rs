@@ -108,7 +108,9 @@ fn main() {
 
     tonic_build::configure()
         .build_client(true)
+        .client_mod_attribute("tempopb", "#[cfg(feature = \"client\")]")
         .build_server(true)
+        .server_mod_attribute("tempopb", "#[cfg(feature = \"server\")]")
         .compile_protos_with_config(
             config,
             &["proto/tempo.proto"],

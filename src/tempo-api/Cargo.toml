@@ -18,3 +18,8 @@ tonic.workspace = true
 [build-dependencies]
 prost-build.workspace = true
 tonic-build = { workspace = true, features = ["prost"] }
+
+[features]
+default = []
+client = []
+server = []

@@ -685,6 +685,7 @@ impl PushErrorReason {
     }
 }
 /// Generated client implementations.
+#[cfg(feature = "client")]
 pub mod pusher_client {
     #![allow(
         unused_variables,
@@ -819,6 +820,7 @@ pub mod pusher_client {
     }
 }
 /// Generated client implementations.
+#[cfg(feature = "client")]
 pub mod metrics_generator_client {
     #![allow(
         unused_variables,
@@ -981,6 +983,7 @@ pub mod metrics_generator_client {
     }
 }
 /// Generated client implementations.
+#[cfg(feature = "client")]
 pub mod querier_client {
     #![allow(
         unused_variables,
@@ -1236,6 +1239,7 @@ pub mod querier_client {
     }
 }
 /// Generated client implementations.
+#[cfg(feature = "client")]
 pub mod streaming_querier_client {
     #![allow(
         unused_variables,
@@ -1503,6 +1507,7 @@ pub mod streaming_querier_client {
     }
 }
 /// Generated client implementations.
+#[cfg(feature = "client")]
 pub mod metrics_client {
     #![allow(
         unused_variables,
@@ -1644,6 +1649,7 @@ pub mod metrics_client {
     }
 }
 /// Generated server implementations.
+#[cfg(feature = "server")]
 pub mod pusher_server {
     #![allow(
         unused_variables,
@@ -1868,6 +1874,7 @@ pub mod pusher_server {
     }
 }
 /// Generated server implementations.
+#[cfg(feature = "server")]
 pub mod metrics_generator_server {
     #![allow(
         unused_variables,
@@ -2149,6 +2156,7 @@ pub mod metrics_generator_server {
     }
 }
 /// Generated server implementations.
+#[cfg(feature = "server")]
 pub mod querier_server {
     #![allow(
         unused_variables,
@@ -2631,6 +2639,7 @@ pub mod querier_server {
     }
 }
 /// Generated server implementations.
+#[cfg(feature = "server")]
 pub mod streaming_querier_server {
     #![allow(
         unused_variables,
@@ -3185,6 +3194,7 @@ pub mod streaming_querier_server {
     }
 }
 /// Generated server implementations.
+#[cfg(feature = "server")]
 pub mod metrics_server {
     #![allow(
         unused_variables,
