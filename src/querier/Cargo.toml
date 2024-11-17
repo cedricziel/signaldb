@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 common = { path = "../common" }
-tempo-api = { path = "../tempo-api" }
+tempo-api = { path = "../tempo-api", features = ["server"] }
 
 async-trait.workspace = true
 
@@ -20,3 +20,4 @@ datafusion.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+tonic.workspace = true

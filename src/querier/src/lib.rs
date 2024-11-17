@@ -1,15 +1,27 @@
 use axum::Router;
+use services::tempo::SignalDBQuerier;
+use tempo_api::tempopb::querier_server::QuerierServer;
 use tokio::sync::oneshot;
+use tonic::transport::{server::Router as TonicRouter, Server};
 use tower_http::trace::TraceLayer;
 
 mod query;
+mod services;
 mod tempo_endpoints;
+
+pub fn grpc_service() -> TonicRouter {
+    let querier = SignalDBQuerier {};
+
+    let querier_svc = QuerierServer::new(querier);
+    Server::builder().add_service(querier_svc)
+}
 
 pub fn query_router() -> Router {
     Router::new()
         .layer(TraceLayer::new_for_http())
         // nest routes for tempo compatibility
         .nest("/tempo", tempo_endpoints::router())
+        .nest("/tempo", grpc_service().into_router())
 }
 
 pub async fn serve_querier_http(

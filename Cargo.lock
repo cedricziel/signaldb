@@ -2683,6 +2683,7 @@ dependencies = [
  "serde_json",
  "tempo-api",
  "tokio",
+ "tonic",
  "tower 0.5.1",
  "tower-http",
  "tracing",
