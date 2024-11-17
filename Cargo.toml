@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 acceptor = { path = "src/acceptor" }
+querier = { path = "src/querier" }
 
 arrow-array.workspace = true
 arrow.workspace = true
@@ -29,7 +30,13 @@ log.workspace = true
 serde_json.workspace = true
 
 [workspace]
-members = ["src/acceptor", "src/common", "src/signal-producer"]
+members = [
+    "src/acceptor",
+    "src/common",
+    "src/querier",
+    "src/signal-producer",
+    "src/tempo-api",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -40,6 +47,7 @@ license = "AGPL-3.0"
 acceptor = { path = "src/acceptor" }
 common = { path = "src/common" }
 
+async-trait = "0.1.83"
 futures = "0.3.31"
 
 arrow = "53.2.0"
@@ -51,6 +59,7 @@ parquet = { version = "53.2.0", features = ["arrow"] }
 object_store = { version = "0.11.0", features = ["aws", "azure", "gcp"] }
 
 tonic = "0.12.3"
+tonic-build = "0.12.3"
 tonic-reflection = "0.12.3"
 
 opentelemetry = "0.26.0"
@@ -58,6 +67,7 @@ opentelemetry_sdk = "0.26.0"
 opentelemetry-stdout = { version = "0.26.0" }
 opentelemetry-otlp = { version = "0.26.0" }
 opentelemetry-proto = "0.26.1"
+opentelemetry-semantic-conventions = "0.26.0"
 
 tokio = { version = "1.41.0", features = ["full"] }
 
@@ -68,5 +78,15 @@ log = "0.4"
 anyhow = "1.0.92"
 
 axum = "0.7.7"
+tower-http = "0.6.1"
 
+serde = { version = "1.0.214", features = ["derive"] }
 serde_json = "1.0.132"
+
+tower = "0.5.1"
+
+prost = "0.13"
+prost-types = "0.13"
+prost-build = "0.13"
+
+thiserror = "2.0.3"

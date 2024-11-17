@@ -5,7 +5,7 @@ use std::{sync::Arc, time::SystemTime};
 
 use anyhow::Ok;
 use arrow_flight::flight_service_server::FlightServiceServer;
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::Schema;
 use axum::{routing::get, Router};
 use common::dataset::DataSet;
 use opentelemetry_proto::tonic::collector::{
@@ -25,7 +25,6 @@ use tokio::{
     fs::{create_dir_all, File},
     sync::oneshot,
 };
-use tonic_reflection::server::{Builder, ServerReflectionServer};
 
 pub async fn get_parquet_writer(data_set: DataSet, schema: Schema) -> AsyncArrowWriter<File> {
     log::info!("get_parquet_writer");
@@ -57,7 +56,7 @@ pub async fn get_parquet_writer(data_set: DataSet, schema: Schema) -> AsyncArrow
     .expect("Error creating parquet writer")
 }
 
-pub async fn init_acceptor(
+pub async fn serve_otlp_grpc(
     init_tx: oneshot::Sender<()>,
     shutdown_rx: oneshot::Receiver<()>,
     stopped_tx: oneshot::Sender<()>,
@@ -70,7 +69,9 @@ pub async fn init_acceptor(
     let trace_server = TraceServiceServer::new(TraceAcceptorService);
     let metric_server = MetricsServiceServer::new(MetricsAcceptorService);
 
-    init_tx.send(()).expect("Unable to send init signal");
+    init_tx
+        .send(())
+        .expect("Unable to send init signal for OTLP/gRPC");
     tonic::transport::Server::builder()
         .add_service(log_server)
         .add_service(trace_server)
@@ -83,7 +84,9 @@ pub async fn init_acceptor(
         .await
         .expect("Unable to start OTLP acceptor");
 
-    stopped_tx.send(()).expect("Unable to send stopped signal");
+    stopped_tx
+        .send(())
+        .expect("Unable to send stopped signal for OTLP/gRPC");
     Ok(())
 }
 
@@ -98,13 +101,36 @@ async fn root() -> &'static str {
     "Hello, World!"
 }
 
-pub async fn serve_otlp_http() {
-    let app = Router::new().route("/", get(root));
+pub fn acceptor_router() -> Router {
+    Router::new().route("/", get(root))
+}
+
+pub async fn serve_otlp_http(
+    init_tx: oneshot::Sender<()>,
+    shutdown_rx: oneshot::Receiver<()>,
+    stopped_tx: oneshot::Sender<()>,
+) -> Result<(), anyhow::Error> {
+    let app = acceptor_router();
 
     let addr = "0.0.0.0:4318";
 
     log::info!("Starting OTLP/HTTP server on {}", addr);
 
+    init_tx
+        .send(())
+        .expect("Unable to send init signal for OTLP/HTTP");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            shutdown_rx.await.ok();
+
+            log::info!("Shutting down OTLP/HTTP server");
+        })
+        .await
+        .unwrap();
+    stopped_tx
+        .send(())
+        .expect("Unable to send stopped signal for OTLP/HTTP");
+
+    Ok(())
 }

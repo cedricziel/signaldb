@@ -1,11 +1,10 @@
-use std::{collections::HashMap, ptr::null, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
-use arrow_array::{ArrayRef, BooleanArray, RecordBatch, StringArray, StructArray};
-use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
+use arrow_array::{ArrayRef, BooleanArray, RecordBatch, StringArray};
+use arrow_schema::{DataType, Field, Schema};
+use serde::{Deserialize, Serialize};
 
-use super::schema;
-
-#[derive(Clone)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum SpanKind {
     Internal,
     Server,
@@ -37,7 +36,7 @@ impl SpanKind {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum SpanStatus {
     Unspecified,
     Ok,
@@ -63,7 +62,7 @@ impl SpanStatus {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Span {
     pub trace_id: String,
     pub span_id: String,
@@ -79,6 +78,8 @@ pub struct Span {
 
     pub attributes: HashMap<String, serde_json::Value>,
     pub resource: HashMap<String, serde_json::Value>,
+
+    pub children: Vec<Span>,
 }
 
 impl Span {
@@ -142,6 +143,7 @@ impl Span {
 /// A batch of spans.
 ///
 /// Supposedly making it easier to convert to a record batch.
+#[derive(Serialize, Deserialize)]
 pub struct SpanBatch {
     pub spans: Vec<Span>,
 }
@@ -177,9 +179,90 @@ impl SpanBatch {
 
         RecordBatch::try_new(Arc::new(schema), columns).unwrap()
     }
+
+    /// Convert an arrow batch to a span batch.
+    pub fn from_record_batch(batch: &RecordBatch) -> Self {
+        let mut span_batch = SpanBatch::new();
+
+        for i in 0..batch.num_rows() {
+            let trace_id = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let span_id = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let parent_span_id = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let status = batch
+                .column(3)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let is_root = batch
+                .column(4)
+                .as_any()
+                .downcast_ref::<BooleanArray>()
+                .unwrap();
+            let name = batch
+                .column(5)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let service_name = batch
+                .column(6)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let span_kind = batch
+                .column(7)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+
+            let span = Span {
+                trace_id: trace_id.value(i).to_string(),
+                span_id: span_id.value(i).to_string(),
+                parent_span_id: parent_span_id.value(i).to_string(),
+                status: SpanStatus::from_str(status.value(i)),
+                is_root: is_root.value(i),
+                name: name.value(i).to_string(),
+                service_name: service_name.value(i).to_string(),
+                span_kind: SpanKind::from_str(span_kind.value(i)),
+                attributes: HashMap::new(),
+                resource: HashMap::new(),
+                children: vec![],
+            };
+
+            span_batch.add_span(span);
+        }
+
+        span_batch
+    }
+}
+
+impl From<arrow_array::RecordBatch> for SpanBatch {
+    fn from(batch: RecordBatch) -> Self {
+        SpanBatch::from_record_batch(&batch)
+    }
+}
+
+impl From<&arrow_array::RecordBatch> for SpanBatch {
+    fn from(batch: &RecordBatch) -> Self {
+        SpanBatch::from_record_batch(&batch)
+    }
 }
 
 mod tests {
+    use std::vec;
+
+    #[allow(unused_imports)]
     use super::*;
 
     #[test]
@@ -195,10 +278,99 @@ mod tests {
             span_kind: SpanKind::Client,
             attributes: HashMap::new(),
             resource: HashMap::new(),
+            children: vec![],
         };
 
         let record_batch = span.to_record_batch();
         assert_eq!(record_batch.num_columns(), 8);
         assert_eq!(record_batch.num_rows(), 1);
+    }
+
+    #[test]
+    fn test_span_batch() {
+        let mut span_batch = SpanBatch::new();
+        span_batch.add_span(Span {
+            trace_id: "trace_id".to_string(),
+            span_id: "span_id".to_string(),
+            parent_span_id: "parent_span_id".to_string(),
+            status: SpanStatus::Ok,
+            is_root: true,
+            name: "name".to_string(),
+            service_name: "service_name".to_string(),
+            span_kind: SpanKind::Client,
+            attributes: HashMap::new(),
+            resource: HashMap::new(),
+            children: vec![],
+        });
+
+        let record_batch = span_batch.to_record_batch();
+        assert_eq!(record_batch.num_columns(), 8);
+        assert_eq!(record_batch.num_rows(), 1);
+
+        let span_batch = SpanBatch::from_record_batch(&record_batch);
+        assert_eq!(span_batch.spans.len(), 1);
+    }
+
+    #[test]
+    fn test_span_kind() {
+        assert_eq!(SpanKind::from_str("Internal"), SpanKind::Internal);
+        assert_eq!(SpanKind::from_str("Server"), SpanKind::Server);
+        assert_eq!(SpanKind::from_str("Client"), SpanKind::Client);
+        assert_eq!(SpanKind::from_str("Producer"), SpanKind::Producer);
+        assert_eq!(SpanKind::from_str("Consumer"), SpanKind::Consumer);
+
+        assert_eq!(SpanKind::Internal.to_str(), "Internal");
+        assert_eq!(SpanKind::Server.to_str(), "Server");
+        assert_eq!(SpanKind::Client.to_str(), "Client");
+        assert_eq!(SpanKind::Producer.to_str(), "Producer");
+        assert_eq!(SpanKind::Consumer.to_str(), "Consumer");
+    }
+
+    #[test]
+    fn test_span_status() {
+        assert_eq!(SpanStatus::from_str("Unspecified"), SpanStatus::Unspecified);
+        assert_eq!(SpanStatus::from_str("Ok"), SpanStatus::Ok);
+        assert_eq!(SpanStatus::from_str("Error"), SpanStatus::Error);
+
+        assert_eq!(SpanStatus::Unspecified.to_str(), "Unspecified");
+        assert_eq!(SpanStatus::Ok.to_str(), "Ok");
+        assert_eq!(SpanStatus::Error.to_str(), "Error");
+    }
+
+    #[test]
+    fn test_span_schema() {
+        let schema = Span::to_schema();
+        assert_eq!(schema.fields().len(), 8);
+    }
+
+    #[test]
+    fn test_span_batch_from_request() {
+        let request = opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest {
+            resource_spans: vec![],
+        };
+
+        let span_batch = SpanBatch::from_request(&request);
+        assert_eq!(span_batch.spans.len(), 0);
+    }
+
+    #[test]
+    fn test_span_batch_from_record_batch() {
+        let span = Span {
+            trace_id: "trace_id".to_string(),
+            span_id: "span_id".to_string(),
+            parent_span_id: "parent_span_id".to_string(),
+            status: SpanStatus::Ok,
+            is_root: true,
+            name: "name".to_string(),
+            service_name: "service_name".to_string(),
+            span_kind: SpanKind::Client,
+            attributes: HashMap::new(),
+            resource: HashMap::new(),
+            children: vec![],
+        };
+
+        let record_batch = span.to_record_batch();
+        let span_batch = SpanBatch::from_record_batch(&record_batch);
+        assert_eq!(span_batch.spans.len(), 1);
     }
 }

@@ -1,11 +1,13 @@
-use std::time::Duration;
+use std::{thread::sleep, time::Duration};
 
 use opentelemetry::{
     global,
-    trace::{TraceContextExt, Tracer},
+    trace::{Span, SpanBuilder, SpanKind, TraceContextExt, Tracer},
     KeyValue,
 };
 use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::{trace::Config, Resource};
+use opentelemetry_semantic_conventions::trace::{HTTP_REQUEST_METHOD, URL_FULL};
 
 /// produce a couple of signals and send it to a destination
 #[tokio::main]
@@ -20,6 +22,12 @@ async fn main() {
     // Then pass it into pipeline builder
     let tracer_provider = opentelemetry_otlp::new_pipeline()
         .tracing()
+        .with_trace_config(
+            Config::default().with_resource(Resource::new(vec![KeyValue::new(
+                "service.name",
+                "signal-producer",
+            )])),
+        )
         .with_exporter(otlp_exporter)
         .install_simple()
         .unwrap();
@@ -32,7 +40,31 @@ async fn main() {
         let span = cx.span();
 
         span.set_attribute(KeyValue::new("question", "what is the answer?"));
+
+        tracer.in_span("doing_work_inside", |cx| {
+            let span = cx.span();
+
+            span.set_attribute(KeyValue::new("question", "what is the answer?"));
+        });
     });
+
+    let mut span = SpanBuilder::from_name("GET /products/{id}")
+        .with_attributes(vec![
+            KeyValue::new(HTTP_REQUEST_METHOD, "GET"),
+            KeyValue::new(URL_FULL, "https://www.rust-lang.org/"),
+        ])
+        .with_kind(SpanKind::Server)
+        .start(&tracer);
+
+    // write an http span
+    tracer.in_span("internal work", |cx| {
+        let span = cx.span();
+
+        span.set_attribute(KeyValue::new("my.domain.attr", 42));
+
+        sleep(Duration::from_secs(3));
+    });
+    span.end();
 
     // Shutdown exporter
     global::shutdown_tracer_provider();

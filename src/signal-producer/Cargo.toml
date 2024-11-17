@@ -11,3 +11,4 @@ opentelemetry.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["async-std", "trace"] }
 opentelemetry-stdout = { workspace = true, features = ["trace"] }
 opentelemetry-otlp = { workspace = true, features = ["tonic"] }
+opentelemetry-semantic-conventions.workspace = true
