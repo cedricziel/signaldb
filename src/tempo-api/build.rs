@@ -57,6 +57,11 @@ fn main() {
         "package opentelemetry.proto.resource.v1",
         "package tempopb.resource.v1",
     )
+    .replace(
+        "import \"opentelemetry/proto/common/v1/common.proto\"",
+        "import \"common/v1/common.proto\"",
+    )
+    .replace("opentelemetry.proto.common.v1", "tempopb.common.v1")
     .replace("[(gogoproto.nullable) = false]", "");
 
     let mut file = OpenOptions::new()
@@ -85,6 +90,16 @@ fn main() {
         "package opentelemetry.proto.trace.v1",
         "package tempopb.trace.v1",
     )
+    .replace(
+        "import \"opentelemetry/proto/common/v1/common.proto\"",
+        "import \"common/v1/common.proto\"",
+    )
+    .replace(
+        "import \"opentelemetry/proto/resource/v1/resource.proto\"",
+        "import \"resource/v1/resource.proto\"",
+    )
+    .replace("opentelemetry.proto.common.v1", "tempopb.common.v1")
+    .replace("opentelemetry.proto.resource.v1", "tempopb.resource.v1")
     .replace("[(gogoproto.nullable) = false]", "");
 
     let mut file = OpenOptions::new()

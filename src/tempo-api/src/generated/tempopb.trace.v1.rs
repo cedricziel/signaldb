@@ -7,9 +7,7 @@ pub struct TracesData {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResourceSpans {
     #[prost(message, optional, tag = "1")]
-    pub resource: ::core::option::Option<
-        super::super::super::opentelemetry::proto::resource::v1::Resource,
-    >,
+    pub resource: ::core::option::Option<super::super::resource::v1::Resource>,
     #[prost(message, repeated, tag = "2")]
     pub scope_spans: ::prost::alloc::vec::Vec<ScopeSpans>,
     #[prost(string, tag = "3")]
@@ -18,9 +16,7 @@ pub struct ResourceSpans {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ScopeSpans {
     #[prost(message, optional, tag = "1")]
-    pub scope: ::core::option::Option<
-        super::super::super::opentelemetry::proto::common::v1::InstrumentationScope,
-    >,
+    pub scope: ::core::option::Option<super::super::common::v1::InstrumentationScope>,
     #[prost(message, repeated, tag = "2")]
     pub spans: ::prost::alloc::vec::Vec<Span>,
     #[prost(string, tag = "3")]
@@ -47,9 +43,7 @@ pub struct Span {
     #[prost(fixed64, tag = "8")]
     pub end_time_unix_nano: u64,
     #[prost(message, repeated, tag = "9")]
-    pub attributes: ::prost::alloc::vec::Vec<
-        super::super::super::opentelemetry::proto::common::v1::KeyValue,
-    >,
+    pub attributes: ::prost::alloc::vec::Vec<super::super::common::v1::KeyValue>,
     #[prost(uint32, tag = "10")]
     pub dropped_attributes_count: u32,
     #[prost(message, repeated, tag = "11")]
@@ -73,7 +67,7 @@ pub mod span {
         pub name: ::prost::alloc::string::String,
         #[prost(message, repeated, tag = "3")]
         pub attributes: ::prost::alloc::vec::Vec<
-            super::super::super::super::opentelemetry::proto::common::v1::KeyValue,
+            super::super::super::common::v1::KeyValue,
         >,
         #[prost(uint32, tag = "4")]
         pub dropped_attributes_count: u32,
@@ -88,7 +82,7 @@ pub mod span {
         pub trace_state: ::prost::alloc::string::String,
         #[prost(message, repeated, tag = "4")]
         pub attributes: ::prost::alloc::vec::Vec<
-            super::super::super::super::opentelemetry::proto::common::v1::KeyValue,
+            super::super::super::common::v1::KeyValue,
         >,
         #[prost(uint32, tag = "5")]
         pub dropped_attributes_count: u32,
