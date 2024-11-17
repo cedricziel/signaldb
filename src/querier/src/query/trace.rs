@@ -11,7 +11,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionContext},
 };
 
-use super::{FindTraceByIdParams, SearchQueryParams, TraceQuerier};
+use super::{error::QuerierError, FindTraceByIdParams, SearchQueryParams, TraceQuerier};
 
 const TRACE_BY_ID_QUERY: &str = "WITH RECURSIVE trace_hierarchy AS (
     SELECT *, ARRAY[span_id] AS path FROM traces WHERE trace_id = '{trace_id}'
@@ -49,7 +49,7 @@ impl TraceQuerier for TraceService {
     async fn find_by_id(
         &self,
         params: FindTraceByIdParams,
-    ) -> Result<Option<model::trace::Trace>, axum::http::StatusCode> {
+    ) -> Result<Option<model::trace::Trace>, QuerierError> {
         log::info!("Querying for trace_id: {}", params.trace_id);
 
         let ctx = SessionContext::new();
@@ -57,22 +57,26 @@ impl TraceQuerier for TraceService {
             .await
             .map_err(|e| {
                 log::error!("Failed to register parquet file: {:?}", e);
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR
+
+                QuerierError::FailedToRegisterParquet(e)
             })?;
 
         let query = TRACE_BY_ID_QUERY.replace("{trace_id}", &params.trace_id);
 
         let df = ctx.sql(&query).await.map_err(|e| {
-            log::error!("Failed to execute query: {:?}", e);
+            log::error!("Failed to execute query: {:?}, {:?}", query, e);
 
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            QuerierError::QueryFailed(e)
         })?;
 
-        let results = df.collect().await.map_err(|e| {
-            log::error!("Failed to collect results: {:?}", e);
+        let results = df
+            .collect()
+            .await
+            .map_err(|e: datafusion::error::DataFusionError| {
+                log::error!("Failed to collect results: {:?}", e);
 
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+                QuerierError::QueryFailed(e)
+            })?;
 
         log::info!("Query returned {} rows", results.len());
         log::info!("Results: {:?}", results);
@@ -211,23 +215,23 @@ impl TraceQuerier for TraceService {
     async fn find_traces(
         &self,
         query: SearchQueryParams,
-    ) -> Result<Vec<model::trace::Trace>, axum::http::StatusCode> {
+    ) -> Result<Vec<model::trace::Trace>, QuerierError> {
         let ctx = SessionContext::new();
         ctx.register_parquet("traces", ".data/ds/traces", ParquetReadOptions::default())
             .await
-            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|e| QuerierError::FailedToRegisterParquet(e))?;
 
         let query = "SELECT * FROM traces;";
 
         let df = ctx
             .sql(query)
             .await
-            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|e| QuerierError::QueryFailed(e))?;
 
         let results = df
             .collect()
             .await
-            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|e| QuerierError::QueryFailed(e))?;
 
         log::info!("Query returned {} rows", results.len());
         log::info!("Results: {:?}", results);

@@ -1,7 +1,9 @@
 use common::model;
 
 use async_trait::async_trait;
+use error::QuerierError;
 
+pub mod error;
 pub mod trace;
 
 #[derive(Debug)]
@@ -28,9 +30,9 @@ pub trait TraceQuerier {
     async fn find_by_id(
         &self,
         params: FindTraceByIdParams,
-    ) -> Result<Option<model::trace::Trace>, axum::http::StatusCode>;
+    ) -> Result<Option<model::trace::Trace>, QuerierError>;
     async fn find_traces(
         &self,
         query: SearchQueryParams,
-    ) -> Result<Vec<model::trace::Trace>, axum::http::StatusCode>;
+    ) -> Result<Vec<model::trace::Trace>, QuerierError>;
 }
