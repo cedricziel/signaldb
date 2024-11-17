@@ -13,27 +13,12 @@ pub mod tempopb {
 
     pub mod resource {
         pub mod v1 {
-            include!("generated/opentelemetry.proto.resource.v1.rs");
+            include!("generated/tempopb.resource.v1.rs");
         }
     }
     pub mod trace {
         pub mod v1 {
             include!("generated/tempopb.trace.v1.rs");
-        }
-    }
-}
-
-pub mod opentelemetry {
-    pub mod proto {
-        pub mod common {
-            pub mod v1 {
-                include!("generated/opentelemetry.proto.common.v1.rs");
-            }
-        }
-        pub mod resource {
-            pub mod v1 {
-                include!("generated/opentelemetry.proto.resource.v1.rs");
-            }
         }
     }
 }
