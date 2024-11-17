@@ -100,10 +100,17 @@ fn main() {
 
     println!("cargo:rerun-if-changed=build.rs");
 
-    prost_build::Config::new()
-        .out_dir(out_path)
-        .disable_comments(&["."])
-        .compile_protos(
+    let mut config = prost_build::Config::default();
+    config.out_dir(out_path);
+    config.disable_comments(&["."]);
+
+    println!("cargo:rerun-if-changed=proto/tempo.proto");
+
+    tonic_build::configure()
+        .build_client(true)
+        .build_server(true)
+        .compile_protos_with_config(
+            config,
             &["proto/tempo.proto"],
             &[otel_proto_path.to_str().unwrap(), "proto/"],
         )
