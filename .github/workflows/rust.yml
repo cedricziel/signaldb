@@ -19,7 +19,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: arduino/setup-protoc@v1
+      - uses: arduino/setup-protoc@v3
       - name: Init submodules
         run: git submodule update --init --recursive
       - name: Set up cargo cache
