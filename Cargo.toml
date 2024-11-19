@@ -90,3 +90,6 @@ prost-types = "0.13"
 prost-build = "0.13"
 
 thiserror = "2.0.3"
+
+[profile.dev]
+split-debuginfo = "unpacked"
