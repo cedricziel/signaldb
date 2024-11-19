@@ -6,15 +6,12 @@ license.workspace = true
 
 [dependencies]
 common.workspace = true
-
-arrow-array.workspace = true
 arrow-flight.workspace = true
 arrow-schema.workspace = true
 parquet.workspace = true
 
 opentelemetry-proto.workspace = true
 tonic.workspace = true
-tonic-reflection.workspace = true
 
 tracing.workspace = true
 
