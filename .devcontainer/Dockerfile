@@ -20,3 +20,5 @@ RUN mkdir -p /home/${USERNAME}/.cargo \
     && echo "protocol = \"sparse\"" >> /home/${USERNAME}/.cargo/config.toml \
     && echo "[net]" >> /home/${USERNAME}/.cargo/config.toml \
     && echo "git-fetch-with-cli = true" >> /home/${USERNAME}/.cargo/config.toml
+
+RUN cargo install cargo-machete

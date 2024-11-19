@@ -15,7 +15,6 @@ arrow.workspace = true
 arrow-schema.workspace = true
 datafusion.workspace = true
 parquet.workspace = true
-object_store.workspace = true
 
 opentelemetry-proto.workspace = true
 tonic.workspace = true
