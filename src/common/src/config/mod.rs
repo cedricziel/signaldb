@@ -1,7 +1,7 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use figment::{
-    providers::{Env, Format, Toml},
+    providers::{Env, Format, Serialized, Toml},
     Figment,
 };
 
@@ -9,12 +9,35 @@ use once_cell::sync::OnceCell;
 
 pub static CONFIG: OnceCell<Configuration> = OnceCell::new();
 
-#[derive(Debug, Deserialize)]
-pub struct Configuration {}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DatabaseConfig {
+    pub url: String,
+}
+
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            url: String::from("sqlite://.data/signaldb.db"),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Configuration {
+    pub database: DatabaseConfig,
+}
+
+impl Default for Configuration {
+    fn default() -> Self {
+        Self {
+            database: Default::default(),
+        }
+    }
+}
 
 impl Configuration {
     pub fn load() -> Result<Self, figment::Error> {
-        let config: Configuration = Figment::new()
+        let config = Figment::from(Serialized::defaults(Configuration::default()))
             .merge(Toml::file("signaldb.toml"))
             .merge(Env::prefixed("SIGNALDB_"))
             .extract()?;
