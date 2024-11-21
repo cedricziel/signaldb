@@ -11,13 +11,13 @@ pub static CONFIG: OnceCell<Configuration> = OnceCell::new();
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DatabaseConfig {
-    pub url: String,
+    pub dsn: String,
 }
 
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
-            url: String::from("sqlite://.data/signaldb.db"),
+            dsn: String::from("sqlite://.data/signaldb.db"),
         }
     }
 }
