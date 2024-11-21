@@ -7,6 +7,9 @@ async fn main() {
 
     tracing_subscriber::fmt::init();
 
+    let config = common::config::Configuration::load().expect("Unable to load configuration");
+    common::config::CONFIG.set(config).unwrap();
+
     let (otlp_grpc_init_tx, otlp_grpc_init_rx) = oneshot::channel();
     let (_otlp_grpc_shutdown_tx, otlp_grpc_shutdown_rx) = oneshot::channel();
     let (otlp_grpc_stopped_tx, _otlp_grpc_stopped_rx) = oneshot::channel();
