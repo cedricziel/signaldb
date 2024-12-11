@@ -8,6 +8,11 @@ use axum::{
 
 use crate::query::{trace::TraceService, FindTraceByIdParams, TraceQuerier};
 
+#[derive(Clone)]
+struct QuerierState {
+    trace_querier: Box<dyn TraceQuerier + Send + Sync>,
+}
+
 pub fn router() -> Router {
     Router::new()
         .route("/api/echo", get(echo))
@@ -21,6 +26,7 @@ pub fn router() -> Router {
             "/api/v2/search/tag/:tag_name/values",
             get(search_tag_values_v2),
         )
+        .with_state(state)
 }
 
 /// GET /api/echo
