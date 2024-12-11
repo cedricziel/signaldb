@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -12,6 +12,8 @@ use datafusion::{
 };
 
 use super::{error::QuerierError, FindTraceByIdParams, SearchQueryParams, TraceQuerier};
+
+const SHALLOW_TRACE_BY_ID_QUERY: &str = "SELECT * FROM traces WHERE trace_id = '{trace_id}';";
 
 const TRACE_BY_ID_QUERY: &str = "WITH RECURSIVE trace_hierarchy AS (
     SELECT *, ARRAY[span_id] AS path FROM traces WHERE trace_id = '{trace_id}'
@@ -34,17 +36,37 @@ const TRACES_BY_QUERY: &str = "WITH RECURSIVE trace_hierarchy AS (
 )
 SELECT * FROM trace_hierarchy;";
 
-#[derive(Debug)]
-pub struct TraceService {}
+pub struct TraceService {
+    // skip debug on session_context
+    session_context: Arc<SessionContext>,
+}
+
+impl Debug for TraceService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TraceService")
+            .field("session_context", &"set")
+            .finish()
+    }
+}
 
 impl TraceService {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(session_context: SessionContext) -> Self {
+        Self {
+            session_context: Arc::new(session_context),
+        }
     }
 }
 
 #[async_trait]
 impl TraceQuerier for TraceService {
+    #[tracing::instrument]
+    async fn find_shallow_by_id(
+        &self,
+        _params: FindTraceByIdParams,
+    ) -> Result<Option<model::trace::Trace>, QuerierError> {
+        unimplemented!()
+    }
+
     #[tracing::instrument]
     async fn find_by_id(
         &self,
@@ -52,18 +74,9 @@ impl TraceQuerier for TraceService {
     ) -> Result<Option<model::trace::Trace>, QuerierError> {
         log::info!("Querying for trace_id: {}", params.trace_id);
 
-        let ctx = SessionContext::new();
-        ctx.register_parquet("traces", ".data/ds/traces", ParquetReadOptions::default())
-            .await
-            .map_err(|e| {
-                log::error!("Failed to register parquet file: {:?}", e);
-
-                QuerierError::FailedToRegisterParquet(e)
-            })?;
-
         let query = TRACE_BY_ID_QUERY.replace("{trace_id}", &params.trace_id);
 
-        let df = ctx.sql(&query).await.map_err(|e| {
+        let df = self.session_context.sql(&query).await.map_err(|e| {
             log::error!("Failed to execute query: {:?}, {:?}", query, e);
 
             QuerierError::QueryFailed(e)
@@ -316,5 +329,23 @@ impl TraceQuerier for TraceService {
         }
 
         Ok(traces)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_find_by_id() {
+        let service = TraceService::new();
+        let params = FindTraceByIdParams {
+            trace_id: "1234".to_string(),
+            start: None,
+            end: None,
+        };
+
+        let result = service.find_by_id(params).await.unwrap();
+        assert!(result.is_none());
     }
 }
