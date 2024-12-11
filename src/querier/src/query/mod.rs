@@ -27,6 +27,10 @@ pub struct SearchQueryParams {
 
 #[async_trait]
 pub trait TraceQuerier {
+    async fn find_shallow_by_id(
+        &self,
+        params: FindTraceByIdParams,
+    ) -> Result<Option<model::trace::Trace>, QuerierError>;
     async fn find_by_id(
         &self,
         params: FindTraceByIdParams,
