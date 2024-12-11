@@ -21,5 +21,6 @@ RUN mkdir -p /home/${USERNAME}/.cargo \
     && echo "[net]" >> /home/${USERNAME}/.cargo/config.toml \
     && echo "git-fetch-with-cli = true" >> /home/${USERNAME}/.cargo/config.toml
 
-RUN cargo install cargo-machete \
-    cargo install --locked cargo-deny
+RUN cargo install --force cargo-machete
+
+RUN cargo install --locked --force cargo-deny
