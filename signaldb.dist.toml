@@ -1,2 +1,8 @@
 [database]
 dsn = "sqlite://.data/signal.db"
+
+[storage]
+default = "local"
+
+[storage.adapters.local]
+url = "file://.data/ds"
