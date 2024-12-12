@@ -49,7 +49,7 @@ common = { path = "src/common" }
 async-trait = "0.1.83"
 futures = "0.3.31"
 
-arrow = "53.2.0"
+arrow = "53.3.0"
 arrow-array = "53.2.0"
 arrow-flight = "53.3.0"
 arrow-schema = "53.3.0"
