@@ -2351,9 +2351,9 @@ dependencies = [
 
 [[package]]
 name = "parquet"
-version = "53.2.0"
+version = "53.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dea02606ba6f5e856561d8d507dba8bac060aefca2a6c0f1aa1d361fed91ff3e"
+checksum = "2b449890367085eb65d7d3321540abc3d7babbd179ce31df0016e90719114191"
 dependencies = [
  "ahash",
  "arrow-array",
@@ -2370,7 +2370,7 @@ dependencies = [
  "flate2",
  "futures",
  "half",
- "hashbrown 0.14.5",
+ "hashbrown 0.15.2",
  "lz4_flex",
  "num",
  "num-bigint",
