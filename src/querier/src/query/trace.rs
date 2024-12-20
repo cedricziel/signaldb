@@ -13,8 +13,10 @@ use datafusion::{
 
 use super::{error::QuerierError, FindTraceByIdParams, SearchQueryParams, TraceQuerier};
 
+#[allow(dead_code)]
 const SHALLOW_TRACE_BY_ID_QUERY: &str = "SELECT * FROM traces WHERE trace_id = '{trace_id}';";
 
+#[allow(dead_code)]
 const TRACE_BY_ID_QUERY: &str = "WITH RECURSIVE trace_hierarchy AS (
     SELECT *, ARRAY[span_id] AS path FROM traces WHERE trace_id = '{trace_id}'
     UNION ALL
@@ -25,6 +27,7 @@ const TRACE_BY_ID_QUERY: &str = "WITH RECURSIVE trace_hierarchy AS (
 )
 SELECT DISTINCT * FROM trace_hierarchy;";
 
+#[allow(dead_code)]
 const TRACES_BY_QUERY: &str = "WITH RECURSIVE trace_hierarchy AS (
     SELECT t.* FROM traces t
     INNER JOIN trace_hierarchy th ON t.parent_span_id = th.span_id
@@ -235,7 +238,7 @@ impl TraceQuerier for TraceService {
     #[tracing::instrument]
     async fn find_traces(
         &self,
-        query: SearchQueryParams,
+        _query: SearchQueryParams,
     ) -> Result<Vec<model::trace::Trace>, QuerierError> {
         let ctx = SessionContext::new();
         ctx.register_parquet("traces", ".data/ds/traces", ParquetReadOptions::default())
@@ -257,7 +260,7 @@ impl TraceQuerier for TraceService {
         log::info!("Query returned {} rows", results.len());
         log::info!("Results: {:?}", results);
 
-        let mut traces = Vec::new();
+        let traces = Vec::new();
 
         for batch in results {
             for row_index in 0..batch.num_rows() {
@@ -283,7 +286,7 @@ impl TraceQuerier for TraceService {
                     .value(row_index)
                     .to_string();
 
-                let span = Span {
+                let _span = Span {
                     span_id: span_id.clone(),
                     parent_span_id: parent_span_id.clone(),
                     children: Vec::new(),

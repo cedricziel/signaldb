@@ -7,6 +7,7 @@ pub mod error;
 pub mod trace;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct FindTraceByIdParams {
     pub trace_id: String,
     pub start: Option<String>,
@@ -14,6 +15,7 @@ pub struct FindTraceByIdParams {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct SearchQueryParams {
     q: Option<String>,
     tags: Option<String>,
@@ -26,6 +28,7 @@ pub struct SearchQueryParams {
 }
 
 #[async_trait]
+#[allow(dead_code)]
 pub trait TraceQuerier: Send + Sync + Clone {
     async fn find_shallow_by_id(
         &self,
