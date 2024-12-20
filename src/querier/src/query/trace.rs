@@ -7,7 +7,7 @@ use common::model::{
     span::{Span, SpanKind, SpanStatus},
 };
 use datafusion::{
-    arrow::array::{BooleanArray, StringArray},
+    arrow::array::{BooleanArray, Int64Array, StringArray},
     prelude::{ParquetReadOptions, SessionContext},
 };
 
@@ -192,6 +192,20 @@ impl TraceQuerier for TraceService {
                     ),
                     attributes: HashMap::new(),
                     resource: HashMap::new(),
+                    start_time_unix_nano: batch
+                        .column_by_name("start_time_unix_nano")
+                        .expect("unable to find column 'start_time_unix_nano'")
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .value(row_index) as u64,
+                    duration_nano: batch
+                        .column_by_name("duration_nano")
+                        .expect("unable to find column 'duration_nano'")
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .value(row_index) as u64,
                 };
 
                 span_map.insert(span_id.clone(), span);
@@ -291,16 +305,7 @@ impl TraceQuerier for TraceService {
                     parent_span_id: parent_span_id.clone(),
                     children: Vec::new(),
                     trace_id: trace_id.clone(),
-                    status: SpanStatus::from_str(
-                        batch
-                            .column_by_name("status")
-                            .expect("unable to find column status")
-                            .as_any()
-                            .downcast_ref::<StringArray>()
-                            .unwrap()
-                            .value(row_index),
-                    )
-                    .into(),
+                    status: SpanStatus::Unspecified,
                     is_root: batch
                         .column_by_name("is_root")
                         .expect("unable to find column 'is_root'")
@@ -333,6 +338,20 @@ impl TraceQuerier for TraceService {
                             .unwrap()
                             .value(row_index),
                     ),
+                    start_time_unix_nano: batch
+                        .column_by_name("start_time_unix_nano")
+                        .expect("unable to find column 'start_time_unix_nano'")
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .value(row_index) as u64,
+                    duration_nano: batch
+                        .column_by_name("duration_nano")
+                        .expect("unable to find column 'duration_nano'")
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .value(row_index) as u64,
                     attributes: HashMap::new(),
                     resource: HashMap::new(),
                 };

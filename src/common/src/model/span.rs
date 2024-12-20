@@ -76,6 +76,9 @@ pub struct Span {
     pub service_name: String,
     pub span_kind: SpanKind,
 
+    pub start_time_unix_nano: u64,
+    pub duration_nano: u64,
+
     pub attributes: HashMap<String, serde_json::Value>,
     pub resource: HashMap<String, serde_json::Value>,
 
@@ -93,6 +96,8 @@ impl Span {
             Field::new("name", DataType::Utf8, false),
             Field::new("service_name", DataType::Utf8, false),
             Field::new("span_kind", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::UInt64, false),
+            Field::new("duration_nano", DataType::UInt64, false),
             // Field::new(
             //     "attributes",
             //     DataType::Struct(Fields::from(Vec::<Field>::new())),
@@ -118,6 +123,8 @@ impl Span {
         let name: ArrayRef = Arc::new(StringArray::from(vec![self.name.clone()]));
         let service_name: ArrayRef = Arc::new(StringArray::from(vec![self.service_name.clone()]));
         let span_kind: ArrayRef = Arc::new(StringArray::from(vec![self.span_kind.to_str()]));
+        let start_time_unix_nano: ArrayRef = Arc::new(arrow_array::UInt64Array::from(vec![self.start_time_unix_nano]));
+        let duration_nano: ArrayRef = Arc::new(arrow_array::UInt64Array::from(vec![self.duration_nano]));
         // let attributes: ArrayRef = Arc::new(StructArray::from(vec![]));
         // let resource: ArrayRef = Arc::new(StructArray::from(vec![null()]));
 
@@ -132,6 +139,8 @@ impl Span {
                 name,
                 service_name,
                 span_kind,
+                start_time_unix_nano,
+                duration_nano,
                 // attributes,
                 // resource,
             ],
@@ -225,6 +234,16 @@ impl SpanBatch {
                 .as_any()
                 .downcast_ref::<StringArray>()
                 .unwrap();
+            let start_time_unix_nano = batch
+                .column(8)
+                .as_any()
+                .downcast_ref::<arrow_array::UInt64Array>()
+                .unwrap();
+            let duration_nano = batch
+                .column(9)
+                .as_any()
+                .downcast_ref::<arrow_array::UInt64Array>()
+                .unwrap();
 
             let span = Span {
                 trace_id: trace_id.value(i).to_string(),
@@ -235,6 +254,8 @@ impl SpanBatch {
                 name: name.value(i).to_string(),
                 service_name: service_name.value(i).to_string(),
                 span_kind: SpanKind::from_str(span_kind.value(i)),
+                start_time_unix_nano: start_time_unix_nano.value(i),
+                duration_nano: duration_nano.value(i),
                 attributes: HashMap::new(),
                 resource: HashMap::new(),
                 children: vec![],
@@ -274,13 +295,15 @@ mod tests {
             name: "name".to_string(),
             service_name: "service_name".to_string(),
             span_kind: SpanKind::Client,
+            start_time_unix_nano: 0,
+            duration_nano: 0,
             attributes: HashMap::new(),
             resource: HashMap::new(),
             children: vec![],
         };
 
         let record_batch = span.to_record_batch();
-        assert_eq!(record_batch.num_columns(), 8);
+        assert_eq!(record_batch.num_columns(), 10);
         assert_eq!(record_batch.num_rows(), 1);
     }
 
@@ -296,13 +319,15 @@ mod tests {
             name: "name".to_string(),
             service_name: "service_name".to_string(),
             span_kind: SpanKind::Client,
+            start_time_unix_nano: 0,
+            duration_nano: 0,
             attributes: HashMap::new(),
             resource: HashMap::new(),
             children: vec![],
         });
 
         let record_batch = span_batch.to_record_batch();
-        assert_eq!(record_batch.num_columns(), 8);
+        assert_eq!(record_batch.num_columns(), 10);
         assert_eq!(record_batch.num_rows(), 1);
 
         let span_batch = SpanBatch::from_record_batch(&record_batch);
@@ -338,7 +363,7 @@ mod tests {
     #[test]
     fn test_span_schema() {
         let schema = Span::to_schema();
-        assert_eq!(schema.fields().len(), 8);
+        assert_eq!(schema.fields().len(), 10);
     }
 
     #[test]
@@ -362,6 +387,8 @@ mod tests {
             name: "name".to_string(),
             service_name: "service_name".to_string(),
             span_kind: SpanKind::Client,
+            start_time_unix_nano: 0,
+            duration_nano: 0,
             attributes: HashMap::new(),
             resource: HashMap::new(),
             children: vec![],
