@@ -259,10 +259,8 @@ impl From<&arrow_array::RecordBatch> for SpanBatch {
     }
 }
 
+#[cfg(test)]
 mod tests {
-    use std::vec;
-
-    #[allow(unused_imports)]
     use super::*;
 
     #[test]

@@ -21,6 +21,7 @@ pub fn query_router() -> Router {
         .layer(TraceLayer::new_for_http())
         // nest routes for tempo compatibility
         .nest("/tempo", tempo_endpoints::router())
+        // TODO: Update to into_axum_router() when we upgrade to a newer version of tonic
         .nest("/tempo", grpc_service().into_router())
 }
 

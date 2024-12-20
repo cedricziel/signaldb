@@ -158,6 +158,7 @@ fn extract_value(attr_val: &Option<&AnyValue>) -> JsonValue {
     }
 }
 
+#[allow(dead_code)]
 fn extract_type(value: JsonValue) -> DataType {
     match value {
         JsonValue::Null => DataType::Null,
