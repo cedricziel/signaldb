@@ -1,19 +1,25 @@
 use std::collections::HashMap;
 
 use axum::{
-    extract::{Path, Query},
+    extract::{Path, Query, State},
     routing::get,
     Router,
 };
+use datafusion::prelude::SessionContext;
 
 use crate::query::{trace::TraceService, FindTraceByIdParams, TraceQuerier};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct QuerierState {
-    trace_querier: Box<dyn TraceQuerier + Send + Sync>,
+    trace_querier: TraceService,
 }
 
 pub fn router() -> Router {
+    let session_context = SessionContext::new();
+    let state = QuerierState {
+        trace_querier: TraceService::new(session_context),
+    };
+
     Router::new()
         .route("/api/echo", get(echo))
         .route("/api/traces/:trace_id", get(query_single_trace))
@@ -44,15 +50,14 @@ pub async fn echo() -> &'static str {
 /// See https://grafana.com/docs/tempo/latest/api_docs/#query
 #[tracing::instrument]
 pub async fn query_single_trace(
+    state: State<QuerierState>,
     Path(trace_id): Path<String>,
     start: Option<Query<String>>,
     end: Option<Query<String>>,
 ) -> Result<axum::Json<tempo_api::Trace>, axum::http::StatusCode> {
     log::info!("Querying for trace_id: {}", trace_id);
 
-    let trace_service = TraceService::new();
-
-    match trace_service
+    match state.trace_querier
         .find_by_id(FindTraceByIdParams {
             trace_id,
             start: start.map(|q| q.0),

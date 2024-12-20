@@ -26,7 +26,7 @@ pub struct SearchQueryParams {
 }
 
 #[async_trait]
-pub trait TraceQuerier {
+pub trait TraceQuerier: Send + Sync + Clone {
     async fn find_shallow_by_id(
         &self,
         params: FindTraceByIdParams,

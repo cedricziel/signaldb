@@ -49,6 +49,14 @@ impl Debug for TraceService {
     }
 }
 
+impl Clone for TraceService {
+    fn clone(&self) -> Self {
+        Self {
+            session_context: Arc::clone(&self.session_context),
+        }
+    }
+}
+
 impl TraceService {
     pub fn new(session_context: SessionContext) -> Self {
         Self {
