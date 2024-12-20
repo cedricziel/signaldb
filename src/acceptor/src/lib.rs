@@ -6,7 +6,10 @@ use std::{sync::Arc, time::SystemTime};
 use anyhow::Ok;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_schema::Schema;
-use axum::{routing::get, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use common::dataset::DataSet;
 use opentelemetry_proto::tonic::collector::{
     logs::v1::logs_service_server::LogsServiceServer,
@@ -102,7 +105,20 @@ async fn root() -> &'static str {
 }
 
 pub fn acceptor_router() -> Router {
-    Router::new().route("/", get(root))
+    Router::new()
+        .route("/", get(root))
+        .route("/v1/traces", post(handle_traces))
+}
+
+async fn handle_traces(
+    axum::extract::Json(payload): axum::extract::Json<serde_json::Value>,
+) -> axum::response::Response<axum::body::Body> {
+    log::info!("Received trace: {:?}", payload);
+    
+    axum::response::Response::builder()
+        .status(200)
+        .body(axum::body::Body::empty())
+        .unwrap()
 }
 
 pub async fn serve_otlp_http(

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::{fmt, error::Error};
 
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +44,14 @@ pub struct Configuration {
     pub database: DatabaseConfig,
     pub storage: StorageConfig,
 }
+
+impl fmt::Display for Configuration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Configuration error")
+    }
+}
+
+impl Error for Configuration {}
 
 impl Configuration {
     pub fn default_storage_url(&self) -> String {

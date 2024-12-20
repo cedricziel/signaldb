@@ -11,6 +11,8 @@ acceptor = { path = "src/acceptor" }
 common = { path = "src/common" }
 querier = { path = "src/querier" }
 
+anyhow.workspace = true
+
 arrow-array.workspace = true
 arrow.workspace = true
 arrow-schema.workspace = true

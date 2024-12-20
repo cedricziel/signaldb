@@ -3226,6 +3226,7 @@ name = "signaldb"
 version = "0.1.0"
 dependencies = [
  "acceptor",
+ "anyhow",
  "arrow",
  "arrow-array",
  "arrow-schema",
