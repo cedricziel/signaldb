@@ -7,8 +7,14 @@ async fn main() {
 
     tracing_subscriber::fmt::init();
 
-    let config = common::config::Configuration::load().expect("Unable to load configuration");
-    common::config::CONFIG.set(config).unwrap();
+    let config = common::config::Configuration::load().map_err(|e| {
+        log::error!("Failed to load configuration: {}", e);
+        std::process::exit(1)
+    })?;
+    if let Err(e) = common::config::CONFIG.set(config) {
+        log::error!("Failed to set global configuration: {}", e);
+        std::process::exit(1)
+    }
 
     let (otlp_grpc_init_tx, otlp_grpc_init_rx) = oneshot::channel();
     let (_otlp_grpc_shutdown_tx, otlp_grpc_shutdown_rx) = oneshot::channel();
