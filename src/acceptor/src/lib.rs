@@ -1,16 +1,15 @@
 mod handler;
 pub mod services;
 
-use std::{sync::Arc, time::SystemTime};
+use std::{net::SocketAddr, sync::Arc, time::SystemTime};
 
-use anyhow::Ok;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_schema::Schema;
 use axum::{
     routing::{get, post},
     Router,
 };
-use common::dataset::DataSet;
+use common::{dataset::DataSet, queue::memory::InMemoryQueue};
 use opentelemetry_proto::tonic::collector::{
     logs::v1::logs_service_server::LogsServiceServer,
     metrics::v1::metrics_service_server::MetricsServiceServer,
@@ -20,16 +19,31 @@ use parquet::{
     arrow::AsyncArrowWriter,
     file::properties::{WriterProperties, WriterVersion},
 };
+use tokio::net::TcpListener;
 use tokio::{
     fs::{create_dir_all, File},
-    sync::oneshot,
+    sync::{oneshot, Mutex},
 };
 
+use crate::handler::otlp_grpc::TraceHandler;
 use crate::services::{
     flight::SignalDBFlightService, otlp_log_service::LogAcceptorService,
     otlp_metric_service::MetricsAcceptorService, otlp_trace_service::TraceAcceptorService,
 };
-use crate::handler::otlp_grpc::TraceHandler;
+
+#[derive(Clone)]
+pub struct AcceptorState {
+    #[allow(dead_code)]
+    queue: Arc<Mutex<InMemoryQueue>>,
+}
+
+impl AcceptorState {
+    pub fn new() -> Self {
+        Self {
+            queue: Arc::new(Mutex::new(InMemoryQueue::default())),
+        }
+    }
+}
 
 pub async fn get_parquet_writer(data_set: DataSet, schema: Schema) -> AsyncArrowWriter<File> {
     log::info!("get_parquet_writer");
@@ -66,10 +80,11 @@ pub async fn serve_otlp_grpc(
     shutdown_rx: oneshot::Receiver<()>,
     stopped_tx: oneshot::Sender<()>,
 ) -> Result<(), anyhow::Error> {
-    let addr = "0.0.0.0:4317".parse().unwrap();
+    let addr: SocketAddr = "0.0.0.0:4317".parse().unwrap();
 
     log::info!("Starting OTLP/gRPC acceptor on {}", addr);
 
+    let _state = AcceptorState::new();
     let log_server = LogsServiceServer::new(LogAcceptorService);
     let trace_server = TraceServiceServer::new(TraceAcceptorService::new(TraceHandler::new()));
     let metric_server = MetricsServiceServer::new(MetricsAcceptorService);
@@ -99,24 +114,20 @@ pub fn create_flight_service() -> FlightServiceServer<SignalDBFlightService> {
     FlightServiceServer::new(SignalDBFlightService)
 }
 
-#[tracing::instrument]
-async fn root() -> &'static str {
-    log::info!("hello world handler");
-
-    "Hello, World!"
-}
-
 pub fn acceptor_router() -> Router {
     Router::new()
-        .route("/", get(root))
         .route("/v1/traces", post(handle_traces))
+        .route("/health", get(health))
+}
+
+async fn health() -> &'static str {
+    "ok"
 }
 
 async fn handle_traces(
     axum::extract::Json(payload): axum::extract::Json<serde_json::Value>,
 ) -> axum::response::Response<axum::body::Body> {
-    log::info!("Received trace: {:?}", payload);
-    
+    log::info!("Got traces: {:?}", payload);
     axum::response::Response::builder()
         .status(200)
         .body(axum::body::Body::empty())
@@ -128,24 +139,24 @@ pub async fn serve_otlp_http(
     shutdown_rx: oneshot::Receiver<()>,
     stopped_tx: oneshot::Sender<()>,
 ) -> Result<(), anyhow::Error> {
+    let addr: SocketAddr = "0.0.0.0:4318".parse().unwrap();
+
+    log::info!("Starting OTLP/HTTP acceptor on {}", addr);
+
     let app = acceptor_router();
-
-    let addr = "0.0.0.0:4318";
-
-    log::info!("Starting OTLP/HTTP server on {}", addr);
 
     init_tx
         .send(())
         .expect("Unable to send init signal for OTLP/HTTP");
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+
+    let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             shutdown_rx.await.ok();
-
-            log::info!("Shutting down OTLP/HTTP server");
+            log::info!("Shutting down OTLP/HTTP acceptor");
         })
-        .await
-        .unwrap();
+        .await?;
+
     stopped_tx
         .send(())
         .expect("Unable to send stopped signal for OTLP/HTTP");

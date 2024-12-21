@@ -1,32 +1,53 @@
-use std::{collections::HashMap, sync::Arc, vec};
+use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{DataType, Field, Fields};
 use common::{
-    dataset::{DataSet, DataSetType, DataStore},
     model::span::{Span, SpanBatch, SpanKind, SpanStatus},
+    queue::{memory::InMemoryQueue, Message, MessageType, Queue},
 };
 use opentelemetry::trace::{SpanId, TraceId};
 use opentelemetry_proto::tonic::{
     collector::trace::v1::ExportTraceServiceRequest,
     common::v1::{any_value::Value, AnyValue},
 };
-
 use serde_json::{Map, Value as JsonValue};
-
-use crate::get_parquet_writer;
-
-#[cfg_attr(test, mockall::automock)]
-#[async_trait::async_trait]
-pub trait TraceHandling {
-    async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest);
-}
+use tokio::sync::Mutex;
 
 #[derive(Debug)]
-pub struct TraceHandler;
+pub struct TraceHandler {
+    queue: Arc<Mutex<InMemoryQueue>>,
+}
+
+#[cfg(test)]
+pub struct MockTraceHandler {
+    pub handle_grpc_otlp_traces_calls: std::sync::Mutex<Vec<ExportTraceServiceRequest>>,
+}
+
+#[cfg(test)]
+impl MockTraceHandler {
+    pub fn new() -> Self {
+        Self {
+            handle_grpc_otlp_traces_calls: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    pub async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
+        self.handle_grpc_otlp_traces_calls
+            .lock()
+            .unwrap()
+            .push(request);
+    }
+
+    pub fn expect_handle_grpc_otlp_traces(&mut self) -> &mut Self {
+        self
+    }
+}
 
 impl TraceHandler {
     pub fn new() -> Self {
-        Self
+        Self {
+            queue: Arc::new(Mutex::new(InMemoryQueue::default())),
+        }
     }
 
     fn extract_value(&self, attr_val: &Option<&AnyValue>) -> JsonValue {
@@ -75,15 +96,9 @@ impl TraceHandler {
             JsonValue::Object(_) => DataType::Struct(Fields::from(Vec::<Field>::new())),
         }
     }
-}
 
-#[async_trait::async_trait]
-impl TraceHandling for TraceHandler {
-    #[tracing::instrument]
-    async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
+    pub async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
         log::info!("Got a request: {:?}", request);
-
-        let ds = DataSet::new(DataSetType::Traces, DataStore::Disk);
 
         let resource_spans = request.resource_spans;
 
@@ -177,20 +192,32 @@ impl TraceHandling for TraceHandler {
             }
         }
 
-        let record_batch = span_batch.to_record_batch();
-        let mut writer = get_parquet_writer(ds, (*record_batch.schema()).clone()).await;
-        writer
-            .write(&record_batch)
+        let _record_batch = span_batch.to_record_batch();
+
+        // Convert record batch to JSON for queue
+        let json_batch = serde_json::to_value(&spans).unwrap();
+
+        // Send batch to queue
+        let message = Message {
+            message_type: MessageType::Signal,
+            subtype: "spans".to_string(),
+            payload: json_batch,
+            metadata: Default::default(),
+            timestamp: std::time::SystemTime::now(),
+        };
+
+        self.queue
+            .lock()
             .await
-            .expect("Cant write to parquet");
-        writer.close().await.expect("Cant close parquet writer");
+            .publish(message)
+            .await
+            .expect("Failed to publish message to queue");
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use opentelemetry_proto::tonic::{
         common::v1::{any_value::Value, AnyValue, KeyValue},
         resource::v1::Resource,
@@ -245,8 +272,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_handle_grpc_otlp_traces() {
+    #[tokio::test]
+    async fn test_handle_grpc_otlp_traces() {
+        let handler = MockTraceHandler::new();
+
         // Create a test request
         let request = ExportTraceServiceRequest {
             resource_spans: vec![ResourceSpans {
@@ -293,11 +322,7 @@ mod tests {
             }],
         };
 
-        // Test that the function doesn't panic
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let handler = TraceHandler::new();
-            handler.handle_grpc_otlp_traces(request).await;
-        });
+        handler.handle_grpc_otlp_traces(request).await;
+        assert_eq!(handler.handle_grpc_otlp_traces_calls.lock().unwrap().len(), 1);
     }
 }
