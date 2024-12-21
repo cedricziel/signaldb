@@ -82,18 +82,18 @@ impl BatchWriter for QueueBatchWriter {
             .await
             .map_err(|e| WriterError::ReceiveError(e.to_string()))?;
 
+        let mut shutdown_rx = self.shutdown.subscribe();
         loop {
-            // Receive messages from the queue
-            let message = self
-                .queue
-                .lock()
-                .await
-                .receive::<BatchWrapper>()
-                .await
-                .map_err(|e| WriterError::ReceiveError(e.to_string()))?;
-
-            if let Some(message) = message {
-                self.process_message(message).await?;
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    return Ok(());
+                }
+                message = self.queue.lock().await.receive::<BatchWrapper>() => {
+                    let message = message.map_err(|e| WriterError::ReceiveError(e.to_string()))?;
+                    if let Some(message) = message {
+                        self.process_message(message).await?;
+                    }
+                }
             }
         }
     }
