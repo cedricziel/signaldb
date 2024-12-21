@@ -27,3 +27,5 @@ async-trait.workspace = true
 
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+uuid.workspace = true

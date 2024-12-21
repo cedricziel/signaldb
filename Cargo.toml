@@ -104,5 +104,7 @@ bytes = "1"
 
 mockall = "0.13.1"
 
+uuid = "1.4.1"
+
 [profile.dev]
 split-debuginfo = "unpacked"
