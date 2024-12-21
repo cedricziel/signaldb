@@ -7,6 +7,7 @@ A signal database based on the FDAP stack.
 I am building this project in my free time. The goal is to build a database for observability signals (metrics/logs/traces/..).
 
 The key traits I want this project to develop over time:
+
 * cost-effective storage
 * open standards native ingestion (OTLP, Prom, ..)
 * effective querying
@@ -18,7 +19,7 @@ The key traits I want this project to develop over time:
 signaldb can be configured using a TOML configuration file or environment variables. The configuration is loaded in the following order:
 
 1. Default values
-2. TOML configuration file (default: `config.toml`)
+2. TOML configuration file (default: `signaldb.toml`)
 3. Environment variables (prefixed with `SIGNALDB_`)
 
 ### Database Configuration
@@ -48,10 +49,10 @@ prefix = "traces"  # Prefix for all objects in this storage
 
 Environment variables:
 
-- `SIGNALDB_STORAGE_DEFAULT`: Name of the default storage adapter
-- `SIGNALDB_STORAGE_ADAPTERS_<NAME>_TYPE`: Storage type for adapter
-- `SIGNALDB_STORAGE_ADAPTERS_<NAME>_URL`: Storage URL for adapter
-- `SIGNALDB_STORAGE_ADAPTERS_<NAME>_PREFIX`: Storage prefix for adapter
+* `SIGNALDB_STORAGE_DEFAULT`: Name of the default storage adapter
+* `SIGNALDB_STORAGE_ADAPTERS_<NAME>_TYPE`: Storage type for adapter
+* `SIGNALDB_STORAGE_ADAPTERS_<NAME>_URL`: Storage URL for adapter
+* `SIGNALDB_STORAGE_ADAPTERS_<NAME>_PREFIX`: Storage prefix for adapter
 
 ## What is the FDAP stack?
 
@@ -63,7 +64,7 @@ It is composed of the following components:
 * **A**rrow - Apache Arrow
 * **P**arquet - Apache Parquet
 
-https://www.influxdata.com/glossary/fdap-stack/
+<https://www.influxdata.com/glossary/fdap-stack/>
 
 ## License
 

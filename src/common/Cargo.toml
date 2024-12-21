@@ -22,3 +22,5 @@ thiserror.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 bytes.workspace = true
+
+humantime-serde.workspace = true
