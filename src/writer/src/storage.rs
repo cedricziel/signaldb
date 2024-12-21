@@ -25,7 +25,7 @@ pub async fn write_batch_to_object_store(
     let object_store_writer = ParquetObjectWriter::new(object_store.clone(), path);
 
     let mut arrow_writer = AsyncArrowWriter::try_new(object_store_writer, schema, Some(props))
-        .expect("Error creating parquet writer");
+        .map_err(|e| anyhow::anyhow!("Failed to create parquet writer: {}", e))?;
 
     arrow_writer.write(&batch).await?;
     arrow_writer.close().await?;
