@@ -84,9 +84,11 @@ pub async fn serve_otlp_grpc(
 
     log::info!("Starting OTLP/gRPC acceptor on {}", addr);
 
-    let _state = AcceptorState::new();
+    let state = AcceptorState::new();
     let log_server = LogsServiceServer::new(LogAcceptorService);
-    let trace_server = TraceServiceServer::new(TraceAcceptorService::new(TraceHandler::new()));
+    let trace_server = TraceServiceServer::new(TraceAcceptorService::new(TraceHandler::new(
+        state.queue.clone(),
+    )));
     let metric_server = MetricsServiceServer::new(MetricsAcceptorService);
 
     init_tx

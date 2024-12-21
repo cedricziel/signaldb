@@ -57,7 +57,8 @@ pub async fn query_single_trace(
 ) -> Result<axum::Json<tempo_api::Trace>, axum::http::StatusCode> {
     log::info!("Querying for trace_id: {}", trace_id);
 
-    match state.trace_querier
+    match state
+        .trace_querier
         .find_by_id(FindTraceByIdParams {
             trace_id,
             start: start.map(|q| q.0),

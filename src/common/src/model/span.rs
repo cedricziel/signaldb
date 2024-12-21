@@ -123,8 +123,11 @@ impl Span {
         let name: ArrayRef = Arc::new(StringArray::from(vec![self.name.clone()]));
         let service_name: ArrayRef = Arc::new(StringArray::from(vec![self.service_name.clone()]));
         let span_kind: ArrayRef = Arc::new(StringArray::from(vec![self.span_kind.to_str()]));
-        let start_time_unix_nano: ArrayRef = Arc::new(arrow_array::UInt64Array::from(vec![self.start_time_unix_nano]));
-        let duration_nano: ArrayRef = Arc::new(arrow_array::UInt64Array::from(vec![self.duration_nano]));
+        let start_time_unix_nano: ArrayRef = Arc::new(arrow_array::UInt64Array::from(vec![
+            self.start_time_unix_nano,
+        ]));
+        let duration_nano: ArrayRef =
+            Arc::new(arrow_array::UInt64Array::from(vec![self.duration_nano]));
         // let attributes: ArrayRef = Arc::new(StructArray::from(vec![]));
         // let resource: ArrayRef = Arc::new(StructArray::from(vec![null()]));
 
@@ -160,6 +163,10 @@ pub struct SpanBatch {
 impl SpanBatch {
     pub fn new() -> Self {
         SpanBatch { spans: vec![] }
+    }
+
+    pub fn new_with_spans(spans: Vec<Span>) -> Self {
+        SpanBatch { spans }
     }
 
     pub fn add_span(&mut self, span: Span) {
