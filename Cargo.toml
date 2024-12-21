@@ -97,5 +97,7 @@ thiserror = "2.0.12"
 figment = { version = "0.10.19", features = ["toml", "env"] }
 once_cell = "1.21.1"
 
+bytes = "1"
+
 [profile.dev]
 split-debuginfo = "unpacked"
