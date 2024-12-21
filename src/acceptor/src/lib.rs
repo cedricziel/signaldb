@@ -20,14 +20,16 @@ use parquet::{
     arrow::AsyncArrowWriter,
     file::properties::{WriterProperties, WriterVersion},
 };
-use services::{
-    flight::SignalDBFlightService, otlp_log_service::LogAcceptorService,
-    otlp_metric_service::MetricsAcceptorService, otlp_trace_service::TraceAcceptorService,
-};
 use tokio::{
     fs::{create_dir_all, File},
     sync::oneshot,
 };
+
+use crate::services::{
+    flight::SignalDBFlightService, otlp_log_service::LogAcceptorService,
+    otlp_metric_service::MetricsAcceptorService, otlp_trace_service::TraceAcceptorService,
+};
+use crate::handler::otlp_grpc::TraceHandler;
 
 pub async fn get_parquet_writer(data_set: DataSet, schema: Schema) -> AsyncArrowWriter<File> {
     log::info!("get_parquet_writer");
@@ -69,7 +71,7 @@ pub async fn serve_otlp_grpc(
     log::info!("Starting OTLP/gRPC acceptor on {}", addr);
 
     let log_server = LogsServiceServer::new(LogAcceptorService);
-    let trace_server = TraceServiceServer::new(TraceAcceptorService::new());
+    let trace_server = TraceServiceServer::new(TraceAcceptorService::new(TraceHandler::new()));
     let metric_server = MetricsServiceServer::new(MetricsAcceptorService);
 
     init_tx

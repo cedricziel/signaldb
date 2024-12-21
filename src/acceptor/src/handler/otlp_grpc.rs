@@ -15,6 +15,12 @@ use serde_json::{Map, Value as JsonValue};
 
 use crate::get_parquet_writer;
 
+#[cfg_attr(test, mockall::automock)]
+#[async_trait::async_trait]
+pub trait TraceHandling {
+    async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest);
+}
+
 #[derive(Debug)]
 pub struct TraceHandler;
 
@@ -23,8 +29,58 @@ impl TraceHandler {
         Self
     }
 
+    fn extract_value(&self, attr_val: &Option<&AnyValue>) -> JsonValue {
+        match attr_val {
+            Some(local_val) => match &local_val.value {
+                Some(val) => match val {
+                    Value::BoolValue(v) => JsonValue::Bool(*v),
+                    Value::IntValue(v) => JsonValue::Number(serde_json::Number::from(*v)),
+                    Value::DoubleValue(v) => {
+                        JsonValue::Number(serde_json::Number::from_f64(*v).unwrap())
+                    }
+                    Value::StringValue(v) => JsonValue::String(v.clone()),
+                    Value::ArrayValue(array_value) => {
+                        let mut vals = vec![];
+                        for item in array_value.values.iter() {
+                            vals.push(self.extract_value(&Some(item)));
+                        }
+                        JsonValue::Array(vals)
+                    }
+                    Value::KvlistValue(key_value_list) => {
+                        let mut vals = Map::new();
+                        for item in key_value_list.values.iter() {
+                            vals.insert(item.key.clone(), self.extract_value(&item.value.as_ref()));
+                        }
+                        JsonValue::Object(vals)
+                    }
+                    Value::BytesValue(vec) => {
+                        let s = String::from_utf8(vec.to_owned()).unwrap_or_default();
+                        JsonValue::String(s)
+                    }
+                },
+                None => JsonValue::Null,
+            },
+            None => JsonValue::Null,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn extract_type(&self, value: JsonValue) -> DataType {
+        match value {
+            JsonValue::Null => DataType::Null,
+            JsonValue::Bool(_) => DataType::Boolean,
+            JsonValue::Number(_) => DataType::Int64,
+            JsonValue::String(_) => DataType::Utf8,
+            JsonValue::Array(_) => DataType::List(Arc::new(Field::new("item", DataType::Utf8, false))),
+            JsonValue::Object(_) => DataType::Struct(Fields::from(Vec::<Field>::new())),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl TraceHandling for TraceHandler {
     #[tracing::instrument]
-    pub async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
+    async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
         log::info!("Got a request: {:?}", request);
 
         let ds = DataSet::new(DataSetType::Traces, DataStore::Disk);
@@ -128,54 +184,6 @@ impl TraceHandler {
             .await
             .expect("Cant write to parquet");
         writer.close().await.expect("Cant close parquet writer");
-    }
-
-    /// Rewrites OTLPs `AnyValue` into a `JsonValue`
-    fn extract_value(&self, attr_val: &Option<&AnyValue>) -> JsonValue {
-        match attr_val {
-            Some(local_val) => match &local_val.value {
-                Some(val) => match val {
-                    Value::BoolValue(v) => JsonValue::Bool(*v),
-                    Value::IntValue(v) => JsonValue::Number(serde_json::Number::from(*v)),
-                    Value::DoubleValue(v) => {
-                        JsonValue::Number(serde_json::Number::from_f64(*v).unwrap())
-                    }
-                    Value::StringValue(v) => JsonValue::String(v.clone()),
-                    Value::ArrayValue(array_value) => {
-                        let mut vals = vec![];
-                        for item in array_value.values.iter() {
-                            vals.push(self.extract_value(&Some(item)));
-                        }
-                        JsonValue::Array(vals)
-                    }
-                    Value::KvlistValue(key_value_list) => {
-                        let mut vals = Map::new();
-                        for item in key_value_list.values.iter() {
-                            vals.insert(item.key.clone(), self.extract_value(&item.value.as_ref()));
-                        }
-                        JsonValue::Object(vals)
-                    }
-                    Value::BytesValue(vec) => {
-                        let s = String::from_utf8(vec.to_owned()).unwrap_or_default();
-                        JsonValue::String(s)
-                    }
-                },
-                None => JsonValue::Null,
-            },
-            None => JsonValue::Null,
-        }
-    }
-
-    #[allow(dead_code)]
-    fn extract_type(&self, value: JsonValue) -> DataType {
-        match value {
-            JsonValue::Null => DataType::Null,
-            JsonValue::Bool(_) => DataType::Boolean,
-            JsonValue::Number(_) => DataType::Int64,
-            JsonValue::String(_) => DataType::Utf8,
-            JsonValue::Array(_) => DataType::List(Arc::new(Field::new("item", DataType::Utf8, false))),
-            JsonValue::Object(_) => DataType::Struct(Fields::from(Vec::<Field>::new())),
-        }
     }
 }
 

@@ -102,5 +102,7 @@ once_cell = "1.21.1"
 
 bytes = "1"
 
+mockall = "0.13.1"
+
 [profile.dev]
 split-debuginfo = "unpacked"
