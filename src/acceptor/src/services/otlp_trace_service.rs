@@ -3,29 +3,29 @@ use opentelemetry_proto::tonic::collector::trace::v1::{
 };
 use tonic::{async_trait, Request, Response, Status};
 
-use crate::handler::otlp_grpc::TraceHandler;
+use crate::handler::otlp_grpc::TraceHandling;
 
-pub struct TraceAcceptorService {
-    handler: TraceHandler,
+pub struct TraceAcceptorService<T: TraceHandling> {
+    handler: T,
 }
 
-impl TraceAcceptorService {
-    pub fn new() -> Self {
-        Self {
-            handler: TraceHandler::new(),
-        }
+impl<T: TraceHandling> TraceAcceptorService<T> {
+    pub fn new(handler: T) -> Self {
+        Self { handler }
     }
 }
 
 #[async_trait]
-impl TraceService for TraceAcceptorService {
+impl<T: TraceHandling + Send + Sync + 'static> TraceService for TraceAcceptorService<T> {
     async fn export(
         &self,
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
         log::info!("Got a request: {:?}", request);
 
-        self.handler.handle_grpc_otlp_traces(request.into_inner()).await;
+        self.handler
+            .handle_grpc_otlp_traces(request.into_inner())
+            .await;
 
         Ok(Response::new(ExportTraceServiceResponse {
             partial_success: None,
@@ -36,18 +36,25 @@ impl TraceService for TraceAcceptorService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::handler::otlp_grpc::MockTraceHandling;
     use opentelemetry_proto::tonic::{
         common::v1::{any_value::Value, AnyValue, KeyValue},
         resource::v1::Resource,
         trace::v1::{
-            span::SpanKind, ResourceSpans, ScopeSpans, Span, Status as SpanStatus,
-            status::StatusCode,
+            span::SpanKind, status::StatusCode, ResourceSpans, ScopeSpans, Span,
+            Status as SpanStatus,
         },
     };
 
     #[tokio::test]
     async fn test_trace_service_export() {
-        let service = TraceAcceptorService::new();
+        let mut mock_handler = MockTraceHandling::new();
+        mock_handler
+            .expect_handle_grpc_otlp_traces()
+            .times(1)
+            .return_const(());
+
+        let service = TraceAcceptorService::new(mock_handler);
 
         // Create a test request with a single span
         let request = ExportTraceServiceRequest {
@@ -64,8 +71,8 @@ mod tests {
                 scope_spans: vec![ScopeSpans {
                     scope: None,
                     spans: vec![Span {
-                        trace_id: vec![1; 16],  // 16-byte trace ID
-                        span_id: vec![2; 8],    // 8-byte span ID
+                        trace_id: vec![1; 16], // 16-byte trace ID
+                        span_id: vec![2; 8],   // 8-byte span ID
                         trace_state: String::new(),
                         parent_span_id: vec![],
                         name: "test-span".to_string(),
