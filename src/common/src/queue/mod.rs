@@ -171,7 +171,11 @@ pub trait Queue: Send + Sync {
         T: Serialize + for<'a> Deserialize<'a> + Send + Sync;
 
     /// Subscribe to messages of specific types
-    async fn subscribe(&mut self, message_type: MessageType, subtype: Option<String>) -> QueueResult<()>;
+    async fn subscribe(
+        &mut self,
+        message_type: MessageType,
+        subtype: Option<String>,
+    ) -> QueueResult<()>;
 
     /// Receive the next message (if any)
     async fn receive<T>(&self) -> QueueResult<Option<Message<T>>>
@@ -207,12 +211,13 @@ mod tests {
         let mut queue = InMemoryQueue::default();
 
         // Connect to queue
-        queue.connect(QueueConfig {
-            queue_type: "memory".to_string(),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
+        queue
+            .connect(QueueConfig {
+                queue_type: "memory".to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
 
         // Subscribe to Signal/trace messages
         queue
@@ -230,11 +235,12 @@ mod tests {
         queue.publish(message).await.unwrap();
 
         // Receive the message with timeout
-        let received: Option<Message<TestPayload>> = timeout(
-            Duration::from_secs(1),
-            queue.receive()
-        ).await.unwrap().unwrap();
-        
+        let received: Option<Message<TestPayload>> =
+            timeout(Duration::from_secs(1), queue.receive())
+                .await
+                .unwrap()
+                .unwrap();
+
         assert!(received.is_some());
         let received = received.unwrap();
         assert_eq!(received.message_type, MessageType::Signal);
@@ -251,19 +257,21 @@ mod tests {
         let mut queue2 = InMemoryQueue::default();
 
         // Connect both queues with separate channels
-        queue1.connect(QueueConfig {
-            queue_type: "memory".to_string(),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
+        queue1
+            .connect(QueueConfig {
+                queue_type: "memory".to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
 
-        queue2.connect(QueueConfig {
-            queue_type: "memory".to_string(),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
+        queue2
+            .connect(QueueConfig {
+                queue_type: "memory".to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
 
         // Subscribe to different message types
         queue1
@@ -293,22 +301,24 @@ mod tests {
         queue2.publish(command_msg).await.unwrap();
 
         // Queue1 should only receive trace message with timeout
-        let received1: Option<Message<TestPayload>> = timeout(
-            Duration::from_secs(1),
-            queue1.receive()
-        ).await.unwrap().unwrap();
-        
+        let received1: Option<Message<TestPayload>> =
+            timeout(Duration::from_secs(1), queue1.receive())
+                .await
+                .unwrap()
+                .unwrap();
+
         assert!(received1.is_some());
         let received1 = received1.unwrap();
         assert_eq!(received1.message_type, MessageType::Signal);
         assert_eq!(received1.payload.data, "trace data");
 
         // Queue2 should only receive command message with timeout
-        let received2: Option<Message<TestPayload>> = timeout(
-            Duration::from_secs(1),
-            queue2.receive()
-        ).await.unwrap().unwrap();
-        
+        let received2: Option<Message<TestPayload>> =
+            timeout(Duration::from_secs(1), queue2.receive())
+                .await
+                .unwrap()
+                .unwrap();
+
         assert!(received2.is_some());
         let received2 = received2.unwrap();
         assert_eq!(received2.message_type, MessageType::Command);

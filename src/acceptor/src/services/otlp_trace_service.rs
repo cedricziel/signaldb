@@ -1,3 +1,4 @@
+use common::queue::Queue;
 use opentelemetry_proto::tonic::collector::trace::v1::{
     trace_service_server::TraceService, ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
@@ -11,7 +12,7 @@ pub trait TraceHandlerTrait {
 }
 
 #[async_trait::async_trait]
-impl TraceHandlerTrait for TraceHandler {
+impl<Q: Queue + Send + Sync> TraceHandlerTrait for TraceHandler<Q> {
     async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
         self.handle_grpc_otlp_traces(request).await;
     }
@@ -35,9 +36,7 @@ impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAccepto
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
         let request = request.into_inner();
 
-        self.handler
-            .handle_grpc_otlp_traces(request)
-            .await;
+        self.handler.handle_grpc_otlp_traces(request).await;
 
         Ok(Response::new(ExportTraceServiceResponse::default()))
     }
@@ -114,10 +113,15 @@ mod tests {
         });
 
         let response = service.export(request).await.unwrap();
+        assert_eq!(response.into_inner(), ExportTraceServiceResponse::default());
         assert_eq!(
-            response.into_inner(),
-            ExportTraceServiceResponse::default()
+            service
+                .handler
+                .handle_grpc_otlp_traces_calls
+                .lock()
+                .unwrap()
+                .len(),
+            1
         );
-        assert_eq!(service.handler.handle_grpc_otlp_traces_calls.lock().unwrap().len(), 1);
     }
 }
