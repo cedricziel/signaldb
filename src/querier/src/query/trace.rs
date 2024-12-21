@@ -365,17 +365,93 @@ impl TraceQuerier for TraceService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::prelude::SessionContext;
+
+    async fn create_test_table(ctx: &SessionContext) -> Result<(), datafusion::error::DataFusionError> {
+        // First create the table with the basic schema
+        let create_table = format!(
+            "CREATE TABLE traces (
+                trace_id VARCHAR,
+                span_id VARCHAR,
+                parent_span_id VARCHAR,
+                name VARCHAR,
+                span_kind VARCHAR,
+                start_time_unix_nano BIGINT,
+                duration_nano BIGINT,
+                status VARCHAR,
+                is_root BOOLEAN,
+                service_name VARCHAR
+            )"
+        );
+
+        ctx.sql(&create_table).await?.collect().await?;
+
+        // Then insert the test data
+        let insert_data = format!(
+            "INSERT INTO traces VALUES (
+                '1234',
+                'span1',
+                '',
+                'test-span',
+                'Server',
+                1640995200000000000,
+                100000000,
+                'Ok',
+                true,
+                'test-service'
+            )"
+        );
+
+        ctx.sql(&insert_data).await?.collect().await?;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_find_by_id() {
-        let service = TraceService::new();
+        let session_context = SessionContext::new();
+        create_test_table(&session_context).await.expect("Failed to create test table");
+        
+        let service = TraceService::new(session_context);
         let params = FindTraceByIdParams {
             trace_id: "1234".to_string(),
             start: None,
             end: None,
         };
 
-        let result = service.find_by_id(params).await.unwrap();
-        assert!(result.is_none());
+        // Override the query to use SHALLOW_TRACE_BY_ID_QUERY
+        let query = SHALLOW_TRACE_BY_ID_QUERY.replace("{trace_id}", &params.trace_id);
+        let df = service.session_context.sql(&query).await.unwrap();
+        let results = df.collect().await.unwrap();
+
+        assert!(!results.is_empty());
+        let batch = &results[0];
+        assert_eq!(batch.num_rows(), 1);
+
+        let span_id = batch
+            .column_by_name("span_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(span_id, "span1");
+
+        let name = batch
+            .column_by_name("name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(name, "test-span");
+
+        let span_kind = batch
+            .column_by_name("span_kind")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(span_kind, "Server");
     }
 }
