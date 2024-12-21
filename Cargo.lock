@@ -7,12 +7,14 @@ name = "acceptor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrow-array",
  "arrow-flight",
  "arrow-schema",
  "async-trait",
  "axum",
  "common",
  "futures",
+ "hyper",
  "log",
  "mockall",
  "opentelemetry",
@@ -3320,6 +3322,7 @@ dependencies = [
  "datafusion",
  "figment",
  "log",
+ "object_store",
  "opentelemetry-proto",
  "parquet",
  "querier",

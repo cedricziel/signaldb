@@ -8,6 +8,7 @@ use super::{Message, MessageType, Queue, QueueConfig, QueueError, QueueResult};
 const DEFAULT_CHANNEL_SIZE: usize = 1024;
 
 /// In-memory queue implementation using tokio's broadcast channel
+#[derive(Debug)]
 pub struct InMemoryQueue {
     /// Sender for the broadcast channel
     sender: Option<broadcast::Sender<Vec<u8>>>,

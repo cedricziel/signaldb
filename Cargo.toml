@@ -33,7 +33,10 @@ log.workspace = true
 serde_json.workspace = true
 figment.workspace = true
 
+object_store.workspace = true
+
 [workspace]
+resolver = "2"
 members = [
     "src/acceptor",
     "src/common",
@@ -107,6 +110,8 @@ mockall = "0.13.1"
 uuid = "1.4.1"
 
 humantime-serde = "1.1.1"
+
+hyper = "1.0.1"
 
 [profile.dev]
 split-debuginfo = "unpacked"

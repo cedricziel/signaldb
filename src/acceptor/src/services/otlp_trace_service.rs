@@ -1,42 +1,52 @@
 use opentelemetry_proto::tonic::collector::trace::v1::{
     trace_service_server::TraceService, ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
-use tonic::{async_trait, Request, Response, Status};
+use tonic::{Request, Response, Status};
 
-use crate::handler::otlp_grpc::TraceHandling;
+use crate::handler::otlp_grpc::TraceHandler;
 
-pub struct TraceAcceptorService<T: TraceHandling> {
-    handler: T,
+#[async_trait::async_trait]
+pub trait TraceHandlerTrait {
+    async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest);
 }
 
-impl<T: TraceHandling> TraceAcceptorService<T> {
-    pub fn new(handler: T) -> Self {
+#[async_trait::async_trait]
+impl TraceHandlerTrait for TraceHandler {
+    async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
+        self.handle_grpc_otlp_traces(request).await;
+    }
+}
+
+pub struct TraceAcceptorService<H: TraceHandlerTrait> {
+    handler: H,
+}
+
+impl<H: TraceHandlerTrait> TraceAcceptorService<H> {
+    pub fn new(handler: H) -> Self {
         Self { handler }
     }
 }
 
-#[async_trait]
-impl<T: TraceHandling + Send + Sync + 'static> TraceService for TraceAcceptorService<T> {
+#[tonic::async_trait]
+impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAcceptorService<H> {
     async fn export(
         &self,
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        log::info!("Got a request: {:?}", request);
+        let request = request.into_inner();
 
         self.handler
-            .handle_grpc_otlp_traces(request.into_inner())
+            .handle_grpc_otlp_traces(request)
             .await;
 
-        Ok(Response::new(ExportTraceServiceResponse {
-            partial_success: None,
-        }))
+        Ok(Response::new(ExportTraceServiceResponse::default()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handler::otlp_grpc::MockTraceHandling;
+    use crate::handler::otlp_grpc::MockTraceHandler;
     use opentelemetry_proto::tonic::{
         common::v1::{any_value::Value, AnyValue, KeyValue},
         resource::v1::Resource,
@@ -46,18 +56,19 @@ mod tests {
         },
     };
 
+    #[async_trait::async_trait]
+    impl TraceHandlerTrait for MockTraceHandler {
+        async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
+            self.handle_grpc_otlp_traces(request).await;
+        }
+    }
+
     #[tokio::test]
     async fn test_trace_service_export() {
-        let mut mock_handler = MockTraceHandling::new();
-        mock_handler
-            .expect_handle_grpc_otlp_traces()
-            .times(1)
-            .return_const(());
-
+        let mock_handler = MockTraceHandler::new();
         let service = TraceAcceptorService::new(mock_handler);
 
-        // Create a test request with a single span
-        let request = ExportTraceServiceRequest {
+        let request = tonic::Request::new(ExportTraceServiceRequest {
             resource_spans: vec![ResourceSpans {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -71,14 +82,14 @@ mod tests {
                 scope_spans: vec![ScopeSpans {
                     scope: None,
                     spans: vec![Span {
-                        trace_id: vec![1; 16], // 16-byte trace ID
-                        span_id: vec![2; 8],   // 8-byte span ID
+                        trace_id: vec![1; 16],
+                        span_id: vec![2; 8],
                         trace_state: String::new(),
-                        parent_span_id: vec![],
+                        parent_span_id: vec![0; 8],
                         name: "test-span".to_string(),
-                        kind: SpanKind::Server as i32,
-                        start_time_unix_nano: 1703163191000000000, // 2024-12-21 13:53:11 UTC
-                        end_time_unix_nano: 1703163192000000000,   // One second later
+                        kind: SpanKind::Internal as i32,
+                        start_time_unix_nano: 1703163191000000000,
+                        end_time_unix_nano: 1703163192000000000,
                         attributes: vec![KeyValue {
                             key: "test.attribute".to_string(),
                             value: Some(AnyValue {
@@ -100,15 +111,13 @@ mod tests {
                 }],
                 schema_url: String::new(),
             }],
-        };
+        });
 
-        // Call the export method
-        let result = service
-            .export(Request::new(request))
-            .await
-            .expect("Export should succeed");
-
-        // Verify the response
-        assert!(result.get_ref().partial_success.is_none());
+        let response = service.export(request).await.unwrap();
+        assert_eq!(
+            response.into_inner(),
+            ExportTraceServiceResponse::default()
+        );
+        assert_eq!(service.handler.handle_grpc_otlp_traces_calls.lock().unwrap().len(), 1);
     }
 }
