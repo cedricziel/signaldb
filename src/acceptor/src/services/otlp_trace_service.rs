@@ -3,9 +3,19 @@ use opentelemetry_proto::tonic::collector::trace::v1::{
 };
 use tonic::{async_trait, Request, Response, Status};
 
-use crate::handler::otlp_grpc::handle_grpc_otlp_traces;
+use crate::handler::otlp_grpc::TraceHandler;
 
-pub struct TraceAcceptorService;
+pub struct TraceAcceptorService {
+    handler: TraceHandler,
+}
+
+impl TraceAcceptorService {
+    pub fn new() -> Self {
+        Self {
+            handler: TraceHandler::new(),
+        }
+    }
+}
 
 #[async_trait]
 impl TraceService for TraceAcceptorService {
@@ -15,7 +25,7 @@ impl TraceService for TraceAcceptorService {
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
         log::info!("Got a request: {:?}", request);
 
-        handle_grpc_otlp_traces(request.into_inner()).await;
+        self.handler.handle_grpc_otlp_traces(request.into_inner()).await;
 
         Ok(Response::new(ExportTraceServiceResponse {
             partial_success: None,
@@ -37,7 +47,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_trace_service_export() {
-        let service = TraceAcceptorService;
+        let service = TraceAcceptorService::new();
 
         // Create a test request with a single span
         let request = ExportTraceServiceRequest {
