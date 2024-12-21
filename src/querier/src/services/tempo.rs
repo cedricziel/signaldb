@@ -16,7 +16,7 @@ impl Querier for SignalDBQuerier {
     #[tracing::instrument]
     async fn find_trace_by_id(
         &self,
-        request: tonic::Request<TraceByIdRequest>,
+        _request: tonic::Request<TraceByIdRequest>,
     ) -> Result<tonic::Response<TraceByIdResponse>, tonic::Status> {
         let response = TraceByIdResponse {
             trace: None,
@@ -31,7 +31,7 @@ impl Querier for SignalDBQuerier {
     #[tracing::instrument]
     async fn search_recent(
         &self,
-        request: tonic::Request<SearchRequest>,
+        _request: tonic::Request<SearchRequest>,
     ) -> Result<tonic::Response<SearchResponse>, tonic::Status> {
         let response = SearchResponse {
             traces: vec![],
@@ -44,7 +44,7 @@ impl Querier for SignalDBQuerier {
     #[tracing::instrument]
     async fn search_block(
         &self,
-        request: tonic::Request<SearchBlockRequest>,
+        _request: tonic::Request<SearchBlockRequest>,
     ) -> Result<tonic::Response<SearchResponse>, tonic::Status> {
         // Implement the method logic here
         unimplemented!()
@@ -53,7 +53,7 @@ impl Querier for SignalDBQuerier {
     #[tracing::instrument]
     async fn search_tags(
         &self,
-        request: tonic::Request<SearchTagsRequest>,
+        _request: tonic::Request<SearchTagsRequest>,
     ) -> Result<tonic::Response<SearchTagsResponse>, tonic::Status> {
         let response = SearchTagsResponse {
             metrics: None,
@@ -66,7 +66,7 @@ impl Querier for SignalDBQuerier {
     #[tracing::instrument]
     async fn search_tags_v2(
         &self,
-        request: tonic::Request<SearchTagsRequest>,
+        _request: tonic::Request<SearchTagsRequest>,
     ) -> Result<tonic::Response<SearchTagsV2Response>, tonic::Status> {
         let response = SearchTagsV2Response {
             metrics: None,
@@ -82,7 +82,7 @@ impl Querier for SignalDBQuerier {
     #[tracing::instrument]
     async fn search_tag_values(
         &self,
-        request: tonic::Request<SearchTagValuesRequest>,
+        _request: tonic::Request<SearchTagValuesRequest>,
     ) -> Result<tonic::Response<SearchTagValuesResponse>, tonic::Status> {
         let response = SearchTagValuesResponse {
             tag_values: vec!["my_tag".to_string()],
@@ -95,7 +95,7 @@ impl Querier for SignalDBQuerier {
     #[tracing::instrument]
     async fn search_tag_values_v2(
         &self,
-        request: tonic::Request<SearchTagValuesRequest>,
+        _request: tonic::Request<SearchTagValuesRequest>,
     ) -> Result<tonic::Response<SearchTagValuesV2Response>, tonic::Status> {
         let response = SearchTagValuesV2Response {
             tag_values: vec![TagValue {

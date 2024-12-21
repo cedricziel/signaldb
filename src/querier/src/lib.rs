@@ -21,6 +21,7 @@ pub fn query_router() -> Router {
         .layer(TraceLayer::new_for_http())
         // nest routes for tempo compatibility
         .nest("/tempo", tempo_endpoints::router())
+        // TODO: Update to into_axum_router() when we upgrade to a newer version of tonic
         .nest("/tempo", grpc_service().into_router())
 }
 
@@ -37,20 +38,19 @@ pub async fn serve_querier_http(
 
     init_tx
         .send(())
-        .expect("Unable to send init signal for querier http server");
+        .map_err(|_| anyhow::anyhow!("Unable to send init signal for querier http server"))?;
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             shutdown_rx.await.ok();
-
             log::info!("Shutting down querier http server");
         })
-        .await
-        .unwrap();
+        .await?;
+
     stopped_tx
         .send(())
-        .expect("Unable to send stopped signal for querier http server");
+        .map_err(|_| anyhow::anyhow!("Unable to send stopped signal for querier http server"))?;
 
     Ok(())
 }

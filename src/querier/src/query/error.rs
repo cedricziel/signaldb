@@ -1,7 +1,7 @@
 use datafusion::error::DataFusionError;
-use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
+#[allow(dead_code)]
 pub enum QuerierError {
     #[error("Trace not found")]
     TraceNotFound,

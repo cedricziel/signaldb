@@ -1,0 +1,24 @@
+# signaldb Configuration
+#
+# This is a sample configuration file for SignalDB. Copy this file to `config.toml`
+# and modify it according to your needs.
+
+# Database Configuration
+[database]
+dsn = "sqlite://.data/signaldb.db"  # SQLite database path
+
+# Storage Configuration
+[storage]
+default = "local"  # Name of the default storage adapter to use
+
+# Local filesystem storage adapter
+[storage.adapters.local]
+type = "filesystem"  # Storage backend type
+url = "file:///data"  # Storage URL
+prefix = "traces"  # Prefix for all objects in this storage
+
+# Example S3 storage adapter
+[storage.adapters.s3]
+type = "s3"  # Storage backend type
+url = "s3://my-bucket"  # S3 bucket URL
+prefix = "traces"  # Prefix for all objects in this bucket

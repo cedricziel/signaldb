@@ -13,9 +13,49 @@ The key traits I want this project to develop over time:
 * robust interfacing with popular analysis tools (Grafana, Perses, ..)
 * easy operation
 
+## Configuration
+
+signaldb can be configured using a TOML configuration file or environment variables. The configuration is loaded in the following order:
+
+1. Default values
+2. TOML configuration file (default: `config.toml`)
+3. Environment variables (prefixed with `SIGNALDB_`)
+
+### Database Configuration
+
+The database configuration controls where SignalDB stores its metadata:
+
+```toml
+[database]
+dsn = "sqlite://.data/signaldb.db"  # SQLite database path (default)
+```
+
+Environment variable: `SIGNALDB_DATABASE_DSN`
+
+### Storage Configuration
+
+SignalDB supports multiple storage backends for storing observability data:
+
+```toml
+[storage]
+default = "local"  # Name of the default storage adapter to use
+
+[storage.adapters.local]  # Configure a storage adapter named "local"
+type = "filesystem"  # Storage backend type
+url = "file:///data"  # Storage URL
+prefix = "traces"  # Prefix for all objects in this storage
+```
+
+Environment variables:
+
+- `SIGNALDB_STORAGE_DEFAULT`: Name of the default storage adapter
+- `SIGNALDB_STORAGE_ADAPTERS_<NAME>_TYPE`: Storage type for adapter
+- `SIGNALDB_STORAGE_ADAPTERS_<NAME>_URL`: Storage URL for adapter
+- `SIGNALDB_STORAGE_ADAPTERS_<NAME>_PREFIX`: Storage prefix for adapter
+
 ## What is the FDAP stack?
 
-The FDAP stack is a set of technologies that can be used to build a data acquisition and processing system. 
+The FDAP stack is a set of technologies that can be used to build a data acquisition and processing system.
 It is composed of the following components:
 
 * **F**light - Apache Arrow Flight
