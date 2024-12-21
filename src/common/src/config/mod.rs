@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::{fmt, error::Error};
+use std::time::Duration;
+use std::{error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
 
@@ -39,10 +40,27 @@ impl Default for DatabaseConfig {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct QueueConfig {
+    pub max_batch_size: usize,
+    #[serde(with = "humantime_serde")]
+    pub max_batch_wait: Duration,
+}
+
+impl Default for QueueConfig {
+    fn default() -> Self {
+        Self {
+            max_batch_size: 1000,
+            max_batch_wait: Duration::from_secs(10),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Configuration {
     pub database: DatabaseConfig,
     pub storage: StorageConfig,
+    pub queue: QueueConfig,
 }
 
 impl fmt::Display for Configuration {
@@ -71,9 +89,7 @@ impl Configuration {
             .map(|config| config.prefix.clone())
             .unwrap_or_else(|| String::from(".data"))
     }
-}
 
-impl Configuration {
     pub fn load() -> Result<Self, figment::Error> {
         let config = Figment::from(Serialized::defaults(Configuration::default()))
             .merge(Toml::file("signaldb.toml"))
