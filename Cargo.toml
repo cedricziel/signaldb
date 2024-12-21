@@ -10,6 +10,7 @@ publish = false
 acceptor = { path = "src/acceptor" }
 common = { path = "src/common" }
 querier = { path = "src/querier" }
+writer = { path = "src/writer" }
 
 anyhow.workspace = true
 
@@ -39,6 +40,7 @@ members = [
     "src/querier",
     "src/signal-producer",
     "src/tempo-api",
+    "src/writer",
 ]
 
 [workspace.package]
@@ -49,6 +51,7 @@ license = "AGPL-3.0"
 [workspace.dependencies]
 acceptor = { path = "src/acceptor" }
 common = { path = "src/common" }
+writer = { path = "src/writer" }
 
 async-trait = "0.1.88"
 futures = "0.3.31"
