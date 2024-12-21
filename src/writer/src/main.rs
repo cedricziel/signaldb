@@ -4,7 +4,7 @@ use anyhow::Result;
 use common::queue::QueueConfig;
 use object_store::local::LocalFileSystem;
 use tracing_subscriber;
-use writer::Writer;
+use writer::{BatchWriter, QueueBatchWriter};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -15,7 +15,7 @@ async fn main() -> Result<()> {
     let object_store = Arc::new(LocalFileSystem::new_with_prefix("./data")?);
 
     // Create writer with default queue config
-    let writer = Writer::new(QueueConfig::default(), object_store);
+    let writer = QueueBatchWriter::new(QueueConfig::default(), object_store);
 
     // Start the writer
     log::info!("Starting writer service...");

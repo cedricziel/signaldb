@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use arrow_array::RecordBatch;
+use async_trait::async_trait;
 use common::{
     persistence::write_batch_to_object_store,
     queue::{memory::InMemoryQueue, Message, MessageType, Queue, QueueConfig},
@@ -24,10 +25,14 @@ impl From<RecordBatch> for BatchWrapper {
     }
 }
 
-pub struct Writer {
-    queue: Arc<Mutex<InMemoryQueue>>,
-    object_store: Arc<dyn ObjectStore>,
-    queue_config: QueueConfig,
+/// A trait for writing batches of data to storage
+#[async_trait]
+pub trait BatchWriter: Send + Sync {
+    /// Start the writer service
+    async fn start(&self) -> Result<()>;
+
+    /// Process a single batch message
+    async fn process_message(&self, message: Message<BatchWrapper>) -> Result<()>;
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -42,7 +47,14 @@ pub enum WriterError {
     MissingBatch,
 }
 
-impl Writer {
+/// A writer implementation that reads from a queue and writes to object storage
+pub struct QueueBatchWriter {
+    queue: Arc<Mutex<InMemoryQueue>>,
+    object_store: Arc<dyn ObjectStore>,
+    queue_config: QueueConfig,
+}
+
+impl QueueBatchWriter {
     pub fn new(queue_config: QueueConfig, object_store: Arc<dyn ObjectStore>) -> Self {
         Self {
             queue: Arc::new(Mutex::new(InMemoryQueue::default())),
@@ -50,8 +62,11 @@ impl Writer {
             queue_config,
         }
     }
+}
 
-    pub async fn start(&self) -> Result<()> {
+#[async_trait]
+impl BatchWriter for QueueBatchWriter {
+    async fn start(&self) -> Result<()> {
         // Connect to queue
         self.queue
             .lock()
@@ -121,6 +136,34 @@ impl Writer {
     }
 }
 
+/// A mock writer implementation for testing
+#[cfg(test)]
+pub struct MockBatchWriter {
+    pub processed_messages: Arc<Mutex<Vec<Message<BatchWrapper>>>>,
+}
+
+#[cfg(test)]
+impl MockBatchWriter {
+    pub fn new() -> Self {
+        Self {
+            processed_messages: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+#[cfg(test)]
+#[async_trait]
+impl BatchWriter for MockBatchWriter {
+    async fn start(&self) -> Result<()> {
+        Ok(())
+    }
+
+    async fn process_message(&self, message: Message<BatchWrapper>) -> Result<()> {
+        self.processed_messages.lock().await.push(message);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,7 +190,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_writer_basic() -> Result<()> {
+    async fn test_queue_writer_basic() -> Result<()> {
         // Setup test directory
         setup_test_dir()?;
 
@@ -160,7 +203,7 @@ mod tests {
 
         // Create writer
         let object_store = Arc::new(LocalFileSystem::new_with_prefix("./test_data")?);
-        let writer = Writer::new(QueueConfig::default(), object_store);
+        let writer = QueueBatchWriter::new(QueueConfig::default(), object_store);
 
         // Connect to queue
         writer
@@ -184,6 +227,33 @@ mod tests {
 
         // Cleanup test directory
         cleanup_test_dir()?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mock_writer() -> Result<()> {
+        // Create mock writer
+        let writer = MockBatchWriter::new();
+
+        // Create a test message
+        let message = Message {
+            message_type: MessageType::Signal,
+            subtype: "test".to_string(),
+            payload: BatchWrapper {
+                batch: None,
+            },
+            metadata: Default::default(),
+            timestamp: SystemTime::now(),
+        };
+
+        // Process message
+        writer.process_message(message.clone()).await?;
+
+        // Verify message was processed
+        let processed = writer.processed_messages.lock().await;
+        assert_eq!(processed.len(), 1);
+        assert_eq!(processed[0].subtype, "test");
 
         Ok(())
     }
