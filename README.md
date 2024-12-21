@@ -33,6 +33,26 @@ dsn = "sqlite://.data/signaldb.db"  # SQLite database path (default)
 
 Environment variable: `SIGNALDB_DATABASE_DSN`
 
+### Queue Configuration
+
+SignalDB uses an internal queue system for processing incoming data. The queue can be configured with the following options:
+
+```toml
+[queue]
+dsn = "memory://"             # Queue backend DSN (default: memory://)
+max_batch_size = 1000         # Maximum number of items per batch
+max_batch_wait = "10s"        # Maximum time to wait before processing a non-full batch
+```
+
+Environment variables:
+
+* `SIGNALDB_QUEUE_DSN`: Queue backend DSN
+* `SIGNALDB_QUEUE_MAX_BATCH_SIZE`: Maximum batch size
+* `SIGNALDB_QUEUE_MAX_BATCH_WAIT`: Maximum batch wait time (supports human-readable durations like "10s", "1m")
+
+Currently supported queue backends:
+* `memory://`: In-memory queue for single-node deployments
+
 ### Storage Configuration
 
 SignalDB supports multiple storage backends for storing observability data:
