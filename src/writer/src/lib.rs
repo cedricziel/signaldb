@@ -3,13 +3,13 @@ use std::sync::Arc;
 use anyhow::Result;
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use common::{
-    persistence::write_batch_to_object_store,
-    queue::{memory::InMemoryQueue, Message, MessageType, Queue, QueueConfig},
-};
+use common::queue::{memory::InMemoryQueue, Message, MessageType, Queue, QueueConfig};
 use object_store::ObjectStore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+
+mod storage;
+pub use storage::write_batch_to_object_store;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BatchWrapper {
@@ -111,7 +111,7 @@ impl BatchWriter for QueueBatchWriter {
                 let path = format!("{}/{}.parquet", message.subtype, message.timestamp.elapsed()?.as_nanos());
                 
                 // Write the batch to object store
-                write_batch_to_object_store(self.object_store.clone(), &path, batch.clone())
+                storage::write_batch_to_object_store(self.object_store.clone(), &path, batch.clone())
                     .await
                     .map_err(|e| WriterError::WriteBatchError(e.to_string()))?;
 
