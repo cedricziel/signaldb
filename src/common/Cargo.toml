@@ -17,3 +17,8 @@ opentelemetry-proto.workspace = true
 
 figment.workspace = true
 once_cell.workspace = true
+
+thiserror.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+bytes.workspace = true
