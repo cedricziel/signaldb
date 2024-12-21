@@ -187,7 +187,7 @@ pub trait Queue: Send + Sync {
     async fn close(&mut self) -> QueueResult<()>;
 }
 
-mod memory;
+pub mod memory;
 pub use memory::InMemoryQueue;
 
 #[cfg(test)]
