@@ -6,10 +6,11 @@ use async_trait::async_trait;
 use common::queue::{memory::InMemoryQueue, Message, MessageType, Queue, QueueConfig};
 use object_store::ObjectStore;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 
 mod storage;
 pub use storage::write_batch_to_object_store;
+use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BatchWrapper {
@@ -19,9 +20,7 @@ pub struct BatchWrapper {
 
 impl From<RecordBatch> for BatchWrapper {
     fn from(batch: RecordBatch) -> Self {
-        Self {
-            batch: Some(batch),
-        }
+        Self { batch: Some(batch) }
     }
 }
 
@@ -33,6 +32,9 @@ pub trait BatchWriter: Send + Sync {
 
     /// Process a single batch message
     async fn process_message(&self, message: Message<BatchWrapper>) -> Result<()>;
+
+    /// Stop the writer service
+    async fn stop(&self) -> Result<()>;
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -52,14 +54,17 @@ pub struct QueueBatchWriter {
     queue: Arc<Mutex<InMemoryQueue>>,
     object_store: Arc<dyn ObjectStore>,
     queue_config: QueueConfig,
+    shutdown: broadcast::Sender<()>,
 }
 
 impl QueueBatchWriter {
     pub fn new(queue_config: QueueConfig, object_store: Arc<dyn ObjectStore>) -> Self {
+        let (shutdown_tx, _) = broadcast::channel(1);
         Self {
             queue: Arc::new(Mutex::new(InMemoryQueue::default())),
             object_store,
             queue_config,
+            shutdown: shutdown_tx,
         }
     }
 }
@@ -84,13 +89,15 @@ impl BatchWriter for QueueBatchWriter {
 
         let mut shutdown_rx = self.shutdown.subscribe();
         loop {
+            let queue = self.queue.lock().await;
             tokio::select! {
                 _ = shutdown_rx.recv() => {
                     return Ok(());
                 }
-                message = self.queue.lock().await.receive::<BatchWrapper>() => {
+                message = queue.receive::<BatchWrapper>() => {
                     let message = message.map_err(|e| WriterError::ReceiveError(e.to_string()))?;
                     if let Some(message) = message {
+                        drop(queue); // Release the lock before processing
                         self.process_message(message).await?;
                     }
                 }
@@ -108,12 +115,21 @@ impl BatchWriter for QueueBatchWriter {
                     .ok_or_else(|| WriterError::MissingBatch)?;
 
                 // Generate path for the batch
-                let path = format!("{}/{}.parquet", message.subtype, message.timestamp.elapsed()?.as_nanos());
-                
+                let path = format!(
+                    "{}/{}-{}.parquet",
+                    message.subtype,
+                    message.timestamp.elapsed()?.as_nanos(),
+                    Uuid::new_v4()
+                );
+
                 // Write the batch to object store
-                storage::write_batch_to_object_store(self.object_store.clone(), &path, batch.clone())
-                    .await
-                    .map_err(|e| WriterError::WriteBatchError(e.to_string()))?;
+                storage::write_batch_to_object_store(
+                    self.object_store.clone(),
+                    &path,
+                    batch.clone(),
+                )
+                .await
+                .map_err(|e| WriterError::WriteBatchError(e.to_string()))?;
 
                 // Acknowledge the message
                 self.queue
@@ -132,6 +148,12 @@ impl BatchWriter for QueueBatchWriter {
             }
         }
 
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<()> {
+        // Send shutdown signal
+        let _ = self.shutdown.send(());
         Ok(())
     }
 }
@@ -160,6 +182,10 @@ impl BatchWriter for MockBatchWriter {
 
     async fn process_message(&self, message: Message<BatchWrapper>) -> Result<()> {
         self.processed_messages.lock().await.push(message);
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -240,9 +266,7 @@ mod tests {
         let message = Message {
             message_type: MessageType::Signal,
             subtype: "test".to_string(),
-            payload: BatchWrapper {
-                batch: None,
-            },
+            payload: BatchWrapper { batch: None },
             metadata: Default::default(),
             timestamp: SystemTime::now(),
         };
