@@ -1,7 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
-use serde::{Deserialize, Serialize};
 
 use super::{Message, MessageType, Queue, QueueConfig, QueueError, QueueResult};
 
@@ -41,17 +41,18 @@ impl Queue for InMemoryQueue {
     where
         T: Serialize + for<'a> Deserialize<'a> + Send + Sync,
     {
-        let sender = self.sender.as_ref().ok_or_else(|| {
-            QueueError::ConnectionError("Queue not connected".to_string())
-        })?;
+        let sender = self
+            .sender
+            .as_ref()
+            .ok_or_else(|| QueueError::ConnectionError("Queue not connected".to_string()))?;
 
         // Serialize the message
         let bytes = message.to_bytes()?;
 
         // Send the serialized message
-        sender.send(bytes).map_err(|e| {
-            QueueError::PublishError(format!("Failed to publish message: {}", e))
-        })?;
+        sender
+            .send(bytes)
+            .map_err(|e| QueueError::PublishError(format!("Failed to publish message: {}", e)))?;
 
         Ok(())
     }
@@ -63,7 +64,7 @@ impl Queue for InMemoryQueue {
     ) -> QueueResult<()> {
         let mut subs = self.subscriptions.lock().await;
         let subtypes = subs.entry(message_type).or_default();
-        
+
         if let Some(subtype) = subtype {
             subtypes.insert(subtype);
         }
@@ -76,9 +77,9 @@ impl Queue for InMemoryQueue {
         T: Serialize + for<'a> Deserialize<'a> + Send + Sync,
     {
         let mut receiver = self.receiver.lock().await;
-        let receiver = receiver.as_mut().ok_or_else(|| {
-            QueueError::ConnectionError("Queue not connected".to_string())
-        })?;
+        let receiver = receiver
+            .as_mut()
+            .ok_or_else(|| QueueError::ConnectionError("Queue not connected".to_string()))?;
 
         let subscriptions = self.subscriptions.lock().await;
 

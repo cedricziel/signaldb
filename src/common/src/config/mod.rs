@@ -118,12 +118,14 @@ mod tests {
     #[test]
     fn test_queue_config_from_toml() {
         let config = Figment::from(Serialized::defaults(Configuration::default()))
-            .merge(Toml::string(r#"
+            .merge(Toml::string(
+                r#"
                 [queue]
                 max_batch_size = 2000
                 max_batch_wait = "20s"
                 dsn = "memory://custom"
-            "#))
+            "#,
+            ))
             .extract::<Configuration>()
             .unwrap();
 
