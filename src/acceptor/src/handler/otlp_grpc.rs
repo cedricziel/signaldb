@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use arrow_schema::{DataType, Field, Fields};
 use common::{
     model::span::{Span, SpanBatch, SpanKind, SpanStatus},
-    queue::{Message, MessageType, Queue, QueueConfig},
+    queue::{Message, Queue},
 };
 use opentelemetry::trace::{SpanId, TraceId};
 use opentelemetry_proto::tonic::{
