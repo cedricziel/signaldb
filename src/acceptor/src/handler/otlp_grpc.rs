@@ -186,7 +186,7 @@ impl<Q: Queue> TraceHandler<Q> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common::queue::memory::InMemoryQueue;
+    use common::queue::{memory::InMemoryQueue, MessageType, QueueConfig};
 
     #[test]
     fn test_extract_value() {
