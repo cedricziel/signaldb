@@ -83,8 +83,8 @@ anyhow = "1.0.95"
 axum = "0.7.9"
 tower-http = "0.6.2"
 
-serde = { version = "1.0.216", features = ["derive"] }
-serde_json = "1.0.134"
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.135"
 
 tower = "0.5.2"
 
