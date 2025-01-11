@@ -55,6 +55,7 @@ license = "AGPL-3.0"
 [workspace.dependencies]
 acceptor = { path = "src/acceptor" }
 common = { path = "src/common" }
+tempo-api = { path = "src/tempo-api" }
 writer = { path = "src/writer" }
 
 async-trait = "0.1.88"

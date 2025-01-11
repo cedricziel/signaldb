@@ -3045,8 +3045,11 @@ name = "router"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "common",
+ "log",
  "serde",
  "serde_json",
+ "tempo-api",
  "tokio",
  "tokio-test",
  "tower 0.5.2",

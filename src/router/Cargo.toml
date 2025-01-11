@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+common.workspace = true
+tempo-api.workspace = true
+
 tokio.workspace = true
 axum.workspace = true
 tower.workspace = true
@@ -11,6 +14,8 @@ tower-http.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+log.workspace = true
 
 [dev-dependencies]
 tokio-test.workspace = true

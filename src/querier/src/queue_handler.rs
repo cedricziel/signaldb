@@ -17,7 +17,7 @@ impl<Q: Queue + 'static> QueueHandler<Q> {
 
     pub async fn start(self) -> anyhow::Result<()> {
         let mut queue_lock = self.queue.lock().await;
-        
+
         // Connect to the queue
         queue_lock
             .connect(QueueConfig::default())
@@ -80,8 +80,11 @@ impl<Q: Queue + 'static> QueueHandler<Q> {
                     "trace" => {
                         // Process the trace data
                         let span_batch = &message.payload;
-                        log::info!("Processing trace batch with {} spans", span_batch.spans.len());
-                        
+                        log::info!(
+                            "Processing trace batch with {} spans",
+                            span_batch.spans.len()
+                        );
+
                         // TODO: Store the spans in the database
                         // This is where we'll integrate with DataFusion or another storage backend
                     }
