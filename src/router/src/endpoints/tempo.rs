@@ -7,10 +7,10 @@ use axum::{
 use std::collections::HashMap;
 use tempo_api;
 
-pub fn router() -> Router<RouterState> {
+pub fn router<S: RouterState>() -> Router<S> {
     Router::new()
         .route("/api/echo", get(echo))
-        .route("/api/traces/:trace_id", get(query_single_trace))
+        .route("/api/traces/:trace_id", get(query_single_trace::<S>))
         .route("/api/search", get(search))
         .route("/api/search/tags", get(search_tags))
         .route("/api/search/tag/:tag_name/values", get(search_tag_values))
@@ -34,8 +34,8 @@ pub async fn echo() -> &'static str {
 ///
 /// See https://grafana.com/docs/tempo/latest/api_docs/#query
 #[tracing::instrument]
-pub async fn query_single_trace(
-    _state: State<RouterState>,
+pub async fn query_single_trace<S: RouterState>(
+    _state: State<S>,
     Path(trace_id): Path<String>,
     _start: Option<Query<String>>,
     _end: Option<Query<String>>,
@@ -110,8 +110,8 @@ mod tests {
             tags: None,
             min_duration: None,
             max_duration: None,
-            q: todo!(),
-            spss: todo!(),
+            q: None,
+            spss: None,
         };
 
         let result = search(Query(query)).await.unwrap();

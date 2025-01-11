@@ -2,8 +2,6 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub mod delegate;
-
 /// Message type to identify different kinds of messages
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -163,7 +161,7 @@ pub type QueueResult<T> = Result<T, QueueError>;
 
 /// Trait that must be implemented by all queue implementations
 #[async_trait]
-pub trait Queue: Send + Sync {
+pub trait Queue: std::fmt::Debug + Sync + Send + 'static {
     /// Connect to the queue system
     async fn connect(&mut self, config: QueueConfig) -> QueueResult<()>;
 
