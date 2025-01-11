@@ -30,5 +30,7 @@ serde_json.workspace = true
 opentelemetry.workspace = true
 async-trait.workspace = true
 
+async-nats.workspace = true
+
 [dev-dependencies]
 mockall.workspace = true

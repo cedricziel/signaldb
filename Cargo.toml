@@ -116,5 +116,7 @@ humantime-serde = "1.1.1"
 
 hyper = "1.0.1"
 
+async-nats = "0.38.0"
+
 [profile.dev]
 split-debuginfo = "unpacked"
