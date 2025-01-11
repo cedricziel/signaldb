@@ -12,7 +12,6 @@ use tower_http::trace::TraceLayer;
 mod query;
 mod queue_handler;
 mod services;
-mod tempo_endpoints;
 
 pub fn grpc_service() -> Router {
     let querier = SignalDBQuerier {};
@@ -26,7 +25,6 @@ pub fn query_router() -> Router {
     Router::new()
         .layer(TraceLayer::new_for_http())
         // nest routes for tempo compatibility
-        .nest("/tempo", tempo_endpoints::router())
         .nest("/tempo", grpc_service())
 }
 
