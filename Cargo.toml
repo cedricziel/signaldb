@@ -41,6 +41,7 @@ members = [
     "src/acceptor",
     "src/common",
     "src/querier",
+    "src/router",
     "src/signal-producer",
     "src/tempo-api",
     "src/writer",
@@ -79,6 +80,7 @@ opentelemetry-proto = "0.26.1"
 opentelemetry-semantic-conventions = "0.26.0"
 
 tokio = { version = "1.44.2", features = ["full"] }
+tokio-test = "0.4.2"
 
 tracing = "0.1"
 tracing-subscriber = "0.3"
