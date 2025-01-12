@@ -25,6 +25,12 @@ pub mod tempopb {
 
 pub mod v2;
 
+#[derive(Deserialize, Debug)]
+pub struct TraceQueryParams {
+    start: Option<String>,
+    end: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SearchQueryParams {
     pub q: Option<String>,
