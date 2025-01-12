@@ -5,7 +5,7 @@ use axum::{
     Router,
 };
 use std::collections::HashMap;
-use tempo_api;
+use tempo_api::{self, TraceQueryParams};
 
 pub fn router<S: RouterState>() -> Router<S> {
     Router::new()
@@ -37,8 +37,7 @@ pub async fn echo() -> &'static str {
 pub async fn query_single_trace<S: RouterState>(
     _state: State<S>,
     Path(trace_id): Path<String>,
-    _start: Option<Query<String>>,
-    _end: Option<Query<String>>,
+    Query(params): Query<TraceQueryParams>,
 ) -> Result<axum::Json<tempo_api::Trace>, axum::http::StatusCode> {
     log::info!("Querying for trace_id: {}", trace_id);
     Err(axum::http::StatusCode::NOT_IMPLEMENTED)
