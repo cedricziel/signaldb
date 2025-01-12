@@ -39,16 +39,14 @@ mod tests {
     use arrow_array::{Int64Array, RecordBatch as ArrowRecordBatch};
     use arrow_schema::{DataType, Field, Schema};
     use object_store::local::LocalFileSystem;
-    use std::{fs, path::PathBuf};
+    use std::fs;
+    use tempfile::tempdir;
 
     #[tokio::test]
     async fn test_write_batch() -> Result<()> {
-        // Setup test directory
-        let test_dir = PathBuf::from("./test_data");
-        if test_dir.exists() {
-            fs::remove_dir_all(&test_dir)?;
-        }
-        fs::create_dir_all(&test_dir)?;
+        // Setup temporary test directory
+        let temp_dir = tempdir()?;
+        let test_dir = temp_dir.path();
 
         // Create test batch
         let schema = Schema::new(vec![Field::new("value", DataType::Int64, false)]);
@@ -58,7 +56,7 @@ mod tests {
         )?;
 
         // Write batch
-        let object_store = Arc::new(LocalFileSystem::new_with_prefix("./test_data")?);
+        let object_store = Arc::new(LocalFileSystem::new_with_prefix(test_dir)?);
         write_batch_to_object_store(object_store, "test.parquet", batch).await?;
 
         // Verify file exists

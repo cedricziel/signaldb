@@ -31,3 +31,4 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 async-nats.workspace = true
+tempfile.workspace = true
