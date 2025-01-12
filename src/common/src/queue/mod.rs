@@ -192,7 +192,9 @@ pub trait Queue: std::fmt::Debug + Sync + Send + 'static {
 }
 
 pub mod memory;
+pub mod nats;
 pub use memory::InMemoryQueue;
+pub use nats::NatsQueue;
 
 #[cfg(test)]
 mod tests {

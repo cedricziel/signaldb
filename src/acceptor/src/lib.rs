@@ -80,7 +80,8 @@ pub async fn serve_otlp_grpc(
     shutdown_rx: oneshot::Receiver<()>,
     stopped_tx: oneshot::Sender<()>,
 ) -> Result<(), anyhow::Error> {
-    let addr: SocketAddr = "0.0.0.0:4317".parse()
+    let addr: SocketAddr = "0.0.0.0:4317"
+        .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse OTLP/gRPC address: {}", e))?;
 
     log::info!("Starting OTLP/gRPC acceptor on {}", addr);
@@ -142,7 +143,8 @@ pub async fn serve_otlp_http(
     shutdown_rx: oneshot::Receiver<()>,
     stopped_tx: oneshot::Sender<()>,
 ) -> Result<(), anyhow::Error> {
-    let addr: SocketAddr = "0.0.0.0:4318".parse()
+    let addr: SocketAddr = "0.0.0.0:4318"
+        .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse OTLP/HTTP address: {}", e))?;
 
     log::info!("Starting OTLP/HTTP acceptor on {}", addr);
