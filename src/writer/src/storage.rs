@@ -39,7 +39,8 @@ mod tests {
     use arrow_array::{Int64Array, RecordBatch as ArrowRecordBatch};
     use arrow_schema::{DataType, Field, Schema};
     use object_store::local::LocalFileSystem;
-    use std::fs;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
+    use std::fs::{self, File};
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -57,10 +58,17 @@ mod tests {
 
         // Write batch
         let object_store = Arc::new(LocalFileSystem::new_with_prefix(test_dir)?);
-        write_batch_to_object_store(object_store, "test.parquet", batch).await?;
+        write_batch_to_object_store(object_store, "test.parquet", batch.clone()).await?;
 
         // Verify file exists
         assert!(test_dir.join("test.parquet").exists());
+
+        // Read back the Parquet file and verify contents
+        let parquet_file = test_dir.join("test.parquet");
+        let reader = ParquetRecordBatchReader::try_new(File::open(parquet_file)?, 1)?;
+        let read_batches: Vec<_> = reader.collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(read_batches.len(), 3);
+        assert_eq!(read_batches[0].num_rows(), 1);
 
         // Cleanup
         fs::remove_dir_all(&test_dir)?;
