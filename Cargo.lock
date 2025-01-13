@@ -3708,14 +3708,17 @@ dependencies = [
 name = "router"
 version = "0.1.0"
 dependencies = [
+ "arrow-flight",
  "axum",
  "common",
+ "futures",
  "log",
  "serde",
  "serde_json",
  "tempo-api",
  "tokio",
  "tokio-test",
+ "tonic",
  "tower 0.5.2",
  "tower-http",
  "tracing",

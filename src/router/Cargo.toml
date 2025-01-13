@@ -7,6 +7,9 @@ edition.workspace = true
 common.workspace = true
 tempo-api.workspace = true
 
+arrow-flight.workspace = true
+futures.workspace = true
+tonic.workspace = true
 tokio.workspace = true
 axum.workspace = true
 tower.workspace = true
