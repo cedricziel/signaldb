@@ -62,7 +62,7 @@ impl SpanStatus {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Span {
     pub trace_id: String,
     pub span_id: String,
@@ -98,16 +98,6 @@ impl Span {
             Field::new("span_kind", DataType::Utf8, false),
             Field::new("start_time_unix_nano", DataType::UInt64, false),
             Field::new("duration_nano", DataType::UInt64, false),
-            // Field::new(
-            //     "attributes",
-            //     DataType::Struct(Fields::from(Vec::<Field>::new())),
-            //     false,
-            // ),
-            // Field::new(
-            //     "resource",
-            //     DataType::Struct(Fields::from(Vec::<Field>::new())),
-            //     false,
-            // ),
         ];
         Schema::new(fields)
     }
@@ -128,8 +118,6 @@ impl Span {
         ]));
         let duration_nano: ArrayRef =
             Arc::new(arrow_array::UInt64Array::from(vec![self.duration_nano]));
-        // let attributes: ArrayRef = Arc::new(StructArray::from(vec![]));
-        // let resource: ArrayRef = Arc::new(StructArray::from(vec![null()]));
 
         RecordBatch::try_new(
             Arc::new(Self::to_schema()),
@@ -144,8 +132,6 @@ impl Span {
                 span_kind,
                 start_time_unix_nano,
                 duration_nano,
-                // attributes,
-                // resource,
             ],
         )
         .unwrap()
@@ -155,7 +141,7 @@ impl Span {
 /// A batch of spans.
 ///
 /// Supposedly making it easier to convert to a record batch.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpanBatch {
     pub spans: Vec<Span>,
 }

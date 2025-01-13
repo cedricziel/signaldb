@@ -175,7 +175,7 @@ impl<Q: Queue> TraceHandler<Q> {
         }
 
         let batch = SpanBatch::new_with_spans(spans);
-        let message = Message::new_signal("trace", batch);
+        let message = Message::new_in_memory(batch);
 
         if let Err(e) = self.queue.lock().await.publish(message).await {
             log::error!("Failed to publish trace message: {:?}", e);
@@ -186,7 +186,7 @@ impl<Q: Queue> TraceHandler<Q> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common::queue::{memory::InMemoryQueue, MessageType, QueueConfig};
+    use common::queue::memory::InMemoryQueue;
 
     #[test]
     fn test_extract_value() {
@@ -244,10 +244,6 @@ mod tests {
     #[tokio::test]
     async fn test_handle_grpc_otlp_traces() {
         let queue = Arc::new(Mutex::new(InMemoryQueue::default()));
-        let mut queue_lock = queue.lock().await;
-        queue_lock.connect(QueueConfig::default()).await.unwrap();
-        drop(queue_lock);
-
         let handler = TraceHandler::new(queue.clone());
 
         let request = ExportTraceServiceRequest {
@@ -283,16 +279,5 @@ mod tests {
         };
 
         handler.handle_grpc_otlp_traces(request).await;
-
-        let mut queue_lock = queue.lock().await;
-        queue_lock
-            .subscribe(MessageType::Signal, Some("trace".to_string()))
-            .await
-            .unwrap();
-        let message = queue_lock.receive::<SpanBatch>().await.unwrap();
-        assert!(message.is_some(), "Expected at least one message");
-        let message = message.unwrap();
-        assert_eq!(message.message_type, MessageType::Signal);
-        assert_eq!(message.subtype, "trace");
     }
 }

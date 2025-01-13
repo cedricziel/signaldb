@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use common::queue::{memory::InMemoryQueue, Message, MessageType, Queue, QueueConfig};
+use common::queue::{memory::InMemoryQueue, Message, Queue, QueueConfig};
 use object_store::ObjectStore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, Mutex};
@@ -43,8 +43,6 @@ pub enum WriterError {
     WriteBatchError(String),
     #[error("Failed to receive message: {0}")]
     ReceiveError(String),
-    #[error("Invalid message type: {0}")]
-    InvalidMessageType(String),
     #[error("Missing batch data")]
     MissingBatch,
 }
@@ -72,81 +70,42 @@ impl QueueBatchWriter {
 #[async_trait]
 impl BatchWriter for QueueBatchWriter {
     async fn start(&self) -> Result<()> {
-        // Connect to queue
+        // Subscribe to messages
         self.queue
             .lock()
             .await
-            .connect(self.queue_config.clone())
-            .await?;
-
-        // Subscribe to signal messages
-        self.queue
-            .lock()
-            .await
-            .subscribe(MessageType::Signal, None)
+            .subscribe("batch".to_string())
             .await
             .map_err(|e| WriterError::ReceiveError(e.to_string()))?;
 
         let mut shutdown_rx = self.shutdown.subscribe();
-        loop {
-            let queue = self.queue.lock().await;
-            tokio::select! {
-                _ = shutdown_rx.recv() => {
-                    return Ok(());
-                }
-                message = queue.receive::<BatchWrapper>() => {
-                    let message = message.map_err(|e| WriterError::ReceiveError(e.to_string()))?;
-                    if let Some(message) = message {
-                        drop(queue); // Release the lock before processing
-                        self.process_message(message).await?;
-                    }
-                }
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                Ok(())
             }
         }
     }
 
     async fn process_message(&self, message: Message<BatchWrapper>) -> Result<()> {
-        match message.message_type {
-            MessageType::Signal => {
-                let batch = message
-                    .payload
-                    .batch
-                    .as_ref()
-                    .ok_or_else(|| WriterError::MissingBatch)?;
+        let batch = message
+            .payload()
+            .batch
+            .as_ref()
+            .ok_or_else(|| WriterError::MissingBatch)?;
 
-                // Generate path for the batch
-                let path = format!(
-                    "{}/{}-{}.parquet",
-                    message.subtype,
-                    message.timestamp.elapsed()?.as_nanos(),
-                    Uuid::new_v4()
-                );
+        // Generate path for the batch
+        let path = format!(
+            "batch/{}-{}.parquet",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos(),
+            Uuid::new_v4()
+        );
 
-                // Write the batch to object store
-                storage::write_batch_to_object_store(
-                    self.object_store.clone(),
-                    &path,
-                    batch.clone(),
-                )
-                .await
-                .map_err(|e| WriterError::WriteBatchError(e.to_string()))?;
-
-                // Acknowledge the message
-                self.queue
-                    .lock()
-                    .await
-                    .ack(&message)
-                    .await
-                    .map_err(|e| WriterError::ReceiveError(e.to_string()))?;
-            }
-            _ => {
-                return Err(WriterError::InvalidMessageType(format!(
-                    "Unexpected message type: {:?}",
-                    message.message_type
-                ))
-                .into());
-            }
-        }
+        // Write the batch to object store
+        storage::write_batch_to_object_store(self.object_store.clone(), &path, batch.clone())
+            .await
+            .map_err(|e| WriterError::WriteBatchError(e.to_string()))?;
 
         Ok(())
     }
@@ -196,7 +155,7 @@ mod tests {
     use arrow_array::{Int64Array, RecordBatch as ArrowRecordBatch};
     use arrow_schema::{DataType, Field, Schema};
     use object_store::local::LocalFileSystem;
-    use std::{fs, path::Path, sync::Arc, time::SystemTime};
+    use std::{fs, path::Path, sync::Arc};
 
     fn setup_test_dir() -> Result<()> {
         let test_dir = Path::new("./test_data");
@@ -231,24 +190,8 @@ mod tests {
         let object_store = Arc::new(LocalFileSystem::new_with_prefix("./test_data")?);
         let writer = QueueBatchWriter::new(QueueConfig::default(), object_store);
 
-        // Connect to queue
-        writer
-            .queue
-            .lock()
-            .await
-            .connect(QueueConfig::default())
-            .await?;
-
-        // Create a message
-        let message = Message {
-            message_type: MessageType::Signal,
-            subtype: "test".to_string(),
-            payload: BatchWrapper::from(batch),
-            metadata: Default::default(),
-            timestamp: SystemTime::now(),
-        };
-
-        // Send message to queue
+        // Create and publish a message
+        let message = Message::new_in_memory(BatchWrapper::from(batch));
         writer.queue.lock().await.publish(message).await?;
 
         // Cleanup test directory
@@ -263,13 +206,7 @@ mod tests {
         let writer = MockBatchWriter::new();
 
         // Create a test message
-        let message = Message {
-            message_type: MessageType::Signal,
-            subtype: "test".to_string(),
-            payload: BatchWrapper { batch: None },
-            metadata: Default::default(),
-            timestamp: SystemTime::now(),
-        };
+        let message = Message::new_in_memory(BatchWrapper { batch: None });
 
         // Process message
         writer.process_message(message.clone()).await?;
@@ -277,7 +214,6 @@ mod tests {
         // Verify message was processed
         let processed = writer.processed_messages.lock().await;
         assert_eq!(processed.len(), 1);
-        assert_eq!(processed[0].subtype, "test");
 
         Ok(())
     }
