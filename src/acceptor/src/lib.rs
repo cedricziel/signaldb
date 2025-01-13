@@ -3,7 +3,6 @@ pub mod services;
 
 use std::{net::SocketAddr, sync::Arc, time::SystemTime};
 
-use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_schema::Schema;
 use axum::{
     routing::{get, post},
@@ -27,8 +26,8 @@ use tokio::{
 
 use crate::handler::otlp_grpc::TraceHandler;
 use crate::services::{
-    flight::SignalDBFlightService, otlp_log_service::LogAcceptorService,
-    otlp_metric_service::MetricsAcceptorService, otlp_trace_service::TraceAcceptorService,
+    otlp_log_service::LogAcceptorService, otlp_metric_service::MetricsAcceptorService,
+    otlp_trace_service::TraceAcceptorService,
 };
 
 #[derive(Clone)]
@@ -112,10 +111,6 @@ pub async fn serve_otlp_grpc(
         .send(())
         .expect("Unable to send stopped signal for OTLP/gRPC");
     Ok(())
-}
-
-pub fn create_flight_service() -> FlightServiceServer<SignalDBFlightService> {
-    FlightServiceServer::new(SignalDBFlightService)
 }
 
 pub fn acceptor_router() -> Router {
