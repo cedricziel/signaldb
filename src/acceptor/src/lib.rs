@@ -30,9 +30,10 @@ use crate::services::{
     otlp_trace_service::TraceAcceptorService,
 };
 
+/// Represents the shared state of the acceptor service.
+/// Contains an in-memory queue for managing incoming telemetry data.
 #[derive(Clone)]
 pub struct AcceptorState {
-    #[allow(dead_code)]
     queue: Arc<Mutex<InMemoryQueue>>,
 }
 
