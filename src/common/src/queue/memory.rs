@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, broadcast::Receiver, Mutex};
 
 use super::{Message, Queue, QueueError, QueueResult};
 
@@ -66,5 +66,22 @@ impl Queue for InMemoryQueue {
         }
 
         Ok(())
+    }
+}
+
+impl InMemoryQueue {
+    pub async fn subscribe_and_get_receiver(
+        &self,
+        topic: String,
+    ) -> QueueResult<Receiver<Vec<u8>>> {
+        let channels = self.channels.lock().await;
+        if let Some(channel) = channels.get(&topic) {
+            Ok(channel.sender.subscribe())
+        } else {
+            Err(QueueError::SubscribeError(format!(
+                "Topic {} not found",
+                topic
+            )))
+        }
     }
 }
