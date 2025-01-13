@@ -8,7 +8,7 @@ use object_store::ObjectStore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, Mutex};
 
-mod storage;
+pub mod storage;
 pub use storage::write_batch_to_object_store;
 use uuid::Uuid;
 

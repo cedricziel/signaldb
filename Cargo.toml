@@ -11,6 +11,8 @@ acceptor = { path = "src/acceptor" }
 common = { path = "src/common" }
 querier = { path = "src/querier" }
 writer = { path = "src/writer" }
+tempfile = "3.8.1"
+hex = "0.4"
 
 anyhow.workspace = true
 
