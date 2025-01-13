@@ -177,9 +177,10 @@ impl<Q: Queue> TraceHandler<Q> {
         let batch = SpanBatch::new_with_spans(spans);
         let message = Message::new_in_memory(batch);
 
-        if let Err(e) = self.queue.lock().await.publish(message).await {
+        self.queue.lock().await.publish(message).await.map_err(|e| {
             log::error!("Failed to publish trace message: {:?}", e);
-        }
+            e
+        })?;
     }
 }
 
