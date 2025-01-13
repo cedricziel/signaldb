@@ -30,7 +30,7 @@ impl Default for InMemoryQueue {
 
 #[async_trait::async_trait]
 impl Queue for InMemoryQueue {
-    async fn publish<T>(&self, message: Message<T>) -> QueueResult<()>
+    async fn publish<T>(&self, topic: String, message: Message<T>) -> QueueResult<()>
     where
         T: Serialize + for<'a> Deserialize<'a> + Send + Sync + std::fmt::Debug,
     {
@@ -39,14 +39,17 @@ impl Queue for InMemoryQueue {
         // Serialize the message
         let bytes = message.to_bytes()?;
 
-        // Send to all subscribed topics
-        if !channels.is_empty() {
-            for channel in channels.values() {
-                channel.sender.send(bytes.clone()).map_err(|e| {
-                    QueueError::PublishError(format!("Failed to publish message: {}", e))
-                })?;
-            }
+        // Send to the specified topic
+        if let Some(channel) = channels.get(&topic) {
+            channel.sender.send(bytes.clone()).map_err(|e| {
+                QueueError::PublishError(format!("Failed to publish message: {}", e))
+            })?;
+        } else {
+            return Err(QueueError::PublishError(format!("Topic not found: {}", topic)));
         }
+
+        Ok(())
+    }
 
         Ok(())
     }
