@@ -987,7 +987,6 @@ version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
- "async-nats",
  "async-trait",
  "bytes",
  "datafusion",
@@ -1000,7 +999,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempo-api",
- "testcontainers-modules",
  "thiserror 2.0.12",
  "tokio",
 ]

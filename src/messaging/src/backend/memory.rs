@@ -6,8 +6,13 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::{Message, MessagingBackend};
 
+struct TopicState {
+    senders: Vec<mpsc::Sender<Message>>,
+    buffer: Vec<Message>,
+}
+
 pub struct InMemoryStreamingBackend {
-    topics: Arc<Mutex<HashMap<String, mpsc::Sender<Message>>>>, // Topic-based senders
+    topics: Arc<Mutex<HashMap<String, TopicState>>>,
     buffer_size: usize,
 }
 
@@ -19,47 +24,84 @@ impl InMemoryStreamingBackend {
         }
     }
 
-    // Ensure a topic exists, creating it if necessary
-    async fn ensure_topic(&self, topic: &str) -> Arc<Mutex<mpsc::Receiver<Message>>> {
+    // Get or create a topic state
+    async fn get_or_create_topic(&self, topic: &str) -> mpsc::Receiver<Message> {
         let mut topics = self.topics.lock().await;
+        let state = topics.entry(topic.to_string()).or_insert_with(|| TopicState {
+            senders: Vec::new(),
+            buffer: Vec::new(),
+        });
 
-        if let Some(_sender) = topics.get(topic) {
-            // Create a new receiver for the existing sender
-            let (_, receiver) = mpsc::channel(self.buffer_size);
-            return Arc::new(Mutex::new(receiver));
+        let (sender, receiver) = mpsc::channel(self.buffer_size);
+
+        // Replay buffered messages
+        let sender_clone = sender.clone();
+        let buffered_messages = state.buffer.clone();
+        tokio::spawn(async move {
+            for msg in buffered_messages {
+                if sender_clone.send(msg).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        state.senders.push(sender);
+
+        // Clean up closed senders
+        state.senders.retain(|s| !s.is_closed());
+
+        receiver
+    }
+
+    // Store message in buffer and forward to all senders
+    async fn broadcast_message(&self, topic: &str, message: Message) -> Result<(), String> {
+        let mut topics = self.topics.lock().await;
+        let state = topics.entry(topic.to_string()).or_insert_with(|| TopicState {
+            senders: Vec::new(),
+            buffer: Vec::new(),
+        });
+
+        // Update buffer
+        if state.buffer.len() >= self.buffer_size {
+            state.buffer.remove(0);
+        }
+        state.buffer.push(message.clone());
+
+        // Clean up closed senders
+        state.senders.retain(|s| !s.is_closed());
+
+        // Forward message to all senders
+        let mut futures = Vec::new();
+        for sender in &state.senders {
+            futures.push(sender.send(message.clone()));
         }
 
-        // Create a new channel for the topic
-        let (sender, receiver) = mpsc::channel(self.buffer_size);
-        topics.insert(topic.to_string(), sender);
-        Arc::new(Mutex::new(receiver))
+        // Wait for all sends to complete
+        for result in futures::future::join_all(futures).await {
+            if let Err(e) = result {
+                return Err(format!("Failed to send message: {}", e));
+            }
+        }
+
+        Ok(())
     }
 }
 
 #[async_trait]
 impl MessagingBackend for InMemoryStreamingBackend {
     async fn send_message(&self, topic: &str, message: Message) -> Result<(), String> {
-        let mut topics = self.topics.lock().await;
-
-        if let Some(sender) = topics.get(topic) {
-            sender.send(message).await.map_err(|e| e.to_string())
-        } else {
-            let (sender, _) = mpsc::channel(self.buffer_size);
-            topics.insert(topic.to_string(), sender.clone());
-            sender.send(message).await.map_err(|e| e.to_string())
-        }
+        self.broadcast_message(topic, message).await
     }
 
     async fn stream(&self, topic: &str) -> Pin<Box<dyn Stream<Item = Message> + Send>> {
-        let receiver = self.ensure_topic(topic).await.clone();
-
-        // Wrap the receiver in a stream
-        let receiver_clone = receiver.clone();
-        Box::pin(futures::stream::unfold(receiver, move |rx| {
-            let receiver_clone = receiver_clone.clone();
-            async move {
-                let mut rx = rx.lock().await;
-                rx.recv().await.map(|msg| (msg, receiver_clone))
+        let receiver = self.get_or_create_topic(topic).await;
+        Box::pin(futures::stream::unfold(receiver, |mut rx| async move {
+            match tokio::time::timeout(
+                tokio::time::Duration::from_millis(2000),
+                rx.recv()
+            ).await {
+                Ok(Some(msg)) => Some((msg, rx)),
+                _ => None,
             }
         }))
     }
@@ -71,8 +113,10 @@ mod tests {
 
     use super::*;
     use futures::StreamExt;
+    use ntest::timeout;
 
     #[tokio::test]
+    #[timeout(10000)]
     async fn test_send_and_receive_single_message() {
         let backend = InMemoryStreamingBackend::new(10);
         let dispatcher = Dispatcher::new(backend);
@@ -95,6 +139,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[timeout(10000)]
     async fn test_multiple_messages_in_single_topic() {
         let backend = InMemoryStreamingBackend::new(10);
         let dispatcher = Dispatcher::new(backend);
@@ -126,6 +171,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[timeout(10000)]
     async fn test_messages_across_multiple_topics() {
         let backend = InMemoryStreamingBackend::new(10);
         let dispatcher = Dispatcher::new(backend);
@@ -167,6 +213,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[timeout(10000)]
     async fn test_stream_closes_gracefully_when_no_more_messages() {
         let backend = InMemoryStreamingBackend::new(10);
         let dispatcher = Dispatcher::new(backend);
@@ -191,9 +238,13 @@ mod tests {
     }
 
     #[tokio::test]
+    #[timeout(10000)]
     async fn test_backpressure_behavior() {
         let backend = InMemoryStreamingBackend::new(2); // Buffer size of 2
         let dispatcher = Dispatcher::new(backend);
+
+        // Create stream before sending messages
+        let mut stream = dispatcher.stream("topic_a").await;
 
         let messages = vec![
             Message::SimpleMessage(SimpleMessage {
@@ -216,7 +267,6 @@ mod tests {
         }
 
         // Consume the messages
-        let mut stream = dispatcher.stream("topic_a").await;
         for expected_message in messages {
             if let Some(received_message) = stream.next().await {
                 assert_eq!(received_message, expected_message);
