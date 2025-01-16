@@ -3,7 +3,7 @@ use acceptor::{
 };
 use common::{
     model::trace::Trace,
-    queue::{memory::InMemoryQueue, Message, Queue},
+    queue::{memory::InMemoryQueue, Message, MessagingBackend},
 };
 use hex;
 use opentelemetry_proto::tonic::{
@@ -30,7 +30,7 @@ async fn test_trace_ingestion_to_storage() {
     let storage_clone = storage.clone();
     tokio::spawn(async move {
         let mut queue = queue_clone.lock().await;
-        queue.subscribe("traces".to_string()).await.unwrap();
+        queue.consume("traces".to_string()).await.unwrap();
         let mut receiver = queue
             .subscribe_and_get_receiver("traces".to_string())
             .await

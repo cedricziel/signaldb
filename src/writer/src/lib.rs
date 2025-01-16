@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use common::queue::{memory::InMemoryQueue, Message, Queue, QueueConfig};
+use common::queue::{memory::InMemoryQueue, Message, MessagingBackend, QueueConfig};
 use object_store::ObjectStore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, Mutex};
@@ -74,7 +74,7 @@ impl BatchWriter for QueueBatchWriter {
         self.queue
             .lock()
             .await
-            .subscribe("batch".to_string())
+            .consume("batch".to_string())
             .await
             .map_err(|e| WriterError::ReceiveError(e.to_string()))?;
 
@@ -192,7 +192,12 @@ mod tests {
 
         // Create and publish a message
         let message = Message::new_in_memory(BatchWrapper::from(batch));
-        writer.queue.lock().await.publish(message).await?;
+        writer
+            .queue
+            .lock()
+            .await
+            .publish("traces".to_string(), message)
+            .await?;
 
         // Cleanup test directory
         cleanup_test_dir()?;

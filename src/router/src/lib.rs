@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{http::StatusCode, response::IntoResponse, routing::get, Router};
-use common::queue::{NatsQueue, Queue};
+use common::queue::{MessagingBackend, NatsQueue};
 
 mod endpoints;
 
@@ -29,7 +29,7 @@ impl RouterState for NatsStateImpl {
 }
 
 pub trait RouterState: std::fmt::Debug + Clone + Send + Sync + 'static {
-    type Q: Queue;
+    type Q: MessagingBackend;
 
     fn queue(&self) -> &Self::Q;
 }

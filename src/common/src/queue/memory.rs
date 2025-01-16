@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
-use tokio::sync::{broadcast, broadcast::Receiver, Mutex};
+use tokio::sync::{broadcast, Mutex};
 
-use super::{Message, Queue, QueueError, QueueResult};
+use super::{Message, MessagingBackend, QueueError, QueueResult};
 
 const DEFAULT_CHANNEL_SIZE: usize = 1024;
 
@@ -29,11 +29,12 @@ impl Default for InMemoryQueue {
 }
 
 #[async_trait::async_trait]
-impl Queue for InMemoryQueue {
-    async fn publish<T>(&self, topic: String, message: Message<T>) -> QueueResult<()>
-    where
-        T: Serialize + for<'a> Deserialize<'a> + Send + Sync + std::fmt::Debug,
-    {
+impl MessagingBackend for InMemoryQueue {
+    async fn create(&mut self) -> QueueResult<()> {
+        Ok(())
+    }
+
+    async fn publish<T: Message>(&self, topic: String, message: T) -> QueueResult<()> {
         let channels = self.channels.lock().await;
 
         // Serialize the message
@@ -45,46 +46,44 @@ impl Queue for InMemoryQueue {
                 QueueError::PublishError(format!("Failed to publish message: {}", e))
             })?;
         } else {
-            return Err(QueueError::PublishError(format!("Topic not found: {}", topic)));
+            return Err(QueueError::PublishError(format!(
+                "Topic not found: {}",
+                topic
+            )));
         }
 
         Ok(())
     }
 
-        Ok(())
-    }
-
-    async fn subscribe(&mut self, topic: String) -> QueueResult<()> {
+    async fn consume(&mut self, topic: String) -> QueueResult<Arc<Receiver<Message>>> {
         let mut channels = self.channels.lock().await;
+        let (tx, rx) = channel();
 
         if !channels.contains_key(&topic) {
-            let (tx, rx) = broadcast::channel(DEFAULT_CHANNEL_SIZE);
+            let (broadcast_tx, broadcast_rx) = broadcast::channel(DEFAULT_CHANNEL_SIZE);
             channels.insert(
-                topic,
+                topic.clone(),
                 TopicChannel {
-                    sender: tx,
-                    _receiver: rx,
+                    sender: broadcast_tx,
+                    _receiver: broadcast_rx,
                 },
             );
         }
 
-        Ok(())
-    }
-}
-
-impl InMemoryQueue {
-    pub async fn subscribe_and_get_receiver(
-        &self,
-        topic: String,
-    ) -> QueueResult<Receiver<Vec<u8>>> {
-        let channels = self.channels.lock().await;
+        // Get the broadcast channel
         if let Some(channel) = channels.get(&topic) {
-            Ok(channel.sender.subscribe())
-        } else {
-            Err(QueueError::SubscribeError(format!(
-                "Topic {} not found",
-                topic
-            )))
+            let mut broadcast_rx = channel.sender.subscribe();
+
+            // Spawn a task to forward messages
+            tokio::spawn(async move {
+                while let Ok(bytes) = broadcast_rx.recv().await {
+                    if let Ok(message) = Message::from_bytes(&bytes, false) {
+                        let _ = tx.send(message);
+                    }
+                }
+            });
         }
+
+        Ok(rx.into())
     }
 }

@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 acceptor = { path = "src/acceptor" }
 common = { path = "src/common" }
+messaging = { path = "src/messaging" }
 querier = { path = "src/querier" }
 writer = { path = "src/writer" }
 tempfile = "3.8.1"
@@ -40,6 +41,7 @@ object_store.workspace = true
 [workspace]
 resolver = "2"
 members = [
+    "src/messaging",
     "src/acceptor",
     "src/common",
     "src/querier",
@@ -124,6 +126,8 @@ testcontainers-modules = { version = "0.11.5", features = [
     "nats",
 ], git = "https://github.com/cedricziel/testcontainers-rs-modules-community.git", branch = "nats-jetstream" }
 tempfile = "3.15.0"
+
+ntest = "0.9.3"
 
 [profile.dev]
 split-debuginfo = "unpacked"

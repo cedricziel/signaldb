@@ -1,55 +1,14 @@
+use async_nats::jetstream;
 use async_trait::async_trait;
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::mpsc::Receiver;
+use std::sync::Arc;
 
 /// Message variants for different queue implementations
-#[derive(Debug, Clone)]
-pub enum Message<T>
-where
-    T: Serialize + for<'a> Deserialize<'a> + Send + Sync + std::fmt::Debug,
-{
-    /// In-memory message
-    InMemory(T),
-    /// NATS JetStream message
-    JetStream(T),
-}
-
-impl<T> Message<T>
-where
-    T: Serialize + for<'a> Deserialize<'a> + Send + Sync + std::fmt::Debug,
-{
-    /// Create a new in-memory message
-    pub fn new_in_memory(payload: T) -> Self {
-        Self::InMemory(payload)
-    }
-
-    /// Create a new JetStream message
-    pub fn new_jetstream(payload: T) -> Self {
-        Self::JetStream(payload)
-    }
-
-    /// Get the message payload
-    pub fn payload(&self) -> &T {
-        match self {
-            Self::InMemory(payload) => payload,
-            Self::JetStream(payload) => payload,
-        }
-    }
-
-    /// Serialize the message to JSON bytes
-    pub fn to_bytes(&self) -> Result<Vec<u8>, QueueError> {
-        serde_json::to_vec(self.payload()).map_err(QueueError::SerializationError)
-    }
-
-    /// Deserialize the message from JSON bytes
-    pub fn from_bytes(bytes: &[u8], is_jetstream: bool) -> Result<Self, QueueError> {
-        let payload: T = serde_json::from_slice(bytes)?;
-        Ok(if is_jetstream {
-            Self::JetStream(payload)
-        } else {
-            Self::InMemory(payload)
-        })
-    }
+pub trait Message: Serialize + for<'de> Deserialize<'de> {
+    fn message_type(&self) -> &'static str;
 }
 
 /// Configuration for a queue implementation
@@ -98,14 +57,33 @@ pub type QueueResult<T> = Result<T, QueueError>;
 
 /// Trait that must be implemented by all queue implementations
 #[async_trait]
-pub trait Queue: std::fmt::Debug + Sync + Send + Clone + 'static {
+pub trait MessagingBackend: std::fmt::Debug + Sync + Send + Clone + 'static {
+    /// Create the queue, do initial setup
+    async fn create(&mut self) -> QueueResult<()>;
+
     /// Publish a message to the queue
-    async fn publish<T>(&self, message: Message<T>) -> QueueResult<()>
-    where
-        T: Serialize + for<'a> Deserialize<'a> + Send + Sync + std::fmt::Debug;
+    async fn publish<T: Message>(&self, topic: String, message: T) -> QueueResult<()>;
 
     /// Subscribe to messages with a specific topic
-    async fn subscribe(&mut self, topic: String) -> QueueResult<()>;
+    async fn consume(&mut self, topic: String) -> QueueResult<Arc<Receiver<dyn Message>>>;
+}
+
+pub struct Dispatcher<B: MessagingBackend> {
+    backend: B,
+}
+
+impl<B: MessagingBackend> Dispatcher<B> {
+    pub fn new(backend: B) -> Self {
+        Self { backend }
+    }
+
+    pub fn publish<T: Message>(&self, topic: String, message: T) -> Result<(), String> {
+        self.backend.publish(topic, message)
+    }
+
+    pub fn receive(&self) -> Result<Box<dyn Message>, String> {
+        self.backend.receive_message()
+    }
 }
 
 pub mod memory;
@@ -128,12 +106,11 @@ mod tests {
         let mut queue = InMemoryQueue::default();
 
         // Subscribe to test topic
-        queue.subscribe("test".to_string()).await.unwrap();
+        let rx = queue.consume("test".to_string()).await.unwrap();
 
         // Publish a message
-        let message = Message::new_in_memory(TestPayload {
+        let test_msg = TestPayload {
             data: "test".to_string(),
-        });
-        queue.publish(message).await.unwrap();
+        };
     }
 }
