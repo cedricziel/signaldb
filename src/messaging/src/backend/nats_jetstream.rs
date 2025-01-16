@@ -1,8 +1,4 @@
-use async_nats::jetstream::{
-    self, consumer,
-    context::Context,
-    stream::{Config, DiscardPolicy},
-};
+use async_nats::jetstream::{self, consumer, context::Context, stream::Config};
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use std::pin::Pin;
@@ -51,10 +47,6 @@ impl MessagingBackend for JetStreamBackend {
     }
 
     async fn stream(&self, topic: &str) -> Pin<Box<dyn Stream<Item = Message> + Send>> {
-        self.ensure_stream(topic)
-            .await
-            .expect("Failed to create stream");
-
         // Create a durable consumer
         let consumer: consumer::PullConsumer = self
             .context
@@ -72,7 +64,7 @@ impl MessagingBackend for JetStreamBackend {
         let stream = futures::stream::unfold(consumer, |consumer| async {
             let timeout = tokio::time::Duration::from_millis(2000);
             match tokio::time::timeout(timeout, async {
-                if let Ok(mut messages) = consumer.fetch().max_messages(10).messages().await {
+                if let Ok(mut messages) = consumer.messages().await {
                     while let Some(msg) = messages.next().await {
                         if let Ok(msg) = msg {
                             return Some(msg);
@@ -209,6 +201,7 @@ mod tests {
 
         let backend = JetStreamBackend::new(&url).await.unwrap();
         backend.ensure_stream("topic_a").await.unwrap();
+        backend.ensure_stream("topic_b").await.unwrap();
 
         let dispatcher = Dispatcher::new(backend);
 
