@@ -9,6 +9,7 @@ async-trait.workspace = true
 
 async-nats.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
 futures.workspace = true
 
 serde.workspace = true

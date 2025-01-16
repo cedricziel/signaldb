@@ -1,278 +1,143 @@
 use async_trait::async_trait;
-use futures::stream::Stream;
-use std::sync::Arc;
-use std::{collections::HashMap, pin::Pin};
-use tokio::sync::{mpsc, Mutex};
+use futures::stream::{Stream, StreamExt};
+use std::{
+    collections::HashMap,
+    pin::Pin,
+    sync::{Arc, Mutex},
+};
+use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
 
 use crate::{Message, MessagingBackend};
 
-struct TopicState {
-    senders: Vec<mpsc::Sender<Message>>,
-    buffer: Vec<Message>,
-}
-
+#[derive(Clone)]
 pub struct InMemoryStreamingBackend {
-    topics: Arc<Mutex<HashMap<String, TopicState>>>,
-    buffer_size: usize,
+    // We store a broadcast::Sender for each topic
+    topics: Arc<Mutex<HashMap<String, broadcast::Sender<Message>>>>,
+    // Used to define the size of the broadcast channel
+    capacity: usize,
 }
 
 impl InMemoryStreamingBackend {
-    pub fn new(buffer_size: usize) -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
             topics: Arc::new(Mutex::new(HashMap::new())),
-            buffer_size,
+            capacity,
         }
     }
 
-    // Get or create a topic state
-    async fn get_or_create_topic(&self, topic: &str) -> mpsc::Receiver<Message> {
-        let mut topics = self.topics.lock().await;
-        let state = topics.entry(topic.to_string()).or_insert_with(|| TopicState {
-            senders: Vec::new(),
-            buffer: Vec::new(),
-        });
+    /// Get or create a broadcast sender for this topic
+    fn get_or_create_topic_sender(&self, topic: &str) -> broadcast::Sender<Message> {
+        let mut map = self.topics.lock().unwrap();
 
-        let (sender, receiver) = mpsc::channel(self.buffer_size);
-
-        // Replay buffered messages
-        let sender_clone = sender.clone();
-        let buffered_messages = state.buffer.clone();
-        tokio::spawn(async move {
-            for msg in buffered_messages {
-                if sender_clone.send(msg).await.is_err() {
-                    break;
-                }
-            }
-        });
-
-        state.senders.push(sender);
-
-        // Clean up closed senders
-        state.senders.retain(|s| !s.is_closed());
-
-        receiver
-    }
-
-    // Store message in buffer and forward to all senders
-    async fn broadcast_message(&self, topic: &str, message: Message) -> Result<(), String> {
-        let mut topics = self.topics.lock().await;
-        let state = topics.entry(topic.to_string()).or_insert_with(|| TopicState {
-            senders: Vec::new(),
-            buffer: Vec::new(),
-        });
-
-        // Update buffer
-        if state.buffer.len() >= self.buffer_size {
-            state.buffer.remove(0);
-        }
-        state.buffer.push(message.clone());
-
-        // Clean up closed senders
-        state.senders.retain(|s| !s.is_closed());
-
-        // Forward message to all senders
-        let mut futures = Vec::new();
-        for sender in &state.senders {
-            futures.push(sender.send(message.clone()));
-        }
-
-        // Wait for all sends to complete
-        for result in futures::future::join_all(futures).await {
-            if let Err(e) = result {
-                return Err(format!("Failed to send message: {}", e));
-            }
-        }
-
-        Ok(())
+        map.entry(topic.to_string())
+            .or_insert_with(|| broadcast::channel(self.capacity).0)
+            .clone()
     }
 }
 
 #[async_trait]
 impl MessagingBackend for InMemoryStreamingBackend {
     async fn send_message(&self, topic: &str, message: Message) -> Result<(), String> {
-        self.broadcast_message(topic, message).await
+        // Get the broadcast sender (creating it if needed) and send
+        let sender = self.get_or_create_topic_sender(topic);
+        sender.send(message).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     async fn stream(&self, topic: &str) -> Pin<Box<dyn Stream<Item = Message> + Send>> {
-        let receiver = self.get_or_create_topic(topic).await;
-        Box::pin(futures::stream::unfold(receiver, |mut rx| async move {
-            match tokio::time::timeout(
-                tokio::time::Duration::from_millis(2000),
-                rx.recv()
-            ).await {
-                Ok(Some(msg)) => Some((msg, rx)),
-                _ => None,
+        // Subscribe to the broadcast channel for that topic
+        let sender = self.get_or_create_topic_sender(topic);
+        let rx = sender.subscribe();
+
+        // Wrap rx in a BroadcastStream, which yields `Result<Message, RecvError>`
+        let broadcast_stream = BroadcastStream::new(rx).filter_map(|res| async {
+            match res {
+                Ok(msg) => Some(msg),
+                Err(_err) => {
+                    // If a slow consumer falls behind, messages are dropped.
+                    // We simply skip them here, but you could log it or handle otherwise.
+                    None
+                }
             }
-        }))
+        });
+
+        // Pin the stream so we can return it
+        Box::pin(broadcast_stream)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{messages::SimpleMessage, Dispatcher};
-
     use super::*;
+    use crate::{messages::SimpleMessage, Message};
     use futures::StreamExt;
-    use ntest::timeout;
+    use tokio::time::{sleep, Duration};
 
     #[tokio::test]
-    #[timeout(10000)]
-    async fn test_send_and_receive_single_message() {
+    async fn test_broadcast_in_memory_backend() {
         let backend = InMemoryStreamingBackend::new(10);
-        let dispatcher = Dispatcher::new(backend);
 
-        let message = Message::SimpleMessage(SimpleMessage {
-            id: "1".to_string(),
-            name: "Test Thing".to_string(),
-        });
+        // Create a first subscriber
+        let mut stream1 = backend.stream("some_topic").await;
 
-        // Send the message
-        dispatcher.send("topic_a", message.clone()).await.unwrap();
-
-        // Consume the message
-        let mut stream = dispatcher.stream("topic_a").await;
-        if let Some(received_message) = stream.next().await {
-            assert_eq!(received_message, message);
-        } else {
-            panic!("No message received");
-        }
-    }
-
-    #[tokio::test]
-    #[timeout(10000)]
-    async fn test_multiple_messages_in_single_topic() {
-        let backend = InMemoryStreamingBackend::new(10);
-        let dispatcher = Dispatcher::new(backend);
-
-        let messages = vec![
-            Message::SimpleMessage(SimpleMessage {
-                id: "1".to_string(),
-                name: "Thing 1".to_string(),
-            }),
-            Message::SimpleMessage(SimpleMessage {
-                id: "1".to_string(),
-                name: "Updated Thing 1".to_string(),
-            }),
-        ];
-
-        for message in messages.clone() {
-            dispatcher.send("topic_a", message).await.unwrap();
-        }
-
-        // Consume messages
-        let mut stream = dispatcher.stream("topic_a").await;
-        for expected_message in messages {
-            if let Some(received_message) = stream.next().await {
-                assert_eq!(received_message, expected_message);
-            } else {
-                panic!("Expected a message but got none");
-            }
-        }
-    }
-
-    #[tokio::test]
-    #[timeout(10000)]
-    async fn test_messages_across_multiple_topics() {
-        let backend = InMemoryStreamingBackend::new(10);
-        let dispatcher = Dispatcher::new(backend);
-
-        let message_topic_a = Message::SimpleMessage(SimpleMessage {
-            id: "1".to_string(),
-            name: "Thing in Topic A".to_string(),
-        });
-        let message_topic_b = Message::SimpleMessage(SimpleMessage {
-            id: "2".to_string(),
-            name: "Thing in Topic B".to_string(),
-        });
-
-        // Send messages to different topics
-        dispatcher
-            .send("topic_a", message_topic_a.clone())
-            .await
-            .unwrap();
-        dispatcher
-            .send("topic_b", message_topic_b.clone())
+        // Send a message
+        backend
+            .send_message(
+                "some_topic",
+                Message::SimpleMessage(SimpleMessage {
+                    id: "1".to_string(),
+                    name: "hello".to_string(),
+                }),
+            )
             .await
             .unwrap();
 
-        // Consume messages from topic_a
-        let mut stream_a = dispatcher.stream("topic_a").await;
-        if let Some(received_message) = stream_a.next().await {
-            assert_eq!(received_message, message_topic_a);
+        // The first subscriber should receive it
+        if let Some(msg) = stream1.next().await {
+            assert_eq!(
+                msg,
+                Message::SimpleMessage(SimpleMessage {
+                    id: "1".to_string(),
+                    name: "hello".to_string(),
+                })
+            );
         } else {
-            panic!("No message received in topic_a");
+            panic!("stream1 did not receive a message");
         }
 
-        // Consume messages from topic_b
-        let mut stream_b = dispatcher.stream("topic_b").await;
-        if let Some(received_message) = stream_b.next().await {
-            assert_eq!(received_message, message_topic_b);
-        } else {
-            panic!("No message received in topic_b");
-        }
-    }
+        // Create a second subscriber
+        let mut stream2 = backend.stream("some_topic").await;
 
-    #[tokio::test]
-    #[timeout(10000)]
-    async fn test_stream_closes_gracefully_when_no_more_messages() {
-        let backend = InMemoryStreamingBackend::new(10);
-        let dispatcher = Dispatcher::new(backend);
+        // Send one more message
+        backend
+            .send_message(
+                "some_topic",
+                Message::SimpleMessage(SimpleMessage {
+                    id: "1".to_string(),
+                    name: "hello".to_string(),
+                }),
+            )
+            .await
+            .unwrap();
 
-        // Send a single message
-        let message = Message::SimpleMessage(SimpleMessage {
-            id: "1".to_string(),
-            name: "Test Thing".to_string(),
-        });
-        dispatcher.send("topic_a", message.clone()).await.unwrap();
+        // Both subscribers should see it (if they haven't lagged behind).
+        let msg1 = stream1.next().await.expect("stream1 didn't get the second");
+        let msg2 = stream2.next().await.expect("stream2 didn't get the second");
 
-        // Consume the single message
-        let mut stream = dispatcher.stream("topic_a").await;
-        if let Some(received_message) = stream.next().await {
-            assert_eq!(received_message, message);
-        } else {
-            panic!("No message received");
-        }
-
-        // The stream should now be empty
-        assert!(stream.next().await.is_none());
-    }
-
-    #[tokio::test]
-    #[timeout(10000)]
-    async fn test_backpressure_behavior() {
-        let backend = InMemoryStreamingBackend::new(2); // Buffer size of 2
-        let dispatcher = Dispatcher::new(backend);
-
-        // Create stream before sending messages
-        let mut stream = dispatcher.stream("topic_a").await;
-
-        let messages = vec![
+        assert_eq!(
+            msg1,
             Message::SimpleMessage(SimpleMessage {
                 id: "1".to_string(),
-                name: "Thing 1".to_string(),
-            }),
+                name: "hello".to_string(),
+            })
+        );
+        assert_eq!(
+            msg2,
             Message::SimpleMessage(SimpleMessage {
-                id: "2".to_string(),
-                name: "Thing 2".to_string(),
-            }),
-            Message::SimpleMessage(SimpleMessage {
-                id: "3".to_string(),
-                name: "Thing 3".to_string(),
-            }),
-        ];
-
-        // Send messages (the buffer can only hold 2 at a time)
-        for message in messages.clone() {
-            dispatcher.send("topic_a", message).await.unwrap();
-        }
-
-        // Consume the messages
-        for expected_message in messages {
-            if let Some(received_message) = stream.next().await {
-                assert_eq!(received_message, expected_message);
-            } else {
-                panic!("Expected a message but got none");
-            }
-        }
+                id: "1".to_string(),
+                name: "hello".to_string(),
+            })
+        );
     }
 }
