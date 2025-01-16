@@ -30,8 +30,6 @@ impl JetStreamBackend {
         self.context
             .create_stream(Config {
                 name: topic.to_string(),
-                max_messages: 100_000,
-                discard: DiscardPolicy::Old,
                 ..Default::default()
             })
             .await
@@ -43,7 +41,6 @@ impl JetStreamBackend {
 #[async_trait]
 impl MessagingBackend for JetStreamBackend {
     async fn send_message(&self, topic: &str, message: Message) -> Result<(), String> {
-        self.ensure_stream(topic).await?; // Ensure the stream exists
         let serialized =
             serde_json::to_string(&message).map_err(|e| format!("Serialization error: {}", e))?;
         self.context
@@ -66,28 +63,37 @@ impl MessagingBackend for JetStreamBackend {
                     durable_name: Some(topic.to_string()),
                     ..Default::default()
                 },
-                "stream",
+                topic,
             )
             .await
             .expect("Failed to create consumer");
 
         // Convert the consumer's messages into a stream
         let stream = futures::stream::unfold(consumer, |consumer| async {
-            match consumer.messages().await {
-                Ok(mut messages) => match messages.next().await {
-                    Some(Ok(msg)) => {
-                        let payload =
-                            String::from_utf8(msg.payload.to_vec()).expect("Invalid UTF-8 message");
-                        if let Ok(message) = serde_json::from_str::<Message>(&payload) {
-                            msg.ack().await.expect("Failed to ack message");
-                            Some((message, consumer))
-                        } else {
-                            None
+            let timeout = tokio::time::Duration::from_millis(2000);
+            match tokio::time::timeout(timeout, async {
+                if let Ok(mut messages) = consumer.fetch().max_messages(10).messages().await {
+                    while let Some(msg) = messages.next().await {
+                        if let Ok(msg) = msg {
+                            return Some(msg);
                         }
                     }
-                    _ => None,
-                },
-                Err(_) => None,
+                }
+                None
+            })
+            .await
+            {
+                Ok(Some(msg)) => {
+                    let payload =
+                        String::from_utf8(msg.payload.to_vec()).expect("Invalid UTF-8 message");
+                    if let Ok(message) = serde_json::from_str::<Message>(&payload) {
+                        msg.ack().await.expect("Failed to ack message");
+                        Some((message, consumer))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
             }
         });
 
@@ -112,11 +118,14 @@ mod tests {
         testcontainers_modules::testcontainers::TestcontainersError,
     > {
         let cmd = NatsServerCmd::default().with_jetstream();
-        Nats::default().with_cmd(&cmd).start().await
+        let container = Nats::default().with_cmd(&cmd).start().await?;
+        // Give the container a moment to fully start up
+        tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+        Ok(container)
     }
 
     #[tokio::test]
-    #[timeout(5000)]
+    #[timeout(10000)]
     async fn test_send_and_receive_single_message() {
         let nats = provide_nats().await.unwrap();
         let url = format!(
@@ -126,6 +135,8 @@ mod tests {
         );
 
         let backend = JetStreamBackend::new(url.as_ref()).await.unwrap();
+        backend.ensure_stream("topic_a").await.unwrap();
+
         let dispatcher = Dispatcher::new(backend);
 
         let message = Message::SimpleMessage(SimpleMessage {
@@ -146,7 +157,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[timeout(5000)]
+    #[timeout(10000)]
     async fn test_multiple_messages_in_single_topic() {
         let nats = provide_nats().await.unwrap();
         let url = format!(
@@ -156,6 +167,8 @@ mod tests {
         );
 
         let backend = JetStreamBackend::new(&url).await.unwrap();
+        backend.ensure_stream("topic_a").await.unwrap();
+
         let dispatcher = Dispatcher::new(backend);
 
         let messages = vec![
@@ -185,7 +198,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[timeout(5000)]
+    #[timeout(10000)]
     async fn test_messages_across_multiple_topics() {
         let nats = provide_nats().await.unwrap();
         let url = format!(
@@ -195,6 +208,8 @@ mod tests {
         );
 
         let backend = JetStreamBackend::new(&url).await.unwrap();
+        backend.ensure_stream("topic_a").await.unwrap();
+
         let dispatcher = Dispatcher::new(backend);
 
         let message_topic_a = Message::SimpleMessage(SimpleMessage {
@@ -234,7 +249,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[timeout(5000)]
+    #[timeout(10000)]
     async fn test_message_acknowledgment() {
         let nats = provide_nats().await.unwrap();
         let url = format!(
@@ -243,6 +258,8 @@ mod tests {
             nats.get_host_port_ipv4(4222).await.unwrap()
         );
         let backend = JetStreamBackend::new(&url).await.unwrap();
+        backend.ensure_stream("topic_ack").await.unwrap();
+
         let dispatcher = Dispatcher::new(backend);
 
         let message = Message::SimpleMessage(SimpleMessage {
@@ -266,7 +283,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[timeout(5000)]
+    #[timeout(10000)]
     async fn test_durable_consumer_persistence() {
         let nats = provide_nats().await.unwrap();
         let url = format!(
@@ -276,6 +293,8 @@ mod tests {
         );
 
         let backend = JetStreamBackend::new(&url).await.unwrap();
+        backend.ensure_stream("topic_durable").await.unwrap();
+
         let dispatcher = Dispatcher::new(backend);
 
         let message = Message::SimpleMessage(SimpleMessage {
