@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use arrow_schema::{DataType, Field, Fields};
 use common::{
     model::span::{Span, SpanBatch, SpanKind, SpanStatus},
-    queue::{Message, Queue},
+    queue::{Message, MessagingBackend},
 };
 use opentelemetry::trace::{SpanId, TraceId};
 use opentelemetry_proto::tonic::{
@@ -14,7 +14,7 @@ use serde_json::{Map, Value as JsonValue};
 use tokio::sync::Mutex;
 
 #[derive(Debug)]
-pub struct TraceHandler<Q: Queue> {
+pub struct TraceHandler<Q: MessagingBackend> {
     queue: Arc<Mutex<Q>>,
 }
 
@@ -43,7 +43,7 @@ impl MockTraceHandler {
     }
 }
 
-impl<Q: Queue> TraceHandler<Q> {
+impl<Q: MessagingBackend> TraceHandler<Q> {
     pub fn new(queue: Arc<Mutex<Q>>) -> Self {
         Self { queue }
     }
@@ -177,10 +177,16 @@ impl<Q: Queue> TraceHandler<Q> {
         let batch = SpanBatch::new_with_spans(spans);
         let message = Message::new_in_memory(batch);
 
-        self.queue.lock().await.publish(message).await.map_err(|e| {
-            log::error!("Failed to publish trace message: {:?}", e);
-            e
-        })?;
+        let _ = self
+            .queue
+            .lock()
+            .await
+            .publish("traces".to_string(), message)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to publish trace message: {:?}", e);
+                e
+            });
     }
 }
 

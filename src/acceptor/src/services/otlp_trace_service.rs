@@ -1,4 +1,4 @@
-use common::queue::Queue;
+use common::queue::MessagingBackend;
 use opentelemetry_proto::tonic::collector::trace::v1::{
     trace_service_server::TraceService, ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
@@ -12,7 +12,7 @@ pub trait TraceHandlerTrait {
 }
 
 #[async_trait::async_trait]
-impl<Q: Queue + Send + Sync> TraceHandlerTrait for TraceHandler<Q> {
+impl<Q: MessagingBackend + Send + Sync> TraceHandlerTrait for TraceHandler<Q> {
     async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
         self.handle_grpc_otlp_traces(request).await;
     }

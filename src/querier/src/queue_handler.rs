@@ -2,15 +2,15 @@ use std::sync::Arc;
 
 use common::{
     model::span::SpanBatch,
-    queue::{Message, Queue},
+    queue::{Message, MessagingBackend},
 };
 use tokio::sync::Mutex;
 
-pub struct QueueHandler<Q: Queue + 'static> {
+pub struct QueueHandler<Q: MessagingBackend + 'static> {
     queue: Arc<Mutex<Q>>,
 }
 
-impl<Q: Queue + 'static> QueueHandler<Q> {
+impl<Q: MessagingBackend + 'static> QueueHandler<Q> {
     pub fn new(queue: Arc<Mutex<Q>>) -> Self {
         Self { queue }
     }
@@ -20,7 +20,7 @@ impl<Q: Queue + 'static> QueueHandler<Q> {
         self.queue
             .lock()
             .await
-            .subscribe("trace".to_string())
+            .consume("trace".to_string())
             .await
             .map_err(|e| anyhow::anyhow!("Failed to subscribe to trace messages: {}", e))?;
 
@@ -58,7 +58,7 @@ impl<Q: Queue + 'static> QueueHandler<Q> {
         self.queue
             .lock()
             .await
-            .publish(message)
+            .publish("traces".to_string(), message)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to publish trace message: {}", e))?;
         Ok(())
