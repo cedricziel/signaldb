@@ -50,7 +50,7 @@ license = "AGPL-3.0"
 acceptor = { path = "src/acceptor" }
 common = { path = "src/common" }
 
-async-trait = "0.1.85"
+async-trait = "0.1.86"
 futures = "0.3.31"
 
 arrow = "53.3.0"
