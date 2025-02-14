@@ -1,5 +1,7 @@
 use super::span::Span;
+use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trace {
     pub trace_id: String,
     pub spans: Vec<Span>,
@@ -8,8 +10,12 @@ pub struct Trace {
 impl Into<tempo_api::Trace> for Trace {
     fn into(self) -> tempo_api::Trace {
         // Find the root span (the one with is_root = true)
-        let root_span = self.spans.iter().find(|s| s.is_root).unwrap_or(&self.spans[0]);
-        
+        let root_span = self
+            .spans
+            .iter()
+            .find(|s| s.is_root)
+            .unwrap_or(&self.spans[0]);
+
         // Calculate duration in milliseconds
         let duration_ms = root_span.duration_nano / 1_000_000;
 

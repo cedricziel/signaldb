@@ -62,7 +62,7 @@ impl SpanStatus {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Span {
     pub trace_id: String,
     pub span_id: String,
@@ -98,16 +98,6 @@ impl Span {
             Field::new("span_kind", DataType::Utf8, false),
             Field::new("start_time_unix_nano", DataType::UInt64, false),
             Field::new("duration_nano", DataType::UInt64, false),
-            // Field::new(
-            //     "attributes",
-            //     DataType::Struct(Fields::from(Vec::<Field>::new())),
-            //     false,
-            // ),
-            // Field::new(
-            //     "resource",
-            //     DataType::Struct(Fields::from(Vec::<Field>::new())),
-            //     false,
-            // ),
         ];
         Schema::new(fields)
     }
@@ -123,10 +113,11 @@ impl Span {
         let name: ArrayRef = Arc::new(StringArray::from(vec![self.name.clone()]));
         let service_name: ArrayRef = Arc::new(StringArray::from(vec![self.service_name.clone()]));
         let span_kind: ArrayRef = Arc::new(StringArray::from(vec![self.span_kind.to_str()]));
-        let start_time_unix_nano: ArrayRef = Arc::new(arrow_array::UInt64Array::from(vec![self.start_time_unix_nano]));
-        let duration_nano: ArrayRef = Arc::new(arrow_array::UInt64Array::from(vec![self.duration_nano]));
-        // let attributes: ArrayRef = Arc::new(StructArray::from(vec![]));
-        // let resource: ArrayRef = Arc::new(StructArray::from(vec![null()]));
+        let start_time_unix_nano: ArrayRef = Arc::new(arrow_array::UInt64Array::from(vec![
+            self.start_time_unix_nano,
+        ]));
+        let duration_nano: ArrayRef =
+            Arc::new(arrow_array::UInt64Array::from(vec![self.duration_nano]));
 
         RecordBatch::try_new(
             Arc::new(Self::to_schema()),
@@ -141,8 +132,6 @@ impl Span {
                 span_kind,
                 start_time_unix_nano,
                 duration_nano,
-                // attributes,
-                // resource,
             ],
         )
         .unwrap()
@@ -152,7 +141,7 @@ impl Span {
 /// A batch of spans.
 ///
 /// Supposedly making it easier to convert to a record batch.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpanBatch {
     pub spans: Vec<Span>,
 }
@@ -160,6 +149,10 @@ pub struct SpanBatch {
 impl SpanBatch {
     pub fn new() -> Self {
         SpanBatch { spans: vec![] }
+    }
+
+    pub fn new_with_spans(spans: Vec<Span>) -> Self {
+        SpanBatch { spans }
     }
 
     pub fn add_span(&mut self, span: Span) {

@@ -1,0 +1,90 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{broadcast, broadcast::Receiver, Mutex};
+
+use super::{Message, Queue, QueueError, QueueResult};
+
+const DEFAULT_CHANNEL_SIZE: usize = 1024;
+
+#[derive(Debug)]
+struct TopicChannel {
+    sender: broadcast::Sender<Vec<u8>>,
+    _receiver: broadcast::Receiver<Vec<u8>>, // Keep a receiver alive to prevent channel closure
+}
+
+/// In-memory queue implementation using tokio's broadcast channel
+#[derive(Debug, Clone)]
+pub struct InMemoryQueue {
+    /// Channels for each topic
+    channels: Arc<Mutex<HashMap<String, TopicChannel>>>,
+}
+
+impl Default for InMemoryQueue {
+    fn default() -> Self {
+        Self {
+            channels: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Queue for InMemoryQueue {
+    async fn publish<T>(&self, topic: String, message: Message<T>) -> QueueResult<()>
+    where
+        T: Serialize + for<'a> Deserialize<'a> + Send + Sync + std::fmt::Debug,
+    {
+        let channels = self.channels.lock().await;
+
+        // Serialize the message
+        let bytes = message.to_bytes()?;
+
+        // Send to the specified topic
+        if let Some(channel) = channels.get(&topic) {
+            channel.sender.send(bytes.clone()).map_err(|e| {
+                QueueError::PublishError(format!("Failed to publish message: {}", e))
+            })?;
+        } else {
+            return Err(QueueError::PublishError(format!("Topic not found: {}", topic)));
+        }
+
+        Ok(())
+    }
+
+        Ok(())
+    }
+
+    async fn subscribe(&mut self, topic: String) -> QueueResult<()> {
+        let mut channels = self.channels.lock().await;
+
+        if !channels.contains_key(&topic) {
+            let (tx, rx) = broadcast::channel(DEFAULT_CHANNEL_SIZE);
+            channels.insert(
+                topic,
+                TopicChannel {
+                    sender: tx,
+                    _receiver: rx,
+                },
+            );
+        }
+
+        Ok(())
+    }
+}
+
+impl InMemoryQueue {
+    pub async fn subscribe_and_get_receiver(
+        &self,
+        topic: String,
+    ) -> QueueResult<Receiver<Vec<u8>>> {
+        let channels = self.channels.lock().await;
+        if let Some(channel) = channels.get(&topic) {
+            Ok(channel.sender.subscribe())
+        } else {
+            Err(QueueError::SubscribeError(format!(
+                "Topic {} not found",
+                topic
+            )))
+        }
+    }
+}
