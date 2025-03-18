@@ -21,6 +21,8 @@ pub trait MessagingBackend: Send + Sync {
 
     // Return a stream of messages for a specific topic
     async fn stream(&self, topic: &str) -> Pin<Box<dyn Stream<Item = Message> + Send>>;
+
+    async fn ack(&self, message: Message) -> Result<(), String>;
 }
 
 pub struct Dispatcher<B: MessagingBackend> {
@@ -38,5 +40,9 @@ impl<B: MessagingBackend> Dispatcher<B> {
 
     pub async fn stream(&self, topic: &str) -> Pin<Box<dyn Stream<Item = Message> + Send>> {
         self.backend.stream(topic).await
+    }
+
+    pub async fn ack(&self, message: Message) -> Result<(), String> {
+        self.backend.ack(message).await
     }
 }

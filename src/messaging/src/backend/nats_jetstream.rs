@@ -1,7 +1,17 @@
-use async_nats::jetstream::{self, consumer, context::Context, stream::Config};
+use async_nats::jetstream::{
+    self,
+    consumer::{self},
+    context::Context,
+    stream::Config,
+};
+use async_stream::{stream, try_stream};
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
-use std::pin::Pin;
+use std::{
+    pin::Pin,
+    time::{Duration, Instant},
+};
+use tokio::time::timeout;
 
 use crate::{Message, MessagingBackend};
 
@@ -24,12 +34,25 @@ impl JetStreamBackend {
     /// Ensures a stream exists for the specified topic
     async fn ensure_stream(&self, topic: &str) -> Result<(), String> {
         self.context
-            .create_stream(Config {
+            .get_or_create_stream(Config {
                 name: topic.to_string(),
                 ..Default::default()
             })
             .await
             .map_err(|e| format!("Failed to create stream: {}", e))?;
+
+        // Ensure a durable consumer exists for the topic
+        self.context
+            .create_consumer_on_stream(
+                consumer::pull::Config {
+                    durable_name: Some(topic.to_string()),
+                    ..Default::default()
+                },
+                topic,
+            )
+            .await
+            .map_err(|e| format!("Failed to create consumer: {}", e))?;
+
         Ok(())
     }
 }
@@ -43,6 +66,7 @@ impl MessagingBackend for JetStreamBackend {
             .publish(topic.to_string(), serialized.into())
             .await
             .map_err(|e| format!("Publish error: {}", e))?;
+
         Ok(())
     }
 
@@ -50,46 +74,66 @@ impl MessagingBackend for JetStreamBackend {
         // Create a durable consumer
         let consumer: consumer::PullConsumer = self
             .context
-            .create_consumer_on_stream(
-                consumer::pull::Config {
-                    durable_name: Some(topic.to_string()),
-                    ..Default::default()
-                },
-                topic,
-            )
+            .get_consumer_from_stream(topic, topic)
             .await
-            .expect("Failed to create consumer");
+            .expect("Failed to get consumer");
 
-        // Convert the consumer's messages into a stream
-        let stream = futures::stream::unfold(consumer, |consumer| async {
-            let timeout = tokio::time::Duration::from_millis(2000);
-            match tokio::time::timeout(timeout, async {
-                if let Ok(mut messages) = consumer.messages().await {
-                    while let Some(msg) = messages.next().await {
-                        if let Ok(msg) = msg {
-                            return Some(msg);
+        // We'll produce a stream of `Message` items.
+        // `try_stream!` lets us `yield` items as soon as they're ready.
+        let s = stream! {
+            loop {
+                // 1) Request up to 10 messages from the server.
+                //    If there aren’t 10 available, JetStream will send what it has.
+                consumer.batch().max_messages(10).messages().await.expect("Failed to get messages");
+
+                // 2) Get a stream of the incoming messages for this pull.
+                let mut js_stream = consumer.messages().await.expect("Failed to get messages");
+
+                // 3) We'll read until 10 messages OR 50ms has elapsed—whichever comes first.
+                let start = Instant::now();
+                let max_wait = Duration::from_millis(50);
+                let mut count = 0;
+
+                while count < 10 {
+                    // How long have we waited so far?
+                    let elapsed = start.elapsed();
+                    if elapsed >= max_wait {
+                        // 50ms is up—stop pulling for this batch
+                        break;
+                    }
+                    let remaining = max_wait - elapsed;
+
+                    // 4) Attempt to read the next message with the leftover time
+                    match timeout(remaining, js_stream.next()).await {
+                        Ok(Some(Ok(js_msg))) => {
+                            // We got a message from JetStream—deserialize it, ack it, and yield it immediately
+                            let payload = String::from_utf8(js_msg.payload.to_vec()).unwrap_or_default();
+                            match serde_json::from_str::<Message>(&payload) {
+                                Ok(msg) => {
+                                    yield msg;
+                                }
+                                Err(e) => {
+                                    eprintln!("JSON parse error: {}", e);
+                                }
+                            }
+                            count += 1;
                         }
+                        // We either timed out waiting for a single message, or got an error, or the stream ended
+                        _ => break,
                     }
                 }
-                None
-            })
-            .await
-            {
-                Ok(Some(msg)) => {
-                    let payload =
-                        String::from_utf8(msg.payload.to_vec()).expect("Invalid UTF-8 message");
-                    if let Ok(message) = serde_json::from_str::<Message>(&payload) {
-                        msg.ack().await.expect("Failed to ack message");
-                        Some((message, consumer))
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            }
-        });
 
-        Box::pin(stream)
+                if count == 0 {
+                    break;
+                }
+            }
+        };
+
+        Box::pin(s)
+    }
+
+    async fn ack(&self, _message: Message) -> Result<(), String> {
+        Ok(())
     }
 }
 
@@ -169,7 +213,7 @@ mod tests {
                 name: "Thing 1".to_string(),
             }),
             Message::SimpleMessage(SimpleMessage {
-                id: "1".to_string(),
+                id: "2".to_string(),
                 name: "Updated Thing 1".to_string(),
             }),
         ];

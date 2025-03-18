@@ -65,6 +65,11 @@ impl MessagingBackend for InMemoryStreamingBackend {
         // Pin the stream so we can return it
         Box::pin(broadcast_stream)
     }
+
+    async fn ack(&self, _message: Message) -> Result<(), String> {
+        // No-op for in-memory backend
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -72,7 +77,6 @@ mod tests {
     use super::*;
     use crate::{messages::SimpleMessage, Message};
     use futures::StreamExt;
-    use tokio::time::{sleep, Duration};
 
     #[tokio::test]
     async fn test_broadcast_in_memory_backend() {
