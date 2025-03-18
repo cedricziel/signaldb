@@ -48,8 +48,10 @@ impl MessagingBackend for NatsBackend {
         let stream = futures::stream::unfold(subscription, |mut subscription| async {
             match tokio::time::timeout(
                 tokio::time::Duration::from_millis(2000),
-                subscription.next()
-            ).await {
+                subscription.next(),
+            )
+            .await
+            {
                 Ok(Some(message)) => {
                     let payload =
                         String::from_utf8(message.payload.to_vec()).expect("Invalid UTF-8 message");
@@ -57,12 +59,16 @@ impl MessagingBackend for NatsBackend {
                         Ok(message) => Some((message, subscription)),
                         Err(_) => None, // Discard invalid messages
                     }
-                },
+                }
                 _ => None, // Timeout or end of stream
             }
         });
 
         Box::pin(stream)
+    }
+
+    async fn ack(&self, _message: Message) -> Result<(), String> {
+        Ok(())
     }
 }
 
@@ -73,10 +79,7 @@ mod tests {
     use super::*;
     use futures::StreamExt;
     use ntest::timeout;
-    use testcontainers_modules::{
-        nats::Nats,
-        testcontainers::runners::AsyncRunner,
-    };
+    use testcontainers_modules::{nats::Nats, testcontainers::runners::AsyncRunner};
 
     async fn provide_nats() -> Result<
         testcontainers_modules::testcontainers::ContainerAsync<Nats>,

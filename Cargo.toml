@@ -63,6 +63,7 @@ tempo-api = { path = "src/tempo-api" }
 writer = { path = "src/writer" }
 
 async-trait = "0.1.88"
+async-stream = "0.3.0"
 futures = "0.3.31"
 
 arrow = "53.4.1"

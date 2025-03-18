@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+async-stream.workspace = true
 async-trait.workspace = true
 
 async-nats.workspace = true
