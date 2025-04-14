@@ -28,12 +28,31 @@ pub trait MessagingBackend: Send + Sync {
     async fn ack(&self, message: Message) -> Result<(), String>;
 }
 
-pub struct Dispatcher<B: MessagingBackend> {
+pub struct Dispatcher<B> {
     backend: B,
 }
 
 impl<B: MessagingBackend> Dispatcher<B> {
     pub fn new(backend: B) -> Self {
+        Self { backend }
+    }
+
+    pub async fn send(&self, topic: &str, message: Message) -> Result<(), String> {
+        self.backend.send_message(topic, message).await
+    }
+
+    pub async fn stream(&self, topic: &str) -> Pin<Box<dyn Stream<Item = Message> + Send>> {
+        self.backend.stream(topic).await
+    }
+
+    pub async fn ack(&self, message: Message) -> Result<(), String> {
+        self.backend.ack(message).await
+    }
+}
+
+// Add implementation for Arc<dyn MessagingBackend>
+impl Dispatcher<std::sync::Arc<dyn MessagingBackend>> {
+    pub fn new_with_arc(backend: std::sync::Arc<dyn MessagingBackend>) -> Self {
         Self { backend }
     }
 

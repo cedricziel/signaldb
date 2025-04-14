@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use futures::StreamExt;
 use messaging::{
     config::BackendConfig,
     messages::{
@@ -26,7 +27,7 @@ async fn main() -> Result<(), String> {
     let backend = config.create_backend().await?;
 
     // Create a dispatcher
-    let dispatcher = Dispatcher::new(backend.as_ref().clone());
+    let dispatcher = Dispatcher::new_with_arc(backend);
 
     // Send a simple message
     let simple_message = Message::SimpleMessage(SimpleMessage {

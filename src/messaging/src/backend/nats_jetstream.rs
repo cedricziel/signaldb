@@ -4,7 +4,7 @@ use async_nats::jetstream::{
     context::Context,
     stream::Config,
 };
-use async_stream::{stream, try_stream};
+use async_stream::stream;
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use std::{
@@ -32,7 +32,7 @@ impl JetStreamBackend {
     }
 
     /// Ensures a stream exists for the specified topic
-    async fn ensure_stream(&self, topic: &str) -> Result<(), String> {
+    pub async fn ensure_stream(&self, topic: &str) -> Result<(), String> {
         self.context
             .get_or_create_stream(Config {
                 name: topic.to_string(),
@@ -83,7 +83,7 @@ impl MessagingBackend for JetStreamBackend {
         let s = stream! {
             loop {
                 // 1) Request up to 10 messages from the server.
-                //    If there aren’t 10 available, JetStream will send what it has.
+                //    If there aren't 10 available, JetStream will send what it has.
                 consumer.batch().max_messages(10).messages().await.expect("Failed to get messages");
 
                 // 2) Get a stream of the incoming messages for this pull.
