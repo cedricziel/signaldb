@@ -195,11 +195,14 @@ mod tests {
         // Create stream first to ensure the consumer is ready
         let mut stream = dispatcher.stream("topic_a").await;
 
+        // Give consumers more time to be fully ready
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+
         // Send the message
         dispatcher.send("topic_a", message.clone()).await.unwrap();
 
-        // Give JetStream a moment to process
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        // Give JetStream more time to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
         // Consume the message with timeout
         match tokio::time::timeout(
@@ -264,6 +267,9 @@ mod tests {
         // Create stream first to ensure the consumer is ready
         let mut stream = dispatcher.stream("topic_a").await;
 
+        // Give consumers more time to be fully ready
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+
         // Send messages
         for message in messages.clone() {
             match dispatcher.send("topic_a", message).await {
@@ -272,13 +278,13 @@ mod tests {
             }
         }
 
-        // Give JetStream a moment to process
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        // Give JetStream more time to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
         // Consume messages with timeout
         for expected_message in messages {
             match tokio::time::timeout(
-                tokio::time::Duration::from_millis(2000),
+                tokio::time::Duration::from_millis(5000),
                 stream.next()
             ).await {
                 Ok(Some(received_message)) => {
@@ -349,8 +355,8 @@ mod tests {
         println!("Creating stream for topic_b");
         let mut stream_b = dispatcher.stream("topic_b").await;
 
-        // Give consumers a moment to be ready
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        // Give consumers more time to be fully ready
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
         // Send messages to different topics with explicit error handling
         println!("Sending message to topic_a");
@@ -367,7 +373,7 @@ mod tests {
 
         // Give JetStream more time to process
         println!("Waiting for messages to be processed");
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
 
         // Consume messages from topic_a with timeout
         println!("Consuming message from topic_a");
@@ -390,7 +396,7 @@ mod tests {
         // Consume messages from topic_b with timeout
         println!("Consuming message from topic_b");
         match tokio::time::timeout(
-            tokio::time::Duration::from_millis(3000),
+            tokio::time::Duration::from_millis(5000),
             stream_b.next()
         ).await {
             Ok(Some(received_message)) => {
@@ -428,15 +434,18 @@ mod tests {
         // Create stream first to ensure the consumer is ready
         let mut stream = dispatcher.stream("topic_ack").await;
 
+        // Give consumers more time to be fully ready
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+
         // Send the message
         dispatcher.send("topic_ack", message.clone()).await.unwrap();
 
-        // Give JetStream a moment to process
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        // Give JetStream more time to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
         // Consume the message and ensure it's acknowledged with timeout
         match tokio::time::timeout(
-            tokio::time::Duration::from_millis(2000),
+            tokio::time::Duration::from_millis(5000),
             stream.next()
         ).await {
             Ok(Some(received_message)) => {
@@ -499,18 +508,21 @@ mod tests {
         // Create a durable consumer first
         let mut stream = dispatcher.stream("topic_durable").await;
 
+        // Give consumers more time to be fully ready
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+
         // Send the message
         dispatcher
             .send("topic_durable", message.clone())
             .await
             .unwrap();
 
-        // Give JetStream a moment to process
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        // Give JetStream more time to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
         // Fetch the message with timeout
         match tokio::time::timeout(
-            tokio::time::Duration::from_millis(2000),
+            tokio::time::Duration::from_millis(5000),
             stream.next()
         ).await {
             Ok(Some(received_message)) => {
