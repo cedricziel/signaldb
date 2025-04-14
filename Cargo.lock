@@ -2712,6 +2712,9 @@ checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
 name = "messaging"
 version = "0.1.0"
 dependencies = [
+ "arrow",
+ "arrow-array",
+ "arrow-schema",
  "async-nats",
  "async-stream",
  "async-trait",

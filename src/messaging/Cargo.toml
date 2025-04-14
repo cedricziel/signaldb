@@ -16,6 +16,10 @@ futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+arrow.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+
 [dev-dependencies]
 testcontainers-modules.workspace = true
 ntest.workspace = true

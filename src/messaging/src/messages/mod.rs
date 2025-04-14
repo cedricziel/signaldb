@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+pub mod span;
+pub mod trace;
+
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct SimpleMessage {
     pub id: String,
