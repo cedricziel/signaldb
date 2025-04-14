@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use common::queue::QueueConfig;
+use common::config::QueueConfig;
 use object_store::local::LocalFileSystem;
 use tracing_subscriber;
 use writer::{BatchWriter, QueueBatchWriter};

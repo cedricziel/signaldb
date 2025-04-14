@@ -1,11 +1,12 @@
 use acceptor::{
     handler::otlp_grpc::TraceHandler, services::otlp_trace_service::TraceAcceptorService,
 };
-use common::{
-    model::trace::Trace,
-    queue::{memory::InMemoryQueue, Message, MessagingBackend},
-};
+use common::config::QueueConfig;
+use futures::StreamExt;
 use hex;
+use messaging::{
+    backend::memory::InMemoryStreamingBackend, messages::trace::Trace, Message, MessagingBackend,
+};
 use opentelemetry_proto::tonic::{
     collector::trace::v1::{trace_service_server::TraceServiceServer, ExportTraceServiceRequest},
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
@@ -23,23 +24,19 @@ async fn test_trace_ingestion_to_storage() {
     let storage = Arc::new(LocalStorage::new(temp_dir.path()));
 
     // Set up memory queue and writer
-    let queue = Arc::new(Mutex::new(InMemoryQueue::default()));
+    let queue = Arc::new(Mutex::new(InMemoryStreamingBackend::new(10)));
     let queue_clone = queue.clone();
 
     // Set up writer to process queue messages
     let storage_clone = storage.clone();
     tokio::spawn(async move {
-        let mut queue = queue_clone.lock().await;
-        queue.consume("traces".to_string()).await.unwrap();
-        let mut receiver = queue
-            .subscribe_and_get_receiver("traces".to_string())
-            .await
-            .unwrap();
-        drop(queue);
+        // Create a stream for the traces topic
+        let mut stream = queue_clone.lock().await.stream("traces").await;
 
-        while let Ok(bytes) = receiver.recv().await {
-            if let Ok(message) = Message::<Trace>::from_bytes(&bytes, false) {
-                storage_clone.store_trace(message.payload()).await.unwrap();
+        // Process messages from the stream
+        while let Some(message) = stream.next().await {
+            if let Message::Trace(trace) = message {
+                storage_clone.store_trace(&trace).await.unwrap();
             }
         }
     });

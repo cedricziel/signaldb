@@ -10,7 +10,7 @@ use tokio_stream::wrappers::BroadcastStream;
 
 use crate::{Message, MessagingBackend};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct InMemoryStreamingBackend {
     // We store a broadcast::Sender for each topic
     topics: Arc<Mutex<HashMap<String, broadcast::Sender<Message>>>>,

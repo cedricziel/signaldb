@@ -8,7 +8,8 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use common::{dataset::DataSet, queue::memory::InMemoryQueue};
+use common::dataset::DataSet;
+use messaging::backend::memory::InMemoryStreamingBackend;
 use opentelemetry_proto::tonic::collector::{
     logs::v1::logs_service_server::LogsServiceServer,
     metrics::v1::metrics_service_server::MetricsServiceServer,
@@ -34,13 +35,13 @@ use crate::services::{
 /// Contains an in-memory queue for managing incoming telemetry data.
 #[derive(Clone)]
 pub struct AcceptorState {
-    queue: Arc<Mutex<InMemoryQueue>>,
+    queue: Arc<Mutex<InMemoryStreamingBackend>>,
 }
 
 impl AcceptorState {
     pub fn new() -> Self {
         Self {
-            queue: Arc::new(Mutex::new(InMemoryQueue::default())),
+            queue: Arc::new(Mutex::new(InMemoryStreamingBackend::new(10))),
         }
     }
 }

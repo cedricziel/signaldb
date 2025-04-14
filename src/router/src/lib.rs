@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{http::StatusCode, response::IntoResponse, routing::get, Router};
-use messaging::{MessagingBackend, backend::nats::NatsBackend};
+use messaging::{backend::nats::NatsBackend, MessagingBackend};
 
 mod endpoints;
 

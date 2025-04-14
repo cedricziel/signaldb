@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use messaging::{
-    messages::span::SpanBatch,
-    Message, MessagingBackend,
-};
+use messaging::{messages::span::SpanBatch, Message, MessagingBackend};
 use tokio::sync::Mutex;
 
 pub struct QueueHandler<Q: MessagingBackend + 'static> {
@@ -16,13 +13,9 @@ impl<Q: MessagingBackend + 'static> QueueHandler<Q> {
     }
 
     pub async fn start(self) -> anyhow::Result<()> {
-        // Subscribe to trace messages
-        self.queue
-            .lock()
-            .await
-            .consume("trace".to_string())
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to subscribe to trace messages: {}", e))?;
+        // Create a stream for the trace topic
+        let mut stream = self.queue.lock().await.stream("trace").await;
+        let _ = stream; // Use the stream to avoid unused variable warning
 
         // Start the message processing loop
         tokio::spawn(async move {
@@ -54,11 +47,10 @@ impl<Q: MessagingBackend + 'static> QueueHandler<Q> {
     }
 
     pub async fn publish_trace(&self, span_batch: SpanBatch) -> anyhow::Result<()> {
-        let message = Message::new_in_memory(span_batch);
-        self.queue
-            .lock()
-            .await
-            .publish("traces".to_string(), message)
+        let message = Message::SpanBatch(span_batch);
+        let queue = self.queue.lock().await;
+        queue
+            .send_message("traces", message)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to publish trace message: {}", e))?;
         Ok(())

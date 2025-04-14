@@ -4167,6 +4167,7 @@ dependencies = [
  "common",
  "datafusion",
  "figment",
+ "futures",
  "hex",
  "log",
  "messaging",

@@ -175,18 +175,13 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
         }
 
         let batch = SpanBatch::new_with_spans(spans);
-        let message = Message::new_in_memory(batch);
+        let message = Message::SpanBatch(batch);
 
-        let _ = self
-            .queue
-            .lock()
-            .await
-            .publish("traces".to_string(), message)
-            .await
-            .map_err(|e| {
-                log::error!("Failed to publish trace message: {:?}", e);
-                e
-            });
+        let queue = self.queue.lock().await;
+        let _ = queue.send_message("traces", message).await.map_err(|e| {
+            log::error!("Failed to publish trace message: {:?}", e);
+            e
+        });
     }
 }
 

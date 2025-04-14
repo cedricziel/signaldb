@@ -205,16 +205,13 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
         // Consume the message with timeout
-        match tokio::time::timeout(
-            tokio::time::Duration::from_millis(2000),
-            stream.next()
-        ).await {
+        match tokio::time::timeout(tokio::time::Duration::from_millis(2000), stream.next()).await {
             Ok(Some(received_message)) => {
                 assert_eq!(received_message, message);
-            },
+            }
             Ok(None) => {
                 panic!("No message received");
-            },
+            }
             Err(_) => {
                 panic!("Timeout waiting for message");
             }
@@ -247,7 +244,7 @@ mod tests {
         };
 
         match backend.ensure_stream("topic_a").await {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(e) => panic!("Failed to ensure stream: {}", e),
         };
 
@@ -273,7 +270,7 @@ mod tests {
         // Send messages
         for message in messages.clone() {
             match dispatcher.send("topic_a", message).await {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) => panic!("Failed to send message: {}", e),
             }
         }
@@ -283,16 +280,15 @@ mod tests {
 
         // Consume messages with timeout
         for expected_message in messages {
-            match tokio::time::timeout(
-                tokio::time::Duration::from_millis(5000),
-                stream.next()
-            ).await {
+            match tokio::time::timeout(tokio::time::Duration::from_millis(5000), stream.next())
+                .await
+            {
                 Ok(Some(received_message)) => {
                     assert_eq!(received_message, expected_message);
-                },
+                }
                 Ok(None) => {
                     panic!("Expected a message but got none");
-                },
+                }
                 Err(_) => {
                     panic!("Timeout waiting for message");
                 }
@@ -377,17 +373,15 @@ mod tests {
 
         // Consume messages from topic_a with timeout
         println!("Consuming message from topic_a");
-        match tokio::time::timeout(
-            tokio::time::Duration::from_millis(3000),
-            stream_a.next()
-        ).await {
+        match tokio::time::timeout(tokio::time::Duration::from_millis(3000), stream_a.next()).await
+        {
             Ok(Some(received_message)) => {
                 println!("Message received from topic_a");
                 assert_eq!(received_message, message_topic_a);
-            },
+            }
             Ok(None) => {
                 panic!("No message received in topic_a");
-            },
+            }
             Err(_) => {
                 panic!("Timeout waiting for message in topic_a");
             }
@@ -395,17 +389,15 @@ mod tests {
 
         // Consume messages from topic_b with timeout
         println!("Consuming message from topic_b");
-        match tokio::time::timeout(
-            tokio::time::Duration::from_millis(5000),
-            stream_b.next()
-        ).await {
+        match tokio::time::timeout(tokio::time::Duration::from_millis(5000), stream_b.next()).await
+        {
             Ok(Some(received_message)) => {
                 println!("Message received from topic_b");
                 assert_eq!(received_message, message_topic_b);
-            },
+            }
             Ok(None) => {
                 panic!("No message received in topic_b");
-            },
+            }
             Err(_) => {
                 panic!("Timeout waiting for message in topic_b");
             }
@@ -444,16 +436,13 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
         // Consume the message and ensure it's acknowledged with timeout
-        match tokio::time::timeout(
-            tokio::time::Duration::from_millis(5000),
-            stream.next()
-        ).await {
+        match tokio::time::timeout(tokio::time::Duration::from_millis(5000), stream.next()).await {
             Ok(Some(received_message)) => {
                 assert_eq!(received_message, message);
-            },
+            }
             Ok(None) => {
                 panic!("No message received for acknowledgment test");
-            },
+            }
             Err(_) => {
                 panic!("Timeout waiting for message in acknowledgment test");
             }
@@ -467,18 +456,16 @@ mod tests {
 
         // Set a timeout for the next() call to avoid hanging
         // We expect this to timeout or return None, as the message should have been acknowledged
-        let result = tokio::time::timeout(
-            tokio::time::Duration::from_millis(1000),
-            new_stream.next()
-        ).await;
+        let result =
+            tokio::time::timeout(tokio::time::Duration::from_millis(1000), new_stream.next()).await;
 
         match result {
             Ok(None) => {
                 // This is the expected case - no message should be received
-            },
+            }
             Ok(Some(_)) => {
                 panic!("Message was replayed despite being acknowledged");
-            },
+            }
             Err(_) => {
                 // Timeout occurred, which is fine - it means no message was available
             }
@@ -521,16 +508,13 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
         // Fetch the message with timeout
-        match tokio::time::timeout(
-            tokio::time::Duration::from_millis(5000),
-            stream.next()
-        ).await {
+        match tokio::time::timeout(tokio::time::Duration::from_millis(5000), stream.next()).await {
             Ok(Some(received_message)) => {
                 assert_eq!(received_message, message);
-            },
+            }
             Ok(None) => {
                 panic!("No message received for durable consumer test");
-            },
+            }
             Err(_) => {
                 panic!("Timeout waiting for message in durable consumer test");
             }
@@ -544,18 +528,16 @@ mod tests {
 
         // Set a timeout for the next() call to avoid hanging
         // We expect this to timeout or return None, as the message should have been acknowledged
-        let result = tokio::time::timeout(
-            tokio::time::Duration::from_millis(1000),
-            new_stream.next()
-        ).await;
+        let result =
+            tokio::time::timeout(tokio::time::Duration::from_millis(1000), new_stream.next()).await;
 
         match result {
             Ok(None) => {
                 // This is the expected case - no message should be received
-            },
+            }
             Ok(Some(_)) => {
                 panic!("Message was replayed despite being acknowledged");
-            },
+            }
             Err(_) => {
                 // Timeout occurred, which is fine - it means no message was available
             }
