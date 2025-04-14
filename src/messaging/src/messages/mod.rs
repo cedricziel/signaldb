@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+pub mod batch;
 pub mod span;
 pub mod trace;
 

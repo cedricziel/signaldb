@@ -2,7 +2,7 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use futures::Stream;
-use messages::{span::SpanBatch, trace::Trace, SimpleMessage};
+use messages::{batch::BatchWrapper, span::SpanBatch, trace::Trace, SimpleMessage};
 use serde::{Deserialize, Serialize};
 
 pub mod backend;
@@ -15,6 +15,7 @@ pub enum Message {
     SimpleMessage(SimpleMessage),
     SpanBatch(SpanBatch),
     Trace(Trace),
+    Batch(BatchWrapper),
 }
 
 // Messaging backend trait

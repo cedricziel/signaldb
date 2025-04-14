@@ -4,7 +4,10 @@ use anyhow::Result;
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
 use common::config::QueueConfig;
-use messaging::{backend::memory::InMemoryStreamingBackend, Message, MessagingBackend};
+use messaging::{
+    backend::memory::InMemoryStreamingBackend, messages::batch::BatchWrapper, Message,
+    MessagingBackend,
+};
 use object_store::ObjectStore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, Mutex};
@@ -12,18 +15,6 @@ use tokio::sync::{broadcast, Mutex};
 pub mod storage;
 pub use storage::write_batch_to_object_store;
 use uuid::Uuid;
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct BatchWrapper {
-    #[serde(skip)]
-    pub batch: Option<RecordBatch>,
-}
-
-impl From<RecordBatch> for BatchWrapper {
-    fn from(batch: RecordBatch) -> Self {
-        Self { batch: Some(batch) }
-    }
-}
 
 /// A trait for writing batches of data to storage
 #[async_trait]
@@ -88,26 +79,32 @@ impl BatchWriter for QueueBatchWriter {
             Message::SimpleMessage(_) => return Err(WriterError::MissingBatch.into()),
             Message::SpanBatch(_) => return Err(WriterError::MissingBatch.into()),
             Message::Trace(_) => return Err(WriterError::MissingBatch.into()),
+            Message::Batch(batch_wrapper) => {
+                if let Some(batch) = &batch_wrapper.batch {
+                    // Generate path for the batch
+                    let path = format!(
+                        "batch/{}-{}.parquet",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)?
+                            .as_nanos(),
+                        Uuid::new_v4()
+                    );
+
+                    // Write the batch to object store
+                    storage::write_batch_to_object_store(
+                        self.object_store.clone(),
+                        &path,
+                        batch.clone(),
+                    )
+                    .await
+                    .map_err(|e| WriterError::WriteBatchError(e.to_string()))?;
+
+                    return Ok(());
+                } else {
+                    return Err(WriterError::MissingBatch.into());
+                }
+            }
         }
-
-        // This is a placeholder until we add the BatchWrapper variant to the Message enum
-        return Err(WriterError::MissingBatch.into());
-
-        // Generate path for the batch
-        /*
-        let path = format!(
-            "batch/{}-{}.parquet",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos(),
-            Uuid::new_v4()
-        );
-
-        // Write the batch to object store
-        storage::write_batch_to_object_store(self.object_store.clone(), &path, batch.clone())
-            .await
-            .map_err(|e| WriterError::WriteBatchError(e.to_string()))?;
-        */
     }
 
     async fn stop(&self) -> Result<()> {
@@ -190,16 +187,10 @@ mod tests {
         let object_store = Arc::new(LocalFileSystem::new_with_prefix("./test_data")?);
         let writer = QueueBatchWriter::new(QueueConfig::default(), object_store);
 
-        // This test needs to be updated to use the new Message enum
-        // For now, we'll skip the test
-        /*
-        // Create and send a message
-        let message = Message::SimpleMessage(SimpleMessage {
-            id: "1".to_string(),
-            name: "Test".to_string(),
-        });
-        writer.backend.send_message("traces", message).await?;
-        */
+        // Create and send a message with the batch
+        let batch_wrapper = messaging::messages::batch::BatchWrapper::from(batch.clone());
+        let message = Message::Batch(batch_wrapper);
+        writer.process_message(message).await?;
 
         // Cleanup test directory
         cleanup_test_dir()?;
@@ -212,12 +203,16 @@ mod tests {
         // Create mock writer
         let writer = MockBatchWriter::new();
 
-        // This test needs to be updated to use the new Message enum
-        // For now, we'll use a simple message
-        let message = Message::SimpleMessage(messaging::messages::SimpleMessage {
-            id: "1".to_string(),
-            name: "Test".to_string(),
-        });
+        // Create a test schema and batch
+        let schema = Schema::new(vec![Field::new("value", DataType::Int64, false)]);
+        let batch = ArrowRecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
+        )?;
+
+        // Create a batch message
+        let batch_wrapper = messaging::messages::batch::BatchWrapper::from(batch);
+        let message = Message::Batch(batch_wrapper);
 
         // Process message
         writer.process_message(message.clone()).await?;
