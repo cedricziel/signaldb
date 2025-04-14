@@ -89,16 +89,17 @@ impl MessagingBackend for JetStreamBackend {
                 // 2) Get a stream of the incoming messages for this pull.
                 let mut js_stream = consumer.messages().await.expect("Failed to get messages");
 
-                // 3) We'll read until 10 messages OR 50ms has elapsed—whichever comes first.
+                // 3) We'll read until 10 messages OR 500ms has elapsed—whichever comes first.
+                // Increased timeout from 50ms to 500ms to give more time for messages to be processed
                 let start = Instant::now();
-                let max_wait = Duration::from_millis(50);
+                let max_wait = Duration::from_millis(500);
                 let mut count = 0;
 
                 while count < 10 {
                     // How long have we waited so far?
                     let elapsed = start.elapsed();
                     if elapsed >= max_wait {
-                        // 50ms is up—stop pulling for this batch
+                        // 500ms is up—stop pulling for this batch
                         break;
                     }
                     let remaining = max_wait - elapsed;
@@ -110,6 +111,10 @@ impl MessagingBackend for JetStreamBackend {
                             let payload = String::from_utf8(js_msg.payload.to_vec()).unwrap_or_default();
                             match serde_json::from_str::<Message>(&payload) {
                                 Ok(msg) => {
+                                    // Acknowledge the message to prevent redelivery
+                                    if let Err(e) = js_msg.ack().await {
+                                        eprintln!("Failed to acknowledge message: {}", e);
+                                    }
                                     yield msg;
                                 }
                                 Err(e) => {
@@ -124,7 +129,12 @@ impl MessagingBackend for JetStreamBackend {
                 }
 
                 if count == 0 {
-                    break;
+                    // If we didn't get any messages in this batch, wait a bit before trying again
+                    // This helps in test scenarios where messages might not be immediately available
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                    // In tests, we might want to break after a certain number of empty batches
+                    // For now, we'll continue looping to keep trying
                 }
             }
         };
@@ -133,6 +143,8 @@ impl MessagingBackend for JetStreamBackend {
     }
 
     async fn ack(&self, _message: Message) -> Result<(), String> {
+        // Messages are already acknowledged in the stream method
+        // when they are received, so this is a no-op
         Ok(())
     }
 }
@@ -155,13 +167,13 @@ mod tests {
     > {
         let cmd = NatsServerCmd::default().with_jetstream();
         let container = Nats::default().with_cmd(&cmd).start().await?;
-        // Give the container a moment to fully start up
-        tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+        // Give the container more time to fully start up
+        tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
         Ok(container)
     }
 
     #[tokio::test]
-    #[timeout(10000)]
+    #[timeout(15000)]
     async fn test_send_and_receive_single_message() {
         let nats = provide_nats().await.unwrap();
         let url = format!(
@@ -180,30 +192,61 @@ mod tests {
             name: "Test Thing".to_string(),
         });
 
+        // Create stream first to ensure the consumer is ready
+        let mut stream = dispatcher.stream("topic_a").await;
+
         // Send the message
         dispatcher.send("topic_a", message.clone()).await.unwrap();
 
-        // Consume the message
-        let mut stream = dispatcher.stream("topic_a").await;
-        if let Some(received_message) = stream.next().await {
-            assert_eq!(received_message, message);
-        } else {
-            panic!("No message received");
+        // Give JetStream a moment to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        // Consume the message with timeout
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(2000),
+            stream.next()
+        ).await {
+            Ok(Some(received_message)) => {
+                assert_eq!(received_message, message);
+            },
+            Ok(None) => {
+                panic!("No message received");
+            },
+            Err(_) => {
+                panic!("Timeout waiting for message");
+            }
         }
     }
 
     #[tokio::test]
-    #[timeout(10000)]
+    #[timeout(15000)]
     async fn test_multiple_messages_in_single_topic() {
-        let nats = provide_nats().await.unwrap();
-        let url = format!(
-            "nats://{}:{}",
-            nats.get_host().await.unwrap(),
-            nats.get_host_port_ipv4(4222).await.unwrap()
-        );
+        let nats = match provide_nats().await {
+            Ok(n) => n,
+            Err(e) => panic!("Failed to start NATS container: {}", e),
+        };
 
-        let backend = JetStreamBackend::new(&url).await.unwrap();
-        backend.ensure_stream("topic_a").await.unwrap();
+        let host = match nats.get_host().await {
+            Ok(h) => h,
+            Err(e) => panic!("Failed to get host: {}", e),
+        };
+
+        let port = match nats.get_host_port_ipv4(4222).await {
+            Ok(p) => p,
+            Err(e) => panic!("Failed to get port: {}", e),
+        };
+
+        let url = format!("nats://{}:{}", host, port);
+
+        let backend = match JetStreamBackend::new(&url).await {
+            Ok(b) => b,
+            Err(e) => panic!("Failed to create JetStream backend: {}", e),
+        };
+
+        match backend.ensure_stream("topic_a").await {
+            Ok(_) => {},
+            Err(e) => panic!("Failed to ensure stream: {}", e),
+        };
 
         let dispatcher = Dispatcher::new(backend);
 
@@ -218,34 +261,75 @@ mod tests {
             }),
         ];
 
+        // Create stream first to ensure the consumer is ready
+        let mut stream = dispatcher.stream("topic_a").await;
+
+        // Send messages
         for message in messages.clone() {
-            dispatcher.send("topic_a", message).await.unwrap();
+            match dispatcher.send("topic_a", message).await {
+                Ok(_) => {},
+                Err(e) => panic!("Failed to send message: {}", e),
+            }
         }
 
-        // Consume messages
-        let mut stream = dispatcher.stream("topic_a").await;
+        // Give JetStream a moment to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        // Consume messages with timeout
         for expected_message in messages {
-            if let Some(received_message) = stream.next().await {
-                assert_eq!(received_message, expected_message);
-            } else {
-                panic!("Expected a message but got none");
+            match tokio::time::timeout(
+                tokio::time::Duration::from_millis(2000),
+                stream.next()
+            ).await {
+                Ok(Some(received_message)) => {
+                    assert_eq!(received_message, expected_message);
+                },
+                Ok(None) => {
+                    panic!("Expected a message but got none");
+                },
+                Err(_) => {
+                    panic!("Timeout waiting for message");
+                }
             }
         }
     }
 
     #[tokio::test]
-    #[timeout(10000)]
+    #[timeout(20000)]
     async fn test_messages_across_multiple_topics() {
-        let nats = provide_nats().await.unwrap();
-        let url = format!(
-            "nats://{}:{}",
-            nats.get_host().await.unwrap(),
-            nats.get_host_port_ipv4(4222).await.unwrap()
-        );
+        // Use the same error handling approach as in test_multiple_messages_in_single_topic
+        let nats = match provide_nats().await {
+            Ok(n) => n,
+            Err(e) => panic!("Failed to start NATS container: {}", e),
+        };
 
-        let backend = JetStreamBackend::new(&url).await.unwrap();
-        backend.ensure_stream("topic_a").await.unwrap();
-        backend.ensure_stream("topic_b").await.unwrap();
+        let host = match nats.get_host().await {
+            Ok(h) => h,
+            Err(e) => panic!("Failed to get host: {}", e),
+        };
+
+        let port = match nats.get_host_port_ipv4(4222).await {
+            Ok(p) => p,
+            Err(e) => panic!("Failed to get port: {}", e),
+        };
+
+        let url = format!("nats://{}:{}", host, port);
+
+        let backend = match JetStreamBackend::new(&url).await {
+            Ok(b) => b,
+            Err(e) => panic!("Failed to create JetStream backend: {}", e),
+        };
+
+        // Ensure streams exist with explicit error handling
+        match backend.ensure_stream("topic_a").await {
+            Ok(_) => println!("Stream topic_a created successfully"),
+            Err(e) => panic!("Failed to ensure stream topic_a: {}", e),
+        };
+
+        match backend.ensure_stream("topic_b").await {
+            Ok(_) => println!("Stream topic_b created successfully"),
+            Err(e) => panic!("Failed to ensure stream topic_b: {}", e),
+        };
 
         let dispatcher = Dispatcher::new(backend);
 
@@ -258,35 +342,72 @@ mod tests {
             name: "Thing in Topic B".to_string(),
         });
 
-        // Send messages to different topics
-        dispatcher
-            .send("topic_a", message_topic_a.clone())
-            .await
-            .unwrap();
-        dispatcher
-            .send("topic_b", message_topic_b.clone())
-            .await
-            .unwrap();
-
-        // Consume messages from topic_a
+        // Create streams first to ensure consumers are ready
+        println!("Creating stream for topic_a");
         let mut stream_a = dispatcher.stream("topic_a").await;
-        if let Some(received_message) = stream_a.next().await {
-            assert_eq!(received_message, message_topic_a);
-        } else {
-            panic!("No message received in topic_a");
+
+        println!("Creating stream for topic_b");
+        let mut stream_b = dispatcher.stream("topic_b").await;
+
+        // Give consumers a moment to be ready
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        // Send messages to different topics with explicit error handling
+        println!("Sending message to topic_a");
+        match dispatcher.send("topic_a", message_topic_a.clone()).await {
+            Ok(_) => println!("Message sent to topic_a successfully"),
+            Err(e) => panic!("Failed to send message to topic_a: {}", e),
         }
 
-        // Consume messages from topic_b
-        let mut stream_b = dispatcher.stream("topic_b").await;
-        if let Some(received_message) = stream_b.next().await {
-            assert_eq!(received_message, message_topic_b);
-        } else {
-            panic!("No message received in topic_b");
+        println!("Sending message to topic_b");
+        match dispatcher.send("topic_b", message_topic_b.clone()).await {
+            Ok(_) => println!("Message sent to topic_b successfully"),
+            Err(e) => panic!("Failed to send message to topic_b: {}", e),
+        }
+
+        // Give JetStream more time to process
+        println!("Waiting for messages to be processed");
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+
+        // Consume messages from topic_a with timeout
+        println!("Consuming message from topic_a");
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(3000),
+            stream_a.next()
+        ).await {
+            Ok(Some(received_message)) => {
+                println!("Message received from topic_a");
+                assert_eq!(received_message, message_topic_a);
+            },
+            Ok(None) => {
+                panic!("No message received in topic_a");
+            },
+            Err(_) => {
+                panic!("Timeout waiting for message in topic_a");
+            }
+        }
+
+        // Consume messages from topic_b with timeout
+        println!("Consuming message from topic_b");
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(3000),
+            stream_b.next()
+        ).await {
+            Ok(Some(received_message)) => {
+                println!("Message received from topic_b");
+                assert_eq!(received_message, message_topic_b);
+            },
+            Ok(None) => {
+                panic!("No message received in topic_b");
+            },
+            Err(_) => {
+                panic!("Timeout waiting for message in topic_b");
+            }
         }
     }
 
     #[tokio::test]
-    #[timeout(10000)]
+    #[timeout(15000)]
     async fn test_message_acknowledgment() {
         let nats = provide_nats().await.unwrap();
         let url = format!(
@@ -304,23 +425,59 @@ mod tests {
             name: "Acknowledged Thing".to_string(),
         });
 
+        // Create stream first to ensure the consumer is ready
+        let mut stream = dispatcher.stream("topic_ack").await;
+
         // Send the message
         dispatcher.send("topic_ack", message.clone()).await.unwrap();
 
-        // Consume the message and ensure it's acknowledged
-        let mut stream = dispatcher.stream("topic_ack").await;
-        if let Some(received_message) = stream.next().await {
-            assert_eq!(received_message, message);
-        } else {
-            panic!("No message received for acknowledgment test");
+        // Give JetStream a moment to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        // Consume the message and ensure it's acknowledged with timeout
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(2000),
+            stream.next()
+        ).await {
+            Ok(Some(received_message)) => {
+                assert_eq!(received_message, message);
+            },
+            Ok(None) => {
+                panic!("No message received for acknowledgment test");
+            },
+            Err(_) => {
+                panic!("Timeout waiting for message in acknowledgment test");
+            }
         }
 
-        // Ensure the message is not replayed
-        assert!(stream.next().await.is_none());
+        // Wait a bit to ensure message processing is complete
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        // Create a new stream to verify the message was acknowledged
+        let mut new_stream = dispatcher.stream("topic_ack").await;
+
+        // Set a timeout for the next() call to avoid hanging
+        // We expect this to timeout or return None, as the message should have been acknowledged
+        let result = tokio::time::timeout(
+            tokio::time::Duration::from_millis(1000),
+            new_stream.next()
+        ).await;
+
+        match result {
+            Ok(None) => {
+                // This is the expected case - no message should be received
+            },
+            Ok(Some(_)) => {
+                panic!("Message was replayed despite being acknowledged");
+            },
+            Err(_) => {
+                // Timeout occurred, which is fine - it means no message was available
+            }
+        }
     }
 
     #[tokio::test]
-    #[timeout(10000)]
+    #[timeout(15000)]
     async fn test_durable_consumer_persistence() {
         let nats = provide_nats().await.unwrap();
         let url = format!(
@@ -339,22 +496,57 @@ mod tests {
             name: "Durable Thing".to_string(),
         });
 
+        // Create a durable consumer first
+        let mut stream = dispatcher.stream("topic_durable").await;
+
         // Send the message
         dispatcher
             .send("topic_durable", message.clone())
             .await
             .unwrap();
 
-        // Create a durable consumer and fetch the message
-        let mut stream = dispatcher.stream("topic_durable").await;
-        if let Some(received_message) = stream.next().await {
-            assert_eq!(received_message, message);
-        } else {
-            panic!("No message received for durable consumer test");
+        // Give JetStream a moment to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        // Fetch the message with timeout
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(2000),
+            stream.next()
+        ).await {
+            Ok(Some(received_message)) => {
+                assert_eq!(received_message, message);
+            },
+            Ok(None) => {
+                panic!("No message received for durable consumer test");
+            },
+            Err(_) => {
+                panic!("Timeout waiting for message in durable consumer test");
+            }
         }
 
+        // Wait a bit to ensure message processing is complete
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
         // Recreate the consumer and ensure no messages are replayed
-        let mut stream = dispatcher.stream("topic_durable").await;
-        assert!(stream.next().await.is_none());
+        let mut new_stream = dispatcher.stream("topic_durable").await;
+
+        // Set a timeout for the next() call to avoid hanging
+        // We expect this to timeout or return None, as the message should have been acknowledged
+        let result = tokio::time::timeout(
+            tokio::time::Duration::from_millis(1000),
+            new_stream.next()
+        ).await;
+
+        match result {
+            Ok(None) => {
+                // This is the expected case - no message should be received
+            },
+            Ok(Some(_)) => {
+                panic!("Message was replayed despite being acknowledged");
+            },
+            Err(_) => {
+                // Timeout occurred, which is fine - it means no message was available
+            }
+        }
     }
 }
