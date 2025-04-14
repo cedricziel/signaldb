@@ -1,7 +1,6 @@
 use acceptor::{
     handler::otlp_grpc::TraceHandler, services::otlp_trace_service::TraceAcceptorService,
 };
-use common::config::QueueConfig;
 use futures::StreamExt;
 use hex;
 use messaging::{
