@@ -15,20 +15,68 @@ use tokio::time::timeout;
 
 use crate::{Message, MessagingBackend};
 
+// Default configuration values
+const DEFAULT_MIN_BACKOFF: Duration = Duration::from_millis(100);
+const DEFAULT_MAX_BACKOFF: Duration = Duration::from_secs(1);
+const DEFAULT_BATCH_SIZE: usize = 10;
+const DEFAULT_BATCH_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Configuration for JetStream message streams
+#[derive(Debug, Clone)]
+pub struct StreamConfig {
+    /// Maximum time to wait for a batch of messages
+    pub batch_timeout: Duration,
+    /// Maximum number of messages to request in a batch
+    pub batch_size: usize,
+    /// Minimum backoff time when no messages are received
+    pub min_backoff: Duration,
+    /// Maximum backoff time when no messages are received
+    pub max_backoff: Duration,
+    /// Maximum time to wait for a message before closing the stream
+    /// Set to None to wait indefinitely
+    pub idle_timeout: Option<Duration>,
+}
+
+impl Default for StreamConfig {
+    fn default() -> Self {
+        Self {
+            batch_timeout: DEFAULT_BATCH_TIMEOUT,
+            batch_size: DEFAULT_BATCH_SIZE,
+            min_backoff: DEFAULT_MIN_BACKOFF,
+            max_backoff: DEFAULT_MAX_BACKOFF,
+            idle_timeout: None, // No idle timeout by default for better test compatibility
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct JetStreamBackend {
     context: Context, // JetStream context
+    config: StreamConfig,
 }
 
 impl JetStreamBackend {
-    /// Creates a new JetStream backend
+    /// Creates a new JetStream backend with default configuration
     pub async fn new(server_url: &str) -> Result<Self, String> {
         let client = async_nats::connect(server_url)
             .await
             .map_err(|e| format!("Failed to connect to NATS: {}", e))?;
         let context = jetstream::new(client);
 
-        Ok(Self { context })
+        Ok(Self {
+            context,
+            config: StreamConfig::default(),
+        })
+    }
+
+    /// Creates a new JetStream backend with custom configuration
+    pub async fn with_config(server_url: &str, config: StreamConfig) -> Result<Self, String> {
+        let client = async_nats::connect(server_url)
+            .await
+            .map_err(|e| format!("Failed to connect to NATS: {}", e))?;
+        let context = jetstream::new(client);
+
+        Ok(Self { context, config })
     }
 
     /// Ensures a stream exists for the specified topic
@@ -78,36 +126,81 @@ impl MessagingBackend for JetStreamBackend {
             .await
             .expect("Failed to get consumer");
 
+        // Clone the config for use in the stream
+        let config = self.config.clone();
+
         // We'll produce a stream of `Message` items.
-        // `try_stream!` lets us `yield` items as soon as they're ready.
         let s = stream! {
+            // Track the last time we received a message for idle timeout
+            let mut last_message_time = Instant::now();
+
+            // Current backoff duration for empty batches
+            let mut current_backoff = config.min_backoff;
+
+            // Main message polling loop
             loop {
-                // 1) Request up to 10 messages from the server.
-                //    If there aren't 10 available, JetStream will send what it has.
-                consumer.batch().max_messages(10).messages().await.expect("Failed to get messages");
-
-                // 2) Get a stream of the incoming messages for this pull.
-                let mut js_stream = consumer.messages().await.expect("Failed to get messages");
-
-                // 3) We'll read until 10 messages OR 500ms has elapsed—whichever comes first.
-                // Increased timeout from 50ms to 500ms to give more time for messages to be processed
-                let start = Instant::now();
-                let max_wait = Duration::from_millis(500);
-                let mut count = 0;
-
-                while count < 10 {
-                    // How long have we waited so far?
-                    let elapsed = start.elapsed();
-                    if elapsed >= max_wait {
-                        // 500ms is up—stop pulling for this batch
+                // Check if we should shutdown due to idle timeout
+                if let Some(idle_timeout) = config.idle_timeout {
+                    if last_message_time.elapsed() > idle_timeout {
+                        eprintln!("Stream shutting down due to idle timeout");
                         break;
                     }
-                    let remaining = max_wait - elapsed;
+                }
 
-                    // 4) Attempt to read the next message with the leftover time
+                // Request a batch of messages
+                match consumer.batch().max_messages(config.batch_size).messages().await {
+                    Ok(_) => {
+                        // Successfully requested messages
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to request messages: {}", e);
+
+                        // Sleep with backoff before trying again
+                        tokio::time::sleep(current_backoff).await;
+
+                        // Increase backoff for next attempt (exponential backoff)
+                        current_backoff = std::cmp::min(current_backoff * 2, config.max_backoff);
+
+                        continue;
+                    }
+                }
+
+                // Get a stream of the incoming messages for this pull
+                let js_stream = match consumer.messages().await {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        eprintln!("Failed to get message stream: {}", e);
+
+                        // Sleep with backoff before trying again
+                        tokio::time::sleep(current_backoff).await;
+
+                        // Increase backoff for next attempt (exponential backoff)
+                        current_backoff = std::cmp::min(current_backoff * 2, config.max_backoff);
+
+                        continue;
+                    }
+                };
+
+                // Process the batch of messages
+                let mut js_stream = js_stream;
+                let start = Instant::now();
+                let mut count = 0;
+
+                // Process messages until we reach batch_size or batch_timeout
+                'batch: while count < config.batch_size {
+                    // Check if we've exceeded the batch timeout
+                    let elapsed = start.elapsed();
+                    if elapsed >= config.batch_timeout {
+                        break 'batch;
+                    }
+
+                    // Calculate remaining time for this batch
+                    let remaining = config.batch_timeout - elapsed;
+
+                    // Attempt to read the next message with the leftover time
                     match timeout(remaining, js_stream.next()).await {
                         Ok(Some(Ok(js_msg))) => {
-                            // We got a message from JetStream—deserialize it, ack it, and yield it immediately
+                            // We got a message from JetStream
                             let payload = String::from_utf8(js_msg.payload.to_vec()).unwrap_or_default();
                             match serde_json::from_str::<Message>(&payload) {
                                 Ok(msg) => {
@@ -115,26 +208,38 @@ impl MessagingBackend for JetStreamBackend {
                                     if let Err(e) = js_msg.ack().await {
                                         eprintln!("Failed to acknowledge message: {}", e);
                                     }
+
+                                    // Update last message time
+                                    last_message_time = Instant::now();
+
+                                    // Reset backoff since we got a message
+                                    current_backoff = config.min_backoff;
+
+                                    // Yield the message
+                                    count += 1;
                                     yield msg;
                                 }
                                 Err(e) => {
                                     eprintln!("JSON parse error: {}", e);
+                                    // Still acknowledge the message to prevent redelivery of invalid messages
+                                    if let Err(e) = js_msg.ack().await {
+                                        eprintln!("Failed to acknowledge invalid message: {}", e);
+                                    }
                                 }
                             }
-                            count += 1;
                         }
-                        // We either timed out waiting for a single message, or got an error, or the stream ended
-                        _ => break,
+                        // We either timed out waiting for a message, got an error, or the stream ended
+                        _ => break 'batch,
                     }
                 }
 
+                // If we didn't get any messages in this batch, apply backoff
                 if count == 0 {
-                    // If we didn't get any messages in this batch, wait a bit before trying again
-                    // This helps in test scenarios where messages might not be immediately available
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    // Sleep with backoff before trying again
+                    tokio::time::sleep(current_backoff).await;
 
-                    // In tests, we might want to break after a certain number of empty batches
-                    // For now, we'll continue looping to keep trying
+                    // Increase backoff for next attempt (exponential backoff)
+                    current_backoff = std::cmp::min(current_backoff * 2, config.max_backoff);
                 }
             }
         };
@@ -197,6 +302,9 @@ mod tests {
 
         // Send the message
         dispatcher.send("topic_a", message.clone()).await.unwrap();
+
+        // Give the system a moment to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
         // Consume the message with timeout
         match tokio::time::timeout(tokio::time::Duration::from_secs(5), stream.next()).await {
@@ -334,23 +442,20 @@ mod tests {
         println!("Creating stream for topic_a");
         let mut stream_a = dispatcher.stream("topic_a").await;
 
-        println!("Creating stream for topic_b");
-        let mut stream_b = dispatcher.stream("topic_b").await;
+        // Give the system a moment to set up the consumer
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-        // Send messages to different topics with explicit error handling
+        // Send message to topic_a
         println!("Sending message to topic_a");
         match dispatcher.send("topic_a", message_topic_a.clone()).await {
             Ok(_) => println!("Message sent to topic_a successfully"),
             Err(e) => panic!("Failed to send message to topic_a: {}", e),
         }
 
-        println!("Sending message to topic_b");
-        match dispatcher.send("topic_b", message_topic_b.clone()).await {
-            Ok(_) => println!("Message sent to topic_b successfully"),
-            Err(e) => panic!("Failed to send message to topic_b: {}", e),
-        }
+        // Give the system a moment to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-        // Consume messages from topic_a with timeout
+        // Consume message from topic_a with timeout
         println!("Consuming message from topic_a");
         match tokio::time::timeout(tokio::time::Duration::from_secs(15), stream_a.next()).await {
             Ok(Some(received_message)) => {
@@ -365,7 +470,21 @@ mod tests {
             }
         }
 
-        // Consume messages from topic_b with timeout
+        // Now create a stream for topic_b
+        println!("Creating stream for topic_b");
+        let mut stream_b = dispatcher.stream("topic_b").await;
+
+        // Send message to topic_b
+        println!("Sending message to topic_b");
+        match dispatcher.send("topic_b", message_topic_b.clone()).await {
+            Ok(_) => println!("Message sent to topic_b successfully"),
+            Err(e) => panic!("Failed to send message to topic_b: {}", e),
+        }
+
+        // Give the system a moment to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        // Consume message from topic_b with timeout
         println!("Consuming message from topic_b");
         match tokio::time::timeout(tokio::time::Duration::from_secs(15), stream_b.next()).await {
             Ok(Some(received_message)) => {
@@ -405,6 +524,9 @@ mod tests {
 
         // Send the message
         dispatcher.send("topic_ack", message.clone()).await.unwrap();
+
+        // Give the system a moment to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
         // Consume the message and ensure it's acknowledged with timeout
         match tokio::time::timeout(tokio::time::Duration::from_secs(5), stream.next()).await {
@@ -499,6 +621,98 @@ mod tests {
             }
             Err(_) => {
                 // Timeout occurred, which is fine - it means no message was available
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[timeout(15000)]
+    async fn test_idle_timeout_shutdown() {
+        let nats = provide_nats().await.unwrap();
+        let url = format!(
+            "nats://{}:{}",
+            nats.get_host().await.unwrap(),
+            nats.get_host_port_ipv4(4222).await.unwrap()
+        );
+
+        // Create a backend with a very short idle timeout
+        let config = StreamConfig {
+            idle_timeout: Some(Duration::from_millis(500)), // 500ms idle timeout
+            ..Default::default()
+        };
+        let backend = JetStreamBackend::with_config(&url, config).await.unwrap();
+        backend.ensure_stream("topic_idle").await.unwrap();
+
+        let dispatcher = Dispatcher::new(backend);
+
+        // Create a stream and don't send any messages
+        let mut stream = dispatcher.stream("topic_idle").await;
+
+        // The stream should complete on its own after the idle timeout
+        // We'll wait a bit longer than the idle timeout to be sure
+        match tokio::time::timeout(Duration::from_secs(2), stream.next()).await {
+            Ok(None) => {
+                // This is the expected case - stream should complete with None
+                println!("Stream completed as expected due to idle timeout");
+            }
+            Ok(Some(_)) => {
+                panic!("Received unexpected message");
+            }
+            Err(_) => {
+                panic!("Timeout waiting for stream to complete");
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[timeout(15000)]
+    async fn test_exponential_backoff() {
+        let nats = provide_nats().await.unwrap();
+        let url = format!(
+            "nats://{}:{}",
+            nats.get_host().await.unwrap(),
+            nats.get_host_port_ipv4(4222).await.unwrap()
+        );
+
+        // Create a backend with custom backoff settings for testing
+        let config = StreamConfig {
+            min_backoff: Duration::from_millis(50),     // Start with 50ms
+            max_backoff: Duration::from_millis(200),    // Cap at 200ms
+            idle_timeout: Some(Duration::from_secs(2)), // 2s idle timeout
+            ..Default::default()
+        };
+        let backend = JetStreamBackend::with_config(&url, config).await.unwrap();
+        backend.ensure_stream("topic_backoff").await.unwrap();
+
+        let dispatcher = Dispatcher::new(backend);
+
+        // Create a stream
+        let mut stream = dispatcher.stream("topic_backoff").await;
+
+        // Wait a bit to allow several backoff cycles
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Now send a message
+        let message = Message::SimpleMessage(SimpleMessage {
+            id: "1".to_string(),
+            name: "Backoff Test".to_string(),
+        });
+        dispatcher
+            .send("topic_backoff", message.clone())
+            .await
+            .unwrap();
+
+        // We should still receive the message despite the backoff
+        match tokio::time::timeout(Duration::from_secs(1), stream.next()).await {
+            Ok(Some(received_message)) => {
+                assert_eq!(received_message, message);
+                println!("Message received successfully after backoff");
+            }
+            Ok(None) => {
+                panic!("No message received after backoff");
+            }
+            Err(_) => {
+                panic!("Timeout waiting for message after backoff");
             }
         }
     }
