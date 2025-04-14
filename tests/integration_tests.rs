@@ -35,8 +35,19 @@ async fn test_trace_ingestion_to_storage() {
 
         // Process messages from the stream
         while let Some(message) = stream.next().await {
-            if let Message::Trace(trace) = message {
-                storage_clone.store_trace(&trace).await.unwrap();
+            match message {
+                Message::Trace(trace) => {
+                    storage_clone.store_trace(&trace).await.unwrap();
+                }
+                Message::SpanBatch(span_batch) => {
+                    // Convert SpanBatch to Trace
+                    if !span_batch.spans.is_empty() {
+                        let trace_id = span_batch.spans[0].trace_id.clone();
+                        let trace = Trace::new_with_spans(trace_id, span_batch.spans);
+                        storage_clone.store_trace(&trace).await.unwrap();
+                    }
+                }
+                _ => {}
             }
         }
     });
