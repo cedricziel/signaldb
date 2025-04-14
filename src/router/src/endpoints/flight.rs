@@ -7,6 +7,7 @@ use futures::stream::BoxStream;
 use tonic::{async_trait, Request, Response, Status, Streaming};
 
 pub struct SignalDBFlightService;
+
 #[async_trait]
 impl FlightService for SignalDBFlightService {
     type HandshakeStream = BoxStream<'static, Result<HandshakeResponse, Status>>;

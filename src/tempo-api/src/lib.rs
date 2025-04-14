@@ -25,16 +25,22 @@ pub mod tempopb {
 
 pub mod v2;
 
+#[derive(Deserialize, Debug)]
+pub struct TraceQueryParams {
+    start: Option<String>,
+    end: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SearchQueryParams {
-    q: Option<String>,
-    tags: Option<String>,
-    min_duration: Option<i32>,
-    max_duration: Option<i32>,
-    limit: Option<i32>,
-    start: Option<i32>,
-    end: Option<i32>,
-    spss: Option<i32>,
+    pub q: Option<String>,
+    pub tags: Option<String>,
+    pub min_duration: Option<i32>,
+    pub max_duration: Option<i32>,
+    pub limit: Option<i32>,
+    pub start: Option<i32>,
+    pub end: Option<i32>,
+    pub spss: Option<i32>,
 }
 
 /// Result of GET /api/search

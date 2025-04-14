@@ -29,3 +29,5 @@ target/
 /.data
 
 signaldb.toml
+
+.clinefile

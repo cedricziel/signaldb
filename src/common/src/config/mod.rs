@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::{fmt, error::Error};
+use std::time::Duration;
+use std::{error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
 
@@ -39,10 +40,29 @@ impl Default for DatabaseConfig {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct QueueConfig {
+    pub max_batch_size: usize,
+    #[serde(with = "humantime_serde")]
+    pub max_batch_wait: Duration,
+    pub dsn: String,
+}
+
+impl Default for QueueConfig {
+    fn default() -> Self {
+        Self {
+            max_batch_size: 1000,
+            max_batch_wait: Duration::from_secs(10),
+            dsn: String::from("memory://"),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Configuration {
     pub database: DatabaseConfig,
     pub storage: StorageConfig,
+    pub queue: QueueConfig,
 }
 
 impl fmt::Display for Configuration {
@@ -71,9 +91,7 @@ impl Configuration {
             .map(|config| config.prefix.clone())
             .unwrap_or_else(|| String::from(".data"))
     }
-}
 
-impl Configuration {
     pub fn load() -> Result<Self, figment::Error> {
         let config = Figment::from(Serialized::defaults(Configuration::default()))
             .merge(Toml::file("signaldb.toml"))
@@ -81,5 +99,38 @@ impl Configuration {
             .extract()?;
 
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_queue_config_defaults() {
+        let config = QueueConfig::default();
+        assert_eq!(config.max_batch_size, 1000);
+        assert_eq!(config.max_batch_wait, Duration::from_secs(10));
+        assert_eq!(config.dsn, "memory://");
+    }
+
+    #[test]
+    fn test_queue_config_from_toml() {
+        let config = Figment::from(Serialized::defaults(Configuration::default()))
+            .merge(Toml::string(
+                r#"
+                [queue]
+                max_batch_size = 2000
+                max_batch_wait = "20s"
+                dsn = "memory://custom"
+            "#,
+            ))
+            .extract::<Configuration>()
+            .unwrap();
+
+        assert_eq!(config.queue.max_batch_size, 2000);
+        assert_eq!(config.queue.max_batch_wait, Duration::from_secs(20));
+        assert_eq!(config.queue.dsn, "memory://custom");
     }
 }

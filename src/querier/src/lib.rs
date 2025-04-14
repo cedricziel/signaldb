@@ -1,28 +1,31 @@
-use axum::Router;
+use std::sync::Arc;
+
+use axum::{routing::get, Router};
+use messaging::backend::memory::InMemoryStreamingBackend;
+use queue_handler::QueueHandler;
 use services::tempo::SignalDBQuerier;
 use tempo_api::tempopb::querier_server::QuerierServer;
-use tokio::sync::oneshot;
-use tonic::transport::{server::Router as TonicRouter, Server};
+use tokio::sync::{oneshot, Mutex};
+use tonic::transport::Server;
 use tower_http::trace::TraceLayer;
 
 mod query;
+mod queue_handler;
 mod services;
-mod tempo_endpoints;
 
-pub fn grpc_service() -> TonicRouter {
+pub fn grpc_service() -> Router {
     let querier = SignalDBQuerier {};
-
     let querier_svc = QuerierServer::new(querier);
-    Server::builder().add_service(querier_svc)
+    let service = Server::builder().add_service(querier_svc).into_service();
+
+    Router::new().route("/", get(|| async { "SignalDB Querier" }))
 }
 
 pub fn query_router() -> Router {
     Router::new()
         .layer(TraceLayer::new_for_http())
         // nest routes for tempo compatibility
-        .nest("/tempo", tempo_endpoints::router())
-        // TODO: Update to into_axum_router() when we upgrade to a newer version of tonic
-        .nest("/tempo", grpc_service().into_router())
+        .nest("/tempo", grpc_service())
 }
 
 pub async fn serve_querier_http(
@@ -30,8 +33,11 @@ pub async fn serve_querier_http(
     shutdown_rx: oneshot::Receiver<()>,
     stopped_tx: oneshot::Sender<()>,
 ) -> Result<(), anyhow::Error> {
-    let addr = "0.0.0.0:9000";
+    // Initialize the queue handler
+    let queue = Arc::new(Mutex::new(InMemoryStreamingBackend::new(10)));
+    QueueHandler::new(queue).start().await?;
 
+    let addr = "0.0.0.0:9000";
     log::info!("Starting querier on {}", addr);
 
     let app = query_router();

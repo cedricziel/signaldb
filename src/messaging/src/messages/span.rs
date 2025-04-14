@@ -62,7 +62,7 @@ impl SpanStatus {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Span {
     pub trace_id: String,
     pub span_id: String,
@@ -141,7 +141,7 @@ impl Span {
 /// A batch of spans.
 ///
 /// Supposedly making it easier to convert to a record batch.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SpanBatch {
     pub spans: Vec<Span>,
 }
@@ -157,13 +157,6 @@ impl SpanBatch {
 
     pub fn add_span(&mut self, span: Span) {
         self.spans.push(span);
-    }
-
-    /// Create a new span batch from a request.
-    pub fn from_request(
-        _request: &opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest,
-    ) -> Self {
-        SpanBatch { spans: vec![] }
     }
 
     /// Convert the span batch to a record batch.
@@ -357,16 +350,6 @@ mod tests {
     fn test_span_schema() {
         let schema = Span::to_schema();
         assert_eq!(schema.fields().len(), 10);
-    }
-
-    #[test]
-    fn test_span_batch_from_request() {
-        let request = opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest {
-            resource_spans: vec![],
-        };
-
-        let span_batch = SpanBatch::from_request(&request);
-        assert_eq!(span_batch.spans.len(), 0);
     }
 
     #[test]

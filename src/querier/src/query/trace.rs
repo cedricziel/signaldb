@@ -367,7 +367,9 @@ mod tests {
     use super::*;
     use datafusion::prelude::SessionContext;
 
-    async fn create_test_table(ctx: &SessionContext) -> Result<(), datafusion::error::DataFusionError> {
+    async fn create_test_table(
+        ctx: &SessionContext,
+    ) -> Result<(), datafusion::error::DataFusionError> {
         // First create the table with the basic schema
         let create_table = format!(
             "CREATE TABLE traces (
@@ -409,8 +411,10 @@ mod tests {
     #[tokio::test]
     async fn test_find_by_id() {
         let session_context = SessionContext::new();
-        create_test_table(&session_context).await.expect("Failed to create test table");
-        
+        create_test_table(&session_context)
+            .await
+            .expect("Failed to create test table");
+
         let service = TraceService::new(session_context);
         let params = FindTraceByIdParams {
             trace_id: "1234".to_string(),

@@ -6,23 +6,32 @@ license.workspace = true
 
 [dependencies]
 common.workspace = true
+messaging.workspace = true
 arrow-flight.workspace = true
 arrow-schema.workspace = true
 parquet.workspace = true
+arrow-array.workspace = true
 
 opentelemetry-proto.workspace = true
 tonic.workspace = true
 
 tracing.workspace = true
 
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 futures.workspace = true
 
 log.workspace = true
 anyhow.workspace = true
 
 axum.workspace = true
+hyper.workspace = true
 
 serde_json.workspace = true
 
 opentelemetry.workspace = true
+async-trait.workspace = true
+
+async-nats.workspace = true
+
+[dev-dependencies]
+mockall.workspace = true
