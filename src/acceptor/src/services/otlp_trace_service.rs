@@ -1,4 +1,4 @@
-use common::queue::MessagingBackend;
+use messaging::MessagingBackend;
 use opentelemetry_proto::tonic::collector::trace::v1::{
     trace_service_server::TraceService, ExportTraceServiceRequest, ExportTraceServiceResponse,
 };

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use common::{
-    model::span::SpanBatch,
-    queue::{Message, MessagingBackend},
+use messaging::{
+    messages::span::SpanBatch,
+    Message, MessagingBackend,
 };
 use tokio::sync::Mutex;
 

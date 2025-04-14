@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{routing::get, Router};
-use common::queue::memory::InMemoryQueue;
+use messaging::backend::memory::InMemoryStreamingBackend;
 use queue_handler::QueueHandler;
 use services::tempo::SignalDBQuerier;
 use tempo_api::tempopb::querier_server::QuerierServer;
@@ -34,7 +34,7 @@ pub async fn serve_querier_http(
     stopped_tx: oneshot::Sender<()>,
 ) -> Result<(), anyhow::Error> {
     // Initialize the queue handler
-    let queue = Arc::new(Mutex::new(InMemoryQueue::default()));
+    let queue = Arc::new(Mutex::new(InMemoryStreamingBackend::new(10)));
     QueueHandler::new(queue).start().await?;
 
     let addr = "0.0.0.0:9000";

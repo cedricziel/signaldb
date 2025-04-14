@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 common = { path = "../common" }
+messaging = { path = "../messaging" }
 tempo-api = { path = "../tempo-api", features = ["server"] }
 
 async-trait.workspace = true

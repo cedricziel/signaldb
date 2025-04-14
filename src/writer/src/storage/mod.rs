@@ -3,7 +3,7 @@ pub use parquet::write_batch_to_object_store;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use common::model::trace::Trace;
+use messaging::messages::trace::Trace;
 use std::path::Path;
 
 #[async_trait]

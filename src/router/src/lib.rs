@@ -1,19 +1,19 @@
 use std::sync::Arc;
 
 use axum::{http::StatusCode, response::IntoResponse, routing::get, Router};
-use common::queue::{MessagingBackend, NatsQueue};
+use messaging::{MessagingBackend, backend::nats::NatsBackend};
 
 mod endpoints;
 
 /// RouterState implementation for NATS
 #[derive(Clone, Debug)]
 pub struct NatsStateImpl {
-    queue: Arc<NatsQueue>,
+    queue: Arc<NatsBackend>,
 }
 
 impl NatsStateImpl {
     /// Create a new NatsStateImpl with the given queue
-    pub fn new(queue: NatsQueue) -> Self {
+    pub fn new(queue: NatsBackend) -> Self {
         Self {
             queue: Arc::new(queue),
         }
@@ -21,7 +21,7 @@ impl NatsStateImpl {
 }
 
 impl RouterState for NatsStateImpl {
-    type Q = NatsQueue;
+    type Q = NatsBackend;
 
     fn queue(&self) -> &Self::Q {
         &self.queue
@@ -37,12 +37,12 @@ pub trait RouterState: std::fmt::Debug + Clone + Send + Sync + 'static {
 /// RouterState holds any shared state that needs to be accessed by route handlers
 #[derive(Clone, Debug)]
 pub struct InMemoryStateImpl {
-    queue: Arc<common::queue::InMemoryQueue>,
+    queue: Arc<messaging::backend::memory::InMemoryStreamingBackend>,
 }
 
 impl InMemoryStateImpl {
     /// Create a new InMemoryStateImpl with the given queue
-    pub fn new(queue: common::queue::InMemoryQueue) -> Self {
+    pub fn new(queue: messaging::backend::memory::InMemoryStreamingBackend) -> Self {
         Self {
             queue: Arc::new(queue),
         }
@@ -50,7 +50,7 @@ impl InMemoryStateImpl {
 }
 
 impl RouterState for InMemoryStateImpl {
-    type Q = common::queue::InMemoryQueue;
+    type Q = messaging::backend::memory::InMemoryStreamingBackend;
 
     fn queue(&self) -> &Self::Q {
         &self.queue

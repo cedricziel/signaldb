@@ -1,6 +1,6 @@
 use acceptor::{serve_otlp_grpc, serve_otlp_http};
 use anyhow::{Context, Result};
-use common::queue::memory::InMemoryQueue;
+use messaging::backend::memory::InMemoryStreamingBackend;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 
@@ -10,7 +10,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     // Initialize queue for future use
-    let _queue = Arc::new(Mutex::new(InMemoryQueue::default()));
+    let _queue = Arc::new(Mutex::new(InMemoryStreamingBackend::new(10)));
 
     let (otlp_grpc_init_tx, otlp_grpc_init_rx) = oneshot::channel();
     let (_otlp_grpc_shutdown_tx, otlp_grpc_shutdown_rx) = oneshot::channel();

@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 common.workspace = true
+messaging.workspace = true
 tempo-api.workspace = true
 
 arrow-flight.workspace = true

@@ -1,9 +1,9 @@
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{DataType, Field, Fields};
-use common::{
-    model::span::{Span, SpanBatch, SpanKind, SpanStatus},
-    queue::{Message, MessagingBackend},
+use messaging::{
+    messages::span::{Span, SpanBatch, SpanKind, SpanStatus},
+    Message, MessagingBackend,
 };
 use opentelemetry::trace::{SpanId, TraceId};
 use opentelemetry_proto::tonic::{
@@ -193,11 +193,11 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common::queue::memory::InMemoryQueue;
+    use messaging::backend::memory::InMemoryStreamingBackend;
 
     #[test]
     fn test_extract_value() {
-        let queue = Arc::new(Mutex::new(InMemoryQueue::default()));
+        let queue = Arc::new(Mutex::new(InMemoryStreamingBackend::new(10)));
         let handler = TraceHandler::new(queue);
 
         // Test boolean value
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn test_extract_type() {
-        let queue = Arc::new(Mutex::new(InMemoryQueue::default()));
+        let queue = Arc::new(Mutex::new(InMemoryStreamingBackend::new(10)));
         let handler = TraceHandler::new(queue);
 
         assert_eq!(handler.extract_type(JsonValue::Null), DataType::Null);
@@ -250,7 +250,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_grpc_otlp_traces() {
-        let queue = Arc::new(Mutex::new(InMemoryQueue::default()));
+        let queue = Arc::new(Mutex::new(InMemoryStreamingBackend::new(10)));
         let handler = TraceHandler::new(queue.clone());
 
         let request = ExportTraceServiceRequest {

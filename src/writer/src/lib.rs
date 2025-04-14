@@ -3,7 +3,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use common::queue::{memory::InMemoryQueue, Message, MessagingBackend, QueueConfig};
+use common::config::QueueConfig;
+use messaging::{backend::memory::InMemoryStreamingBackend, Message, MessagingBackend};
 use object_store::ObjectStore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, Mutex};
@@ -49,7 +50,7 @@ pub enum WriterError {
 
 /// A writer implementation that reads from a queue and writes to object storage
 pub struct QueueBatchWriter {
-    queue: Arc<Mutex<InMemoryQueue>>,
+    queue: Arc<Mutex<InMemoryStreamingBackend>>,
     object_store: Arc<dyn ObjectStore>,
     queue_config: QueueConfig,
     shutdown: broadcast::Sender<()>,
@@ -59,7 +60,7 @@ impl QueueBatchWriter {
     pub fn new(queue_config: QueueConfig, object_store: Arc<dyn ObjectStore>) -> Self {
         let (shutdown_tx, _) = broadcast::channel(1);
         Self {
-            queue: Arc::new(Mutex::new(InMemoryQueue::default())),
+            queue: Arc::new(Mutex::new(InMemoryStreamingBackend::new(10))),
             object_store,
             queue_config,
             shutdown: shutdown_tx,
