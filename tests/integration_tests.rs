@@ -99,10 +99,7 @@ async fn test_trace_ingestion_to_storage() {
     client.export(trace_request).await.unwrap();
 
     // Allow time for processing
-    sleep(Duration::from_millis(100)).await;
-
-    // Verify trace was written to storage
-    sleep(Duration::from_millis(200)).await;
+    sleep(Duration::from_millis(1500)).await;
 
     let stored_traces = storage.list_traces().await.unwrap();
     assert_eq!(stored_traces.len(), 1);

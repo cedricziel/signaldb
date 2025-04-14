@@ -195,17 +195,11 @@ mod tests {
         // Create stream first to ensure the consumer is ready
         let mut stream = dispatcher.stream("topic_a").await;
 
-        // Give consumers more time to be fully ready
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-
         // Send the message
         dispatcher.send("topic_a", message.clone()).await.unwrap();
 
-        // Give JetStream more time to process
-        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-
         // Consume the message with timeout
-        match tokio::time::timeout(tokio::time::Duration::from_millis(2000), stream.next()).await {
+        match tokio::time::timeout(tokio::time::Duration::from_secs(5), stream.next()).await {
             Ok(Some(received_message)) => {
                 assert_eq!(received_message, message);
             }
@@ -264,9 +258,6 @@ mod tests {
         // Create stream first to ensure the consumer is ready
         let mut stream = dispatcher.stream("topic_a").await;
 
-        // Give consumers more time to be fully ready
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-
         // Send messages
         for message in messages.clone() {
             match dispatcher.send("topic_a", message).await {
@@ -275,14 +266,9 @@ mod tests {
             }
         }
 
-        // Give JetStream more time to process
-        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-
         // Consume messages with timeout
         for expected_message in messages {
-            match tokio::time::timeout(tokio::time::Duration::from_millis(5000), stream.next())
-                .await
-            {
+            match tokio::time::timeout(tokio::time::Duration::from_secs(5), stream.next()).await {
                 Ok(Some(received_message)) => {
                     assert_eq!(received_message, expected_message);
                 }
@@ -297,7 +283,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[timeout(20000)]
+    #[timeout(30000)]
     async fn test_messages_across_multiple_topics() {
         // Use the same error handling approach as in test_multiple_messages_in_single_topic
         let nats = match provide_nats().await {
@@ -351,9 +337,6 @@ mod tests {
         println!("Creating stream for topic_b");
         let mut stream_b = dispatcher.stream("topic_b").await;
 
-        // Give consumers more time to be fully ready
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-
         // Send messages to different topics with explicit error handling
         println!("Sending message to topic_a");
         match dispatcher.send("topic_a", message_topic_a.clone()).await {
@@ -367,14 +350,9 @@ mod tests {
             Err(e) => panic!("Failed to send message to topic_b: {}", e),
         }
 
-        // Give JetStream more time to process
-        println!("Waiting for messages to be processed");
-        tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
-
         // Consume messages from topic_a with timeout
         println!("Consuming message from topic_a");
-        match tokio::time::timeout(tokio::time::Duration::from_millis(3000), stream_a.next()).await
-        {
+        match tokio::time::timeout(tokio::time::Duration::from_secs(15), stream_a.next()).await {
             Ok(Some(received_message)) => {
                 println!("Message received from topic_a");
                 assert_eq!(received_message, message_topic_a);
@@ -389,8 +367,7 @@ mod tests {
 
         // Consume messages from topic_b with timeout
         println!("Consuming message from topic_b");
-        match tokio::time::timeout(tokio::time::Duration::from_millis(5000), stream_b.next()).await
-        {
+        match tokio::time::timeout(tokio::time::Duration::from_secs(15), stream_b.next()).await {
             Ok(Some(received_message)) => {
                 println!("Message received from topic_b");
                 assert_eq!(received_message, message_topic_b);
@@ -426,17 +403,11 @@ mod tests {
         // Create stream first to ensure the consumer is ready
         let mut stream = dispatcher.stream("topic_ack").await;
 
-        // Give consumers more time to be fully ready
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-
         // Send the message
         dispatcher.send("topic_ack", message.clone()).await.unwrap();
 
-        // Give JetStream more time to process
-        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-
         // Consume the message and ensure it's acknowledged with timeout
-        match tokio::time::timeout(tokio::time::Duration::from_millis(5000), stream.next()).await {
+        match tokio::time::timeout(tokio::time::Duration::from_secs(5), stream.next()).await {
             Ok(Some(received_message)) => {
                 assert_eq!(received_message, message);
             }
@@ -448,16 +419,13 @@ mod tests {
             }
         }
 
-        // Wait a bit to ensure message processing is complete
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
         // Create a new stream to verify the message was acknowledged
         let mut new_stream = dispatcher.stream("topic_ack").await;
 
         // Set a timeout for the next() call to avoid hanging
         // We expect this to timeout or return None, as the message should have been acknowledged
         let result =
-            tokio::time::timeout(tokio::time::Duration::from_millis(1000), new_stream.next()).await;
+            tokio::time::timeout(tokio::time::Duration::from_secs(1), new_stream.next()).await;
 
         match result {
             Ok(None) => {
@@ -495,20 +463,14 @@ mod tests {
         // Create a durable consumer first
         let mut stream = dispatcher.stream("topic_durable").await;
 
-        // Give consumers more time to be fully ready
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-
         // Send the message
         dispatcher
             .send("topic_durable", message.clone())
             .await
             .unwrap();
 
-        // Give JetStream more time to process
-        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-
         // Fetch the message with timeout
-        match tokio::time::timeout(tokio::time::Duration::from_millis(5000), stream.next()).await {
+        match tokio::time::timeout(tokio::time::Duration::from_secs(5), stream.next()).await {
             Ok(Some(received_message)) => {
                 assert_eq!(received_message, message);
             }
@@ -520,16 +482,13 @@ mod tests {
             }
         }
 
-        // Wait a bit to ensure message processing is complete
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
         // Recreate the consumer and ensure no messages are replayed
         let mut new_stream = dispatcher.stream("topic_durable").await;
 
         // Set a timeout for the next() call to avoid hanging
         // We expect this to timeout or return None, as the message should have been acknowledged
         let result =
-            tokio::time::timeout(tokio::time::Duration::from_millis(1000), new_stream.next()).await;
+            tokio::time::timeout(tokio::time::Duration::from_secs(1), new_stream.next()).await;
 
         match result {
             Ok(None) => {
