@@ -996,6 +996,7 @@ dependencies = [
  "humantime-serde",
  "object_store",
  "once_cell",
+ "opentelemetry",
  "opentelemetry-proto",
  "serde",
  "serde_json",
