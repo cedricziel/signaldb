@@ -2,10 +2,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use common::flight::conversion::otlp_logs_to_arrow;
-use messaging::{
-    messages::batch::BatchWrapper,
-    Message, MessagingBackend,
-};
+use messaging::{messages::batch::BatchWrapper, Message, MessagingBackend};
 use opentelemetry_proto::tonic::collector::logs::v1::{
     logs_service_server::LogsService, ExportLogsServiceRequest, ExportLogsServiceResponse,
 };
@@ -42,10 +39,13 @@ impl<Q: MessagingBackend + 'static> LogsService for LogAcceptorService<Q> {
         let queue = self.queue.lock().await;
 
         // Send the message
-        let _ = queue.send_message("arrow-logs", message).await.map_err(|e| {
-            log::error!("Failed to publish arrow logs message: {:?}", e);
-            e
-        });
+        let _ = queue
+            .send_message("arrow-logs", message)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to publish arrow logs message: {:?}", e);
+                e
+            });
 
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,
@@ -67,10 +67,7 @@ impl MockLogAcceptorService {
     }
 
     pub async fn export(&self, request: ExportLogsServiceRequest) -> ExportLogsServiceResponse {
-        self.handle_export_calls
-            .lock()
-            .unwrap()
-            .push(request);
+        self.handle_export_calls.lock().unwrap().push(request);
 
         ExportLogsServiceResponse {
             partial_success: None,

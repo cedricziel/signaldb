@@ -92,7 +92,7 @@ pub async fn serve_otlp_grpc(
     let trace_server = TraceServiceServer::new(TraceAcceptorService::new(TraceHandler::new(
         state.queue.clone(),
     )));
-    let metric_server = MetricsServiceServer::new(MetricsAcceptorService);
+    let metric_server = MetricsServiceServer::new(MetricsAcceptorService::new(state.queue.clone()));
 
     init_tx
         .send(())

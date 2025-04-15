@@ -13,6 +13,7 @@ datafusion.workspace = true
 object_store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+hex.workspace = true
 opentelemetry.workspace = true
 opentelemetry-proto.workspace = true
 

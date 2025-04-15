@@ -139,16 +139,19 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
                     let mut span_attributes = HashMap::new();
 
                     for attr in &span.attributes {
-                        span_attributes.insert(attr.key.clone(), self.extract_value(&attr.value.as_ref()));
+                        span_attributes
+                            .insert(attr.key.clone(), self.extract_value(&attr.value.as_ref()));
                     }
 
                     let trace_id =
                         TraceId::from_bytes(span.trace_id.clone().try_into().unwrap()).to_string();
-                    let span_id = SpanId::from_bytes(span.span_id.clone().try_into().unwrap()).to_string();
+                    let span_id =
+                        SpanId::from_bytes(span.span_id.clone().try_into().unwrap()).to_string();
                     let parent_span_id = if span.parent_span_id.is_empty() {
                         "0000000000000000".to_string()
                     } else {
-                        SpanId::from_bytes(span.parent_span_id.clone().try_into().unwrap()).to_string()
+                        SpanId::from_bytes(span.parent_span_id.clone().try_into().unwrap())
+                            .to_string()
                     };
 
                     let span_status = match &span.status {
@@ -193,15 +196,21 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
         let queue = self.queue.lock().await;
 
         // Send both messages
-        let _ = queue.send_message("arrow-traces", message).await.map_err(|e| {
-            log::error!("Failed to publish arrow trace message: {:?}", e);
-            e
-        });
+        let _ = queue
+            .send_message("arrow-traces", message)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to publish arrow trace message: {:?}", e);
+                e
+            });
 
-        let _ = queue.send_message("traces", span_message).await.map_err(|e| {
-            log::error!("Failed to publish trace message: {:?}", e);
-            e
-        });
+        let _ = queue
+            .send_message("traces", span_message)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to publish trace message: {:?}", e);
+                e
+            });
     }
 }
 

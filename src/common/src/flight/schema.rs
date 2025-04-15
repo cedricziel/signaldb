@@ -31,24 +31,20 @@ impl FlightSchemas {
             Field::new("parent_span_id", DataType::Utf8, true),
             Field::new("name", DataType::Utf8, false),
             Field::new("service_name", DataType::Utf8, false),
-
             // Timing information
             Field::new("start_time_unix_nano", DataType::UInt64, false),
             Field::new("end_time_unix_nano", DataType::UInt64, false),
             Field::new("duration_nano", DataType::UInt64, false),
-
             // Span metadata
             Field::new("span_kind", DataType::Utf8, false),
             Field::new("status_code", DataType::Utf8, false),
             Field::new("status_message", DataType::Utf8, true),
             Field::new("is_root", DataType::Boolean, false),
-
             // Attributes and resources as JSON strings
             // Using JSON strings allows for flexible attribute storage
             // while maintaining compatibility with Arrow Flight
             Field::new("attributes_json", DataType::Utf8, true),
             Field::new("resource_json", DataType::Utf8, true),
-
             // Events as a nested list
             Field::new(
                 "events",
@@ -63,7 +59,6 @@ impl FlightSchemas {
                 ))),
                 true,
             ),
-
             // Links to other spans
             Field::new(
                 "links",
@@ -92,18 +87,15 @@ impl FlightSchemas {
             Field::new("severity_number", DataType::Int32, true),
             Field::new("severity_text", DataType::Utf8, true),
             Field::new("body", DataType::Utf8, true), // JSON serialized AnyValue
-
             // Trace context
             Field::new("trace_id", DataType::Binary, true),
             Field::new("span_id", DataType::Binary, true),
             Field::new("flags", DataType::UInt32, true),
-
             // Attributes and resources
             Field::new("attributes_json", DataType::Utf8, true),
             Field::new("resource_json", DataType::Utf8, true),
             Field::new("scope_json", DataType::Utf8, true),
             Field::new("dropped_attributes_count", DataType::UInt32, true),
-
             // Service context
             Field::new("service_name", DataType::Utf8, true),
         ];
@@ -118,23 +110,18 @@ impl FlightSchemas {
             Field::new("name", DataType::Utf8, false),
             Field::new("description", DataType::Utf8, true),
             Field::new("unit", DataType::Utf8, true),
-
             // Common datapoint fields
             Field::new("start_time_unix_nano", DataType::UInt64, true),
             Field::new("time_unix_nano", DataType::UInt64, false),
             Field::new("attributes_json", DataType::Utf8, true),
             Field::new("resource_json", DataType::Utf8, true),
             Field::new("scope_json", DataType::Utf8, true),
-
             // Metric type
             Field::new("metric_type", DataType::Utf8, false), // "gauge", "sum", "histogram", "exponential_histogram", "summary"
-
             // Metric-specific fields (stored as JSON strings)
             Field::new("data_json", DataType::Utf8, false), // JSON serialized metric data
-
             // Aggregation temporality (for sum, histogram, exponential_histogram)
             Field::new("aggregation_temporality", DataType::Int32, true), // 0=unspecified, 1=delta, 2=cumulative
-
             // Monotonicity (for sum)
             Field::new("is_monotonic", DataType::Boolean, true),
         ];
@@ -188,7 +175,9 @@ mod tests {
         // Verify log schema
         let log_schema = schemas.log_schema;
         assert!(log_schema.field_with_name("time_unix_nano").is_ok());
-        assert!(log_schema.field_with_name("observed_time_unix_nano").is_ok());
+        assert!(log_schema
+            .field_with_name("observed_time_unix_nano")
+            .is_ok());
         assert!(log_schema.field_with_name("severity_number").is_ok());
         assert!(log_schema.field_with_name("severity_text").is_ok());
         assert!(log_schema.field_with_name("body").is_ok());
@@ -205,14 +194,18 @@ mod tests {
         assert!(metric_schema.field_with_name("name").is_ok());
         assert!(metric_schema.field_with_name("description").is_ok());
         assert!(metric_schema.field_with_name("unit").is_ok());
-        assert!(metric_schema.field_with_name("start_time_unix_nano").is_ok());
+        assert!(metric_schema
+            .field_with_name("start_time_unix_nano")
+            .is_ok());
         assert!(metric_schema.field_with_name("time_unix_nano").is_ok());
         assert!(metric_schema.field_with_name("attributes_json").is_ok());
         assert!(metric_schema.field_with_name("resource_json").is_ok());
         assert!(metric_schema.field_with_name("scope_json").is_ok());
         assert!(metric_schema.field_with_name("metric_type").is_ok());
         assert!(metric_schema.field_with_name("data_json").is_ok());
-        assert!(metric_schema.field_with_name("aggregation_temporality").is_ok());
+        assert!(metric_schema
+            .field_with_name("aggregation_temporality")
+            .is_ok());
         assert!(metric_schema.field_with_name("is_monotonic").is_ok());
     }
 

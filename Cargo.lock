@@ -993,6 +993,7 @@ dependencies = [
  "datafusion",
  "figment",
  "futures",
+ "hex",
  "humantime-serde",
  "object_store",
  "once_cell",

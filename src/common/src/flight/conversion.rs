@@ -1,14 +1,20 @@
 use arrow_array::{
-    ArrayRef, BinaryArray, BooleanArray, Int32Array, ListArray, RecordBatch, StringArray, StructArray, UInt32Array,
-    UInt64Array,
+    ArrayRef, BinaryArray, BooleanArray, Int32Array, ListArray, RecordBatch, StringArray,
+    StructArray, UInt32Array, UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema};
+use hex;
 use opentelemetry::trace::{SpanId, TraceId};
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
+    collector::metrics::v1::ExportMetricsServiceRequest,
     collector::trace::v1::ExportTraceServiceRequest,
     common::v1::{any_value::Value, AnyValue, KeyValue},
     logs::v1::{LogRecord, SeverityNumber},
+    metrics::v1::{
+        AggregationTemporality, ExponentialHistogram, Gauge, Histogram, Metric as OtelMetric, Sum,
+        Summary,
+    },
     trace::v1::{span::Event, Span as OtelSpan, Status as OtelStatus},
 };
 use serde_json::{json, Map, Value as JsonValue};
@@ -96,7 +102,8 @@ pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> RecordBatch 
                 for attr in &span.attributes {
                     attr_map.insert(attr.key.clone(), extract_value(&attr.value));
                 }
-                let attributes_json = serde_json::to_string(&attr_map).unwrap_or_else(|_| "{}".to_string());
+                let attributes_json =
+                    serde_json::to_string(&attr_map).unwrap_or_else(|_| "{}".to_string());
 
                 // Extract status
                 let (status_code, status_message) = extract_status(span);
@@ -139,7 +146,6 @@ pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> RecordBatch 
             }
         }
     }
-
 
     // Create Arrow arrays from the extracted data
     let trace_id_array: ArrayRef = Arc::new(StringArray::from(trace_ids));
@@ -188,7 +194,6 @@ pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> RecordBatch 
             links_array,
         ],
     );
-
 
     result.unwrap_or_else(|_| RecordBatch::new_empty(Arc::new(schema_clone)))
 }
@@ -263,11 +268,7 @@ fn extract_events(span: &OtelSpan) -> Vec<(String, u64, String)> {
         }
         let attributes_json = serde_json::to_string(&attr_map).unwrap_or_else(|_| "{}".to_string());
 
-        events.push((
-            event.name.clone(),
-            event.time_unix_nano,
-            attributes_json,
-        ));
+        events.push((event.name.clone(), event.time_unix_nano, attributes_json));
     }
 
     events
@@ -278,8 +279,10 @@ fn extract_links(span: &OtelSpan) -> Vec<(String, String, String)> {
     let mut links = Vec::new();
 
     for link in &span.links {
-        let trace_id = TraceId::from_bytes(link.trace_id.clone().try_into().unwrap_or([0; 16])).to_string();
-        let span_id = SpanId::from_bytes(link.span_id.clone().try_into().unwrap_or([0; 8])).to_string();
+        let trace_id =
+            TraceId::from_bytes(link.trace_id.clone().try_into().unwrap_or([0; 16])).to_string();
+        let span_id =
+            SpanId::from_bytes(link.span_id.clone().try_into().unwrap_or([0; 8])).to_string();
 
         let mut attr_map = Map::new();
         for attr in &link.attributes {
@@ -452,7 +455,10 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> RecordBatch {
             let scope_json = if let Some(scope) = &scope_logs.scope {
                 let mut scope_map = Map::new();
                 scope_map.insert("name".to_string(), JsonValue::String(scope.name.clone()));
-                scope_map.insert("version".to_string(), JsonValue::String(scope.version.clone()));
+                scope_map.insert(
+                    "version".to_string(),
+                    JsonValue::String(scope.version.clone()),
+                );
 
                 if !scope.attributes.is_empty() {
                     let mut attrs_map = Map::new();
@@ -473,11 +479,13 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> RecordBatch {
                 for attr in &log.attributes {
                     attr_map.insert(attr.key.clone(), extract_value(&attr.value));
                 }
-                let attributes_json = serde_json::to_string(&attr_map).unwrap_or_else(|_| "{}".to_string());
+                let attributes_json =
+                    serde_json::to_string(&attr_map).unwrap_or_else(|_| "{}".to_string());
 
                 // Extract body as JSON
                 let body_json = if let Some(body) = &log.body {
-                    serde_json::to_string(&extract_value(&Some(body.clone()))).unwrap_or_else(|_| "null".to_string())
+                    serde_json::to_string(&extract_value(&Some(body.clone())))
+                        .unwrap_or_else(|_| "null".to_string())
                 } else {
                     "null".to_string()
                 };
@@ -512,14 +520,16 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> RecordBatch {
     let body_array: ArrayRef = Arc::new(StringArray::from(bodies));
 
     // Create binary arrays for trace_id and span_id
-    let trace_id_array: ArrayRef = Arc::new(BinaryArray::from_iter(trace_ids.into_iter().map(Some)));
+    let trace_id_array: ArrayRef =
+        Arc::new(BinaryArray::from_iter(trace_ids.into_iter().map(Some)));
     let span_id_array: ArrayRef = Arc::new(BinaryArray::from_iter(span_ids.into_iter().map(Some)));
 
     let flags_array: ArrayRef = Arc::new(UInt32Array::from(flags));
     let attributes_json_array: ArrayRef = Arc::new(StringArray::from(attributes_jsons));
     let resource_json_array: ArrayRef = Arc::new(StringArray::from(resource_jsons));
     let scope_json_array: ArrayRef = Arc::new(StringArray::from(scope_jsons));
-    let dropped_attributes_count_array: ArrayRef = Arc::new(UInt32Array::from(dropped_attributes_counts));
+    let dropped_attributes_count_array: ArrayRef =
+        Arc::new(UInt32Array::from(dropped_attributes_counts));
     let service_name_array: ArrayRef = Arc::new(StringArray::from(service_names));
 
     // Clone schema for potential error case
@@ -546,6 +556,650 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> RecordBatch {
     );
 
     result.unwrap_or_else(|_| RecordBatch::new_empty(Arc::new(schema_clone)))
+}
+
+/// Convert OTLP metric data to Arrow RecordBatch using the Flight metric schema
+pub fn otlp_metrics_to_arrow(request: &ExportMetricsServiceRequest) -> RecordBatch {
+    let schemas = FlightSchemas::new();
+    let schema = schemas.metric_schema.clone();
+
+    // Extract metrics from the request
+    let mut names = Vec::new();
+    let mut descriptions = Vec::new();
+    let mut units = Vec::new();
+    let mut start_times = Vec::new();
+    let mut times = Vec::new();
+    let mut attributes_jsons = Vec::new();
+    let mut resource_jsons = Vec::new();
+    let mut scope_jsons = Vec::new();
+    let mut metric_types = Vec::new();
+    let mut data_jsons = Vec::new();
+    let mut aggregation_temporalities = Vec::new();
+    let mut is_monotonics = Vec::new();
+
+    for resource_metrics in &request.resource_metrics {
+        // Extract resource attributes as JSON
+        let resource_json = if let Some(resource) = &resource_metrics.resource {
+            let mut resource_map = Map::new();
+            for attr in &resource.attributes {
+                resource_map.insert(attr.key.clone(), extract_value(&attr.value));
+            }
+            serde_json::to_string(&resource_map).unwrap_or_else(|_| "{}".to_string())
+        } else {
+            "{}".to_string()
+        };
+
+        for scope_metrics in &resource_metrics.scope_metrics {
+            // Extract scope attributes as JSON
+            let scope_json = if let Some(scope) = &scope_metrics.scope {
+                let mut scope_map = Map::new();
+                scope_map.insert("name".to_string(), JsonValue::String(scope.name.clone()));
+                scope_map.insert(
+                    "version".to_string(),
+                    JsonValue::String(scope.version.clone()),
+                );
+
+                if !scope.attributes.is_empty() {
+                    let mut attrs_map = Map::new();
+                    for attr in &scope.attributes {
+                        attrs_map.insert(attr.key.clone(), extract_value(&attr.value));
+                    }
+                    scope_map.insert("attributes".to_string(), JsonValue::Object(attrs_map));
+                }
+
+                serde_json::to_string(&scope_map).unwrap_or_else(|_| "{}".to_string())
+            } else {
+                "{}".to_string()
+            };
+
+            for metric in &scope_metrics.metrics {
+                // Extract common metric fields
+                let name = metric.name.clone();
+                let description = metric.description.clone();
+                let unit = metric.unit.clone();
+
+                // Extract metric-specific fields based on data type
+                let (metric_type, data_json, start_time, time, agg_temporality, is_monotonic) = match &metric.data {
+                    Some(data) => match data {
+                        opentelemetry_proto::tonic::metrics::v1::metric::Data::Gauge(gauge) => {
+                            let data_points = extract_number_data_points(&gauge.data_points);
+                            let data_json = serde_json::to_string(&data_points).unwrap_or_else(|_| "[]".to_string());
+
+                            // Get time from the first data point if available
+                            let (start_time, time) = if !gauge.data_points.is_empty() {
+                                (
+                                    gauge.data_points[0].start_time_unix_nano,
+                                    gauge.data_points[0].time_unix_nano,
+                                )
+                            } else {
+                                (0, 0)
+                            };
+
+                            ("gauge".to_string(), data_json, start_time, time, 0, false)
+                        },
+                        opentelemetry_proto::tonic::metrics::v1::metric::Data::Sum(sum) => {
+                            let data_points = extract_number_data_points(&sum.data_points);
+                            let data_json = serde_json::to_string(&data_points).unwrap_or_else(|_| "[]".to_string());
+
+                            // Get time from the first data point if available
+                            let (start_time, time) = if !sum.data_points.is_empty() {
+                                (
+                                    sum.data_points[0].start_time_unix_nano,
+                                    sum.data_points[0].time_unix_nano,
+                                )
+                            } else {
+                                (0, 0)
+                            };
+
+                            (
+                                "sum".to_string(),
+                                data_json,
+                                start_time,
+                                time,
+                                sum.aggregation_temporality as i32,
+                                sum.is_monotonic,
+                            )
+                        },
+                        opentelemetry_proto::tonic::metrics::v1::metric::Data::Histogram(histogram) => {
+                            let data_points = extract_histogram_data_points(&histogram.data_points);
+                            let data_json = serde_json::to_string(&data_points).unwrap_or_else(|_| "[]".to_string());
+
+                            // Get time from the first data point if available
+                            let (start_time, time) = if !histogram.data_points.is_empty() {
+                                (
+                                    histogram.data_points[0].start_time_unix_nano,
+                                    histogram.data_points[0].time_unix_nano,
+                                )
+                            } else {
+                                (0, 0)
+                            };
+
+                            (
+                                "histogram".to_string(),
+                                data_json,
+                                start_time,
+                                time,
+                                histogram.aggregation_temporality as i32,
+                                false,
+                            )
+                        },
+                        opentelemetry_proto::tonic::metrics::v1::metric::Data::ExponentialHistogram(exp_histogram) => {
+                            let data_points = extract_exponential_histogram_data_points(&exp_histogram.data_points);
+                            let data_json = serde_json::to_string(&data_points).unwrap_or_else(|_| "[]".to_string());
+
+                            // Get time from the first data point if available
+                            let (start_time, time) = if !exp_histogram.data_points.is_empty() {
+                                (
+                                    exp_histogram.data_points[0].start_time_unix_nano,
+                                    exp_histogram.data_points[0].time_unix_nano,
+                                )
+                            } else {
+                                (0, 0)
+                            };
+
+                            (
+                                "exponential_histogram".to_string(),
+                                data_json,
+                                start_time,
+                                time,
+                                exp_histogram.aggregation_temporality as i32,
+                                false,
+                            )
+                        },
+                        opentelemetry_proto::tonic::metrics::v1::metric::Data::Summary(summary) => {
+                            let data_points = extract_summary_data_points(&summary.data_points);
+                            let data_json = serde_json::to_string(&data_points).unwrap_or_else(|_| "[]".to_string());
+
+                            // Get time from the first data point if available
+                            let (start_time, time) = if !summary.data_points.is_empty() {
+                                (
+                                    summary.data_points[0].start_time_unix_nano,
+                                    summary.data_points[0].time_unix_nano,
+                                )
+                            } else {
+                                (0, 0)
+                            };
+
+                            ("summary".to_string(), data_json, start_time, time, 0, false)
+                        },
+                    },
+                    None => ("unknown".to_string(), "{}".to_string(), 0, 0, 0, false),
+                };
+
+                // Extract metadata attributes as JSON
+                let mut attr_map = Map::new();
+                for attr in &metric.metadata {
+                    attr_map.insert(attr.key.clone(), extract_value(&attr.value));
+                }
+                let attributes_json =
+                    serde_json::to_string(&attr_map).unwrap_or_else(|_| "{}".to_string());
+
+                // Add to arrays
+                names.push(name);
+                descriptions.push(description);
+                units.push(unit);
+                start_times.push(start_time);
+                times.push(time);
+                attributes_jsons.push(attributes_json);
+                resource_jsons.push(resource_json.clone());
+                scope_jsons.push(scope_json.clone());
+                metric_types.push(metric_type);
+                data_jsons.push(data_json);
+                aggregation_temporalities.push(agg_temporality);
+                is_monotonics.push(is_monotonic);
+            }
+        }
+    }
+
+    // Create Arrow arrays from the extracted data
+    let name_array: ArrayRef = Arc::new(StringArray::from(names));
+    let description_array: ArrayRef = Arc::new(StringArray::from(descriptions));
+    let unit_array: ArrayRef = Arc::new(StringArray::from(units));
+    let start_time_array: ArrayRef = Arc::new(UInt64Array::from(start_times));
+    let time_array: ArrayRef = Arc::new(UInt64Array::from(times));
+    let attributes_json_array: ArrayRef = Arc::new(StringArray::from(attributes_jsons));
+    let resource_json_array: ArrayRef = Arc::new(StringArray::from(resource_jsons));
+    let scope_json_array: ArrayRef = Arc::new(StringArray::from(scope_jsons));
+    let metric_type_array: ArrayRef = Arc::new(StringArray::from(metric_types));
+    let data_json_array: ArrayRef = Arc::new(StringArray::from(data_jsons));
+    let aggregation_temporality_array: ArrayRef =
+        Arc::new(Int32Array::from(aggregation_temporalities));
+    let is_monotonic_array: ArrayRef = Arc::new(BooleanArray::from(is_monotonics));
+
+    // Clone schema for potential error case
+    let schema_clone = schema.clone();
+
+    // Create and return the RecordBatch
+    let result = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![
+            name_array,
+            description_array,
+            unit_array,
+            start_time_array,
+            time_array,
+            attributes_json_array,
+            resource_json_array,
+            scope_json_array,
+            metric_type_array,
+            data_json_array,
+            aggregation_temporality_array,
+            is_monotonic_array,
+        ],
+    );
+
+    result.unwrap_or_else(|_| RecordBatch::new_empty(Arc::new(schema_clone)))
+}
+
+/// Extract number data points from OTLP NumberDataPoint
+fn extract_number_data_points(
+    data_points: &[opentelemetry_proto::tonic::metrics::v1::NumberDataPoint],
+) -> Vec<JsonValue> {
+    let mut result = Vec::new();
+
+    for point in data_points {
+        let mut point_map = Map::new();
+
+        // Add timestamps
+        point_map.insert(
+            "start_time_unix_nano".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.start_time_unix_nano)),
+        );
+        point_map.insert(
+            "time_unix_nano".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.time_unix_nano)),
+        );
+
+        // Add value
+        match &point.value {
+            Some(value) => match value {
+                opentelemetry_proto::tonic::metrics::v1::number_data_point::Value::AsDouble(v) => {
+                    if let Some(num) = serde_json::Number::from_f64(*v) {
+                        point_map.insert("value".to_string(), JsonValue::Number(num));
+                    } else {
+                        point_map.insert("value".to_string(), JsonValue::Null);
+                    }
+                }
+                opentelemetry_proto::tonic::metrics::v1::number_data_point::Value::AsInt(v) => {
+                    point_map.insert(
+                        "value".to_string(),
+                        JsonValue::Number(serde_json::Number::from(*v)),
+                    );
+                }
+            },
+            None => {
+                point_map.insert("value".to_string(), JsonValue::Null);
+            }
+        }
+
+        // Add attributes
+        let mut attr_map = Map::new();
+        for attr in &point.attributes {
+            attr_map.insert(attr.key.clone(), extract_value(&attr.value));
+        }
+        point_map.insert("attributes".to_string(), JsonValue::Object(attr_map));
+
+        // Add flags
+        point_map.insert(
+            "flags".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.flags)),
+        );
+
+        // Add exemplars if present
+        if !point.exemplars.is_empty() {
+            let exemplars = extract_exemplars(&point.exemplars);
+            point_map.insert("exemplars".to_string(), JsonValue::Array(exemplars));
+        }
+
+        result.push(JsonValue::Object(point_map));
+    }
+
+    result
+}
+
+/// Extract histogram data points from OTLP HistogramDataPoint
+fn extract_histogram_data_points(
+    data_points: &[opentelemetry_proto::tonic::metrics::v1::HistogramDataPoint],
+) -> Vec<JsonValue> {
+    let mut result = Vec::new();
+
+    for point in data_points {
+        let mut point_map = Map::new();
+
+        // Add timestamps
+        point_map.insert(
+            "start_time_unix_nano".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.start_time_unix_nano)),
+        );
+        point_map.insert(
+            "time_unix_nano".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.time_unix_nano)),
+        );
+
+        // Add count and sum
+        point_map.insert(
+            "count".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.count)),
+        );
+        if let Some(sum) = point.sum {
+            if let Some(num) = serde_json::Number::from_f64(sum) {
+                point_map.insert("sum".to_string(), JsonValue::Number(num));
+            }
+        }
+
+        // Add min/max if present
+        if let Some(min) = point.min {
+            if let Some(num) = serde_json::Number::from_f64(min) {
+                point_map.insert("min".to_string(), JsonValue::Number(num));
+            }
+        }
+
+        if let Some(max) = point.max {
+            if let Some(num) = serde_json::Number::from_f64(max) {
+                point_map.insert("max".to_string(), JsonValue::Number(num));
+            }
+        }
+
+        // Add bucket boundaries and counts
+        let mut bounds = Vec::new();
+        for bound in &point.explicit_bounds {
+            if let Some(num) = serde_json::Number::from_f64(*bound) {
+                bounds.push(JsonValue::Number(num));
+            }
+        }
+        point_map.insert("explicit_bounds".to_string(), JsonValue::Array(bounds));
+
+        let mut counts = Vec::new();
+        for count in &point.bucket_counts {
+            counts.push(JsonValue::Number(serde_json::Number::from(*count)));
+        }
+        point_map.insert("bucket_counts".to_string(), JsonValue::Array(counts));
+
+        // Add attributes
+        let mut attr_map = Map::new();
+        for attr in &point.attributes {
+            attr_map.insert(attr.key.clone(), extract_value(&attr.value));
+        }
+        point_map.insert("attributes".to_string(), JsonValue::Object(attr_map));
+
+        // Add flags
+        point_map.insert(
+            "flags".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.flags)),
+        );
+
+        // Add exemplars if present
+        if !point.exemplars.is_empty() {
+            let exemplars = extract_exemplars(&point.exemplars);
+            point_map.insert("exemplars".to_string(), JsonValue::Array(exemplars));
+        }
+
+        result.push(JsonValue::Object(point_map));
+    }
+
+    result
+}
+
+/// Extract exponential histogram data points from OTLP ExponentialHistogramDataPoint
+fn extract_exponential_histogram_data_points(
+    data_points: &[opentelemetry_proto::tonic::metrics::v1::ExponentialHistogramDataPoint],
+) -> Vec<JsonValue> {
+    let mut result = Vec::new();
+
+    for point in data_points {
+        let mut point_map = Map::new();
+
+        // Add timestamps
+        point_map.insert(
+            "start_time_unix_nano".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.start_time_unix_nano)),
+        );
+        point_map.insert(
+            "time_unix_nano".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.time_unix_nano)),
+        );
+
+        // Add count, sum, and scale
+        point_map.insert(
+            "count".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.count)),
+        );
+        if let Some(sum) = point.sum {
+            if let Some(num) = serde_json::Number::from_f64(sum) {
+                point_map.insert("sum".to_string(), JsonValue::Number(num));
+            }
+        }
+        point_map.insert(
+            "scale".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.scale)),
+        );
+        point_map.insert(
+            "zero_count".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.zero_count)),
+        );
+
+        // Add min/max if present
+        if let Some(min) = point.min {
+            if let Some(num) = serde_json::Number::from_f64(min) {
+                point_map.insert("min".to_string(), JsonValue::Number(num));
+            }
+        }
+
+        if let Some(max) = point.max {
+            if let Some(num) = serde_json::Number::from_f64(max) {
+                point_map.insert("max".to_string(), JsonValue::Number(num));
+            }
+        }
+
+        // Add positive and negative buckets
+        if let Some(positive) = &point.positive {
+            let mut pos_map = Map::new();
+            pos_map.insert(
+                "offset".to_string(),
+                JsonValue::Number(serde_json::Number::from(positive.offset)),
+            );
+
+            let mut counts = Vec::new();
+            for count in &positive.bucket_counts {
+                counts.push(JsonValue::Number(serde_json::Number::from(*count)));
+            }
+            pos_map.insert("bucket_counts".to_string(), JsonValue::Array(counts));
+
+            point_map.insert("positive".to_string(), JsonValue::Object(pos_map));
+        }
+
+        if let Some(negative) = &point.negative {
+            let mut neg_map = Map::new();
+            neg_map.insert(
+                "offset".to_string(),
+                JsonValue::Number(serde_json::Number::from(negative.offset)),
+            );
+
+            let mut counts = Vec::new();
+            for count in &negative.bucket_counts {
+                counts.push(JsonValue::Number(serde_json::Number::from(*count)));
+            }
+            neg_map.insert("bucket_counts".to_string(), JsonValue::Array(counts));
+
+            point_map.insert("negative".to_string(), JsonValue::Object(neg_map));
+        }
+
+        // Add zero threshold
+        point_map.insert(
+            "zero_threshold".to_string(),
+            JsonValue::Number(
+                serde_json::Number::from_f64(point.zero_threshold)
+                    .unwrap_or(serde_json::Number::from(0)),
+            ),
+        );
+
+        // Add attributes
+        let mut attr_map = Map::new();
+        for attr in &point.attributes {
+            attr_map.insert(attr.key.clone(), extract_value(&attr.value));
+        }
+        point_map.insert("attributes".to_string(), JsonValue::Object(attr_map));
+
+        // Add flags
+        point_map.insert(
+            "flags".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.flags)),
+        );
+
+        // Add exemplars if present
+        if !point.exemplars.is_empty() {
+            let exemplars = extract_exemplars(&point.exemplars);
+            point_map.insert("exemplars".to_string(), JsonValue::Array(exemplars));
+        }
+
+        result.push(JsonValue::Object(point_map));
+    }
+
+    result
+}
+
+/// Extract summary data points from OTLP SummaryDataPoint
+fn extract_summary_data_points(
+    data_points: &[opentelemetry_proto::tonic::metrics::v1::SummaryDataPoint],
+) -> Vec<JsonValue> {
+    let mut result = Vec::new();
+
+    for point in data_points {
+        let mut point_map = Map::new();
+
+        // Add timestamps
+        point_map.insert(
+            "start_time_unix_nano".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.start_time_unix_nano)),
+        );
+        point_map.insert(
+            "time_unix_nano".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.time_unix_nano)),
+        );
+
+        // Add count and sum
+        point_map.insert(
+            "count".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.count)),
+        );
+        if let Some(num) = serde_json::Number::from_f64(point.sum) {
+            point_map.insert("sum".to_string(), JsonValue::Number(num));
+        }
+
+        // Add quantile values
+        let mut quantiles = Vec::new();
+        for q in &point.quantile_values {
+            let mut q_map = Map::new();
+            q_map.insert(
+                "quantile".to_string(),
+                JsonValue::Number(
+                    serde_json::Number::from_f64(q.quantile).unwrap_or(serde_json::Number::from(0)),
+                ),
+            );
+            q_map.insert(
+                "value".to_string(),
+                JsonValue::Number(
+                    serde_json::Number::from_f64(q.value).unwrap_or(serde_json::Number::from(0)),
+                ),
+            );
+            quantiles.push(JsonValue::Object(q_map));
+        }
+        point_map.insert("quantile_values".to_string(), JsonValue::Array(quantiles));
+
+        // Add attributes
+        let mut attr_map = Map::new();
+        for attr in &point.attributes {
+            attr_map.insert(attr.key.clone(), extract_value(&attr.value));
+        }
+        point_map.insert("attributes".to_string(), JsonValue::Object(attr_map));
+
+        // Add flags
+        point_map.insert(
+            "flags".to_string(),
+            JsonValue::Number(serde_json::Number::from(point.flags)),
+        );
+
+        result.push(JsonValue::Object(point_map));
+    }
+
+    result
+}
+
+/// Extract exemplars from OTLP Exemplar
+fn extract_exemplars(
+    exemplars: &[opentelemetry_proto::tonic::metrics::v1::Exemplar],
+) -> Vec<JsonValue> {
+    let mut result = Vec::new();
+
+    for exemplar in exemplars {
+        let mut exemplar_map = Map::new();
+
+        // Add timestamp
+        exemplar_map.insert(
+            "time_unix_nano".to_string(),
+            JsonValue::Number(serde_json::Number::from(exemplar.time_unix_nano)),
+        );
+
+        // Add value
+        match &exemplar.value {
+            Some(value) => match value {
+                opentelemetry_proto::tonic::metrics::v1::exemplar::Value::AsDouble(v) => {
+                    if let Some(num) = serde_json::Number::from_f64(*v) {
+                        exemplar_map.insert("value".to_string(), JsonValue::Number(num));
+                    } else {
+                        exemplar_map.insert("value".to_string(), JsonValue::Null);
+                    }
+                }
+                opentelemetry_proto::tonic::metrics::v1::exemplar::Value::AsInt(v) => {
+                    exemplar_map.insert(
+                        "value".to_string(),
+                        JsonValue::Number(serde_json::Number::from(*v)),
+                    );
+                }
+            },
+            None => {
+                exemplar_map.insert("value".to_string(), JsonValue::Null);
+            }
+        }
+
+        // Add filtered attributes
+        let mut attr_map = Map::new();
+        for attr in &exemplar.filtered_attributes {
+            attr_map.insert(attr.key.clone(), extract_value(&attr.value));
+        }
+        exemplar_map.insert(
+            "filtered_attributes".to_string(),
+            JsonValue::Object(attr_map),
+        );
+
+        // Add trace and span IDs if present
+        if !exemplar.trace_id.is_empty() {
+            exemplar_map.insert(
+                "trace_id".to_string(),
+                JsonValue::String(hex::encode(&exemplar.trace_id)),
+            );
+        }
+
+        if !exemplar.span_id.is_empty() {
+            exemplar_map.insert(
+                "span_id".to_string(),
+                JsonValue::String(hex::encode(&exemplar.span_id)),
+            );
+        }
+
+        result.push(JsonValue::Object(exemplar_map));
+    }
+
+    result
+}
+
+/// Convert Arrow RecordBatch back to OTLP format for metrics
+pub fn arrow_to_otlp_metrics(batch: &RecordBatch) -> ExportMetricsServiceRequest {
+    // This is a placeholder for the reverse conversion
+    // Implementation will be added in a future PR
+    ExportMetricsServiceRequest {
+        resource_metrics: vec![],
+    }
 }
 
 /// Convert Arrow RecordBatch back to OTLP format for logs
@@ -641,12 +1295,36 @@ mod tests {
         assert_eq!(batch.num_columns(), 16);
 
         // Verify some of the values
-        let trace_id = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
-        let span_id = batch.column(1).as_any().downcast_ref::<StringArray>().unwrap();
-        let name = batch.column(3).as_any().downcast_ref::<StringArray>().unwrap();
-        let service_name = batch.column(4).as_any().downcast_ref::<StringArray>().unwrap();
-        let span_kind = batch.column(8).as_any().downcast_ref::<StringArray>().unwrap();
-        let status_code = batch.column(9).as_any().downcast_ref::<StringArray>().unwrap();
+        let trace_id = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let span_id = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let name = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let service_name = batch
+            .column(4)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let span_kind = batch
+            .column(8)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let status_code = batch
+            .column(9)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
 
         assert_eq!(name.value(0), "test-span");
         assert_eq!(service_name.value(0), "test-service");
@@ -713,11 +1391,31 @@ mod tests {
         assert_eq!(batch.num_columns(), 13);
 
         // Verify some of the values
-        let time = batch.column(0).as_any().downcast_ref::<UInt64Array>().unwrap();
-        let observed_time = batch.column(1).as_any().downcast_ref::<UInt64Array>().unwrap();
-        let severity_number = batch.column(2).as_any().downcast_ref::<Int32Array>().unwrap();
-        let severity_text = batch.column(3).as_any().downcast_ref::<StringArray>().unwrap();
-        let service_name = batch.column(12).as_any().downcast_ref::<StringArray>().unwrap();
+        let time = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let observed_time = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let severity_number = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let severity_text = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let service_name = batch
+            .column(12)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
 
         assert_eq!(time.value(0), 1000);
         assert_eq!(observed_time.value(0), 2000);
