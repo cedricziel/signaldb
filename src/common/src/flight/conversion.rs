@@ -1,12 +1,14 @@
 use arrow_array::{
-    ArrayRef, BooleanArray, ListArray, RecordBatch, StringArray, StructArray, UInt32Array,
+    ArrayRef, BinaryArray, BooleanArray, Int32Array, ListArray, RecordBatch, StringArray, StructArray, UInt32Array,
     UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema};
 use opentelemetry::trace::{SpanId, TraceId};
 use opentelemetry_proto::tonic::{
+    collector::logs::v1::ExportLogsServiceRequest,
     collector::trace::v1::ExportTraceServiceRequest,
     common::v1::{any_value::Value, AnyValue, KeyValue},
+    logs::v1::{LogRecord, SeverityNumber},
     trace::v1::{span::Event, Span as OtelSpan, Status as OtelStatus},
 };
 use serde_json::{json, Map, Value as JsonValue};
@@ -399,6 +401,162 @@ fn create_links_array(links_data: &[Vec<(String, String, String)>]) -> ArrayRef 
     Arc::new(ListArray::new_null(field, links_data.len()))
 }
 
+/// Convert OTLP log data to Arrow RecordBatch using the Flight log schema
+pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> RecordBatch {
+    let schemas = FlightSchemas::new();
+    let schema = schemas.log_schema.clone();
+
+    // Extract logs from the request
+    let mut times = Vec::new();
+    let mut observed_times = Vec::new();
+    let mut severity_numbers = Vec::new();
+    let mut severity_texts = Vec::new();
+    let mut bodies = Vec::new();
+    let mut trace_ids = Vec::new();
+    let mut span_ids = Vec::new();
+    let mut flags = Vec::new();
+    let mut attributes_jsons = Vec::new();
+    let mut resource_jsons = Vec::new();
+    let mut scope_jsons = Vec::new();
+    let mut dropped_attributes_counts = Vec::new();
+    let mut service_names = Vec::new();
+
+    for resource_logs in &request.resource_logs {
+        // Extract resource attributes as JSON
+        let resource_json = if let Some(resource) = &resource_logs.resource {
+            let mut resource_map = Map::new();
+            for attr in &resource.attributes {
+                resource_map.insert(attr.key.clone(), extract_value(&attr.value));
+            }
+            serde_json::to_string(&resource_map).unwrap_or_else(|_| "{}".to_string())
+        } else {
+            "{}".to_string()
+        };
+
+        // Extract service name from resource attributes
+        let mut service_name = String::from("unknown");
+        if let Some(resource) = &resource_logs.resource {
+            for attr in &resource.attributes {
+                if attr.key == "service.name" {
+                    if let Some(val) = &attr.value {
+                        if let Some(Value::StringValue(s)) = &val.value {
+                            service_name = s.clone();
+                        }
+                    }
+                }
+            }
+        }
+
+        for scope_logs in &resource_logs.scope_logs {
+            // Extract scope attributes as JSON
+            let scope_json = if let Some(scope) = &scope_logs.scope {
+                let mut scope_map = Map::new();
+                scope_map.insert("name".to_string(), JsonValue::String(scope.name.clone()));
+                scope_map.insert("version".to_string(), JsonValue::String(scope.version.clone()));
+
+                if !scope.attributes.is_empty() {
+                    let mut attrs_map = Map::new();
+                    for attr in &scope.attributes {
+                        attrs_map.insert(attr.key.clone(), extract_value(&attr.value));
+                    }
+                    scope_map.insert("attributes".to_string(), JsonValue::Object(attrs_map));
+                }
+
+                serde_json::to_string(&scope_map).unwrap_or_else(|_| "{}".to_string())
+            } else {
+                "{}".to_string()
+            };
+
+            for log in &scope_logs.log_records {
+                // Extract log attributes as JSON
+                let mut attr_map = Map::new();
+                for attr in &log.attributes {
+                    attr_map.insert(attr.key.clone(), extract_value(&attr.value));
+                }
+                let attributes_json = serde_json::to_string(&attr_map).unwrap_or_else(|_| "{}".to_string());
+
+                // Extract body as JSON
+                let body_json = if let Some(body) = &log.body {
+                    serde_json::to_string(&extract_value(&Some(body.clone()))).unwrap_or_else(|_| "null".to_string())
+                } else {
+                    "null".to_string()
+                };
+
+                // Extract severity
+                let severity_number = log.severity_number as i32;
+                let severity_text = log.severity_text.clone();
+
+                // Add to arrays
+                times.push(log.time_unix_nano);
+                observed_times.push(log.observed_time_unix_nano);
+                severity_numbers.push(severity_number);
+                severity_texts.push(severity_text);
+                bodies.push(body_json);
+                trace_ids.push(log.trace_id.clone());
+                span_ids.push(log.span_id.clone());
+                flags.push(log.flags);
+                attributes_jsons.push(attributes_json);
+                resource_jsons.push(resource_json.clone());
+                scope_jsons.push(scope_json.clone());
+                dropped_attributes_counts.push(log.dropped_attributes_count);
+                service_names.push(service_name.clone());
+            }
+        }
+    }
+
+    // Create Arrow arrays from the extracted data
+    let time_array: ArrayRef = Arc::new(UInt64Array::from(times));
+    let observed_time_array: ArrayRef = Arc::new(UInt64Array::from(observed_times));
+    let severity_number_array: ArrayRef = Arc::new(Int32Array::from(severity_numbers));
+    let severity_text_array: ArrayRef = Arc::new(StringArray::from(severity_texts));
+    let body_array: ArrayRef = Arc::new(StringArray::from(bodies));
+
+    // Create binary arrays for trace_id and span_id
+    let trace_id_array: ArrayRef = Arc::new(BinaryArray::from_iter(trace_ids.into_iter().map(Some)));
+    let span_id_array: ArrayRef = Arc::new(BinaryArray::from_iter(span_ids.into_iter().map(Some)));
+
+    let flags_array: ArrayRef = Arc::new(UInt32Array::from(flags));
+    let attributes_json_array: ArrayRef = Arc::new(StringArray::from(attributes_jsons));
+    let resource_json_array: ArrayRef = Arc::new(StringArray::from(resource_jsons));
+    let scope_json_array: ArrayRef = Arc::new(StringArray::from(scope_jsons));
+    let dropped_attributes_count_array: ArrayRef = Arc::new(UInt32Array::from(dropped_attributes_counts));
+    let service_name_array: ArrayRef = Arc::new(StringArray::from(service_names));
+
+    // Clone schema for potential error case
+    let schema_clone = schema.clone();
+
+    // Create and return the RecordBatch
+    let result = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![
+            time_array,
+            observed_time_array,
+            severity_number_array,
+            severity_text_array,
+            body_array,
+            trace_id_array,
+            span_id_array,
+            flags_array,
+            attributes_json_array,
+            resource_json_array,
+            scope_json_array,
+            dropped_attributes_count_array,
+            service_name_array,
+        ],
+    );
+
+    result.unwrap_or_else(|_| RecordBatch::new_empty(Arc::new(schema_clone)))
+}
+
+/// Convert Arrow RecordBatch back to OTLP format for logs
+pub fn arrow_to_otlp_logs(batch: &RecordBatch) -> ExportLogsServiceRequest {
+    // This is a placeholder for the reverse conversion
+    // Implementation will be added in a future PR
+    ExportLogsServiceRequest {
+        resource_logs: vec![],
+    }
+}
+
 /// Convert Arrow RecordBatch back to OTLP format
 pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
     // This is a placeholder for the reverse conversion
@@ -412,6 +570,7 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
 mod tests {
     use super::*;
     use opentelemetry_proto::tonic::{
+        logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
         resource::v1::Resource,
         trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
     };
@@ -493,6 +652,78 @@ mod tests {
         assert_eq!(service_name.value(0), "test-service");
         assert_eq!(span_kind.value(0), "Server");
         assert_eq!(status_code.value(0), "Ok");
+    }
+
+    #[test]
+    fn test_otlp_logs_to_arrow_empty() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![],
+        };
+
+        let batch = otlp_logs_to_arrow(&request);
+        assert_eq!(batch.num_rows(), 0);
+        assert_eq!(batch.num_columns(), 13); // All the fields in the log schema
+    }
+
+    #[test]
+    fn test_otlp_logs_to_arrow_single_log() {
+        // Create a simple OTLP request with one log record
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("test-service".to_string())),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1000,
+                        observed_time_unix_nano: 2000,
+                        severity_number: 9, // INFO (9) according to the SeverityNumber enum
+                        severity_text: "INFO".to_string(),
+                        body: Some(AnyValue {
+                            value: Some(Value::StringValue("Test log message".to_string())),
+                        }),
+                        attributes: vec![KeyValue {
+                            key: "test.attribute".to_string(),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue("test-value".to_string())),
+                            }),
+                        }],
+                        dropped_attributes_count: 0,
+                        flags: 0,
+                        trace_id: vec![1; 16],
+                        span_id: vec![2; 8],
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let batch = otlp_logs_to_arrow(&request);
+
+        // Verify the batch has one row
+        assert_eq!(batch.num_rows(), 1);
+        assert_eq!(batch.num_columns(), 13);
+
+        // Verify some of the values
+        let time = batch.column(0).as_any().downcast_ref::<UInt64Array>().unwrap();
+        let observed_time = batch.column(1).as_any().downcast_ref::<UInt64Array>().unwrap();
+        let severity_number = batch.column(2).as_any().downcast_ref::<Int32Array>().unwrap();
+        let severity_text = batch.column(3).as_any().downcast_ref::<StringArray>().unwrap();
+        let service_name = batch.column(12).as_any().downcast_ref::<StringArray>().unwrap();
+
+        assert_eq!(time.value(0), 1000);
+        assert_eq!(observed_time.value(0), 2000);
+        assert_eq!(severity_number.value(0), 9); // INFO (9) according to the SeverityNumber enum
+        assert_eq!(severity_text.value(0), "INFO");
+        assert_eq!(service_name.value(0), "test-service");
     }
 
     #[test]

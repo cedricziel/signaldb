@@ -88,7 +88,7 @@ pub async fn serve_otlp_grpc(
     log::info!("Starting OTLP/gRPC acceptor on {}", addr);
 
     let state = AcceptorState::new();
-    let log_server = LogsServiceServer::new(LogAcceptorService);
+    let log_server = LogsServiceServer::new(LogAcceptorService::new(state.queue.clone()));
     let trace_server = TraceServiceServer::new(TraceAcceptorService::new(TraceHandler::new(
         state.queue.clone(),
     )));
