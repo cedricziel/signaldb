@@ -1,6 +1,5 @@
 use std::{collections::HashMap, sync::Arc};
 
-use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Fields};
 use common::flight::conversion::otlp_traces_to_arrow;
 use messaging::{

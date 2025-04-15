@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
 use common::flight::conversion::otlp_metrics_to_arrow;
 use messaging::{messages::batch::BatchWrapper, Message, MessagingBackend};
 use opentelemetry_proto::tonic::collector::metrics::v1::{
