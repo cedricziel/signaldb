@@ -543,6 +543,129 @@ mod tests {
     use arrow_array::{RecordBatch, StringArray, UInt64Array, BooleanArray};
     use std::sync::Arc;
     use arrow_schema::{Schema, Field, DataType};
+    use opentelemetry_proto::tonic::{
+        trace::v1::{Status, Span},
+        common::v1::{AnyValue, KeyValue},
+    };
+
+    #[test]
+    fn test_otlp_traces_to_arrow() {
+        // Create a simple OTLP trace
+        let trace_id_bytes = hex::decode("0123456789abcdef0123456789abcdef").unwrap();
+        let span_id_bytes = hex::decode("0123456789abcdef").unwrap();
+
+        // Create a span with attributes
+        let mut attributes = Vec::new();
+        attributes.push(KeyValue {
+            key: "attr1".to_string(),
+            value: Some(AnyValue {
+                value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                    "value1".to_string(),
+                )),
+            }),
+        });
+
+        // Create a span
+        let span = Span {
+            trace_id: trace_id_bytes,
+            span_id: span_id_bytes,
+            parent_span_id: vec![],  // Root span
+            name: "test-span".to_string(),
+            kind: 1,  // Server
+            start_time_unix_nano: 1000000000,
+            end_time_unix_nano: 2000000000,
+            attributes,
+            dropped_attributes_count: 0,
+            events: vec![],
+            dropped_events_count: 0,
+            links: vec![],
+            dropped_links_count: 0,
+            status: Some(Status {
+                code: 2,  // Ok
+                message: "Success".to_string(),
+            }),
+            flags: 0,
+            trace_state: "".to_string(),
+        };
+
+        // Create resource attributes
+        let mut resource_attributes = Vec::new();
+        resource_attributes.push(KeyValue {
+            key: "service.name".to_string(),
+            value: Some(AnyValue {
+                value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                    "test_service".to_string(),
+                )),
+            }),
+        });
+
+        // Create resource
+        let resource = opentelemetry_proto::tonic::resource::v1::Resource {
+            attributes: resource_attributes,
+            dropped_attributes_count: 0,
+        };
+
+        // Create scope spans
+        let scope_spans = ScopeSpans {
+            scope: None,
+            spans: vec![span],
+            schema_url: "".to_string(),
+        };
+
+        // Create resource spans
+        let resource_spans = ResourceSpans {
+            resource: Some(resource),
+            scope_spans: vec![scope_spans],
+            schema_url: "".to_string(),
+        };
+
+        // Create the OTLP request
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![resource_spans],
+        };
+
+        // Convert OTLP to Arrow
+        let result = otlp_traces_to_arrow(&request);
+
+        // Verify the result
+        assert_eq!(result.num_rows(), 1);
+
+        // Get columns
+        let columns = result.columns();
+        let trace_id_array = columns[0].as_any().downcast_ref::<StringArray>().unwrap();
+        let span_id_array = columns[1].as_any().downcast_ref::<StringArray>().unwrap();
+        let parent_span_id_array = columns[2].as_any().downcast_ref::<StringArray>().unwrap();
+        let name_array = columns[3].as_any().downcast_ref::<StringArray>().unwrap();
+        let service_name_array = columns[4].as_any().downcast_ref::<StringArray>().unwrap();
+        let start_time_array = columns[5].as_any().downcast_ref::<UInt64Array>().unwrap();
+        let end_time_array = columns[6].as_any().downcast_ref::<UInt64Array>().unwrap();
+        let span_kind_array = columns[8].as_any().downcast_ref::<StringArray>().unwrap();
+        let status_code_array = columns[9].as_any().downcast_ref::<StringArray>().unwrap();
+        let status_message_array = columns[10].as_any().downcast_ref::<StringArray>().unwrap();
+        let is_root_array = columns[11].as_any().downcast_ref::<BooleanArray>().unwrap();
+        let attributes_json_array = columns[12].as_any().downcast_ref::<StringArray>().unwrap();
+        let resource_json_array = columns[13].as_any().downcast_ref::<StringArray>().unwrap();
+
+        // Verify values
+        assert_eq!(trace_id_array.value(0), "0123456789abcdef0123456789abcdef");
+        assert_eq!(span_id_array.value(0), "0123456789abcdef");
+        assert_eq!(parent_span_id_array.value(0), "0000000000000000"); // Root span has empty parent
+        assert_eq!(name_array.value(0), "test-span");
+        assert_eq!(service_name_array.value(0), "test_service");
+        assert_eq!(start_time_array.value(0), 1000000000);
+        assert_eq!(end_time_array.value(0), 2000000000);
+        assert_eq!(span_kind_array.value(0), "Server");
+        assert_eq!(status_code_array.value(0), "Ok");
+        assert_eq!(status_message_array.value(0), "Success");
+        assert!(is_root_array.value(0)); // Should be a root span
+
+        // Verify JSON strings
+        let attributes_json: serde_json::Value = serde_json::from_str(attributes_json_array.value(0)).unwrap();
+        assert_eq!(attributes_json["attr1"], "value1");
+
+        let resource_json: serde_json::Value = serde_json::from_str(resource_json_array.value(0)).unwrap();
+        assert_eq!(resource_json["service.name"], "test_service");
+    }
 
     #[test]
     fn test_arrow_to_otlp_traces() {
@@ -685,5 +808,148 @@ mod tests {
         // Verify attributes
         assert_eq!(span.attributes.len(), 1);
         assert_eq!(span.attributes[0].key, "attr1");
+    }
+
+    #[test]
+    fn test_bidirectional_conversion() {
+        // Create a simple OTLP trace
+        let trace_id_bytes = hex::decode("0123456789abcdef0123456789abcdef").unwrap();
+        let span_id_bytes = hex::decode("0123456789abcdef").unwrap();
+
+        // Create a span with attributes
+        let mut attributes = Vec::new();
+        attributes.push(KeyValue {
+            key: "attr1".to_string(),
+            value: Some(AnyValue {
+                value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                    "value1".to_string(),
+                )),
+            }),
+        });
+        attributes.push(KeyValue {
+            key: "attr2".to_string(),
+            value: Some(AnyValue {
+                value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(
+                    42,
+                )),
+            }),
+        });
+
+        // Create a span
+        let span = Span {
+            trace_id: trace_id_bytes,
+            span_id: span_id_bytes,
+            parent_span_id: vec![],  // Root span
+            name: "test-span".to_string(),
+            kind: 1,  // Server
+            start_time_unix_nano: 1000000000,
+            end_time_unix_nano: 2000000000,
+            attributes,
+            dropped_attributes_count: 0,
+            events: vec![],
+            dropped_events_count: 0,
+            links: vec![],
+            dropped_links_count: 0,
+            status: Some(Status {
+                code: 2,  // Ok
+                message: "Success".to_string(),
+            }),
+            flags: 0,
+            trace_state: "".to_string(),
+        };
+
+        // Create resource attributes
+        let mut resource_attributes = Vec::new();
+        resource_attributes.push(KeyValue {
+            key: "service.name".to_string(),
+            value: Some(AnyValue {
+                value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                    "test_service".to_string(),
+                )),
+            }),
+        });
+
+        // Create resource
+        let resource = opentelemetry_proto::tonic::resource::v1::Resource {
+            attributes: resource_attributes,
+            dropped_attributes_count: 0,
+        };
+
+        // Create scope spans
+        let scope_spans = ScopeSpans {
+            scope: None,
+            spans: vec![span],
+            schema_url: "".to_string(),
+        };
+
+        // Create resource spans
+        let resource_spans = ResourceSpans {
+            resource: Some(resource),
+            scope_spans: vec![scope_spans],
+            schema_url: "".to_string(),
+        };
+
+        // Create the OTLP request
+        let original_request = ExportTraceServiceRequest {
+            resource_spans: vec![resource_spans],
+        };
+
+        // Convert OTLP to Arrow
+        let arrow_batch = otlp_traces_to_arrow(&original_request);
+
+        // Convert Arrow back to OTLP
+        let converted_request = arrow_to_otlp_traces(&arrow_batch);
+
+        // Verify the result
+        assert_eq!(converted_request.resource_spans.len(), 1);
+        let resource_spans = &converted_request.resource_spans[0];
+
+        // Verify resource
+        assert!(resource_spans.resource.is_some());
+        let resource = resource_spans.resource.as_ref().unwrap();
+        assert_eq!(resource.attributes.len(), 1);
+        assert_eq!(resource.attributes[0].key, "service.name");
+
+        // Verify scope spans
+        assert_eq!(resource_spans.scope_spans.len(), 1);
+        let scope_spans = &resource_spans.scope_spans[0];
+
+        // Verify spans
+        assert_eq!(scope_spans.spans.len(), 1);
+        let span = &scope_spans.spans[0];
+
+        // Verify span properties
+        assert_eq!(hex::encode(&span.trace_id), "0123456789abcdef0123456789abcdef");
+        assert_eq!(hex::encode(&span.span_id), "0123456789abcdef");
+        assert_eq!(span.name, "test-span");
+        assert_eq!(span.kind, 1); // Server
+        assert_eq!(span.start_time_unix_nano, 1000000000);
+        assert_eq!(span.end_time_unix_nano, 2000000000);
+
+        // Verify status
+        assert!(span.status.is_some());
+        let status = span.status.as_ref().unwrap();
+        assert_eq!(status.code, 2); // Ok
+        assert_eq!(status.message, "Success");
+
+        // Verify attributes (should have both attributes)
+        assert_eq!(span.attributes.len(), 2);
+
+        // Find attributes by key
+        let attr1 = span.attributes.iter().find(|attr| attr.key == "attr1").unwrap();
+        let attr2 = span.attributes.iter().find(|attr| attr.key == "attr2").unwrap();
+
+        // Verify attribute values
+        if let Some(AnyValue { value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(val)) }) = &attr1.value {
+            assert_eq!(val, "value1");
+        } else {
+            panic!("Expected string value for attr1");
+        }
+
+        if let Some(AnyValue { value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(val)) }) = &attr2.value {
+            assert_eq!(*val, 42);
+        } else {
+            panic!("Expected int value for attr2");
+        }
     }
 }
