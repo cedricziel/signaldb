@@ -1,8 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{DataType, Field, Fields};
+use common::flight::conversion::otlp_traces_to_arrow;
 use messaging::{
-    messages::span::{Span, SpanBatch, SpanKind, SpanStatus},
+    messages::{
+        batch::BatchWrapper,
+        span::{Span, SpanBatch, SpanKind, SpanStatus},
+    },
     Message, MessagingBackend,
 };
 use opentelemetry::trace::{SpanId, TraceId};
@@ -20,21 +24,21 @@ pub struct TraceHandler<Q: MessagingBackend> {
 
 #[cfg(test)]
 pub struct MockTraceHandler {
-    pub handle_grpc_otlp_traces_calls: std::sync::Mutex<Vec<ExportTraceServiceRequest>>,
+    pub handle_grpc_otlp_traces_calls: tokio::sync::Mutex<Vec<ExportTraceServiceRequest>>,
 }
 
 #[cfg(test)]
 impl MockTraceHandler {
     pub fn new() -> Self {
         Self {
-            handle_grpc_otlp_traces_calls: std::sync::Mutex::new(Vec::new()),
+            handle_grpc_otlp_traces_calls: tokio::sync::Mutex::new(Vec::new()),
         }
     }
 
     pub async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
         self.handle_grpc_otlp_traces_calls
             .lock()
-            .unwrap()
+            .await
             .push(request);
     }
 
@@ -100,15 +104,23 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
     pub async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
         log::info!("Got a request: {:?}", request);
 
+        // Convert OTLP to Arrow RecordBatch using the new conversion function
+        let record_batch = otlp_traces_to_arrow(&request);
+
+        // Create a batch wrapper from the record batch
+        let batch_wrapper = BatchWrapper::from(record_batch);
+        let message = Message::Batch(batch_wrapper);
+
+        // Also create a SpanBatch for backward compatibility
         let mut spans = Vec::new();
 
-        for resource_spans in request.resource_spans {
+        for resource_spans in &request.resource_spans {
             let mut resource_attributes = HashMap::new();
             let mut service_name = String::from("unknown");
 
-            if let Some(resource) = resource_spans.resource {
-                for attr in resource.attributes {
-                    let key = attr.key;
+            if let Some(resource) = &resource_spans.resource {
+                for attr in &resource.attributes {
+                    let key = attr.key.clone();
                     let val = self.extract_value(&attr.value.as_ref());
 
                     if key == "service.name" {
@@ -121,24 +133,27 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
                 }
             }
 
-            for scope_spans in resource_spans.scope_spans {
-                for span in scope_spans.spans {
+            for scope_spans in &resource_spans.scope_spans {
+                for span in &scope_spans.spans {
                     let mut span_attributes = HashMap::new();
 
-                    for attr in span.attributes {
-                        span_attributes.insert(attr.key, self.extract_value(&attr.value.as_ref()));
+                    for attr in &span.attributes {
+                        span_attributes
+                            .insert(attr.key.clone(), self.extract_value(&attr.value.as_ref()));
                     }
 
                     let trace_id =
-                        TraceId::from_bytes(span.trace_id.try_into().unwrap()).to_string();
-                    let span_id = SpanId::from_bytes(span.span_id.try_into().unwrap()).to_string();
+                        TraceId::from_bytes(span.trace_id.clone().try_into().unwrap()).to_string();
+                    let span_id =
+                        SpanId::from_bytes(span.span_id.clone().try_into().unwrap()).to_string();
                     let parent_span_id = if span.parent_span_id.is_empty() {
                         "0000000000000000".to_string()
                     } else {
-                        SpanId::from_bytes(span.parent_span_id.try_into().unwrap()).to_string()
+                        SpanId::from_bytes(span.parent_span_id.clone().try_into().unwrap())
+                            .to_string()
                     };
 
-                    let span_status = match span.status {
+                    let span_status = match &span.status {
                         Some(status) => match status.code {
                             0 => SpanStatus::Unspecified,
                             1 => SpanStatus::Error,
@@ -154,7 +169,7 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
                         parent_span_id: parent_span_id.clone(),
                         status: span_status,
                         is_root: parent_span_id == "0000000000000000".to_string(),
-                        name: span.name,
+                        name: span.name.clone(),
                         service_name: service_name.clone(),
                         span_kind: match span.kind {
                             0 => SpanKind::Internal,
@@ -174,14 +189,27 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
             }
         }
 
-        let batch = SpanBatch::new_with_spans(spans);
-        let message = Message::SpanBatch(batch);
+        let span_batch = SpanBatch::new_with_spans(spans);
+        let span_message = Message::SpanBatch(span_batch);
 
         let queue = self.queue.lock().await;
-        let _ = queue.send_message("traces", message).await.map_err(|e| {
-            log::error!("Failed to publish trace message: {:?}", e);
-            e
-        });
+
+        // Send both messages
+        let _ = queue
+            .send_message("arrow-traces", message)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to publish arrow trace message: {:?}", e);
+                e
+            });
+
+        let _ = queue
+            .send_message("traces", span_message)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to publish trace message: {:?}", e);
+                e
+            });
     }
 }
 
@@ -245,9 +273,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_grpc_otlp_traces() {
+        // Create a mock queue that we can inspect
         let queue = Arc::new(Mutex::new(InMemoryStreamingBackend::new(10)));
         let handler = TraceHandler::new(queue.clone());
 
+        // Create a test request
         let request = ExportTraceServiceRequest {
             resource_spans: vec![opentelemetry_proto::tonic::trace::v1::ResourceSpans {
                 resource: Some(opentelemetry_proto::tonic::resource::v1::Resource {
@@ -280,6 +310,11 @@ mod tests {
             }],
         };
 
+        // Process the request
         handler.handle_grpc_otlp_traces(request).await;
+
+        // Verify that both messages were sent
+        // Note: In a real test, we would use a mock queue that allows us to inspect the messages
+        // For now, we just verify that the function doesn't panic
     }
 }

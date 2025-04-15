@@ -11,12 +11,15 @@ acceptor = { path = "src/acceptor" }
 common = { path = "src/common" }
 messaging = { path = "src/messaging" }
 querier = { path = "src/querier" }
+router = { path = "src/router" }
 writer = { path = "src/writer" }
 tempfile = "3.8.1"
 hex = "0.4"
 futures = "0.3.31"
 
 anyhow.workspace = true
+axum.workspace = true
+arrow-flight.workspace = true
 
 arrow-array.workspace = true
 arrow.workspace = true
@@ -71,6 +74,7 @@ futures = "0.3.31"
 arrow = "53.4.1"
 arrow-array = "53.2.0"
 arrow-flight = "53.4.1"
+arrow-ipc = "53.4.1"
 arrow-schema = "53.4.1"
 datafusion = "43.0.0"
 parquet = { version = "53.3.0", features = ["arrow"] }
@@ -88,7 +92,7 @@ opentelemetry-proto = "0.26.1"
 opentelemetry-semantic-conventions = "0.26.0"
 
 tokio = { version = "1.44.2", features = ["full"] }
-tokio-stream = { version = "0.1.17", features = ["sync"] }
+tokio-stream = { version = "0.1.17", features = ["sync", "net"] }
 tokio-test = "0.4.2"
 
 tracing = "0.1"
@@ -122,7 +126,9 @@ uuid = "1.4.1"
 
 humantime-serde = "1.1.1"
 
-hyper = "1.0.1"
+hyper = { version = "1.0.1", features = ["server", "http1"] }
+
+hex = "0.4"
 
 async-nats = "0.38.0"
 

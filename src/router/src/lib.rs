@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use axum::{http::StatusCode, response::IntoResponse, routing::get, Router};
 use messaging::{backend::nats::NatsBackend, MessagingBackend};
+use tonic::transport::Server;
 
-mod endpoints;
+pub mod endpoints;
 
 /// RouterState implementation for NATS
 #[derive(Clone, Debug)]
@@ -60,9 +61,14 @@ impl RouterState for InMemoryStateImpl {
 /// Create a new router instance with all routes configured
 pub fn create_router<S: RouterState>(state: S) -> Router<S> {
     Router::new()
-        .with_state(state)
+        .with_state(state.clone())
         .route("/health", get(health_check))
         .nest("/tempo", endpoints::tempo::router())
+}
+
+/// Create a new Flight service instance
+pub fn create_flight_service<S: RouterState>(state: S) -> endpoints::flight::SignalDBFlightService<S> {
+    endpoints::flight::SignalDBFlightService::new(state)
 }
 
 /// Basic health check endpoint
