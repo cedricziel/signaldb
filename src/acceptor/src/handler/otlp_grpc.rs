@@ -25,21 +25,21 @@ pub struct TraceHandler<Q: MessagingBackend> {
 
 #[cfg(test)]
 pub struct MockTraceHandler {
-    pub handle_grpc_otlp_traces_calls: std::sync::Mutex<Vec<ExportTraceServiceRequest>>,
+    pub handle_grpc_otlp_traces_calls: tokio::sync::Mutex<Vec<ExportTraceServiceRequest>>,
 }
 
 #[cfg(test)]
 impl MockTraceHandler {
     pub fn new() -> Self {
         Self {
-            handle_grpc_otlp_traces_calls: std::sync::Mutex::new(Vec::new()),
+            handle_grpc_otlp_traces_calls: tokio::sync::Mutex::new(Vec::new()),
         }
     }
 
     pub async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
         self.handle_grpc_otlp_traces_calls
             .lock()
-            .unwrap()
+            .await
             .push(request);
     }
 

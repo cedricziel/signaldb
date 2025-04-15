@@ -119,7 +119,7 @@ mod tests {
                 .handler
                 .handle_grpc_otlp_traces_calls
                 .lock()
-                .unwrap()
+                .await
                 .len(),
             1
         );

@@ -55,19 +55,19 @@ impl<Q: MessagingBackend + 'static> LogsService for LogAcceptorService<Q> {
 
 #[cfg(test)]
 pub struct MockLogAcceptorService {
-    pub handle_export_calls: std::sync::Mutex<Vec<ExportLogsServiceRequest>>,
+    pub handle_export_calls: tokio::sync::Mutex<Vec<ExportLogsServiceRequest>>,
 }
 
 #[cfg(test)]
 impl MockLogAcceptorService {
     pub fn new() -> Self {
         Self {
-            handle_export_calls: std::sync::Mutex::new(Vec::new()),
+            handle_export_calls: tokio::sync::Mutex::new(Vec::new()),
         }
     }
 
     pub async fn export(&self, request: ExportLogsServiceRequest) -> ExportLogsServiceResponse {
-        self.handle_export_calls.lock().unwrap().push(request);
+        self.handle_export_calls.lock().await.push(request);
 
         ExportLogsServiceResponse {
             partial_success: None,

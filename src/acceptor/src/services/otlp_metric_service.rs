@@ -56,14 +56,14 @@ impl<Q: MessagingBackend + 'static> MetricsService for MetricsAcceptorService<Q>
 
 #[cfg(test)]
 pub struct MockMetricsAcceptorService {
-    pub handle_export_calls: std::sync::Mutex<Vec<ExportMetricsServiceRequest>>,
+    pub handle_export_calls: tokio::sync::Mutex<Vec<ExportMetricsServiceRequest>>,
 }
 
 #[cfg(test)]
 impl MockMetricsAcceptorService {
     pub fn new() -> Self {
         Self {
-            handle_export_calls: std::sync::Mutex::new(Vec::new()),
+            handle_export_calls: tokio::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -71,7 +71,7 @@ impl MockMetricsAcceptorService {
         &self,
         request: ExportMetricsServiceRequest,
     ) -> ExportMetricsServiceResponse {
-        self.handle_export_calls.lock().unwrap().push(request);
+        self.handle_export_calls.lock().await.push(request);
 
         ExportMetricsServiceResponse {
             partial_success: None,
