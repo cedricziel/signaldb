@@ -1,14 +1,13 @@
 use arrow_array::{
-    ArrayRef, BinaryArray, BooleanArray, Int32Array, StringArray, UInt32Array, UInt64Array,
+    ArrayRef, BinaryArray, Int32Array, StringArray, UInt32Array, UInt64Array,
 };
-use arrow_schema::{DataType, Field};
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
-    common::v1::{any_value::Value, AnyValue, KeyValue},
-    logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
+    common::v1::KeyValue,
+    logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
     resource::v1::Resource,
 };
-use serde_json::{Map, Value as JsonValue};
+use serde_json::Map;
 use std::sync::Arc;
 
 use crate::flight::conversion::conversion_common::{
@@ -210,9 +209,13 @@ pub fn arrow_to_otlp_logs(batch: &arrow_array::RecordBatch) -> ExportLogsService
         .expect("event_name column should be StringArray");
 
     // Group logs by resource and scope
-    let mut resource_scope_logs_map: HashMap<String, HashMap<String, Vec<LogRecord>>> = HashMap::new();
+    let mut resource_scope_logs_map: HashMap<String, HashMap<String, Vec<LogRecord>>> =
+        HashMap::new();
     let mut resource_attributes_map: HashMap<String, Vec<KeyValue>> = HashMap::new();
-    let mut scope_attributes_map: HashMap<String, opentelemetry_proto::tonic::common::v1::InstrumentationScope> = HashMap::new();
+    let mut scope_attributes_map: HashMap<
+        String,
+        opentelemetry_proto::tonic::common::v1::InstrumentationScope,
+    > = HashMap::new();
 
     for row in 0..batch.num_rows() {
         let time_unix_nano = time_array.value(row);
@@ -238,46 +241,53 @@ pub fn arrow_to_otlp_logs(batch: &arrow_array::RecordBatch) -> ExportLogsService
         };
 
         // Parse attributes JSON string to KeyValue vector
-        let attributes: Vec<KeyValue> = if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(attributes_json_str) {
-            if let serde_json::Value::Object(map) = json_val {
-                map.into_iter()
-                    .map(|(k, v)| KeyValue {
-                        key: k,
-                        value: Some(json_value_to_any_value(&v)),
-                    })
-                    .collect()
+        let attributes: Vec<KeyValue> =
+            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(attributes_json_str) {
+                if let serde_json::Value::Object(map) = json_val {
+                    map.into_iter()
+                        .map(|(k, v)| KeyValue {
+                            key: k,
+                            value: Some(json_value_to_any_value(&v)),
+                        })
+                        .collect()
+                } else {
+                    vec![]
+                }
             } else {
                 vec![]
-            }
-        } else {
-            vec![]
-        };
+            };
 
         // Parse resource JSON string to KeyValue vector
-        let resource_attributes: Vec<KeyValue> = if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(resource_json_str) {
-            if let serde_json::Value::Object(map) = json_val {
-                map.into_iter()
-                    .map(|(k, v)| KeyValue {
-                        key: k,
-                        value: Some(json_value_to_any_value(&v)),
-                    })
-                    .collect()
+        let resource_attributes: Vec<KeyValue> =
+            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(resource_json_str) {
+                if let serde_json::Value::Object(map) = json_val {
+                    map.into_iter()
+                        .map(|(k, v)| KeyValue {
+                            key: k,
+                            value: Some(json_value_to_any_value(&v)),
+                        })
+                        .collect()
+                } else {
+                    vec![]
+                }
             } else {
                 vec![]
-            }
-        } else {
-            vec![]
-        };
+            };
 
         // Parse scope JSON string to InstrumentationScope
-        let scope = if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(scope_json_str) {
+        let scope = if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(scope_json_str)
+        {
             if let serde_json::Value::Object(map) = json_val {
-                let name = map.get("name")
+                let name = map
+                    .get("name")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("").to_string();
-                let version = map.get("version")
+                    .unwrap_or("")
+                    .to_string();
+                let version = map
+                    .get("version")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("").to_string();
+                    .unwrap_or("")
+                    .to_string();
 
                 let mut scope_attributes = Vec::new();
                 if let Some(attrs) = map.get("attributes") {
@@ -374,17 +384,17 @@ pub fn arrow_to_otlp_logs(batch: &arrow_array::RecordBatch) -> ExportLogsService
         resource_logs.push(resource_logs_entry);
     }
 
-    ExportLogsServiceRequest {
-        resource_logs,
-    }
+    ExportLogsServiceRequest { resource_logs }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{RecordBatch, StringArray, UInt64Array, Int32Array, UInt32Array, BinaryArray};
+    use arrow_array::{
+        BinaryArray, Int32Array, RecordBatch, StringArray, UInt32Array, UInt64Array,
+    };
+    use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
-    use arrow_schema::{Schema, Field, DataType};
 
     #[test]
     fn test_arrow_to_otlp_logs() {
@@ -422,7 +432,8 @@ mod tests {
         let flags_array = UInt32Array::from(vec![1]);
         let attributes_json_array = StringArray::from(vec!["{\"attr1\":\"value1\"}"]);
         let resource_json_array = StringArray::from(vec!["{\"service.name\":\"test_service\"}"]);
-        let scope_json_array = StringArray::from(vec!["{\"name\":\"test_scope\",\"version\":\"1.0\"}"]);
+        let scope_json_array =
+            StringArray::from(vec!["{\"name\":\"test_scope\",\"version\":\"1.0\"}"]);
         let dropped_attributes_count_array = UInt32Array::from(vec![0]);
         let service_name_array = StringArray::from(vec!["test_service"]);
         let event_name_array = StringArray::from(vec![""]);
@@ -445,7 +456,8 @@ mod tests {
                 Arc::new(service_name_array),
                 Arc::new(event_name_array),
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Convert Arrow to OTLP
         let result = arrow_to_otlp_logs(&batch);
