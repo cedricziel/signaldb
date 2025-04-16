@@ -37,6 +37,7 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> arrow_array::Re
     let mut scope_jsons = Vec::new();
     let mut dropped_attributes_counts = Vec::new();
     let mut service_names = Vec::new();
+    let mut event_names = Vec::new();
 
     for resource_logs in &request.resource_logs {
         // Extract resource attributes as JSON
@@ -74,6 +75,9 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> arrow_array::Re
                 let severity_number = log.severity_number as u32 as i32;
                 let severity_text = log.severity_text.clone();
 
+                // Extract event name
+                let event_name = log.event_name.clone();
+
                 // Add to arrays
                 times.push(log.time_unix_nano);
                 observed_times.push(log.observed_time_unix_nano);
@@ -88,6 +92,7 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> arrow_array::Re
                 scope_jsons.push(scope_json.clone());
                 dropped_attributes_counts.push(log.dropped_attributes_count);
                 service_names.push(service_name.clone());
+                event_names.push(event_name);
             }
         }
     }
@@ -111,6 +116,7 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> arrow_array::Re
     let dropped_attributes_count_array: ArrayRef =
         Arc::new(UInt32Array::from(dropped_attributes_counts));
     let service_name_array: ArrayRef = Arc::new(StringArray::from(service_names));
+    let event_name_array: ArrayRef = Arc::new(StringArray::from(event_names));
 
     // Clone schema for potential error case
     let schema_clone = schema.clone();
@@ -132,6 +138,7 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> arrow_array::Re
             scope_json_array,
             dropped_attributes_count_array,
             service_name_array,
+            event_name_array,
         ],
     );
 
@@ -197,6 +204,10 @@ pub fn arrow_to_otlp_logs(batch: &arrow_array::RecordBatch) -> ExportLogsService
         .as_any()
         .downcast_ref::<StringArray>()
         .expect("service_name column should be StringArray");
+    let event_name_array = columns[13]
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("event_name column should be StringArray");
 
     // Group logs by resource and scope
     let mut resource_scope_logs_map: HashMap<String, HashMap<String, Vec<LogRecord>>> = HashMap::new();
@@ -217,6 +228,7 @@ pub fn arrow_to_otlp_logs(batch: &arrow_array::RecordBatch) -> ExportLogsService
         let scope_json_str = scope_json_array.value(row);
         let dropped_attributes_count = dropped_attributes_count_array.value(row);
         let service_name = service_name_array.value(row).to_string();
+        let event_name = event_name_array.value(row).to_string();
 
         // Parse body JSON string to AnyValue
         let body = if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(body_json) {
@@ -314,6 +326,7 @@ pub fn arrow_to_otlp_logs(batch: &arrow_array::RecordBatch) -> ExportLogsService
             flags,
             trace_id,
             span_id,
+            event_name,
         };
 
         // Use resource_json_str and scope_json_str as keys for grouping
@@ -390,6 +403,7 @@ mod tests {
             Field::new("scope_json", DataType::Utf8, true),
             Field::new("dropped_attributes_count", DataType::UInt32, true),
             Field::new("service_name", DataType::Utf8, true),
+            Field::new("event_name", DataType::Utf8, true),
         ]));
 
         // Sample data for a log
@@ -411,6 +425,7 @@ mod tests {
         let scope_json_array = StringArray::from(vec!["{\"name\":\"test_scope\",\"version\":\"1.0\"}"]);
         let dropped_attributes_count_array = UInt32Array::from(vec![0]);
         let service_name_array = StringArray::from(vec!["test_service"]);
+        let event_name_array = StringArray::from(vec![""]);
 
         let batch = RecordBatch::try_new(
             schema,
@@ -428,6 +443,7 @@ mod tests {
                 Arc::new(scope_json_array),
                 Arc::new(dropped_attributes_count_array),
                 Arc::new(service_name_array),
+                Arc::new(event_name_array),
             ],
         ).unwrap();
 
