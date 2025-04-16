@@ -8,8 +8,8 @@ use arrow_flight::{
 use bytes::Bytes;
 use common::flight::schema::FlightSchemas;
 use futures::stream::BoxStream;
-use futures::{stream, Stream, StreamExt};
-use tonic::{async_trait, Request, Response, Status, Streaming};
+use futures::{stream, StreamExt};
+use tonic::{Request, Response, Status, Streaming};
 
 use crate::RouterState;
 
@@ -29,7 +29,7 @@ impl<S: RouterState> SignalDBFlightService<S> {
     }
 }
 
-#[async_trait]
+#[tonic::async_trait]
 impl<S: RouterState> FlightService for SignalDBFlightService<S> {
     type HandshakeStream = BoxStream<'static, Result<HandshakeResponse, Status>>;
 

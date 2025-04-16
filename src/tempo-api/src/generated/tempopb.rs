@@ -713,7 +713,7 @@ pub mod pusher_client {
     }
     impl<T> PusherClient<T>
     where
-        T: tonic::client::GrpcService<tonic::body::Body>,
+        T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
         T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
@@ -734,13 +734,13 @@ pub mod pusher_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
+                http::Request<tonic::body::BoxBody>,
                 Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
             <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
+                http::Request<tonic::body::BoxBody>,
             >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             PusherClient::new(InterceptedService::new(inner, interceptor))
@@ -848,7 +848,7 @@ pub mod metrics_generator_client {
     }
     impl<T> MetricsGeneratorClient<T>
     where
-        T: tonic::client::GrpcService<tonic::body::Body>,
+        T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
         T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
@@ -869,13 +869,13 @@ pub mod metrics_generator_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
+                http::Request<tonic::body::BoxBody>,
                 Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
             <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
+                http::Request<tonic::body::BoxBody>,
             >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             MetricsGeneratorClient::new(InterceptedService::new(inner, interceptor))
@@ -1011,7 +1011,7 @@ pub mod querier_client {
     }
     impl<T> QuerierClient<T>
     where
-        T: tonic::client::GrpcService<tonic::body::Body>,
+        T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
         T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
@@ -1032,13 +1032,13 @@ pub mod querier_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
+                http::Request<tonic::body::BoxBody>,
                 Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
             <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
+                http::Request<tonic::body::BoxBody>,
             >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             QuerierClient::new(InterceptedService::new(inner, interceptor))
@@ -1267,7 +1267,7 @@ pub mod streaming_querier_client {
     }
     impl<T> StreamingQuerierClient<T>
     where
-        T: tonic::client::GrpcService<tonic::body::Body>,
+        T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
         T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
@@ -1288,13 +1288,13 @@ pub mod streaming_querier_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
+                http::Request<tonic::body::BoxBody>,
                 Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
             <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
+                http::Request<tonic::body::BoxBody>,
             >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             StreamingQuerierClient::new(InterceptedService::new(inner, interceptor))
@@ -1535,7 +1535,7 @@ pub mod metrics_client {
     }
     impl<T> MetricsClient<T>
     where
-        T: tonic::client::GrpcService<tonic::body::Body>,
+        T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
         T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
@@ -1556,13 +1556,13 @@ pub mod metrics_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
+                http::Request<tonic::body::BoxBody>,
                 Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
             <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
+                http::Request<tonic::body::BoxBody>,
             >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             MetricsClient::new(InterceptedService::new(inner, interceptor))
@@ -1738,7 +1738,7 @@ pub mod pusher_server {
         B: Body + std::marker::Send + 'static,
         B::Error: Into<StdError> + std::marker::Send + 'static,
     {
-        type Response = http::Response<tonic::body::Body>;
+        type Response = http::Response<tonic::body::BoxBody>;
         type Error = std::convert::Infallible;
         type Future = BoxFuture<Self::Response, Self::Error>;
         fn poll_ready(
@@ -1837,9 +1837,7 @@ pub mod pusher_server {
                 }
                 _ => {
                     Box::pin(async move {
-                        let mut response = http::Response::new(
-                            tonic::body::Body::default(),
-                        );
+                        let mut response = http::Response::new(empty_body());
                         let headers = response.headers_mut();
                         headers
                             .insert(
@@ -1973,7 +1971,7 @@ pub mod metrics_generator_server {
         B: Body + std::marker::Send + 'static,
         B::Error: Into<StdError> + std::marker::Send + 'static,
     {
-        type Response = http::Response<tonic::body::Body>;
+        type Response = http::Response<tonic::body::BoxBody>;
         type Error = std::convert::Infallible;
         type Future = BoxFuture<Self::Response, Self::Error>;
         fn poll_ready(
@@ -2121,9 +2119,7 @@ pub mod metrics_generator_server {
                 }
                 _ => {
                     Box::pin(async move {
-                        let mut response = http::Response::new(
-                            tonic::body::Body::default(),
-                        );
+                        let mut response = http::Response::new(empty_body());
                         let headers = response.headers_mut();
                         headers
                             .insert(
@@ -2282,7 +2278,7 @@ pub mod querier_server {
         B: Body + std::marker::Send + 'static,
         B::Error: Into<StdError> + std::marker::Send + 'static,
     {
-        type Response = http::Response<tonic::body::Body>;
+        type Response = http::Response<tonic::body::BoxBody>;
         type Error = std::convert::Infallible;
         type Future = BoxFuture<Self::Response, Self::Error>;
         fn poll_ready(
@@ -2606,9 +2602,7 @@ pub mod querier_server {
                 }
                 _ => {
                     Box::pin(async move {
-                        let mut response = http::Response::new(
-                            tonic::body::Body::default(),
-                        );
+                        let mut response = http::Response::new(empty_body());
                         let headers = response.headers_mut();
                         headers
                             .insert(
@@ -2812,7 +2806,7 @@ pub mod streaming_querier_server {
         B: Body + std::marker::Send + 'static,
         B::Error: Into<StdError> + std::marker::Send + 'static,
     {
-        type Response = http::Response<tonic::body::Body>;
+        type Response = http::Response<tonic::body::BoxBody>;
         type Error = std::convert::Infallible;
         type Future = BoxFuture<Self::Response, Self::Error>;
         fn poll_ready(
@@ -3163,9 +3157,7 @@ pub mod streaming_querier_server {
                 }
                 _ => {
                     Box::pin(async move {
-                        let mut response = http::Response::new(
-                            tonic::body::Body::default(),
-                        );
+                        let mut response = http::Response::new(empty_body());
                         let headers = response.headers_mut();
                         headers
                             .insert(
@@ -3295,7 +3287,7 @@ pub mod metrics_server {
         B: Body + std::marker::Send + 'static,
         B::Error: Into<StdError> + std::marker::Send + 'static,
     {
-        type Response = http::Response<tonic::body::Body>;
+        type Response = http::Response<tonic::body::BoxBody>;
         type Error = std::convert::Infallible;
         type Future = BoxFuture<Self::Response, Self::Error>;
         fn poll_ready(
@@ -3398,9 +3390,7 @@ pub mod metrics_server {
                 }
                 _ => {
                     Box::pin(async move {
-                        let mut response = http::Response::new(
-                            tonic::body::Body::default(),
-                        );
+                        let mut response = http::Response::new(empty_body());
                         let headers = response.headers_mut();
                         headers
                             .insert(
