@@ -5,34 +5,31 @@ use opentelemetry::{
     trace::{Span, SpanBuilder, SpanKind, TraceContextExt, Tracer},
     KeyValue,
 };
-use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::{trace::Config, Resource};
+use opentelemetry_otlp::SpanExporter;
+use opentelemetry_sdk::{
+    trace::SdkTracerProvider,
+    Resource,
+};
 use opentelemetry_semantic_conventions::trace::{HTTP_REQUEST_METHOD, URL_FULL};
 
 /// produce a couple of signals and send it to a destination
 #[tokio::main]
 async fn main() {
-    // First, create a OTLP exporter builder. Configure it as you need.
-    let otlp_exporter = opentelemetry_otlp::new_exporter()
-        .tonic()
-        .with_endpoint("http://localhost:4317")
-        .with_timeout(Duration::from_secs(3))
-        .with_protocol(opentelemetry_otlp::Protocol::Grpc);
+    let resource = Resource::builder()
+        .with_attributes(vec![KeyValue::new("service.name", "signal-producer")])
+        .build();
 
-    // Then pass it into pipeline builder
-    let tracer_provider = opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_trace_config(
-            Config::default().with_resource(Resource::new(vec![KeyValue::new(
-                "service.name",
-                "signal-producer",
-            )])),
-        )
-        .with_exporter(otlp_exporter)
-        .install_simple()
-        .unwrap();
+    let exporter = SpanExporter::builder()
+        .with_tonic()
+        .build()
+        .expect("Failed to create span exporter");
 
-    global::set_tracer_provider(tracer_provider);
+    let provider = SdkTracerProvider::builder()
+        .with_resource(resource.clone())
+        .with_batch_exporter(exporter)
+        .build();
+
+    global::set_tracer_provider(provider.clone());
 
     let tracer = global::tracer("readme_example");
 
@@ -66,8 +63,8 @@ async fn main() {
     });
     span.end();
 
-    // Shutdown exporter
-    global::shutdown_tracer_provider();
+    // Shutdown provider
+    provider.shutdown().expect("Failed to shutdown exporter");
 
     tokio::time::sleep(Duration::from_secs(3)).await;
 }
