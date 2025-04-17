@@ -27,3 +27,10 @@ bytes.workspace = true
 
 humantime-serde.workspace = true
 futures.workspace = true
+async-nats.workspace = true
+async-stream.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+testcontainers-modules.workspace = true
+ntest.workspace = true
