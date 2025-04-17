@@ -24,6 +24,9 @@ use tokio::{
     fs::{create_dir_all, File},
     sync::{oneshot, Mutex},
 };
+// Flight protocol client
+use arrow_flight::client::FlightClient;
+use tonic::transport::Endpoint;
 
 use crate::handler::otlp_grpc::TraceHandler;
 use crate::services::{
@@ -88,11 +91,27 @@ pub async fn serve_otlp_grpc(
     log::info!("Starting OTLP/gRPC acceptor on {}", addr);
 
     let state = AcceptorState::new();
-    let log_server = LogsServiceServer::new(LogAcceptorService::new(state.queue.clone()));
-    let trace_server = TraceServiceServer::new(TraceAcceptorService::new(TraceHandler::new(
+    // Initialize Flight client to forward telemetry to writer
+    let flight_endpoint = std::env::var("FLIGHT_ENDPOINT").unwrap_or_else(|_| {
+        // Default Flight endpoint
+        "http://127.0.0.1:50051".to_string()
+    });
+    let endpoint = Endpoint::new(flight_endpoint)
+        .map_err(|e| anyhow::anyhow!("Invalid Flight endpoint: {}", e))?;
+    let channel = endpoint.connect().await?;
+    let flight_client = Arc::new(Mutex::new(FlightClient::new(channel)));
+    // Set up OTLP/gRPC services with Flight forwarding
+    let log_server = LogsServiceServer::new(LogAcceptorService::new_with_flight(
         state.queue.clone(),
-    )));
-    let metric_server = MetricsServiceServer::new(MetricsAcceptorService::new(state.queue.clone()));
+        flight_client.clone(),
+    ));
+    let trace_server = TraceServiceServer::new(TraceAcceptorService::new(
+        TraceHandler::new_with_flight(state.queue.clone(), flight_client.clone()),
+    ));
+    let metric_server = MetricsServiceServer::new(MetricsAcceptorService::new_with_flight(
+        state.queue.clone(),
+        flight_client.clone(),
+    ));
 
     init_tx
         .send(())

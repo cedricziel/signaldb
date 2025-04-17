@@ -1,5 +1,4 @@
 use acceptor::{serve_otlp_grpc, serve_otlp_http};
-use std::convert::Infallible;
 use anyhow::{Context, Result};
 use messaging::backend::memory::InMemoryStreamingBackend;
 use router::{create_flight_service, create_router, InMemoryStateImpl};

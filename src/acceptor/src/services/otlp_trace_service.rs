@@ -67,7 +67,7 @@ mod tests {
         let mock_handler = MockTraceHandler::new();
         let service = TraceAcceptorService::new(mock_handler);
 
-        let request = tonic::Request::new(ExportTraceServiceRequest {
+        let request = Request::new(ExportTraceServiceRequest {
             resource_spans: vec![ResourceSpans {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {

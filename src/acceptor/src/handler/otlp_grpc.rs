@@ -16,10 +16,17 @@ use opentelemetry_proto::tonic::{
 };
 use serde_json::{Map, Value as JsonValue};
 use tokio::sync::Mutex;
+// Flight protocol imports
+use arrow_flight::client::FlightClient;
+use arrow_flight::utils::batches_to_flight_data;
+use futures::{stream, StreamExt, TryStreamExt};
 
 #[derive(Debug)]
 pub struct TraceHandler<Q: MessagingBackend> {
+    /// In-memory queue for legacy messaging (optional use)
     queue: Arc<Mutex<Q>>,
+    /// Optional Flight client for forwarding telemetry
+    flight_client: Option<Arc<Mutex<FlightClient>>>,
 }
 
 #[cfg(test)]
@@ -48,8 +55,13 @@ impl MockTraceHandler {
 }
 
 impl<Q: MessagingBackend> TraceHandler<Q> {
+    /// Create a new handler using only the in-memory queue
     pub fn new(queue: Arc<Mutex<Q>>) -> Self {
-        Self { queue }
+        Self { queue, flight_client: None }
+    }
+    /// Create a new handler with both queue and Flight client
+    pub fn new_with_flight(queue: Arc<Mutex<Q>>, flight_client: Arc<Mutex<FlightClient>>) -> Self {
+        Self { queue, flight_client: Some(flight_client) }
     }
 
     fn extract_value(&self, attr_val: &Option<&AnyValue>) -> JsonValue {
@@ -106,8 +118,10 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
 
         // Convert OTLP to Arrow RecordBatch using the new conversion function
         let record_batch = otlp_traces_to_arrow(&request);
+        // Clone batch for Flight protocol if configured
+        let flight_batch = record_batch.clone();
 
-        // Create a batch wrapper from the record batch
+        // Create a batch wrapper from the record batch for legacy queue
         let batch_wrapper = BatchWrapper::from(record_batch);
         let message = Message::Batch(batch_wrapper);
 
@@ -193,8 +207,7 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
         let span_message = Message::SpanBatch(span_batch);
 
         let queue = self.queue.lock().await;
-
-        // Send both messages
+        // Send to in-memory queue/topic for backward compatibility
         let _ = queue
             .send_message("arrow-traces", message)
             .await
@@ -210,6 +223,29 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
                 log::error!("Failed to publish trace message: {:?}", e);
                 e
             });
+        // Forward via Flight protocol if configured
+        if let Some(flight_client) = &self.flight_client {
+            // Convert the batch to FlightData
+            let schema = flight_batch.schema();
+            let flight_data = batches_to_flight_data(schema.as_ref(), vec![flight_batch])
+                .unwrap_or_default();
+            // Send via Flight DoPut
+            let mut client = flight_client.lock().await;
+            let mut results = client
+                .do_put(stream::iter(flight_data.into_iter().map(Ok)))
+                .await
+                .unwrap_or_else(|e| {
+                    log::error!("Flight do_put failed for traces: {:?}", e);
+                    // Return empty stream on failure
+                    futures::stream::empty().boxed()
+                });
+            // Drain results to complete upload
+            while let Some(res) = results.next().await {
+                if let Err(e) = res {
+                    log::error!("Flight put result error for traces: {:?}", e);
+                }
+            }
+        }
     }
 }
 

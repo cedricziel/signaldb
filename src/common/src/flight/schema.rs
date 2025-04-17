@@ -98,6 +98,8 @@ impl FlightSchemas {
             Field::new("dropped_attributes_count", DataType::UInt32, true),
             // Service context
             Field::new("service_name", DataType::Utf8, true),
+            // Event context (added in OpenTelemetry 0.29.0)
+            Field::new("event_name", DataType::Utf8, true),
         ];
 
         Schema::new(Fields::from(fields))
