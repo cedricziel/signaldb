@@ -5,6 +5,8 @@ use router::{create_flight_service, create_router, InMemoryStateImpl};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::{oneshot, Mutex};
 use tonic::transport::Server;
+use common::discovery::{register, deregister, Instance};
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -84,12 +86,28 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to receive init signal from OTLP/HTTP server")?;
 
+    // Register this acceptor instance with service discovery
+    let instance_id = Uuid::new_v4().to_string();
+    let host = std::env::var("SERVICE_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    register("acceptor", Instance {
+        id: instance_id.clone(),
+        host: host.clone(),
+        port: 4317,
+    })
+    .await
+    .context("Service discovery register failed")?;
+
     log::info!("All services started successfully");
 
     // Wait for ctrl+c
     tokio::signal::ctrl_c()
         .await
         .context("Failed to listen for ctrl+c signal")?;
+
+    // Deregister this acceptor instance
+    deregister("acceptor", &instance_id)
+        .await
+        .context("Service discovery deregister failed")?;
 
     // Wait for servers to stop
     let _ = grpc_handle.await;

@@ -26,6 +26,8 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -816,8 +818,11 @@ dependencies = [
 name = "common"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "arrow-array",
  "arrow-schema",
+ "async-nats",
+ "async-stream",
  "async-trait",
  "bytes",
  "datafusion",
@@ -825,6 +830,7 @@ dependencies = [
  "futures",
  "hex",
  "humantime-serde",
+ "ntest",
  "object_store",
  "once_cell",
  "opentelemetry",
@@ -832,6 +838,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempo-api",
+ "testcontainers-modules",
  "thiserror 2.0.12",
  "tokio",
 ]
@@ -3966,6 +3973,7 @@ dependencies = [
  "tonic",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "writer",
 ]
 
