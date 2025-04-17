@@ -1,4 +1,8 @@
 use std::sync::Arc;
+// Flight protocol imports
+use arrow_flight::client::FlightClient;
+use arrow_flight::utils::batches_to_flight_data;
+use futures::{stream, StreamExt, TryStreamExt};
 
 use common::flight::conversion::otlp_logs_to_arrow;
 use messaging::{messages::batch::BatchWrapper, Message, MessagingBackend};
@@ -10,11 +14,17 @@ use tonic::{async_trait, Request, Response, Status};
 
 pub struct LogAcceptorService<Q: MessagingBackend + 'static> {
     queue: Arc<Mutex<Q>>,
+    flight_client: Option<Arc<Mutex<FlightClient>>>,
 }
 
 impl<Q: MessagingBackend + 'static> LogAcceptorService<Q> {
+    /// Legacy constructor using only in-memory queue
     pub fn new(queue: Arc<Mutex<Q>>) -> Self {
-        Self { queue }
+        Self { queue, flight_client: None }
+    }
+    /// Constructor with Flight client for forwarding telemetry
+    pub fn new_with_flight(queue: Arc<Mutex<Q>>, flight_client: Arc<Mutex<FlightClient>>) -> Self {
+        Self { queue, flight_client: Some(flight_client) }
     }
 }
 
@@ -30,6 +40,8 @@ impl<Q: MessagingBackend + 'static> LogsService for LogAcceptorService<Q> {
 
         // Convert OTLP to Arrow RecordBatch
         let record_batch = otlp_logs_to_arrow(&req);
+        // Clone for Flight protocol if configured
+        let flight_batch = record_batch.clone();
 
         // Create a batch wrapper from the record batch
         let batch_wrapper = BatchWrapper::from(record_batch);
@@ -46,6 +58,25 @@ impl<Q: MessagingBackend + 'static> LogsService for LogAcceptorService<Q> {
                 e
             });
 
+        // Forward via Flight protocol if configured
+        if let Some(flight_client) = &self.flight_client {
+            let schema = flight_batch.schema();
+            let flight_data = batches_to_flight_data(schema.as_ref(), vec![flight_batch])
+                .unwrap_or_default();
+            let mut client = flight_client.lock().await;
+            let mut results = client
+                .do_put(stream::iter(flight_data.into_iter().map(Ok)))
+                .await
+                .unwrap_or_else(|e| {
+                    log::error!("Flight do_put failed for logs: {:?}", e);
+                    futures::stream::empty().boxed()
+                });
+            while let Some(res) = results.next().await {
+                if let Err(e) = res {
+                    log::error!("Flight put result error for logs: {:?}", e);
+                }
+            }
+        }
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,
         }))

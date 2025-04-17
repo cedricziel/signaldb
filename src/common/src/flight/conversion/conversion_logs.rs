@@ -1,6 +1,4 @@
-use arrow_array::{
-    ArrayRef, BinaryArray, Int32Array, StringArray, UInt32Array, UInt64Array,
-};
+use arrow_array::{ArrayRef, BinaryArray, Int32Array, StringArray, UInt32Array, UInt64Array};
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
     common::v1::KeyValue,
@@ -394,6 +392,7 @@ mod tests {
         BinaryArray, Int32Array, RecordBatch, StringArray, UInt32Array, UInt64Array,
     };
     use arrow_schema::{DataType, Field, Schema};
+    use opentelemetry_proto::tonic::common::v1::any_value::Value;
     use std::sync::Arc;
 
     #[test]
