@@ -26,6 +26,8 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
