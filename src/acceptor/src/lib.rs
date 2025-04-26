@@ -94,7 +94,9 @@ pub async fn serve_otlp_grpc(
         .map_err(|e| anyhow::anyhow!("Failed to parse OTLP/gRPC address: {}", e))?;
 
     // Service discovery registration (optional via NATS KV)
-    let discovery_kind = std::env::var("DISCOVERY_KIND").unwrap_or_else(|_| "none".to_string());
+    // Determine service discovery mode (default to NATS subject-based)
+    let discovery_kind = std::env::var("DISCOVERY_KIND").unwrap_or_else(|_| "nats".to_string());
+    log::info!("Service discovery mode: {}", discovery_kind);
     // Hold optional discovery client and heartbeat handle
     let mut discovery_opt: Option<(NatsDiscovery, tokio::task::JoinHandle<()>)> = None;
     if discovery_kind.eq_ignore_ascii_case("nats") {
@@ -198,7 +200,9 @@ pub async fn serve_otlp_http(
 
     log::info!("Starting OTLP/HTTP acceptor on {}", addr);
     // Service discovery registration (optional via NATS KV subject approach)
-    let discovery_kind = std::env::var("DISCOVERY_KIND").unwrap_or_else(|_| "none".to_string());
+    // Determine service discovery mode (default to NATS subject-based)
+    let discovery_kind = std::env::var("DISCOVERY_KIND").unwrap_or_else(|_| "nats".to_string());
+    log::info!("Service discovery mode: {}", discovery_kind);
     let mut discovery_opt: Option<(NatsDiscovery, tokio::task::JoinHandle<()>)> = None;
     if discovery_kind.eq_ignore_ascii_case("nats") {
         let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "127.0.0.1:4222".to_string());
