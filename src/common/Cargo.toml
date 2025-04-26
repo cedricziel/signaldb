@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+async-nats.workspace = true
+log.workspace = true
+anyhow.workspace = true
 tempo-api = { path = "../tempo-api" }
 
 arrow-array.workspace = true
@@ -31,8 +34,6 @@ futures.workspace = true
 sqlx.workspace = true
 uuid.workspace = true
 chrono = { workspace = true }
-
-log.workspace = true
 
 [dev-dependencies]
 testcontainers-modules.workspace = true

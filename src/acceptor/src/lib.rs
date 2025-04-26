@@ -25,8 +25,7 @@ use tokio::{
     sync::{oneshot, Mutex},
 };
 // Service discovery
-mod discovery;
-use discovery::{Instance as DiscoveryInstance, NatsDiscovery};
+use common::discovery::{Instance as DiscoveryInstance, NatsDiscovery};
 use uuid::Uuid;
 use std::time::Duration;
 // Flight protocol client

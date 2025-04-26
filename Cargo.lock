@@ -824,8 +824,10 @@ dependencies = [
 name = "common"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "arrow-array",
  "arrow-schema",
+ "async-nats",
  "async-trait",
  "bytes",
  "chrono",

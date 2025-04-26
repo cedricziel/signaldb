@@ -6,3 +6,21 @@ default = "local"
 
 [storage.adapters.local]
 url = "file://.data/ds"
+
+[queue]
+max_batch_size = 1000
+max_batch_wait = "10s"
+dsn = "memory://"
+
+[discovery]
+# Service discovery kind: "none", "nats", or "catalog"
+kind = "nats"
+# NATS-based discovery settings
+url = "127.0.0.1:4222"
+advertise_address = "127.0.0.1:4317"
+heartbeat_interval = "10s"
+# Catalog-based discovery settings (Postgres KV)
+# dsn = "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+# heartbeat_interval = "10s"
+# poll_interval = "30s"
+# ttl = "30s"
