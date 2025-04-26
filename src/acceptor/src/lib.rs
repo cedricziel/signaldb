@@ -24,6 +24,11 @@ use tokio::{
     fs::{create_dir_all, File},
     sync::{oneshot, Mutex},
 };
+// Service discovery
+mod discovery;
+use discovery::{Instance as DiscoveryInstance, NatsDiscovery};
+use uuid::Uuid;
+use std::time::Duration;
 // Flight protocol client
 use arrow_flight::client::FlightClient;
 use tonic::transport::Endpoint;
@@ -88,6 +93,25 @@ pub async fn serve_otlp_grpc(
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse OTLP/gRPC address: {}", e))?;
 
+    // Service discovery registration (optional via NATS KV)
+    let discovery_kind = std::env::var("DISCOVERY_KIND").unwrap_or_else(|_| "none".to_string());
+    // Hold optional discovery client and heartbeat handle
+    let mut discovery_opt: Option<(NatsDiscovery, tokio::task::JoinHandle<()>)> = None;
+    if discovery_kind.eq_ignore_ascii_case("nats") {
+        let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "127.0.0.1:4222".to_string());
+        // Use an advertise address if provided, else bind address
+        let advertise_addr = std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| addr.to_string());
+        let instance_id = Uuid::new_v4().to_string();
+        let inst = DiscoveryInstance { id: instance_id.clone(), host: advertise_addr.clone(), port: addr.port() };
+        let discovery = NatsDiscovery::new(&nats_url, "acceptor", inst)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to initialize service discovery: {}", e))?;
+        // Register and spawn heartbeat
+        discovery.register().await.map_err(|e| anyhow::anyhow!("Failed to register service: {}", e))?;
+        let hb_handle = discovery.spawn_heartbeat(Duration::from_secs(10));
+        discovery_opt = Some((discovery, hb_handle));
+    }
+
     log::info!("Starting OTLP/gRPC acceptor on {}", addr);
 
     let state = AcceptorState::new();
@@ -124,6 +148,15 @@ pub async fn serve_otlp_grpc(
             shutdown_rx.await.ok();
 
             log::info!("Shutting down OTLP acceptor");
+            // Graceful service discovery deregistration
+            if let Some((discovery, hb_handle)) = discovery_opt {
+                // Stop heartbeat task
+                hb_handle.abort();
+                // Deregister service
+                if let Err(e) = discovery.deregister().await {
+                    log::error!("Failed to deregister service: {}", e);
+                }
+            }
         })
         .await
         .expect("Unable to start OTLP acceptor");
@@ -164,6 +197,21 @@ pub async fn serve_otlp_http(
         .map_err(|e| anyhow::anyhow!("Failed to parse OTLP/HTTP address: {}", e))?;
 
     log::info!("Starting OTLP/HTTP acceptor on {}", addr);
+    // Service discovery registration (optional via NATS KV subject approach)
+    let discovery_kind = std::env::var("DISCOVERY_KIND").unwrap_or_else(|_| "none".to_string());
+    let mut discovery_opt: Option<(NatsDiscovery, tokio::task::JoinHandle<()>)> = None;
+    if discovery_kind.eq_ignore_ascii_case("nats") {
+        let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "127.0.0.1:4222".to_string());
+        let advertise_addr = std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| addr.to_string());
+        let instance_id = Uuid::new_v4().to_string();
+        let inst = DiscoveryInstance { id: instance_id.clone(), host: advertise_addr.clone(), port: addr.port() };
+        let discovery = NatsDiscovery::new(&nats_url, "acceptor", inst)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to initialize service discovery: {}", e))?;
+        discovery.register().await.map_err(|e| anyhow::anyhow!("Failed to register service: {}", e))?;
+        let hb_handle = discovery.spawn_heartbeat(Duration::from_secs(10));
+        discovery_opt = Some((discovery, hb_handle));
+    }
 
     let app = acceptor_router();
 
@@ -176,6 +224,13 @@ pub async fn serve_otlp_http(
         .with_graceful_shutdown(async {
             shutdown_rx.await.ok();
             log::info!("Shutting down OTLP/HTTP acceptor");
+            // Graceful service discovery deregistration
+            if let Some((discovery, hb_handle)) = discovery_opt {
+                hb_handle.abort();
+                if let Err(e) = discovery.deregister().await {
+                    log::error!("Failed to deregister service: {}", e);
+                }
+            }
         })
         .await?;
 

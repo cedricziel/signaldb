@@ -22,10 +22,12 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-proto",
  "parquet",
+ "serde",
  "serde_json",
  "tokio",
  "tonic",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
