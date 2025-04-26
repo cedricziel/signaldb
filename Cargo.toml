@@ -13,6 +13,7 @@ messaging = { path = "src/messaging" }
 querier = { path = "src/querier" }
 router = { path = "src/router" }
 writer = { path = "src/writer" }
+uuid = { workspace = true }
 tempfile = "3.8.1"
 hex = "0.4"
 futures = "0.3.31"

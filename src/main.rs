@@ -1,5 +1,8 @@
 use acceptor::{serve_otlp_grpc, serve_otlp_http};
 use anyhow::{Context, Result};
+use common::catalog::Catalog;
+use uuid::Uuid;
+use tokio::time::{sleep, Duration};
 use messaging::backend::memory::InMemoryStreamingBackend;
 use router::{create_flight_service, create_router, InMemoryStateImpl};
 use std::{net::SocketAddr, sync::Arc};
@@ -10,6 +13,42 @@ use tonic::transport::Server;
 async fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt::init();
+
+    // Initialize Catalog client and register this ingester
+    let catalog_dsn = std::env::var("CATALOG_DSN")
+        .unwrap_or_else(|_| "postgres://postgres:postgres@127.0.0.1:5432/postgres".to_string());
+    let catalog = Catalog::new(&catalog_dsn)
+        .await
+        .context("Failed to initialize Catalog client")?;
+    let ingester_id = Uuid::new_v4();
+    let ingester_address = std::env::var("INGESTER_ADDRESS")
+        .unwrap_or_else(|_| "127.0.0.1:4317".to_string());
+    catalog
+        .register_ingester(ingester_id, &ingester_address)
+        .await
+        .context("Failed to register ingester in Catalog")?;
+    // Heartbeat loop to refresh last_seen timestamp
+    tokio::spawn({
+        let catalog = catalog.clone();
+        async move {
+            loop {
+                sleep(Duration::from_secs(10)).await;
+                if let Err(e) = catalog.heartbeat(ingester_id).await {
+                    log::error!("Failed to send heartbeat to Catalog: {}", e);
+                }
+            }
+        }
+    });
+    // Log initial Catalog state
+    if let Ok(ings) = catalog.list_ingesters().await {
+        log::info!("Catalog ingesters: {:#?}", ings);
+    }
+    if let Ok(shs) = catalog.list_shards().await {
+        log::info!("Catalog shards: {:#?}", shs);
+    }
+    if let Ok(owns) = catalog.list_shard_owners().await {
+        log::info!("Catalog shard owners: {:#?}", owns);
+    }
 
     // Initialize queue for future use
     let queue = Arc::new(Mutex::new(InMemoryStreamingBackend::new(10)));
