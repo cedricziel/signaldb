@@ -27,3 +27,11 @@ bytes.workspace = true
 
 humantime-serde.workspace = true
 futures.workspace = true
+
+sqlx.workspace = true
+uuid.workspace = true
+chrono = { workspace = true }
+
+[dev-dependencies]
+testcontainers-modules.workspace = true
+testcontainers = "0.23.3"
