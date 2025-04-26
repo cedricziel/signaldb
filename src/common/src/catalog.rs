@@ -70,10 +70,17 @@ impl Catalog {
         UPDATE ingesters SET last_seen = NOW()
         WHERE id = $1
         "#;
-        query(stmt)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+-       query(stmt)
+-           .bind(id)
+-           .execute(&self.pool)
+-           .await?;
++       let result = query(stmt)
++           .bind(id)
++           .execute(&self.pool)
++           .await?;
++       if result.rows_affected() == 0 {
++           return Err(sqlx::Error::RowNotFound);
++       }
         Ok(())
     }
 
