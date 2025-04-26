@@ -831,6 +831,7 @@ dependencies = [
  "futures",
  "hex",
  "humantime-serde",
+ "log",
  "object_store",
  "once_cell",
  "opentelemetry",

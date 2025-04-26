@@ -13,13 +13,13 @@ use once_cell::sync::OnceCell;
 
 pub static CONFIG: OnceCell<Configuration> = OnceCell::new();
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct StorageConfig {
     default: String,
     adapters: HashMap<String, ObjectStorageConfig>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct ObjectStorageConfig {
     pub url: String,
     pub prefix: String,
@@ -27,7 +27,7 @@ pub struct ObjectStorageConfig {
     pub storage_type: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DatabaseConfig {
     pub dsn: String,
 }
@@ -40,7 +40,7 @@ impl Default for DatabaseConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QueueConfig {
     pub max_batch_size: usize,
     #[serde(with = "humantime_serde")]
@@ -57,12 +57,32 @@ impl Default for QueueConfig {
         }
     }
 }
+/// Configuration for service discovery (Catalog)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DiscoveryConfig {
+    /// Data source name for the Catalog (Postgres DSN)
+    pub dsn: String,
+    /// Interval at which to send heartbeats to the Catalog
+    #[serde(with = "humantime_serde")]
+    pub heartbeat_interval: Duration,
+    /// Interval at which to poll the Catalog for updates
+    #[serde(with = "humantime_serde")]
+    pub poll_interval: Duration,
+    /// Time-to-live for service entries before they are considered stale
+    #[serde(with = "humantime_serde")]
+    pub ttl: Duration,
+}
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct Configuration {
+    /// Database configuration (used for internal storage)
     pub database: DatabaseConfig,
+    /// Object storage configuration
     pub storage: StorageConfig,
+    /// Message queue configuration
     pub queue: QueueConfig,
+    /// Optional service discovery configuration
+    pub discovery: Option<DiscoveryConfig>,
 }
 
 impl fmt::Display for Configuration {

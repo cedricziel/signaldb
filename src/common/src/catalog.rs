@@ -1,6 +1,6 @@
-use sqlx::{PgPool, query, Row};
-use uuid::Uuid;
 use chrono::{DateTime, Utc};
+use sqlx::{query, PgPool, Row};
+use uuid::Uuid;
 
 /// Catalog provides an interface to the Postgres catalog database.
 #[derive(Clone)]
@@ -70,17 +70,10 @@ impl Catalog {
         UPDATE ingesters SET last_seen = NOW()
         WHERE id = $1
         "#;
--       query(stmt)
--           .bind(id)
--           .execute(&self.pool)
--           .await?;
-+       let result = query(stmt)
-+           .bind(id)
-+           .execute(&self.pool)
-+           .await?;
-+       if result.rows_affected() == 0 {
-+           return Err(sqlx::Error::RowNotFound);
-+       }
+        let result = query(stmt).bind(id).execute(&self.pool).await?;
+        if result.rows_affected() == 0 {
+            return Err(sqlx::Error::RowNotFound);
+        }
         Ok(())
     }
 
@@ -135,7 +128,12 @@ impl Catalog {
     }
 
     /// Add a shard definition if not exists.
-    pub async fn add_shard(&self, id: i32, start_range: i64, end_range: i64) -> Result<(), sqlx::Error> {
+    pub async fn add_shard(
+        &self,
+        id: i32,
+        start_range: i64,
+        end_range: i64,
+    ) -> Result<(), sqlx::Error> {
         let stmt = r#"
         INSERT INTO shards (id, start_range, end_range)
         VALUES ($1, $2, $3)
@@ -163,6 +161,38 @@ impl Catalog {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+    /// Deregister an ingester instance, removing it from the catalog.
+    pub async fn deregister_ingester(&self, id: Uuid) -> Result<(), sqlx::Error> {
+        // Remove the ingester entry from the catalog
+        let stmt = r#"
+        DELETE FROM ingesters
+        WHERE id = $1
+        "#;
+        query(stmt).bind(id).execute(&self.pool).await?;
+        Ok(())
+    }
+}
+
+/// Extension methods for Catalog to manage heartbeats.
+impl Catalog {
+    /// Spawn a background task that updates the heartbeat (last_seen) for the given ingester ID
+    /// at the specified interval. Returns a JoinHandle for the spawned task.
+    pub fn spawn_ingester_heartbeat(
+        &self,
+        id: Uuid,
+        interval: std::time::Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        let catalog = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                if let Err(e) = catalog.heartbeat(id).await {
+                    log::error!("Failed to send heartbeat for ingester {}: {}", id, e);
+                }
+            }
+        })
     }
 }
 

@@ -1,53 +1,58 @@
 use acceptor::{serve_otlp_grpc, serve_otlp_http};
 use anyhow::{Context, Result};
 use common::catalog::Catalog;
-use uuid::Uuid;
-use tokio::time::{sleep, Duration};
+use common::config::Configuration;
 use messaging::backend::memory::InMemoryStreamingBackend;
 use router::{create_flight_service, create_router, InMemoryStateImpl};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::{oneshot, Mutex};
+use tokio::time::{sleep, Duration};
 use tonic::transport::Server;
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt::init();
 
-    // Initialize Catalog client and register this ingester
-    let catalog_dsn = std::env::var("CATALOG_DSN")
-        .unwrap_or_else(|_| "postgres://postgres:postgres@127.0.0.1:5432/postgres".to_string());
-    let catalog = Catalog::new(&catalog_dsn)
-        .await
-        .context("Failed to initialize Catalog client")?;
-    let ingester_id = Uuid::new_v4();
-    let ingester_address = std::env::var("INGESTER_ADDRESS")
-        .unwrap_or_else(|_| "127.0.0.1:4317".to_string());
-    catalog
-        .register_ingester(ingester_id, &ingester_address)
-        .await
-        .context("Failed to register ingester in Catalog")?;
-    // Heartbeat loop to refresh last_seen timestamp
-    tokio::spawn({
-        let catalog = catalog.clone();
-        async move {
+    // Load application configuration (including optional service discovery)
+    let config = common::config::Configuration::load().context("Failed to load configuration")?;
+    // Optional service discovery setup using Catalog
+    // Tracks optional registry state: (catalog client, instance id, heartbeat task)
+    let mut registry: Option<(Catalog, Uuid, tokio::task::JoinHandle<()>)> = None;
+    if let Some(disc) = config.discovery.clone() {
+        // Initialize Catalog client
+        let catalog = Catalog::new(&disc.dsn)
+            .await
+            .context("Failed to initialize Catalog client")?;
+        // Register this ingester instance
+        let ingester_id = Uuid::new_v4();
+        let ingester_address =
+            std::env::var("INGESTER_ADDRESS").unwrap_or_else(|_| "127.0.0.1:4317".to_string());
+        catalog
+            .register_ingester(ingester_id, &ingester_address)
+            .await
+            .context("Failed to register ingester in Catalog")?;
+        // Spawn heartbeat task
+        let hb_handle = catalog.spawn_ingester_heartbeat(ingester_id, disc.heartbeat_interval);
+        // Periodically poll and log Catalog state
+        let catalog_poll = catalog.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(disc.poll_interval);
             loop {
-                sleep(Duration::from_secs(10)).await;
-                if let Err(e) = catalog.heartbeat(ingester_id).await {
-                    log::error!("Failed to send heartbeat to Catalog: {}", e);
+                ticker.tick().await;
+                if let Ok(ings) = catalog_poll.list_ingesters().await {
+                    log::info!("Catalog ingesters: {:#?}", ings);
+                }
+                if let Ok(shs) = catalog_poll.list_shards().await {
+                    log::info!("Catalog shards: {:#?}", shs);
+                }
+                if let Ok(owns) = catalog_poll.list_shard_owners().await {
+                    log::info!("Catalog shard owners: {:#?}", owns);
                 }
             }
-        }
-    });
-    // Log initial Catalog state
-    if let Ok(ings) = catalog.list_ingesters().await {
-        log::info!("Catalog ingesters: {:#?}", ings);
-    }
-    if let Ok(shs) = catalog.list_shards().await {
-        log::info!("Catalog shards: {:#?}", shs);
-    }
-    if let Ok(owns) = catalog.list_shard_owners().await {
-        log::info!("Catalog shard owners: {:#?}", owns);
+        });
+        registry = Some((catalog, ingester_id, hb_handle));
     }
 
     // Initialize queue for future use
@@ -107,12 +112,15 @@ async fn main() -> Result<()> {
         log::info!("Starting Flight service on {}", flight_addr);
 
         match Server::builder()
-            .add_service(arrow_flight::flight_service_server::FlightServiceServer::new(flight_service))
+            .add_service(
+                arrow_flight::flight_service_server::FlightServiceServer::new(flight_service),
+            )
             .serve(flight_addr)
-            .await {
-                Ok(_) => log::info!("Flight service stopped"),
-                Err(e) => log::error!("Flight service error: {}", e),
-            }
+            .await
+        {
+            Ok(_) => log::info!("Flight service stopped"),
+            Err(e) => log::error!("Flight service error: {}", e),
+        }
     });
 
     // Wait for OTLP servers to initialize
@@ -129,6 +137,16 @@ async fn main() -> Result<()> {
     tokio::signal::ctrl_c()
         .await
         .context("Failed to listen for ctrl+c signal")?;
+    log::info!("Shutting down service discovery and other services");
+    // Graceful deregistration if service discovery was enabled
+    if let Some((catalog, ingester_id, hb_handle)) = registry {
+        // stop heartbeat task
+        hb_handle.abort();
+        // deregister this ingester instance
+        if let Err(e) = catalog.deregister_ingester(ingester_id).await {
+            log::error!("Failed to deregister ingester {}: {}", ingester_id, e);
+        }
+    }
 
     // Wait for servers to stop
     let _ = grpc_handle.await;
