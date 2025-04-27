@@ -1,7 +1,6 @@
 use anyhow::Context;
 use common::config::Configuration;
 use common::discovery::{Instance as DiscoveryInstance, NatsDiscovery};
-use messaging::backend::memory::InMemoryStreamingBackend;
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
 use std::sync::Arc;
@@ -9,8 +8,9 @@ use std::time::Duration;
 use tokio::signal;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
-use writer::BatchWriter;
-use writer::QueueBatchWriter;
+use tonic::transport::Server;
+use arrow_flight::flight_service_server::FlightServiceServer;
+use writer::WriterFlightService;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -54,17 +54,20 @@ async fn main() -> anyhow::Result<()> {
             .context("Failed to initialize local object store")?,
     );
 
-    // Initialize queue backend (in-memory)
-    let backend = InMemoryStreamingBackend::new(config.queue.max_batch_size);
-
-    // Create batch writer
-    let writer = Arc::new(QueueBatchWriter::new(config.queue.clone(), object_store));
-    log::info!("Starting writer service");
-
-    // Run writer.start() in background
-    let writer_clone = writer.clone();
-    let writer_task: JoinHandle<anyhow::Result<()>> =
-        tokio::spawn(async move { writer_clone.start().await.context("Writer start failed") });
+    // Create Flight ingestion service
+    let flight_service = WriterFlightService::new(object_store.clone());
+    let flight_addr = std::env::var("WRITER_FLIGHT_ADDR")
+        .unwrap_or_else(|_| "0.0.0.0:50061".to_string())
+        .parse()
+        .context("Invalid WRITER_FLIGHT_ADDR")?;
+    log::info!("Starting Flight ingest service on {}", flight_addr);
+    let flight_handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(FlightServiceServer::new(flight_service))
+            .serve(flight_addr)
+            .await
+            .unwrap();
+    });
 
     // Await shutdown signal
     signal::ctrl_c()
@@ -72,8 +75,6 @@ async fn main() -> anyhow::Result<()> {
         .context("Failed to listen for shutdown signal")?;
     log::info!("Shutting down writer service");
 
-    // Stop writer
-    writer.stop().await.context("Writer stop failed")?;
     // Deregister discovery
     if let Some((nd, hb)) = discovery_handle {
         hb.abort();
@@ -81,9 +82,8 @@ async fn main() -> anyhow::Result<()> {
             .await
             .context("Failed to deregister writer")?;
     }
-
-    // Await writer task completion
-    let _ = writer_task.await;
+    // Shutdown Flight server
+    flight_handle.abort();
 
     Ok(())
 }
