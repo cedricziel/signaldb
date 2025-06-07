@@ -1,6 +1,6 @@
 use acceptor::{serve_otlp_grpc, serve_otlp_http};
 use anyhow::{Context, Result};
-use common::catalog::Catalog;
+use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::config::Configuration;
 use messaging::backend::memory::InMemoryStreamingBackend;
 use router::{create_flight_service, create_router, InMemoryStateImpl};
@@ -8,51 +8,43 @@ use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::{oneshot, Mutex};
 use tokio::time::{sleep, Duration};
 use tonic::transport::Server;
-use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt::init();
 
-    // Load application configuration (including optional service discovery)
-    let config = common::config::Configuration::load().context("Failed to load configuration")?;
-    // Optional service discovery setup using Catalog
-    // Tracks optional registry state: (catalog client, instance id, heartbeat task)
-    let mut registry: Option<(Catalog, Uuid, tokio::task::JoinHandle<()>)> = None;
-    if let Some(disc) = config.discovery.clone() {
-        // Initialize Catalog client
-        let catalog = Catalog::new(&disc.dsn)
-            .await
-            .context("Failed to initialize Catalog client")?;
-        // Register this ingester instance
-        let ingester_id = Uuid::new_v4();
-        let ingester_address =
-            std::env::var("INGESTER_ADDRESS").unwrap_or_else(|_| "127.0.0.1:4317".to_string());
-        catalog
-            .register_ingester(ingester_id, &ingester_address)
-            .await
-            .context("Failed to register ingester in Catalog")?;
-        // Spawn heartbeat task
-        let hb_handle = catalog.spawn_ingester_heartbeat(ingester_id, disc.heartbeat_interval);
-        // Periodically poll and log Catalog state
-        let catalog_poll = catalog.clone();
+    // Load application configuration
+    let config = Configuration::load().context("Failed to load configuration")?;
+    
+    // Initialize router service bootstrap for catalog-based discovery
+    let flight_addr = SocketAddr::from(([0, 0, 0, 0], 50053));
+    let router_bootstrap = ServiceBootstrap::new(
+        config.clone(),
+        ServiceType::Router,
+        flight_addr.to_string(),
+    ).await
+    .context("Failed to initialize router service bootstrap")?;
+    
+    // Spawn a task to periodically log catalog state (similar to previous behavior)
+    if config.discovery.is_some() {
+        let catalog = router_bootstrap.catalog().clone();
+        let poll_interval = config.discovery.as_ref().unwrap().poll_interval;
         tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(disc.poll_interval);
+            let mut ticker = tokio::time::interval(poll_interval);
             loop {
                 ticker.tick().await;
-                if let Ok(ings) = catalog_poll.list_ingesters().await {
+                if let Ok(ings) = catalog.list_ingesters().await {
                     log::info!("Catalog ingesters: {:#?}", ings);
                 }
-                if let Ok(shs) = catalog_poll.list_shards().await {
+                if let Ok(shs) = catalog.list_shards().await {
                     log::info!("Catalog shards: {:#?}", shs);
                 }
-                if let Ok(owns) = catalog_poll.list_shard_owners().await {
+                if let Ok(owns) = catalog.list_shard_owners().await {
                     log::info!("Catalog shard owners: {:#?}", owns);
                 }
             }
         });
-        registry = Some((catalog, ingester_id, hb_handle));
     }
 
     // Initialize queue for future use
@@ -138,14 +130,9 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to listen for ctrl+c signal")?;
     log::info!("Shutting down service discovery and other services");
-    // Graceful deregistration if service discovery was enabled
-    if let Some((catalog, ingester_id, hb_handle)) = registry {
-        // stop heartbeat task
-        hb_handle.abort();
-        // deregister this ingester instance
-        if let Err(e) = catalog.deregister_ingester(ingester_id).await {
-            log::error!("Failed to deregister ingester {}: {}", ingester_id, e);
-        }
+    // Graceful deregistration using service bootstrap
+    if let Err(e) = router_bootstrap.shutdown().await {
+        log::error!("Failed to shutdown router service bootstrap: {}", e);
     }
 
     // Wait for servers to stop

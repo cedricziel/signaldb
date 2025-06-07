@@ -1,13 +1,10 @@
 use anyhow::Context;
 use common::config::Configuration;
-use common::discovery::{Instance as DiscoveryInstance, NatsDiscovery};
+use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::signal;
-use tokio::task::JoinHandle;
-use uuid::Uuid;
 use tonic::transport::Server;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use writer::WriterFlightService;
@@ -20,32 +17,22 @@ async fn main() -> anyhow::Result<()> {
     // Load configuration
     let config = Configuration::load().context("Failed to load configuration")?;
 
-    // Service discovery (NATS subject-based)
-    // Service discovery (optional, default to NATS)
-    let mut discovery_handle: Option<(NatsDiscovery, JoinHandle<()>)> = None;
-    let discovery_kind = std::env::var("DISCOVERY_KIND").unwrap_or_else(|_| "nats".to_string());
-    log::info!("Writer service discovery mode: {}", discovery_kind);
-    if discovery_kind.eq_ignore_ascii_case("nats") {
-        let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "127.0.0.1:4222".to_string());
-        let advertise_addr = std::env::var("WRITER_ADVERTISE_ADDR").unwrap_or_else(|_| {
-            // Use local host with no real port (writer is headless)
-            "127.0.0.1:0".to_string()
-        });
-        // Heartbeat interval for service discovery
-        let heartbeat_interval = Duration::from_secs(10);
-        let instance_id = Uuid::new_v4().to_string();
-        let inst = DiscoveryInstance {
-            id: instance_id.clone(),
-            host: advertise_addr,
-            port: 0,
-        };
-        let nd = NatsDiscovery::new(&nats_url, "writer", inst)
-            .await
-            .context("Failed to initialize NATS discovery")?;
-        nd.register().await.context("Failed to register writer")?;
-        let hb = nd.spawn_heartbeat(heartbeat_interval);
-        discovery_handle = Some((nd, hb));
-    }
+    // Get Flight address for service registration
+    let flight_addr = std::env::var("WRITER_FLIGHT_ADDR")
+        .unwrap_or_else(|_| "0.0.0.0:50061".to_string())
+        .parse::<std::net::SocketAddr>()
+        .context("Invalid WRITER_FLIGHT_ADDR")?;
+
+    // Initialize service bootstrap for catalog-based discovery
+    let advertise_addr = std::env::var("WRITER_ADVERTISE_ADDR")
+        .unwrap_or_else(|_| flight_addr.to_string());
+    
+    let service_bootstrap = ServiceBootstrap::new(
+        config.clone(),
+        ServiceType::Writer,
+        advertise_addr,
+    ).await
+    .context("Failed to initialize service bootstrap")?;
 
     // Initialize object store (local filesystem)
     let prefix = config.default_storage_prefix();
@@ -56,10 +43,6 @@ async fn main() -> anyhow::Result<()> {
 
     // Create Flight ingestion service
     let flight_service = WriterFlightService::new(object_store.clone());
-    let flight_addr = std::env::var("WRITER_FLIGHT_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:50061".to_string())
-        .parse()
-        .context("Invalid WRITER_FLIGHT_ADDR")?;
     log::info!("Starting Flight ingest service on {}", flight_addr);
     let flight_handle = tokio::spawn(async move {
         Server::builder()
@@ -75,13 +58,10 @@ async fn main() -> anyhow::Result<()> {
         .context("Failed to listen for shutdown signal")?;
     log::info!("Shutting down writer service");
 
-    // Deregister discovery
-    if let Some((nd, hb)) = discovery_handle {
-        hb.abort();
-        nd.deregister()
-            .await
-            .context("Failed to deregister writer")?;
-    }
+    // Graceful shutdown: deregister from catalog first, then stop Flight server
+    service_bootstrap.shutdown().await
+        .context("Failed to shutdown service bootstrap")?;
+    
     // Shutdown Flight server
     flight_handle.abort();
 
