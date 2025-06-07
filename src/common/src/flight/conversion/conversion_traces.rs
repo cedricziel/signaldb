@@ -1,5 +1,8 @@
-use arrow_array::{ArrayRef, BooleanArray, ListArray, StringArray, StructArray, UInt64Array};
-use arrow_schema::{DataType, Field};
+use datafusion::arrow::{
+    array::{ArrayRef, BooleanArray, ListArray, StringArray, StructArray, UInt64Array},
+    datatypes::{DataType, Field},
+    record_batch::RecordBatch,
+};
 use hex;
 use opentelemetry::trace::{SpanId, TraceId};
 use opentelemetry_proto::tonic::{
@@ -16,7 +19,7 @@ use crate::flight::conversion::conversion_common::{
 use crate::flight::schema::FlightSchemas;
 
 /// Convert OTLP trace data to Arrow RecordBatch using the Flight trace schema
-pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> arrow_array::RecordBatch {
+pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> RecordBatch {
     let schemas = FlightSchemas::new();
     let schema = schemas.trace_schema.clone();
 
@@ -145,7 +148,7 @@ pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> arrow_array:
     let schema_clone = schema.clone();
 
     // Create and return the RecordBatch
-    let result = arrow_array::RecordBatch::try_new(
+    let result = RecordBatch::try_new(
         Arc::new(schema),
         vec![
             trace_id_array,
@@ -167,7 +170,7 @@ pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> arrow_array:
         ],
     );
 
-    result.unwrap_or_else(|_| arrow_array::RecordBatch::new_empty(Arc::new(schema_clone)))
+    result.unwrap_or_else(|_| RecordBatch::new_empty(Arc::new(schema_clone)))
 }
 
 /// Extract status code and message from span
@@ -334,7 +337,7 @@ fn create_links_array(links_data: &[Vec<(String, String, String)>]) -> ArrayRef 
 }
 
 /// Convert Arrow RecordBatch to OTLP ExportTraceServiceRequest
-pub fn arrow_to_otlp_traces(batch: &arrow_array::RecordBatch) -> ExportTraceServiceRequest {
+pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
     use opentelemetry_proto::tonic::trace::v1::Status;
     use std::convert::TryInto;
 
@@ -554,8 +557,11 @@ pub fn arrow_to_otlp_traces(batch: &arrow_array::RecordBatch) -> ExportTraceServ
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{BooleanArray, RecordBatch, StringArray, UInt64Array};
-    use arrow_schema::{DataType, Field, Schema};
+
+    use datafusion::arrow::{
+        array::{BooleanArray, StringArray, UInt64Array},
+        datatypes::Schema,
+    };
     use opentelemetry_proto::tonic::{
         common::v1::{AnyValue, KeyValue},
         trace::v1::{Span, Status},

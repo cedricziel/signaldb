@@ -7,14 +7,10 @@ rust-version.workspace = true
 
 [dependencies]
 common.workspace = true
-# messaging removed - writer now ingests via Flight
-arrow-flight.workspace = true
 
-arrow-array.workspace = true
-arrow-schema.workspace = true
 datafusion.workspace = true
+arrow-flight.workspace = true
 object_store.workspace = true
-parquet.workspace = true
 
 tokio.workspace = true
 futures.workspace = true

@@ -1,4 +1,6 @@
-use arrow_array::{ArrayRef, BooleanArray, Int32Array, StringArray, UInt64Array};
+use datafusion::arrow::array::{
+    ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray, UInt64Array,
+};
 use opentelemetry_proto::tonic::{
     collector::metrics::v1::ExportMetricsServiceRequest,
     common::v1::KeyValue,
@@ -29,7 +31,9 @@ use crate::flight::schema::FlightSchemas;
 use super::extract_scope_json;
 
 /// Convert OTLP metric data to Arrow RecordBatch using the Flight metric schema
-pub fn otlp_metrics_to_arrow(request: &ExportMetricsServiceRequest) -> arrow_array::RecordBatch {
+pub fn otlp_metrics_to_arrow(
+    request: &ExportMetricsServiceRequest,
+) -> datafusion::arrow::record_batch::RecordBatch {
     let schemas = FlightSchemas::new();
     let schema = schemas.metric_schema.clone();
 
@@ -217,7 +221,7 @@ pub fn otlp_metrics_to_arrow(request: &ExportMetricsServiceRequest) -> arrow_arr
     let schema_clone = schema.clone();
 
     // Create and return the RecordBatch
-    let result = arrow_array::RecordBatch::try_new(
+    let result = RecordBatch::try_new(
         Arc::new(schema),
         vec![
             name_array,
@@ -235,7 +239,7 @@ pub fn otlp_metrics_to_arrow(request: &ExportMetricsServiceRequest) -> arrow_arr
         ],
     );
 
-    result.unwrap_or_else(|_| arrow_array::RecordBatch::new_empty(Arc::new(schema_clone)))
+    result.unwrap_or_else(|_| RecordBatch::new_empty(Arc::new(schema_clone)))
 }
 
 /// Extract number data points from OTLP NumberDataPoint
@@ -305,7 +309,7 @@ fn extract_number_data_points(
 }
 
 /// Convert Arrow RecordBatch to OTLP ExportMetricsServiceRequest
-pub fn arrow_to_otlp_metrics(batch: &arrow_array::RecordBatch) -> ExportMetricsServiceRequest {
+pub fn arrow_to_otlp_metrics(batch: &RecordBatch) -> ExportMetricsServiceRequest {
     let columns = batch.columns();
 
     // Extract columns by index based on the schema order in otlp_metrics_to_arrow
@@ -1411,9 +1415,9 @@ fn extract_exemplars(
 
 #[cfg(test)]
 mod tests {
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
     use super::*;
-    use arrow_array::{BooleanArray, Int32Array, RecordBatch, StringArray, UInt64Array};
-    use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 
     #[test]

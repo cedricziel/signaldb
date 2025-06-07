@@ -11,8 +11,6 @@ log.workspace = true
 anyhow.workspace = true
 tempo-api = { path = "../tempo-api" }
 
-arrow-array.workspace = true
-arrow-schema.workspace = true
 datafusion.workspace = true
 object_store.workspace = true
 serde.workspace = true

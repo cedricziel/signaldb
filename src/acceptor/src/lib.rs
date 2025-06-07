@@ -3,21 +3,21 @@ pub mod services;
 
 use std::{net::SocketAddr, sync::Arc, time::SystemTime};
 
-use arrow_schema::Schema;
 use axum::{
     routing::{get, post},
     Router,
 };
 use common::dataset::DataSet;
+use datafusion::arrow::datatypes::Schema;
+use datafusion::parquet::{
+    arrow::AsyncArrowWriter,
+    file::properties::{WriterProperties, WriterVersion},
+};
 use messaging::backend::memory::InMemoryStreamingBackend;
 use opentelemetry_proto::tonic::collector::{
     logs::v1::logs_service_server::LogsServiceServer,
     metrics::v1::metrics_service_server::MetricsServiceServer,
     trace::v1::trace_service_server::TraceServiceServer,
-};
-use parquet::{
-    arrow::AsyncArrowWriter,
-    file::properties::{WriterProperties, WriterVersion},
 };
 use tokio::net::TcpListener;
 use tokio::{

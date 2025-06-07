@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arrow_schema::{DataType, Field, Fields, Schema};
+use datafusion::arrow::datatypes::{DataType, Field, Fields, Schema};
 
 /// Flight schemas for SignalDB
 pub struct FlightSchemas {

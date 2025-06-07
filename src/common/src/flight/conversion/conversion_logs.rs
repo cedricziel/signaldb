@@ -1,4 +1,7 @@
-use arrow_array::{ArrayRef, BinaryArray, Int32Array, StringArray, UInt32Array, UInt64Array};
+use datafusion::arrow::array::{
+    ArrayRef, BinaryArray, Int32Array, StringArray, UInt32Array, UInt64Array,
+};
+use datafusion::arrow::record_batch::RecordBatch;
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
     common::v1::KeyValue,
@@ -16,7 +19,7 @@ use crate::flight::schema::FlightSchemas;
 use super::extract_scope_json;
 
 /// Convert OTLP log data to Arrow RecordBatch using the Flight log schema
-pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> arrow_array::RecordBatch {
+pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> RecordBatch {
     let schemas = FlightSchemas::new();
     let schema = schemas.log_schema.clone();
 
@@ -119,7 +122,7 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> arrow_array::Re
     let schema_clone = schema.clone();
 
     // Create and return the RecordBatch
-    let result = arrow_array::RecordBatch::try_new(
+    let result = RecordBatch::try_new(
         Arc::new(schema),
         vec![
             time_array,
@@ -139,11 +142,11 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> arrow_array::Re
         ],
     );
 
-    result.unwrap_or_else(|_| arrow_array::RecordBatch::new_empty(Arc::new(schema_clone)))
+    result.unwrap_or_else(|_| RecordBatch::new_empty(Arc::new(schema_clone)))
 }
 
 /// Convert Arrow RecordBatch to OTLP ExportLogsServiceRequest
-pub fn arrow_to_otlp_logs(batch: &arrow_array::RecordBatch) -> ExportLogsServiceRequest {
+pub fn arrow_to_otlp_logs(batch: &RecordBatch) -> ExportLogsServiceRequest {
     use std::collections::HashMap;
 
     let columns = batch.columns();
@@ -388,10 +391,11 @@ pub fn arrow_to_otlp_logs(batch: &arrow_array::RecordBatch) -> ExportLogsService
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{
-        BinaryArray, Int32Array, RecordBatch, StringArray, UInt32Array, UInt64Array,
+    use datafusion::arrow::array::{
+        BinaryArray, Int32Array, StringArray, UInt32Array, UInt64Array,
     };
-    use arrow_schema::{DataType, Field, Schema};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::record_batch::RecordBatch;
     use opentelemetry_proto::tonic::common::v1::any_value::Value;
     use std::sync::Arc;
 

@@ -8,10 +8,9 @@ rust-version.workspace = true
 [dependencies]
 common.workspace = true
 messaging.workspace = true
+
+datafusion.workspace = true
 arrow-flight.workspace = true
-arrow-schema.workspace = true
-parquet.workspace = true
-arrow-array.workspace = true
 
 opentelemetry-proto.workspace = true
 tonic.workspace = true

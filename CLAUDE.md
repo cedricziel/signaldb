@@ -92,3 +92,6 @@ Integration tests are in workspace root `tests/` and individual component `tests
 ## Deployment Modes
 
 Signaldb has a microservices and a monolothic mode
+
+## Development Memories
+- For arrow & parquet try using the ones re-exported by datafusion

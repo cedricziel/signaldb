@@ -1,8 +1,8 @@
 // Integration test for writer storage functionality using an in-memory object store.
 use std::sync::Arc;
 
-use arrow_array::{Int32Array, RecordBatch};
-use arrow_schema::{DataType, Field, Schema};
+use datafusion::arrow::array::{Int32Array, RecordBatch};
+use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use futures::TryStreamExt;
 use object_store::{memory::InMemory, ObjectStore};
 

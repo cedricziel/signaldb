@@ -22,13 +22,9 @@ futures = "0.3.31"
 
 anyhow.workspace = true
 axum.workspace = true
-arrow-flight.workspace = true
 
-arrow-array.workspace = true
-arrow.workspace = true
-arrow-schema.workspace = true
 datafusion.workspace = true
-parquet.workspace = true
+arrow-flight.workspace = true
 
 opentelemetry-proto.workspace = true
 tonic.workspace = true
@@ -75,15 +71,11 @@ async-trait = "0.1.88"
 async-stream = "0.3.0"
 futures = "0.3.31"
 
-# Use wildcards to let Cargo resolve versions based on datafusion's requirements
-arrow = "*"
-arrow-array = "*"
-arrow-flight = "*"
-arrow-ipc = "*"
-arrow-schema = "*"
-datafusion = "46.0.1"
-parquet = { version = "*", features = ["arrow", "async"] }
-object_store = { version = "*", features = ["aws", "azure", "gcp"] }
+# Use datafusion's reexported dependencies for consistency
+datafusion = { version = "47.0.0" }
+# Use same versions as datafusion for compatibility
+arrow-flight = { version = "55.1.0" }
+object_store = { version = "0.12.1", features = ["aws", "azure", "gcp"] }
 
 tonic = { version = "0.12.3", features = [
     "transport",
@@ -118,7 +110,6 @@ tower-http = "0.6.2"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 
-tower = "0.5.2"
 
 prost = "0.13"
 prost-types = "0.13"

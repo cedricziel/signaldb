@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
-use arrow_schema::{DataType, Field, Fields};
 use common::flight::conversion::otlp_traces_to_arrow;
+use datafusion::arrow::datatypes::{DataType, Field, Fields};
 use messaging::{
     messages::{
         batch::BatchWrapper,
