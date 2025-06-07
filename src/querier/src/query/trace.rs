@@ -158,7 +158,8 @@ impl TraceQuerier for TraceService {
                             .downcast_ref::<StringArray>()
                             .unwrap()
                             .value(row_index),
-                    ).unwrap_or(SpanStatus::Unspecified),
+                    )
+                    .unwrap_or(SpanStatus::Unspecified),
                     is_root: batch
                         .column_by_name("is_root")
                         .expect("unable to find column 'is_root'")
@@ -190,7 +191,8 @@ impl TraceQuerier for TraceService {
                             .downcast_ref::<StringArray>()
                             .unwrap()
                             .value(row_index),
-                    ).unwrap_or(SpanKind::Internal),
+                    )
+                    .unwrap_or(SpanKind::Internal),
                     attributes: HashMap::new(),
                     resource: HashMap::new(),
                     start_time_unix_nano: batch
@@ -332,7 +334,8 @@ impl TraceQuerier for TraceService {
                             .downcast_ref::<StringArray>()
                             .unwrap()
                             .value(row_index),
-                    ).unwrap_or(SpanKind::Internal),
+                    )
+                    .unwrap_or(SpanKind::Internal),
                     start_time_unix_nano: batch
                         .column_by_name("start_time_unix_nano")
                         .expect("unable to find column 'start_time_unix_nano'")
