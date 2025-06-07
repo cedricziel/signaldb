@@ -1,0 +1,68 @@
+# Multi-stage Dockerfile for testing different deployment models
+FROM rust:1.75 as base
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    protobuf-compiler \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy dependency files first for better caching
+COPY Cargo.toml Cargo.lock ./
+COPY src/*/Cargo.toml src/*/
+COPY deny.toml rustfmt.toml ./
+
+# Create dummy source files to build dependencies
+RUN find src -name "Cargo.toml" -exec dirname {} \; | while read dir; do \
+        mkdir -p "$dir/src" && \
+        echo "fn main() {}" > "$dir/src/main.rs" && \
+        echo "pub fn add(left: usize, right: usize) -> usize { left + right }" > "$dir/src/lib.rs"; \
+    done
+
+# Build dependencies
+RUN cargo build --all-targets
+
+# Remove dummy files
+RUN find src -name "main.rs" -o -name "lib.rs" | xargs rm
+
+# Copy actual source code
+COPY . .
+
+# Build the application
+RUN cargo build --all-targets
+
+# Test stage
+FROM base as test
+CMD ["cargo", "test", "--all-features"]
+
+# Monolithic deployment stage
+FROM base as monolithic
+RUN cargo build --release --bin signaldb
+EXPOSE 4317 4318 50051 50053 3000
+CMD ["./target/release/signaldb"]
+
+# Microservices - Acceptor
+FROM base as acceptor
+RUN cargo build --release --bin signaldb-acceptor
+EXPOSE 4317 4318
+CMD ["./target/release/signaldb-acceptor"]
+
+# Microservices - Router
+FROM base as router
+RUN cargo build --release --bin signaldb-router
+EXPOSE 50053 3000
+CMD ["./target/release/signaldb-router"]
+
+# Microservices - Writer
+FROM base as writer
+RUN cargo build --release --bin signaldb-writer
+EXPOSE 50051
+CMD ["./target/release/signaldb-writer"]
+
+# Development stage with all tools
+FROM base as dev
+RUN cargo install cargo-watch cargo-audit cargo-deny
+VOLUME ["/app"]
+CMD ["cargo", "watch", "-x", "test"]

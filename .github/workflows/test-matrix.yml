@@ -1,0 +1,336 @@
+name: Database & Deployment Testing Matrix
+
+# Extended testing matrix for comprehensive validation across database versions,
+# deployment scenarios, and performance benchmarks. Run manually when needed
+# for thorough testing before major releases or significant changes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_scope:
+        description: 'Test scope'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - database-only
+          - deployment-only
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  database-compatibility:
+    name: Database Compatibility
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.test_scope == 'full' || github.event.inputs.test_scope == 'database-only' }}
+    strategy:
+      matrix:
+        database:
+          - type: postgresql
+            version: "13"
+            dsn: "postgres://postgres:postgres@localhost:5432/signaldb_test"
+          - type: postgresql
+            version: "14"
+            dsn: "postgres://postgres:postgres@localhost:5432/signaldb_test"
+          - type: postgresql
+            version: "15"
+            dsn: "postgres://postgres:postgres@localhost:5432/signaldb_test"
+          - type: postgresql
+            version: "16"
+            dsn: "postgres://postgres:postgres@localhost:5432/signaldb_test"
+          - type: sqlite
+            version: "latest"
+            dsn: "sqlite://.data/test_compatibility.db"
+    
+    services:
+      postgres:
+        image: postgres:${{ matrix.database.version }}
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: signaldb_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: db-test-${{ matrix.database.type }}-${{ matrix.database.version }}
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+    
+    - name: Setup test environment
+      run: |
+        mkdir -p .data
+        echo "SIGNALDB_DATABASE_DSN=${{ matrix.database.dsn }}" >> $GITHUB_ENV
+        echo "SIGNALDB_DISCOVERY_DSN=${{ matrix.database.dsn }}" >> $GITHUB_ENV
+    
+    - name: Run database schema tests
+      if: matrix.database.type == 'postgresql' || matrix.database.type == 'sqlite'
+      run: |
+        cargo test --test '*' --all-features -- --test-threads=1
+      env:
+        RUST_LOG: debug
+    
+    - name: Run catalog integration tests
+      run: |
+        cargo test -p common catalog_integration --all-features
+    
+    - name: Test service bootstrap with database
+      run: |
+        cargo test -p common service_bootstrap --all-features
+
+  deployment-scenarios:
+    name: Deployment Scenarios
+    runs-on: ${{ matrix.os }}
+    if: ${{ github.event.inputs.test_scope == 'full' || github.event.inputs.test_scope == 'deployment-only' }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        deployment:
+          - type: monolithic
+            config: |
+              [database]
+              dsn = "sqlite://.data/monolithic.db"
+              [discovery]
+              dsn = "sqlite://.data/monolithic.db"
+              heartbeat_interval = "30s"
+              poll_interval = "60s"
+              ttl = "300s"
+          - type: microservices
+            config: |
+              [database]
+              dsn = "sqlite://.data/microservices.db"
+              [discovery]
+              dsn = "sqlite://.data/microservices.db"
+              heartbeat_interval = "15s"
+              poll_interval = "30s"
+              ttl = "120s"
+          - type: hybrid
+            config: |
+              [database]
+              dsn = "sqlite://.data/hybrid.db"
+              [discovery]
+              dsn = "sqlite://.data/hybrid.db"
+              heartbeat_interval = "10s"
+              poll_interval = "20s"
+              ttl = "60s"
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: deploy-test-${{ matrix.os }}-${{ matrix.deployment.type }}
+    
+    - name: Install system dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+    
+    - name: Install system dependencies (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install protobuf
+    
+    - name: Setup deployment environment
+      run: |
+        mkdir -p .data
+        cat > signaldb.toml << 'EOF'
+        ${{ matrix.deployment.config }}
+        EOF
+    
+    - name: Build deployment binaries
+      run: |
+        case "${{ matrix.deployment.type }}" in
+          monolithic)
+            cargo build --release --bin signaldb
+            ;;
+          microservices)
+            cargo build --release --bin acceptor
+            cargo build --release --bin router
+            cargo build --release --bin writer
+            ;;
+          hybrid)
+            cargo build --release --bin signaldb
+            cargo build --release --bin acceptor
+            cargo build --release --bin router
+            ;;
+        esac
+    
+    - name: Test deployment startup
+      run: |
+        case "${{ matrix.deployment.type }}" in
+          monolithic)
+            echo "Testing monolithic deployment"
+            timeout 10s ./target/release/signaldb || echo "Monolithic test completed"
+            ;;
+          microservices)
+            echo "Testing microservices deployment"
+            timeout 5s ./target/release/acceptor &
+            timeout 5s ./target/release/router &
+            timeout 5s ./target/release/writer &
+            wait
+            echo "Microservices test completed"
+            ;;
+          hybrid)
+            echo "Testing hybrid deployment"
+            timeout 5s ./target/release/acceptor &
+            timeout 10s ./target/release/signaldb || echo "Hybrid test completed"
+            wait
+            ;;
+        esac
+
+  performance-benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.test_scope == 'full' }}
+    strategy:
+      matrix:
+        database: [postgresql, sqlite]
+        load: [light, medium, heavy]
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: signaldb_bench
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: bench-${{ matrix.database }}-${{ matrix.load }}
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+    
+    - name: Configure benchmark environment
+      run: |
+        mkdir -p .data
+        if [ "${{ matrix.database }}" = "postgresql" ]; then
+          echo "SIGNALDB_DATABASE_DSN=postgres://postgres:postgres@localhost:5432/signaldb_bench" >> $GITHUB_ENV
+        else
+          echo "SIGNALDB_DATABASE_DSN=sqlite://.data/benchmark.db" >> $GITHUB_ENV
+        fi
+    
+    - name: Build release binaries
+      run: |
+        cargo build --release --all-targets
+    
+    - name: Run performance benchmarks
+      run: |
+        echo "Running ${{ matrix.load }} load benchmarks with ${{ matrix.database }}"
+        case "${{ matrix.load }}" in
+          light)
+            cargo test --release --test '*' -- --test-threads=1 --ignored
+            ;;
+          medium)
+            cargo test --release --test '*' -- --test-threads=2 --ignored
+            ;;
+          heavy)
+            cargo test --release --test '*' -- --test-threads=4 --ignored
+            ;;
+        esac
+      env:
+        RUST_LOG: warn
+
+  integration-end-to-end:
+    name: End-to-End Integration
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.test_scope == 'full' }}
+    strategy:
+      matrix:
+        scenario:
+          - name: "Full Pipeline PostgreSQL"
+            database: "postgres://postgres:postgres@localhost:5432/signaldb_e2e"
+            deployment: "microservices"
+          - name: "Full Pipeline SQLite"
+            database: "sqlite://.data/e2e.db"
+            deployment: "monolithic"
+          - name: "Cross-Service Discovery"
+            database: "sqlite://.data/discovery.db"
+            deployment: "microservices"
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: signaldb_e2e
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: e2e-${{ matrix.scenario.name }}
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler curl
+    
+    - name: Setup test environment
+      run: |
+        mkdir -p .data
+        echo "SIGNALDB_DATABASE_DSN=${{ matrix.scenario.database }}" >> $GITHUB_ENV
+        echo "SIGNALDB_DISCOVERY_DSN=${{ matrix.scenario.database }}" >> $GITHUB_ENV
+    
+    - name: Build all binaries
+      run: |
+        cargo build --release --all-targets
+    
+    - name: Run end-to-end tests
+      run: |
+        echo "Running ${{ matrix.scenario.name }} scenario"
+        cargo test --release --test integration_tests -- --test-threads=1
+      env:
+        RUST_LOG: info

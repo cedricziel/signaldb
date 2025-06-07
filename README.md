@@ -1,18 +1,101 @@
-# signaldb
+# SignalDB
 
-A signal database based on the FDAP stack.
+A high-performance observability data platform built with the FDAP stack (Flight, DataFusion, Arrow, Parquet).
 
-## Project goals
+## Project Goals
 
-I am building this project in my free time. The goal is to build a database for observability signals (metrics/logs/traces/..).
+Building a database for observability signals (metrics/logs/traces) with focus on:
 
-The key traits I want this project to develop over time:
+* **Cost-effective storage** - Efficient columnar storage with Parquet
+* **Open standards ingestion** - Native OTLP, Prometheus, and other standard protocols
+* **Effective querying** - Fast SQL queries powered by DataFusion
+* **Tool compatibility** - Seamless integration with Grafana, Perses, and other analysis tools
+* **Easy operation** - Configless deployments and flexible architecture
 
-* cost-effective storage
-* open standards native ingestion (OTLP, Prom, ..)
-* effective querying
-* robust interfacing with popular analysis tools (Grafana, Perses, ..)
-* easy operation
+## Architecture
+
+SignalDB supports multiple deployment models:
+
+### Monolithic Deployment
+Single binary (`signaldb`) that includes all services - ideal for development and small deployments.
+
+### Microservices Deployment
+Independent services for scalable production deployments:
+- **signaldb-acceptor**: OTLP data ingestion (gRPC port 4317, HTTP port 4318)
+- **signaldb-router**: Query routing and service discovery (Flight port 50053, HTTP API port 3000)
+- **signaldb-writer**: Data persistence (Flight port 50051)
+- **signaldb-querier**: Query processing
+
+### Service Discovery
+All services register in a shared catalog for automatic discovery:
+- Heartbeat-based health checking
+- Automatic deregistration on shutdown
+- Background polling for real-time updates
+- Load balancing across available services
+
+## Database Support
+
+- **PostgreSQL**: Production deployments with full SQL capabilities
+- **SQLite**: Development, testing, and single-node deployments (configless operation)
+
+## Quick Start
+
+### Configless Operation (SQLite)
+```bash
+# Monolithic deployment - zero configuration required
+cargo run --bin signaldb
+
+# Microservices deployment  
+cargo run --bin signaldb-acceptor &
+cargo run --bin signaldb-router &
+cargo run --bin signaldb-writer &
+```
+
+### PostgreSQL Configuration
+```toml
+# signaldb.toml
+[database]
+dsn = "postgres://user:password@localhost:5432/signaldb"
+
+[discovery]
+dsn = "postgres://user:password@localhost:5432/signaldb"
+heartbeat_interval = "30s"
+poll_interval = "60s"
+ttl = "300s"
+```
+
+## Development
+
+### Prerequisites
+- Rust 1.70+
+- Protocol Buffers compiler
+
+### Building
+```bash
+# All binaries
+cargo build --release
+
+# Specific deployment model
+cargo build --release --bin signaldb           # Monolithic
+cargo build --release --bin signaldb-acceptor  # Microservices
+cargo build --release --bin signaldb-router    # Microservices  
+cargo build --release --bin signaldb-writer    # Microservices
+```
+
+### Testing
+```bash
+# Unit and integration tests
+cargo test
+
+# Database compatibility tests
+cargo test -p common catalog_integration
+
+# Deployment testing
+./scripts/test-deployment.sh
+
+# Docker-based testing
+docker-compose -f docker-compose.test.yml up
+```
 
 ## Configuration
 

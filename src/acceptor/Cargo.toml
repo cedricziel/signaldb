@@ -36,7 +36,7 @@ serde = { workspace = true, features = ["derive"] }
 uuid = { workspace = true }
 
 [[bin]]
-name = "acceptor"
+name = "signaldb-acceptor"
 path = "src/main.rs"
 
 [dev-dependencies]

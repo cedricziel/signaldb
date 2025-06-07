@@ -36,6 +36,10 @@ tonic.workspace = true
 
 async-nats.workspace = true
 tempfile.workspace = true
+
+[[bin]]
+name = "signaldb-writer"
+path = "src/main.rs"
  
 [dev-dependencies]
 tokio-stream.workspace = true
