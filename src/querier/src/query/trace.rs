@@ -267,7 +267,7 @@ impl TraceQuerier for TraceService {
         log::info!("Query returned {} rows", results.len());
         log::info!("Results: {:?}", results);
 
-        let traces = Vec::new();
+        let mut traces = Vec::new();
 
         for batch in results {
             for row_index in 0..batch.num_rows() {

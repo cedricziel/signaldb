@@ -231,7 +231,7 @@ pub fn arrow_to_otlp_logs(batch: &RecordBatch) -> ExportLogsServiceRequest {
         let resource_json_str = resource_json_array.value(row);
         let scope_json_str = scope_json_array.value(row);
         let dropped_attributes_count = dropped_attributes_count_array.value(row);
-        let service_name = service_name_array.value(row).to_string();
+        let _service_name = service_name_array.value(row).to_string();
         let event_name = event_name_array.value(row).to_string();
 
         // Parse body JSON string to AnyValue
@@ -329,7 +329,7 @@ pub fn arrow_to_otlp_logs(batch: &RecordBatch) -> ExportLogsServiceRequest {
         let log_record = LogRecord {
             time_unix_nano,
             observed_time_unix_nano,
-            severity_number: unsafe { u32::cast_signed(severity_number as u32) }, // Convert i32 to SeverityNumber enum
+            severity_number, // i32 to SeverityNumber enum
             severity_text,
             body,
             attributes,

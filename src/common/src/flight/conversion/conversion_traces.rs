@@ -533,7 +533,7 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
             });
 
         // Find or create ScopeSpans for this service
-        let scope_spans = resource_spans.scope_spans.iter_mut().find(|ss| {
+        let scope_spans = resource_spans.scope_spans.iter_mut().find(|_ss| {
             // For now, no scope differentiation, so just use the first one
             true
         });

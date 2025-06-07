@@ -11,7 +11,7 @@ mod services;
 pub fn grpc_service() -> Router {
     let querier = SignalDBQuerier {};
     let querier_svc = QuerierServer::new(querier);
-    let service = Server::builder().add_service(querier_svc).into_service();
+    let _service = Server::builder().add_service(querier_svc).into_service();
 
     Router::new().route("/", get(|| async { "SignalDB Querier" }))
 }
