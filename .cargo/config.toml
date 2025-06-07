@@ -1,0 +1,7 @@
+[env]
+TMPDIR = { value = "target/tmp", force = true, relative = true }
+TEMP = { value = "target/tmp", force = true, relative = true }
+TMP = { value = "target/tmp", force = true, relative = true }
+
+[build]
+incremental = true
