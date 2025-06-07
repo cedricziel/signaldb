@@ -121,7 +121,7 @@ bytes = "1"
 
 mockall = "0.13.1"
 
-uuid = "1.4.1"
+uuid = "1.17.0"
 
 humantime-serde = "1.1.1"
 
