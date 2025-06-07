@@ -26,7 +26,7 @@ jobs:
         include:
           # Test with minimum supported Rust version
           - os: ubuntu-latest
-            rust: 1.70.0
+            rust: 1.75.0
             database: sqlite
 
     services:
