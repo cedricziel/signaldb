@@ -61,7 +61,7 @@ impl<Q: MessagingBackend + 'static> MetricsService for MetricsAcceptorService<Q>
             .send_message("arrow-metrics", message)
             .await
             .map_err(|e| {
-                log::error!("Failed to publish arrow metrics message: {:?}", e);
+                log::error!("Failed to publish arrow metrics message: {e:?}");
                 e
             });
 
@@ -75,12 +75,12 @@ impl<Q: MessagingBackend + 'static> MetricsService for MetricsAcceptorService<Q>
                 .do_put(stream::iter(flight_data.into_iter().map(Ok)))
                 .await
                 .unwrap_or_else(|e| {
-                    log::error!("Flight do_put failed for metrics: {:?}", e);
+                    log::error!("Flight do_put failed for metrics: {e:?}");
                     futures::stream::empty().boxed()
                 });
             while let Some(res) = results.next().await {
                 if let Err(e) = res {
-                    log::error!("Flight put result error for metrics: {:?}", e);
+                    log::error!("Flight put result error for metrics: {e:?}");
                 }
             }
         }

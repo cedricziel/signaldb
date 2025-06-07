@@ -343,11 +343,11 @@ pub fn arrow_to_otlp_logs(batch: &RecordBatch) -> ExportLogsServiceRequest {
         // Use resource_json_str and scope_json_str as keys for grouping
         let scope_logs_map = resource_scope_logs_map
             .entry(resource_json_str.to_string())
-            .or_insert_with(HashMap::new);
+            .or_default();
 
         let logs = scope_logs_map
             .entry(scope_json_str.to_string())
-            .or_insert_with(Vec::new);
+            .or_default();
 
         logs.push(log_record);
 

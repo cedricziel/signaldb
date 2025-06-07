@@ -139,7 +139,7 @@ pub fn json_value_to_any_value(json_val: &JsonValue) -> AnyValue {
             value: Some(Value::StringValue(s.clone())),
         },
         JsonValue::Array(arr) => {
-            let values = arr.iter().map(|v| json_value_to_any_value(v)).collect();
+            let values = arr.iter().map(json_value_to_any_value).collect();
 
             AnyValue {
                 value: Some(Value::ArrayValue(ArrayValue { values })),

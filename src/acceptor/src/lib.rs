@@ -44,6 +44,12 @@ pub struct AcceptorState {
     queue: Arc<Mutex<InMemoryStreamingBackend>>,
 }
 
+impl Default for AcceptorState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AcceptorState {
     pub fn new() -> Self {
         Self {
@@ -72,7 +78,6 @@ pub async fn get_parquet_writer(data_set: DataSet, schema: Schema) -> AsyncArrow
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
                 .as_secs()
-                .to_string()
         ))
         .await
         .expect("Error creating parquet file"),
@@ -103,7 +108,7 @@ pub async fn serve_otlp_grpc(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to initialize service bootstrap: {}", e))?;
 
-    log::info!("Starting OTLP/gRPC acceptor on {}", addr);
+    log::info!("Starting OTLP/gRPC acceptor on {addr}");
 
     let state = AcceptorState::new();
     // Initialize Flight client to forward telemetry to writer
@@ -141,7 +146,7 @@ pub async fn serve_otlp_grpc(
             log::info!("Shutting down OTLP acceptor");
             // Graceful service bootstrap shutdown
             if let Err(e) = service_bootstrap.shutdown().await {
-                log::error!("Failed to shutdown service bootstrap: {}", e);
+                log::error!("Failed to shutdown service bootstrap: {e}");
             }
         })
         .await
@@ -166,7 +171,7 @@ async fn health() -> &'static str {
 async fn handle_traces(
     axum::extract::Json(payload): axum::extract::Json<serde_json::Value>,
 ) -> axum::response::Response<axum::body::Body> {
-    log::info!("Got traces: {:?}", payload);
+    log::info!("Got traces: {payload:?}");
     axum::response::Response::builder()
         .status(200)
         .body(axum::body::Body::empty())
@@ -182,7 +187,7 @@ pub async fn serve_otlp_http(
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse OTLP/HTTP address: {}", e))?;
 
-    log::info!("Starting OTLP/HTTP acceptor on {}", addr);
+    log::info!("Starting OTLP/HTTP acceptor on {addr}");
 
     // Load configuration
     let config = Configuration::load()
@@ -209,7 +214,7 @@ pub async fn serve_otlp_http(
             log::info!("Shutting down OTLP/HTTP acceptor");
             // Graceful service bootstrap shutdown
             if let Err(e) = service_bootstrap.shutdown().await {
-                log::error!("Failed to shutdown service bootstrap: {}", e);
+                log::error!("Failed to shutdown service bootstrap: {e}");
             }
         })
         .await?;

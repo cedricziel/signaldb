@@ -60,7 +60,7 @@ impl<Q: MessagingBackend + 'static> LogsService for LogAcceptorService<Q> {
             .send_message("arrow-logs", message)
             .await
             .map_err(|e| {
-                log::error!("Failed to publish arrow logs message: {:?}", e);
+                log::error!("Failed to publish arrow logs message: {e:?}");
                 e
             });
 
@@ -74,12 +74,12 @@ impl<Q: MessagingBackend + 'static> LogsService for LogAcceptorService<Q> {
                 .do_put(stream::iter(flight_data.into_iter().map(Ok)))
                 .await
                 .unwrap_or_else(|e| {
-                    log::error!("Flight do_put failed for logs: {:?}", e);
+                    log::error!("Flight do_put failed for logs: {e:?}");
                     futures::stream::empty().boxed()
                 });
             while let Some(res) = results.next().await {
                 if let Err(e) = res {
-                    log::error!("Flight put result error for logs: {:?}", e);
+                    log::error!("Flight put result error for logs: {e:?}");
                 }
             }
         }

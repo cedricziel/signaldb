@@ -12,6 +12,12 @@ pub struct FlightSchemas {
     pub metric_schema: Schema,
 }
 
+impl Default for FlightSchemas {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FlightSchemas {
     /// Create a new instance of FlightSchemas with all defined schemas
     pub fn new() -> Self {

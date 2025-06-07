@@ -189,7 +189,7 @@ impl Catalog {
             loop {
                 ticker.tick().await;
                 if let Err(e) = catalog.heartbeat(id).await {
-                    log::error!("Failed to send heartbeat for ingester {}: {}", id, e);
+                    log::error!("Failed to send heartbeat for ingester {id}: {e}");
                 }
             }
         })

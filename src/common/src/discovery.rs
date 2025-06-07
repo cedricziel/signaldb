@@ -51,7 +51,7 @@ impl NatsDiscovery {
                 ticker.tick().await;
                 let payload = serde_json::to_vec(&instance).unwrap();
                 if let Err(err) = client.publish(heartbeat_subj.clone(), payload.into()).await {
-                    log::error!("Discovery heartbeat failed: {}", err);
+                    log::error!("Discovery heartbeat failed: {err}");
                 }
             }
         })

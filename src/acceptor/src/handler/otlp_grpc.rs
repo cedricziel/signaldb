@@ -120,7 +120,7 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
     }
 
     pub async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
-        log::info!("Got a request: {:?}", request);
+        log::info!("Got a request: {request:?}");
 
         // Convert OTLP to Arrow RecordBatch using the new conversion function
         let record_batch = otlp_traces_to_arrow(&request);
@@ -188,7 +188,7 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
                         span_id,
                         parent_span_id: parent_span_id.clone(),
                         status: span_status,
-                        is_root: parent_span_id == "0000000000000000".to_string(),
+                        is_root: parent_span_id == "0000000000000000",
                         name: span.name.clone(),
                         service_name: service_name.clone(),
                         span_kind: match span.kind {
@@ -218,7 +218,7 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
             .send_message("arrow-traces", message)
             .await
             .map_err(|e| {
-                log::error!("Failed to publish arrow trace message: {:?}", e);
+                log::error!("Failed to publish arrow trace message: {e:?}");
                 e
             });
 
@@ -226,7 +226,7 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
             .send_message("traces", span_message)
             .await
             .map_err(|e| {
-                log::error!("Failed to publish trace message: {:?}", e);
+                log::error!("Failed to publish trace message: {e:?}");
                 e
             });
         // Forward via Flight protocol if configured
@@ -241,14 +241,14 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
                 .do_put(stream::iter(flight_data.into_iter().map(Ok)))
                 .await
                 .unwrap_or_else(|e| {
-                    log::error!("Flight do_put failed for traces: {:?}", e);
+                    log::error!("Flight do_put failed for traces: {e:?}");
                     // Return empty stream on failure
                     futures::stream::empty().boxed()
                 });
             // Drain results to complete upload
             while let Some(res) = results.next().await {
                 if let Err(e) = res {
-                    log::error!("Flight put result error for traces: {:?}", e);
+                    log::error!("Flight put result error for traces: {e:?}");
                 }
             }
         }

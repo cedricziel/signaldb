@@ -107,7 +107,7 @@ pub fn otlp_metrics_to_arrow(
                                 data_json,
                                 start_time,
                                 time,
-                                sum.aggregation_temporality as i32,
+                                sum.aggregation_temporality,
                                 sum.is_monotonic,
                             )
                         },
@@ -130,7 +130,7 @@ pub fn otlp_metrics_to_arrow(
                                 data_json,
                                 start_time,
                                 time,
-                                histogram.aggregation_temporality as i32,
+                                histogram.aggregation_temporality,
                                 false,
                             )
                         },
@@ -153,7 +153,7 @@ pub fn otlp_metrics_to_arrow(
                                 data_json,
                                 start_time,
                                 time,
-                                exp_histogram.aggregation_temporality as i32,
+                                exp_histogram.aggregation_temporality,
                                 false,
                             )
                         },
@@ -517,11 +517,11 @@ pub fn arrow_to_otlp_metrics(batch: &RecordBatch) -> ExportMetricsServiceRequest
         // Use resource_json_str and scope_json_str as keys for grouping
         let scope_metrics_map = resource_scope_metrics_map
             .entry(resource_json_str.to_string())
-            .or_insert_with(HashMap::new);
+            .or_default();
 
         let metrics = scope_metrics_map
             .entry(scope_json_str.to_string())
-            .or_insert_with(Vec::new);
+            .or_default();
 
         metrics.push(metric);
 

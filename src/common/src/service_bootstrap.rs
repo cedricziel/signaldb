@@ -25,7 +25,7 @@ impl std::fmt::Display for ServiceType {
             ServiceType::Router => "router",
             ServiceType::Querier => "querier",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -59,12 +59,7 @@ impl ServiceBootstrap {
         let catalog = Catalog::new(dsn).await?;
         let service_id = Uuid::new_v4();
 
-        log::info!(
-            "Registering {} service {} at {} with catalog",
-            service_type,
-            service_id,
-            address
-        );
+        log::info!("Registering {service_type} service {service_id} at {address} with catalog");
 
         // Register as ingester for backward compatibility with existing catalog schema
         catalog.register_ingester(service_id, &address).await?;

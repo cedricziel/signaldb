@@ -147,6 +147,12 @@ pub struct SpanBatch {
     pub spans: Vec<Span>,
 }
 
+impl Default for SpanBatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SpanBatch {
     pub fn new() -> Self {
         SpanBatch { spans: vec![] }
@@ -270,7 +276,7 @@ impl From<RecordBatch> for SpanBatch {
 
 impl From<&RecordBatch> for SpanBatch {
     fn from(batch: &RecordBatch) -> Self {
-        SpanBatch::from_record_batch(&batch)
+        SpanBatch::from_record_batch(batch)
     }
 }
 

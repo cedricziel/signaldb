@@ -39,7 +39,7 @@ pub async fn query_single_trace<S: RouterState>(
     Path(trace_id): Path<String>,
     Query(params): Query<TraceQueryParams>,
 ) -> Result<axum::Json<tempo_api::Trace>, axum::http::StatusCode> {
-    log::info!("Querying for trace_id: {}", trace_id);
+    log::info!("Querying for trace_id: {trace_id}");
 
     // Use service registry to find available services for routing
     let services = state.service_registry().get_services().await;
@@ -57,16 +57,13 @@ pub async fn query_single_trace<S: RouterState>(
         // TODO: Actually route the request to the service
         // For now, we'll log the routing decision and return a mock trace
     } else {
-        log::warn!(
-            "No services available to handle trace query for {}",
-            trace_id
-        );
+        log::warn!("No services available to handle trace query for {trace_id}");
         return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
     }
 
     // Create a mock trace
     let trace = tempo_api::Trace {
-        trace_id: trace_id,
+        trace_id,
         root_service_name: "unknown".to_string(),
         root_trace_name: "unknown".to_string(),
         start_time_unix_nano: "0".to_string(),
@@ -83,7 +80,7 @@ pub async fn search<S: RouterState>(
     state: State<S>,
     Query(query): Query<tempo_api::SearchQueryParams>,
 ) -> Result<axum::Json<tempo_api::SearchResult>, axum::http::StatusCode> {
-    log::info!("Searching for traces with params: {:?}", query);
+    log::info!("Searching for traces with params: {query:?}");
 
     // Use service registry to find available services for routing
     let services = state.service_registry().get_services().await;
