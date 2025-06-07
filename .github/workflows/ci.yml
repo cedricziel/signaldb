@@ -93,7 +93,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run unit tests
-        run: cargo test --lib --all-features
+        run: cargo test --workspace --lib --all-features
 
       - name: Run integration tests
         run: cargo test --test '*' --all-features
