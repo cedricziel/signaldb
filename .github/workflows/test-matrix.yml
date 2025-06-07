@@ -168,14 +168,14 @@ jobs:
             cargo build --release --bin signaldb
             ;;
           microservices)
-            cargo build --release --bin acceptor
-            cargo build --release --bin router
-            cargo build --release --bin writer
+            cargo build --release -p acceptor --bin signaldb-acceptor
+            cargo build --release -p router --bin signaldb-router
+            cargo build --release -p writer --bin signaldb-writer
             ;;
           hybrid)
             cargo build --release --bin signaldb
-            cargo build --release --bin acceptor
-            cargo build --release --bin router
+            cargo build --release -p acceptor --bin signaldb-acceptor
+            cargo build --release -p router --bin signaldb-router
             ;;
         esac
     
@@ -188,15 +188,15 @@ jobs:
             ;;
           microservices)
             echo "Testing microservices deployment"
-            timeout 5s ./target/release/acceptor &
-            timeout 5s ./target/release/router &
-            timeout 5s ./target/release/writer &
+            timeout 5s ./target/release/signaldb-acceptor &
+            timeout 5s ./target/release/signaldb-router &
+            timeout 5s ./target/release/signaldb-writer &
             wait
             echo "Microservices test completed"
             ;;
           hybrid)
             echo "Testing hybrid deployment"
-            timeout 5s ./target/release/acceptor &
+            timeout 5s ./target/release/signaldb-acceptor &
             timeout 10s ./target/release/signaldb || echo "Hybrid test completed"
             wait
             ;;
