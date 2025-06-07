@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::config::Configuration;
+use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use messaging::backend::memory::InMemoryStreamingBackend;
 use router::{create_flight_service, create_router, InMemoryStateImpl, RouterState};
 use std::net::SocketAddr;
@@ -13,32 +13,36 @@ async fn main() -> Result<()> {
 
     // Load application configuration
     let config = Configuration::load().context("Failed to load configuration")?;
-    
+
     log::info!("Starting SignalDB Router Service");
-    
+
     // Standard ports for router services
     let flight_addr = SocketAddr::from(([0, 0, 0, 0], 50053)); // Arrow Flight
-    let http_addr = SocketAddr::from(([0, 0, 0, 0], 3000));     // Tempo API
-    
+    let http_addr = SocketAddr::from(([0, 0, 0, 0], 3000)); // Tempo API
+
     // Initialize router service bootstrap for catalog-based discovery
-    let router_bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Router,
-        flight_addr.to_string(),
-    ).await
-    .context("Failed to initialize router service bootstrap")?;
-    
+    let router_bootstrap =
+        ServiceBootstrap::new(config.clone(), ServiceType::Router, flight_addr.to_string())
+            .await
+            .context("Failed to initialize router service bootstrap")?;
+
     // Create router state with catalog access
     let state = InMemoryStateImpl::new(
         InMemoryStreamingBackend::new(10),
-        router_bootstrap.catalog().clone()
+        router_bootstrap.catalog().clone(),
     );
 
     // Start background service discovery polling
     if config.discovery.is_some() {
         let poll_interval = config.discovery.as_ref().unwrap().poll_interval;
-        state.service_registry().start_background_polling(poll_interval).await;
-        log::info!("Started service registry background polling with interval: {:?}", poll_interval);
+        state
+            .service_registry()
+            .start_background_polling(poll_interval)
+            .await;
+        log::info!(
+            "Started service registry background polling with interval: {:?}",
+            poll_interval
+        );
     }
 
     log::info!("Router service registered with catalog");
@@ -81,9 +85,9 @@ async fn main() -> Result<()> {
     tokio::signal::ctrl_c()
         .await
         .context("Failed to listen for ctrl+c signal")?;
-    
+
     log::info!("🛑 Shutting down router service...");
-    
+
     // Graceful deregistration using service bootstrap
     if let Err(e) = router_bootstrap.shutdown().await {
         log::error!("Failed to shutdown router service bootstrap: {}", e);

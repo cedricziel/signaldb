@@ -57,11 +57,17 @@ impl MockTraceHandler {
 impl<Q: MessagingBackend> TraceHandler<Q> {
     /// Create a new handler using only the in-memory queue
     pub fn new(queue: Arc<Mutex<Q>>) -> Self {
-        Self { queue, flight_client: None }
+        Self {
+            queue,
+            flight_client: None,
+        }
     }
     /// Create a new handler with both queue and Flight client
     pub fn new_with_flight(queue: Arc<Mutex<Q>>, flight_client: Arc<Mutex<FlightClient>>) -> Self {
-        Self { queue, flight_client: Some(flight_client) }
+        Self {
+            queue,
+            flight_client: Some(flight_client),
+        }
     }
 
     fn extract_value(&self, attr_val: &Option<&AnyValue>) -> JsonValue {
@@ -227,8 +233,8 @@ impl<Q: MessagingBackend> TraceHandler<Q> {
         if let Some(flight_client) = &self.flight_client {
             // Convert the batch to FlightData
             let schema = flight_batch.schema();
-            let flight_data = batches_to_flight_data(schema.as_ref(), vec![flight_batch])
-                .unwrap_or_default();
+            let flight_data =
+                batches_to_flight_data(schema.as_ref(), vec![flight_batch]).unwrap_or_default();
             // Send via Flight DoPut
             let mut client = flight_client.lock().await;
             let mut results = client

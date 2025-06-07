@@ -180,10 +180,10 @@ mod tests {
     #[test]
     fn test_default_configuration_enables_sqlite() {
         let config = Configuration::default();
-        
+
         // Database should default to SQLite in .data directory
         assert_eq!(config.database.dsn, "sqlite://.data/signaldb.db");
-        
+
         // Discovery should be enabled by default with SQLite
         assert!(config.discovery.is_some());
         let discovery = config.discovery.unwrap();
@@ -199,7 +199,7 @@ mod tests {
         let config = Figment::from(Serialized::defaults(Configuration::default()))
             .extract::<Configuration>()
             .unwrap();
-        
+
         // Should work completely configless with SQLite defaults
         assert_eq!(config.database.dsn, "sqlite://.data/signaldb.db");
         assert!(config.discovery.is_some());

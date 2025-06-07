@@ -1,7 +1,7 @@
+use anyhow::Error;
 use async_nats::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use anyhow::Error;
 
 /// Service instance metadata for NATS-based discovery.
 #[derive(Debug, Clone, Serialize, Deserialize)]

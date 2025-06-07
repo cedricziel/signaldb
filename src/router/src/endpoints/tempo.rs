@@ -43,14 +43,24 @@ pub async fn query_single_trace<S: RouterState>(
 
     // Use service registry to find available services for routing
     let services = state.service_registry().get_services().await;
-    log::info!("Available services for trace query: {} services found", services.len());
+    log::info!(
+        "Available services for trace query: {} services found",
+        services.len()
+    );
 
     if let Some(service) = state.service_registry().get_service_for_routing().await {
-        log::info!("Routing trace query {} to service at {}", trace_id, service.address);
+        log::info!(
+            "Routing trace query {} to service at {}",
+            trace_id,
+            service.address
+        );
         // TODO: Actually route the request to the service
         // For now, we'll log the routing decision and return a mock trace
     } else {
-        log::warn!("No services available to handle trace query for {}", trace_id);
+        log::warn!(
+            "No services available to handle trace query for {}",
+            trace_id
+        );
         return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
     }
 
@@ -77,7 +87,10 @@ pub async fn search<S: RouterState>(
 
     // Use service registry to find available services for routing
     let services = state.service_registry().get_services().await;
-    log::info!("Available services for trace search: {} services found", services.len());
+    log::info!(
+        "Available services for trace search: {} services found",
+        services.len()
+    );
 
     if let Some(service) = state.service_registry().get_service_for_routing().await {
         log::info!("Routing trace search to service at {}", service.address);
@@ -145,8 +158,8 @@ pub async fn search_tag_values_v2(
 mod tests {
     use super::*;
     use axum::extract::State;
-    use messaging::backend::memory::InMemoryStreamingBackend;
     use common::catalog::Catalog;
+    use messaging::backend::memory::InMemoryStreamingBackend;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -154,7 +167,7 @@ mod tests {
         // For testing, we'll need to use a real PostgreSQL connection or mock
         // Since we don't want to require a DB for unit tests, let's skip the catalog tests for now
         // and focus on testing the service registry logic separately
-        
+
         // This is a placeholder - in a real test we'd either:
         // 1. Use a test database
         // 2. Create a mock catalog implementation
@@ -167,7 +180,7 @@ mod tests {
     async fn test_search_result() {
         // This test is disabled because it requires a real database connection
         // To enable this test, set up a test database and update the catalog creation logic
-        
+
         // Create a mock state
         let _queue = Arc::new(Mutex::new(InMemoryStreamingBackend::new(10)));
         let catalog = create_test_catalog().await;

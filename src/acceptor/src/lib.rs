@@ -25,10 +25,10 @@ use tokio::{
     sync::{oneshot, Mutex},
 };
 // Service bootstrap and configuration
-use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::config::Configuration;
-use uuid::Uuid;
+use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use std::time::Duration;
+use uuid::Uuid;
 // Flight protocol client
 use arrow_flight::client::FlightClient;
 use tonic::transport::Endpoint;
@@ -98,15 +98,12 @@ pub async fn serve_otlp_grpc(
         .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
 
     // Initialize service bootstrap for catalog-based discovery
-    let advertise_addr = std::env::var("ACCEPTOR_ADVERTISE_ADDR")
-        .unwrap_or_else(|_| addr.to_string());
-    
-    let service_bootstrap = ServiceBootstrap::new(
-        config,
-        ServiceType::Acceptor,
-        advertise_addr,
-    ).await
-    .map_err(|e| anyhow::anyhow!("Failed to initialize service bootstrap: {}", e))?;
+    let advertise_addr =
+        std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| addr.to_string());
+
+    let service_bootstrap = ServiceBootstrap::new(config, ServiceType::Acceptor, advertise_addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to initialize service bootstrap: {}", e))?;
 
     log::info!("Starting OTLP/gRPC acceptor on {}", addr);
 
@@ -194,15 +191,12 @@ pub async fn serve_otlp_http(
         .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
 
     // Initialize service bootstrap for catalog-based discovery
-    let advertise_addr = std::env::var("ACCEPTOR_ADVERTISE_ADDR")
-        .unwrap_or_else(|_| addr.to_string());
-    
-    let service_bootstrap = ServiceBootstrap::new(
-        config,
-        ServiceType::Acceptor,
-        advertise_addr,
-    ).await
-    .map_err(|e| anyhow::anyhow!("Failed to initialize service bootstrap: {}", e))?;
+    let advertise_addr =
+        std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| addr.to_string());
+
+    let service_bootstrap = ServiceBootstrap::new(config, ServiceType::Acceptor, advertise_addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to initialize service bootstrap: {}", e))?;
 
     let app = acceptor_router();
 

@@ -21,11 +21,17 @@ pub struct MetricsAcceptorService<Q: MessagingBackend + 'static> {
 impl<Q: MessagingBackend + 'static> MetricsAcceptorService<Q> {
     /// Legacy constructor using only in-memory queue
     pub fn new(queue: Arc<Mutex<Q>>) -> Self {
-        Self { queue, flight_client: None }
+        Self {
+            queue,
+            flight_client: None,
+        }
     }
     /// Constructor with Flight client for forwarding telemetry
     pub fn new_with_flight(queue: Arc<Mutex<Q>>, flight_client: Arc<Mutex<FlightClient>>) -> Self {
-        Self { queue, flight_client: Some(flight_client) }
+        Self {
+            queue,
+            flight_client: Some(flight_client),
+        }
     }
 }
 
@@ -62,8 +68,8 @@ impl<Q: MessagingBackend + 'static> MetricsService for MetricsAcceptorService<Q>
         // Forward via Flight protocol if configured
         if let Some(flight_client) = &self.flight_client {
             let schema = flight_batch.schema();
-            let flight_data = batches_to_flight_data(schema.as_ref(), vec![flight_batch])
-                .unwrap_or_default();
+            let flight_data =
+                batches_to_flight_data(schema.as_ref(), vec![flight_batch]).unwrap_or_default();
             let mut client = flight_client.lock().await;
             let mut results = client
                 .do_put(stream::iter(flight_data.into_iter().map(Ok)))

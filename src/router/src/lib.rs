@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use axum::{http::StatusCode, response::IntoResponse, routing::get, Router};
-use messaging::{backend::nats::NatsBackend, MessagingBackend};
 use common::catalog::Catalog;
+use messaging::{backend::nats::NatsBackend, MessagingBackend};
 
-pub mod endpoints;
 pub mod discovery;
+pub mod endpoints;
 
 /// RouterState implementation for NATS
 #[derive(Clone, Debug)]
@@ -28,7 +28,7 @@ impl RouterState for NatsStateImpl {
     fn queue(&self) -> &Self::Q {
         &self.queue
     }
-    
+
     fn catalog(&self) -> &Catalog {
         // TODO: NatsStateImpl needs catalog integration
         unimplemented!("Catalog not implemented for NatsStateImpl")
@@ -68,7 +68,10 @@ impl std::fmt::Debug for InMemoryStateImpl {
 
 impl InMemoryStateImpl {
     /// Create a new InMemoryStateImpl with the given queue and catalog
-    pub fn new(queue: messaging::backend::memory::InMemoryStreamingBackend, catalog: Catalog) -> Self {
+    pub fn new(
+        queue: messaging::backend::memory::InMemoryStreamingBackend,
+        catalog: Catalog,
+    ) -> Self {
         let service_registry = discovery::ServiceRegistry::new(catalog.clone());
         Self {
             queue: Arc::new(queue),
@@ -84,7 +87,7 @@ impl RouterState for InMemoryStateImpl {
     fn queue(&self) -> &Self::Q {
         &self.queue
     }
-    
+
     fn catalog(&self) -> &Catalog {
         &self.catalog
     }
@@ -103,7 +106,9 @@ pub fn create_router<S: RouterState>(state: S) -> Router<S> {
 }
 
 /// Create a new Flight service instance
-pub fn create_flight_service<S: RouterState>(state: S) -> endpoints::flight::SignalDBFlightService<S> {
+pub fn create_flight_service<S: RouterState>(
+    state: S,
+) -> endpoints::flight::SignalDBFlightService<S> {
     endpoints::flight::SignalDBFlightService::new(state)
 }
 

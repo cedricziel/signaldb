@@ -1,19 +1,19 @@
-use arrow_array::{
-    ArrayRef, BooleanArray, StringArray, StructArray, UInt64Array, ListArray,
-};
+use arrow_array::{ArrayRef, BooleanArray, ListArray, StringArray, StructArray, UInt64Array};
 use arrow_schema::{DataType, Field};
 use hex;
 use opentelemetry::trace::{SpanId, TraceId};
 use opentelemetry_proto::tonic::{
     collector::trace::v1::ExportTraceServiceRequest,
+    common::v1::KeyValue,
     trace::v1::{ResourceSpans, ScopeSpans, Span as OtelSpan, Status as OtelStatus},
-    common::v1::{KeyValue},
 };
-use serde_json::{Map};
+use serde_json::Map;
 use std::sync::Arc;
 
+use crate::flight::conversion::conversion_common::{
+    extract_resource_json, extract_service_name, extract_value, json_value_to_any_value,
+};
 use crate::flight::schema::FlightSchemas;
-use crate::flight::conversion::conversion_common::{extract_value, extract_resource_json, extract_service_name, json_value_to_any_value};
 
 /// Convert OTLP trace data to Arrow RecordBatch using the Flight trace schema
 pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> arrow_array::RecordBatch {
@@ -451,12 +451,18 @@ pub fn arrow_to_otlp_traces(batch: &arrow_array::RecordBatch) -> ExportTraceServ
         };
 
         // Parse attributes JSON string to KeyValue vector
-        let attributes: Vec<KeyValue> = if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(attributes_json_str) {
+        let attributes: Vec<KeyValue> = if let Ok(json_val) =
+            serde_json::from_str::<serde_json::Value>(attributes_json_str)
+        {
             if let serde_json::Value::Object(map) = json_val {
                 map.into_iter()
                     .map(|(k, v)| KeyValue {
                         key: k,
-                        value: Some(crate::flight::conversion::conversion_common::json_value_to_any_value(&v)),
+                        value: Some(
+                            crate::flight::conversion::conversion_common::json_value_to_any_value(
+                                &v,
+                            ),
+                        ),
                     })
                     .collect()
             } else {
@@ -467,12 +473,18 @@ pub fn arrow_to_otlp_traces(batch: &arrow_array::RecordBatch) -> ExportTraceServ
         };
 
         // Parse resource JSON string to KeyValue vector
-        let resource_attributes: Vec<KeyValue> = if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(resource_json_str) {
+        let resource_attributes: Vec<KeyValue> = if let Ok(json_val) =
+            serde_json::from_str::<serde_json::Value>(resource_json_str)
+        {
             if let serde_json::Value::Object(map) = json_val {
                 map.into_iter()
                     .map(|(k, v)| KeyValue {
                         key: k,
-                        value: Some(crate::flight::conversion::conversion_common::json_value_to_any_value(&v)),
+                        value: Some(
+                            crate::flight::conversion::conversion_common::json_value_to_any_value(
+                                &v,
+                            ),
+                        ),
                     })
                     .collect()
             } else {
@@ -506,14 +518,16 @@ pub fn arrow_to_otlp_traces(batch: &arrow_array::RecordBatch) -> ExportTraceServ
         };
 
         // Group spans by service name in resource_spans_map
-        let resource_spans = resource_spans_map.entry(service_name.clone()).or_insert_with(|| ResourceSpans {
-            resource: Some(opentelemetry_proto::tonic::resource::v1::Resource {
-                attributes: resource_attributes.clone(),
-                dropped_attributes_count: 0,
-            }),
-            scope_spans: vec![],
-            schema_url: "".to_string(),
-        });
+        let resource_spans = resource_spans_map
+            .entry(service_name.clone())
+            .or_insert_with(|| ResourceSpans {
+                resource: Some(opentelemetry_proto::tonic::resource::v1::Resource {
+                    attributes: resource_attributes.clone(),
+                    dropped_attributes_count: 0,
+                }),
+                scope_spans: vec![],
+                schema_url: "".to_string(),
+            });
 
         // Find or create ScopeSpans for this service
         let scope_spans = resource_spans.scope_spans.iter_mut().find(|ss| {
@@ -540,13 +554,13 @@ pub fn arrow_to_otlp_traces(batch: &arrow_array::RecordBatch) -> ExportTraceServ
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{RecordBatch, StringArray, UInt64Array, BooleanArray};
-    use std::sync::Arc;
-    use arrow_schema::{Schema, Field, DataType};
+    use arrow_array::{BooleanArray, RecordBatch, StringArray, UInt64Array};
+    use arrow_schema::{DataType, Field, Schema};
     use opentelemetry_proto::tonic::{
-        trace::v1::{Status, Span},
         common::v1::{AnyValue, KeyValue},
+        trace::v1::{Span, Status},
     };
+    use std::sync::Arc;
 
     #[test]
     fn test_otlp_traces_to_arrow() {
@@ -559,9 +573,11 @@ mod tests {
         attributes.push(KeyValue {
             key: "attr1".to_string(),
             value: Some(AnyValue {
-                value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
-                    "value1".to_string(),
-                )),
+                value: Some(
+                    opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                        "value1".to_string(),
+                    ),
+                ),
             }),
         });
 
@@ -569,9 +585,9 @@ mod tests {
         let span = Span {
             trace_id: trace_id_bytes,
             span_id: span_id_bytes,
-            parent_span_id: vec![],  // Root span
+            parent_span_id: vec![], // Root span
             name: "test-span".to_string(),
-            kind: 1,  // Server
+            kind: 1, // Server
             start_time_unix_nano: 1000000000,
             end_time_unix_nano: 2000000000,
             attributes,
@@ -581,7 +597,7 @@ mod tests {
             links: vec![],
             dropped_links_count: 0,
             status: Some(Status {
-                code: 2,  // Ok
+                code: 2, // Ok
                 message: "Success".to_string(),
             }),
             flags: 0,
@@ -593,9 +609,11 @@ mod tests {
         resource_attributes.push(KeyValue {
             key: "service.name".to_string(),
             value: Some(AnyValue {
-                value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
-                    "test_service".to_string(),
-                )),
+                value: Some(
+                    opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                        "test_service".to_string(),
+                    ),
+                ),
             }),
         });
 
@@ -660,10 +678,12 @@ mod tests {
         assert!(is_root_array.value(0)); // Should be a root span
 
         // Verify JSON strings
-        let attributes_json: serde_json::Value = serde_json::from_str(attributes_json_array.value(0)).unwrap();
+        let attributes_json: serde_json::Value =
+            serde_json::from_str(attributes_json_array.value(0)).unwrap();
         assert_eq!(attributes_json["attr1"], "value1");
 
-        let resource_json: serde_json::Value = serde_json::from_str(resource_json_array.value(0)).unwrap();
+        let resource_json: serde_json::Value =
+            serde_json::from_str(resource_json_array.value(0)).unwrap();
         assert_eq!(resource_json["service.name"], "test_service");
     }
 
@@ -685,24 +705,38 @@ mod tests {
             Field::new("is_root", DataType::Boolean, false),
             Field::new("attributes_json", DataType::Utf8, true),
             Field::new("resource_json", DataType::Utf8, true),
-            Field::new("events", DataType::List(Arc::new(Field::new(
-                "item",
-                DataType::Struct(vec![
-                    Field::new("name", DataType::Utf8, false),
-                    Field::new("timestamp_unix_nano", DataType::UInt64, false),
-                    Field::new("attributes_json", DataType::Utf8, true),
-                ].into()),
+            Field::new(
+                "events",
+                DataType::List(Arc::new(Field::new(
+                    "item",
+                    DataType::Struct(
+                        vec![
+                            Field::new("name", DataType::Utf8, false),
+                            Field::new("timestamp_unix_nano", DataType::UInt64, false),
+                            Field::new("attributes_json", DataType::Utf8, true),
+                        ]
+                        .into(),
+                    ),
+                    true,
+                ))),
                 true,
-            ))), true),
-            Field::new("links", DataType::List(Arc::new(Field::new(
-                "item",
-                DataType::Struct(vec![
-                    Field::new("trace_id", DataType::Utf8, false),
-                    Field::new("span_id", DataType::Utf8, false),
-                    Field::new("attributes_json", DataType::Utf8, true),
-                ].into()),
+            ),
+            Field::new(
+                "links",
+                DataType::List(Arc::new(Field::new(
+                    "item",
+                    DataType::Struct(
+                        vec![
+                            Field::new("trace_id", DataType::Utf8, false),
+                            Field::new("span_id", DataType::Utf8, false),
+                            Field::new("attributes_json", DataType::Utf8, true),
+                        ]
+                        .into(),
+                    ),
+                    true,
+                ))),
                 true,
-            ))), true),
+            ),
         ]));
 
         // Sample data for a trace
@@ -728,22 +762,28 @@ mod tests {
         // Create empty events and links arrays
         let field_events = Arc::new(Field::new(
             "item",
-            DataType::Struct(vec![
-                Field::new("name", DataType::Utf8, false),
-                Field::new("timestamp_unix_nano", DataType::UInt64, false),
-                Field::new("attributes_json", DataType::Utf8, true),
-            ].into()),
+            DataType::Struct(
+                vec![
+                    Field::new("name", DataType::Utf8, false),
+                    Field::new("timestamp_unix_nano", DataType::UInt64, false),
+                    Field::new("attributes_json", DataType::Utf8, true),
+                ]
+                .into(),
+            ),
             true,
         ));
         let events_array = Arc::new(ListArray::new_null(field_events, 1));
 
         let field_links = Arc::new(Field::new(
             "item",
-            DataType::Struct(vec![
-                Field::new("trace_id", DataType::Utf8, false),
-                Field::new("span_id", DataType::Utf8, false),
-                Field::new("attributes_json", DataType::Utf8, true),
-            ].into()),
+            DataType::Struct(
+                vec![
+                    Field::new("trace_id", DataType::Utf8, false),
+                    Field::new("span_id", DataType::Utf8, false),
+                    Field::new("attributes_json", DataType::Utf8, true),
+                ]
+                .into(),
+            ),
             true,
         ));
         let links_array = Arc::new(ListArray::new_null(field_links, 1));
@@ -768,7 +808,8 @@ mod tests {
                 events_array,
                 links_array,
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Convert Arrow to OTLP
         let result = arrow_to_otlp_traces(&batch);
@@ -821,17 +862,17 @@ mod tests {
         attributes.push(KeyValue {
             key: "attr1".to_string(),
             value: Some(AnyValue {
-                value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
-                    "value1".to_string(),
-                )),
+                value: Some(
+                    opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                        "value1".to_string(),
+                    ),
+                ),
             }),
         });
         attributes.push(KeyValue {
             key: "attr2".to_string(),
             value: Some(AnyValue {
-                value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(
-                    42,
-                )),
+                value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(42)),
             }),
         });
 
@@ -839,9 +880,9 @@ mod tests {
         let span = Span {
             trace_id: trace_id_bytes,
             span_id: span_id_bytes,
-            parent_span_id: vec![],  // Root span
+            parent_span_id: vec![], // Root span
             name: "test-span".to_string(),
-            kind: 1,  // Server
+            kind: 1, // Server
             start_time_unix_nano: 1000000000,
             end_time_unix_nano: 2000000000,
             attributes,
@@ -851,7 +892,7 @@ mod tests {
             links: vec![],
             dropped_links_count: 0,
             status: Some(Status {
-                code: 2,  // Ok
+                code: 2, // Ok
                 message: "Success".to_string(),
             }),
             flags: 0,
@@ -863,9 +904,11 @@ mod tests {
         resource_attributes.push(KeyValue {
             key: "service.name".to_string(),
             value: Some(AnyValue {
-                value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
-                    "test_service".to_string(),
-                )),
+                value: Some(
+                    opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                        "test_service".to_string(),
+                    ),
+                ),
             }),
         });
 
@@ -919,7 +962,10 @@ mod tests {
         let span = &scope_spans.spans[0];
 
         // Verify span properties
-        assert_eq!(hex::encode(&span.trace_id), "0123456789abcdef0123456789abcdef");
+        assert_eq!(
+            hex::encode(&span.trace_id),
+            "0123456789abcdef0123456789abcdef"
+        );
         assert_eq!(hex::encode(&span.span_id), "0123456789abcdef");
         assert_eq!(span.name, "test-span");
         assert_eq!(span.kind, 1); // Server
@@ -936,17 +982,31 @@ mod tests {
         assert_eq!(span.attributes.len(), 2);
 
         // Find attributes by key
-        let attr1 = span.attributes.iter().find(|attr| attr.key == "attr1").unwrap();
-        let attr2 = span.attributes.iter().find(|attr| attr.key == "attr2").unwrap();
+        let attr1 = span
+            .attributes
+            .iter()
+            .find(|attr| attr.key == "attr1")
+            .unwrap();
+        let attr2 = span
+            .attributes
+            .iter()
+            .find(|attr| attr.key == "attr2")
+            .unwrap();
 
         // Verify attribute values
-        if let Some(AnyValue { value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(val)) }) = &attr1.value {
+        if let Some(AnyValue {
+            value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(val)),
+        }) = &attr1.value
+        {
             assert_eq!(val, "value1");
         } else {
             panic!("Expected string value for attr1");
         }
 
-        if let Some(AnyValue { value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(val)) }) = &attr2.value {
+        if let Some(AnyValue {
+            value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(val)),
+        }) = &attr2.value
+        {
             assert_eq!(*val, 42);
         } else {
             panic!("Expected int value for attr2");

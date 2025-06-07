@@ -1,7 +1,4 @@
 # Build optimization for faster CI builds
-[build]
-# Use a single codegen unit for better optimization in release builds
-codegen-units = 1
 
 # Link Time Optimization for smaller release binaries
 [profile.release]

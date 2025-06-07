@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use arrow_array::{Int32Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use object_store::{memory::InMemory, ObjectStore};
 use futures::TryStreamExt;
+use object_store::{memory::InMemory, ObjectStore};
 
 use writer::{write_batch_to_object_store, WriterFlightService};
 
@@ -30,11 +30,18 @@ async fn test_write_batch_to_object_store() -> anyhow::Result<()> {
     while let Some(meta) = list_stream.try_next().await? {
         if meta.location.as_ref() == path {
             found = true;
-            println!("Found parquet file: {} (size: {} bytes)", meta.location, meta.size);
+            println!(
+                "Found parquet file: {} (size: {} bytes)",
+                meta.location, meta.size
+            );
             break;
         }
     }
-    assert!(found, "No parquet file found in object store at path: {}", path);
+    assert!(
+        found,
+        "No parquet file found in object store at path: {}",
+        path
+    );
     Ok(())
 }
 

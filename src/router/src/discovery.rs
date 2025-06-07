@@ -1,8 +1,8 @@
+use common::catalog::{Catalog, Ingester};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::Duration;
-use common::catalog::{Catalog, Ingester};
 
 /// ServiceRegistry maintains an up-to-date view of available services for routing
 #[derive(Clone)]
@@ -79,7 +79,8 @@ impl ServiceRegistry {
     /// Get services by address pattern (useful for filtering by service type if encoded in address)
     pub async fn get_services_by_pattern(&self, pattern: &str) -> Vec<Ingester> {
         let services = self.services.read().await;
-        services.values()
+        services
+            .values()
             .filter(|service| service.address.contains(pattern))
             .cloned()
             .collect()
@@ -101,13 +102,13 @@ mod tests {
     async fn test_service_registry_health_check_logic() {
         // Test the health check logic by directly testing the HashMap
         let services = Arc::new(RwLock::new(HashMap::new()));
-        
+
         // Should be unhealthy with no services
         {
             let services_guard = services.read().await;
             assert!(services_guard.is_empty());
         }
-        
+
         // Add a mock service
         {
             let mut services_guard = services.write().await;
@@ -118,7 +119,7 @@ mod tests {
             };
             services_guard.insert(mock_ingester.id, mock_ingester);
         }
-        
+
         // Should be healthy with services
         {
             let services_guard = services.read().await;
@@ -130,9 +131,9 @@ mod tests {
     fn test_service_registry_debug_impl() {
         // Test that our manual Debug implementation works
         use std::collections::HashMap;
-        let services: Arc<RwLock<HashMap<uuid::Uuid, common::catalog::Ingester>>> = 
+        let services: Arc<RwLock<HashMap<uuid::Uuid, common::catalog::Ingester>>> =
             Arc::new(RwLock::new(HashMap::new()));
-        
+
         // We can't easily test the actual ServiceRegistry Debug without a catalog,
         // but we can test that the structure compiles
         let debug_output = "ServiceRegistry";

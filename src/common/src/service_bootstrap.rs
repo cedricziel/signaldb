@@ -1,9 +1,9 @@
-use std::time::Duration;
-use std::path::Path;
-use std::fs;
 use anyhow::Result;
-use uuid::Uuid;
+use std::fs;
+use std::path::Path;
+use std::time::Duration;
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 use crate::catalog::{Catalog, Ingester};
 use crate::config::Configuration;
@@ -21,7 +21,7 @@ impl std::fmt::Display for ServiceType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             ServiceType::Acceptor => "acceptor",
-            ServiceType::Writer => "writer", 
+            ServiceType::Writer => "writer",
             ServiceType::Router => "router",
             ServiceType::Querier => "querier",
         };
@@ -60,8 +60,10 @@ impl ServiceBootstrap {
         let service_id = Uuid::new_v4();
 
         log::info!(
-            "Registering {} service {} at {} with catalog", 
-            service_type, service_id, address
+            "Registering {} service {} at {} with catalog",
+            service_type,
+            service_id,
+            address
         );
 
         // Register as ingester for backward compatibility with existing catalog schema
@@ -69,16 +71,10 @@ impl ServiceBootstrap {
 
         // Start heartbeat if discovery config is available
         let heartbeat_handle = if let Some(discovery_config) = &config.discovery {
-            Some(catalog.spawn_ingester_heartbeat(
-                service_id,
-                discovery_config.heartbeat_interval,
-            ))
+            Some(catalog.spawn_ingester_heartbeat(service_id, discovery_config.heartbeat_interval))
         } else {
             // Use default heartbeat interval
-            Some(catalog.spawn_ingester_heartbeat(
-                service_id,
-                Duration::from_secs(30),
-            ))
+            Some(catalog.spawn_ingester_heartbeat(service_id, Duration::from_secs(30)))
         };
 
         Ok(ServiceBootstrap {
@@ -100,11 +96,11 @@ impl ServiceBootstrap {
 
         // Extract the file path from the SQLite DSN
         if let Some(file_path) = dsn.strip_prefix("sqlite:") {
-            // Handle special cases like ":memory:" 
+            // Handle special cases like ":memory:"
             if file_path == ":memory:" {
                 return Ok(());
             }
-            
+
             // Get the directory part of the path
             if let Some(parent) = Path::new(file_path).parent() {
                 if !parent.exists() {
@@ -164,7 +160,8 @@ impl ServiceBootstrap {
     pub async fn shutdown(mut self) -> Result<()> {
         log::info!(
             "Shutting down {} service {} and deregistering from catalog",
-            self.service_type, self.service_id
+            self.service_type,
+            self.service_id
         );
 
         // Stop heartbeat task
@@ -208,17 +205,17 @@ mod tests {
         // Test with file-based SQLite DSN
         let test_dir = ".test_data/test_subdir";
         let test_dsn = format!("sqlite:{}/test.db", test_dir);
-        
+
         // Clean up any existing test directory
         let _ = std::fs::remove_dir_all(".test_data");
-        
+
         // Test directory creation
         let result = ServiceBootstrap::ensure_data_directory(&test_dsn);
         assert!(result.is_ok());
-        
+
         // Verify directory was created
         assert!(Path::new(test_dir).exists());
-        
+
         // Clean up
         let _ = std::fs::remove_dir_all(".test_data");
     }
@@ -240,11 +237,8 @@ mod tests {
 
         // This would fail in the actual test because we need a real database
         // but it shows the intended usage pattern
-        let result = ServiceBootstrap::new(
-            config,
-            ServiceType::Writer,
-            "localhost:50051".to_string(),
-        ).await;
+        let result =
+            ServiceBootstrap::new(config, ServiceType::Writer, "localhost:50051".to_string()).await;
 
         // We expect this to fail since we're using an in-memory SQLite database
         // but the error should be from the database connection, not from our code structure

@@ -1,7 +1,7 @@
 use acceptor::{serve_otlp_grpc, serve_otlp_http};
 use anyhow::{Context, Result};
-use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::config::Configuration;
+use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use messaging::backend::memory::InMemoryStreamingBackend;
 use router::{create_flight_service, create_router, InMemoryStateImpl, RouterState};
 use std::{net::SocketAddr, sync::Arc};
@@ -15,30 +15,34 @@ async fn main() -> Result<()> {
 
     // Load application configuration
     let config = Configuration::load().context("Failed to load configuration")?;
-    
+
     // Initialize router service bootstrap for catalog-based discovery
     let flight_addr = SocketAddr::from(([0, 0, 0, 0], 50053));
-    let router_bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Router,
-        flight_addr.to_string(),
-    ).await
-    .context("Failed to initialize router service bootstrap")?;
-    
+    let router_bootstrap =
+        ServiceBootstrap::new(config.clone(), ServiceType::Router, flight_addr.to_string())
+            .await
+            .context("Failed to initialize router service bootstrap")?;
+
     // Initialize queue for future use
     let queue = Arc::new(Mutex::new(InMemoryStreamingBackend::new(10)));
 
     // Create router state with catalog access
     let state = InMemoryStateImpl::new(
         InMemoryStreamingBackend::new(10),
-        router_bootstrap.catalog().clone()
+        router_bootstrap.catalog().clone(),
     );
 
     // Start background service discovery polling
     if config.discovery.is_some() {
         let poll_interval = config.discovery.as_ref().unwrap().poll_interval;
-        state.service_registry().start_background_polling(poll_interval).await;
-        log::info!("Started service registry background polling with interval: {:?}", poll_interval);
+        state
+            .service_registry()
+            .start_background_polling(poll_interval)
+            .await;
+        log::info!(
+            "Started service registry background polling with interval: {:?}",
+            poll_interval
+        );
     }
 
     let (otlp_grpc_init_tx, otlp_grpc_init_rx) = oneshot::channel::<()>();

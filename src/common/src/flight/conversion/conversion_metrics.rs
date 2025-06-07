@@ -1414,9 +1414,9 @@ fn extract_exemplars(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{RecordBatch, StringArray, UInt64Array, Int32Array, BooleanArray};
+    use arrow_array::{BooleanArray, Int32Array, RecordBatch, StringArray, UInt64Array};
+    use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
-    use arrow_schema::{Schema, Field, DataType};
 
     #[test]
     fn test_arrow_to_otlp_metrics_gauge() {
@@ -1444,7 +1444,8 @@ mod tests {
         let time_array = UInt64Array::from(vec![2000000000]);
         let attributes_json_array = StringArray::from(vec!["{\"attr1\":\"value1\"}"]);
         let resource_json_array = StringArray::from(vec!["{\"service.name\":\"test_service\"}"]);
-        let scope_json_array = StringArray::from(vec!["{\"name\":\"test_scope\",\"version\":\"1.0\"}"]);
+        let scope_json_array =
+            StringArray::from(vec!["{\"name\":\"test_scope\",\"version\":\"1.0\"}"]);
         let metric_type_array = StringArray::from(vec!["gauge"]);
 
         // Create a gauge data point
@@ -1470,7 +1471,8 @@ mod tests {
                 Arc::new(aggregation_temporality_array),
                 Arc::new(is_monotonic_array),
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Convert Arrow to OTLP
         let result = arrow_to_otlp_metrics(&batch);
@@ -1504,7 +1506,9 @@ mod tests {
 
         // Verify metric data
         assert!(metric.data.is_some());
-        if let Some(opentelemetry_proto::tonic::metrics::v1::metric::Data::Gauge(gauge)) = &metric.data {
+        if let Some(opentelemetry_proto::tonic::metrics::v1::metric::Data::Gauge(gauge)) =
+            &metric.data
+        {
             assert_eq!(gauge.data_points.len(), 1);
             let data_point = &gauge.data_points[0];
             assert_eq!(data_point.start_time_unix_nano, 1000000000);
@@ -1512,7 +1516,10 @@ mod tests {
 
             // Verify value
             assert!(data_point.value.is_some());
-            if let Some(opentelemetry_proto::tonic::metrics::v1::number_data_point::Value::AsDouble(value)) = data_point.value {
+            if let Some(
+                opentelemetry_proto::tonic::metrics::v1::number_data_point::Value::AsDouble(value),
+            ) = data_point.value
+            {
                 assert_eq!(value, 42.5);
             } else {
                 panic!("Expected double value");
@@ -1552,7 +1559,8 @@ mod tests {
         let time_array = UInt64Array::from(vec![2000000000]);
         let attributes_json_array = StringArray::from(vec!["{\"attr1\":\"value1\"}"]);
         let resource_json_array = StringArray::from(vec!["{\"service.name\":\"test_service\"}"]);
-        let scope_json_array = StringArray::from(vec!["{\"name\":\"test_scope\",\"version\":\"1.0\"}"]);
+        let scope_json_array =
+            StringArray::from(vec!["{\"name\":\"test_scope\",\"version\":\"1.0\"}"]);
         let metric_type_array = StringArray::from(vec!["sum"]);
 
         // Create a sum data point
@@ -1578,7 +1586,8 @@ mod tests {
                 Arc::new(aggregation_temporality_array),
                 Arc::new(is_monotonic_array),
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Convert Arrow to OTLP
         let result = arrow_to_otlp_metrics(&batch);
@@ -1598,13 +1607,17 @@ mod tests {
 
         // Verify metric data
         assert!(metric.data.is_some());
-        if let Some(opentelemetry_proto::tonic::metrics::v1::metric::Data::Sum(sum)) = &metric.data {
+        if let Some(opentelemetry_proto::tonic::metrics::v1::metric::Data::Sum(sum)) = &metric.data
+        {
             assert_eq!(sum.data_points.len(), 1);
             let data_point = &sum.data_points[0];
 
             // Verify value
             assert!(data_point.value.is_some());
-            if let Some(opentelemetry_proto::tonic::metrics::v1::number_data_point::Value::AsInt(value)) = data_point.value {
+            if let Some(opentelemetry_proto::tonic::metrics::v1::number_data_point::Value::AsInt(
+                value,
+            )) = data_point.value
+            {
                 assert_eq!(value, 100);
             } else {
                 panic!("Expected integer value");
@@ -1644,7 +1657,8 @@ mod tests {
         let time_array = UInt64Array::from(vec![2000000000]);
         let attributes_json_array = StringArray::from(vec!["{\"attr1\":\"value1\"}"]);
         let resource_json_array = StringArray::from(vec!["{\"service.name\":\"test_service\"}"]);
-        let scope_json_array = StringArray::from(vec!["{\"name\":\"test_scope\",\"version\":\"1.0\"}"]);
+        let scope_json_array =
+            StringArray::from(vec!["{\"name\":\"test_scope\",\"version\":\"1.0\"}"]);
         let metric_type_array = StringArray::from(vec!["histogram"]);
 
         // Create a histogram data point
@@ -1670,7 +1684,8 @@ mod tests {
                 Arc::new(aggregation_temporality_array),
                 Arc::new(is_monotonic_array),
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Convert Arrow to OTLP
         let result = arrow_to_otlp_metrics(&batch);
@@ -1690,7 +1705,9 @@ mod tests {
 
         // Verify metric data
         assert!(metric.data.is_some());
-        if let Some(opentelemetry_proto::tonic::metrics::v1::metric::Data::Histogram(histogram)) = &metric.data {
+        if let Some(opentelemetry_proto::tonic::metrics::v1::metric::Data::Histogram(histogram)) =
+            &metric.data
+        {
             assert_eq!(histogram.data_points.len(), 1);
             let data_point = &histogram.data_points[0];
 
