@@ -4449,7 +4449,7 @@ dependencies = [
  "sqlx-mysql",
  "sqlx-postgres",
  "sqlx-sqlite",
- "syn 2.0.100",
+ "syn",
  "tokio",
  "url",
 ]
