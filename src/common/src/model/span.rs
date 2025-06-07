@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use datafusion::arrow::{
     array::{ArrayRef, BooleanArray, StringArray, UInt64Array},
@@ -16,16 +16,24 @@ pub enum SpanKind {
     Consumer,
 }
 
+impl FromStr for SpanKind {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Internal" => Ok(SpanKind::Internal),
+            "Server" => Ok(SpanKind::Server),
+            "Client" => Ok(SpanKind::Client),
+            "Producer" => Ok(SpanKind::Producer),
+            "Consumer" => Ok(SpanKind::Consumer),
+            _ => Ok(SpanKind::Internal),
+        }
+    }
+}
+
 impl SpanKind {
     pub fn from_str(s: &str) -> Self {
-        match s {
-            "Internal" => SpanKind::Internal,
-            "Server" => SpanKind::Server,
-            "Client" => SpanKind::Client,
-            "Producer" => SpanKind::Producer,
-            "Consumer" => SpanKind::Consumer,
-            _ => SpanKind::Internal,
-        }
+        s.parse().unwrap_or(SpanKind::Internal)
     }
 
     pub fn to_str(&self) -> &str {
@@ -46,14 +54,22 @@ pub enum SpanStatus {
     Error,
 }
 
+impl FromStr for SpanStatus {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Unspecified" => Ok(SpanStatus::Unspecified),
+            "Ok" => Ok(SpanStatus::Ok),
+            "Error" => Ok(SpanStatus::Error),
+            _ => Ok(SpanStatus::Unspecified),
+        }
+    }
+}
+
 impl SpanStatus {
     pub fn from_str(s: &str) -> Self {
-        match s {
-            "Unspecified" => SpanStatus::Unspecified,
-            "Ok" => SpanStatus::Ok,
-            "Error" => SpanStatus::Error,
-            _ => SpanStatus::Unspecified,
-        }
+        s.parse().unwrap_or(SpanStatus::Unspecified)
     }
 
     pub fn to_str(&self) -> &str {

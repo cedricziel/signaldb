@@ -135,11 +135,12 @@ impl Configuration {
             .unwrap_or_else(|| String::from(".data"))
     }
 
-    pub fn load() -> Result<Self, figment::Error> {
+    pub fn load() -> Result<Self, Box<figment::Error>> {
         let config = Figment::from(Serialized::defaults(Configuration::default()))
             .merge(Toml::file("signaldb.toml"))
             .merge(Env::prefixed("SIGNALDB_"))
-            .extract()?;
+            .extract()
+            .map_err(Box::new)?;
 
         Ok(config)
     }
