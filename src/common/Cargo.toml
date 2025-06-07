@@ -36,4 +36,4 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 testcontainers-modules.workspace = true
-testcontainers = "0.23.3"
+testcontainers = "0.24.0"
