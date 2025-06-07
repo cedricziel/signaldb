@@ -1,12 +1,13 @@
-
 use opentelemetry_proto::tonic::{
+    common::v1::{any_value::Value, AnyValue, ArrayValue, KeyValue, KeyValueList},
     resource::v1::Resource,
-    common::v1::{KeyValue, any_value::Value, AnyValue, ArrayValue, KeyValueList},
 };
 use serde_json::{Map, Value as JsonValue};
 
 /// Extract AnyValue to JsonValue
-pub fn extract_value(attr_val: &Option<opentelemetry_proto::tonic::common::v1::AnyValue>) -> JsonValue {
+pub fn extract_value(
+    attr_val: &Option<opentelemetry_proto::tonic::common::v1::AnyValue>,
+) -> JsonValue {
     match attr_val {
         Some(val) => match &val.value {
             Some(value) => match value {
@@ -78,11 +79,16 @@ pub fn extract_service_name(resource: &Option<Resource>) -> String {
 }
 
 /// Extract scope attributes as JSON string
-pub fn extract_scope_json(scope: &Option<opentelemetry_proto::tonic::common::v1::InstrumentationScope>) -> String {
+pub fn extract_scope_json(
+    scope: &Option<opentelemetry_proto::tonic::common::v1::InstrumentationScope>,
+) -> String {
     if let Some(scope) = scope {
         let mut scope_map = Map::new();
         scope_map.insert("name".to_string(), JsonValue::String(scope.name.clone()));
-        scope_map.insert("version".to_string(), JsonValue::String(scope.version.clone()));
+        scope_map.insert(
+            "version".to_string(),
+            JsonValue::String(scope.version.clone()),
+        );
 
         if !scope.attributes.is_empty() {
             let mut attrs_map = Map::new();
@@ -102,9 +108,7 @@ pub fn extract_scope_json(scope: &Option<opentelemetry_proto::tonic::common::v1:
 /// This is the inverse of extract_value
 pub fn json_value_to_any_value(json_val: &JsonValue) -> AnyValue {
     match json_val {
-        JsonValue::Null => AnyValue {
-            value: None,
-        },
+        JsonValue::Null => AnyValue { value: None },
         JsonValue::Bool(b) => AnyValue {
             value: Some(Value::BoolValue(*b)),
         },
@@ -130,21 +134,20 @@ pub fn json_value_to_any_value(json_val: &JsonValue) -> AnyValue {
                     value: Some(Value::DoubleValue(n.as_f64().unwrap())),
                 }
             }
-        },
+        }
         JsonValue::String(s) => AnyValue {
             value: Some(Value::StringValue(s.clone())),
         },
         JsonValue::Array(arr) => {
-            let values = arr.iter()
-                .map(|v| json_value_to_any_value(v))
-                .collect();
+            let values = arr.iter().map(json_value_to_any_value).collect();
 
             AnyValue {
                 value: Some(Value::ArrayValue(ArrayValue { values })),
             }
-        },
+        }
         JsonValue::Object(obj) => {
-            let values = obj.iter()
+            let values = obj
+                .iter()
                 .map(|(k, v)| KeyValue {
                     key: k.clone(),
                     value: Some(json_value_to_any_value(v)),
@@ -154,6 +157,6 @@ pub fn json_value_to_any_value(json_val: &JsonValue) -> AnyValue {
             AnyValue {
                 value: Some(Value::KvlistValue(KeyValueList { values })),
             }
-        },
+        }
     }
 }

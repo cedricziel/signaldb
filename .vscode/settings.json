@@ -4,5 +4,12 @@
     "editor.defaultFormatter": "rust-lang.rust-analyzer",
     "editor.formatOnSave": true
   },
-  "cSpell.words": ["jetstream", "ntest", "testcontainers"]
+  "cSpell.words": [
+    "datafusion",
+    "jetstream",
+    "ntest",
+    "serde",
+    "testcontainers",
+    "thiserror"
+  ]
 }

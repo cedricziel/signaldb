@@ -3,27 +3,29 @@ pub mod services;
 
 use std::{net::SocketAddr, sync::Arc, time::SystemTime};
 
-use arrow_schema::Schema;
 use axum::{
     routing::{get, post},
     Router,
 };
 use common::dataset::DataSet;
-use messaging::backend::memory::InMemoryStreamingBackend;
+use datafusion::arrow::datatypes::Schema;
+use datafusion::parquet::{
+    arrow::AsyncArrowWriter,
+    file::properties::{WriterProperties, WriterVersion},
+};
 use opentelemetry_proto::tonic::collector::{
     logs::v1::logs_service_server::LogsServiceServer,
     metrics::v1::metrics_service_server::MetricsServiceServer,
     trace::v1::trace_service_server::TraceServiceServer,
-};
-use parquet::{
-    arrow::AsyncArrowWriter,
-    file::properties::{WriterProperties, WriterVersion},
 };
 use tokio::net::TcpListener;
 use tokio::{
     fs::{create_dir_all, File},
     sync::{oneshot, Mutex},
 };
+// Service bootstrap and configuration
+use common::config::Configuration;
+use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 // Flight protocol client
 use arrow_flight::client::FlightClient;
 use tonic::transport::Endpoint;
@@ -33,21 +35,6 @@ use crate::services::{
     otlp_log_service::LogAcceptorService, otlp_metric_service::MetricsAcceptorService,
     otlp_trace_service::TraceAcceptorService,
 };
-
-/// Represents the shared state of the acceptor service.
-/// Contains an in-memory queue for managing incoming telemetry data.
-#[derive(Clone)]
-pub struct AcceptorState {
-    queue: Arc<Mutex<InMemoryStreamingBackend>>,
-}
-
-impl AcceptorState {
-    pub fn new() -> Self {
-        Self {
-            queue: Arc::new(Mutex::new(InMemoryStreamingBackend::new(10))),
-        }
-    }
-}
 
 pub async fn get_parquet_writer(data_set: DataSet, schema: Schema) -> AsyncArrowWriter<File> {
     log::info!("get_parquet_writer");
@@ -69,7 +56,6 @@ pub async fn get_parquet_writer(data_set: DataSet, schema: Schema) -> AsyncArrow
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
                 .as_secs()
-                .to_string()
         ))
         .await
         .expect("Error creating parquet file"),
@@ -88,9 +74,20 @@ pub async fn serve_otlp_grpc(
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse OTLP/gRPC address: {}", e))?;
 
-    log::info!("Starting OTLP/gRPC acceptor on {}", addr);
+    // Load configuration
+    let config = Configuration::load()
+        .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
 
-    let state = AcceptorState::new();
+    // Initialize service bootstrap for catalog-based discovery
+    let advertise_addr =
+        std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| addr.to_string());
+
+    let service_bootstrap = ServiceBootstrap::new(config, ServiceType::Acceptor, advertise_addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to initialize service bootstrap: {}", e))?;
+
+    log::info!("Starting OTLP/gRPC acceptor on {addr}");
+
     // Initialize Flight client to forward telemetry to writer
     let flight_endpoint = std::env::var("FLIGHT_ENDPOINT").unwrap_or_else(|_| {
         // Default Flight endpoint
@@ -101,17 +98,12 @@ pub async fn serve_otlp_grpc(
     let channel = endpoint.connect().await?;
     let flight_client = Arc::new(Mutex::new(FlightClient::new(channel)));
     // Set up OTLP/gRPC services with Flight forwarding
-    let log_server = LogsServiceServer::new(LogAcceptorService::new_with_flight(
-        state.queue.clone(),
+    let log_server = LogsServiceServer::new(LogAcceptorService::new(flight_client.clone()));
+    let trace_server = TraceServiceServer::new(TraceAcceptorService::new(TraceHandler::new(
         flight_client.clone(),
-    ));
-    let trace_server = TraceServiceServer::new(TraceAcceptorService::new(
-        TraceHandler::new_with_flight(state.queue.clone(), flight_client.clone()),
-    ));
-    let metric_server = MetricsServiceServer::new(MetricsAcceptorService::new_with_flight(
-        state.queue.clone(),
-        flight_client.clone(),
-    ));
+    )));
+    let metric_server =
+        MetricsServiceServer::new(MetricsAcceptorService::new(flight_client.clone()));
 
     init_tx
         .send(())
@@ -124,6 +116,10 @@ pub async fn serve_otlp_grpc(
             shutdown_rx.await.ok();
 
             log::info!("Shutting down OTLP acceptor");
+            // Graceful service bootstrap shutdown
+            if let Err(e) = service_bootstrap.shutdown().await {
+                log::error!("Failed to shutdown service bootstrap: {e}");
+            }
         })
         .await
         .expect("Unable to start OTLP acceptor");
@@ -147,7 +143,7 @@ async fn health() -> &'static str {
 async fn handle_traces(
     axum::extract::Json(payload): axum::extract::Json<serde_json::Value>,
 ) -> axum::response::Response<axum::body::Body> {
-    log::info!("Got traces: {:?}", payload);
+    log::info!("Got traces: {payload:?}");
     axum::response::Response::builder()
         .status(200)
         .body(axum::body::Body::empty())
@@ -163,7 +159,19 @@ pub async fn serve_otlp_http(
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse OTLP/HTTP address: {}", e))?;
 
-    log::info!("Starting OTLP/HTTP acceptor on {}", addr);
+    log::info!("Starting OTLP/HTTP acceptor on {addr}");
+
+    // Load configuration
+    let config = Configuration::load()
+        .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
+
+    // Initialize service bootstrap for catalog-based discovery
+    let advertise_addr =
+        std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| addr.to_string());
+
+    let service_bootstrap = ServiceBootstrap::new(config, ServiceType::Acceptor, advertise_addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to initialize service bootstrap: {}", e))?;
 
     let app = acceptor_router();
 
@@ -176,6 +184,10 @@ pub async fn serve_otlp_http(
         .with_graceful_shutdown(async {
             shutdown_rx.await.ok();
             log::info!("Shutting down OTLP/HTTP acceptor");
+            // Graceful service bootstrap shutdown
+            if let Err(e) = service_bootstrap.shutdown().await {
+                log::error!("Failed to shutdown service bootstrap: {e}");
+            }
         })
         .await?;
 

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Debug, sync::Arc};
+use std::{collections::HashMap, fmt::Debug, str::FromStr, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -39,6 +39,7 @@ const TRACES_BY_QUERY: &str = "WITH RECURSIVE trace_hierarchy AS (
 )
 SELECT * FROM trace_hierarchy;";
 
+#[allow(dead_code)]
 pub struct TraceService {
     // skip debug on session_context
     session_context: Arc<SessionContext>,
@@ -61,6 +62,7 @@ impl Clone for TraceService {
 }
 
 impl TraceService {
+    #[allow(dead_code)]
     pub fn new(session_context: SessionContext) -> Self {
         Self {
             session_context: Arc::new(session_context),
@@ -88,7 +90,7 @@ impl TraceQuerier for TraceService {
         let query = TRACE_BY_ID_QUERY.replace("{trace_id}", &params.trace_id);
 
         let df = self.session_context.sql(&query).await.map_err(|e| {
-            log::error!("Failed to execute query: {:?}, {:?}", query, e);
+            log::error!("Failed to execute query: {query:?}, {e:?}");
 
             QuerierError::QueryFailed(e)
         })?;
@@ -97,7 +99,7 @@ impl TraceQuerier for TraceService {
             .collect()
             .await
             .map_err(|e: datafusion::error::DataFusionError| {
-                log::error!("Failed to collect results: {:?}", e);
+                log::error!("Failed to collect results: {e:?}");
 
                 QuerierError::QueryFailed(e)
             })?;
@@ -157,7 +159,7 @@ impl TraceQuerier for TraceService {
                             .unwrap()
                             .value(row_index),
                     )
-                    .into(),
+                    .unwrap_or(SpanStatus::Unspecified),
                     is_root: batch
                         .column_by_name("is_root")
                         .expect("unable to find column 'is_root'")
@@ -189,7 +191,8 @@ impl TraceQuerier for TraceService {
                             .downcast_ref::<StringArray>()
                             .unwrap()
                             .value(row_index),
-                    ),
+                    )
+                    .unwrap_or(SpanKind::Internal),
                     attributes: HashMap::new(),
                     resource: HashMap::new(),
                     start_time_unix_nano: batch
@@ -228,7 +231,7 @@ impl TraceQuerier for TraceService {
             if let Some(child_span) = span_map.get(&span_id) {
                 child_spans
                     .entry(parent_span_id)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(child_span.clone());
             }
         }
@@ -257,19 +260,13 @@ impl TraceQuerier for TraceService {
         let ctx = SessionContext::new();
         ctx.register_parquet("traces", ".data/ds/traces", ParquetReadOptions::default())
             .await
-            .map_err(|e| QuerierError::FailedToRegisterParquet(e))?;
+            .map_err(QuerierError::FailedToRegisterParquet)?;
 
         let query = "SELECT * FROM traces;";
 
-        let df = ctx
-            .sql(query)
-            .await
-            .map_err(|e| QuerierError::QueryFailed(e))?;
+        let df = ctx.sql(query).await.map_err(QuerierError::QueryFailed)?;
 
-        let results = df
-            .collect()
-            .await
-            .map_err(|e| QuerierError::QueryFailed(e))?;
+        let results = df.collect().await.map_err(QuerierError::QueryFailed)?;
 
         log::info!("Query returned {} rows", results.len());
         log::info!("Results: {:?}", results);
@@ -337,7 +334,8 @@ impl TraceQuerier for TraceService {
                             .downcast_ref::<StringArray>()
                             .unwrap()
                             .value(row_index),
-                    ),
+                    )
+                    .unwrap_or(SpanKind::Internal),
                     start_time_unix_nano: batch
                         .column_by_name("start_time_unix_nano")
                         .expect("unable to find column 'start_time_unix_nano'")

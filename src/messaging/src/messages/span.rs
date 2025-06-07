@@ -1,8 +1,10 @@
-use std::{collections::HashMap, sync::Arc};
-
-use arrow_array::{ArrayRef, BooleanArray, RecordBatch, StringArray};
-use arrow_schema::{DataType, Field, Schema};
+use datafusion::arrow::{
+    array::{ArrayRef, BooleanArray, StringArray, UInt64Array},
+    datatypes::{DataType, Field, Schema},
+    record_batch::RecordBatch,
+};
 use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, sync::Arc};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum SpanKind {
@@ -86,7 +88,7 @@ pub struct Span {
 }
 
 impl Span {
-    pub fn to_schema() -> arrow_schema::Schema {
+    pub fn to_schema() -> Schema {
         let fields = vec![
             Field::new("trace_id", DataType::Utf8, false),
             Field::new("span_id", DataType::Utf8, false),
@@ -113,11 +115,9 @@ impl Span {
         let name: ArrayRef = Arc::new(StringArray::from(vec![self.name.clone()]));
         let service_name: ArrayRef = Arc::new(StringArray::from(vec![self.service_name.clone()]));
         let span_kind: ArrayRef = Arc::new(StringArray::from(vec![self.span_kind.to_str()]));
-        let start_time_unix_nano: ArrayRef = Arc::new(arrow_array::UInt64Array::from(vec![
-            self.start_time_unix_nano,
-        ]));
-        let duration_nano: ArrayRef =
-            Arc::new(arrow_array::UInt64Array::from(vec![self.duration_nano]));
+        let start_time_unix_nano: ArrayRef =
+            Arc::new(UInt64Array::from(vec![self.start_time_unix_nano]));
+        let duration_nano: ArrayRef = Arc::new(UInt64Array::from(vec![self.duration_nano]));
 
         RecordBatch::try_new(
             Arc::new(Self::to_schema()),
@@ -144,6 +144,12 @@ impl Span {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SpanBatch {
     pub spans: Vec<Span>,
+}
+
+impl Default for SpanBatch {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SpanBatch {
@@ -223,12 +229,12 @@ impl SpanBatch {
             let start_time_unix_nano = batch
                 .column(8)
                 .as_any()
-                .downcast_ref::<arrow_array::UInt64Array>()
+                .downcast_ref::<UInt64Array>()
                 .unwrap();
             let duration_nano = batch
                 .column(9)
                 .as_any()
-                .downcast_ref::<arrow_array::UInt64Array>()
+                .downcast_ref::<UInt64Array>()
                 .unwrap();
 
             let span = Span {
@@ -254,15 +260,15 @@ impl SpanBatch {
     }
 }
 
-impl From<arrow_array::RecordBatch> for SpanBatch {
+impl From<RecordBatch> for SpanBatch {
     fn from(batch: RecordBatch) -> Self {
         SpanBatch::from_record_batch(&batch)
     }
 }
 
-impl From<&arrow_array::RecordBatch> for SpanBatch {
+impl From<&RecordBatch> for SpanBatch {
     fn from(batch: &RecordBatch) -> Self {
-        SpanBatch::from_record_batch(&batch)
+        SpanBatch::from_record_batch(batch)
     }
 }
 

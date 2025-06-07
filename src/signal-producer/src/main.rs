@@ -6,10 +6,7 @@ use opentelemetry::{
     KeyValue,
 };
 use opentelemetry_otlp::SpanExporter;
-use opentelemetry_sdk::{
-    trace::SdkTracerProvider,
-    Resource,
-};
+use opentelemetry_sdk::{trace::SdkTracerProvider, Resource};
 use opentelemetry_semantic_conventions::trace::{HTTP_REQUEST_METHOD, URL_FULL};
 
 /// produce a couple of signals and send it to a destination

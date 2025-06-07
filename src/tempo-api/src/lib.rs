@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +28,9 @@ pub mod v2;
 
 #[derive(Deserialize, Debug)]
 pub struct TraceQueryParams {
+    #[allow(dead_code)]
     start: Option<String>,
+    #[allow(dead_code)]
     end: Option<String>,
 }
 
@@ -147,13 +150,17 @@ impl TagScope {
             TagScope::Intrinsic => "intrinsic",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for TagScope {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "resource" => Some(TagScope::Resource),
-            "span" => Some(TagScope::Span),
-            "intrinsic" => Some(TagScope::Intrinsic),
-            _ => None,
+            "resource" => Ok(TagScope::Resource),
+            "span" => Ok(TagScope::Span),
+            "intrinsic" => Ok(TagScope::Intrinsic),
+            _ => Err(()),
         }
     }
 }

@@ -60,7 +60,7 @@ impl JetStreamBackend {
     pub async fn new(server_url: &str) -> Result<Self, String> {
         let client = async_nats::connect(server_url)
             .await
-            .map_err(|e| format!("Failed to connect to NATS: {}", e))?;
+            .map_err(|e| format!("Failed to connect to NATS: {e}"))?;
         let context = jetstream::new(client);
 
         Ok(Self {
@@ -73,7 +73,7 @@ impl JetStreamBackend {
     pub async fn with_config(server_url: &str, config: StreamConfig) -> Result<Self, String> {
         let client = async_nats::connect(server_url)
             .await
-            .map_err(|e| format!("Failed to connect to NATS: {}", e))?;
+            .map_err(|e| format!("Failed to connect to NATS: {e}"))?;
         let context = jetstream::new(client);
 
         Ok(Self { context, config })
@@ -87,7 +87,7 @@ impl JetStreamBackend {
                 ..Default::default()
             })
             .await
-            .map_err(|e| format!("Failed to create stream: {}", e))?;
+            .map_err(|e| format!("Failed to create stream: {e}"))?;
 
         // Ensure a durable consumer exists for the topic
         self.context
@@ -99,7 +99,7 @@ impl JetStreamBackend {
                 topic,
             )
             .await
-            .map_err(|e| format!("Failed to create consumer: {}", e))?;
+            .map_err(|e| format!("Failed to create consumer: {e}"))?;
 
         Ok(())
     }
@@ -109,11 +109,11 @@ impl JetStreamBackend {
 impl MessagingBackend for JetStreamBackend {
     async fn send_message(&self, topic: &str, message: Message) -> Result<(), String> {
         let serialized =
-            serde_json::to_string(&message).map_err(|e| format!("Serialization error: {}", e))?;
+            serde_json::to_string(&message).map_err(|e| format!("Serialization error: {e}"))?;
         self.context
             .publish(topic.to_string(), serialized.into())
             .await
-            .map_err(|e| format!("Publish error: {}", e))?;
+            .map_err(|e| format!("Publish error: {e}"))?;
 
         Ok(())
     }
@@ -153,7 +153,7 @@ impl MessagingBackend for JetStreamBackend {
                         // Successfully requested messages
                     }
                     Err(e) => {
-                        eprintln!("Failed to request messages: {}", e);
+                        eprintln!("Failed to request messages: {e}");
 
                         // Sleep with backoff before trying again
                         tokio::time::sleep(current_backoff).await;
@@ -169,7 +169,7 @@ impl MessagingBackend for JetStreamBackend {
                 let js_stream = match consumer.messages().await {
                     Ok(stream) => stream,
                     Err(e) => {
-                        eprintln!("Failed to get message stream: {}", e);
+                        eprintln!("Failed to get message stream: {e}");
 
                         // Sleep with backoff before trying again
                         tokio::time::sleep(current_backoff).await;
@@ -206,7 +206,7 @@ impl MessagingBackend for JetStreamBackend {
                                 Ok(msg) => {
                                     // Acknowledge the message to prevent redelivery
                                     if let Err(e) = js_msg.ack().await {
-                                        eprintln!("Failed to acknowledge message: {}", e);
+                                        eprintln!("Failed to acknowledge message: {e}");
                                     }
 
                                     // Update last message time
@@ -220,10 +220,10 @@ impl MessagingBackend for JetStreamBackend {
                                     yield msg;
                                 }
                                 Err(e) => {
-                                    eprintln!("JSON parse error: {}", e);
+                                    eprintln!("JSON parse error: {e}");
                                     // Still acknowledge the message to prevent redelivery of invalid messages
                                     if let Err(e) = js_msg.ack().await {
-                                        eprintln!("Failed to acknowledge invalid message: {}", e);
+                                        eprintln!("Failed to acknowledge invalid message: {e}");
                                     }
                                 }
                             }

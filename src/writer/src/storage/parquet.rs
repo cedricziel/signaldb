@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use arrow_array::RecordBatch;
+use datafusion::arrow::array::RecordBatch;
 use datafusion::parquet::{
     arrow::{async_writer::ParquetObjectWriter, AsyncArrowWriter},
     file::properties::{WriterProperties, WriterVersion},
@@ -36,10 +36,10 @@ pub async fn write_batch_to_object_store(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{Int64Array, RecordBatch as ArrowRecordBatch};
-    use arrow_schema::{DataType, Field, Schema};
+    use datafusion::arrow::array::{Int64Array, RecordBatch as ArrowRecordBatch};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use object_store::local::LocalFileSystem;
-    use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use std::fs::{self, File};
     use tempfile::tempdir;
 

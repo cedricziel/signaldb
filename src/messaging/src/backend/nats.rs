@@ -17,7 +17,7 @@ impl NatsBackend {
     pub async fn new(server_url: &str) -> Result<Self, String> {
         let client = async_nats::connect(server_url)
             .await
-            .map_err(|e| format!("Failed to connect to NATS: {}", e))?;
+            .map_err(|e| format!("Failed to connect to NATS: {e}"))?;
         Ok(Self {
             client: Arc::new(client),
         })
@@ -28,11 +28,11 @@ impl NatsBackend {
 impl MessagingBackend for NatsBackend {
     async fn send_message(&self, topic: &str, message: Message) -> Result<(), String> {
         let serialized =
-            serde_json::to_string(&message).map_err(|e| format!("Serialization error: {}", e))?;
+            serde_json::to_string(&message).map_err(|e| format!("Serialization error: {e}"))?;
         self.client
             .publish(topic.to_string(), serialized.into())
             .await
-            .map_err(|e| format!("Publish error: {}", e))?;
+            .map_err(|e| format!("Publish error: {e}"))?;
         Ok(())
     }
 

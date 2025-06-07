@@ -40,7 +40,7 @@ fn main() {
             fs::canonicalize(crate_path.clone()).unwrap().display()
         ))
         .unwrap();
-    file.write(common_string.as_bytes()).unwrap();
+    file.write_all(common_string.as_bytes()).unwrap();
 
     fs::create_dir_all(format!(
         "{}/resource/v1",
@@ -73,7 +73,7 @@ fn main() {
             fs::canonicalize(crate_path.clone()).unwrap().display()
         ))
         .unwrap();
-    file.write(resource_string.as_bytes()).unwrap();
+    file.write_all(resource_string.as_bytes()).unwrap();
 
     fs::create_dir_all(format!(
         "{}/trace/v1",
@@ -111,13 +111,13 @@ fn main() {
             fs::canonicalize(crate_path.clone()).unwrap().display()
         ))
         .unwrap();
-    file.write(trace_string.as_bytes()).unwrap();
+    file.write_all(trace_string.as_bytes()).unwrap();
 
     println!("cargo:rerun-if-changed=build.rs");
 
     let mut config = prost_build::Config::default();
     config.out_dir(out_path);
-    config.disable_comments(&["."]);
+    config.disable_comments(["."]);
 
     println!("cargo:rerun-if-changed=proto/tempo.proto");
 

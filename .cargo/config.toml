@@ -1,0 +1,24 @@
+# Build optimization for faster CI builds
+
+# Link Time Optimization for smaller release binaries
+[profile.release]
+lto = true
+opt-level = 3
+codegen-units = 1
+panic = "abort"
+
+# Faster compilation for development and testing
+[profile.dev]
+debug = true
+opt-level = 0
+overflow-checks = true
+
+# Test profile optimizations
+[profile.test]
+debug = true
+opt-level = 1
+
+# Environment variables for consistent builds
+[env]
+# Ensure consistent behavior across different environments
+RUST_BACKTRACE = { value = "1", condition = { env_not_set = "RUST_BACKTRACE" } }

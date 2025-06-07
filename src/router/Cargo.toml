@@ -2,28 +2,33 @@
 name = "router"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 common.workspace = true
-messaging.workspace = true
 tempo-api.workspace = true
 
+datafusion.workspace = true
 arrow-flight.workspace = true
-arrow-schema.workspace = true
-arrow-array.workspace = true
-arrow-ipc.workspace = true
+
 futures.workspace = true
 tonic.workspace = true
 tokio.workspace = true
 axum.workspace = true
-tower.workspace = true
-tower-http.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 bytes.workspace = true
+uuid.workspace = true
+chrono.workspace = true
 
 log.workspace = true
+anyhow.workspace = true
+tracing-subscriber.workspace = true
+
+[[bin]]
+name = "signaldb-router"
+path = "src/main.rs"
 
 [dev-dependencies]
 tokio-test.workspace = true

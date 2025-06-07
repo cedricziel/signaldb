@@ -1,22 +1,17 @@
-use std::sync::Arc;
-
 use axum::{routing::get, Router};
-use messaging::backend::memory::InMemoryStreamingBackend;
-use queue_handler::QueueHandler;
 use services::tempo::SignalDBQuerier;
 use tempo_api::tempopb::querier_server::QuerierServer;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::oneshot;
 use tonic::transport::Server;
 use tower_http::trace::TraceLayer;
 
 mod query;
-mod queue_handler;
 mod services;
 
 pub fn grpc_service() -> Router {
     let querier = SignalDBQuerier {};
     let querier_svc = QuerierServer::new(querier);
-    let service = Server::builder().add_service(querier_svc).into_service();
+    let _service = Server::builder().add_service(querier_svc).into_service();
 
     Router::new().route("/", get(|| async { "SignalDB Querier" }))
 }
@@ -33,12 +28,11 @@ pub async fn serve_querier_http(
     shutdown_rx: oneshot::Receiver<()>,
     stopped_tx: oneshot::Sender<()>,
 ) -> Result<(), anyhow::Error> {
-    // Initialize the queue handler
-    let queue = Arc::new(Mutex::new(InMemoryStreamingBackend::new(10)));
-    QueueHandler::new(queue).start().await?;
+    // FDAP-aligned querier - reads directly from Parquet files via DataFusion
+    // No messaging queue needed for FDAP architecture
 
     let addr = "0.0.0.0:9000";
-    log::info!("Starting querier on {}", addr);
+    log::info!("Starting querier on {addr}");
 
     let app = query_router();
 

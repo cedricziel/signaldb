@@ -3,20 +3,19 @@ name = "acceptor"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 common.workspace = true
-messaging.workspace = true
+
+datafusion.workspace = true
 arrow-flight.workspace = true
-arrow-schema.workspace = true
-parquet.workspace = true
-arrow-array.workspace = true
 
 opentelemetry-proto.workspace = true
 tonic.workspace = true
 
 tracing.workspace = true
-
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tokio = { workspace = true, features = ["sync"] }
 futures.workspace = true
 
@@ -32,6 +31,12 @@ opentelemetry.workspace = true
 async-trait.workspace = true
 
 async-nats.workspace = true
+serde = { workspace = true, features = ["derive"] }
+uuid = { workspace = true }
+
+[[bin]]
+name = "signaldb-acceptor"
+path = "src/main.rs"
 
 [dev-dependencies]
 mockall.workspace = true

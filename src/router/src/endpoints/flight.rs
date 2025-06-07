@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
@@ -15,7 +13,9 @@ use crate::RouterState;
 
 /// SignalDBFlightService is a Flight service implementation for SignalDB
 pub struct SignalDBFlightService<S: RouterState> {
+    #[allow(dead_code)]
     state: S,
+    #[allow(dead_code)]
     schemas: FlightSchemas,
 }
 

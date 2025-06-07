@@ -3,12 +3,14 @@ name = "common"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
+async-nats.workspace = true
+log.workspace = true
+anyhow.workspace = true
 tempo-api = { path = "../tempo-api" }
 
-arrow-array.workspace = true
-arrow-schema.workspace = true
 datafusion.workspace = true
 object_store.workspace = true
 serde.workspace = true
@@ -27,3 +29,11 @@ bytes.workspace = true
 
 humantime-serde.workspace = true
 futures.workspace = true
+
+sqlx.workspace = true
+uuid.workspace = true
+chrono = { workspace = true }
+
+[dev-dependencies]
+testcontainers-modules.workspace = true
+testcontainers = "0.23.3"

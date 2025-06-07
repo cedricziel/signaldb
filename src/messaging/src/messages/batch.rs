@@ -1,4 +1,4 @@
-use arrow_array::RecordBatch;
+use datafusion::arrow::record_batch::RecordBatch;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

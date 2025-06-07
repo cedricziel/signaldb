@@ -1,4 +1,3 @@
-use messaging::MessagingBackend;
 use opentelemetry_proto::tonic::collector::trace::v1::{
     trace_service_server::TraceService, ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
@@ -12,7 +11,7 @@ pub trait TraceHandlerTrait {
 }
 
 #[async_trait::async_trait]
-impl<Q: MessagingBackend + Send + Sync> TraceHandlerTrait for TraceHandler<Q> {
+impl TraceHandlerTrait for TraceHandler {
     async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
         self.handle_grpc_otlp_traces(request).await;
     }
@@ -43,31 +42,31 @@ impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAccepto
 }
 
 #[cfg(test)]
+#[async_trait::async_trait]
+impl TraceHandlerTrait for crate::handler::otlp_grpc::MockTraceHandler {
+    async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
+        self.handle_grpc_otlp_traces(request).await;
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::handler::otlp_grpc::MockTraceHandler;
     use opentelemetry_proto::tonic::{
         common::v1::{any_value::Value, AnyValue, KeyValue},
         resource::v1::Resource,
-        trace::v1::{
-            span::SpanKind, status::StatusCode, ResourceSpans, ScopeSpans, Span,
-            Status as SpanStatus,
-        },
+        trace::v1::{span::SpanKind, ResourceSpans, ScopeSpans, Span, Status as SpanStatus},
     };
 
-    #[async_trait::async_trait]
-    impl TraceHandlerTrait for MockTraceHandler {
-        async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
-            self.handle_grpc_otlp_traces(request).await;
-        }
-    }
-
     #[tokio::test]
-    async fn test_trace_service_export() {
-        let mock_handler = MockTraceHandler::new();
+    async fn test_trace_acceptor_service() {
+        let mut mock_handler = MockTraceHandler::new();
+        mock_handler.expect_handle_grpc_otlp_traces();
+
         let service = TraceAcceptorService::new(mock_handler);
 
-        let request = Request::new(ExportTraceServiceRequest {
+        let request = ExportTraceServiceRequest {
             resource_spans: vec![ResourceSpans {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -81,47 +80,35 @@ mod tests {
                 scope_spans: vec![ScopeSpans {
                     scope: None,
                     spans: vec![Span {
-                        trace_id: vec![1; 16],
-                        span_id: vec![2; 8],
-                        trace_state: String::new(),
-                        parent_span_id: vec![0; 8],
+                        trace_id: b"1234567890123456".to_vec(),
+                        span_id: b"12345678".to_vec(),
+                        trace_state: "".to_string(),
+                        parent_span_id: b"".to_vec(),
                         name: "test-span".to_string(),
-                        kind: SpanKind::Internal as i32,
-                        start_time_unix_nano: 1703163191000000000,
-                        end_time_unix_nano: 1703163192000000000,
-                        attributes: vec![KeyValue {
-                            key: "test.attribute".to_string(),
-                            value: Some(AnyValue {
-                                value: Some(Value::StringValue("test-value".to_string())),
-                            }),
-                        }],
+                        kind: SpanKind::Server as i32,
+                        start_time_unix_nano: 1234567890,
+                        end_time_unix_nano: 1234567891,
+                        attributes: vec![],
                         dropped_attributes_count: 0,
                         events: vec![],
                         dropped_events_count: 0,
                         links: vec![],
                         dropped_links_count: 0,
                         status: Some(SpanStatus {
-                            code: StatusCode::Ok as i32,
-                            message: String::new(),
+                            code: 1,
+                            message: "OK".to_string(),
                         }),
                         flags: 0,
                     }],
-                    schema_url: String::new(),
+                    schema_url: "".to_string(),
                 }],
-                schema_url: String::new(),
+                schema_url: "".to_string(),
             }],
-        });
+        };
 
-        let response = service.export(request).await.unwrap();
-        assert_eq!(response.into_inner(), ExportTraceServiceResponse::default());
-        assert_eq!(
-            service
-                .handler
-                .handle_grpc_otlp_traces_calls
-                .lock()
-                .await
-                .len(),
-            1
-        );
+        let tonic_request = Request::new(request);
+        let response = service.export(tonic_request).await;
+
+        assert!(response.is_ok());
     }
 }

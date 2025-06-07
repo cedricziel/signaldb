@@ -1,7 +1,10 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
-use arrow_array::{ArrayRef, BooleanArray, RecordBatch, StringArray};
-use arrow_schema::{DataType, Field, Schema};
+use datafusion::arrow::{
+    array::{ArrayRef, BooleanArray, StringArray, UInt64Array},
+    datatypes::{DataType, Field, Schema},
+    record_batch::RecordBatch,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -13,18 +16,22 @@ pub enum SpanKind {
     Consumer,
 }
 
-impl SpanKind {
-    pub fn from_str(s: &str) -> Self {
+impl FromStr for SpanKind {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "Internal" => SpanKind::Internal,
-            "Server" => SpanKind::Server,
-            "Client" => SpanKind::Client,
-            "Producer" => SpanKind::Producer,
-            "Consumer" => SpanKind::Consumer,
-            _ => SpanKind::Internal,
+            "Internal" => Ok(SpanKind::Internal),
+            "Server" => Ok(SpanKind::Server),
+            "Client" => Ok(SpanKind::Client),
+            "Producer" => Ok(SpanKind::Producer),
+            "Consumer" => Ok(SpanKind::Consumer),
+            _ => Ok(SpanKind::Internal),
         }
     }
+}
 
+impl SpanKind {
     pub fn to_str(&self) -> &str {
         match self {
             SpanKind::Internal => "Internal",
@@ -43,16 +50,20 @@ pub enum SpanStatus {
     Error,
 }
 
-impl SpanStatus {
-    pub fn from_str(s: &str) -> Self {
+impl FromStr for SpanStatus {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "Unspecified" => SpanStatus::Unspecified,
-            "Ok" => SpanStatus::Ok,
-            "Error" => SpanStatus::Error,
-            _ => SpanStatus::Unspecified,
+            "Unspecified" => Ok(SpanStatus::Unspecified),
+            "Ok" => Ok(SpanStatus::Ok),
+            "Error" => Ok(SpanStatus::Error),
+            _ => Ok(SpanStatus::Unspecified),
         }
     }
+}
 
+impl SpanStatus {
     pub fn to_str(&self) -> &str {
         match self {
             SpanStatus::Unspecified => "Unspecified",
@@ -86,7 +97,7 @@ pub struct Span {
 }
 
 impl Span {
-    pub fn to_schema() -> arrow_schema::Schema {
+    pub fn to_schema() -> Schema {
         let fields = vec![
             Field::new("trace_id", DataType::Utf8, false),
             Field::new("span_id", DataType::Utf8, false),
@@ -113,11 +124,9 @@ impl Span {
         let name: ArrayRef = Arc::new(StringArray::from(vec![self.name.clone()]));
         let service_name: ArrayRef = Arc::new(StringArray::from(vec![self.service_name.clone()]));
         let span_kind: ArrayRef = Arc::new(StringArray::from(vec![self.span_kind.to_str()]));
-        let start_time_unix_nano: ArrayRef = Arc::new(arrow_array::UInt64Array::from(vec![
-            self.start_time_unix_nano,
-        ]));
-        let duration_nano: ArrayRef =
-            Arc::new(arrow_array::UInt64Array::from(vec![self.duration_nano]));
+        let start_time_unix_nano: ArrayRef =
+            Arc::new(UInt64Array::from(vec![self.start_time_unix_nano]));
+        let duration_nano: ArrayRef = Arc::new(UInt64Array::from(vec![self.duration_nano]));
 
         RecordBatch::try_new(
             Arc::new(Self::to_schema()),
@@ -144,6 +153,12 @@ impl Span {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpanBatch {
     pub spans: Vec<Span>,
+}
+
+impl Default for SpanBatch {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SpanBatch {
@@ -230,23 +245,23 @@ impl SpanBatch {
             let start_time_unix_nano = batch
                 .column(8)
                 .as_any()
-                .downcast_ref::<arrow_array::UInt64Array>()
+                .downcast_ref::<UInt64Array>()
                 .unwrap();
             let duration_nano = batch
                 .column(9)
                 .as_any()
-                .downcast_ref::<arrow_array::UInt64Array>()
+                .downcast_ref::<UInt64Array>()
                 .unwrap();
 
             let span = Span {
                 trace_id: trace_id.value(i).to_string(),
                 span_id: span_id.value(i).to_string(),
                 parent_span_id: parent_span_id.value(i).to_string(),
-                status: SpanStatus::from_str(status.value(i)),
+                status: status.value(i).parse().unwrap_or(SpanStatus::Unspecified),
                 is_root: is_root.value(i),
                 name: name.value(i).to_string(),
                 service_name: service_name.value(i).to_string(),
-                span_kind: SpanKind::from_str(span_kind.value(i)),
+                span_kind: span_kind.value(i).parse().unwrap_or(SpanKind::Internal),
                 start_time_unix_nano: start_time_unix_nano.value(i),
                 duration_nano: duration_nano.value(i),
                 attributes: HashMap::new(),
@@ -261,15 +276,15 @@ impl SpanBatch {
     }
 }
 
-impl From<arrow_array::RecordBatch> for SpanBatch {
+impl From<RecordBatch> for SpanBatch {
     fn from(batch: RecordBatch) -> Self {
         SpanBatch::from_record_batch(&batch)
     }
 }
 
-impl From<&arrow_array::RecordBatch> for SpanBatch {
+impl From<&RecordBatch> for SpanBatch {
     fn from(batch: &RecordBatch) -> Self {
-        SpanBatch::from_record_batch(&batch)
+        SpanBatch::from_record_batch(batch)
     }
 }
 
@@ -329,11 +344,11 @@ mod tests {
 
     #[test]
     fn test_span_kind() {
-        assert_eq!(SpanKind::from_str("Internal"), SpanKind::Internal);
-        assert_eq!(SpanKind::from_str("Server"), SpanKind::Server);
-        assert_eq!(SpanKind::from_str("Client"), SpanKind::Client);
-        assert_eq!(SpanKind::from_str("Producer"), SpanKind::Producer);
-        assert_eq!(SpanKind::from_str("Consumer"), SpanKind::Consumer);
+        assert_eq!("Internal".parse::<SpanKind>().unwrap(), SpanKind::Internal);
+        assert_eq!("Server".parse::<SpanKind>().unwrap(), SpanKind::Server);
+        assert_eq!("Client".parse::<SpanKind>().unwrap(), SpanKind::Client);
+        assert_eq!("Producer".parse::<SpanKind>().unwrap(), SpanKind::Producer);
+        assert_eq!("Consumer".parse::<SpanKind>().unwrap(), SpanKind::Consumer);
 
         assert_eq!(SpanKind::Internal.to_str(), "Internal");
         assert_eq!(SpanKind::Server.to_str(), "Server");
@@ -344,9 +359,12 @@ mod tests {
 
     #[test]
     fn test_span_status() {
-        assert_eq!(SpanStatus::from_str("Unspecified"), SpanStatus::Unspecified);
-        assert_eq!(SpanStatus::from_str("Ok"), SpanStatus::Ok);
-        assert_eq!(SpanStatus::from_str("Error"), SpanStatus::Error);
+        assert_eq!(
+            "Unspecified".parse::<SpanStatus>().unwrap(),
+            SpanStatus::Unspecified
+        );
+        assert_eq!("Ok".parse::<SpanStatus>().unwrap(), SpanStatus::Ok);
+        assert_eq!("Error".parse::<SpanStatus>().unwrap(), SpanStatus::Error);
 
         assert_eq!(SpanStatus::Unspecified.to_str(), "Unspecified");
         assert_eq!(SpanStatus::Ok.to_str(), "Ok");

@@ -4,28 +4,26 @@ version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0"
 
+rust-version = "1.82.0"
+
 publish = false
 
 [dependencies]
 acceptor = { path = "src/acceptor" }
 common = { path = "src/common" }
-messaging = { path = "src/messaging" }
 querier = { path = "src/querier" }
 router = { path = "src/router" }
 writer = { path = "src/writer" }
+uuid = { workspace = true }
 tempfile = "3.8.1"
 hex = "0.4"
 futures = "0.3.31"
 
 anyhow.workspace = true
 axum.workspace = true
-arrow-flight.workspace = true
 
-arrow-array.workspace = true
-arrow.workspace = true
-arrow-schema.workspace = true
 datafusion.workspace = true
-parquet.workspace = true
+arrow-flight.workspace = true
 
 opentelemetry-proto.workspace = true
 tonic.workspace = true
@@ -59,11 +57,11 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0"
+rust-version = "1.82.0"
 
 [workspace.dependencies]
 acceptor = { path = "src/acceptor" }
 common = { path = "src/common" }
-messaging = { path = "src/messaging" }
 tempo-api = { path = "src/tempo-api" }
 writer = { path = "src/writer" }
 
@@ -71,15 +69,11 @@ async-trait = "0.1.88"
 async-stream = "0.3.0"
 futures = "0.3.31"
 
-# Use wildcards to let Cargo resolve versions based on datafusion's requirements
-arrow = "*"
-arrow-array = "*"
-arrow-flight = "*"
-arrow-ipc = "*"
-arrow-schema = "*"
-datafusion = "46.0.1"
-parquet = { version = "*", features = ["arrow", "async"] }
-object_store = { version = "*", features = ["aws", "azure", "gcp"] }
+# Use datafusion's reexported dependencies for consistency
+datafusion = { version = "47.0.0" }
+# Use same versions as datafusion for compatibility
+arrow-flight = { version = "55.1.0" }
+object_store = { version = "0.12.1", features = ["aws", "azure", "gcp"] }
 
 tonic = { version = "0.12.3", features = [
     "transport",
@@ -114,7 +108,6 @@ tower-http = "0.6.2"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 
-tower = "0.5.2"
 
 prost = "0.13"
 prost-types = "0.13"
@@ -141,10 +134,22 @@ async-nats = "0.38.0"
 
 testcontainers-modules = { version = "0.11.5", features = [
     "nats",
+    "postgres",
 ], git = "https://github.com/cedricziel/testcontainers-rs-modules-community.git", branch = "nats-jetstream" }
 tempfile = "3.15.0"
 
 ntest = "0.9.3"
+
+chrono = { version = "0.4", features = ["serde"] }
+sqlx = { version = "0.8", default-features = false, features = [
+    "postgres",
+    "sqlite",
+    "any",
+    "macros",
+    "runtime-tokio-rustls",
+    "chrono",
+    "uuid",
+] }
 
 [profile.dev]
 split-debuginfo = "unpacked"
