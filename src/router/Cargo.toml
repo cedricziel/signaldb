@@ -26,6 +26,12 @@ uuid.workspace = true
 chrono.workspace = true
 
 log.workspace = true
+anyhow.workspace = true
+tracing-subscriber.workspace = true
+
+[[bin]]
+name = "router"
+path = "src/main.rs"
 
 [dev-dependencies]
 tokio-test.workspace = true

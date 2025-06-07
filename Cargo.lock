@@ -3762,6 +3762,7 @@ dependencies = [
 name = "router"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "arrow-array",
  "arrow-flight",
  "arrow-ipc",
@@ -3782,6 +3783,7 @@ dependencies = [
  "tower 0.5.2",
  "tower-http",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

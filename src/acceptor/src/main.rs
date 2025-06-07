@@ -1,11 +1,33 @@
 use acceptor::{serve_otlp_grpc, serve_otlp_http};
 use anyhow::{Context, Result};
+use common::service_bootstrap::{ServiceBootstrap, ServiceType};
+use common::config::Configuration;
+use std::net::SocketAddr;
 use tokio::sync::oneshot;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt::init();
+
+    // Load application configuration
+    let config = Configuration::load().context("Failed to load configuration")?;
+    
+    log::info!("Starting SignalDB Acceptor Service");
+    
+    // Standard OTLP ports
+    let grpc_addr = SocketAddr::from(([0, 0, 0, 0], 4317)); // Standard OTLP gRPC port
+    let http_addr = SocketAddr::from(([0, 0, 0, 0], 4318)); // Standard OTLP HTTP port
+    
+    // Initialize acceptor service bootstrap for catalog-based discovery
+    let acceptor_bootstrap = ServiceBootstrap::new(
+        config.clone(),
+        ServiceType::Acceptor,
+        grpc_addr.to_string(), // Register the main gRPC endpoint
+    ).await
+    .context("Failed to initialize acceptor service bootstrap")?;
+    
+    log::info!("Acceptor service registered with catalog");
 
     // Channels for OTLP/gRPC server signals
     let (grpc_init_tx, grpc_init_rx) = oneshot::channel::<()>();
@@ -34,13 +56,22 @@ async fn main() -> Result<()> {
     // Await initialization signals
     grpc_init_rx.await.context("Failed to initialize OTLP/gRPC server")?;
     http_init_rx.await.context("Failed to initialize OTLP/HTTP server")?;
-    log::info!("OTLP acceptor microservice is running");
+    
+    log::info!("✅ Acceptor service started successfully");
+    log::info!("📡 OTLP gRPC server listening on {}", grpc_addr);
+    log::info!("🌐 OTLP HTTP server listening on {}", http_addr);
 
     // Wait for shutdown signal (Ctrl+C)
     tokio::signal::ctrl_c()
         .await
         .context("Failed to listen for shutdown signal")?;
-    log::info!("Shutting down OTLP acceptor microservice");
+    
+    log::info!("🛑 Shutting down acceptor service...");
+    
+    // Graceful deregistration using service bootstrap
+    if let Err(e) = acceptor_bootstrap.shutdown().await {
+        log::error!("Failed to shutdown acceptor service bootstrap: {}", e);
+    }
 
     // Trigger shutdown
     let _ = grpc_shutdown_tx.send(());
@@ -53,6 +84,8 @@ async fn main() -> Result<()> {
     // Await spawned tasks
     let _ = grpc_handle.await;
     let _ = http_handle.await;
+
+    log::info!("✅ Acceptor service stopped gracefully");
 
     Ok(())
 }

@@ -35,5 +35,9 @@ async-nats.workspace = true
 serde = { workspace = true, features = ["derive"] }
 uuid = { workspace = true }
 
+[[bin]]
+name = "acceptor"
+path = "src/main.rs"
+
 [dev-dependencies]
 mockall.workspace = true
