@@ -14,7 +14,7 @@ impl<Q: MessagingBackend + 'static> QueueHandler<Q> {
 
     pub async fn start(self) -> anyhow::Result<()> {
         // Create a stream for the trace topic
-        let mut stream = self.queue.lock().await.stream("trace").await;
+        let stream = self.queue.lock().await.stream("trace").await;
         let _ = stream; // Use the stream to avoid unused variable warning
 
         // Start the message processing loop

@@ -38,7 +38,7 @@ pub async fn serve_querier_http(
     QueueHandler::new(queue).start().await?;
 
     let addr = "0.0.0.0:9000";
-    log::info!("Starting querier on {}", addr);
+    log::info!("Starting querier on {addr}");
 
     let app = query_router();
 
