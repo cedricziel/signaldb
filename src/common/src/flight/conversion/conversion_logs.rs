@@ -242,53 +242,57 @@ pub fn arrow_to_otlp_logs(batch: &RecordBatch) -> ExportLogsServiceRequest {
         };
 
         // Parse attributes JSON string to KeyValue vector
-        let attributes: Vec<KeyValue> =
-            if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(attributes_json_str) {
-                map.into_iter()
-                    .map(|(k, v)| KeyValue {
-                        key: k,
-                        value: Some(json_value_to_any_value(&v)),
-                    })
-                    .collect()
-            } else {
-                vec![]
-            };
+        let attributes: Vec<KeyValue> = if let Ok(serde_json::Value::Object(map)) =
+            serde_json::from_str::<serde_json::Value>(attributes_json_str)
+        {
+            map.into_iter()
+                .map(|(k, v)| KeyValue {
+                    key: k,
+                    value: Some(json_value_to_any_value(&v)),
+                })
+                .collect()
+        } else {
+            vec![]
+        };
 
         // Parse resource JSON string to KeyValue vector
-        let resource_attributes: Vec<KeyValue> =
-            if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(resource_json_str) {
-                map.into_iter()
-                    .map(|(k, v)| KeyValue {
-                        key: k,
-                        value: Some(json_value_to_any_value(&v)),
-                    })
-                    .collect()
-            } else {
-                vec![]
-            };
+        let resource_attributes: Vec<KeyValue> = if let Ok(serde_json::Value::Object(map)) =
+            serde_json::from_str::<serde_json::Value>(resource_json_str)
+        {
+            map.into_iter()
+                .map(|(k, v)| KeyValue {
+                    key: k,
+                    value: Some(json_value_to_any_value(&v)),
+                })
+                .collect()
+        } else {
+            vec![]
+        };
 
         // Parse scope JSON string to InstrumentationScope
-        let scope = if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(scope_json_str) {
-                let name = map
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let version = map
-                    .get("version")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+        let scope = if let Ok(serde_json::Value::Object(map)) =
+            serde_json::from_str::<serde_json::Value>(scope_json_str)
+        {
+            let name = map
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let version = map
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
 
-                let mut scope_attributes = Vec::new();
-                if let Some(serde_json::Value::Object(attrs_map)) = map.get("attributes") {
-                    for (k, v) in attrs_map {
-                        scope_attributes.push(KeyValue {
-                            key: k.clone(),
-                            value: Some(json_value_to_any_value(v)),
-                        });
-                    }
+            let mut scope_attributes = Vec::new();
+            if let Some(serde_json::Value::Object(attrs_map)) = map.get("attributes") {
+                for (k, v) in attrs_map {
+                    scope_attributes.push(KeyValue {
+                        key: k.clone(),
+                        value: Some(json_value_to_any_value(v)),
+                    });
                 }
+            }
 
             opentelemetry_proto::tonic::common::v1::InstrumentationScope {
                 name,

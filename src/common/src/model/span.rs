@@ -359,7 +359,10 @@ mod tests {
 
     #[test]
     fn test_span_status() {
-        assert_eq!("Unspecified".parse::<SpanStatus>().unwrap(), SpanStatus::Unspecified);
+        assert_eq!(
+            "Unspecified".parse::<SpanStatus>().unwrap(),
+            SpanStatus::Unspecified
+        );
         assert_eq!("Ok".parse::<SpanStatus>().unwrap(), SpanStatus::Ok);
         assert_eq!("Error".parse::<SpanStatus>().unwrap(), SpanStatus::Error);
 

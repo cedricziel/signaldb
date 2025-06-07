@@ -1,4 +1,3 @@
-
 use datafusion::arrow::{
     array::{ArrayRef, BooleanArray, ListArray, StringArray, StructArray, UInt64Array},
     datatypes::{DataType, Field},
@@ -462,9 +461,7 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
                 .map(|(k, v)| KeyValue {
                     key: k,
                     value: Some(
-                        crate::flight::conversion::conversion_common::json_value_to_any_value(
-                            &v,
-                        ),
+                        crate::flight::conversion::conversion_common::json_value_to_any_value(&v),
                     ),
                 })
                 .collect()
@@ -480,9 +477,7 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
                 .map(|(k, v)| KeyValue {
                     key: k,
                     value: Some(
-                        crate::flight::conversion::conversion_common::json_value_to_any_value(
-                            &v,
-                        ),
+                        crate::flight::conversion::conversion_common::json_value_to_any_value(&v),
                     ),
                 })
                 .collect()

@@ -16,6 +16,7 @@ use uuid::Uuid;
 /// Flight service that ingests RecordBatches and writes them as Parquet files
 pub struct WriterFlightService {
     object_store: Arc<dyn ObjectStore>,
+    #[allow(dead_code)]
     schemas: FlightSchemas,
 }
 
