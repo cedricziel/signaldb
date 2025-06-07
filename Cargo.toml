@@ -15,7 +15,7 @@ querier = { path = "src/querier" }
 router = { path = "src/router" }
 writer = { path = "src/writer" }
 uuid = { workspace = true }
-tempfile = "3.8.1"
+tempfile = "3.20.0"
 hex = "0.4"
 futures = "0.3.31"
 
@@ -135,7 +135,7 @@ testcontainers-modules = { version = "0.11.5", features = [
     "nats",
     "postgres",
 ], git = "https://github.com/cedricziel/testcontainers-rs-modules-community.git", branch = "nats-jetstream" }
-tempfile = "3.15.0"
+tempfile = "3.20.0"
 
 ntest = "0.9.3"
 
