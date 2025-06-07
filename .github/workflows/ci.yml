@@ -116,6 +116,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Init submodules
+        run: git submodule update --init --recursive
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -186,6 +189,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Init submodules
+        run: git submodule update --init --recursive
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -241,6 +247,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Init submodules
+        run: git submodule update --init --recursive
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -274,6 +283,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Init submodules
+        run: git submodule update --init --recursive
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
