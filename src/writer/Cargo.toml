@@ -36,3 +36,6 @@ tonic.workspace = true
 
 async-nats.workspace = true
 tempfile.workspace = true
+ 
+[dev-dependencies]
+tokio-stream.workspace = true
