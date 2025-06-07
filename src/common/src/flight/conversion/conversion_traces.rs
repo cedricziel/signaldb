@@ -5,13 +5,13 @@ use opentelemetry::trace::{SpanId, TraceId};
 use opentelemetry_proto::tonic::{
     collector::trace::v1::ExportTraceServiceRequest,
     common::v1::KeyValue,
-    trace::v1::{ResourceSpans, ScopeSpans, Span as OtelSpan, Status as OtelStatus},
+    trace::v1::{ResourceSpans, ScopeSpans, Span as OtelSpan},
 };
 use serde_json::Map;
 use std::sync::Arc;
 
 use crate::flight::conversion::conversion_common::{
-    extract_resource_json, extract_service_name, extract_value, json_value_to_any_value,
+    extract_resource_json, extract_service_name, extract_value,
 };
 use crate::flight::schema::FlightSchemas;
 
@@ -335,7 +335,7 @@ fn create_links_array(links_data: &[Vec<(String, String, String)>]) -> ArrayRef 
 
 /// Convert Arrow RecordBatch to OTLP ExportTraceServiceRequest
 pub fn arrow_to_otlp_traces(batch: &arrow_array::RecordBatch) -> ExportTraceServiceRequest {
-    use opentelemetry_proto::tonic::trace::v1::{Span, Status};
+    use opentelemetry_proto::tonic::trace::v1::Status;
     use std::convert::TryInto;
 
     let columns = batch.columns();

@@ -326,7 +326,7 @@ pub fn arrow_to_otlp_logs(batch: &arrow_array::RecordBatch) -> ExportLogsService
         let log_record = LogRecord {
             time_unix_nano,
             observed_time_unix_nano,
-            severity_number: unsafe { std::mem::transmute(severity_number as u32) }, // Convert i32 to SeverityNumber enum
+            severity_number: unsafe { u32::cast_signed(severity_number as u32) }, // Convert i32 to SeverityNumber enum
             severity_text,
             body,
             attributes,

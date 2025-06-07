@@ -1,9 +1,8 @@
 use arrow_array::{ArrayRef, BooleanArray, Int32Array, StringArray, UInt64Array};
-use arrow_schema::DataType;
 use opentelemetry_proto::tonic::{
     collector::metrics::v1::ExportMetricsServiceRequest,
     common::v1::KeyValue,
-    metrics::v1::{Metric as OtelMetric, ResourceMetrics, ScopeMetrics},
+    metrics::v1::{ResourceMetrics, ScopeMetrics},
     resource::v1::Resource,
 };
 use serde_json::{Map, Value as JsonValue};
@@ -12,7 +11,6 @@ use std::sync::Arc;
 use opentelemetry_proto::tonic::metrics::v1::exemplar;
 use opentelemetry_proto::tonic::metrics::v1::exponential_histogram_data_point::Buckets;
 use opentelemetry_proto::tonic::metrics::v1::number_data_point;
-use opentelemetry_proto::tonic::metrics::v1::summary_data_point;
 use opentelemetry_proto::tonic::metrics::v1::Exemplar;
 use opentelemetry_proto::tonic::metrics::v1::ExponentialHistogramDataPoint;
 use opentelemetry_proto::tonic::metrics::v1::HistogramDataPoint;

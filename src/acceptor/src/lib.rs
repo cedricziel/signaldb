@@ -27,8 +27,6 @@ use tokio::{
 // Service bootstrap and configuration
 use common::config::Configuration;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use std::time::Duration;
-use uuid::Uuid;
 // Flight protocol client
 use arrow_flight::client::FlightClient;
 use tonic::transport::Endpoint;
