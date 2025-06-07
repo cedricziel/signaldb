@@ -3585,7 +3585,6 @@ dependencies = [
  "common",
  "datafusion",
  "log",
- "messaging",
  "object_store",
  "serde_json",
  "tempo-api",
