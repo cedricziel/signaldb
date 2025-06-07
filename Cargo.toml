@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0"
 
+rust-version = "1.82.0"
+
 publish = false
 
 [dependencies]
@@ -60,6 +62,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0"
+rust-version = "1.82.0"
 
 [workspace.dependencies]
 acceptor = { path = "src/acceptor" }
