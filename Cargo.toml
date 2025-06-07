@@ -151,6 +151,8 @@ ntest = "0.9.3"
 chrono = { version = "0.4", features = ["serde"] }
 sqlx = { version = "0.8", default-features = false, features = [
     "postgres",
+    "sqlite",
+    "any",
     "macros",
     "runtime-tokio-rustls",
     "chrono",

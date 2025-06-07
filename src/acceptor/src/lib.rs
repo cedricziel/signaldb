@@ -24,8 +24,9 @@ use tokio::{
     fs::{create_dir_all, File},
     sync::{oneshot, Mutex},
 };
-// Service discovery
-use common::discovery::{Instance as DiscoveryInstance, NatsDiscovery};
+// Service bootstrap and configuration
+use common::service_bootstrap::{ServiceBootstrap, ServiceType};
+use common::config::Configuration;
 use uuid::Uuid;
 use std::time::Duration;
 // Flight protocol client
@@ -92,26 +93,20 @@ pub async fn serve_otlp_grpc(
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse OTLP/gRPC address: {}", e))?;
 
-    // Service discovery registration (optional via NATS KV)
-    // Determine service discovery mode (default to NATS subject-based)
-    let discovery_kind = std::env::var("DISCOVERY_KIND").unwrap_or_else(|_| "nats".to_string());
-    log::info!("Service discovery mode: {}", discovery_kind);
-    // Hold optional discovery client and heartbeat handle
-    let mut discovery_opt: Option<(NatsDiscovery, tokio::task::JoinHandle<()>)> = None;
-    if discovery_kind.eq_ignore_ascii_case("nats") {
-        let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "127.0.0.1:4222".to_string());
-        // Use an advertise address if provided, else bind address
-        let advertise_addr = std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| addr.to_string());
-        let instance_id = Uuid::new_v4().to_string();
-        let inst = DiscoveryInstance { id: instance_id.clone(), host: advertise_addr.clone(), port: addr.port() };
-        let discovery = NatsDiscovery::new(&nats_url, "acceptor", inst)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to initialize service discovery: {}", e))?;
-        // Register and spawn heartbeat
-        discovery.register().await.map_err(|e| anyhow::anyhow!("Failed to register service: {}", e))?;
-        let hb_handle = discovery.spawn_heartbeat(Duration::from_secs(10));
-        discovery_opt = Some((discovery, hb_handle));
-    }
+    // Load configuration
+    let config = Configuration::load()
+        .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
+
+    // Initialize service bootstrap for catalog-based discovery
+    let advertise_addr = std::env::var("ACCEPTOR_ADVERTISE_ADDR")
+        .unwrap_or_else(|_| addr.to_string());
+    
+    let service_bootstrap = ServiceBootstrap::new(
+        config,
+        ServiceType::Acceptor,
+        advertise_addr,
+    ).await
+    .map_err(|e| anyhow::anyhow!("Failed to initialize service bootstrap: {}", e))?;
 
     log::info!("Starting OTLP/gRPC acceptor on {}", addr);
 
@@ -149,14 +144,9 @@ pub async fn serve_otlp_grpc(
             shutdown_rx.await.ok();
 
             log::info!("Shutting down OTLP acceptor");
-            // Graceful service discovery deregistration
-            if let Some((discovery, hb_handle)) = discovery_opt {
-                // Stop heartbeat task
-                hb_handle.abort();
-                // Deregister service
-                if let Err(e) = discovery.deregister().await {
-                    log::error!("Failed to deregister service: {}", e);
-                }
+            // Graceful service bootstrap shutdown
+            if let Err(e) = service_bootstrap.shutdown().await {
+                log::error!("Failed to shutdown service bootstrap: {}", e);
             }
         })
         .await
@@ -198,23 +188,21 @@ pub async fn serve_otlp_http(
         .map_err(|e| anyhow::anyhow!("Failed to parse OTLP/HTTP address: {}", e))?;
 
     log::info!("Starting OTLP/HTTP acceptor on {}", addr);
-    // Service discovery registration (optional via NATS KV subject approach)
-    // Determine service discovery mode (default to NATS subject-based)
-    let discovery_kind = std::env::var("DISCOVERY_KIND").unwrap_or_else(|_| "nats".to_string());
-    log::info!("Service discovery mode: {}", discovery_kind);
-    let mut discovery_opt: Option<(NatsDiscovery, tokio::task::JoinHandle<()>)> = None;
-    if discovery_kind.eq_ignore_ascii_case("nats") {
-        let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "127.0.0.1:4222".to_string());
-        let advertise_addr = std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| addr.to_string());
-        let instance_id = Uuid::new_v4().to_string();
-        let inst = DiscoveryInstance { id: instance_id.clone(), host: advertise_addr.clone(), port: addr.port() };
-        let discovery = NatsDiscovery::new(&nats_url, "acceptor", inst)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to initialize service discovery: {}", e))?;
-        discovery.register().await.map_err(|e| anyhow::anyhow!("Failed to register service: {}", e))?;
-        let hb_handle = discovery.spawn_heartbeat(Duration::from_secs(10));
-        discovery_opt = Some((discovery, hb_handle));
-    }
+
+    // Load configuration
+    let config = Configuration::load()
+        .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
+
+    // Initialize service bootstrap for catalog-based discovery
+    let advertise_addr = std::env::var("ACCEPTOR_ADVERTISE_ADDR")
+        .unwrap_or_else(|_| addr.to_string());
+    
+    let service_bootstrap = ServiceBootstrap::new(
+        config,
+        ServiceType::Acceptor,
+        advertise_addr,
+    ).await
+    .map_err(|e| anyhow::anyhow!("Failed to initialize service bootstrap: {}", e))?;
 
     let app = acceptor_router();
 
@@ -227,12 +215,9 @@ pub async fn serve_otlp_http(
         .with_graceful_shutdown(async {
             shutdown_rx.await.ok();
             log::info!("Shutting down OTLP/HTTP acceptor");
-            // Graceful service discovery deregistration
-            if let Some((discovery, hb_handle)) = discovery_opt {
-                hb_handle.abort();
-                if let Err(e) = discovery.deregister().await {
-                    log::error!("Failed to deregister service: {}", e);
-                }
+            // Graceful service bootstrap shutdown
+            if let Err(e) = service_bootstrap.shutdown().await {
+                log::error!("Failed to shutdown service bootstrap: {}", e);
             }
         })
         .await?;
