@@ -12,12 +12,15 @@ updates:
     assignees:
       - cedricziel
     groups:
-      arrow:
-        patterns:
-          - "arrow*"
-      datafusion:
+      datafusion-ecosystem:
         patterns:
           - "datafusion*"
+          - "arrow*"
+          - "parquet*"
+          - "object_store*"
+        update-types:
+          - "minor"
+          - "patch"
       serde:
         patterns:
           - "serde*"
