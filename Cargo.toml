@@ -43,7 +43,6 @@ object_store.workspace = true
 [workspace]
 resolver = "2"
 members = [
-    "src/messaging",
     "src/acceptor",
     "src/common",
     "src/querier",
