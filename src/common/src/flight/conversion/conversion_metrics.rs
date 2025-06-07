@@ -1,3 +1,4 @@
+
 use datafusion::arrow::array::{
     ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray, UInt64Array,
 };
@@ -387,78 +388,58 @@ pub fn arrow_to_otlp_metrics(batch: &RecordBatch) -> ExportMetricsServiceRequest
 
         // Parse attributes JSON string to KeyValue vector
         let metadata: Vec<KeyValue> =
-            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(attributes_json_str) {
-                if let serde_json::Value::Object(map) = json_val {
-                    map.into_iter()
-                        .map(|(k, v)| KeyValue {
-                            key: k,
-                            value: Some(json_value_to_any_value(&v)),
-                        })
-                        .collect()
-                } else {
-                    vec![]
-                }
+            if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(attributes_json_str) {
+                map.into_iter()
+                    .map(|(k, v)| KeyValue {
+                        key: k,
+                        value: Some(json_value_to_any_value(&v)),
+                    })
+                    .collect()
             } else {
                 vec![]
             };
 
         // Parse resource JSON string to KeyValue vector
         let resource_attributes: Vec<KeyValue> =
-            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(resource_json_str) {
-                if let serde_json::Value::Object(map) = json_val {
-                    map.into_iter()
-                        .map(|(k, v)| KeyValue {
-                            key: k,
-                            value: Some(json_value_to_any_value(&v)),
-                        })
-                        .collect()
-                } else {
-                    vec![]
-                }
+            if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(resource_json_str) {
+                map.into_iter()
+                    .map(|(k, v)| KeyValue {
+                        key: k,
+                        value: Some(json_value_to_any_value(&v)),
+                    })
+                    .collect()
             } else {
                 vec![]
             };
 
         // Parse scope JSON string to InstrumentationScope
-        let scope = if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(scope_json_str)
-        {
-            if let serde_json::Value::Object(map) = json_val {
-                let name = map
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let version = map
-                    .get("version")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+        let scope = if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(scope_json_str) {
+            let name = map
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let version = map
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
 
-                let mut scope_attributes = Vec::new();
-                if let Some(attrs) = map.get("attributes") {
-                    if let serde_json::Value::Object(attrs_map) = attrs {
-                        for (k, v) in attrs_map {
-                            scope_attributes.push(KeyValue {
-                                key: k.clone(),
-                                value: Some(json_value_to_any_value(v)),
-                            });
-                        }
-                    }
+            let mut scope_attributes = Vec::new();
+            if let Some(serde_json::Value::Object(attrs_map)) = map.get("attributes") {
+                for (k, v) in attrs_map {
+                    scope_attributes.push(KeyValue {
+                        key: k.clone(),
+                        value: Some(json_value_to_any_value(v)),
+                    });
                 }
+            }
 
-                opentelemetry_proto::tonic::common::v1::InstrumentationScope {
-                    name,
-                    version,
-                    attributes: scope_attributes,
-                    dropped_attributes_count: 0,
-                }
-            } else {
-                opentelemetry_proto::tonic::common::v1::InstrumentationScope {
-                    name: "".to_string(),
-                    version: "".to_string(),
-                    attributes: vec![],
-                    dropped_attributes_count: 0,
-                }
+            opentelemetry_proto::tonic::common::v1::InstrumentationScope {
+                name,
+                version,
+                attributes: scope_attributes,
+                dropped_attributes_count: 0,
             }
         } else {
             opentelemetry_proto::tonic::common::v1::InstrumentationScope {
@@ -570,9 +551,8 @@ fn parse_number_data_points(
 ) -> Vec<opentelemetry_proto::tonic::metrics::v1::NumberDataPoint> {
     let mut data_points = Vec::new();
 
-    if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(json_str) {
-        if let serde_json::Value::Array(points) = json_val {
-            for point_val in points {
+    if let Ok(serde_json::Value::Array(points)) = serde_json::from_str::<serde_json::Value>(json_str) {
+        for point_val in points {
                 if let serde_json::Value::Object(point_map) = point_val {
                     // Extract timestamps
                     let start_time_unix_nano = point_map
@@ -605,18 +585,14 @@ fn parse_number_data_points(
                     };
 
                     // Extract attributes
-                    let attributes = if let Some(attrs) = point_map.get("attributes") {
-                        if let serde_json::Value::Object(attrs_map) = attrs {
-                            attrs_map
-                                .iter()
-                                .map(|(k, v)| KeyValue {
-                                    key: k.clone(),
-                                    value: Some(json_value_to_any_value(v)),
-                                })
-                                .collect()
-                        } else {
-                            vec![]
-                        }
+                    let attributes = if let Some(serde_json::Value::Object(attrs_map)) = point_map.get("attributes") {
+                        attrs_map
+                            .iter()
+                            .map(|(k, v)| KeyValue {
+                                key: k.clone(),
+                                value: Some(json_value_to_any_value(v)),
+                            })
+                            .collect()
                     } else {
                         vec![]
                     };
@@ -644,7 +620,6 @@ fn parse_number_data_points(
                     data_points.push(data_point);
                 }
             }
-        }
     }
 
     data_points
@@ -658,9 +633,8 @@ fn parse_histogram_data_points(
 ) -> Vec<HistogramDataPoint> {
     let mut data_points = Vec::new();
 
-    if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(json_str) {
-        if let serde_json::Value::Array(points) = json_val {
-            for point_val in points {
+    if let Ok(serde_json::Value::Array(points)) = serde_json::from_str::<serde_json::Value>(json_str) {
+        for point_val in points {
                 if let serde_json::Value::Object(point_map) = point_val {
                     // Extract timestamps
                     let start_time_unix_nano = point_map
@@ -681,39 +655,27 @@ fn parse_histogram_data_points(
                     let max = point_map.get("max").and_then(|v| v.as_f64());
 
                     // Extract bucket boundaries and counts
-                    let explicit_bounds = if let Some(bounds) = point_map.get("explicit_bounds") {
-                        if let serde_json::Value::Array(bounds_arr) = bounds {
-                            bounds_arr.iter().filter_map(|v| v.as_f64()).collect()
-                        } else {
-                            vec![]
-                        }
+                    let explicit_bounds = if let Some(serde_json::Value::Array(bounds_arr)) = point_map.get("explicit_bounds") {
+                        bounds_arr.iter().filter_map(|v| v.as_f64()).collect()
                     } else {
                         vec![]
                     };
 
-                    let bucket_counts = if let Some(counts) = point_map.get("bucket_counts") {
-                        if let serde_json::Value::Array(counts_arr) = counts {
-                            counts_arr.iter().filter_map(|v| v.as_u64()).collect()
-                        } else {
-                            vec![]
-                        }
+                    let bucket_counts = if let Some(serde_json::Value::Array(counts_arr)) = point_map.get("bucket_counts") {
+                        counts_arr.iter().filter_map(|v| v.as_u64()).collect()
                     } else {
                         vec![]
                     };
 
                     // Extract attributes
-                    let attributes = if let Some(attrs) = point_map.get("attributes") {
-                        if let serde_json::Value::Object(attrs_map) = attrs {
-                            attrs_map
-                                .iter()
-                                .map(|(k, v)| KeyValue {
-                                    key: k.clone(),
-                                    value: Some(json_value_to_any_value(v)),
-                                })
-                                .collect()
-                        } else {
-                            vec![]
-                        }
+                    let attributes = if let Some(serde_json::Value::Object(attrs_map)) = point_map.get("attributes") {
+                        attrs_map
+                            .iter()
+                            .map(|(k, v)| KeyValue {
+                                key: k.clone(),
+                                value: Some(json_value_to_any_value(v)),
+                            })
+                            .collect()
                     } else {
                         vec![]
                     };
@@ -746,7 +708,6 @@ fn parse_histogram_data_points(
                     data_points.push(data_point);
                 }
             }
-        }
     }
 
     data_points
@@ -760,9 +721,8 @@ fn parse_exponential_histogram_data_points(
 ) -> Vec<ExponentialHistogramDataPoint> {
     let mut data_points = Vec::new();
 
-    if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(json_str) {
-        if let serde_json::Value::Array(points) = json_val {
-            for point_val in points {
+    if let Ok(serde_json::Value::Array(points)) = serde_json::from_str::<serde_json::Value>(json_str) {
+        for point_val in points {
                 if let serde_json::Value::Object(point_map) = point_val {
                     // Extract timestamps
                     let start_time_unix_nano = point_map
@@ -847,18 +807,14 @@ fn parse_exponential_histogram_data_points(
                         .unwrap_or(0.0);
 
                     // Extract attributes
-                    let attributes = if let Some(attrs) = point_map.get("attributes") {
-                        if let serde_json::Value::Object(attrs_map) = attrs {
-                            attrs_map
-                                .iter()
-                                .map(|(k, v)| KeyValue {
-                                    key: k.clone(),
-                                    value: Some(json_value_to_any_value(v)),
-                                })
-                                .collect()
-                        } else {
-                            vec![]
-                        }
+                    let attributes = if let Some(serde_json::Value::Object(attrs_map)) = point_map.get("attributes") {
+                        attrs_map
+                            .iter()
+                            .map(|(k, v)| KeyValue {
+                                key: k.clone(),
+                                value: Some(json_value_to_any_value(v)),
+                            })
+                            .collect()
                     } else {
                         vec![]
                     };
@@ -894,7 +850,6 @@ fn parse_exponential_histogram_data_points(
                     data_points.push(data_point);
                 }
             }
-        }
     }
 
     data_points
@@ -908,9 +863,8 @@ fn parse_summary_data_points(
 ) -> Vec<SummaryDataPoint> {
     let mut data_points = Vec::new();
 
-    if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(json_str) {
-        if let serde_json::Value::Array(points) = json_val {
-            for point_val in points {
+    if let Ok(serde_json::Value::Array(points)) = serde_json::from_str::<serde_json::Value>(json_str) {
+        for point_val in points {
                 if let serde_json::Value::Object(point_map) = point_val {
                     // Extract timestamps
                     let start_time_unix_nano = point_map
@@ -927,48 +881,39 @@ fn parse_summary_data_points(
                     let sum = point_map.get("sum").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
                     // Extract quantile values
-                    let quantile_values = if let Some(quantiles) = point_map.get("quantile_values")
-                    {
-                        if let serde_json::Value::Array(quantiles_arr) = quantiles {
-                            quantiles_arr.iter()
-                                .filter_map(|q| {
-                                    if let serde_json::Value::Object(q_map) = q {
-                                        let quantile = q_map.get("quantile")
-                                            .and_then(|v| v.as_f64())
-                                            .unwrap_or(0.0);
-                                        let value = q_map.get("value")
-                                            .and_then(|v| v.as_f64())
-                                            .unwrap_or(0.0);
+                    let quantile_values = if let Some(serde_json::Value::Array(quantiles_arr)) = point_map.get("quantile_values") {
+                        quantiles_arr.iter()
+                            .filter_map(|q| {
+                                if let serde_json::Value::Object(q_map) = q {
+                                    let quantile = q_map.get("quantile")
+                                        .and_then(|v| v.as_f64())
+                                        .unwrap_or(0.0);
+                                    let value = q_map.get("value")
+                                        .and_then(|v| v.as_f64())
+                                        .unwrap_or(0.0);
 
-                                        Some(opentelemetry_proto::tonic::metrics::v1::summary_data_point::ValueAtQuantile {
-                                            quantile,
-                                            value,
-                                        })
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect()
-                        } else {
-                            vec![]
-                        }
+                                    Some(opentelemetry_proto::tonic::metrics::v1::summary_data_point::ValueAtQuantile {
+                                        quantile,
+                                        value,
+                                    })
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
                     } else {
                         vec![]
                     };
 
                     // Extract attributes
-                    let attributes = if let Some(attrs) = point_map.get("attributes") {
-                        if let serde_json::Value::Object(attrs_map) = attrs {
-                            attrs_map
-                                .iter()
-                                .map(|(k, v)| KeyValue {
-                                    key: k.clone(),
-                                    value: Some(json_value_to_any_value(v)),
-                                })
-                                .collect()
-                        } else {
-                            vec![]
-                        }
+                    let attributes = if let Some(serde_json::Value::Object(attrs_map)) = point_map.get("attributes") {
+                        attrs_map
+                            .iter()
+                            .map(|(k, v)| KeyValue {
+                                key: k.clone(),
+                                value: Some(json_value_to_any_value(v)),
+                            })
+                            .collect()
                     } else {
                         vec![]
                     };
@@ -990,7 +935,6 @@ fn parse_summary_data_points(
                     data_points.push(data_point);
                 }
             }
-        }
     }
 
     data_points
@@ -1031,18 +975,14 @@ fn parse_exemplars(exemplars_val: &serde_json::Value) -> Vec<Exemplar> {
 
                 // Extract filtered attributes
                 let filtered_attributes =
-                    if let Some(attrs) = exemplar_map.get("filtered_attributes") {
-                        if let serde_json::Value::Object(attrs_map) = attrs {
-                            attrs_map
-                                .iter()
-                                .map(|(k, v)| KeyValue {
-                                    key: k.clone(),
-                                    value: Some(json_value_to_any_value(v)),
-                                })
-                                .collect()
-                        } else {
-                            vec![]
-                        }
+                    if let Some(serde_json::Value::Object(attrs_map)) = exemplar_map.get("filtered_attributes") {
+                        attrs_map
+                            .iter()
+                            .map(|(k, v)| KeyValue {
+                                key: k.clone(),
+                                value: Some(json_value_to_any_value(v)),
+                            })
+                            .collect()
                     } else {
                         vec![]
                     };

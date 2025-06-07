@@ -32,10 +32,6 @@ impl FromStr for SpanKind {
 }
 
 impl SpanKind {
-    pub fn from_str(s: &str) -> Self {
-        s.parse().unwrap_or(SpanKind::Internal)
-    }
-
     pub fn to_str(&self) -> &str {
         match self {
             SpanKind::Internal => "Internal",
@@ -68,10 +64,6 @@ impl FromStr for SpanStatus {
 }
 
 impl SpanStatus {
-    pub fn from_str(s: &str) -> Self {
-        s.parse().unwrap_or(SpanStatus::Unspecified)
-    }
-
     pub fn to_str(&self) -> &str {
         match self {
             SpanStatus::Unspecified => "Unspecified",
@@ -265,11 +257,11 @@ impl SpanBatch {
                 trace_id: trace_id.value(i).to_string(),
                 span_id: span_id.value(i).to_string(),
                 parent_span_id: parent_span_id.value(i).to_string(),
-                status: SpanStatus::from_str(status.value(i)),
+                status: status.value(i).parse().unwrap_or(SpanStatus::Unspecified),
                 is_root: is_root.value(i),
                 name: name.value(i).to_string(),
                 service_name: service_name.value(i).to_string(),
-                span_kind: SpanKind::from_str(span_kind.value(i)),
+                span_kind: span_kind.value(i).parse().unwrap_or(SpanKind::Internal),
                 start_time_unix_nano: start_time_unix_nano.value(i),
                 duration_nano: duration_nano.value(i),
                 attributes: HashMap::new(),
@@ -352,11 +344,11 @@ mod tests {
 
     #[test]
     fn test_span_kind() {
-        assert_eq!(SpanKind::from_str("Internal"), SpanKind::Internal);
-        assert_eq!(SpanKind::from_str("Server"), SpanKind::Server);
-        assert_eq!(SpanKind::from_str("Client"), SpanKind::Client);
-        assert_eq!(SpanKind::from_str("Producer"), SpanKind::Producer);
-        assert_eq!(SpanKind::from_str("Consumer"), SpanKind::Consumer);
+        assert_eq!("Internal".parse::<SpanKind>().unwrap(), SpanKind::Internal);
+        assert_eq!("Server".parse::<SpanKind>().unwrap(), SpanKind::Server);
+        assert_eq!("Client".parse::<SpanKind>().unwrap(), SpanKind::Client);
+        assert_eq!("Producer".parse::<SpanKind>().unwrap(), SpanKind::Producer);
+        assert_eq!("Consumer".parse::<SpanKind>().unwrap(), SpanKind::Consumer);
 
         assert_eq!(SpanKind::Internal.to_str(), "Internal");
         assert_eq!(SpanKind::Server.to_str(), "Server");
@@ -367,9 +359,9 @@ mod tests {
 
     #[test]
     fn test_span_status() {
-        assert_eq!(SpanStatus::from_str("Unspecified"), SpanStatus::Unspecified);
-        assert_eq!(SpanStatus::from_str("Ok"), SpanStatus::Ok);
-        assert_eq!(SpanStatus::from_str("Error"), SpanStatus::Error);
+        assert_eq!("Unspecified".parse::<SpanStatus>().unwrap(), SpanStatus::Unspecified);
+        assert_eq!("Ok".parse::<SpanStatus>().unwrap(), SpanStatus::Ok);
+        assert_eq!("Error".parse::<SpanStatus>().unwrap(), SpanStatus::Error);
 
         assert_eq!(SpanStatus::Unspecified.to_str(), "Unspecified");
         assert_eq!(SpanStatus::Ok.to_str(), "Ok");

@@ -243,42 +243,32 @@ pub fn arrow_to_otlp_logs(batch: &RecordBatch) -> ExportLogsServiceRequest {
 
         // Parse attributes JSON string to KeyValue vector
         let attributes: Vec<KeyValue> =
-            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(attributes_json_str) {
-                if let serde_json::Value::Object(map) = json_val {
-                    map.into_iter()
-                        .map(|(k, v)| KeyValue {
-                            key: k,
-                            value: Some(json_value_to_any_value(&v)),
-                        })
-                        .collect()
-                } else {
-                    vec![]
-                }
+            if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(attributes_json_str) {
+                map.into_iter()
+                    .map(|(k, v)| KeyValue {
+                        key: k,
+                        value: Some(json_value_to_any_value(&v)),
+                    })
+                    .collect()
             } else {
                 vec![]
             };
 
         // Parse resource JSON string to KeyValue vector
         let resource_attributes: Vec<KeyValue> =
-            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(resource_json_str) {
-                if let serde_json::Value::Object(map) = json_val {
-                    map.into_iter()
-                        .map(|(k, v)| KeyValue {
-                            key: k,
-                            value: Some(json_value_to_any_value(&v)),
-                        })
-                        .collect()
-                } else {
-                    vec![]
-                }
+            if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(resource_json_str) {
+                map.into_iter()
+                    .map(|(k, v)| KeyValue {
+                        key: k,
+                        value: Some(json_value_to_any_value(&v)),
+                    })
+                    .collect()
             } else {
                 vec![]
             };
 
         // Parse scope JSON string to InstrumentationScope
-        let scope = if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(scope_json_str)
-        {
-            if let serde_json::Value::Object(map) = json_val {
+        let scope = if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(scope_json_str) {
                 let name = map
                     .get("name")
                     .and_then(|v| v.as_str())
@@ -291,30 +281,20 @@ pub fn arrow_to_otlp_logs(batch: &RecordBatch) -> ExportLogsServiceRequest {
                     .to_string();
 
                 let mut scope_attributes = Vec::new();
-                if let Some(attrs) = map.get("attributes") {
-                    if let serde_json::Value::Object(attrs_map) = attrs {
-                        for (k, v) in attrs_map {
-                            scope_attributes.push(KeyValue {
-                                key: k.clone(),
-                                value: Some(json_value_to_any_value(v)),
-                            });
-                        }
+                if let Some(serde_json::Value::Object(attrs_map)) = map.get("attributes") {
+                    for (k, v) in attrs_map {
+                        scope_attributes.push(KeyValue {
+                            key: k.clone(),
+                            value: Some(json_value_to_any_value(v)),
+                        });
                     }
                 }
 
-                opentelemetry_proto::tonic::common::v1::InstrumentationScope {
-                    name,
-                    version,
-                    attributes: scope_attributes,
-                    dropped_attributes_count: 0,
-                }
-            } else {
-                opentelemetry_proto::tonic::common::v1::InstrumentationScope {
-                    name: "".to_string(),
-                    version: "".to_string(),
-                    attributes: vec![],
-                    dropped_attributes_count: 0,
-                }
+            opentelemetry_proto::tonic::common::v1::InstrumentationScope {
+                name,
+                version,
+                attributes: scope_attributes,
+                dropped_attributes_count: 0,
             }
         } else {
             opentelemetry_proto::tonic::common::v1::InstrumentationScope {

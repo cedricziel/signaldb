@@ -1,3 +1,4 @@
+
 use datafusion::arrow::{
     array::{ArrayRef, BooleanArray, ListArray, StringArray, StructArray, UInt64Array},
     datatypes::{DataType, Field},
@@ -454,45 +455,37 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
         };
 
         // Parse attributes JSON string to KeyValue vector
-        let attributes: Vec<KeyValue> = if let Ok(json_val) =
+        let attributes: Vec<KeyValue> = if let Ok(serde_json::Value::Object(map)) =
             serde_json::from_str::<serde_json::Value>(attributes_json_str)
         {
-            if let serde_json::Value::Object(map) = json_val {
-                map.into_iter()
-                    .map(|(k, v)| KeyValue {
-                        key: k,
-                        value: Some(
-                            crate::flight::conversion::conversion_common::json_value_to_any_value(
-                                &v,
-                            ),
+            map.into_iter()
+                .map(|(k, v)| KeyValue {
+                    key: k,
+                    value: Some(
+                        crate::flight::conversion::conversion_common::json_value_to_any_value(
+                            &v,
                         ),
-                    })
-                    .collect()
-            } else {
-                vec![]
-            }
+                    ),
+                })
+                .collect()
         } else {
             vec![]
         };
 
         // Parse resource JSON string to KeyValue vector
-        let resource_attributes: Vec<KeyValue> = if let Ok(json_val) =
+        let resource_attributes: Vec<KeyValue> = if let Ok(serde_json::Value::Object(map)) =
             serde_json::from_str::<serde_json::Value>(resource_json_str)
         {
-            if let serde_json::Value::Object(map) = json_val {
-                map.into_iter()
-                    .map(|(k, v)| KeyValue {
-                        key: k,
-                        value: Some(
-                            crate::flight::conversion::conversion_common::json_value_to_any_value(
-                                &v,
-                            ),
+            map.into_iter()
+                .map(|(k, v)| KeyValue {
+                    key: k,
+                    value: Some(
+                        crate::flight::conversion::conversion_common::json_value_to_any_value(
+                            &v,
                         ),
-                    })
-                    .collect()
-            } else {
-                vec![]
-            }
+                    ),
+                })
+                .collect()
         } else {
             vec![]
         };
