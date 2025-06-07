@@ -60,7 +60,7 @@ impl Default for QueueConfig {
 /// Configuration for service discovery (Catalog)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiscoveryConfig {
-    /// Data source name for the Catalog (Postgres DSN)
+    /// Data source name for the Catalog (PostgreSQL or SQLite DSN)
     pub dsn: String,
     /// Interval at which to send heartbeats to the Catalog
     #[serde(with = "humantime_serde")]
@@ -73,7 +73,18 @@ pub struct DiscoveryConfig {
     pub ttl: Duration,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            dsn: String::from("sqlite://.data/signaldb.db"),
+            heartbeat_interval: Duration::from_secs(30),
+            poll_interval: Duration::from_secs(60),
+            ttl: Duration::from_secs(300),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Configuration {
     /// Database configuration (used for internal storage)
     pub database: DatabaseConfig,
@@ -81,8 +92,20 @@ pub struct Configuration {
     pub storage: StorageConfig,
     /// Message queue configuration
     pub queue: QueueConfig,
-    /// Optional service discovery configuration
+    /// Service discovery configuration (enabled by default with SQLite)
     pub discovery: Option<DiscoveryConfig>,
+}
+
+impl Default for Configuration {
+    fn default() -> Self {
+        Self {
+            database: DatabaseConfig::default(),
+            storage: StorageConfig::default(),
+            queue: QueueConfig::default(),
+            // Enable discovery by default for configless operation
+            discovery: Some(DiscoveryConfig::default()),
+        }
+    }
 }
 
 impl fmt::Display for Configuration {
@@ -152,5 +175,33 @@ mod tests {
         assert_eq!(config.queue.max_batch_size, 2000);
         assert_eq!(config.queue.max_batch_wait, Duration::from_secs(20));
         assert_eq!(config.queue.dsn, "memory://custom");
+    }
+
+    #[test]
+    fn test_default_configuration_enables_sqlite() {
+        let config = Configuration::default();
+        
+        // Database should default to SQLite in .data directory
+        assert_eq!(config.database.dsn, "sqlite://.data/signaldb.db");
+        
+        // Discovery should be enabled by default with SQLite
+        assert!(config.discovery.is_some());
+        let discovery = config.discovery.unwrap();
+        assert_eq!(discovery.dsn, "sqlite://.data/signaldb.db");
+        assert_eq!(discovery.heartbeat_interval, Duration::from_secs(30));
+        assert_eq!(discovery.poll_interval, Duration::from_secs(60));
+        assert_eq!(discovery.ttl, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn test_configless_operation() {
+        // Test that we can load defaults without any config file
+        let config = Figment::from(Serialized::defaults(Configuration::default()))
+            .extract::<Configuration>()
+            .unwrap();
+        
+        // Should work completely configless with SQLite defaults
+        assert_eq!(config.database.dsn, "sqlite://.data/signaldb.db");
+        assert!(config.discovery.is_some());
     }
 }

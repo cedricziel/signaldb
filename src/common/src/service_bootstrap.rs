@@ -1,4 +1,6 @@
 use std::time::Duration;
+use std::path::Path;
+use std::fs;
 use anyhow::Result;
 use uuid::Uuid;
 use tokio::task::JoinHandle;
@@ -51,6 +53,9 @@ impl ServiceBootstrap {
             &config.database.dsn
         };
 
+        // Ensure data directory exists for SQLite databases
+        Self::ensure_data_directory(dsn)?;
+
         let catalog = Catalog::new(dsn).await?;
         let service_id = Uuid::new_v4();
 
@@ -84,6 +89,31 @@ impl ServiceBootstrap {
             config,
             heartbeat_handle,
         })
+    }
+
+    /// Ensure the data directory exists for SQLite databases
+    fn ensure_data_directory(dsn: &str) -> Result<()> {
+        // Only handle SQLite databases
+        if !dsn.starts_with("sqlite:") {
+            return Ok(());
+        }
+
+        // Extract the file path from the SQLite DSN
+        if let Some(file_path) = dsn.strip_prefix("sqlite:") {
+            // Handle special cases like ":memory:" 
+            if file_path == ":memory:" {
+                return Ok(());
+            }
+            
+            // Get the directory part of the path
+            if let Some(parent) = Path::new(file_path).parent() {
+                if !parent.exists() {
+                    fs::create_dir_all(parent)?;
+                    log::info!("Created data directory: {}", parent.display());
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Get the service ID
@@ -164,6 +194,34 @@ mod tests {
     use super::*;
     use crate::config::{DatabaseConfig, DiscoveryConfig};
     use std::time::Duration;
+
+    #[test]
+    fn test_ensure_data_directory() {
+        // Test with in-memory SQLite (should be no-op)
+        let result = ServiceBootstrap::ensure_data_directory("sqlite::memory:");
+        assert!(result.is_ok());
+
+        // Test with PostgreSQL DSN (should be no-op)
+        let result = ServiceBootstrap::ensure_data_directory("postgresql://user:pass@localhost/db");
+        assert!(result.is_ok());
+
+        // Test with file-based SQLite DSN
+        let test_dir = ".test_data/test_subdir";
+        let test_dsn = format!("sqlite:{}/test.db", test_dir);
+        
+        // Clean up any existing test directory
+        let _ = std::fs::remove_dir_all(".test_data");
+        
+        // Test directory creation
+        let result = ServiceBootstrap::ensure_data_directory(&test_dsn);
+        assert!(result.is_ok());
+        
+        // Verify directory was created
+        assert!(Path::new(test_dir).exists());
+        
+        // Clean up
+        let _ = std::fs::remove_dir_all(".test_data");
+    }
 
     #[tokio::test]
     async fn test_service_bootstrap_creation() {

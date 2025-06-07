@@ -88,3 +88,7 @@ Active work areas (see `next-steps.md`):
 ## Testing
 
 Integration tests are in workspace root `tests/` and individual component `tests/` directories. Some tests use testcontainers for NATS and PostgreSQL.
+
+## Deployment Modes
+
+Signaldb has a microservices and a monolothic mode

@@ -3768,6 +3768,7 @@ dependencies = [
  "arrow-schema",
  "axum",
  "bytes",
+ "chrono",
  "common",
  "futures",
  "log",
@@ -3781,6 +3782,7 @@ dependencies = [
  "tower 0.5.2",
  "tower-http",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

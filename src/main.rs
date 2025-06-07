@@ -3,10 +3,9 @@ use anyhow::{Context, Result};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::config::Configuration;
 use messaging::backend::memory::InMemoryStreamingBackend;
-use router::{create_flight_service, create_router, InMemoryStateImpl};
+use router::{create_flight_service, create_router, InMemoryStateImpl, RouterState};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::{oneshot, Mutex};
-use tokio::time::{sleep, Duration};
 use tonic::transport::Server;
 
 #[tokio::main]
@@ -26,32 +25,21 @@ async fn main() -> Result<()> {
     ).await
     .context("Failed to initialize router service bootstrap")?;
     
-    // Spawn a task to periodically log catalog state (similar to previous behavior)
-    if config.discovery.is_some() {
-        let catalog = router_bootstrap.catalog().clone();
-        let poll_interval = config.discovery.as_ref().unwrap().poll_interval;
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(poll_interval);
-            loop {
-                ticker.tick().await;
-                if let Ok(ings) = catalog.list_ingesters().await {
-                    log::info!("Catalog ingesters: {:#?}", ings);
-                }
-                if let Ok(shs) = catalog.list_shards().await {
-                    log::info!("Catalog shards: {:#?}", shs);
-                }
-                if let Ok(owns) = catalog.list_shard_owners().await {
-                    log::info!("Catalog shard owners: {:#?}", owns);
-                }
-            }
-        });
-    }
-
     // Initialize queue for future use
     let queue = Arc::new(Mutex::new(InMemoryStreamingBackend::new(10)));
 
-    // Create router state
-    let state = InMemoryStateImpl::new(InMemoryStreamingBackend::new(10));
+    // Create router state with catalog access
+    let state = InMemoryStateImpl::new(
+        InMemoryStreamingBackend::new(10),
+        router_bootstrap.catalog().clone()
+    );
+
+    // Start background service discovery polling
+    if config.discovery.is_some() {
+        let poll_interval = config.discovery.as_ref().unwrap().poll_interval;
+        state.service_registry().start_background_polling(poll_interval).await;
+        log::info!("Started service registry background polling with interval: {:?}", poll_interval);
+    }
 
     let (otlp_grpc_init_tx, otlp_grpc_init_rx) = oneshot::channel::<()>();
     let (_otlp_grpc_shutdown_tx, otlp_grpc_shutdown_rx) = oneshot::channel::<()>();
