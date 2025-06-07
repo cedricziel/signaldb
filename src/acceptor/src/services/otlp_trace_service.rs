@@ -42,6 +42,14 @@ impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAccepto
 }
 
 #[cfg(test)]
+#[async_trait::async_trait]
+impl TraceHandlerTrait for crate::handler::otlp_grpc::MockTraceHandler {
+    async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
+        self.handle_grpc_otlp_traces(request).await;
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::handler::otlp_grpc::MockTraceHandler;
@@ -49,7 +57,7 @@ mod tests {
         common::v1::{any_value::Value, AnyValue, KeyValue},
         resource::v1::Resource,
         trace::v1::{
-            resource_spans::ScopeSpans, span::SpanKind, ResourceSpans, Span, Status as SpanStatus,
+            span::SpanKind, ResourceSpans, ScopeSpans, Span, Status as SpanStatus,
         },
     };
 

@@ -156,9 +156,6 @@ mod tests {
     use super::*;
     use axum::extract::State;
     use common::catalog::Catalog;
-    use messaging::backend::memory::InMemoryStreamingBackend;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     async fn create_test_catalog() -> Catalog {
         // For testing, we'll need to use a real PostgreSQL connection or mock
@@ -179,9 +176,8 @@ mod tests {
         // To enable this test, set up a test database and update the catalog creation logic
 
         // Create a mock state
-        let _queue = Arc::new(Mutex::new(InMemoryStreamingBackend::new(10)));
         let catalog = create_test_catalog().await;
-        let state = crate::InMemoryStateImpl::new(InMemoryStreamingBackend::new(10), catalog);
+        let state = crate::InMemoryStateImpl::new(catalog);
 
         let query = tempo_api::SearchQueryParams {
             start: None,
