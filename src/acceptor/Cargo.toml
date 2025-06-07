@@ -7,7 +7,6 @@ rust-version.workspace = true
 
 [dependencies]
 common.workspace = true
-messaging.workspace = true
 
 datafusion.workspace = true
 arrow-flight.workspace = true

@@ -2,10 +2,9 @@ use acceptor::{serve_otlp_grpc, serve_otlp_http};
 use anyhow::{Context, Result};
 use common::config::Configuration;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use messaging::backend::memory::InMemoryStreamingBackend;
 use router::{create_flight_service, create_router, InMemoryStateImpl, RouterState};
-use std::{net::SocketAddr, sync::Arc};
-use tokio::sync::{oneshot, Mutex};
+use std::net::SocketAddr;
+use tokio::sync::oneshot;
 use tonic::transport::Server;
 
 #[tokio::main]
@@ -23,14 +22,8 @@ async fn main() -> Result<()> {
             .await
             .context("Failed to initialize router service bootstrap")?;
 
-    // Initialize queue for future use
-    let queue = Arc::new(Mutex::new(InMemoryStreamingBackend::new(10)));
-
     // Create router state with catalog access
-    let state = InMemoryStateImpl::new(
-        InMemoryStreamingBackend::new(10),
-        router_bootstrap.catalog().clone(),
-    );
+    let state = InMemoryStateImpl::new(router_bootstrap.catalog().clone());
 
     // Start background service discovery polling
     if config.discovery.is_some() {
@@ -73,7 +66,7 @@ async fn main() -> Result<()> {
     });
 
     // Start HTTP router
-    let app = create_router(state.clone());
+    let _app = create_router(state.clone());
     let http_router_addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     let http_router_handle = tokio::spawn(async move {
         log::info!("Starting HTTP router on {http_router_addr}");

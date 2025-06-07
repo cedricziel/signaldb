@@ -11,7 +11,6 @@ publish = false
 [dependencies]
 acceptor = { path = "src/acceptor" }
 common = { path = "src/common" }
-messaging = { path = "src/messaging" }
 querier = { path = "src/querier" }
 router = { path = "src/router" }
 writer = { path = "src/writer" }
@@ -63,7 +62,6 @@ rust-version = "1.82.0"
 [workspace.dependencies]
 acceptor = { path = "src/acceptor" }
 common = { path = "src/common" }
-messaging = { path = "src/messaging" }
 tempo-api = { path = "src/tempo-api" }
 writer = { path = "src/writer" }
 

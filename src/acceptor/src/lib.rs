@@ -13,7 +13,6 @@ use datafusion::parquet::{
     arrow::AsyncArrowWriter,
     file::properties::{WriterProperties, WriterVersion},
 };
-use messaging::backend::memory::InMemoryStreamingBackend;
 use opentelemetry_proto::tonic::collector::{
     logs::v1::logs_service_server::LogsServiceServer,
     metrics::v1::metrics_service_server::MetricsServiceServer,
@@ -36,27 +35,6 @@ use crate::services::{
     otlp_log_service::LogAcceptorService, otlp_metric_service::MetricsAcceptorService,
     otlp_trace_service::TraceAcceptorService,
 };
-
-/// Represents the shared state of the acceptor service.
-/// Contains an in-memory queue for managing incoming telemetry data.
-#[derive(Clone)]
-pub struct AcceptorState {
-    queue: Arc<Mutex<InMemoryStreamingBackend>>,
-}
-
-impl Default for AcceptorState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl AcceptorState {
-    pub fn new() -> Self {
-        Self {
-            queue: Arc::new(Mutex::new(InMemoryStreamingBackend::new(10))),
-        }
-    }
-}
 
 pub async fn get_parquet_writer(data_set: DataSet, schema: Schema) -> AsyncArrowWriter<File> {
     log::info!("get_parquet_writer");
@@ -110,7 +88,6 @@ pub async fn serve_otlp_grpc(
 
     log::info!("Starting OTLP/gRPC acceptor on {addr}");
 
-    let state = AcceptorState::new();
     // Initialize Flight client to forward telemetry to writer
     let flight_endpoint = std::env::var("FLIGHT_ENDPOINT").unwrap_or_else(|_| {
         // Default Flight endpoint
@@ -121,17 +98,12 @@ pub async fn serve_otlp_grpc(
     let channel = endpoint.connect().await?;
     let flight_client = Arc::new(Mutex::new(FlightClient::new(channel)));
     // Set up OTLP/gRPC services with Flight forwarding
-    let log_server = LogsServiceServer::new(LogAcceptorService::new_with_flight(
-        state.queue.clone(),
+    let log_server = LogsServiceServer::new(LogAcceptorService::new(flight_client.clone()));
+    let trace_server = TraceServiceServer::new(TraceAcceptorService::new(TraceHandler::new(
         flight_client.clone(),
-    ));
-    let trace_server = TraceServiceServer::new(TraceAcceptorService::new(
-        TraceHandler::new_with_flight(state.queue.clone(), flight_client.clone()),
-    ));
-    let metric_server = MetricsServiceServer::new(MetricsAcceptorService::new_with_flight(
-        state.queue.clone(),
-        flight_client.clone(),
-    ));
+    )));
+    let metric_server =
+        MetricsServiceServer::new(MetricsAcceptorService::new(flight_client.clone()));
 
     init_tx
         .send(())
