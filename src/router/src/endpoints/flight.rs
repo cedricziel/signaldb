@@ -13,7 +13,9 @@ use crate::RouterState;
 
 /// SignalDBFlightService is a Flight service implementation for SignalDB
 pub struct SignalDBFlightService<S: RouterState> {
+    #[allow(dead_code)]
     state: S,
+    #[allow(dead_code)]
     schemas: FlightSchemas,
 }
 

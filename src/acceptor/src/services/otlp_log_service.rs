@@ -49,7 +49,7 @@ impl LogsService for LogAcceptorService {
                     while let Some(response) = response_stream.next().await {
                         match response {
                             Ok(put_result) => {
-                                log::debug!("Flight put response: {:?}", put_result);
+                                log::debug!("Flight put response: {put_result:?}");
                             }
                             Err(e) => {
                                 log::error!("Flight put error: {e}");
