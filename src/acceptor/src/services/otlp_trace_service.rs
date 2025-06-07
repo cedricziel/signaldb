@@ -56,9 +56,7 @@ mod tests {
     use opentelemetry_proto::tonic::{
         common::v1::{any_value::Value, AnyValue, KeyValue},
         resource::v1::Resource,
-        trace::v1::{
-            span::SpanKind, ResourceSpans, ScopeSpans, Span, Status as SpanStatus,
-        },
+        trace::v1::{span::SpanKind, ResourceSpans, ScopeSpans, Span, Status as SpanStatus},
     };
 
     #[tokio::test]
