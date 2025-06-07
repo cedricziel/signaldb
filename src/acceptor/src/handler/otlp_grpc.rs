@@ -20,6 +20,13 @@ pub struct MockTraceHandler {
 }
 
 #[cfg(any(test, feature = "testing"))]
+impl Default for MockTraceHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
 impl MockTraceHandler {
     pub fn new() -> Self {
         Self {
