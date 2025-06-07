@@ -39,10 +39,7 @@ async fn main() -> Result<()> {
             .service_registry()
             .start_background_polling(poll_interval)
             .await;
-        log::info!(
-            "Started service registry background polling with interval: {:?}",
-            poll_interval
-        );
+        log::info!("Started service registry background polling with interval: {poll_interval:?}");
     }
 
     let (otlp_grpc_init_tx, otlp_grpc_init_rx) = oneshot::channel::<()>();
@@ -79,7 +76,7 @@ async fn main() -> Result<()> {
     let app = create_router(state.clone());
     let http_router_addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     let http_router_handle = tokio::spawn(async move {
-        log::info!("Starting HTTP router on {}", http_router_addr);
+        log::info!("Starting HTTP router on {http_router_addr}");
 
         // For now, we'll skip starting the HTTP server due to compatibility issues with axum 0.7.9
         // This will be fixed in a future update
@@ -93,7 +90,7 @@ async fn main() -> Result<()> {
     let flight_service = create_flight_service(state);
     let flight_addr = SocketAddr::from(([0, 0, 0, 0], 50053));
     let flight_handle = tokio::spawn(async move {
-        log::info!("Starting Flight service on {}", flight_addr);
+        log::info!("Starting Flight service on {flight_addr}");
 
         match Server::builder()
             .add_service(
@@ -103,7 +100,7 @@ async fn main() -> Result<()> {
             .await
         {
             Ok(_) => log::info!("Flight service stopped"),
-            Err(e) => log::error!("Flight service error: {}", e),
+            Err(e) => log::error!("Flight service error: {e}"),
         }
     });
 
@@ -124,7 +121,7 @@ async fn main() -> Result<()> {
     log::info!("Shutting down service discovery and other services");
     // Graceful deregistration using service bootstrap
     if let Err(e) = router_bootstrap.shutdown().await {
-        log::error!("Failed to shutdown router service bootstrap: {}", e);
+        log::error!("Failed to shutdown router service bootstrap: {e}");
     }
 
     // Wait for servers to stop
