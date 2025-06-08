@@ -36,29 +36,42 @@ use crate::services::{
     otlp_trace_service::TraceAcceptorService,
 };
 
-pub async fn get_parquet_writer(data_set: DataSet, schema: Schema) -> AsyncArrowWriter<File> {
+pub async fn get_parquet_writer(data_set: DataSet, schema: Schema, config: &Configuration) -> AsyncArrowWriter<File> {
     log::info!("get_parquet_writer");
 
     let props = WriterProperties::builder()
         .set_writer_version(WriterVersion::PARQUET_2_0)
         .build();
 
-    let path = format!(".data/ds/{}", data_set.data_type);
-    create_dir_all(path)
+    // Get storage path from configuration instead of hardcoded path
+    let storage_url = config.default_storage_url();
+    let base_path = if let Some(path) = storage_url.strip_prefix("file://") {
+        path.to_string()
+    } else {
+        // Fallback to .data/ds if not a file:// URL
+        ".data/ds".to_string()
+    };
+
+    let dir_path = format!("{}/{}", base_path, data_set.data_type);
+    create_dir_all(&dir_path)
         .await
         .expect("Error creating directory");
 
+    let file_path = format!(
+        "{}/{}.parquet",
+        dir_path,
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    );
+
+    log::info!("Writing parquet file to: {file_path}");
+
     AsyncArrowWriter::try_new(
-        File::create(format!(
-            ".data/ds/{}/{}.parquet",
-            data_set.data_type,
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-        ))
-        .await
-        .expect("Error creating parquet file"),
+        File::create(file_path)
+            .await
+            .expect("Error creating parquet file"),
         Arc::new(schema),
         Some(props),
     )

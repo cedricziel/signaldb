@@ -67,7 +67,7 @@ async fn test_trace_ingestion_via_flight() {
     };
 
     // Send trace data to the test server
-    let endpoint = format!("http://{}", addr);
+    let endpoint = format!("http://{addr}");
     let mut client = opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint)
         .await
         .unwrap();

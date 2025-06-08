@@ -259,14 +259,20 @@ jobs:
 
       - name: Configure environment
         run: |
-          mkdir -p .data
+          # Create writable data directory
+          mkdir -p ${{ runner.temp }}/signaldb-data
+          chmod 755 ${{ runner.temp }}/signaldb-data
+          
           if [ "${{ matrix.database }}" = "postgresql" ]; then
             echo "SIGNALDB_DATABASE_DSN=postgres://postgres:postgres@localhost:5432/signaldb_test" >> $GITHUB_ENV
             echo "SIGNALDB_DISCOVERY_DSN=postgres://postgres:postgres@localhost:5432/signaldb_test" >> $GITHUB_ENV
           else
-            echo "SIGNALDB_DATABASE_DSN=sqlite://.data/test_deployment.db" >> $GITHUB_ENV
-            echo "SIGNALDB_DISCOVERY_DSN=sqlite://.data/test_deployment.db" >> $GITHUB_ENV
+            echo "SIGNALDB_DATABASE_DSN=sqlite://${{ runner.temp }}/signaldb-data/test_deployment.db" >> $GITHUB_ENV
+            echo "SIGNALDB_DISCOVERY_DSN=sqlite://${{ runner.temp }}/signaldb-data/test_deployment.db" >> $GITHUB_ENV
           fi
+          
+          # Configure storage to use temp directory as well
+          echo "SIGNALDB_STORAGE_ADAPTERS_LOCAL_URL=file://${{ runner.temp }}/signaldb-data/storage" >> $GITHUB_ENV
 
       - name: Test deployment
         run: |
