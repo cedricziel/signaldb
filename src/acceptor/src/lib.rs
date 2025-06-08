@@ -36,7 +36,11 @@ use crate::services::{
     otlp_trace_service::TraceAcceptorService,
 };
 
-pub async fn get_parquet_writer(data_set: DataSet, schema: Schema, config: &Configuration) -> AsyncArrowWriter<File> {
+pub async fn get_parquet_writer(
+    data_set: DataSet,
+    schema: Schema,
+    config: &Configuration,
+) -> AsyncArrowWriter<File> {
     log::info!("get_parquet_writer");
 
     let props = WriterProperties::builder()
