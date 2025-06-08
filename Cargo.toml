@@ -9,7 +9,7 @@ rust-version = "1.82.0"
 publish = false
 
 [dependencies]
-acceptor = { path = "src/acceptor" }
+acceptor = { path = "src/acceptor", features = ["testing"] }
 common = { path = "src/common" }
 querier = { path = "src/querier" }
 router = { path = "src/router" }
@@ -59,7 +59,7 @@ license = "AGPL-3.0"
 rust-version = "1.82.0"
 
 [workspace.dependencies]
-acceptor = { path = "src/acceptor" }
+acceptor = { path = "src/acceptor", features = ["testing"] }
 common = { path = "src/common" }
 tempo-api = { path = "src/tempo-api" }
 writer = { path = "src/writer" }

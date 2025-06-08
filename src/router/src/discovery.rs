@@ -131,7 +131,7 @@ mod tests {
     fn test_service_registry_debug_impl() {
         // Test that our manual Debug implementation works
         use std::collections::HashMap;
-        let services: Arc<RwLock<HashMap<uuid::Uuid, common::catalog::Ingester>>> =
+        let _services: Arc<RwLock<HashMap<uuid::Uuid, common::catalog::Ingester>>> =
             Arc::new(RwLock::new(HashMap::new()));
 
         // We can't easily test the actual ServiceRegistry Debug without a catalog,

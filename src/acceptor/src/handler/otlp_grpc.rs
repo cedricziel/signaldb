@@ -14,12 +14,19 @@ pub struct TraceHandler {
     flight_client: Arc<Mutex<FlightClient>>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub struct MockTraceHandler {
     pub handle_grpc_otlp_traces_calls: tokio::sync::Mutex<Vec<ExportTraceServiceRequest>>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
+impl Default for MockTraceHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
 impl MockTraceHandler {
     pub fn new() -> Self {
         Self {

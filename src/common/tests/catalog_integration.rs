@@ -1,6 +1,6 @@
-use common::catalog::{Catalog, Ingester, Shard, ShardOwner};
-use testcontainers::runners::AsyncRunner;
+use common::catalog::Catalog;
 use testcontainers_modules::postgres::Postgres;
+use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use tokio::time::{sleep, Duration};
 use uuid::Uuid;
 
