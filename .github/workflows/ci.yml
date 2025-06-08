@@ -177,11 +177,6 @@ jobs:
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "security"
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
           shared-key: "build-${{ matrix.os }}"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
