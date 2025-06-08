@@ -53,6 +53,14 @@ impl ServiceBootstrap {
             &config.database.dsn
         };
 
+        log::info!("Using DSN for service bootstrap: {}", dsn);
+        log::info!("Database config DSN: {}", config.database.dsn);
+        if let Some(discovery_config) = &config.discovery {
+            log::info!("Discovery config DSN: {}", discovery_config.dsn);
+        } else {
+            log::info!("No discovery config found");
+        }
+
         // Ensure data directory exists for SQLite databases
         Self::ensure_data_directory(dsn)?;
 
@@ -84,26 +92,69 @@ impl ServiceBootstrap {
 
     /// Ensure the data directory exists for SQLite databases
     fn ensure_data_directory(dsn: &str) -> Result<()> {
+        log::info!("Ensuring data directory exists for DSN: {}", dsn);
+
         // Only handle SQLite databases
         if !dsn.starts_with("sqlite:") {
+            log::info!("Not a SQLite DSN, skipping directory creation");
             return Ok(());
         }
 
         // Extract the file path from the SQLite DSN
-        if let Some(file_path) = dsn.strip_prefix("sqlite:") {
-            // Handle special cases like ":memory:"
-            if file_path == ":memory:" {
+        // Handle different SQLite DSN formats:
+        // - sqlite::memory: (in-memory)
+        // - sqlite:relative/path/file.db (relative path)
+        // - sqlite://path/file.db (relative path with //)
+        // - sqlite:///absolute/path/file.db (absolute path with ///)
+        let file_path = if let Some(path) = dsn.strip_prefix("sqlite:") {
+            if path == ":memory:" {
+                log::info!("In-memory database, skipping directory creation");
                 return Ok(());
             }
 
-            // Get the directory part of the path
-            if let Some(parent) = Path::new(file_path).parent() {
-                if !parent.exists() {
-                    fs::create_dir_all(parent)?;
-                    log::info!("Created data directory: {}", parent.display());
-                }
+            // Handle different slash patterns
+            if path.starts_with("///") {
+                // Absolute path: sqlite:///absolute/path/file.db -> /absolute/path/file.db
+                &path[2..] // Remove only 2 slashes to keep the leading /
+            } else if path.starts_with("//") {
+                // Relative path with //: sqlite://relative/path/file.db -> relative/path/file.db
+                &path[2..] // Remove both slashes
+            } else if path.starts_with('/') {
+                // Single slash: sqlite:/path/file.db -> /path/file.db
+                path // Keep as is
+            } else {
+                // No slashes: sqlite:relative/path/file.db -> relative/path/file.db
+                path // Keep as is
             }
+        } else {
+            log::info!("Failed to extract file path from DSN: {}", dsn);
+            return Ok(());
+        };
+
+        log::info!("Extracted file path: {}", file_path);
+
+        // Get the directory part of the path
+        if let Some(parent) = Path::new(file_path).parent() {
+            log::info!(
+                "Parent directory: {}, exists: {}",
+                parent.display(),
+                parent.exists()
+            );
+            if !parent.exists() {
+                log::info!("Creating directory: {}", parent.display());
+                fs::create_dir_all(parent).map_err(|e| {
+                    log::error!("Failed to create directory '{}': {}", parent.display(), e);
+                    e
+                })?;
+                log::info!("Created data directory: {}", parent.display());
+            } else {
+                log::info!("Directory already exists: {}", parent.display());
+            }
+        } else {
+            log::info!("No parent directory found for path: {}", file_path);
         }
+
+        log::info!("Directory setup completed successfully");
         Ok(())
     }
 

@@ -135,9 +135,11 @@ jobs:
           if [ "${{ matrix.database }}" = "postgresql" ]; then
             echo "DATABASE_URL=postgres://postgres:postgres@localhost:5432/signaldb_test" >> $GITHUB_ENV
             echo "SIGNALDB_DATABASE_DSN=postgres://postgres:postgres@localhost:5432/signaldb_test" >> $GITHUB_ENV
+            echo "SIGNALDB_DISCOVERY_DSN=postgres://postgres:postgres@localhost:5432/signaldb_test" >> $GITHUB_ENV
           else
             echo "DATABASE_URL=sqlite://.data/test.db" >> $GITHUB_ENV
             echo "SIGNALDB_DATABASE_DSN=sqlite://.data/test.db" >> $GITHUB_ENV
+            echo "SIGNALDB_DISCOVERY_DSN=sqlite://.data/test.db" >> $GITHUB_ENV
           fi
 
       - name: Run all tests
@@ -363,6 +365,7 @@ jobs:
           mkdir -p .data
           echo "DATABASE_URL=postgres://postgres:postgres@localhost:5432/signaldb_test" >> $GITHUB_ENV
           echo "SIGNALDB_DATABASE_DSN=postgres://postgres:postgres@localhost:5432/signaldb_test" >> $GITHUB_ENV
+          echo "SIGNALDB_DISCOVERY_DSN=postgres://postgres:postgres@localhost:5432/signaldb_test" >> $GITHUB_ENV
 
       - name: Generate coverage report
         run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
