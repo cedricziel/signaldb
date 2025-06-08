@@ -12,7 +12,7 @@ pub enum Catalog {
 impl Catalog {
     /// Create a new Catalog client and initialize schema.
     pub async fn new(dsn: &str) -> Result<Self, sqlx::Error> {
-        log::info!("Connecting to catalog database with DSN: {}", dsn);
+        log::info!("Connecting to catalog database with DSN: {dsn}");
 
         let catalog = if dsn.starts_with("sqlite:") {
             // Add mode=rwc to create database file if it doesn't exist
@@ -20,17 +20,15 @@ impl Catalog {
                 if dsn.contains("mode=") {
                     dsn.to_string()
                 } else {
-                    format!("{}&mode=rwc", dsn)
+                    format!("{dsn}&mode=rwc")
                 }
             } else {
-                format!("{}?mode=rwc", dsn)
+                format!("{dsn}?mode=rwc")
             };
 
             let pool = SqlitePool::connect(&dsn_with_create).await.map_err(|e| {
                 log::error!(
-                    "Failed to connect to SQLite database with DSN '{}': {}",
-                    dsn_with_create,
-                    e
+                    "Failed to connect to SQLite database with DSN '{dsn_with_create}': {e}"
                 );
                 e
             })?;
@@ -38,9 +36,7 @@ impl Catalog {
         } else {
             let pool = PgPool::connect(dsn).await.map_err(|e| {
                 log::error!(
-                    "Failed to connect to PostgreSQL database with DSN '{}': {}",
-                    dsn,
-                    e
+                    "Failed to connect to PostgreSQL database with DSN '{dsn}': {e}"
                 );
                 e
             })?;
@@ -49,7 +45,7 @@ impl Catalog {
 
         log::info!("Database connection established successfully");
         catalog.init().await.map_err(|e| {
-            log::error!("Failed to initialize catalog schema: {}", e);
+            log::error!("Failed to initialize catalog schema: {e}");
             e
         })?;
         log::info!("Catalog schema initialized successfully");

@@ -53,7 +53,7 @@ impl ServiceBootstrap {
             &config.database.dsn
         };
 
-        log::info!("Using DSN for service bootstrap: {}", dsn);
+        log::info!("Using DSN for service bootstrap: {dsn}");
         log::info!("Database config DSN: {}", config.database.dsn);
         if let Some(discovery_config) = &config.discovery {
             log::info!("Discovery config DSN: {}", discovery_config.dsn);
@@ -92,7 +92,7 @@ impl ServiceBootstrap {
 
     /// Ensure the data directory exists for SQLite databases
     fn ensure_data_directory(dsn: &str) -> Result<()> {
-        log::info!("Ensuring data directory exists for DSN: {}", dsn);
+        log::info!("Ensuring data directory exists for DSN: {dsn}");
 
         // Only handle SQLite databases
         if !dsn.starts_with("sqlite:") {
@@ -127,11 +127,11 @@ impl ServiceBootstrap {
                 path // Keep as is
             }
         } else {
-            log::info!("Failed to extract file path from DSN: {}", dsn);
+            log::info!("Failed to extract file path from DSN: {dsn}");
             return Ok(());
         };
 
-        log::info!("Extracted file path: {}", file_path);
+        log::info!("Extracted file path: {file_path}");
 
         // Get the directory part of the path
         if let Some(parent) = Path::new(file_path).parent() {
@@ -151,7 +151,7 @@ impl ServiceBootstrap {
                 log::info!("Directory already exists: {}", parent.display());
             }
         } else {
-            log::info!("No parent directory found for path: {}", file_path);
+            log::info!("No parent directory found for path: {file_path}");
         }
 
         log::info!("Directory setup completed successfully");
