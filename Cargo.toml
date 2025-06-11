@@ -72,7 +72,7 @@ futures = "0.3.31"
 datafusion = { version = "47.0.0" }
 # Use same versions as datafusion for compatibility
 arrow-flight = { version = "55.1.0" }
-object_store = { version = "0.12.1", features = ["aws", "azure", "gcp"] }
+object_store = { version = "0.12.2", features = ["aws", "azure", "gcp"] }
 
 tonic = { version = "0.12.3", features = [
     "transport",
