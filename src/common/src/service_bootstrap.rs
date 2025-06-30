@@ -116,9 +116,9 @@ impl ServiceBootstrap {
             if path.starts_with("///") {
                 // Absolute path: sqlite:///absolute/path/file.db -> /absolute/path/file.db
                 &path[2..] // Remove only 2 slashes to keep the leading /
-            } else if path.starts_with("//") {
+            } else if let Some(stripped) = path.strip_prefix("//") {
                 // Relative path with //: sqlite://relative/path/file.db -> relative/path/file.db
-                &path[2..] // Remove both slashes
+                stripped // Remove both slashes
             } else if path.starts_with('/') {
                 // Single slash: sqlite:/path/file.db -> /path/file.db
                 path // Keep as is
