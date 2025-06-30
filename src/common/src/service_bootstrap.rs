@@ -452,13 +452,16 @@ mod tests {
             ..Default::default()
         };
 
-        // This would fail in the actual test because we need a real database
-        // but it shows the intended usage pattern
+        // Create a service bootstrap with in-memory SQLite
         let result =
             ServiceBootstrap::new(config, ServiceType::Writer, "localhost:50051".to_string()).await;
 
-        // We expect this to fail since we're using an in-memory SQLite database
-        // but the error should be from the database connection, not from our code structure
-        assert!(result.is_err());
+        // The operation should succeed with in-memory SQLite
+        assert!(result.is_ok());
+        
+        // Verify the service was created with correct properties
+        let bootstrap = result.unwrap();
+        assert_eq!(bootstrap.service_type, ServiceType::Writer);
+        assert_eq!(bootstrap.address, "localhost:50051");
     }
 }
