@@ -78,8 +78,8 @@ jobs:
     - name: Setup test environment
       run: |
         mkdir -p .data
-        echo "SIGNALDB_DATABASE_DSN=${{ matrix.database.dsn }}" >> $GITHUB_ENV
-        echo "SIGNALDB_DISCOVERY_DSN=${{ matrix.database.dsn }}" >> $GITHUB_ENV
+        echo "SIGNALDB__DATABASE__DSN=${{ matrix.database.dsn }}" >> $GITHUB_ENV
+        echo "SIGNALDB__DISCOVERY__DSN=${{ matrix.database.dsn }}" >> $GITHUB_ENV
     
     - name: Run database schema tests
       if: matrix.database.type == 'postgresql' || matrix.database.type == 'sqlite'
@@ -245,9 +245,9 @@ jobs:
       run: |
         mkdir -p .data
         if [ "${{ matrix.database }}" = "postgresql" ]; then
-          echo "SIGNALDB_DATABASE_DSN=postgres://postgres:postgres@localhost:5432/signaldb_bench" >> $GITHUB_ENV
+          echo "SIGNALDB__DATABASE__DSN=postgres://postgres:postgres@localhost:5432/signaldb_bench" >> $GITHUB_ENV
         else
-          echo "SIGNALDB_DATABASE_DSN=sqlite://.data/benchmark.db" >> $GITHUB_ENV
+          echo "SIGNALDB__DATABASE__DSN=sqlite://.data/benchmark.db" >> $GITHUB_ENV
         fi
     
     - name: Build release binaries
@@ -321,8 +321,8 @@ jobs:
     - name: Setup test environment
       run: |
         mkdir -p .data
-        echo "SIGNALDB_DATABASE_DSN=${{ matrix.scenario.database }}" >> $GITHUB_ENV
-        echo "SIGNALDB_DISCOVERY_DSN=${{ matrix.scenario.database }}" >> $GITHUB_ENV
+        echo "SIGNALDB__DATABASE__DSN=${{ matrix.scenario.database }}" >> $GITHUB_ENV
+        echo "SIGNALDB__DISCOVERY__DSN=${{ matrix.scenario.database }}" >> $GITHUB_ENV
     
     - name: Build all binaries
       run: |
