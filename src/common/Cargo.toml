@@ -12,7 +12,6 @@ anyhow.workspace = true
 tempo-api = { path = "../tempo-api" }
 
 datafusion.workspace = true
-object_store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
@@ -21,14 +20,9 @@ opentelemetry-proto.workspace = true
 
 figment.workspace = true
 once_cell.workspace = true
-
-thiserror.workspace = true
-async-trait.workspace = true
 tokio.workspace = true
-bytes.workspace = true
 
 humantime-serde.workspace = true
-futures.workspace = true
 
 sqlx.workspace = true
 uuid.workspace = true
