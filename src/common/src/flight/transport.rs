@@ -323,7 +323,7 @@ impl InMemoryFlightTransport {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut services = self.services.write().await;
         services.remove(&service_id);
-        log::info!("Unregistered Flight service {}", service_id);
+        log::info!("Unregistered Flight service {service_id}");
         Ok(())
     }
 

@@ -27,11 +27,14 @@ async fn create_test_sqlite_config() -> (Configuration, TempDir) {
 }
 
 /// Test helper to create a PostgreSQL config using testcontainers
-async fn create_test_postgres_config() -> (Configuration, testcontainers_modules::testcontainers::ContainerAsync<postgres::Postgres>) {
+async fn create_test_postgres_config() -> (
+    Configuration,
+    testcontainers_modules::testcontainers::ContainerAsync<postgres::Postgres>,
+) {
     let postgres_container = postgres::Postgres::default().start().await.unwrap();
     let host_ip = postgres_container.get_host().await.unwrap();
     let host_port = postgres_container.get_host_port_ipv4(5432).await.unwrap();
-    
+
     let dsn = format!(
         "postgresql://postgres:postgres@{}:{}/postgres",
         host_ip, host_port
@@ -133,26 +136,38 @@ async fn test_multiple_services_with_sqlite_catalog() {
     // No need to register them again - just get their IDs for verification
     let writer_services = writer_transport.list_services().await;
     let querier_services = querier_transport.list_services().await;
-    
+
     // Both transports start with empty local registries
     assert_eq!(writer_services.len(), 0);
     assert_eq!(querier_services.len(), 0);
 
     // Test that both transports are healthy (can discover services)
-    assert!(writer_transport.is_healthy().await, "Writer transport should be healthy");
-    assert!(querier_transport.is_healthy().await, "Querier transport should be healthy");
-    
+    assert!(
+        writer_transport.is_healthy().await,
+        "Writer transport should be healthy"
+    );
+    assert!(
+        querier_transport.is_healthy().await,
+        "Querier transport should be healthy"
+    );
+
     // Test capability-based discovery (even though current impl assumes all are writers)
     let trace_services = writer_transport
         .discover_services_by_capability(ServiceCapability::TraceIngestion)
         .await;
-    
+
     // Should discover services from catalog (both services registered)
-    assert!(!trace_services.is_empty(), "Should discover services from catalog");
-    
+    assert!(
+        !trace_services.is_empty(),
+        "Should discover services from catalog"
+    );
+
     // Since both services were registered with ServiceBootstrap, they appear in catalog
     // The current implementation assumes all catalog services are writers with trace ingestion
-    assert!(trace_services.len() >= 1, "Should have at least one service discovered");
+    assert!(
+        trace_services.len() >= 1,
+        "Should have at least one service discovered"
+    );
 }
 
 #[tokio::test]
@@ -429,13 +444,10 @@ async fn test_service_discovery_across_transports() {
 async fn test_flight_transport_with_postgres_catalog() {
     let (config, _postgres_container) = create_test_postgres_config().await;
 
-    let bootstrap = ServiceBootstrap::new(
-        config,
-        ServiceType::Writer,
-        "localhost:50052".to_string(),
-    )
-    .await
-    .expect("Failed to create service bootstrap with PostgreSQL");
+    let bootstrap =
+        ServiceBootstrap::new(config, ServiceType::Writer, "localhost:50052".to_string())
+            .await
+            .expect("Failed to create service bootstrap with PostgreSQL");
 
     let transport = bootstrap.create_flight_transport();
 
