@@ -14,6 +14,7 @@ cargo build                # Build all workspace members
 cargo test                 # Run all tests across workspace
 cargo run                  # Run in monolithic mode (all services)
 cargo deny check           # License and security auditing
+cargo machete              # Check for unused dependencies
 ```
 
 ### Running Individual Services
@@ -96,3 +97,4 @@ Signaldb has a microservices and a monolothic mode
 ## Development Memories
 - For arrow & parquet try using the ones re-exported by datafusion
 - We need to run cargo fmt after bigger chunks of work to apply the canonical formatting
+- Run cargo machete before committing and remove unused dependencies

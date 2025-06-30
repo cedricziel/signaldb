@@ -37,3 +37,6 @@ chrono = { workspace = true }
 [dev-dependencies]
 testcontainers-modules.workspace = true
 testcontainers = "0.24.0"
+
+[package.metadata.cargo-machete]
+ignored = ["humantime-serde", "testcontainers"]
