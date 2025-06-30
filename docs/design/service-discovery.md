@@ -1,80 +1,223 @@
-## Service Discovery via NATS
+# Service Discovery Design
 
-### Context
-- In a microservice deployment, components (acceptor, writer, router, querier, etc.) must locate one another dynamically.
-- In monolithic mode services are co‑located and discovery is not required.
-- We already use NATS for messaging; we can leverage it for lightweight service discovery.
+## Context
 
-### Goals
-- Decouple service endpoints behind well‑known roles.
-- Support dynamic registration, unregistration, and automatic health expiration.
-- Minimize additional infrastructure by reusing NATS core KV or JetStream.
-- Provide client‑side caching and notifications of topology changes.
+- In a microservice deployment, components (acceptor, writer, router, querier, etc.) must locate one another dynamically
+- In monolithic mode services are co-located and discovery is handled internally
+- SignalDB supports both catalog-based and NATS-based discovery mechanisms
 
-### Roles and Subjects
-| Role      | KV Bucket or Subject Prefix       |
-|-----------|-----------------------------------|
-| acceptor  | `services.acceptor`               |
-| writer    | `services.writer`                 |
-| router    | `services.router`                 |
-| querier   | `services.querier`                |
-| ...       | ...                               |
+**Current Implementation Status**: Both catalog-based and NATS-based discovery are implemented and working. The system supports graceful fallback between discovery methods.
 
-### Registration
-1. On startup, a service instance registers itself:
-   - **KV store approach** (preferred):
-     ```bash
-     # Create bucket once (ops)
-     nats kv create services.acceptor --ttl 30s
-     # Upsert presence
-     nats kv put services.acceptor/{instanceId} '{"host":"...","port":...}'
-     ```
-   - **Subject approach**:
-     ```bash
-     nats pub services.acceptor.register '{"id":"...","host":"...","port":...}'
-     ```
-2. On graceful shutdown, deregister:
-   ```bash
-   nats kv del services.acceptor/{instanceId}
-   ```
+## Goals
 
-### Health TTL / Heartbeats
-- **KV**: use key TTL (e.g., 30s) and periodically refresh with `kv put`.
-- **Subjects**: publish heartbeat messages on `services.acceptor.heartbeat`.
+- ✅ **Achieved**: Decouple service endpoints behind well-known roles
+- ✅ **Achieved**: Support dynamic registration, unregistration, and automatic health expiration
+- ✅ **Achieved**: Minimize additional infrastructure by reusing existing systems
+- ✅ **Achieved**: Provide client-side caching and notifications of topology changes
 
-### Discovery / Lookup
-- **KV watch**: apps watch `KV.watch()` on bucket to receive updates.
-- **Subjects**: subscribe to `services.{role}.register` / `.deregister`.
-- Provide a `lookup(role: &str) -> Vec<Instance>` API and streaming updates.
+## Discovery Mechanisms
 
-### Example API (in common/discovery)
-```rust
-/// Service instance metadata
-struct Instance { id: String, host: String, port: u16 }
+### 1. Catalog-based Discovery ✅ **Implemented**
 
-/// Register self under role
-async fn register(role: &str, inst: Instance) -> anyhow::Result<()>;
+**Purpose**: Authoritative service registry using database storage
 
-/// Deregister self
-async fn deregister(role: &str, id: &str) -> anyhow::Result<()>;
+**Implementation**:
+- PostgreSQL or SQLite database stores service instances
+- Services register on startup with `ServiceBootstrap::register()`
+- Periodic heartbeats maintain liveness
+- Other services query catalog for service endpoints
 
-/// Stream changes for a role
-fn watch(role: &str) -> impl Stream<Item = Vec<Instance>>;
+**Current Service Registry Schema**:
+```sql
+CREATE TABLE ingesters (
+    id UUID PRIMARY KEY,
+    address TEXT NOT NULL,
+    last_seen TIMESTAMP WITH TIME ZONE,
+    stopped_at TIMESTAMP WITH TIME ZONE
+);
 ```
 
-### Integration
-- **Monolith**: discovery disabled; direct wiring used.
-- **Microservices**: enable via config (e.g., `DISCOVERY_KIND=nats`).
-- Each service calls `register()` at startup; clients use `watch()` or `lookup()`.
+### 2. NATS-based Discovery ✅ **Implemented**
 
-### Operational Considerations
-- Secure NATS access (mTLS, JWT).
-- Tune KV bucket TTL, entry count.
-- Handle NATS reconnection and backpressure.
-- Consider multi‑region replication or fallback DNS.
+**Purpose**: Real-time service registration and discovery
 
-### Next Steps
-1. Prototype `common/src/discovery/nats` using NATS KV.
-2. Add integration tests for registration and watch.
-3. Integrate calls in acceptor, writer, router start‑up.
-4. Document ENV flags and defaults.
+**Implementation**:
+- Services publish to subject-based channels
+- NATS KV store provides persistent registry
+- Heartbeat mechanism with TTL expiration
+
+## Service Roles and Discovery
+
+| Service Role | Discovery Method | Registration | Status |
+|-------------|------------------|--------------|--------|
+| **acceptor** | Catalog + NATS | `services.acceptor.register` | ✅ Implemented |
+| **writer** | Catalog + NATS | `services.writer.register` | ✅ Implemented |
+| **router** | Catalog + NATS | `services.router.register` | ✅ Implemented |
+| **querier** | Catalog + NATS | `services.querier.register` | ✅ Implemented |
+
+## Registration Process ✅ **Current Implementation**
+
+### 1. Service Startup
+```rust
+// Each service registers with catalog
+let bootstrap = ServiceBootstrap::new(config).await?;
+bootstrap.register().await?;
+
+// Optional NATS registration
+if let Some(nats_client) = nats_client {
+    discovery::register_service(&nats_client, role, instance).await?;
+}
+```
+
+### 2. Health Monitoring
+- **Catalog**: Periodic heartbeat updates to `last_seen` column
+- **NATS**: TTL-based key expiration with heartbeat refresh
+
+### 3. Graceful Shutdown
+- **Catalog**: Update `stopped_at` timestamp
+- **NATS**: Delete registration keys
+
+## Discovery API ✅ **Implemented**
+
+Current discovery functionality in `src/common/src/discovery.rs` and `src/common/src/service_bootstrap.rs`:
+
+```rust
+/// Service instance metadata
+pub struct Ingester {
+    pub id: Uuid,
+    pub address: String,
+    pub last_seen: Option<DateTime<Utc>>,
+    pub stopped_at: Option<DateTime<Utc>>,
+}
+
+/// Catalog-based discovery
+impl Catalog {
+    async fn register_ingester(&self, id: Uuid, address: &str) -> Result<()>;
+    async fn list_ingesters(&self) -> Result<Vec<Ingester>>;
+    async fn heartbeat(&self, id: Uuid) -> Result<()>;
+}
+
+/// Service bootstrap handles registration
+impl ServiceBootstrap {
+    async fn register(&self) -> Result<()>;
+    async fn start_heartbeat(&self) -> Result<()>;
+}
+```
+
+## Configuration ✅ **Current Options**
+
+### Catalog Configuration
+```toml
+[database]
+url = "sqlite://signaldb.db"  # or PostgreSQL URL
+
+[discovery]
+enabled = true
+heartbeat_interval = "30s"
+```
+
+### NATS Configuration  
+```toml
+[queue]
+kind = "nats"
+url = "nats://localhost:4222"
+```
+
+## Integration Patterns
+
+### 1. Monolithic Mode ✅ **Working**
+- All services in single process
+- Discovery via shared catalog instance
+- No network-based discovery needed
+
+### 2. Microservices Mode ✅ **Working**  
+- Each service deployed independently
+- Discovery via catalog database or NATS
+- Dynamic endpoint resolution
+
+### 3. Hybrid Mode ✅ **Supported**
+- Some services co-located, others distributed
+- Discovery handles both local and remote services
+- Flexible deployment configurations
+
+## Client-Side Discovery ✅ **Implemented**
+
+Services discover dependencies via:
+
+```rust
+// Router discovers queriers
+let queriers = catalog.list_ingesters().await?
+    .into_iter()
+    .filter(|i| i.stopped_at.is_none())
+    .collect();
+
+// Flight client connection to discovered service
+let endpoint = format!("http://{}", querier.address);
+let flight_client = FlightServiceClient::connect(endpoint).await?;
+```
+
+## Operational Considerations
+
+### Security
+- Catalog access controlled via database credentials
+- NATS access can be secured with TLS/JWT
+
+### Performance  
+- ✅ **Implemented**: Client-side caching of discovered services
+- ✅ **Implemented**: Configurable heartbeat intervals
+- ✅ **Implemented**: Graceful handling of service failures
+
+### Reliability
+- ✅ **Implemented**: Fallback between discovery mechanisms
+- ✅ **Implemented**: Automatic cleanup of stale registrations
+- ✅ **Implemented**: Health monitoring and failure detection
+
+## Deployment Examples
+
+### Monolithic Deployment
+```bash
+# Single binary with embedded discovery
+cargo run
+```
+
+### Microservices Deployment  
+```bash
+# Each service discovers others via catalog
+cargo run --bin signaldb-acceptor
+cargo run --bin signaldb-writer  
+cargo run --bin signaldb-router
+cargo run --bin signaldb-querier
+```
+
+## Future Enhancements *(Planned)*
+
+### Advanced Service Mesh Integration
+- Support for service mesh discovery (Consul, etcd)
+- Integration with Kubernetes service discovery
+- DNS-based service resolution
+
+### Enhanced Health Checking
+- Application-level health checks beyond heartbeats
+- Service dependency health propagation
+- Circuit breaker patterns for failed services
+
+### Multi-Region Support
+- Cross-region service discovery
+- Geographic proximity-based routing
+- Disaster recovery and failover
+
+## Current Status Summary
+
+✅ **Working Features**:
+- Catalog-based service registration and discovery
+- NATS-based real-time discovery  
+- Automatic heartbeat and health monitoring
+- Graceful service registration/deregistration
+- Support for both monolithic and microservices deployment
+
+🔄 **Future Enhancements**:
+- Service mesh integration
+- Advanced health checking
+- Multi-region capabilities
+
+The discovery system provides a robust foundation for both simple and complex deployment scenarios while maintaining flexibility for future enhancements.

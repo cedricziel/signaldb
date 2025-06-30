@@ -2,52 +2,47 @@
 
 ## 1. Introduction
 
-This document outlines the design for implementing Apache Arrow Flight as the primary communication mechanism in SignalDB, both for inter-service communication and external client access. The design aims to leverage the performance benefits of Arrow Flight while maintaining compatibility with the existing architecture.
+This document outlines the design for Apache Arrow Flight as the primary communication mechanism in SignalDB, both for inter-service communication and external client access. The design leverages the performance benefits of Arrow Flight while maintaining compatibility with the current architecture.
+
+**Current Implementation Status**: Basic Flight communication is implemented and working. WAL integration and advanced features are planned for future implementation.
 
 ## 2. Background
 
 ### 2.1 Current Architecture
 
 SignalDB currently uses:
-- A messaging system with both in-memory and NATS backends for inter-service communication
-- The acceptor receives OTLP data via gRPC and HTTP
-- The querier provides a Tempo-compatible API
-- The writer persists data in Parquet format using object storage
-- Components communicate through a pub/sub pattern with topics like "batch"
+- **Apache Arrow Flight** as the primary inter-service communication mechanism ✅ **Implemented**
+- OTLP data received via gRPC and HTTP at the Acceptor
+- Direct Flight communication between Acceptor and Writer
+- Direct Flight communication between Router and Querier
+- Object storage integration for Parquet persistence
 
-Current architecture diagram:
+**Current architecture:**
 
 ```
-                                 ┌─────────────────┐
-                                 │  Message Bus    │
-                                 │ (Memory/NATS)   │
-                                 └─────────────────┘
-                                    ▲           ▲
-                                    │           │
-                                    │           │
-                                    ▼           ▼
-┌──────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│ OTLP Clients │───▶│   Acceptor  │───▶│    Writer   │───▶│   Storage   │
-└──────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
-                                                                │
-                                                                │
-                                                                ▼
-┌──────────────┐    ┌─────────────┐    ┌─────────────┐
-│ HTTP Clients │───▶│    Router   │◀───│   Querier   │
-└──────────────┘    └─────────────┘    └─────────────┘
+External Clients
+      │
+      ▼ (OTLP/gRPC)
+┌─────────────┐  Flight  ┌─────────────┐    ┌─────────────┐
+│   Acceptor  │─────────▶│    Writer   │───▶│   Storage   │
+└─────────────┘          └─────────────┘    └─────────────┘
+                                                  │
+                                                  ▼
+┌─────────────┐  Flight  ┌─────────────┐    ┌─────────────┐
+│   Clients   │◀─────────│    Router   │───▶│   Querier   │
+└─────────────┘          └─────────────┘    └─────────────┘
 ```
 
-In this architecture:
+**What's Working:**
 1. OTLP clients send telemetry data to the Acceptor
-2. The Acceptor processes and forwards data via the message bus
-3. The Writer consumes messages and persists data to storage in Parquet format
-4. The Querier reads from storage to serve queries
-5. The Router exposes HTTP/gRPC endpoints for clients to query data
-6. Components communicate asynchronously through the message bus
+2. Acceptor converts OTLP to Arrow format and forwards via Flight
+3. Writer receives Arrow data and persists to Parquet storage
+4. Router exposes HTTP endpoints and forwards queries via Flight
+5. Querier executes queries against storage and returns results via Flight
 
 ### 2.2 Apache Arrow Flight
 
-Apache Arrow Flight is a high-performance client-server framework designed for efficient transfer of large datasets over network interfaces. It's part of the Apache Arrow ecosystem and is specifically optimized for moving Arrow data.
+Apache Arrow Flight is a high-performance client-server framework designed for efficient transfer of large datasets over network interfaces.
 
 Key benefits include:
 - Native Arrow format transfer (no serialization/deserialization overhead)
@@ -57,17 +52,17 @@ Key benefits include:
 
 ## 3. Design Goals
 
-1. Improve performance of data transfer between components
-2. Provide a high-performance query interface for external clients
-3. Maintain logical separation of components while supporting monolithic deployment
-4. Reduce or eliminate the need for a separate message bus
-5. Support both in-process and networked communication with the same code
+1. ✅ **Achieved**: Improve performance of data transfer between components
+2. ✅ **Achieved**: Provide a high-performance query interface for external clients
+3. ✅ **Achieved**: Maintain logical separation of components while supporting monolithic deployment
+4. ✅ **Achieved**: Eliminate the need for a separate message bus
+5. ✅ **Achieved**: Support both in-process and networked communication with the same code
 
 ## 4. Flight Integration Design
 
-### 4.1 Architecture Overview
+### 4.1 Current Implementation
 
-The proposed architecture introduces Flight as the primary data transfer mechanism:
+The current architecture uses Flight as the primary data transfer mechanism:
 
 ```
 External Clients
@@ -79,122 +74,63 @@ External Clients
                                             │
                                             ▼
                                       ┌─────────────┐
-                                      │   Querier   │
-                                      └─────────────┘
-                                            │
-                                            ▼
-┌─────────────┐                      ┌─────────────┐
-│   Clients   │◀─────────────────────│   Router    │
-└─────────────┘                      └─────────────┘
+│   Clients   │◀─────────────────────│   Router    │───▶│   Querier   │
+└─────────────┘                      └─────────────┘    └─────────────┘
 ```
 
-All data-intensive communication between components will use Flight, while a minimal message bus may be retained for service coordination.
+All data-intensive communication between components uses Flight.
 
-### 4.2 In-Process Flight Transport
+### 4.2 Component Flight Services ✅ **Implemented**
 
-For monolithic deployment, we'll implement an in-memory Flight transport:
+Each component implements a Flight service:
 
-```rust
-pub struct InMemoryFlightTransport {
-    services: Arc<RwLock<HashMap<String, Box<dyn FlightService>>>>,
-}
-```
-
-This transport will allow components to communicate via Flight without network overhead when running in the same process.
-
-### 4.3 Component Flight Services
-
-Each component will implement a Flight service:
-
-- **AcceptorFlightService**: Receives data from external sources and forwards to the writer
-- **WriterFlightService**: Receives data from the acceptor and writes to storage
+- **AcceptorFlightService**: Not exposed externally; forwards data to Writer via Flight client
+- **WriterFlightService**: Receives data from Acceptor and writes to storage
 - **QuerierFlightService**: Executes queries against storage and returns results
-- **RouterFlightService**: Exposes a unified Flight API to external clients
+- **RouterFlightService**: Exposes HTTP API and forwards requests to Querier via Flight
 
-### 4.4 External Flight Interface
+### 4.3 External Flight Interface
 
-The external Flight interface will expose:
-
-- **ListFlights**: Discover available datasets (traces, metrics, logs)
-- **GetFlightInfo**: Get metadata about specific datasets
-- **DoGet**: Query and retrieve trace data
-- **DoAction**: Support administrative operations
+The Router exposes Flight capabilities via HTTP endpoints, providing:
+- Query execution via Tempo-compatible API
+- Trace retrieval and search functionality
+- Administrative operations
 
 ## 5. Implementation Details
 
-### 5.1 In-Memory Flight Transport
-
-```rust
-pub struct InMemoryFlightClient {
-    service_name: String,
-    services: Arc<RwLock<HashMap<String, Box<dyn FlightService>>>>,
-}
-
-impl InMemoryFlightClient {
-    async fn do_get(&self, ticket: Ticket) -> Result<RecordBatchStream> {
-        let services = self.services.read().unwrap();
-        let service = services.get(&self.service_name).unwrap();
-        service.do_get(Request::new(ticket)).await
-    }
-
-    // Implement other Flight methods...
-}
-```
-
-### 5.2 Dual-Mode Operation
-
-Components will be able to operate in both in-process and networked modes:
-
-```rust
-enum FlightClientMode {
-    InProcess(InMemoryFlightClient),
-    Network(NetworkFlightClient),
-}
-
-struct FlightClient {
-    mode: FlightClientMode,
-}
-```
-
-### 5.3 Data Flow Examples
+### 5.1 Current Data Flow ✅ **Working**
 
 #### Trace Ingestion Flow:
-
-1. Acceptor receives OTLP trace data
-2. Acceptor converts to Arrow format
-3. Acceptor uses Flight to send to Writer (`DoPut`)
-4. Writer persists to Parquet storage
+1. Acceptor receives OTLP trace data via gRPC
+2. Acceptor converts OTLP to Arrow format using `otlp_traces_to_arrow`
+3. Acceptor uses Flight `DoPut` to send Arrow data to Writer
+4. Writer persists data to Parquet storage via object_store
 
 #### Query Flow:
+1. Client sends HTTP query to Router
+2. Router forwards query to Querier via Flight
+3. Querier executes query using DataFusion against Parquet files
+4. Results streamed back to client via Flight → HTTP
 
-1. Client sends query via Flight (`DoGet`)
-2. Router forwards to Querier
-3. Querier executes query using DataFusion
-4. Results streamed back to client via Flight
+### 5.2 Schema Design ✅ **Implemented**
 
-### 5.4 Schema Design
+Flight schemas are defined in `src/common/flight/schema.rs` with conversions for:
+- OTLP traces → Arrow schema
+- OTLP metrics → Arrow schema
+- OTLP logs → Arrow schema
 
-Flight requires well-defined schemas. For traces:
+### 5.3 Service Discovery Integration ✅ **Implemented**
 
-```rust
-let schema = Schema::new(vec![
-    Field::new("trace_id", DataType::Utf8, false),
-    Field::new("span_id", DataType::Utf8, false),
-    Field::new("parent_span_id", DataType::Utf8, true),
-    Field::new("name", DataType::Utf8, false),
-    Field::new("start_time", DataType::Int64, false),
-    Field::new("end_time", DataType::Int64, false),
-    Field::new("duration_ns", DataType::Int64, false),
-    Field::new("service_name", DataType::Utf8, false),
-    // Additional fields for attributes, events, etc.
-]);
-```
+Components discover each other via:
+- Catalog-based service registry
+- NATS-based real-time discovery
+- Flight endpoint registration and lookup
 
-## 6. Data Durability and Buffering
+## 6. Future Enhancements *(Planned)*
 
-### 6.1 Write-Ahead Log (WAL) in Acceptor
+### 6.1 Write-Ahead Log (WAL) Integration
 
-A critical aspect of the current messaging system is its role as a distributed buffer. To maintain this functionality while moving to Flight, we'll implement a Write-Ahead Log (WAL) in the acceptor:
+To enhance durability and buffering capabilities:
 
 ```
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
@@ -202,168 +138,65 @@ A critical aspect of the current messaging system is its role as a distributed b
 └─────────────┘    └─────────────┘    └─────────────┘
 ```
 
-#### WAL Design:
+#### Planned WAL Features:
+1. **Durability**: Write incoming data to WAL before acknowledgment
+2. **Recovery**: Replay unprocessed entries on restart
+3. **Batching**: Support efficient batch processing
+4. **Retention**: Configurable retention policies
+5. **Distributed Operation**: Support replication in distributed deployments
 
-1. **Durability**: All incoming data will be written to the WAL before acknowledgment
-2. **Recovery**: On restart, the acceptor can replay unprocessed entries
-3. **Batching**: The WAL will support batching for efficient processing
-4. **Retention**: Configurable retention policy based on time or space
-5. **Distributed Operation**: Support for replication in distributed deployments
+### 6.2 Enhanced Buffering
 
-#### Implementation:
+For handling backpressure and improving performance:
+- In-memory buffering in Writer before Parquet persistence
+- Configurable flush policies (size, time, or count-based)
+- Real-time query support for buffered data
 
-```rust
-pub struct WriteAheadLog {
-    storage: Arc<dyn ObjectStore>,
-    current_segment: RwLock<WALSegment>,
-    config: WALConfig,
-}
+### 6.3 Multi-Writer Replication
 
-impl WriteAheadLog {
-    // Write data to WAL before sending via Flight
-    async fn append(&self, batch: &RecordBatch) -> Result<WALPosition> {
-        // Write to current segment
-        let position = self.current_segment.write().unwrap().append(batch).await?;
+For high availability:
+- Hash-based data distribution across multiple Writers
+- Replication factor configuration
+- Automatic failover handling
 
-        // Roll segment if needed
-        if self.current_segment.read().unwrap().size() > self.config.max_segment_size {
-            self.roll_segment().await?;
-        }
+## 7. Monolithic Binary Implementation ✅ **Current**
 
-        Ok(position)
-    }
+The current monolithic binary (`cargo run`) starts all services in a single process:
+- Services communicate via Flight using localhost endpoints
+- Automatic service discovery via catalog
+- Single configuration file for all components
 
-    // Read from WAL during recovery
-    async fn read_from(&self, position: WALPosition) -> Result<impl Stream<Item = RecordBatch>> {
-        // Implementation to read from a specific position
-    }
+## 8. Client SDK Integration
 
-    // Trim WAL based on acknowledged positions
-    async fn trim_to(&self, position: WALPosition) -> Result<()> {
-        // Remove segments that are fully acknowledged
-    }
-}
-```
+Flight communication enables:
+- High-performance data transfer
+- Streaming query results
+- Native Arrow format support
+- gRPC-based transport with authentication
 
-#### Integration with Flight:
+## 9. Performance Benefits ✅ **Achieved**
 
-The acceptor will:
-1. Write incoming data to the WAL
-2. Acknowledge the client once data is durably stored
-3. Asynchronously send data to the writer via Flight
-4. Trim the WAL once the writer confirms processing
+Current implementation provides:
+- **Zero-copy data transfer**: Arrow format maintained throughout pipeline
+- **Streaming capabilities**: Large query results can be streamed
+- **Protocol efficiency**: gRPC transport with minimal overhead
+- **Schema evolution**: Arrow schema support for versioning
 
-This approach provides:
-- Durability guarantees similar to the current message bus
-- Buffer for handling backpressure
-- Recovery mechanism for component failures
-- Efficient batch processing
+## 10. Deployment Modes
 
-### 6.2 Message Bus Considerations
+### 10.1 Monolithic Mode ✅ **Current**
+- All services in single process
+- Flight communication via localhost
+- Simplified deployment and configuration
 
-#### 6.2.1 Hybrid Approach
+### 10.2 Microservices Mode ✅ **Supported**
+- Services deployed independently
+- Flight communication via network
+- Service discovery via catalog/NATS
+- Individual scaling and failure isolation
 
-While Flight with WAL will handle the primary data flow, a minimal message bus may be retained for:
+## 11. Conclusion
 
-- Service discovery and coordination
-- Broadcasting system events
-- Handling service outages
+Arrow Flight implementation in SignalDB has successfully eliminated the need for a separate message bus while providing high-performance data transfer. The current implementation supports both monolithic and distributed deployment patterns with excellent performance characteristics.
 
-#### 6.2.2 Complete Replacement
-
-For a complete replacement of the message bus:
-
-1. Implement retry logic in Flight clients
-2. Enhance the WAL with distributed consensus (e.g., Raft)
-3. Develop a service registry for component discovery
-
-## 7. Monolithic Binary Implementation
-
-For monolithic deployment:
-
-```rust
-fn main() {
-    // Create the in-memory Flight transport
-    let flight_transport = Arc::new(InMemoryFlightTransport::new());
-
-    // Initialize components with the transport
-    let acceptor = AcceptorComponent::new(flight_transport.clone());
-    let writer = WriterComponent::new(flight_transport.clone());
-    let querier = QuerierComponent::new(flight_transport.clone());
-
-    // Register Flight services
-    flight_transport.register_service("acceptor", acceptor.flight_service());
-    flight_transport.register_service("writer", writer.flight_service());
-    flight_transport.register_service("querier", querier.flight_service());
-
-    // Start the external Flight server for client connections
-    let external_flight_server = ExternalFlightServer::new(
-        flight_transport.clone(),
-        "0.0.0.0:8082",
-    );
-
-    // Run everything
-    tokio::runtime::Runtime::new().unwrap().block_on(async {
-        tokio::join!(
-            acceptor.run(),
-            writer.run(),
-            querier.run(),
-            external_flight_server.run(),
-        );
-    });
-}
-```
-
-## 8. Implementation Strategy
-
-### 8.1 Phase 1: External Flight API
-
-1. Complete the `SignalDBFlightService` implementation
-2. Connect it to the existing querier component
-3. Provide basic query capabilities for external clients
-
-### 8.2 Phase 2: In-Memory Transport
-
-1. Implement the in-memory Flight transport
-2. Update one component pair (e.g., querier and router) to use Flight
-3. Benchmark and validate the approach
-
-### 8.3 Phase 3: Full Integration
-
-1. Implement Flight services for all components
-2. Gradually migrate from message bus to Flight
-3. Support both monolithic and distributed deployment
-
-## 9. Client SDK Example
-
-```rust
-async fn query_traces(client: &FlightClient, trace_id: &str) -> Result<Vec<RecordBatch>> {
-    // Create a query descriptor
-    let query = format!("SELECT * FROM traces WHERE trace_id = '{}'", trace_id);
-    let descriptor = FlightDescriptor::new_cmd(query.into_bytes());
-
-    // Get flight info
-    let flight_info = client.get_flight_info(descriptor).await?;
-
-    // Get the data
-    let endpoint = &flight_info.endpoint[0];
-    let ticket = endpoint.ticket.as_ref().unwrap();
-
-    // Stream results
-    let mut stream = client.do_get(ticket.clone()).await?;
-    let mut batches = Vec::new();
-
-    while let Some(data) = stream.next().await {
-        let batch = arrow_flight::utils::flight_data_to_arrow_batch(&data?, &schema)?;
-        batches.push(batch);
-    }
-
-    Ok(batches)
-}
-```
-
-## 10. Conclusion
-
-Implementing Arrow Flight in SignalDB will provide significant performance improvements for both inter-service communication and external client access. The design supports both monolithic and distributed deployment while maintaining the logical separation of components.
-
-The in-memory Flight transport allows for zero-copy data transfer in monolithic deployments, while the same code can run in a distributed environment with minimal changes.
+The Flight-based architecture provides a solid foundation for future enhancements including WAL integration, advanced buffering, and multi-writer replication capabilities.
