@@ -202,6 +202,69 @@ impl ServiceBootstrap {
         Ok(())
     }
 
+    /// Create and register a Flight transport integrated with this bootstrap
+    pub fn create_flight_transport(self) -> crate::flight::transport::InMemoryFlightTransport {
+        crate::flight::transport::InMemoryFlightTransport::new(self)
+    }
+
+    /// Create and register a Flight transport with custom pool configuration
+    pub fn create_flight_transport_with_config(
+        self,
+        max_pool_size: usize,
+        connection_timeout: u64,
+    ) -> crate::flight::transport::InMemoryFlightTransport {
+        crate::flight::transport::InMemoryFlightTransport::with_pool_config(
+            self,
+            max_pool_size,
+            connection_timeout,
+        )
+    }
+
+    /// Helper method to derive Flight capabilities from service type
+    pub fn default_flight_capabilities(&self) -> Vec<crate::flight::transport::ServiceCapability> {
+        use crate::flight::transport::ServiceCapability;
+
+        match self.service_type {
+            ServiceType::Acceptor => vec![ServiceCapability::TraceIngestion],
+            ServiceType::Writer => vec![
+                ServiceCapability::TraceIngestion,
+                ServiceCapability::Storage,
+            ],
+            ServiceType::Router => vec![ServiceCapability::Routing],
+            ServiceType::Querier => vec![ServiceCapability::QueryExecution],
+        }
+    }
+
+    /// Get Flight endpoint from service address
+    pub fn flight_endpoint(&self) -> String {
+        // If address contains a port, use it directly, otherwise assume it's a Flight endpoint
+        if self.address.contains(':') {
+            format!("http://{}", self.address)
+        } else {
+            // Default Flight port if no port specified
+            format!("http://{}:50051", self.address)
+        }
+    }
+
+    /// Extract port from service address
+    pub fn extract_port(&self) -> Result<u16> {
+        let parts: Vec<&str> = self.address.split(':').collect();
+        if parts.len() == 2 {
+            parts[1]
+                .parse::<u16>()
+                .map_err(|e| anyhow::anyhow!("Invalid port in address '{}': {}", self.address, e))
+        } else {
+            // Default to Flight port if no port specified
+            Ok(50051)
+        }
+    }
+
+    /// Extract hostname from service address
+    pub fn extract_hostname(&self) -> String {
+        let parts: Vec<&str> = self.address.split(':').collect();
+        parts[0].to_string()
+    }
+
     /// Gracefully shutdown the service and deregister from catalog
     pub async fn shutdown(mut self) -> Result<()> {
         log::info!(

@@ -779,6 +779,7 @@ name = "common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrow-flight",
  "chrono",
  "datafusion",
  "figment",
@@ -791,10 +792,12 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "tempfile",
  "tempo-api",
  "testcontainers",
  "testcontainers-modules",
  "tokio",
+ "tonic",
  "uuid",
 ]
 
