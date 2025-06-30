@@ -138,7 +138,7 @@ impl Configuration {
     pub fn load() -> Result<Self, Box<figment::Error>> {
         let config = Figment::from(Serialized::defaults(Configuration::default()))
             .merge(Toml::file("signaldb.toml"))
-            .merge(Env::prefixed("SIGNALDB_"))
+            .merge(Env::prefixed("SIGNALDB__").split("__"))
             .extract()
             .map_err(Box::new)?;
 
@@ -204,5 +204,75 @@ mod tests {
         // Should work completely configless with SQLite defaults
         assert_eq!(config.database.dsn, "sqlite://.data/signaldb.db");
         assert!(config.discovery.is_some());
+    }
+
+    #[test]
+    fn test_env_var_override() {
+        // Test environment variable parsing with double underscore separator
+        std::env::set_var("SIGNALDB__DATABASE__DSN", "sqlite://./test.db");
+        std::env::set_var("SIGNALDB__DISCOVERY__DSN", "sqlite://./discovery.db");
+
+        let config = Figment::from(Serialized::defaults(Configuration::default()))
+            .merge(Env::prefixed("SIGNALDB__").split("__"))
+            .extract::<Configuration>()
+            .unwrap();
+
+        assert_eq!(config.database.dsn, "sqlite://./test.db");
+
+        if let Some(discovery) = config.discovery {
+            assert_eq!(discovery.dsn, "sqlite://./discovery.db");
+        }
+
+        // Clean up
+        std::env::remove_var("SIGNALDB__DATABASE__DSN");
+        std::env::remove_var("SIGNALDB__DISCOVERY__DSN");
+    }
+
+    #[test]
+    fn test_env_var_single_underscore_format() {
+        // Test that single underscore format works when used as a flat key
+        // This is actually valid since "DATABASE_DSN" could be interpreted as a top-level key
+        std::env::set_var("SIGNALDB__DATABASE_DSN", "sqlite://./test.db");
+
+        let config = Figment::from(Serialized::defaults(Configuration::default()))
+            .merge(Env::prefixed("SIGNALDB__").split("__"))
+            .extract::<Configuration>()
+            .unwrap();
+
+        // This should work because "DATABASE_DSN" is treated as a single key
+        // and we're looking for nested "database.dsn" but figment is flexible
+        assert_eq!(config.database.dsn, "sqlite://./test.db");
+
+        // Clean up
+        std::env::remove_var("SIGNALDB__DATABASE_DSN");
+    }
+
+    #[test]
+    fn test_nested_storage_config_env_vars() {
+        // Test deeply nested storage configuration
+        std::env::set_var("SIGNALDB__STORAGE__DEFAULT", "local");
+        std::env::set_var(
+            "SIGNALDB__STORAGE__ADAPTERS__LOCAL__URL",
+            "file:///tmp/test",
+        );
+        std::env::set_var("SIGNALDB__STORAGE__ADAPTERS__LOCAL__PREFIX", "test-prefix");
+        std::env::set_var("SIGNALDB__STORAGE__ADAPTERS__LOCAL__TYPE", "filesystem");
+
+        let config = Figment::from(Serialized::defaults(Configuration::default()))
+            .merge(Env::prefixed("SIGNALDB__").split("__"))
+            .extract::<Configuration>()
+            .unwrap();
+
+        assert_eq!(config.storage.default, "local");
+        let local_adapter = config.storage.adapters.get("local").unwrap();
+        assert_eq!(local_adapter.url, "file:///tmp/test");
+        assert_eq!(local_adapter.prefix, "test-prefix");
+        assert_eq!(local_adapter.storage_type, "filesystem");
+
+        // Clean up
+        std::env::remove_var("SIGNALDB__STORAGE__DEFAULT");
+        std::env::remove_var("SIGNALDB__STORAGE__ADAPTERS__LOCAL__URL");
+        std::env::remove_var("SIGNALDB__STORAGE__ADAPTERS__LOCAL__PREFIX");
+        std::env::remove_var("SIGNALDB__STORAGE__ADAPTERS__LOCAL__TYPE");
     }
 }

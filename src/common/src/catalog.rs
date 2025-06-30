@@ -35,9 +35,7 @@ impl Catalog {
             Catalog::Sqlite(pool)
         } else {
             let pool = PgPool::connect(dsn).await.map_err(|e| {
-                log::error!(
-                    "Failed to connect to PostgreSQL database with DSN '{dsn}': {e}"
-                );
+                log::error!("Failed to connect to PostgreSQL database with DSN '{dsn}': {e}");
                 e
             })?;
             Catalog::Postgres(pool)

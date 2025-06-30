@@ -96,3 +96,6 @@ Signaldb has a microservices and a monolothic mode
 ## Development Memories
 - For arrow & parquet try using the ones re-exported by datafusion
 - We need to run cargo fmt after bigger chunks of work to apply the canonical formatting
+- We need to format the code before committing
+- Always run cargo commands from the workspace root
+- run cargo clippy and fix all warnings before committing
