@@ -4,6 +4,7 @@ use crate::flight::transport::ServiceCapability;
 use crate::service_bootstrap::{ServiceBootstrap, ServiceType};
 use std::time::Duration;
 use tempfile::TempDir;
+use testcontainers_modules::{postgres, testcontainers::runners::AsyncRunner};
 
 /// Test helper to create a temporary SQLite database for testing
 async fn create_test_sqlite_config() -> (Configuration, TempDir) {
@@ -25,14 +26,18 @@ async fn create_test_sqlite_config() -> (Configuration, TempDir) {
     (config, temp_dir)
 }
 
-/// Test helper to create a test PostgreSQL config (requires running PostgreSQL)
-#[allow(dead_code)]
-fn create_test_postgres_config() -> Configuration {
-    let dsn = std::env::var("TEST_POSTGRES_DSN").unwrap_or_else(|_| {
-        "postgresql://postgres:password@localhost:5432/signaldb_test".to_string()
-    });
+/// Test helper to create a PostgreSQL config using testcontainers
+async fn create_test_postgres_config() -> (Configuration, testcontainers_modules::testcontainers::ContainerAsync<postgres::Postgres>) {
+    let postgres_container = postgres::Postgres::default().start().await.unwrap();
+    let host_ip = postgres_container.get_host().await.unwrap();
+    let host_port = postgres_container.get_host_port_ipv4(5432).await.unwrap();
+    
+    let dsn = format!(
+        "postgresql://postgres:postgres@{}:{}/postgres",
+        host_ip, host_port
+    );
 
-    Configuration {
+    let config = Configuration {
         database: DatabaseConfig { dsn: dsn.clone() },
         discovery: Some(DiscoveryConfig {
             dsn,
@@ -41,7 +46,9 @@ fn create_test_postgres_config() -> Configuration {
             ttl: Duration::from_secs(10),
         }),
         ..Default::default()
-    }
+    };
+
+    (config, postgres_container)
 }
 
 #[tokio::test]
@@ -418,21 +425,17 @@ async fn test_service_discovery_across_transports() {
     // Note: Bootstraps are moved when creating transports, so they are cleaned up automatically
 }
 
-// Only run PostgreSQL tests if TEST_POSTGRES_DSN is set
 #[tokio::test]
-#[ignore] // Ignored by default, run with --ignored if PostgreSQL is available
 async fn test_flight_transport_with_postgres_catalog() {
-    if std::env::var("TEST_POSTGRES_DSN").is_err() {
-        eprintln!("Skipping PostgreSQL test - TEST_POSTGRES_DSN not set");
-        return;
-    }
+    let (config, _postgres_container) = create_test_postgres_config().await;
 
-    let config = create_test_postgres_config();
-
-    let bootstrap =
-        ServiceBootstrap::new(config, ServiceType::Writer, "localhost:50052".to_string())
-            .await
-            .expect("Failed to create service bootstrap with PostgreSQL");
+    let bootstrap = ServiceBootstrap::new(
+        config,
+        ServiceType::Writer,
+        "localhost:50052".to_string(),
+    )
+    .await
+    .expect("Failed to create service bootstrap with PostgreSQL");
 
     let transport = bootstrap.create_flight_transport();
 
@@ -456,4 +459,5 @@ async fn test_flight_transport_with_postgres_catalog() {
     );
 
     // Note: Bootstrap is moved when creating transport, so it's cleaned up automatically
+    // PostgreSQL container will be cleaned up when it goes out of scope
 }
