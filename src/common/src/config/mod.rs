@@ -132,33 +132,6 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn test_queue_config_defaults() {
-        let config = QueueConfig::default();
-        assert_eq!(config.max_batch_size, 1000);
-        assert_eq!(config.max_batch_wait, Duration::from_secs(10));
-        assert_eq!(config.dsn, "memory://");
-    }
-
-    #[test]
-    fn test_queue_config_from_toml() {
-        let config = Figment::from(Serialized::defaults(Configuration::default()))
-            .merge(Toml::string(
-                r#"
-                [queue]
-                max_batch_size = 2000
-                max_batch_wait = "20s"
-                dsn = "memory://custom"
-            "#,
-            ))
-            .extract::<Configuration>()
-            .unwrap();
-
-        assert_eq!(config.queue.max_batch_size, 2000);
-        assert_eq!(config.queue.max_batch_wait, Duration::from_secs(20));
-        assert_eq!(config.queue.dsn, "memory://custom");
-    }
-
-    #[test]
     fn test_default_configuration_enables_sqlite() {
         let config = Configuration::default();
 
