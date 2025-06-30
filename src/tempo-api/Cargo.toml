@@ -23,3 +23,6 @@ tonic-build = { workspace = true, features = ["prost"] }
 default = []
 client = []
 server = []
+
+[package.metadata.cargo-machete]
+ignored = ["prost-build", "tonic-build"]

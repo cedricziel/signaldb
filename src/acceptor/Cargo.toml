@@ -26,16 +26,11 @@ log.workspace = true
 anyhow.workspace = true
 
 axum.workspace = true
-hyper.workspace = true
 
 serde_json.workspace = true
 
 opentelemetry.workspace = true
 async-trait.workspace = true
-
-async-nats.workspace = true
-serde = { workspace = true, features = ["derive"] }
-uuid = { workspace = true }
 
 [[bin]]
 name = "signaldb-acceptor"
@@ -43,3 +38,6 @@ path = "src/main.rs"
 
 [dev-dependencies]
 mockall.workspace = true
+
+[package.metadata.cargo-machete]
+ignored = ["tracing", "opentelemetry", "mockall"]

@@ -306,13 +306,16 @@ jobs:
 
       - name: Install security tools
         run: |
-          cargo install cargo-audit cargo-deny
+          cargo install cargo-audit cargo-deny cargo-machete
 
       - name: Run security audit
         run: cargo audit
 
       - name: Run cargo deny
         run: cargo deny check
+
+      - name: Check for unused dependencies
+        run: cargo machete --with-metadata
 
   coverage:
     name: Code Coverage

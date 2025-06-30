@@ -7,8 +7,6 @@ rust-version.workspace = true
 [dependencies]
 common.workspace = true
 tempo-api.workspace = true
-
-datafusion.workspace = true
 arrow-flight.workspace = true
 
 futures.workspace = true
@@ -16,8 +14,6 @@ tonic.workspace = true
 tokio.workspace = true
 axum.workspace = true
 tracing.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 bytes.workspace = true
 uuid.workspace = true
 chrono.workspace = true
@@ -32,3 +28,6 @@ path = "src/main.rs"
 
 [dev-dependencies]
 tokio-test.workspace = true
+
+[package.metadata.cargo-machete]
+ignored = ["tokio-test"]
