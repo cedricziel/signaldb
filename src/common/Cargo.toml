@@ -6,7 +6,6 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-async-nats.workspace = true
 log.workspace = true
 anyhow.workspace = true
 tempo-api = { path = "../tempo-api" }

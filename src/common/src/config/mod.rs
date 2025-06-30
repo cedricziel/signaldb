@@ -40,23 +40,6 @@ impl Default for DatabaseConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct QueueConfig {
-    pub max_batch_size: usize,
-    #[serde(with = "humantime_serde")]
-    pub max_batch_wait: Duration,
-    pub dsn: String,
-}
-
-impl Default for QueueConfig {
-    fn default() -> Self {
-        Self {
-            max_batch_size: 1000,
-            max_batch_wait: Duration::from_secs(10),
-            dsn: String::from("memory://"),
-        }
-    }
-}
 /// Configuration for service discovery (Catalog)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiscoveryConfig {
@@ -90,8 +73,6 @@ pub struct Configuration {
     pub database: DatabaseConfig,
     /// Object storage configuration
     pub storage: StorageConfig,
-    /// Message queue configuration
-    pub queue: QueueConfig,
     /// Service discovery configuration (enabled by default with SQLite)
     pub discovery: Option<DiscoveryConfig>,
 }
@@ -101,7 +82,6 @@ impl Default for Configuration {
         Self {
             database: DatabaseConfig::default(),
             storage: StorageConfig::default(),
-            queue: QueueConfig::default(),
             // Enable discovery by default for configless operation
             discovery: Some(DiscoveryConfig::default()),
         }
