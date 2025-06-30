@@ -458,7 +458,7 @@ mod tests {
 
         // The operation should succeed with in-memory SQLite
         assert!(result.is_ok());
-        
+
         // Verify the service was created with correct properties
         let bootstrap = result.unwrap();
         assert_eq!(bootstrap.service_type, ServiceType::Writer);
