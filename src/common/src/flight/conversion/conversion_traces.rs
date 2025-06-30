@@ -1,5 +1,6 @@
 use datafusion::arrow::{
-    array::{ArrayRef, BooleanArray, ListArray, StringArray, StructArray, UInt64Array},
+    array::{Array, ArrayRef, BooleanArray, ListArray, StringArray, StructArray, UInt64Array},
+    buffer::OffsetBuffer,
     datatypes::{DataType, Field},
     record_batch::RecordBatch,
 };
@@ -14,7 +15,7 @@ use serde_json::Map;
 use std::sync::Arc;
 
 use crate::flight::conversion::conversion_common::{
-    extract_resource_json, extract_service_name, extract_value,
+    extract_resource_json, extract_service_name, extract_value, json_value_to_any_value,
 };
 use crate::flight::schema::FlightSchemas;
 
@@ -237,49 +238,68 @@ fn create_events_array(events_data: &[Vec<(String, u64, String)>]) -> ArrayRef {
         Field::new("attributes_json", DataType::Utf8, true),
     ];
 
-    let mut event_structs = Vec::new();
+    // Collect all events from all spans into flat arrays
+    let mut all_event_names = Vec::new();
+    let mut all_event_timestamps = Vec::new();
+    let mut all_event_attrs = Vec::new();
+
+    // Create offsets array - tracks where each span's events start/end
+    let mut offsets = Vec::with_capacity(events_data.len() + 1);
+    offsets.push(0i32);
 
     for span_events in events_data {
-        let mut event_names = Vec::new();
-        let mut event_timestamps = Vec::new();
-        let mut event_attrs = Vec::new();
-
         for (name, timestamp, attrs) in span_events {
-            event_names.push(name.clone());
-            event_timestamps.push(*timestamp);
-            event_attrs.push(attrs.clone());
+            all_event_names.push(name.clone());
+            all_event_timestamps.push(*timestamp);
+            all_event_attrs.push(attrs.clone());
         }
+        offsets.push(all_event_names.len() as i32);
+    }
 
-        let name_array = StringArray::from(event_names);
-        let timestamp_array = UInt64Array::from(event_timestamps);
-        let attrs_array = StringArray::from(event_attrs);
-
-        let struct_array = StructArray::from(vec![
+    // Create the struct array containing all events
+    let values = if all_event_names.is_empty() {
+        // Create empty struct array with correct schema
+        StructArray::from(vec![
             (
                 Arc::new(Field::new("name", DataType::Utf8, false)),
-                Arc::new(name_array) as ArrayRef,
+                Arc::new(StringArray::new_null(0)) as ArrayRef,
             ),
             (
                 Arc::new(Field::new("timestamp_unix_nano", DataType::UInt64, false)),
-                Arc::new(timestamp_array) as ArrayRef,
+                Arc::new(UInt64Array::new_null(0)) as ArrayRef,
             ),
             (
                 Arc::new(Field::new("attributes_json", DataType::Utf8, true)),
-                Arc::new(attrs_array) as ArrayRef,
+                Arc::new(StringArray::new_null(0)) as ArrayRef,
             ),
-        ]);
+        ])
+    } else {
+        StructArray::from(vec![
+            (
+                Arc::new(Field::new("name", DataType::Utf8, false)),
+                Arc::new(StringArray::from(all_event_names)) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("timestamp_unix_nano", DataType::UInt64, false)),
+                Arc::new(UInt64Array::from(all_event_timestamps)) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("attributes_json", DataType::Utf8, true)),
+                Arc::new(StringArray::from(all_event_attrs)) as ArrayRef,
+            ),
+        ])
+    };
 
-        event_structs.push(Arc::new(struct_array) as ArrayRef);
-    }
-
-    // For now, return a placeholder empty array
-    // TODO: Implement proper list array creation in a future PR
+    // Create the list array field
     let field = Arc::new(Field::new(
         "item",
         DataType::Struct(event_struct_fields.into()),
         true,
     ));
-    Arc::new(ListArray::new_null(field, events_data.len()))
+
+    // Create the list array
+    let offsets_buffer = OffsetBuffer::new(offsets.into());
+    Arc::new(ListArray::try_new(field, offsets_buffer, Arc::new(values), None).unwrap())
 }
 
 /// Create Arrow array for links
@@ -291,49 +311,194 @@ fn create_links_array(links_data: &[Vec<(String, String, String)>]) -> ArrayRef 
         Field::new("attributes_json", DataType::Utf8, true),
     ];
 
-    let mut link_structs = Vec::new();
+    // Collect all links from all spans into flat arrays
+    let mut all_link_trace_ids = Vec::new();
+    let mut all_link_span_ids = Vec::new();
+    let mut all_link_attrs = Vec::new();
+
+    // Create offsets array - tracks where each span's links start/end
+    let mut offsets = Vec::with_capacity(links_data.len() + 1);
+    offsets.push(0i32);
 
     for span_links in links_data {
-        let mut link_trace_ids = Vec::new();
-        let mut link_span_ids = Vec::new();
-        let mut link_attrs = Vec::new();
-
         for (trace_id, span_id, attrs) in span_links {
-            link_trace_ids.push(trace_id.clone());
-            link_span_ids.push(span_id.clone());
-            link_attrs.push(attrs.clone());
+            all_link_trace_ids.push(trace_id.clone());
+            all_link_span_ids.push(span_id.clone());
+            all_link_attrs.push(attrs.clone());
         }
+        offsets.push(all_link_trace_ids.len() as i32);
+    }
 
-        let trace_id_array = StringArray::from(link_trace_ids);
-        let span_id_array = StringArray::from(link_span_ids);
-        let attrs_array = StringArray::from(link_attrs);
-
-        let struct_array = StructArray::from(vec![
+    // Create the struct array containing all links
+    let values = if all_link_trace_ids.is_empty() {
+        // Create empty struct array with correct schema
+        StructArray::from(vec![
             (
                 Arc::new(Field::new("trace_id", DataType::Utf8, false)),
-                Arc::new(trace_id_array) as ArrayRef,
+                Arc::new(StringArray::new_null(0)) as ArrayRef,
             ),
             (
                 Arc::new(Field::new("span_id", DataType::Utf8, false)),
-                Arc::new(span_id_array) as ArrayRef,
+                Arc::new(StringArray::new_null(0)) as ArrayRef,
             ),
             (
                 Arc::new(Field::new("attributes_json", DataType::Utf8, true)),
-                Arc::new(attrs_array) as ArrayRef,
+                Arc::new(StringArray::new_null(0)) as ArrayRef,
             ),
-        ]);
+        ])
+    } else {
+        StructArray::from(vec![
+            (
+                Arc::new(Field::new("trace_id", DataType::Utf8, false)),
+                Arc::new(StringArray::from(all_link_trace_ids)) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("span_id", DataType::Utf8, false)),
+                Arc::new(StringArray::from(all_link_span_ids)) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("attributes_json", DataType::Utf8, true)),
+                Arc::new(StringArray::from(all_link_attrs)) as ArrayRef,
+            ),
+        ])
+    };
 
-        link_structs.push(Arc::new(struct_array) as ArrayRef);
-    }
-
-    // For now, return a placeholder empty array
-    // TODO: Implement proper list array creation in a future PR
+    // Create the list array field
     let field = Arc::new(Field::new(
         "item",
         DataType::Struct(link_struct_fields.into()),
         true,
     ));
-    Arc::new(ListArray::new_null(field, links_data.len()))
+
+    // Create the list array
+    let offsets_buffer = OffsetBuffer::new(offsets.into());
+    Arc::new(ListArray::try_new(field, offsets_buffer, Arc::new(values), None).unwrap())
+}
+
+/// Parse events from ListArray for a specific row
+fn parse_events_from_list_array(
+    events_array: &ListArray,
+    row: usize,
+) -> Vec<opentelemetry_proto::tonic::trace::v1::span::Event> {
+    use opentelemetry_proto::tonic::trace::v1::span::Event;
+
+    let mut events = Vec::new();
+
+    // Get the list for this row
+    if !events_array.is_null(row) {
+        let list_values = events_array.value(row);
+        if let Some(struct_array) = list_values.as_any().downcast_ref::<StructArray>() {
+            let name_array = struct_array
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let timestamp_array = struct_array
+                .column(1)
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .unwrap();
+            let attrs_array = struct_array
+                .column(2)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+
+            for i in 0..struct_array.len() {
+                let name = name_array.value(i).to_string();
+                let timestamp = timestamp_array.value(i);
+                let attrs_json = attrs_array.value(i);
+
+                // Parse attributes from JSON
+                let mut attributes = Vec::new();
+                if let Ok(attrs_value) = serde_json::from_str::<serde_json::Value>(attrs_json) {
+                    if let Some(attrs_obj) = attrs_value.as_object() {
+                        for (key, value) in attrs_obj {
+                            attributes.push(KeyValue {
+                                key: key.clone(),
+                                value: Some(json_value_to_any_value(value)),
+                            });
+                        }
+                    }
+                }
+
+                events.push(Event {
+                    time_unix_nano: timestamp,
+                    name,
+                    attributes,
+                    dropped_attributes_count: 0,
+                });
+            }
+        }
+    }
+
+    events
+}
+
+/// Parse links from ListArray for a specific row  
+fn parse_links_from_list_array(
+    links_array: &ListArray,
+    row: usize,
+) -> Vec<opentelemetry_proto::tonic::trace::v1::span::Link> {
+    use opentelemetry_proto::tonic::trace::v1::span::Link;
+
+    let mut links = Vec::new();
+
+    // Get the list for this row
+    if !links_array.is_null(row) {
+        let list_values = links_array.value(row);
+        if let Some(struct_array) = list_values.as_any().downcast_ref::<StructArray>() {
+            let trace_id_array = struct_array
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let span_id_array = struct_array
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let attrs_array = struct_array
+                .column(2)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+
+            for i in 0..struct_array.len() {
+                let trace_id_str = trace_id_array.value(i);
+                let span_id_str = span_id_array.value(i);
+                let attrs_json = attrs_array.value(i);
+
+                // Convert hex strings back to bytes
+                let trace_id_bytes = hex::decode(trace_id_str).unwrap_or(vec![0; 16]);
+                let span_id_bytes = hex::decode(span_id_str).unwrap_or(vec![0; 8]);
+
+                // Parse attributes from JSON
+                let mut attributes = Vec::new();
+                if let Ok(attrs_value) = serde_json::from_str::<serde_json::Value>(attrs_json) {
+                    if let Some(attrs_obj) = attrs_value.as_object() {
+                        for (key, value) in attrs_obj {
+                            attributes.push(KeyValue {
+                                key: key.clone(),
+                                value: Some(json_value_to_any_value(value)),
+                            });
+                        }
+                    }
+                }
+
+                links.push(Link {
+                    trace_id: trace_id_bytes,
+                    span_id: span_id_bytes,
+                    trace_state: "".to_string(),
+                    attributes,
+                    dropped_attributes_count: 0,
+                    flags: 0,
+                });
+            }
+        }
+    }
+
+    links
 }
 
 /// Convert Arrow RecordBatch to OTLP ExportTraceServiceRequest
@@ -400,11 +565,11 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
         .as_any()
         .downcast_ref::<StringArray>()
         .expect("resource_json column should be StringArray");
-    let _events_array = columns[14]
+    let events_array = columns[14]
         .as_any()
         .downcast_ref::<ListArray>()
         .expect("events column should be ListArray");
-    let _links_array = columns[15]
+    let links_array = columns[15]
         .as_any()
         .downcast_ref::<ListArray>()
         .expect("links column should be ListArray");
@@ -496,9 +661,9 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
             end_time_unix_nano,
             attributes,
             dropped_attributes_count: 0,
-            events: vec![], // TODO: parse events from events_array
+            events: parse_events_from_list_array(events_array, row),
             dropped_events_count: 0,
-            links: vec![], // TODO: parse links from links_array
+            links: parse_links_from_list_array(links_array, row),
             dropped_links_count: 0,
             status: Some(Status {
                 code: status_code,
@@ -575,6 +740,46 @@ mod tests {
             }),
         });
 
+        // Create events for the span
+        let mut events = Vec::new();
+        events.push(opentelemetry_proto::tonic::trace::v1::span::Event {
+            time_unix_nano: 1500000000,
+            name: "test-event".to_string(),
+            attributes: vec![KeyValue {
+                key: "event_attr".to_string(),
+                value: Some(AnyValue {
+                    value: Some(
+                        opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                            "event_value".to_string(),
+                        ),
+                    ),
+                }),
+            }],
+            dropped_attributes_count: 0,
+        });
+
+        // Create links for the span
+        let mut links = Vec::new();
+        let link_trace_id = hex::decode("fedcba9876543210fedcba9876543210").unwrap();
+        let link_span_id = hex::decode("fedcba9876543210").unwrap();
+        links.push(opentelemetry_proto::tonic::trace::v1::span::Link {
+            trace_id: link_trace_id,
+            span_id: link_span_id,
+            trace_state: "".to_string(),
+            attributes: vec![KeyValue {
+                key: "link_attr".to_string(),
+                value: Some(AnyValue {
+                    value: Some(
+                        opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                            "link_value".to_string(),
+                        ),
+                    ),
+                }),
+            }],
+            dropped_attributes_count: 0,
+            flags: 0,
+        });
+
         // Create a span
         let span = Span {
             trace_id: trace_id_bytes,
@@ -586,9 +791,9 @@ mod tests {
             end_time_unix_nano: 2000000000,
             attributes,
             dropped_attributes_count: 0,
-            events: vec![],
+            events,
             dropped_events_count: 0,
-            links: vec![],
+            links,
             dropped_links_count: 0,
             status: Some(Status {
                 code: 2, // Ok
@@ -870,6 +1075,50 @@ mod tests {
             }),
         });
 
+        // Create events for the span
+        let mut events = Vec::new();
+        events.push(opentelemetry_proto::tonic::trace::v1::span::Event {
+            time_unix_nano: 1500000000,
+            name: "span-event".to_string(),
+            attributes: vec![KeyValue {
+                key: "event_key".to_string(),
+                value: Some(AnyValue {
+                    value: Some(
+                        opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                            "event_val".to_string(),
+                        ),
+                    ),
+                }),
+            }],
+            dropped_attributes_count: 0,
+        });
+        events.push(opentelemetry_proto::tonic::trace::v1::span::Event {
+            time_unix_nano: 1600000000,
+            name: "second-event".to_string(),
+            attributes: vec![],
+            dropped_attributes_count: 0,
+        });
+
+        // Create links for the span
+        let mut links = Vec::new();
+        let link_trace_id = hex::decode("abcdef0123456789abcdef0123456789").unwrap();
+        let link_span_id = hex::decode("abcdef0123456789").unwrap();
+        links.push(opentelemetry_proto::tonic::trace::v1::span::Link {
+            trace_id: link_trace_id,
+            span_id: link_span_id,
+            trace_state: "".to_string(),
+            attributes: vec![KeyValue {
+                key: "link_key".to_string(),
+                value: Some(AnyValue {
+                    value: Some(
+                        opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(123),
+                    ),
+                }),
+            }],
+            dropped_attributes_count: 0,
+            flags: 0,
+        });
+
         // Create a span
         let span = Span {
             trace_id: trace_id_bytes,
@@ -881,9 +1130,9 @@ mod tests {
             end_time_unix_nano: 2000000000,
             attributes,
             dropped_attributes_count: 0,
-            events: vec![],
+            events,
             dropped_events_count: 0,
-            links: vec![],
+            links,
             dropped_links_count: 0,
             status: Some(Status {
                 code: 2, // Ok
@@ -1004,6 +1253,48 @@ mod tests {
             assert_eq!(*val, 42);
         } else {
             panic!("Expected int value for attr2");
+        }
+
+        // Verify events
+        assert_eq!(span.events.len(), 2);
+
+        let event1 = &span.events[0];
+        assert_eq!(event1.name, "span-event");
+        assert_eq!(event1.time_unix_nano, 1500000000);
+        assert_eq!(event1.attributes.len(), 1);
+        assert_eq!(event1.attributes[0].key, "event_key");
+        if let Some(AnyValue {
+            value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(val)),
+        }) = &event1.attributes[0].value
+        {
+            assert_eq!(val, "event_val");
+        } else {
+            panic!("Expected string value for event attribute");
+        }
+
+        let event2 = &span.events[1];
+        assert_eq!(event2.name, "second-event");
+        assert_eq!(event2.time_unix_nano, 1600000000);
+        assert_eq!(event2.attributes.len(), 0);
+
+        // Verify links
+        assert_eq!(span.links.len(), 1);
+
+        let link = &span.links[0];
+        assert_eq!(
+            hex::encode(&link.trace_id),
+            "abcdef0123456789abcdef0123456789"
+        );
+        assert_eq!(hex::encode(&link.span_id), "abcdef0123456789");
+        assert_eq!(link.attributes.len(), 1);
+        assert_eq!(link.attributes[0].key, "link_key");
+        if let Some(AnyValue {
+            value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(val)),
+        }) = &link.attributes[0].value
+        {
+            assert_eq!(*val, 123);
+        } else {
+            panic!("Expected int value for link attribute");
         }
     }
 }
