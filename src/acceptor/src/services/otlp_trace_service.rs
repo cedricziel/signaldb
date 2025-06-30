@@ -41,7 +41,7 @@ impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAccepto
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 #[async_trait::async_trait]
 impl TraceHandlerTrait for crate::handler::otlp_grpc::MockTraceHandler {
     async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {

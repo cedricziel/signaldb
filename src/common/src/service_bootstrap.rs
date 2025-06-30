@@ -53,6 +53,14 @@ impl ServiceBootstrap {
             &config.database.dsn
         };
 
+        log::info!("Using DSN for service bootstrap: {dsn}");
+        log::info!("Database config DSN: {}", config.database.dsn);
+        if let Some(discovery_config) = &config.discovery {
+            log::info!("Discovery config DSN: {}", discovery_config.dsn);
+        } else {
+            log::info!("No discovery config found");
+        }
+
         // Ensure data directory exists for SQLite databases
         Self::ensure_data_directory(dsn)?;
 
@@ -84,26 +92,69 @@ impl ServiceBootstrap {
 
     /// Ensure the data directory exists for SQLite databases
     fn ensure_data_directory(dsn: &str) -> Result<()> {
+        log::info!("Ensuring data directory exists for DSN: {dsn}");
+
         // Only handle SQLite databases
         if !dsn.starts_with("sqlite:") {
+            log::info!("Not a SQLite DSN, skipping directory creation");
             return Ok(());
         }
 
         // Extract the file path from the SQLite DSN
-        if let Some(file_path) = dsn.strip_prefix("sqlite:") {
-            // Handle special cases like ":memory:"
-            if file_path == ":memory:" {
+        // Handle different SQLite DSN formats:
+        // - sqlite::memory: (in-memory)
+        // - sqlite:relative/path/file.db (relative path)
+        // - sqlite://path/file.db (relative path with //)
+        // - sqlite:///absolute/path/file.db (absolute path with ///)
+        let file_path = if let Some(path) = dsn.strip_prefix("sqlite:") {
+            if path == ":memory:" {
+                log::info!("In-memory database, skipping directory creation");
                 return Ok(());
             }
 
-            // Get the directory part of the path
-            if let Some(parent) = Path::new(file_path).parent() {
-                if !parent.exists() {
-                    fs::create_dir_all(parent)?;
-                    log::info!("Created data directory: {}", parent.display());
-                }
+            // Handle different slash patterns
+            if path.starts_with("///") {
+                // Absolute path: sqlite:///absolute/path/file.db -> /absolute/path/file.db
+                &path[2..] // Remove only 2 slashes to keep the leading /
+            } else if path.starts_with("//") {
+                // Relative path with //: sqlite://relative/path/file.db -> relative/path/file.db
+                &path[2..] // Remove both slashes
+            } else if path.starts_with('/') {
+                // Single slash: sqlite:/path/file.db -> /path/file.db
+                path // Keep as is
+            } else {
+                // No slashes: sqlite:relative/path/file.db -> relative/path/file.db
+                path // Keep as is
             }
+        } else {
+            log::info!("Failed to extract file path from DSN: {dsn}");
+            return Ok(());
+        };
+
+        log::info!("Extracted file path: {file_path}");
+
+        // Get the directory part of the path
+        if let Some(parent) = Path::new(file_path).parent() {
+            log::info!(
+                "Parent directory: {}, exists: {}",
+                parent.display(),
+                parent.exists()
+            );
+            if !parent.exists() {
+                log::info!("Creating directory: {}", parent.display());
+                fs::create_dir_all(parent).map_err(|e| {
+                    log::error!("Failed to create directory '{}': {}", parent.display(), e);
+                    e
+                })?;
+                log::info!("Created data directory: {}", parent.display());
+            } else {
+                log::info!("Directory already exists: {}", parent.display());
+            }
+        } else {
+            log::info!("No parent directory found for path: {file_path}");
         }
+
+        log::info!("Directory setup completed successfully");
         Ok(())
     }
 
@@ -215,6 +266,177 @@ mod tests {
         let _ = std::fs::remove_dir_all(".test_data");
     }
 
+    #[test]
+    fn test_ensure_data_directory_temp_locations() {
+        use std::env;
+
+        // Test with system temp directory (should always work)
+        let temp_dir = env::temp_dir();
+        let test_subdir = temp_dir.join("signaldb_test_temp");
+        let test_dsn = format!("sqlite:{}/test.db", test_subdir.display());
+
+        // Clean up any existing test directory
+        let _ = std::fs::remove_dir_all(&test_subdir);
+
+        // Test directory creation in temp
+        let result = ServiceBootstrap::ensure_data_directory(&test_dsn);
+        assert!(
+            result.is_ok(),
+            "Should be able to create directory in system temp"
+        );
+
+        // Verify directory was created
+        assert!(test_subdir.exists());
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&test_subdir);
+    }
+
+    #[test]
+    fn test_ensure_data_directory_edge_cases() {
+        // Test with root path (no parent directory)
+        let result = ServiceBootstrap::ensure_data_directory("sqlite:test.db");
+        assert!(result.is_ok(), "Should handle files in current directory");
+
+        // Test with empty string after sqlite: prefix
+        let result = ServiceBootstrap::ensure_data_directory("sqlite:");
+        assert!(result.is_ok(), "Should handle empty path gracefully");
+
+        // Test with relative paths
+        let result = ServiceBootstrap::ensure_data_directory("sqlite:./relative/path/test.db");
+        assert!(result.is_ok(), "Should handle relative paths");
+
+        // Clean up any created directories
+        let _ = std::fs::remove_dir_all("./relative");
+    }
+
+    #[test]
+    #[cfg(unix)] // Unix-specific permission test
+    fn test_ensure_data_directory_permissions() {
+        use std::env;
+        use std::os::unix::fs::PermissionsExt;
+
+        // Create a test directory with known permissions
+        let temp_dir = env::temp_dir();
+        let test_parent = temp_dir.join("signaldb_perm_test");
+        let test_subdir = test_parent.join("subdir");
+        let test_dsn = format!("sqlite:{}/test.db", test_subdir.display());
+
+        // Clean up any existing test directory
+        let _ = std::fs::remove_dir_all(&test_parent);
+
+        // Create parent with write permissions
+        std::fs::create_dir_all(&test_parent).unwrap();
+        let mut perms = std::fs::metadata(&test_parent).unwrap().permissions();
+        perms.set_mode(0o755); // rwxr-xr-x
+        std::fs::set_permissions(&test_parent, perms).unwrap();
+
+        // Test directory creation
+        let result = ServiceBootstrap::ensure_data_directory(&test_dsn);
+        assert!(
+            result.is_ok(),
+            "Should be able to create subdirectory with proper permissions"
+        );
+
+        // Verify subdirectory was created
+        assert!(test_subdir.exists());
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&test_parent);
+    }
+
+    #[test]
+    fn test_ensure_data_directory_ci_simulation() {
+        use std::env;
+
+        // Simulate GitHub Actions runner.temp scenario
+        let temp_base = env::temp_dir();
+        let runner_temp = temp_base.join("github_runner_temp");
+        let signaldb_data = runner_temp.join("signaldb-data");
+
+        // Clean up any existing directories
+        let _ = std::fs::remove_dir_all(&runner_temp);
+
+        // Create the runner temp directory (simulating GitHub Actions)
+        std::fs::create_dir_all(&runner_temp).unwrap();
+
+        // Test the DSN pattern used in CI
+        let test_dsn = format!("sqlite:{}/test_deployment.db", signaldb_data.display());
+
+        // This should create the signaldb-data directory
+        let result = ServiceBootstrap::ensure_data_directory(&test_dsn);
+        assert!(
+            result.is_ok(),
+            "Should handle GitHub Actions temp directory pattern"
+        );
+
+        // Verify the directory was created
+        assert!(
+            signaldb_data.exists(),
+            "signaldb-data directory should be created"
+        );
+        assert!(
+            signaldb_data.is_dir(),
+            "signaldb-data should be a directory"
+        );
+
+        // Test that we can actually write to it
+        let test_file = signaldb_data.join("test_write.txt");
+        std::fs::write(&test_file, "test content")
+            .expect("Should be able to write to created directory");
+
+        // Verify the file was written
+        assert!(test_file.exists());
+        let content = std::fs::read_to_string(&test_file).unwrap();
+        assert_eq!(content, "test content");
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&runner_temp);
+    }
+
+    #[test]
+    fn test_bootstrap_filesystem_operations() {
+        use std::env;
+
+        // Test the filesystem operations that bootstrap depends on
+        let temp_dir = env::temp_dir().join("signaldb_bootstrap_fs_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        // Test various DSN patterns that might be used in CI or production
+        let temp_dsn = format!("sqlite:{}/test.db", temp_dir.display());
+        let test_cases = vec![
+            ("sqlite::memory:", true),            // In-memory should always work
+            (temp_dsn.as_str(), true),            // Temp dir should work
+            ("sqlite:./test_bootstrap.db", true), // Current dir should work
+        ];
+
+        for (dsn, should_succeed) in test_cases {
+            let result = ServiceBootstrap::ensure_data_directory(&dsn);
+            if should_succeed {
+                assert!(
+                    result.is_ok(),
+                    "DSN '{}' should work: {:?}",
+                    dsn,
+                    result.err()
+                );
+            } else {
+                assert!(result.is_err(), "DSN '{}' should fail", dsn);
+            }
+        }
+
+        // Test that we can write to the created directory
+        if temp_dir.exists() {
+            let test_file = temp_dir.join("write_test.txt");
+            std::fs::write(&test_file, "test")
+                .expect("Should be able to write to created directory");
+            assert!(test_file.exists());
+        }
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::remove_file("./test_bootstrap.db");
+    }
+
     #[tokio::test]
     async fn test_service_bootstrap_creation() {
         let config = Configuration {
@@ -230,13 +452,16 @@ mod tests {
             ..Default::default()
         };
 
-        // This would fail in the actual test because we need a real database
-        // but it shows the intended usage pattern
+        // Create a service bootstrap with in-memory SQLite
         let result =
             ServiceBootstrap::new(config, ServiceType::Writer, "localhost:50051".to_string()).await;
 
-        // We expect this to fail since we're using an in-memory SQLite database
-        // but the error should be from the database connection, not from our code structure
-        assert!(result.is_err());
+        // The operation should succeed with in-memory SQLite
+        assert!(result.is_ok());
+        
+        // Verify the service was created with correct properties
+        let bootstrap = result.unwrap();
+        assert_eq!(bootstrap.service_type, ServiceType::Writer);
+        assert_eq!(bootstrap.address, "localhost:50051");
     }
 }

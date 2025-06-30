@@ -43,12 +43,14 @@ SELECT * FROM trace_hierarchy;";
 pub struct TraceService {
     // skip debug on session_context
     session_context: Arc<SessionContext>,
+    traces_path: String,
 }
 
 impl Debug for TraceService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TraceService")
             .field("session_context", &"set")
+            .field("traces_path", &self.traces_path)
             .finish()
     }
 }
@@ -57,15 +59,17 @@ impl Clone for TraceService {
     fn clone(&self) -> Self {
         Self {
             session_context: Arc::clone(&self.session_context),
+            traces_path: self.traces_path.clone(),
         }
     }
 }
 
 impl TraceService {
     #[allow(dead_code)]
-    pub fn new(session_context: SessionContext) -> Self {
+    pub fn new(session_context: SessionContext, traces_path: String) -> Self {
         Self {
             session_context: Arc::new(session_context),
+            traces_path,
         }
     }
 }
@@ -258,7 +262,7 @@ impl TraceQuerier for TraceService {
         _query: SearchQueryParams,
     ) -> Result<Vec<model::trace::Trace>, QuerierError> {
         let ctx = SessionContext::new();
-        ctx.register_parquet("traces", ".data/ds/traces", ParquetReadOptions::default())
+        ctx.register_parquet("traces", &self.traces_path, ParquetReadOptions::default())
             .await
             .map_err(QuerierError::FailedToRegisterParquet)?;
 
@@ -413,7 +417,7 @@ mod tests {
             .await
             .expect("Failed to create test table");
 
-        let service = TraceService::new(session_context);
+        let service = TraceService::new(session_context, "test_traces".to_string());
         let params = FindTraceByIdParams {
             trace_id: "1234".to_string(),
             start: None,

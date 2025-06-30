@@ -15,6 +15,14 @@ async fn main() -> Result<()> {
     // Load application configuration
     let config = Configuration::load().context("Failed to load configuration")?;
 
+    log::info!("Loaded configuration:");
+    log::info!("  Database DSN: {}", config.database.dsn);
+    if let Some(discovery) = &config.discovery {
+        log::info!("  Discovery DSN: {}", discovery.dsn);
+    } else {
+        log::info!("  No discovery configuration");
+    }
+
     // Initialize router service bootstrap for catalog-based discovery
     let flight_addr = SocketAddr::from(([0, 0, 0, 0], 50053));
     let router_bootstrap =
