@@ -40,6 +40,15 @@ impl Default for DatabaseConfig {
     }
 }
 
+impl DatabaseConfig {
+    /// Create an in-memory database configuration for monolithic mode
+    pub fn in_memory() -> Self {
+        Self {
+            dsn: String::from("sqlite::memory:"),
+        }
+    }
+}
+
 /// Configuration for service discovery (Catalog)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiscoveryConfig {
@@ -59,7 +68,7 @@ pub struct DiscoveryConfig {
 impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
-            dsn: String::from("sqlite://.data/signaldb.db"),
+            dsn: String::from("sqlite::memory:"),
             heartbeat_interval: Duration::from_secs(30),
             poll_interval: Duration::from_secs(60),
             ttl: Duration::from_secs(300),
@@ -138,10 +147,10 @@ mod tests {
         // Database should default to SQLite in .data directory
         assert_eq!(config.database.dsn, "sqlite://.data/signaldb.db");
 
-        // Discovery should be enabled by default with SQLite
+        // Discovery should be enabled by default with in-memory SQLite
         assert!(config.discovery.is_some());
         let discovery = config.discovery.unwrap();
-        assert_eq!(discovery.dsn, "sqlite://.data/signaldb.db");
+        assert_eq!(discovery.dsn, "sqlite::memory:");
         assert_eq!(discovery.heartbeat_interval, Duration::from_secs(30));
         assert_eq!(discovery.poll_interval, Duration::from_secs(60));
         assert_eq!(discovery.ttl, Duration::from_secs(300));
@@ -157,6 +166,7 @@ mod tests {
         // Should work completely configless with SQLite defaults
         assert_eq!(config.database.dsn, "sqlite://.data/signaldb.db");
         assert!(config.discovery.is_some());
+        assert_eq!(config.discovery.unwrap().dsn, "sqlite::memory:");
     }
 
     #[test]
