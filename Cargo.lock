@@ -3519,17 +3519,23 @@ name = "querier"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrow-flight",
  "async-trait",
  "axum",
+ "bytes",
  "common",
  "datafusion",
+ "futures",
  "log",
+ "object_store",
  "tempo-api",
  "thiserror",
  "tokio",
  "tonic",
  "tower-http",
  "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
