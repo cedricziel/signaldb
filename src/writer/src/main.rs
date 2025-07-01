@@ -1,6 +1,7 @@
 use anyhow::Context;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use common::config::Configuration;
+use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
@@ -28,9 +29,28 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("WRITER_ADVERTISE_ADDR").unwrap_or_else(|_| flight_addr.to_string());
 
     let service_bootstrap =
-        ServiceBootstrap::new(config.clone(), ServiceType::Writer, advertise_addr)
+        ServiceBootstrap::new(config.clone(), ServiceType::Writer, advertise_addr.clone())
             .await
             .context("Failed to initialize service bootstrap")?;
+
+    // Create Flight transport and register this writer's Flight service
+    let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
+
+    // Register this writer's Flight service with its capabilities
+    let service_id = flight_transport
+        .register_flight_service(
+            ServiceType::Writer,
+            flight_addr.ip().to_string(),
+            flight_addr.port(),
+            vec![
+                ServiceCapability::TraceIngestion,
+                ServiceCapability::Storage,
+            ],
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to register Flight service: {}", e))?;
+
+    log::info!("Writer Flight service registered with ID: {}", service_id);
 
     // Initialize object store (local filesystem)
     let prefix = config.default_storage_prefix();
@@ -56,11 +76,13 @@ async fn main() -> anyhow::Result<()> {
         .context("Failed to listen for shutdown signal")?;
     log::info!("Shutting down writer service");
 
-    // Graceful shutdown: deregister from catalog first, then stop Flight server
-    service_bootstrap
-        .shutdown()
+    // Graceful shutdown: unregister Flight service
+    flight_transport
+        .unregister_service(service_id)
         .await
-        .context("Failed to shutdown service bootstrap")?;
+        .map_err(|e| anyhow::anyhow!("Failed to unregister Flight service: {}", e))?;
+
+    // Note: ServiceBootstrap shutdown is handled via drop impl when flight_transport is dropped
 
     // Shutdown Flight server
     flight_handle.abort();
