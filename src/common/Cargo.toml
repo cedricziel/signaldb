@@ -13,6 +13,7 @@ tempo-api = { path = "../tempo-api" }
 datafusion.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+bincode.workspace = true
 hex.workspace = true
 opentelemetry.workspace = true
 opentelemetry-proto.workspace = true

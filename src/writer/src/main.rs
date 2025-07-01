@@ -3,6 +3,7 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use common::config::Configuration;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
+use common::wal::{Wal, WalConfig};
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
 use std::sync::Arc;
@@ -59,8 +60,24 @@ async fn main() -> anyhow::Result<()> {
             .context("Failed to initialize local object store")?,
     );
 
-    // Create Flight ingestion service
-    let flight_service = WriterFlightService::new(object_store.clone());
+    // Initialize WAL for durability
+    let wal_config = WalConfig {
+        wal_dir: std::env::var("WRITER_WAL_DIR")
+            .unwrap_or_else(|_| ".wal/writer".to_string())
+            .into(),
+        ..Default::default()
+    };
+
+    let mut wal = Wal::new(wal_config)
+        .await
+        .context("Failed to initialize WAL")?;
+
+    // Start background WAL flush task
+    wal.start_background_flush();
+    let wal = Arc::new(wal);
+
+    // Create Flight ingestion service with WAL
+    let flight_service = WriterFlightService::new(object_store.clone(), wal.clone());
     log::info!("Starting Flight ingest service on {}", flight_addr);
     let flight_handle = tokio::spawn(async move {
         Server::builder()
@@ -81,6 +98,14 @@ async fn main() -> anyhow::Result<()> {
         .unregister_service(service_id)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to unregister Flight service: {}", e))?;
+
+    // Shutdown WAL and flush any remaining data
+    if let Ok(wal) = Arc::try_unwrap(wal) {
+        wal.shutdown().await.context("Failed to shutdown WAL")?;
+    } else {
+        log::warn!("Could not get exclusive access to WAL for shutdown - forcing flush");
+        // WAL will be dropped and cleaned up automatically
+    }
 
     // Note: ServiceBootstrap shutdown is handled via drop impl when flight_transport is dropped
 

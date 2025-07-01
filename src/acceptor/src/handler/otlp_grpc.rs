@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use common::flight::conversion::otlp_traces_to_arrow;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
+use common::wal::{record_batch_to_bytes, Wal, WalOperation};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 // Flight protocol imports
 use arrow_flight::utils::batches_to_flight_data;
@@ -10,6 +11,8 @@ use futures::{stream, StreamExt};
 pub struct TraceHandler {
     /// Flight transport for forwarding telemetry
     flight_transport: Arc<InMemoryFlightTransport>,
+    /// WAL for durability
+    wal: Arc<Wal>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -45,9 +48,12 @@ impl MockTraceHandler {
 }
 
 impl TraceHandler {
-    /// Create a new handler with Flight transport
-    pub fn new(flight_transport: Arc<InMemoryFlightTransport>) -> Self {
-        Self { flight_transport }
+    /// Create a new handler with Flight transport and WAL
+    pub fn new(flight_transport: Arc<InMemoryFlightTransport>, wal: Arc<Wal>) -> Self {
+        Self {
+            flight_transport,
+            wal,
+        }
     }
 
     pub async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
@@ -56,6 +62,36 @@ impl TraceHandler {
         // Convert OTLP traces to Arrow RecordBatch
         let record_batch = otlp_traces_to_arrow(&request);
 
+        // Step 1: Write to WAL first for durability
+        let batch_bytes = match record_batch_to_bytes(&record_batch) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                log::error!("Failed to serialize record batch: {e}");
+                return;
+            }
+        };
+
+        let wal_entry_id = match self
+            .wal
+            .append(WalOperation::WriteTraces, batch_bytes.clone())
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                log::error!("Failed to write traces to WAL: {e}");
+                return;
+            }
+        };
+
+        // Flush WAL to ensure durability
+        if let Err(e) = self.wal.flush().await {
+            log::error!("Failed to flush WAL: {e}");
+            return;
+        }
+
+        log::debug!("Traces written to WAL with entry ID: {}", wal_entry_id);
+
+        // Step 2: Forward from WAL to writer via Flight
         // Get a Flight client for a writer service with trace ingestion capability
         let mut client = match self
             .flight_transport
@@ -65,6 +101,7 @@ impl TraceHandler {
             Ok(client) => client,
             Err(e) => {
                 log::error!("Failed to get Flight client for trace ingestion: {e}");
+                // Data remains in WAL for retry by background processor
                 return;
             }
         };
@@ -74,6 +111,7 @@ impl TraceHandler {
             Ok(data) => data,
             Err(e) => {
                 log::error!("Failed to convert batch to flight data: {e}");
+                // Data remains in WAL for retry
                 return;
             }
         };
@@ -83,6 +121,7 @@ impl TraceHandler {
         match client.do_put(flight_stream).await {
             Ok(response) => {
                 let mut response_stream = response.into_inner();
+                let mut success = true;
                 while let Some(result) = response_stream.next().await {
                     match result {
                         Ok(put_result) => {
@@ -90,14 +129,23 @@ impl TraceHandler {
                         }
                         Err(e) => {
                             log::error!("Flight put error: {e}");
-                            return;
+                            success = false;
+                            break;
                         }
                     }
                 }
-                log::debug!("Successfully forwarded traces via Flight protocol");
+
+                if success {
+                    log::debug!("Successfully forwarded traces via Flight protocol");
+                    // TODO: In production, mark WAL entry as processed rather than removing
+                    // This allows for cleanup by background process after retention period
+                } else {
+                    log::error!("Failed to forward traces - data remains in WAL for retry");
+                }
             }
             Err(e) => {
                 log::error!("Failed to forward traces via Flight protocol: {e}");
+                // Data remains in WAL for retry by background processor
             }
         }
     }

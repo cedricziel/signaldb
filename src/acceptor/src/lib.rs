@@ -28,6 +28,8 @@ use common::config::Configuration;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 // Flight protocol and transport
 use common::flight::transport::InMemoryFlightTransport;
+// WAL for durability
+use common::wal::{Wal, WalConfig};
 
 use crate::handler::otlp_grpc::TraceHandler;
 use crate::services::{
@@ -109,10 +111,28 @@ pub async fn serve_otlp_grpc(
 
     // Start background connection cleanup
     flight_transport.start_connection_cleanup(std::time::Duration::from_secs(60));
-    // Set up OTLP/gRPC services with Flight forwarding
+
+    // Initialize WAL for durability
+    let wal_config = WalConfig {
+        wal_dir: std::env::var("ACCEPTOR_WAL_DIR")
+            .unwrap_or_else(|_| ".wal/acceptor".to_string())
+            .into(),
+        ..Default::default()
+    };
+
+    let mut wal = Wal::new(wal_config)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to initialize WAL: {}", e))?;
+
+    // Start background WAL flush task
+    wal.start_background_flush();
+    let wal = Arc::new(wal);
+
+    // Set up OTLP/gRPC services with Flight forwarding and WAL
     let log_server = LogsServiceServer::new(LogAcceptorService::new(flight_transport.clone()));
     let trace_server = TraceServiceServer::new(TraceAcceptorService::new(TraceHandler::new(
         flight_transport.clone(),
+        wal.clone(),
     )));
     let metric_server =
         MetricsServiceServer::new(MetricsAcceptorService::new(flight_transport.clone()));
