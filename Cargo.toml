@@ -47,7 +47,6 @@ path = "examples/flight_client.rs"
 env_logger = "0.11.5"
 querier = { path = "src/querier" }
 testcontainers-modules = { workspace = true }
-reqwest = "0.12"
 
 [workspace]
 resolver = "2"
