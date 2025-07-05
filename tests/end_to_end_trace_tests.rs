@@ -242,7 +242,7 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
         .await
         .unwrap();
 
-    let response = timeout(Duration::from_secs(10), otlp_client.export(trace_request))
+    let _response = timeout(Duration::from_secs(10), otlp_client.export(trace_request))
         .await
         .expect("OTLP export timed out")
         .expect("OTLP export failed");
@@ -434,7 +434,7 @@ async fn test_monolithic_mode_trace_pipeline() {
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
 
     // Use in-memory catalog for monolithic mode
-    let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+    let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
     // Single configuration for all services
     let config = Configuration::default();
