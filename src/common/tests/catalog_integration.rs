@@ -14,7 +14,7 @@ async fn test_ingester_operations() {
         .expect("Failed to start database");
 
     let port = container.get_host_port_ipv4(5432).await.unwrap();
-    let dsn = format!("postgres://postgres:postgres@127.0.0.1:{}/postgres", port);
+    let dsn = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
     // Give the database some time to initialize
     sleep(Duration::from_secs(1)).await;
@@ -62,7 +62,7 @@ async fn test_shard_operations() {
         .expect("Failed to start database");
 
     let port = container.get_host_port_ipv4(5432).await.unwrap();
-    let dsn = format!("postgres://postgres:postgres@127.0.0.1:{}/postgres", port);
+    let dsn = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
     sleep(Duration::from_secs(1)).await;
     let catalog = Catalog::new(&dsn).await.expect("Failed to create Catalog");

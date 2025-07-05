@@ -337,7 +337,7 @@ mod tests {
 
         // Test with file-based SQLite DSN
         let test_dir = ".test_data/test_subdir";
-        let test_dsn = format!("sqlite:{}/test.db", test_dir);
+        let test_dsn = format!("sqlite:{test_dir}/test.db");
 
         // Clean up any existing test directory
         let _ = std::fs::remove_dir_all(".test_data");
@@ -498,7 +498,7 @@ mod tests {
         ];
 
         for (dsn, should_succeed) in test_cases {
-            let result = ServiceBootstrap::ensure_data_directory(&dsn);
+            let result = ServiceBootstrap::ensure_data_directory(dsn);
             if should_succeed {
                 assert!(
                     result.is_ok(),
@@ -507,7 +507,7 @@ mod tests {
                     result.err()
                 );
             } else {
-                assert!(result.is_err(), "DSN '{}' should fail", dsn);
+                assert!(result.is_err(), "DSN '{dsn}' should fail");
             }
         }
 

@@ -373,8 +373,7 @@ mod tests {
         ctx: &SessionContext,
     ) -> Result<(), datafusion::error::DataFusionError> {
         // First create the table with the basic schema
-        let create_table = format!(
-            "CREATE TABLE traces (
+        let create_table = "CREATE TABLE traces (
                 trace_id VARCHAR,
                 span_id VARCHAR,
                 parent_span_id VARCHAR,
@@ -386,13 +385,12 @@ mod tests {
                 is_root BOOLEAN,
                 service_name VARCHAR
             )"
-        );
+        .to_string();
 
         ctx.sql(&create_table).await?.collect().await?;
 
         // Then insert the test data
-        let insert_data = format!(
-            "INSERT INTO traces VALUES (
+        let insert_data = "INSERT INTO traces VALUES (
                 '1234',
                 'span1',
                 '',
@@ -404,7 +402,7 @@ mod tests {
                 true,
                 'test-service'
             )"
-        );
+        .to_string();
 
         ctx.sql(&insert_data).await?.collect().await?;
         Ok(())

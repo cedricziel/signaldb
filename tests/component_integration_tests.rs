@@ -566,7 +566,7 @@ async fn test_direct_acceptor_writer_flight() {
     println!("Flight do_put result: {:?}", put_result.is_ok());
 
     if let Err(e) = &put_result {
-        println!("Flight do_put error: {}", e);
+        println!("Flight do_put error: {e}");
     }
 
     assert!(
@@ -581,10 +581,10 @@ async fn test_direct_acceptor_writer_flight() {
     while let Some(result) = response_stream.next().await {
         match result {
             Ok(_put_result) => response_count += 1,
-            Err(e) => println!("Response stream error: {}", e),
+            Err(e) => println!("Response stream error: {e}"),
         }
     }
-    println!("Received {} put responses", response_count);
+    println!("Received {response_count} put responses");
 
     // Test 3: Check if data reached object store
     sleep(Duration::from_secs(2)).await;
@@ -754,8 +754,8 @@ async fn test_otlp_to_arrow_conversion() {
     );
 
     if let Err(e) = &flight_data_result {
-        println!("Arrow → Flight conversion error: {}", e);
-        assert!(false, "Arrow to Flight conversion failed: {}", e);
+        println!("Arrow → Flight conversion error: {e}");
+        panic!("Arrow to Flight conversion failed: {e}");
     }
 
     let flight_data = flight_data_result.unwrap();
@@ -771,8 +771,8 @@ async fn test_otlp_to_arrow_conversion() {
     println!("Write converted data result: {:?}", write_result.is_ok());
 
     if let Err(e) = &write_result {
-        println!("Write error: {}", e);
-        assert!(false, "Failed to write converted OTLP data: {}", e);
+        println!("Write error: {e}");
+        panic!("Failed to write converted OTLP data: {e}");
     }
 
     // Verify the file exists
@@ -909,7 +909,7 @@ async fn test_acceptor_processing_simulation() {
         println!("❌ Data did not reach object store - issue confirmed in acceptor processing");
 
         // Let's check if there are errors we're missing
-        if unprocessed.len() > 0 {
+        if !unprocessed.is_empty() {
             println!("⚠️  Data stuck in acceptor WAL - likely conversion or flight error");
         } else {
             println!("⚠️  Data processed from acceptor WAL but didn't reach writer");
@@ -995,10 +995,7 @@ async fn test_grpc_service_layer() {
 
     sleep(Duration::from_millis(500)).await;
 
-    println!(
-        "gRPC services started - acceptor: {}, writer: {}",
-        acceptor_addr, writer_addr
-    );
+    println!("gRPC services started - acceptor: {acceptor_addr}, writer: {writer_addr}");
 
     // Test: Create gRPC client and send the same request as end-to-end test
     let trace_id = vec![0x42; 16];
@@ -1022,7 +1019,7 @@ async fn test_grpc_service_layer() {
         }],
     };
 
-    println!("Connecting to gRPC acceptor at http://{}", acceptor_addr);
+    println!("Connecting to gRPC acceptor at http://{acceptor_addr}");
 
     // Create gRPC client
     let endpoint = format!("http://{acceptor_addr}");
@@ -1031,8 +1028,8 @@ async fn test_grpc_service_layer() {
     println!("gRPC client connection result: {:?}", client_result.is_ok());
 
     if let Err(e) = &client_result {
-        println!("gRPC client connection error: {}", e);
-        assert!(false, "Failed to connect to gRPC acceptor: {}", e);
+        println!("gRPC client connection error: {e}");
+        panic!("Failed to connect to gRPC acceptor: {e}");
     }
 
     let mut client = client_result.unwrap();
@@ -1045,16 +1042,16 @@ async fn test_grpc_service_layer() {
     println!("gRPC export result: {:?}", export_result.is_ok());
 
     if let Err(e) = &export_result {
-        println!("gRPC export error: {}", e);
-        assert!(false, "gRPC export failed: {}", e);
+        println!("gRPC export error: {e}");
+        panic!("gRPC export failed: {e}");
     }
 
     let export_response = export_result.unwrap();
     println!("gRPC export response: {:?}", export_response.is_ok());
 
     if let Err(e) = &export_response {
-        println!("gRPC export response error: {}", e);
-        assert!(false, "gRPC export response failed: {}", e);
+        println!("gRPC export response error: {e}");
+        panic!("gRPC export response failed: {e}");
     }
 
     println!("gRPC request completed successfully");
@@ -1082,13 +1079,13 @@ async fn test_grpc_service_layer() {
     if objects.is_empty() {
         println!("❌ gRPC layer test failed - data did not reach object store");
 
-        if unprocessed.len() > 0 {
+        if !unprocessed.is_empty() {
             println!("⚠️  Data stuck in acceptor WAL - issue in acceptor gRPC service processing");
         } else {
             println!("⚠️  Data processed from acceptor WAL but didn't reach writer - Flight communication issue");
         }
 
-        assert!(false, "gRPC service layer test failed");
+        panic!("gRPC service layer test failed");
     } else {
         println!("✅ gRPC layer test passed - data reached object store");
     }
@@ -1225,10 +1222,7 @@ async fn test_end_to_end_without_querier() {
 
     if objects.is_empty() {
         println!("❌ End-to-end without querier FAILED");
-        assert!(
-            false,
-            "No data found in object store - querier is not the issue"
-        );
+        panic!("No data found in object store - querier is not the issue");
     } else {
         println!("✅ End-to-end without querier PASSED - querier was causing interference!");
     }
@@ -1324,7 +1318,7 @@ async fn test_object_store_sharing_investigation() {
 
     // Consume response stream
     let mut response_stream = _put_result.into_inner();
-    while let Some(_) = response_stream.next().await {}
+    while (response_stream.next().await).is_some() {}
 
     sleep(Duration::from_secs(1)).await;
 
@@ -1393,7 +1387,7 @@ async fn test_object_store_sharing_investigation() {
 
     if let Ok(response) = put_result2 {
         let mut response_stream2 = response.into_inner();
-        while let Some(_) = response_stream2.next().await {}
+        while (response_stream2.next().await).is_some() {}
     } else {
         println!("❌ Second write failed: {:?}", put_result2.err());
     }
@@ -1621,9 +1615,9 @@ async fn test_service_discovery_investigation() {
             .get_client_for_capability(ServiceCapability::TraceIngestion)
             .await;
         if let Ok(_client) = client_result {
-            println!("📡 Request #{}: TraceIngestion client - OK", i);
+            println!("📡 Request #{i}: TraceIngestion client - OK");
         } else {
-            println!("❌ Request #{}: TraceIngestion client - FAILED", i);
+            println!("❌ Request #{i}: TraceIngestion client - FAILED");
         }
     }
 
@@ -1777,7 +1771,7 @@ async fn test_end_to_end_discovery_debug() {
         println!("📡 do_put result: {:?}", put_result.is_ok());
 
         if let Err(e) = put_result {
-            println!("❌ do_put failed with: {}", e);
+            println!("❌ do_put failed with: {e}");
             if e.to_string().contains("read-only") {
                 println!("🚨 FOUND THE BUG: Acceptor is talking to QUERIER instead of WRITER!");
             }

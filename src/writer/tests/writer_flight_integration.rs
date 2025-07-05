@@ -42,8 +42,7 @@ async fn test_write_batch_to_object_store() -> anyhow::Result<()> {
     }
     assert!(
         found,
-        "No parquet file found in object store at path: {}",
-        path
+        "No parquet file found in object store at path: {path}"
     );
     Ok(())
 }

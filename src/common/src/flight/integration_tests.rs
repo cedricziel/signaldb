@@ -35,10 +35,7 @@ async fn create_test_postgres_config() -> (
     let host_ip = postgres_container.get_host().await.unwrap();
     let host_port = postgres_container.get_host_port_ipv4(5432).await.unwrap();
 
-    let dsn = format!(
-        "postgresql://postgres:postgres@{}:{}/postgres",
-        host_ip, host_port
-    );
+    let dsn = format!("postgresql://postgres:postgres@{host_ip}:{host_port}/postgres");
 
     let config = Configuration {
         database: DatabaseConfig { dsn: dsn.clone() },
@@ -173,7 +170,7 @@ async fn test_multiple_services_with_sqlite_catalog() {
     // Since both services were registered with ServiceBootstrap, they appear in catalog
     // The current implementation assumes all catalog services are writers with trace ingestion
     assert!(
-        trace_services.len() >= 1,
+        !trace_services.is_empty(),
         "Should have at least one service discovered"
     );
 }
