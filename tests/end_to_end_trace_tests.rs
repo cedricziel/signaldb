@@ -91,7 +91,7 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
             .unwrap();
     let _writer_id = writer_bootstrap.service_id();
 
-    println!("✅ Writer service started at {}", writer_addr);
+    println!("✅ Writer service started at {writer_addr}");
 
     // Start Querier Service
     let querier_service = QuerierFlightService::new(object_store.clone(), flight_transport.clone());
@@ -114,7 +114,7 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
     .unwrap();
     let _querier_id = querier_bootstrap.service_id();
 
-    println!("✅ Querier service started at {}", querier_addr);
+    println!("✅ Querier service started at {querier_addr}");
 
     // Setup Router state (for testing query routing)
     let catalog = Catalog::new(&catalog_dsn).await.unwrap();
@@ -137,7 +137,7 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
         .serve(acceptor_addr);
     tokio::spawn(acceptor_server);
 
-    println!("✅ Acceptor service started at {}", acceptor_addr);
+    println!("✅ Acceptor service started at {acceptor_addr}");
 
     // Allow all services to start and register
     sleep(Duration::from_secs(2)).await;
@@ -176,11 +176,11 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
 
     // === PART 3: Send test trace data ===
 
-    let test_trace_id = hex::encode(&[
+    let test_trace_id = hex::encode([
         0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
         0x88,
     ]);
-    let test_span_id = hex::encode(&[0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x11, 0x22]);
+    let test_span_id = hex::encode([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x11, 0x22]);
 
     let trace_request = ExportTraceServiceRequest {
         resource_spans: vec![ResourceSpans {
@@ -237,7 +237,7 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
     };
 
     // Send trace data to acceptor
-    let endpoint = format!("http://{}", acceptor_addr);
+    let endpoint = format!("http://{acceptor_addr}");
     let mut otlp_client = opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint)
         .await
         .unwrap();
@@ -247,10 +247,7 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
         .expect("OTLP export timed out")
         .expect("OTLP export failed");
 
-    println!(
-        "✅ Step 1: Successfully sent trace {} to acceptor",
-        test_trace_id
-    );
+    println!("✅ Step 1: Successfully sent trace {test_trace_id} to acceptor");
 
     // === PART 4: Verify data persistence ===
 
@@ -305,12 +302,9 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
         .expect("Failed to get querier client");
 
     // Create a Flight ticket for trace lookup
-    let query_ticket = arrow_flight::Ticket::new(format!("find_trace:{}", test_trace_id));
+    let query_ticket = arrow_flight::Ticket::new(format!("find_trace:{test_trace_id}"));
 
-    println!(
-        "🔍 Querying for trace {} via Flight protocol...",
-        test_trace_id
-    );
+    println!("🔍 Querying for trace {test_trace_id} via Flight protocol...");
 
     let query_result = timeout(Duration::from_secs(10), query_client.do_get(query_ticket)).await;
 
@@ -326,13 +320,13 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
                         flight_data_count += 1;
                     }
                     Err(e) => {
-                        println!("⚠️  Error reading flight data: {}", e);
+                        println!("⚠️  Error reading flight data: {e}");
                     }
                 }
             }
 
             println!("✅ Step 3: Successfully queried trace via Flight protocol");
-            println!("  - Received {} flight data chunks", flight_data_count);
+            println!("  - Received {flight_data_count} flight data chunks");
 
             // Note: In a fully implemented system, we would:
             // 1. Convert the Flight data back to trace format
@@ -341,7 +335,7 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
             // For now, we verify that the query mechanism works
         }
         Ok(Err(e)) => {
-            println!("❌ Flight query failed: {}", e);
+            println!("❌ Flight query failed: {e}");
             // Don't panic here - this might be expected if query implementation is incomplete
             println!("⚠️  Query functionality may still be under development");
         }
@@ -363,22 +357,22 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
 
     match router_query_result {
         Ok(mut router_client) => {
-            let router_ticket = arrow_flight::Ticket::new(format!("find_trace:{}", test_trace_id));
+            let router_ticket = arrow_flight::Ticket::new(format!("find_trace:{test_trace_id}"));
 
             match timeout(Duration::from_secs(10), router_client.do_get(router_ticket)).await {
                 Ok(Ok(response)) => {
                     let mut stream = response.into_inner();
                     let mut data_count = 0;
 
-                    while let Some(_) = stream.next().await {
+                    while (stream.next().await).is_some() {
                         data_count += 1;
                     }
 
                     println!("✅ Step 4: Router can successfully query traces via Flight");
-                    println!("  - Router received {} data chunks", data_count);
+                    println!("  - Router received {data_count} data chunks");
                 }
                 Ok(Err(e)) => {
-                    println!("⚠️  Router query failed: {} (may be expected)", e);
+                    println!("⚠️  Router query failed: {e} (may be expected)");
                 }
                 Err(_) => {
                     println!("⚠️  Router query timed out (may be expected)");
@@ -386,10 +380,7 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
             }
         }
         Err(e) => {
-            println!(
-                "⚠️  Router could not get query client: {} (may be expected)",
-                e
-            );
+            println!("⚠️  Router could not get query client: {e} (may be expected)");
         }
     }
 
@@ -403,7 +394,7 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
     println!("✅ Service Discovery: All services properly registered and discoverable");
     println!("✅ Query Infrastructure: Flight-based query mechanism operational");
 
-    if objects.len() > 0 {
+    if !objects.is_empty() {
         println!("✅ OVERALL: Complete trace pipeline FUNCTIONAL");
     } else {
         panic!("❌ OVERALL: Trace pipeline FAILED - no data persisted");
@@ -507,16 +498,16 @@ async fn test_monolithic_mode_trace_pipeline() {
     tokio::spawn(acceptor_server);
 
     println!("✅ All services started in monolithic mode:");
-    println!("  - Writer: {}", writer_addr);
-    println!("  - Querier: {}", querier_addr);
-    println!("  - Acceptor: {}", acceptor_addr);
+    println!("  - Writer: {writer_addr}");
+    println!("  - Querier: {querier_addr}");
+    println!("  - Acceptor: {acceptor_addr}");
 
     // Allow services to register
     sleep(Duration::from_secs(2)).await;
 
     // Test the pipeline
-    let test_trace_id = hex::encode(&[0xff; 16]);
-    let test_span_id = hex::encode(&[0xaa; 8]);
+    let test_trace_id = hex::encode([0xff; 16]);
+    let test_span_id = hex::encode([0xaa; 8]);
 
     let trace_request = ExportTraceServiceRequest {
         resource_spans: vec![ResourceSpans {
@@ -539,7 +530,7 @@ async fn test_monolithic_mode_trace_pipeline() {
     };
 
     // Send trace
-    let endpoint = format!("http://{}", acceptor_addr);
+    let endpoint = format!("http://{acceptor_addr}");
     let mut otlp_client = opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint)
         .await
         .unwrap();
@@ -566,7 +557,7 @@ async fn test_monolithic_mode_trace_pipeline() {
         .await
         .expect("Failed to get querier client");
 
-    let query_ticket = arrow_flight::Ticket::new(format!("find_trace:{}", test_trace_id));
+    let query_ticket = arrow_flight::Ticket::new(format!("find_trace:{test_trace_id}"));
     let query_result = timeout(Duration::from_secs(5), query_client.do_get(query_ticket)).await;
 
     match query_result {
@@ -637,8 +628,8 @@ async fn test_flight_communication_performance() {
     let start_time = std::time::Instant::now();
 
     for i in 0..num_traces {
-        let trace_id = format!("{:032x}", i);
-        let span_id = format!("{:016x}", i);
+        let trace_id = format!("{i:032x}");
+        let span_id = format!("{i:016x}");
 
         let trace_request = ExportTraceServiceRequest {
             resource_spans: vec![ResourceSpans {
@@ -648,7 +639,7 @@ async fn test_flight_communication_performance() {
                     spans: vec![Span {
                         trace_id: hex::decode(&trace_id).unwrap(),
                         span_id: hex::decode(&span_id).unwrap(),
-                        name: format!("perf-test-span-{}", i),
+                        name: format!("perf-test-span-{i}"),
                         kind: 1,
                         start_time_unix_nano: 1_640_995_200_000_000_000 + (i as u64 * 1_000_000),
                         end_time_unix_nano: 1_640_995_205_000_000_000 + (i as u64 * 1_000_000),
@@ -676,10 +667,7 @@ async fn test_flight_communication_performance() {
     let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
 
     println!("🎯 PERFORMANCE TEST RESULTS:");
-    println!(
-        "📈 Ingested {} traces in {:?}",
-        num_traces, ingestion_duration
-    );
+    println!("📈 Ingested {num_traces} traces in {ingestion_duration:?}");
     println!(
         "📈 Average per trace: {:?}",
         ingestion_duration / num_traces

@@ -13,6 +13,7 @@ cargo fmt --all -- --check
 
 # Run clippy with warnings as errors
 echo "Running clippy..."
+cargo clippy --all-targets --all-features -- -D warnings
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Check for unused dependencies
