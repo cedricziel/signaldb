@@ -70,7 +70,7 @@ feature-depth = 1
 # A list of advisory IDs to ignore. Note that ignored advisories will still
 # output a note when they are encountered.
 ignore = [
-    { id = "RUSTSEC-2024-0384", reason = "instant is a dependency of datafusion" },
+    { id = "RUSTSEC-2024-0436", reason = "paste 1.x is unmaintained but is a dependency of datafusion. No security issues reported." },
     #"RUSTSEC-0000-0000",
     #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
     #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish
@@ -209,7 +209,8 @@ skip = [
     "thiserror",
     "thiserror-impl",
     { crate = "hashbrown", reason = "hashbrown is a dependency of tower, axum and arrow-array" },
-    { crate = "instant", reason = "instant is a dependency of datafusion" },
+    { crate = "getrandom", reason = "getrandom has multiple versions due to different dependencies requiring different versions" },
+    { crate = "indexmap", reason = "indexmap v1 is used by tonic/tower, v2 is used by arrow/datafusion" },
     #"ansi_term@0.11.0",
     #{ crate = "ansi_term@0.11.0", reason = "you can specify a reason why it can't be updated/removed" },
 ]
