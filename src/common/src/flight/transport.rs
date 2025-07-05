@@ -149,17 +149,58 @@ impl InMemoryFlightTransport {
         &self,
         capability: ServiceCapability,
     ) -> Vec<FlightServiceMetadata> {
-        // Get services from local registry
+        // First get services from local registry
         let local_services = {
             let services = self.services.read().await;
             services.values().cloned().collect::<Vec<_>>()
         };
 
-        // Filter by capability and return
-        FlightServiceMetadata::filter_by_capability(&local_services, &capability)
-            .into_iter()
-            .cloned()
-            .collect()
+        // Filter by capability
+        let local_filtered =
+            FlightServiceMetadata::filter_by_capability(&local_services, &capability);
+
+        // Start with local services
+        let mut all_services: Vec<FlightServiceMetadata> =
+            local_filtered.into_iter().cloned().collect();
+
+        // Also discover services from catalog (for backward compatibility)
+        // Only add catalog services if they're not already in local registry
+        if let Ok(ingesters) = self.bootstrap.discover_ingesters().await {
+            for ingester in ingesters {
+                // Check if this service is already in local registry
+                let already_local = all_services
+                    .iter()
+                    .any(|s| s.service_id == ingester.id);
+
+                if !already_local {
+                    // For now, assume all ingesters have trace ingestion capability
+                    // This can be enhanced when we store capabilities in catalog
+                    if matches!(
+                        capability,
+                        ServiceCapability::TraceIngestion | ServiceCapability::Storage
+                    ) {
+                        let parts: Vec<&str> = ingester.address.split(':').collect();
+                        if parts.len() == 2 {
+                            if let Ok(port) = parts[1].parse::<u16>() {
+                                let metadata = FlightServiceMetadata::new(
+                                    ingester.id,
+                                    ServiceType::Writer, // Assume writer for now
+                                    ingester.address.clone(),
+                                    port,
+                                    vec![
+                                        ServiceCapability::TraceIngestion,
+                                        ServiceCapability::Storage,
+                                    ],
+                                );
+                                all_services.push(metadata);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        all_services
     }
 
     /// Get a Flight client for the specified service
@@ -435,8 +476,9 @@ mod tests {
         let trace_services = transport
             .discover_services_by_capability(ServiceCapability::TraceIngestion)
             .await;
-        assert_eq!(trace_services.len(), 1);
-        assert_eq!(trace_services[0].service_type, ServiceType::Writer);
+        // Should find locally registered writer plus any catalog services
+        assert!(!trace_services.is_empty());
+        assert!(trace_services.iter().any(|s| s.service_type == ServiceType::Writer));
 
         let query_services = transport
             .discover_services_by_capability(ServiceCapability::QueryExecution)
