@@ -157,7 +157,12 @@ async fn test_acceptor_writer_flow() {
 
     // Verify WAL entries were processed
     let unprocessed = wal.get_unprocessed_entries().await.unwrap();
-    println!("Unprocessed WAL entries: {}", unprocessed.len());
+    assert_eq!(
+        unprocessed.len(),
+        0,
+        "Expected all WAL entries to be processed, but found {} unprocessed entries",
+        unprocessed.len()
+    );
 
     // Clean up
     flight_transport
