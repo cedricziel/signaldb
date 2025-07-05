@@ -39,7 +39,6 @@ docker compose up          # Start PostgreSQL, Grafana, and supporting services
 - **Writer** (`src/writer/`): Stateful ingestion service (the "Ingester")
 - **Querier** (`src/querier/`): Query execution engine for stored data
 - **Common** (`src/common/`): Shared configuration, discovery, and data models
-- **Messaging** (`src/messaging/`): Message queue abstraction (memory queues)
 - **Tempo API** (`src/tempo-api/`): Grafana Tempo compatibility layer
 
 ### Data Flow
@@ -68,9 +67,9 @@ The system uses Apache Arrow Flight extensively for inter-service communication.
 
 Services register themselves with discovery backends on startup. Look at existing patterns in acceptor/router for implementing new services.
 
-### Message Processing
+### Data Processing
 
-Use the messaging abstraction in `src/messaging/` for async batch processing. Supports acknowledgment patterns and different backends.
+Services use WAL (Write-Ahead Log) for durability and Apache Arrow Flight for high-performance inter-service communication.
 
 ### Storage Integration
 
