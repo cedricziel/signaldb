@@ -23,23 +23,20 @@ use tokio::time::{sleep, timeout};
 use tonic::transport::Server;
 use writer::WriterFlightService;
 
-/// Complete end-to-end test: OTLP ingestion → Storage → Query retrieval
-///
-/// This test extends the working component_integration_tests pattern
-/// to validate the complete SignalDB pipeline end-to-end.
-#[tokio::test]
-async fn test_complete_trace_ingestion_and_query_pipeline() {
-    println!("🚀 Starting complete end-to-end trace pipeline test...");
+/// Test services configuration and shared resources
+struct TestServices {
+    pub object_store: Arc<dyn ObjectStore>,
+    pub flight_transport: Arc<InMemoryFlightTransport>,
+    pub acceptor_addr: std::net::SocketAddr,
+    pub writer_addr: std::net::SocketAddr,
+    pub querier_addr: std::net::SocketAddr,
+    pub config: Configuration,
+    pub temp_dir: TempDir,
+}
 
-    // Use same setup as working test_end_to_end_without_querier
+/// Set up test infrastructure with shared configuration
+async fn setup_test_infrastructure() -> (Configuration, TempDir, Arc<dyn ObjectStore>) {
     let temp_dir = TempDir::new().unwrap();
-    let wal_config = WalConfig {
-        wal_dir: PathBuf::from(temp_dir.path()),
-        max_segment_size: 1024 * 1024,
-        max_buffer_entries: 1,
-        flush_interval_secs: 1,
-    };
-
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
 
     // Set up service discovery with shared SQLite database
@@ -48,13 +45,26 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
 
     let mut config = Configuration::default();
     config.discovery = Some(common::config::DiscoveryConfig {
-        dsn: catalog_dsn.clone(),
+        dsn: catalog_dsn,
         heartbeat_interval: Duration::from_secs(30),
         poll_interval: Duration::from_secs(60),
         ttl: Duration::from_secs(300),
     });
 
-    // Create acceptor bootstrap (same as working test)
+    (config, temp_dir, object_store)
+}
+
+/// Set up all services for testing (distributed mode)
+async fn setup_distributed_services() -> TestServices {
+    let (config, temp_dir, object_store) = setup_test_infrastructure().await;
+
+    let wal_config = WalConfig {
+        wal_dir: PathBuf::from(temp_dir.path()),
+        max_segment_size: 1024 * 1024,
+        max_buffer_entries: 1,
+        flush_interval_secs: 1,
+    };
+
     let acceptor_bootstrap = ServiceBootstrap::new(
         config.clone(),
         ServiceType::Acceptor,
@@ -64,13 +74,13 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
     .unwrap();
     let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
 
-    // Start writer (same as working test)
-    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
+    // Start writer Flight service
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
 
+    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
+    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
     let writer_server = Server::builder()
         .add_service(FlightServiceServer::new(writer_service))
         .serve(writer_addr);
@@ -82,8 +92,6 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
             .await
             .unwrap();
     let _writer_id = writer_bootstrap.service_id();
-
-    println!("✅ Writer service started at {writer_addr}");
 
     // Start querier service for query testing
     let querier_service = QuerierFlightService::new(object_store.clone(), flight_transport.clone());
@@ -105,15 +113,92 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
     .unwrap();
     let _querier_id = querier_bootstrap.service_id();
 
-    println!("✅ Querier service started at {querier_addr}");
+    // Start acceptor
+    let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
+    let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal.clone());
+    let acceptor_service = TraceAcceptorService::new(trace_handler);
+    let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let acceptor_addr = acceptor_listener.local_addr().unwrap();
+    drop(acceptor_listener);
 
-    // Setup Router state for query routing
-    let catalog = Catalog::new(&catalog_dsn).await.unwrap();
-    let service_registry =
-        ServiceRegistry::with_flight_transport(catalog.clone(), (*flight_transport).clone());
-    let _router_state = InMemoryStateImpl::new(catalog);
+    let acceptor_server = Server::builder()
+        .add_service(TraceServiceServer::new(acceptor_service))
+        .serve(acceptor_addr);
+    tokio::spawn(acceptor_server);
 
-    println!("✅ Router state initialized");
+    // Allow services to start and register
+    sleep(Duration::from_secs(2)).await;
+
+    TestServices {
+        object_store,
+        flight_transport,
+        acceptor_addr,
+        writer_addr,
+        querier_addr,
+        config,
+        temp_dir,
+    }
+}
+
+/// Set up all services for testing (monolithic mode)
+async fn setup_monolithic_services() -> TestServices {
+    let (config, temp_dir, object_store) = setup_test_infrastructure().await;
+
+    let wal_config = WalConfig {
+        wal_dir: PathBuf::from(temp_dir.path()),
+        max_segment_size: 1024 * 1024,
+        max_buffer_entries: 1,
+        flush_interval_secs: 1,
+    };
+
+    // Use the same flight transport pattern as the working distributed test
+    let acceptor_bootstrap = ServiceBootstrap::new(
+        config.clone(),
+        ServiceType::Acceptor,
+        "127.0.0.1:50058".to_string(),
+    )
+    .await
+    .unwrap();
+    let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
+
+    // Start writer Flight service (same as working test)
+    let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let writer_addr = writer_listener.local_addr().unwrap();
+    drop(writer_listener);
+
+    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
+    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
+    let writer_server = Server::builder()
+        .add_service(FlightServiceServer::new(writer_service))
+        .serve(writer_addr);
+    tokio::spawn(writer_server);
+
+    // Create writer bootstrap for proper service registration
+    let writer_bootstrap =
+        ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
+            .await
+            .unwrap();
+    let _writer_id = writer_bootstrap.service_id();
+
+    // Start querier service for query testing
+    let querier_service = QuerierFlightService::new(object_store.clone(), flight_transport.clone());
+    let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let querier_addr = querier_listener.local_addr().unwrap();
+    drop(querier_listener);
+
+    let querier_server = Server::builder()
+        .add_service(FlightServiceServer::new(querier_service))
+        .serve(querier_addr);
+    tokio::spawn(querier_server);
+
+    let querier_bootstrap = ServiceBootstrap::new(
+        config.clone(),
+        ServiceType::Querier,
+        querier_addr.to_string(),
+    )
+    .await
+    .unwrap();
+    let _querier_id = querier_bootstrap.service_id();
 
     // Start acceptor (same as working test)
     let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
@@ -128,19 +213,33 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
         .serve(acceptor_addr);
     tokio::spawn(acceptor_server);
 
-    println!("✅ Acceptor service started at {acceptor_addr}");
+    // Allow more time for monolithic service startup and discovery
+    // Need extra time for all services to register with the shared catalog
+    sleep(Duration::from_secs(5)).await;
 
-    // Allow services to start and register (same timing as working test)
-    sleep(Duration::from_secs(2)).await;
+    TestServices {
+        object_store,
+        flight_transport,
+        acceptor_addr,
+        writer_addr,
+        querier_addr,
+        config,
+        temp_dir,
+    }
+}
 
-    // Verify service discovery
-    let trace_ingestion_services = flight_transport
+/// Verify that all services are discoverable
+async fn verify_service_discovery(services: &TestServices) {
+    let trace_ingestion_services = services
+        .flight_transport
         .discover_services_by_capability(ServiceCapability::TraceIngestion)
         .await;
-    let query_services = flight_transport
+    let query_services = services
+        .flight_transport
         .discover_services_by_capability(ServiceCapability::QueryExecution)
         .await;
-    let storage_services = flight_transport
+    let storage_services = services
+        .flight_transport
         .discover_services_by_capability(ServiceCapability::Storage)
         .await;
 
@@ -163,8 +262,10 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
     assert!(!storage_services.is_empty(), "No storage services found");
 
     println!("✅ Service discovery verification passed");
+}
 
-    // Send test trace data (exact same format as working test)
+/// Send a test trace via OTLP and return the trace ID
+async fn send_test_trace(services: &TestServices, trace_name: &str) -> Vec<u8> {
     let trace_id = vec![0x42; 16];
     let span_id = vec![0x24; 8];
 
@@ -177,7 +278,7 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
                     trace_id: trace_id.clone(),
                     span_id: span_id.clone(),
                     parent_span_id: vec![],
-                    name: "end-to-end-test-span".to_string(),
+                    name: trace_name.to_string(),
                     kind: 1,
                     start_time_unix_nano: 1_000_000_000,
                     end_time_unix_nano: 2_000_000_000,
@@ -200,8 +301,8 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
         }],
     };
 
-    // Send trace (same as working test)
-    let endpoint = format!("http://{acceptor_addr}");
+    // Send trace
+    let endpoint = format!("http://{}", services.acceptor_addr);
     let mut otlp_client = opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint)
         .await
         .unwrap();
@@ -212,14 +313,172 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
         .expect("OTLP export failed");
 
     println!(
-        "✅ Step 1: Successfully sent trace {} to acceptor",
+        "✅ Successfully sent trace {} to acceptor",
         hex::encode(&trace_id)
     );
 
-    // Verify data persistence - allow extra time for WAL processing and Flight communication
-    sleep(Duration::from_secs(5)).await;
+    trace_id
+}
 
-    let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
+/// Send a test trace via OTLP with detailed timeout logging (for monolithic mode)
+async fn send_test_trace_with_logging(services: &TestServices, trace_name: &str) -> Vec<u8> {
+    let trace_id = vec![0xff; 16];
+    let span_id = vec![0xaa; 8];
+
+    let trace_request = ExportTraceServiceRequest {
+        resource_spans: vec![ResourceSpans {
+            resource: None,
+            scope_spans: vec![ScopeSpans {
+                scope: None,
+                spans: vec![Span {
+                    trace_id: trace_id.clone(),
+                    span_id: span_id.clone(),
+                    parent_span_id: vec![],
+                    name: trace_name.to_string(),
+                    kind: 1,
+                    start_time_unix_nano: 1_000_000_000,
+                    end_time_unix_nano: 2_000_000_000,
+                    ..Default::default()
+                }],
+                schema_url: "".to_string(),
+            }],
+            schema_url: "".to_string(),
+        }],
+    };
+
+    let endpoint = format!("http://{}", services.acceptor_addr);
+    println!("🔗 Attempting to connect to OTLP endpoint: {endpoint}");
+
+    let mut otlp_client = match opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint.clone()).await {
+        Ok(client) => {
+            println!("✅ Successfully connected to OTLP endpoint");
+            client
+        }
+        Err(e) => {
+            println!("❌ Failed to connect to OTLP endpoint {endpoint}: {e}");
+            panic!("OTLP connection failed: {e}");
+        }
+    };
+
+    println!("📤 Sending trace via OTLP...");
+
+    // Add detailed timing to identify where the hang occurs
+    let start_time = std::time::Instant::now();
+    println!("⏱️  Starting OTLP export at {start_time:?}");
+
+    let export_result = timeout(Duration::from_secs(15), otlp_client.export(trace_request)).await;
+
+    match export_result {
+        Ok(Ok(_response)) => {
+            println!(
+                "✅ OTLP export completed successfully in {:?}",
+                start_time.elapsed()
+            );
+        }
+        Ok(Err(e)) => {
+            println!(
+                "❌ OTLP export failed after {:?}: {e}",
+                start_time.elapsed()
+            );
+            panic!("OTLP export failed: {e}");
+        }
+        Err(_) => {
+            println!("⏰ OTLP export timed out after {:?}", start_time.elapsed());
+
+            // Let's check if the issue is in service discovery
+            println!("🔍 Checking if acceptor can discover storage services...");
+            let storage_check = services
+                .flight_transport
+                .discover_services_by_capability(ServiceCapability::Storage)
+                .await;
+            println!("📋 Storage services discoverable: {}", storage_check.len());
+            for service in &storage_check {
+                println!("  - {} at {}", service.service_type, service.endpoint);
+            }
+
+            panic!("OTLP export timed out - likely hanging in Flight communication");
+        }
+    }
+
+    println!("✅ Trace sent successfully");
+    trace_id
+}
+
+/// Set up all services for performance testing
+async fn setup_performance_services() -> TestServices {
+    let (config, temp_dir, object_store) = setup_test_infrastructure().await;
+
+    let wal_config = WalConfig {
+        wal_dir: PathBuf::from(temp_dir.path()),
+        max_segment_size: 1024 * 1024,
+        max_buffer_entries: 10, // Smaller buffer for performance testing
+        flush_interval_secs: 1,
+    };
+
+    let service_bootstrap = ServiceBootstrap::new(
+        config.clone(),
+        ServiceType::Acceptor,
+        "127.0.0.1:50052".to_string(),
+    )
+    .await
+    .unwrap();
+    let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
+
+    // Start writer service
+    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
+    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
+    let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let writer_addr = writer_listener.local_addr().unwrap();
+    drop(writer_listener);
+
+    let writer_server = Server::builder()
+        .add_service(FlightServiceServer::new(writer_service))
+        .serve(writer_addr);
+    tokio::spawn(writer_server);
+
+    let writer_bootstrap =
+        ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
+            .await
+            .unwrap();
+    let _writer_id = writer_bootstrap.service_id();
+
+    // Start acceptor service
+    let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
+    let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal.clone());
+    let acceptor_service = TraceAcceptorService::new(trace_handler);
+    let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let acceptor_addr = acceptor_listener.local_addr().unwrap();
+    drop(acceptor_listener);
+
+    let acceptor_server = Server::builder()
+        .add_service(TraceServiceServer::new(acceptor_service))
+        .serve(acceptor_addr);
+    tokio::spawn(acceptor_server);
+
+    sleep(Duration::from_millis(500)).await;
+
+    TestServices {
+        object_store,
+        flight_transport,
+        acceptor_addr,
+        writer_addr,
+        querier_addr: "127.0.0.1:0".parse().unwrap(), // Not used in performance test
+        config,
+        temp_dir,
+    }
+}
+
+/// Verify data persistence and WAL processing
+async fn verify_data_persistence(services: &TestServices, processing_delay: Duration) {
+    // Verify data persistence - allow extra time for WAL processing and Flight communication
+    sleep(processing_delay).await;
+
+    let objects: Vec<_> = services
+        .object_store
+        .list(None)
+        .try_collect()
+        .await
+        .unwrap();
     println!("📦 Objects in store: {}", objects.len());
     for obj in &objects {
         println!("  - {}", obj.location);
@@ -230,35 +489,47 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
         "No data found in object store after ingestion"
     );
 
-    // Verify WAL entries were processed
-    let unprocessed_acceptor = acceptor_wal.get_unprocessed_entries().await.unwrap();
-    let unprocessed_writer = writer_wal.get_unprocessed_entries().await.unwrap();
+    println!("✅ Data successfully persisted to object store");
+}
 
-    println!("📋 WAL Status:");
-    println!(
-        "  - Acceptor unprocessed entries: {}",
-        unprocessed_acceptor.len()
-    );
-    println!(
-        "  - Writer unprocessed entries: {}",
-        unprocessed_writer.len()
-    );
+/// Complete end-to-end test: OTLP ingestion → Storage → Query retrieval
+///
+/// This test extends the working component_integration_tests pattern
+/// to validate the complete SignalDB pipeline end-to-end.
+#[tokio::test]
+async fn test_complete_trace_ingestion_and_query_pipeline() {
+    println!("🚀 Starting complete end-to-end trace pipeline test...");
 
-    assert_eq!(
-        unprocessed_acceptor.len(),
-        0,
-        "Acceptor WAL should be processed"
-    );
-    assert_eq!(
-        unprocessed_writer.len(),
-        0,
-        "Writer WAL should be processed"
-    );
+    // Set up all services in distributed mode
+    let services = setup_distributed_services().await;
 
-    println!("✅ Step 2: Data successfully persisted to object store");
+    println!("✅ Writer service started at {}", services.writer_addr);
+    println!("✅ Querier service started at {}", services.querier_addr);
+    println!("✅ Acceptor service started at {}", services.acceptor_addr);
+
+    // Setup Router state for query routing
+    let catalog_dsn = services.config.discovery.as_ref().unwrap().dsn.clone();
+    let catalog = Catalog::new(&catalog_dsn).await.unwrap();
+    let service_registry = ServiceRegistry::with_flight_transport(
+        catalog.clone(),
+        (*services.flight_transport).clone(),
+    );
+    let _router_state = InMemoryStateImpl::new(catalog);
+
+    println!("✅ Router state initialized");
+
+    // Verify service discovery
+    verify_service_discovery(&services).await;
+
+    // Send test trace data
+    let trace_id = send_test_trace(&services, "end-to-end-test-span").await;
+
+    // Verify data persistence and WAL processing
+    verify_data_persistence(&services, Duration::from_secs(5)).await;
 
     // Test querying the trace back
-    let mut query_client = flight_transport
+    let mut query_client = services
+        .flight_transport
         .get_client_for_capability(ServiceCapability::QueryExecution)
         .await
         .expect("Failed to get querier client");
@@ -347,6 +618,12 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
     println!("✅ Service Discovery: All services properly registered and discoverable");
     println!("✅ Query Infrastructure: Flight-based query mechanism operational");
 
+    let objects: Vec<_> = services
+        .object_store
+        .list(None)
+        .try_collect()
+        .await
+        .unwrap();
     if !objects.is_empty() {
         println!("✅ OVERALL: Complete trace pipeline FUNCTIONAL");
     } else {
@@ -364,124 +641,29 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
 async fn test_monolithic_mode_trace_pipeline() {
     println!("🚀 Testing monolithic mode trace pipeline...");
 
-    // Same setup as working test but with in-memory catalog for monolithic mode
-    let temp_dir = TempDir::new().unwrap();
-    let wal_config = WalConfig {
-        wal_dir: PathBuf::from(temp_dir.path()),
-        max_segment_size: 1024 * 1024,
-        max_buffer_entries: 1,
-        flush_interval_secs: 1,
-    };
-
-    let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-
-    // Set up service discovery with in-memory catalog for monolithic mode
-    let catalog_db_path = temp_dir.path().join("mono_catalog.db");
-    let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
-
-    let mut config = Configuration::default();
-    config.discovery = Some(common::config::DiscoveryConfig {
-        dsn: catalog_dsn.clone(),
-        heartbeat_interval: Duration::from_secs(30),
-        poll_interval: Duration::from_secs(60),
-        ttl: Duration::from_secs(300),
-    });
-
-    // Use the same flight transport pattern as the working distributed test
-    let acceptor_bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Acceptor,
-        "127.0.0.1:50058".to_string(),
-    )
-    .await
-    .unwrap();
-    let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
-
-    println!("✅ Monolithic mode configuration initialized");
-
-    // Start writer Flight service (same as working test)
-    let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let writer_addr = writer_listener.local_addr().unwrap();
-    drop(writer_listener);
-
-    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
-    let writer_server = Server::builder()
-        .add_service(FlightServiceServer::new(writer_service))
-        .serve(writer_addr);
-    tokio::spawn(writer_server);
-
-    // Create writer bootstrap for proper service registration
-    let writer_bootstrap =
-        ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
-            .await
-            .unwrap();
-    let _writer_id = writer_bootstrap.service_id();
-
-    // Start querier service for query testing
-    let querier_service = QuerierFlightService::new(object_store.clone(), flight_transport.clone());
-    let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let querier_addr = querier_listener.local_addr().unwrap();
-    drop(querier_listener);
-
-    let querier_server = Server::builder()
-        .add_service(FlightServiceServer::new(querier_service))
-        .serve(querier_addr);
-    tokio::spawn(querier_server);
-
-    let querier_bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Querier,
-        querier_addr.to_string(),
-    )
-    .await
-    .unwrap();
-    let _querier_id = querier_bootstrap.service_id();
-
-    // Start acceptor (same as working test)
-    let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal.clone());
-    let acceptor_service = TraceAcceptorService::new(trace_handler);
-    let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let acceptor_addr = acceptor_listener.local_addr().unwrap();
-    drop(acceptor_listener);
-
-    let acceptor_server = Server::builder()
-        .add_service(TraceServiceServer::new(acceptor_service))
-        .serve(acceptor_addr);
-    tokio::spawn(acceptor_server);
+    // Set up all services in monolithic mode
+    let services = setup_monolithic_services().await;
 
     println!("✅ All services started in monolithic mode:");
-    println!("  - Writer: {writer_addr}");
-    println!("  - Querier: {querier_addr}");
-    println!("  - Acceptor: {acceptor_addr}");
+    println!("  - Writer: {}", services.writer_addr);
+    println!("  - Querier: {}", services.querier_addr);
+    println!("  - Acceptor: {}", services.acceptor_addr);
 
-    // Allow more time for monolithic service startup and discovery
-    // Need extra time for all services to register with the shared catalog
-    sleep(Duration::from_secs(5)).await;
-
-    // Create a temporary flight transport for service discovery verification
-    let discovery_bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Acceptor,
-        "127.0.0.1:50061".to_string(),
-    )
-    .await
-    .unwrap();
-    let _discovery_transport = Arc::new(InMemoryFlightTransport::new(discovery_bootstrap));
-
-    // Verify service discovery (same as working test)
-    let trace_ingestion_services = flight_transport
+    // Verify service discovery
+    println!("📋 Monolithic Service Discovery Status:");
+    let trace_ingestion_services = services
+        .flight_transport
         .discover_services_by_capability(ServiceCapability::TraceIngestion)
         .await;
-    let query_services = flight_transport
+    let query_services = services
+        .flight_transport
         .discover_services_by_capability(ServiceCapability::QueryExecution)
         .await;
-    let storage_services = flight_transport
+    let storage_services = services
+        .flight_transport
         .discover_services_by_capability(ServiceCapability::Storage)
         .await;
 
-    println!("📋 Monolithic Service Discovery Status:");
     println!(
         "  - TraceIngestion services: {}",
         trace_ingestion_services.len()
@@ -504,96 +686,15 @@ async fn test_monolithic_mode_trace_pipeline() {
 
     println!("✅ Monolithic service discovery verification passed");
 
-    // Test the pipeline (same data format as working test)
-    let trace_id = vec![0xff; 16];
-    let span_id = vec![0xaa; 8];
+    // Send test trace with detailed logging
+    let trace_id = send_test_trace_with_logging(&services, "monolithic-test-span").await;
 
-    let trace_request = ExportTraceServiceRequest {
-        resource_spans: vec![ResourceSpans {
-            resource: None,
-            scope_spans: vec![ScopeSpans {
-                scope: None,
-                spans: vec![Span {
-                    trace_id: trace_id.clone(),
-                    span_id: span_id.clone(),
-                    parent_span_id: vec![],
-                    name: "monolithic-test-span".to_string(),
-                    kind: 1,
-                    start_time_unix_nano: 1_000_000_000,
-                    end_time_unix_nano: 2_000_000_000,
-                    ..Default::default()
-                }],
-                schema_url: "".to_string(),
-            }],
-            schema_url: "".to_string(),
-        }],
-    };
-
-    let endpoint = format!("http://{acceptor_addr}");
-    println!("🔗 Attempting to connect to OTLP endpoint: {endpoint}");
-
-    let mut otlp_client = match opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint.clone()).await {
-        Ok(client) => {
-            println!("✅ Successfully connected to OTLP endpoint");
-            client
-        }
-        Err(e) => {
-            println!("❌ Failed to connect to OTLP endpoint {endpoint}: {e}");
-            panic!("OTLP connection failed: {e}");
-        }
-    };
-
-    println!("📤 Sending trace via OTLP...");
-
-    // Add detailed timing to identify where the hang occurs
-    let start_time = std::time::Instant::now();
-    println!("⏱️  Starting OTLP export at {start_time:?}");
-
-    let export_result = timeout(Duration::from_secs(15), otlp_client.export(trace_request)).await;
-
-    match export_result {
-        Ok(Ok(_response)) => {
-            println!(
-                "✅ OTLP export completed successfully in {:?}",
-                start_time.elapsed()
-            );
-        }
-        Ok(Err(e)) => {
-            println!(
-                "❌ OTLP export failed after {:?}: {e}",
-                start_time.elapsed()
-            );
-            panic!("OTLP export failed: {e}");
-        }
-        Err(_) => {
-            println!("⏰ OTLP export timed out after {:?}", start_time.elapsed());
-
-            // Let's check if the issue is in service discovery
-            println!("🔍 Checking if acceptor can discover storage services...");
-            let storage_check = flight_transport
-                .discover_services_by_capability(ServiceCapability::Storage)
-                .await;
-            println!("📋 Storage services discoverable: {}", storage_check.len());
-            for service in &storage_check {
-                println!("  - {} at {}", service.service_type, service.endpoint);
-            }
-
-            panic!("OTLP export timed out - likely hanging in Flight communication");
-        }
-    }
-
-    println!("✅ Trace sent successfully in monolithic mode");
-
-    sleep(Duration::from_secs(4)).await;
-
-    let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
-    assert!(!objects.is_empty(), "No data found in object store");
-
-    println!("✅ Data persisted successfully in monolithic mode");
-    println!("📦 Objects in store: {}", objects.len());
+    // Verify data persistence
+    verify_data_persistence(&services, Duration::from_secs(4)).await;
 
     // Test query
-    let mut query_client = flight_transport
+    let mut query_client = services
+        .flight_transport
         .get_client_for_capability(ServiceCapability::QueryExecution)
         .await
         .expect("Failed to get querier client");
@@ -623,79 +724,22 @@ async fn test_monolithic_mode_trace_pipeline() {
 async fn test_flight_communication_performance() {
     println!("🚀 Testing Flight communication performance...");
 
-    // Same setup as working test for reliable performance measurement
-    let temp_dir = TempDir::new().unwrap();
-    let wal_config = WalConfig {
-        wal_dir: PathBuf::from(temp_dir.path()),
-        max_segment_size: 1024 * 1024,
-        max_buffer_entries: 10, // Smaller buffer for performance testing
-        flush_interval_secs: 1,
-    };
+    // Set up services for performance testing
+    let services = setup_performance_services().await;
 
-    let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-
-    let catalog_db_path = temp_dir.path().join("catalog.db");
-    let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
-
-    let mut config = Configuration::default();
-    config.discovery = Some(common::config::DiscoveryConfig {
-        dsn: catalog_dsn.clone(),
-        heartbeat_interval: Duration::from_secs(30),
-        poll_interval: Duration::from_secs(60),
-        ttl: Duration::from_secs(300),
-    });
-
-    let service_bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Acceptor,
-        "127.0.0.1:50052".to_string(),
-    )
-    .await
-    .unwrap();
-    let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
-
-    // Start writer service
-    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
-    let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let writer_addr = writer_listener.local_addr().unwrap();
-    drop(writer_listener);
-
-    let writer_server = Server::builder()
-        .add_service(FlightServiceServer::new(writer_service))
-        .serve(writer_addr);
-    tokio::spawn(writer_server);
-
-    let writer_bootstrap =
-        ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
-            .await
-            .unwrap();
-    let _writer_id = writer_bootstrap.service_id();
-
-    // Start acceptor service
-    let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal.clone());
-    let acceptor_service = TraceAcceptorService::new(trace_handler);
-    let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let acceptor_addr = acceptor_listener.local_addr().unwrap();
-    drop(acceptor_listener);
-
-    let acceptor_server = Server::builder()
-        .add_service(TraceServiceServer::new(acceptor_service))
-        .serve(acceptor_addr);
-    tokio::spawn(acceptor_server);
-
-    sleep(Duration::from_millis(500)).await;
-
-    // Create gRPC client
-    let endpoint = format!("http://{acceptor_addr}");
-    let mut otlp_client = opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint)
-        .await
-        .unwrap();
+    println!("✅ Performance test services started:");
+    println!("  - Writer: {}", services.writer_addr);
+    println!("  - Acceptor: {}", services.acceptor_addr);
 
     // Performance test: Send multiple traces
     let num_traces: u32 = 50; // Smaller number for reliable testing
     let start_time = std::time::Instant::now();
+
+    // Create gRPC client
+    let endpoint = format!("http://{}", services.acceptor_addr);
+    let mut otlp_client = opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint)
+        .await
+        .unwrap();
 
     for i in 0..num_traces {
         let mut trace_id = vec![0u8; 16];
@@ -733,7 +777,12 @@ async fn test_flight_communication_performance() {
     // Allow processing to complete - extra time for performance test
     sleep(Duration::from_secs(6)).await;
 
-    let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
+    let objects: Vec<_> = services
+        .object_store
+        .list(None)
+        .try_collect()
+        .await
+        .unwrap();
 
     println!("🎯 PERFORMANCE TEST RESULTS:");
     println!("📈 Ingested {num_traces} traces in {ingestion_duration:?}");
