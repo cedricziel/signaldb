@@ -3,6 +3,10 @@ set -e
 
 echo "Running pre-commit hooks..."
 
+# Check that code compiles
+echo "Checking code compilation..."
+cargo check --all-targets --all-features
+
 # Check code formatting
 echo "Checking code formatting..."
 cargo fmt --all -- --check
