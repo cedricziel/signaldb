@@ -221,15 +221,23 @@ impl FlightService for QuerierFlightService {
         let descriptor = request.into_inner();
 
         // Return appropriate schema based on the descriptor
-        let _schema =
+        let schema =
             if descriptor.cmd == b"traces".as_slice() || descriptor.cmd.starts_with(b"SELECT") {
                 create_span_batch_schema()
             } else {
                 return Err(Status::not_found("Unknown schema"));
             };
 
+        // Serialize schema to Flight format
+        let options = datafusion::arrow::ipc::writer::IpcWriteOptions::default();
+        let mut dict_tracker = datafusion::arrow::ipc::writer::DictionaryTracker::new(false);
+        let data_gen = datafusion::arrow::ipc::writer::IpcDataGenerator::default();
+        let schema_bytes = data_gen
+            .schema_to_bytes_with_dictionary_tracker(&schema, &mut dict_tracker, &options)
+            .ipc_message;
+
         let schema_result = SchemaResult {
-            schema: Bytes::new(), // TODO: Implement proper schema serialization
+            schema: schema_bytes.into(),
         };
 
         Ok(Response::new(schema_result))
