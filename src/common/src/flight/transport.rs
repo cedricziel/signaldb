@@ -75,13 +75,11 @@ struct FlightConnection {
     last_used: std::time::Instant,
 }
 
-/// In-memory Flight transport that manages service registration and connection pooling
+/// Catalog-based Flight transport that manages service discovery and connection pooling
 #[derive(Clone)]
 pub struct InMemoryFlightTransport {
     /// ServiceBootstrap for catalog integration
     bootstrap: Arc<ServiceBootstrap>,
-    /// Registry of Flight services
-    services: Arc<tokio::sync::RwLock<HashMap<Uuid, FlightServiceMetadata>>>,
     /// Connection pool for Flight clients
     connections: Arc<tokio::sync::RwLock<HashMap<String, FlightConnection>>>,
     /// Maximum number of connections to keep in pool
@@ -95,7 +93,6 @@ impl InMemoryFlightTransport {
     pub fn new(bootstrap: ServiceBootstrap) -> Self {
         Self {
             bootstrap: Arc::new(bootstrap),
-            services: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             connections: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             max_pool_size: 50,
             connection_timeout: 30,
@@ -110,97 +107,74 @@ impl InMemoryFlightTransport {
     ) -> Self {
         Self {
             bootstrap: Arc::new(bootstrap),
-            services: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             connections: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             max_pool_size,
             connection_timeout,
         }
     }
 
-    /// Register a Flight service with the transport
+    /// Register a Flight service with the catalog-based transport
+    /// Note: Services are now registered automatically through ServiceBootstrap
+    /// This method is kept for backward compatibility but now just returns the bootstrap service ID
     pub async fn register_flight_service(
         &self,
-        service_type: ServiceType,
-        address: String,
-        port: u16,
-        capabilities: Vec<ServiceCapability>,
+        _service_type: ServiceType,
+        _address: String,
+        _port: u16,
+        _capabilities: Vec<ServiceCapability>,
     ) -> Result<Uuid, Box<dyn std::error::Error + Send + Sync>> {
-        let service_id = Uuid::new_v4(); // Generate unique ID for each service
-        let metadata =
-            FlightServiceMetadata::new(service_id, service_type, address, port, capabilities);
+        // Services are now registered automatically via ServiceBootstrap catalog integration
+        // Return the current service's ID for compatibility
+        let service_id = self.bootstrap.service_id();
 
         log::info!(
-            "Registering Flight service {} of type {} at {} with capabilities: {:?}",
-            service_id,
-            metadata.service_type,
-            metadata.endpoint,
-            metadata.capabilities
+            "Flight service registration requested - using catalog service ID: {}",
+            service_id
         );
-
-        // Register with in-memory registry
-        let mut services = self.services.write().await;
-        services.insert(service_id, metadata);
 
         Ok(service_id)
     }
 
-    /// Discover Flight services with specific capabilities
+    /// Discover Flight services with specific capabilities using catalog
     pub async fn discover_services_by_capability(
         &self,
         capability: ServiceCapability,
     ) -> Vec<FlightServiceMetadata> {
-        // First get services from local registry
-        let local_services = {
-            let services = self.services.read().await;
-            services.values().cloned().collect::<Vec<_>>()
-        };
+        // Use catalog-based discovery only
+        if let Ok(ingesters) = self
+            .bootstrap
+            .discover_services_by_capability(capability.clone())
+            .await
+        {
+            let mut services = Vec::new();
 
-        // Filter by capability
-        let local_filtered =
-            FlightServiceMetadata::filter_by_capability(&local_services, &capability);
-
-        // Start with local services
-        let mut all_services: Vec<FlightServiceMetadata> =
-            local_filtered.into_iter().cloned().collect();
-
-        // Also discover services from catalog (for backward compatibility)
-        // Only add catalog services if they're not already in local registry
-        if let Ok(ingesters) = self.bootstrap.discover_ingesters().await {
             for ingester in ingesters {
-                // Check if this service is already in local registry
-                let already_local = all_services
-                    .iter()
-                    .any(|s| s.service_id == ingester.id);
-
-                if !already_local {
-                    // For now, assume all ingesters have trace ingestion capability
-                    // This can be enhanced when we store capabilities in catalog
-                    if matches!(
-                        capability,
-                        ServiceCapability::TraceIngestion | ServiceCapability::Storage
-                    ) {
-                        let parts: Vec<&str> = ingester.address.split(':').collect();
-                        if parts.len() == 2 {
-                            if let Ok(port) = parts[1].parse::<u16>() {
-                                let metadata = FlightServiceMetadata::new(
-                                    ingester.id,
-                                    ServiceType::Writer, // Assume writer for now
-                                    ingester.address.clone(),
-                                    port,
-                                    vec![
-                                        ServiceCapability::TraceIngestion,
-                                        ServiceCapability::Storage,
-                                    ],
-                                );
-                                all_services.push(metadata);
-                            }
-                        }
+                let parts: Vec<&str> = ingester.address.split(':').collect();
+                if parts.len() == 2 {
+                    if let Ok(port) = parts[1].parse::<u16>() {
+                        let metadata = FlightServiceMetadata::new(
+                            ingester.id,
+                            ingester.service_type.clone(),
+                            ingester.address.clone(),
+                            port,
+                            ingester.capabilities.clone(),
+                        );
+                        services.push(metadata);
                     }
                 }
             }
-        }
 
-        all_services
+            log::debug!(
+                "Discovered {} services with capability {:?} from catalog",
+                services.len(),
+                capability
+            );
+
+            services
+        } else {
+            log::warn!("Failed to discover services from catalog");
+            Vec::new()
+        }
     }
 
     /// Get a Flight client for the specified service
@@ -208,37 +182,26 @@ impl InMemoryFlightTransport {
         &self,
         service_id: Uuid,
     ) -> Result<FlightServiceClient<Channel>, Box<dyn std::error::Error + Send + Sync>> {
-        // Find the service metadata
-        let service_metadata = {
-            let services = self.services.read().await;
-            services.get(&service_id).cloned()
-        };
+        // Discover service from catalog
+        let ingesters = self.bootstrap.discover_ingesters().await?;
+        let ingester = ingesters
+            .into_iter()
+            .find(|i| i.id == service_id)
+            .ok_or("Service not found in catalog")?;
 
-        let service_metadata = match service_metadata {
-            Some(metadata) => metadata,
-            None => {
-                // Try to discover from catalog
-                let ingesters = self.bootstrap.discover_ingesters().await?;
-                let ingester = ingesters
-                    .into_iter()
-                    .find(|i| i.id == service_id)
-                    .ok_or("Service not found")?;
+        let parts: Vec<&str> = ingester.address.split(':').collect();
+        if parts.len() != 2 {
+            return Err("Invalid service address format".into());
+        }
+        let port = parts[1].parse::<u16>()?;
 
-                let parts: Vec<&str> = ingester.address.split(':').collect();
-                if parts.len() != 2 {
-                    return Err("Invalid service address format".into());
-                }
-                let port = parts[1].parse::<u16>()?;
-
-                FlightServiceMetadata::new(
-                    ingester.id,
-                    ServiceType::Writer, // Default assumption
-                    ingester.address,
-                    port,
-                    vec![ServiceCapability::TraceIngestion],
-                )
-            }
-        };
+        let service_metadata = FlightServiceMetadata::new(
+            ingester.id,
+            ingester.service_type,
+            ingester.address,
+            port,
+            ingester.capabilities,
+        );
 
         // Check connection pool first
         {
@@ -309,41 +272,54 @@ impl InMemoryFlightTransport {
         self.get_flight_client(service.service_id).await
     }
 
-    /// Get all registered Flight services
+    /// Get all registered Flight services from catalog
     pub async fn list_services(&self) -> Vec<FlightServiceMetadata> {
-        let services = self.services.read().await;
-        services.values().cloned().collect()
+        if let Ok(ingesters) = self.bootstrap.discover_ingesters().await {
+            let mut services = Vec::new();
+
+            for ingester in ingesters {
+                let parts: Vec<&str> = ingester.address.split(':').collect();
+                if parts.len() == 2 {
+                    if let Ok(port) = parts[1].parse::<u16>() {
+                        let metadata = FlightServiceMetadata::new(
+                            ingester.id,
+                            ingester.service_type,
+                            ingester.address,
+                            port,
+                            ingester.capabilities,
+                        );
+                        services.push(metadata);
+                    }
+                }
+            }
+
+            services
+        } else {
+            Vec::new()
+        }
     }
 
-    /// Remove a service registration
+    /// Remove a service registration from catalog
     pub async fn unregister_service(
         &self,
         service_id: Uuid,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut services = self.services.write().await;
-        services.remove(&service_id);
-        log::info!("Unregistered Flight service {service_id}");
+        self.bootstrap
+            .catalog()
+            .deregister_ingester(service_id)
+            .await?;
+        log::info!("Unregistered Flight service {service_id} from catalog");
         Ok(())
     }
 
     /// Health check - returns true if transport is operational
     pub async fn is_healthy(&self) -> bool {
-        // Check if we have any registered services or can discover services
-        let local_count = {
-            let services = self.services.read().await;
-            services.len()
-        };
-
-        if local_count > 0 {
-            true
-        } else {
-            // Check if we can discover services from catalog
-            self.bootstrap
-                .discover_ingesters()
-                .await
-                .map(|services| !services.is_empty())
-                .unwrap_or(false)
-        }
+        // Check if we can discover services from catalog
+        self.bootstrap
+            .discover_ingesters()
+            .await
+            .map(|services| !services.is_empty())
+            .unwrap_or(false)
     }
 
     /// Get connection pool statistics
@@ -374,7 +350,6 @@ impl InMemoryFlightTransport {
     pub fn start_connection_cleanup(&self, cleanup_interval: std::time::Duration) {
         let transport = InMemoryFlightTransport {
             bootstrap: self.bootstrap.clone(),
-            services: self.services.clone(),
             connections: self.connections.clone(),
             max_pool_size: self.max_pool_size,
             connection_timeout: self.connection_timeout,
@@ -435,56 +410,36 @@ mod tests {
             .await
             .unwrap();
 
+        // Service registration now uses catalog, so we should find services from catalog
         let services = transport.list_services().await;
-        assert_eq!(services.len(), 1);
-        assert_eq!(services[0].service_id, service_id);
-        assert_eq!(services[0].service_type, ServiceType::Writer);
-        assert!(services[0].has_capability(&ServiceCapability::TraceIngestion));
-        assert!(services[0].has_capability(&ServiceCapability::Storage));
+        // Should include the bootstrap service itself which was registered with catalog
+        assert!(!services.is_empty());
+        // The returned service ID should be the bootstrap service ID
+        assert_eq!(service_id, transport.bootstrap.service_id());
     }
 
     #[tokio::test]
     async fn test_capability_filtering() {
         let transport = create_test_transport().await;
 
-        // Register writer service
-        transport
-            .register_flight_service(
-                ServiceType::Writer,
-                "localhost".to_string(),
-                50052,
-                vec![
-                    ServiceCapability::TraceIngestion,
-                    ServiceCapability::Storage,
-                ],
-            )
-            .await
-            .unwrap();
+        // The transport bootstrap registered a Router service with Routing capability
+        // Test capability filtering for Router service
+        let routing_services = transport
+            .discover_services_by_capability(ServiceCapability::Routing)
+            .await;
 
-        // Register querier service
-        transport
-            .register_flight_service(
-                ServiceType::Querier,
-                "localhost".to_string(),
-                50053,
-                vec![ServiceCapability::QueryExecution],
-            )
-            .await
-            .unwrap();
+        // Should find the router service that was registered during bootstrap
+        assert!(!routing_services.is_empty());
+        assert!(routing_services
+            .iter()
+            .any(|s| s.service_type == ServiceType::Router));
 
-        // Test capability filtering
+        // Test for capabilities that shouldn't exist
         let trace_services = transport
             .discover_services_by_capability(ServiceCapability::TraceIngestion)
             .await;
-        // Should find locally registered writer plus any catalog services
-        assert!(!trace_services.is_empty());
-        assert!(trace_services.iter().any(|s| s.service_type == ServiceType::Writer));
-
-        let query_services = transport
-            .discover_services_by_capability(ServiceCapability::QueryExecution)
-            .await;
-        assert_eq!(query_services.len(), 1);
-        assert_eq!(query_services[0].service_type, ServiceType::Querier);
+        // Router doesn't have trace ingestion capability, so this should be empty
+        assert!(trace_services.is_empty());
     }
 
     #[tokio::test]
@@ -518,23 +473,11 @@ mod tests {
     async fn test_health_check() {
         let transport = create_test_transport().await;
 
-        // Should be healthy even with no local services due to catalog integration
-        let _is_healthy = transport.is_healthy().await;
-        // This might be false if no services are registered in the in-memory catalog
-        // The actual result depends on the bootstrap catalog state
-
-        // Register a service to ensure health
-        transport
-            .register_flight_service(
-                ServiceType::Writer,
-                "localhost".to_string(),
-                50052,
-                vec![ServiceCapability::TraceIngestion],
-            )
-            .await
-            .unwrap();
-
-        let is_healthy_with_service = transport.is_healthy().await;
-        assert!(is_healthy_with_service);
+        // Should be healthy because the bootstrap service was registered with catalog
+        let is_healthy = transport.is_healthy().await;
+        assert!(
+            is_healthy,
+            "Transport should be healthy with bootstrap service in catalog"
+        );
     }
 }

@@ -1,3 +1,5 @@
+use crate::flight::transport::ServiceCapability;
+use crate::service_bootstrap::ServiceType;
 use chrono::{DateTime, Utc};
 use sqlx::{query, PgPool, Row, SqlitePool};
 use uuid::Uuid;
@@ -59,7 +61,9 @@ impl Catalog {
                 CREATE TABLE IF NOT EXISTS ingesters (
                     id TEXT PRIMARY KEY,
                     address TEXT NOT NULL,
-                    last_seen TEXT NOT NULL
+                    last_seen TEXT NOT NULL,
+                    service_type TEXT NOT NULL DEFAULT 'Writer',
+                    capabilities TEXT NOT NULL DEFAULT 'TraceIngestion,Storage'
                 )"#;
                 query(create_ingesters).execute(pool).await?;
 
@@ -85,7 +89,9 @@ impl Catalog {
                 CREATE TABLE IF NOT EXISTS ingesters (
                     id UUID PRIMARY KEY,
                     address TEXT NOT NULL,
-                    last_seen TIMESTAMPTZ NOT NULL
+                    last_seen TIMESTAMPTZ NOT NULL,
+                    service_type TEXT NOT NULL DEFAULT 'Writer',
+                    capabilities TEXT NOT NULL DEFAULT 'TraceIngestion,Storage'
                 )"#;
                 query(create_ingesters).execute(pool).await?;
 
@@ -110,48 +116,77 @@ impl Catalog {
         Ok(())
     }
 
-    /// Register or update an ingester with its address and heartbeat.
-    pub async fn register_ingester(&self, id: Uuid, address: &str) -> Result<(), sqlx::Error> {
+    /// Register or update an ingester with its address, service type, capabilities and heartbeat.
+    pub async fn register_ingester(
+        &self,
+        id: Uuid,
+        address: &str,
+        service_type: ServiceType,
+        capabilities: &[ServiceCapability],
+    ) -> Result<(), sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
                 let now = Utc::now().to_rfc3339();
                 let id_str = id.to_string();
+                let service_type_str = format!("{:?}", service_type);
+                let capabilities_str = capabilities
+                    .iter()
+                    .map(|c| format!("{:?}", c))
+                    .collect::<Vec<_>>()
+                    .join(",");
 
                 // Try insert first, then update if it already exists
                 let insert_stmt = r#"
-                INSERT INTO ingesters (id, address, last_seen)
-                VALUES (?, ?, ?)
+                INSERT INTO ingesters (id, address, last_seen, service_type, capabilities)
+                VALUES (?, ?, ?, ?, ?)
                 "#;
 
                 let result = query(insert_stmt)
                     .bind(&id_str)
                     .bind(address)
                     .bind(&now)
+                    .bind(&service_type_str)
+                    .bind(&capabilities_str)
                     .execute(pool)
                     .await;
 
                 if result.is_err() {
                     // If insert failed (likely due to duplicate key), try update
                     let update_stmt = r#"
-                    UPDATE ingesters SET address = ?, last_seen = ?
+                    UPDATE ingesters SET address = ?, last_seen = ?, service_type = ?, capabilities = ?
                     WHERE id = ?
                     "#;
                     query(update_stmt)
                         .bind(address)
                         .bind(&now)
+                        .bind(&service_type_str)
+                        .bind(&capabilities_str)
                         .bind(&id_str)
                         .execute(pool)
                         .await?;
                 }
             }
             Catalog::Postgres(pool) => {
+                let service_type_str = format!("{:?}", service_type);
+                let capabilities_str = capabilities
+                    .iter()
+                    .map(|c| format!("{:?}", c))
+                    .collect::<Vec<_>>()
+                    .join(",");
+
                 // PostgreSQL with UPSERT
                 let stmt = r#"
-                INSERT INTO ingesters (id, address, last_seen)
-                VALUES ($1, $2, NOW())
-                ON CONFLICT (id) DO UPDATE SET address = $2, last_seen = NOW()
+                INSERT INTO ingesters (id, address, last_seen, service_type, capabilities)
+                VALUES ($1, $2, NOW(), $3, $4)
+                ON CONFLICT (id) DO UPDATE SET address = $2, last_seen = NOW(), service_type = $3, capabilities = $4
                 "#;
-                query(stmt).bind(id).bind(address).execute(pool).await?;
+                query(stmt)
+                    .bind(id)
+                    .bind(address)
+                    .bind(&service_type_str)
+                    .bind(&capabilities_str)
+                    .execute(pool)
+                    .await?;
             }
         }
 
@@ -191,13 +226,17 @@ impl Catalog {
     pub async fn list_ingesters(&self) -> Result<Vec<Ingester>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let rows = query("SELECT id, address, last_seen FROM ingesters")
-                    .fetch_all(pool)
-                    .await?;
+                let rows = query(
+                    "SELECT id, address, last_seen, service_type, capabilities FROM ingesters",
+                )
+                .fetch_all(pool)
+                .await?;
                 let mut ingesters = Vec::with_capacity(rows.len());
                 for row in rows {
                     let id_str: String = row.get("id");
                     let last_seen_str: String = row.get("last_seen");
+                    let service_type_str: String = row.get("service_type");
+                    let capabilities_str: String = row.get("capabilities");
 
                     let id = Uuid::parse_str(&id_str)
                         .map_err(|_| sqlx::Error::Decode("Invalid UUID format".into()))?;
@@ -205,25 +244,40 @@ impl Catalog {
                         .map_err(|_| sqlx::Error::Decode("Invalid timestamp format".into()))?
                         .with_timezone(&Utc);
 
+                    let service_type = parse_service_type(&service_type_str);
+                    let capabilities = parse_capabilities(&capabilities_str);
+
                     let ing = Ingester {
                         id,
                         address: row.get("address"),
                         last_seen,
+                        service_type,
+                        capabilities,
                     };
                     ingesters.push(ing);
                 }
                 Ok(ingesters)
             }
             Catalog::Postgres(pool) => {
-                let rows = query("SELECT id, address, last_seen FROM ingesters")
-                    .fetch_all(pool)
-                    .await?;
+                let rows = query(
+                    "SELECT id, address, last_seen, service_type, capabilities FROM ingesters",
+                )
+                .fetch_all(pool)
+                .await?;
                 let mut ingesters = Vec::with_capacity(rows.len());
                 for row in rows {
+                    let service_type_str: String = row.get("service_type");
+                    let capabilities_str: String = row.get("capabilities");
+
+                    let service_type = parse_service_type(&service_type_str);
+                    let capabilities = parse_capabilities(&capabilities_str);
+
                     let ing = Ingester {
                         id: row.get("id"),
                         address: row.get("address"),
                         last_seen: row.get("last_seen"),
+                        service_type,
+                        capabilities,
                     };
                     ingesters.push(ing);
                 }
@@ -396,6 +450,22 @@ impl Catalog {
             }
         }
     }
+    /// Discover services that have a specific capability.
+    pub async fn discover_services_by_capability(
+        &self,
+        capability: ServiceCapability,
+    ) -> Result<Vec<Ingester>, sqlx::Error> {
+        let ingesters = self.list_ingesters().await?;
+
+        // Filter ingesters that have the required capability
+        let filtered: Vec<Ingester> = ingesters
+            .into_iter()
+            .filter(|ingester| ingester.capabilities.contains(&capability))
+            .collect();
+
+        Ok(filtered)
+    }
+
     /// Deregister an ingester instance, removing it from the catalog.
     pub async fn deregister_ingester(&self, id: Uuid) -> Result<(), sqlx::Error> {
         match self {
@@ -447,6 +517,8 @@ pub struct Ingester {
     pub id: Uuid,
     pub address: String,
     pub last_seen: DateTime<Utc>,
+    pub service_type: ServiceType,
+    pub capabilities: Vec<ServiceCapability>,
 }
 
 /// Definition of a shard range.
@@ -462,4 +534,32 @@ pub struct Shard {
 pub struct ShardOwner {
     pub shard_id: i32,
     pub ingester_id: Uuid,
+}
+
+/// Helper function to parse service type from string
+fn parse_service_type(s: &str) -> ServiceType {
+    match s {
+        "Acceptor" => ServiceType::Acceptor,
+        "Router" => ServiceType::Router,
+        "Writer" => ServiceType::Writer,
+        "Querier" => ServiceType::Querier,
+        _ => ServiceType::Writer, // Default fallback
+    }
+}
+
+/// Helper function to parse capabilities from comma-separated string
+fn parse_capabilities(s: &str) -> Vec<ServiceCapability> {
+    if s.is_empty() {
+        return vec![];
+    }
+
+    s.split(',')
+        .filter_map(|cap| match cap.trim() {
+            "TraceIngestion" => Some(ServiceCapability::TraceIngestion),
+            "QueryExecution" => Some(ServiceCapability::QueryExecution),
+            "Routing" => Some(ServiceCapability::Routing),
+            "Storage" => Some(ServiceCapability::Storage),
+            _ => None,
+        })
+        .collect()
 }

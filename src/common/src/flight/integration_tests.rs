@@ -133,13 +133,21 @@ async fn test_multiple_services_with_sqlite_catalog() {
     let querier_transport = querier_bootstrap.create_flight_transport();
 
     // The services are already registered with the catalog through ServiceBootstrap
-    // No need to register them again - just get their IDs for verification
+    // Both transports should see the services in the catalog
     let writer_services = writer_transport.list_services().await;
     let querier_services = querier_transport.list_services().await;
 
-    // Both transports start with empty local registries
-    assert_eq!(writer_services.len(), 0);
-    assert_eq!(querier_services.len(), 0);
+    // Both transports should see both services registered in the catalog
+    assert_eq!(
+        writer_services.len(),
+        2,
+        "Should see both writer and querier services"
+    );
+    assert_eq!(
+        querier_services.len(),
+        2,
+        "Should see both writer and querier services"
+    );
 
     // Test that both transports are healthy (can discover services)
     assert!(
