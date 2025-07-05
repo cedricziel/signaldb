@@ -24,7 +24,7 @@ use tonic::transport::Server;
 use writer::WriterFlightService;
 
 /// Complete end-to-end test: OTLP ingestion → Storage → Query retrieval
-/// 
+///
 /// This test extends the working component_integration_tests pattern
 /// to validate the complete SignalDB pipeline end-to-end.
 #[tokio::test]
@@ -145,12 +145,21 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
         .await;
 
     println!("📋 Service Discovery Status:");
-    println!("  - TraceIngestion services: {}", trace_ingestion_services.len());
+    println!(
+        "  - TraceIngestion services: {}",
+        trace_ingestion_services.len()
+    );
     println!("  - QueryExecution services: {}", query_services.len());
     println!("  - Storage services: {}", storage_services.len());
 
-    assert!(!trace_ingestion_services.is_empty(), "No trace ingestion services found");
-    assert!(!query_services.is_empty(), "No query execution services found");
+    assert!(
+        !trace_ingestion_services.is_empty(),
+        "No trace ingestion services found"
+    );
+    assert!(
+        !query_services.is_empty(),
+        "No query execution services found"
+    );
     assert!(!storage_services.is_empty(), "No storage services found");
 
     println!("✅ Service discovery verification passed");
@@ -202,7 +211,10 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
         .expect("OTLP export timed out")
         .expect("OTLP export failed");
 
-    println!("✅ Step 1: Successfully sent trace {} to acceptor", hex::encode(&trace_id));
+    println!(
+        "✅ Step 1: Successfully sent trace {} to acceptor",
+        hex::encode(&trace_id)
+    );
 
     // Verify data persistence - allow extra time for WAL processing and Flight communication
     sleep(Duration::from_secs(5)).await;
@@ -213,18 +225,35 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
         println!("  - {}", obj.location);
     }
 
-    assert!(!objects.is_empty(), "No data found in object store after ingestion");
+    assert!(
+        !objects.is_empty(),
+        "No data found in object store after ingestion"
+    );
 
     // Verify WAL entries were processed
     let unprocessed_acceptor = acceptor_wal.get_unprocessed_entries().await.unwrap();
     let unprocessed_writer = writer_wal.get_unprocessed_entries().await.unwrap();
 
     println!("📋 WAL Status:");
-    println!("  - Acceptor unprocessed entries: {}", unprocessed_acceptor.len());
-    println!("  - Writer unprocessed entries: {}", unprocessed_writer.len());
+    println!(
+        "  - Acceptor unprocessed entries: {}",
+        unprocessed_acceptor.len()
+    );
+    println!(
+        "  - Writer unprocessed entries: {}",
+        unprocessed_writer.len()
+    );
 
-    assert_eq!(unprocessed_acceptor.len(), 0, "Acceptor WAL should be processed");
-    assert_eq!(unprocessed_writer.len(), 0, "Writer WAL should be processed");
+    assert_eq!(
+        unprocessed_acceptor.len(),
+        0,
+        "Acceptor WAL should be processed"
+    );
+    assert_eq!(
+        unprocessed_writer.len(),
+        0,
+        "Writer WAL should be processed"
+    );
 
     println!("✅ Step 2: Data successfully persisted to object store");
 
@@ -236,7 +265,10 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
 
     let query_ticket = arrow_flight::Ticket::new(format!("find_trace:{}", hex::encode(&trace_id)));
 
-    println!("🔍 Querying for trace {} via Flight protocol...", hex::encode(&trace_id));
+    println!(
+        "🔍 Querying for trace {} via Flight protocol...",
+        hex::encode(&trace_id)
+    );
 
     let query_result = timeout(Duration::from_secs(10), query_client.do_get(query_ticket)).await;
 
@@ -278,7 +310,8 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
 
     match router_query_result {
         Ok(mut router_client) => {
-            let router_ticket = arrow_flight::Ticket::new(format!("find_trace:{}", hex::encode(&trace_id)));
+            let router_ticket =
+                arrow_flight::Ticket::new(format!("find_trace:{}", hex::encode(&trace_id)));
 
             match timeout(Duration::from_secs(10), router_client.do_get(router_ticket)).await {
                 Ok(Ok(response)) => {
@@ -324,7 +357,7 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
 }
 
 /// Test monolithic deployment mode
-/// 
+///
 /// This test validates that Flight communication works when all services
 /// are running in the same process (monolithic mode).
 #[tokio::test]
@@ -341,11 +374,11 @@ async fn test_monolithic_mode_trace_pipeline() {
     };
 
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    
+
     // Set up service discovery with in-memory catalog for monolithic mode
     let catalog_db_path = temp_dir.path().join("mono_catalog.db");
     let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
-    
+
     let mut config = Configuration::default();
     config.discovery = Some(common::config::DiscoveryConfig {
         dsn: catalog_dsn.clone(),
@@ -493,7 +526,7 @@ async fn test_monolithic_mode_trace_pipeline() {
 }
 
 /// Performance benchmark test for Flight communication
-/// 
+///
 /// This test measures the performance of the Flight-based communication.
 #[tokio::test]
 async fn test_flight_communication_performance() {
@@ -576,7 +609,7 @@ async fn test_flight_communication_performance() {
     for i in 0..num_traces {
         let mut trace_id = vec![0u8; 16];
         let mut span_id = vec![0u8; 8];
-        
+
         // Create unique trace and span IDs
         trace_id[12..16].copy_from_slice(&(i as u32).to_be_bytes());
         span_id[4..8].copy_from_slice(&(i as u32).to_be_bytes());
@@ -613,8 +646,14 @@ async fn test_flight_communication_performance() {
 
     println!("🎯 PERFORMANCE TEST RESULTS:");
     println!("📈 Ingested {num_traces} traces in {ingestion_duration:?}");
-    println!("📈 Average per trace: {:?}", ingestion_duration / num_traces);
-    println!("📈 Throughput: {:.2} traces/second", num_traces as f64 / ingestion_duration.as_secs_f64());
+    println!(
+        "📈 Average per trace: {:?}",
+        ingestion_duration / num_traces
+    );
+    println!(
+        "📈 Throughput: {:.2} traces/second",
+        num_traces as f64 / ingestion_duration.as_secs_f64()
+    );
     println!("📦 Objects stored: {}", objects.len());
 
     // Performance assertions
