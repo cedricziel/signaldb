@@ -247,7 +247,9 @@ async fn test_querier_integration() {
     // Skip query execution for now - DataFusion requires proper table registration
     // The querier architecture has been simplified to only query object store
     // and no longer depends on writers, which was the main goal
-    println!("✓ Querier test completed (query execution skipped - requires DataFusion table setup)");
+    println!(
+        "✓ Querier test completed (query execution skipped - requires DataFusion table setup)"
+    );
 
     // Clean up
     flight_transport
@@ -457,7 +459,7 @@ async fn test_end_to_end_pipeline() {
     for obj in &objects {
         println!("  - {}", obj.location);
     }
-    
+
     assert!(
         !objects.is_empty(),
         "No data found in object store after ingestion"
@@ -482,7 +484,7 @@ async fn test_end_to_end_pipeline() {
 async fn test_direct_acceptor_writer_flight() {
     // This test isolates the Flight communication between acceptor and writer
     // to confirm if the issue is in the Flight data transfer
-    
+
     let temp_dir = TempDir::new().unwrap();
     let wal_config = WalConfig {
         wal_dir: PathBuf::from(temp_dir.path()),
@@ -493,7 +495,7 @@ async fn test_direct_acceptor_writer_flight() {
 
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
     let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
-    
+
     // Create shared flight transport
     let service_bootstrap = ServiceBootstrap::new(
         Configuration::default(),
@@ -522,7 +524,10 @@ async fn test_direct_acceptor_writer_flight() {
             ServiceType::Writer,
             writer_addr.ip().to_string(),
             writer_addr.port(),
-            vec![ServiceCapability::TraceIngestion, ServiceCapability::Storage],
+            vec![
+                ServiceCapability::TraceIngestion,
+                ServiceCapability::Storage,
+            ],
         )
         .await
         .unwrap();
@@ -533,35 +538,42 @@ async fn test_direct_acceptor_writer_flight() {
     let client_result = flight_transport
         .get_client_for_capability(ServiceCapability::TraceIngestion)
         .await;
-    
+
     println!("Flight client creation: {:?}", client_result.is_ok());
-    assert!(client_result.is_ok(), "Failed to get Flight client for writer");
+    assert!(
+        client_result.is_ok(),
+        "Failed to get Flight client for writer"
+    );
 
     let mut client = client_result.unwrap();
 
     // Test 2: Can we send data directly via Flight do_put?
     let test_data = create_test_span_data();
     let schema = test_data.schema();
-    
+
     println!("Test data created with {} rows", test_data.num_rows());
-    
+
     // Convert to Flight data
     let flight_data = arrow_flight::utils::batches_to_flight_data(&schema, vec![test_data])
         .expect("Failed to convert to flight data");
-    
+
     println!("Converted to {} Flight data chunks", flight_data.len());
 
     // Send via do_put
     let flight_stream = stream::iter(flight_data.into_iter());
     let put_result = client.do_put(flight_stream).await;
-    
+
     println!("Flight do_put result: {:?}", put_result.is_ok());
-    
+
     if let Err(e) = &put_result {
         println!("Flight do_put error: {}", e);
     }
-    
-    assert!(put_result.is_ok(), "Flight do_put failed: {:?}", put_result.err());
+
+    assert!(
+        put_result.is_ok(),
+        "Flight do_put failed: {:?}",
+        put_result.err()
+    );
 
     // Consume the response stream
     let mut response_stream = put_result.unwrap().into_inner();
@@ -576,15 +588,18 @@ async fn test_direct_acceptor_writer_flight() {
 
     // Test 3: Check if data reached object store
     sleep(Duration::from_secs(2)).await;
-    
+
     let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
     println!("Objects in store after direct Flight: {}", objects.len());
-    
+
     for obj in &objects {
         println!("  - {}", obj.location);
     }
 
-    assert!(!objects.is_empty(), "No data found in object store after direct Flight communication");
+    assert!(
+        !objects.is_empty(),
+        "No data found in object store after direct Flight communication"
+    );
     println!("✓ Direct Flight communication test passed");
 }
 
@@ -592,7 +607,7 @@ async fn test_direct_acceptor_writer_flight() {
 #[tokio::test]
 async fn test_wal_processing_isolation() {
     // This test checks if the WAL is working correctly in isolation
-    
+
     let temp_dir = TempDir::new().unwrap();
     let wal_config = WalConfig {
         wal_dir: PathBuf::from(temp_dir.path()),
@@ -602,35 +617,44 @@ async fn test_wal_processing_isolation() {
     };
 
     let wal = Arc::new(Wal::new(wal_config).await.unwrap());
-    
+
     // Test 1: Can we write to WAL?
     let test_data = b"test trace data";
-    let entry_id = wal.append(common::wal::WalOperation::WriteTraces, test_data.to_vec()).await;
+    let entry_id = wal
+        .append(common::wal::WalOperation::WriteTraces, test_data.to_vec())
+        .await;
     println!("WAL append result: {:?}", entry_id.is_ok());
     assert!(entry_id.is_ok(), "Failed to append to WAL");
-    
+
     let entry_id = entry_id.unwrap();
-    
+
     // Test 2: Can we flush WAL?
     let flush_result = wal.flush().await;
     println!("WAL flush result: {:?}", flush_result.is_ok());
     assert!(flush_result.is_ok(), "Failed to flush WAL");
-    
+
     // Test 3: Can we get unprocessed entries?
     let unprocessed = wal.get_unprocessed_entries().await.unwrap();
     println!("Unprocessed entries: {}", unprocessed.len());
     assert_eq!(unprocessed.len(), 1, "Expected 1 unprocessed entry");
-    
+
     // Test 4: Can we mark as processed?
     let mark_result = wal.mark_processed(entry_id).await;
     println!("Mark processed result: {:?}", mark_result.is_ok());
     assert!(mark_result.is_ok(), "Failed to mark entry as processed");
-    
+
     // Test 5: Are there now zero unprocessed entries?
     let unprocessed_after = wal.get_unprocessed_entries().await.unwrap();
-    println!("Unprocessed entries after marking: {}", unprocessed_after.len());
-    assert_eq!(unprocessed_after.len(), 0, "Expected 0 unprocessed entries after marking");
-    
+    println!(
+        "Unprocessed entries after marking: {}",
+        unprocessed_after.len()
+    );
+    assert_eq!(
+        unprocessed_after.len(),
+        0,
+        "Expected 0 unprocessed entries after marking"
+    );
+
     println!("✓ WAL processing isolation test passed");
 }
 
@@ -638,34 +662,37 @@ async fn test_wal_processing_isolation() {
 #[tokio::test]
 async fn test_object_store_write_isolation() {
     // This test checks if writing to object store works in isolation
-    
+
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
     let test_data = create_test_span_data();
-    
+
     println!("Created test data with {} rows", test_data.num_rows());
-    
+
     // Test: Can we write directly to object store?
     let path = "test/direct_write.parquet";
-    let write_result = writer::write_batch_to_object_store(
-        object_store.clone(), 
-        path, 
-        test_data
-    ).await;
-    
-    println!("Direct object store write result: {:?}", write_result.is_ok());
+    let write_result =
+        writer::write_batch_to_object_store(object_store.clone(), path, test_data).await;
+
+    println!(
+        "Direct object store write result: {:?}",
+        write_result.is_ok()
+    );
     assert!(write_result.is_ok(), "Failed to write to object store");
-    
+
     // Verify the file exists
     let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
     println!("Objects after direct write: {}", objects.len());
-    
+
     for obj in &objects {
         println!("  - {}", obj.location);
     }
-    
+
     assert!(!objects.is_empty(), "No objects found after direct write");
-    assert!(objects.iter().any(|obj| obj.location.as_ref() == path), "Expected file not found");
-    
+    assert!(
+        objects.iter().any(|obj| obj.location.as_ref() == path),
+        "Expected file not found"
+    );
+
     println!("✓ Object store write isolation test passed");
 }
 
@@ -674,9 +701,9 @@ async fn test_object_store_write_isolation() {
 async fn test_otlp_to_arrow_conversion() {
     // This test checks if the OTLP → Arrow conversion works correctly
     // This is what the acceptor does when it receives OTLP data
-    
+
     println!("Testing OTLP → Arrow conversion...");
-    
+
     // Create the same OTLP request as the failing end-to-end test
     let trace_id = vec![0x42; 16]; // Same as end-to-end test
     let trace_request = ExportTraceServiceRequest {
@@ -698,60 +725,73 @@ async fn test_otlp_to_arrow_conversion() {
             schema_url: "".to_string(),
         }],
     };
-    
-    println!("Created OTLP request with {} resource spans", trace_request.resource_spans.len());
-    
+
+    println!(
+        "Created OTLP request with {} resource spans",
+        trace_request.resource_spans.len()
+    );
+
     // Test: Can we convert OTLP to Arrow like the acceptor does?
     // This uses the same conversion logic as in the acceptor
-    let record_batch = common::flight::conversion::conversion_traces::otlp_traces_to_arrow(&trace_request);
-    
+    let record_batch =
+        common::flight::conversion::conversion_traces::otlp_traces_to_arrow(&trace_request);
+
     println!("OTLP → Arrow conversion completed successfully");
-    println!("Converted to RecordBatch with {} rows, {} columns", 
-             record_batch.num_rows(), 
-             record_batch.num_columns());
-    
+    println!(
+        "Converted to RecordBatch with {} rows, {} columns",
+        record_batch.num_rows(),
+        record_batch.num_columns()
+    );
+
     // Test: Can we convert the RecordBatch to Flight data?
     let schema = record_batch.schema();
-    let flight_data_result = arrow_flight::utils::batches_to_flight_data(&schema, vec![record_batch.clone()]);
-    
-    println!("Arrow → Flight conversion result: {:?}", flight_data_result.is_ok());
-    
+    let flight_data_result =
+        arrow_flight::utils::batches_to_flight_data(&schema, vec![record_batch.clone()]);
+
+    println!(
+        "Arrow → Flight conversion result: {:?}",
+        flight_data_result.is_ok()
+    );
+
     if let Err(e) = &flight_data_result {
         println!("Arrow → Flight conversion error: {}", e);
         assert!(false, "Arrow to Flight conversion failed: {}", e);
     }
-    
+
     let flight_data = flight_data_result.unwrap();
     println!("Converted to {} Flight data chunks", flight_data.len());
-    
+
     // Test: Can we write the converted data to object store?
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
     let path = "test/otlp_converted.parquet";
-    
-    let write_result = writer::write_batch_to_object_store(
-        object_store.clone(),
-        path,
-        record_batch,
-    ).await;
-    
+
+    let write_result =
+        writer::write_batch_to_object_store(object_store.clone(), path, record_batch).await;
+
     println!("Write converted data result: {:?}", write_result.is_ok());
-    
+
     if let Err(e) = &write_result {
         println!("Write error: {}", e);
         assert!(false, "Failed to write converted OTLP data: {}", e);
     }
-    
+
     // Verify the file exists
     let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
     println!("Objects after OTLP conversion test: {}", objects.len());
-    
+
     for obj in &objects {
         println!("  - {}", obj.location);
     }
-    
-    assert!(!objects.is_empty(), "No objects found after OTLP conversion");
-    assert!(objects.iter().any(|obj| obj.location.as_ref() == path), "Expected file not found");
-    
+
+    assert!(
+        !objects.is_empty(),
+        "No objects found after OTLP conversion"
+    );
+    assert!(
+        objects.iter().any(|obj| obj.location.as_ref() == path),
+        "Expected file not found"
+    );
+
     println!("✓ OTLP to Arrow conversion test passed");
 }
 
@@ -760,9 +800,9 @@ async fn test_otlp_to_arrow_conversion() {
 async fn test_acceptor_processing_simulation() {
     // This test simulates exactly what the acceptor does when it receives OTLP data
     // We'll use the same TraceHandler logic but in isolation
-    
+
     println!("Testing full acceptor processing simulation...");
-    
+
     let temp_dir = TempDir::new().unwrap();
     let wal_config = WalConfig {
         wal_dir: PathBuf::from(temp_dir.path()),
@@ -773,7 +813,7 @@ async fn test_acceptor_processing_simulation() {
 
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
     let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
-    
+
     // Create flight transport and writer (same as end-to-end test)
     let service_bootstrap = ServiceBootstrap::new(
         Configuration::default(),
@@ -802,17 +842,20 @@ async fn test_acceptor_processing_simulation() {
             ServiceType::Writer,
             writer_addr.ip().to_string(),
             writer_addr.port(),
-            vec![ServiceCapability::TraceIngestion, ServiceCapability::Storage],
+            vec![
+                ServiceCapability::TraceIngestion,
+                ServiceCapability::Storage,
+            ],
         )
         .await
         .unwrap();
 
     sleep(Duration::from_millis(500)).await;
-    
+
     // Create acceptor components
     let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
     let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal.clone());
-    
+
     // Create the same OTLP request as the failing test
     let trace_id = vec![0x42; 16];
     let trace_request = ExportTraceServiceRequest {
@@ -834,34 +877,37 @@ async fn test_acceptor_processing_simulation() {
             schema_url: "".to_string(),
         }],
     };
-    
+
     println!("Calling TraceHandler::handle_traces directly...");
-    
+
     // Test: Call the TraceHandler directly (bypasses gRPC layer)
     trace_handler.handle_grpc_otlp_traces(trace_request).await;
-    
+
     println!("TraceHandler::handle_traces completed");
-    
+
     // Check if data reached object store
     sleep(Duration::from_secs(2)).await;
-    
+
     let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
     println!("Objects after acceptor simulation: {}", objects.len());
-    
+
     for obj in &objects {
         println!("  - {}", obj.location);
     }
-    
+
     // Check WAL status
     let unprocessed = acceptor_wal.get_unprocessed_entries().await.unwrap();
     println!("Unprocessed acceptor WAL entries: {}", unprocessed.len());
-    
+
     let writer_unprocessed = writer_wal.get_unprocessed_entries().await.unwrap();
-    println!("Unprocessed writer WAL entries: {}", writer_unprocessed.len());
-    
+    println!(
+        "Unprocessed writer WAL entries: {}",
+        writer_unprocessed.len()
+    );
+
     if objects.is_empty() {
         println!("❌ Data did not reach object store - issue confirmed in acceptor processing");
-        
+
         // Let's check if there are errors we're missing
         if unprocessed.len() > 0 {
             println!("⚠️  Data stuck in acceptor WAL - likely conversion or flight error");
@@ -871,7 +917,7 @@ async fn test_acceptor_processing_simulation() {
     } else {
         println!("✅ Data reached object store via acceptor simulation");
     }
-    
+
     println!("✓ Acceptor processing simulation completed");
 }
 
@@ -880,9 +926,9 @@ async fn test_acceptor_processing_simulation() {
 async fn test_grpc_service_layer() {
     // This test isolates the gRPC service layer to see where it breaks
     // We'll test: gRPC client → gRPC service → TraceHandler
-    
+
     println!("Testing gRPC service layer...");
-    
+
     let temp_dir = TempDir::new().unwrap();
     let wal_config = WalConfig {
         wal_dir: PathBuf::from(temp_dir.path()),
@@ -893,7 +939,7 @@ async fn test_grpc_service_layer() {
 
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
     let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
-    
+
     // Create flight transport and writer (same setup as working simulation)
     let service_bootstrap = ServiceBootstrap::new(
         Configuration::default(),
@@ -922,18 +968,21 @@ async fn test_grpc_service_layer() {
             ServiceType::Writer,
             writer_addr.ip().to_string(),
             writer_addr.port(),
-            vec![ServiceCapability::TraceIngestion, ServiceCapability::Storage],
+            vec![
+                ServiceCapability::TraceIngestion,
+                ServiceCapability::Storage,
+            ],
         )
         .await
         .unwrap();
 
     sleep(Duration::from_millis(500)).await;
-    
+
     // Create acceptor with gRPC service (same as end-to-end test)
     let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
     let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal.clone());
     let acceptor_service = TraceAcceptorService::new(trace_handler);
-    
+
     // Start acceptor gRPC service
     let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let acceptor_addr = acceptor_listener.local_addr().unwrap();
@@ -943,11 +992,14 @@ async fn test_grpc_service_layer() {
         .add_service(TraceServiceServer::new(acceptor_service))
         .serve(acceptor_addr);
     tokio::spawn(acceptor_server);
-    
+
     sleep(Duration::from_millis(500)).await;
-    
-    println!("gRPC services started - acceptor: {}, writer: {}", acceptor_addr, writer_addr);
-    
+
+    println!(
+        "gRPC services started - acceptor: {}, writer: {}",
+        acceptor_addr, writer_addr
+    );
+
     // Test: Create gRPC client and send the same request as end-to-end test
     let trace_id = vec![0x42; 16];
     let trace_request = ExportTraceServiceRequest {
@@ -969,75 +1021,78 @@ async fn test_grpc_service_layer() {
             schema_url: "".to_string(),
         }],
     };
-    
+
     println!("Connecting to gRPC acceptor at http://{}", acceptor_addr);
-    
+
     // Create gRPC client
     let endpoint = format!("http://{acceptor_addr}");
     let client_result = opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint).await;
-    
+
     println!("gRPC client connection result: {:?}", client_result.is_ok());
-    
+
     if let Err(e) = &client_result {
         println!("gRPC client connection error: {}", e);
         assert!(false, "Failed to connect to gRPC acceptor: {}", e);
     }
-    
+
     let mut client = client_result.unwrap();
-    
+
     println!("Sending gRPC export request...");
-    
+
     // Send the request
     let export_result = timeout(Duration::from_secs(10), client.export(trace_request)).await;
-    
+
     println!("gRPC export result: {:?}", export_result.is_ok());
-    
+
     if let Err(e) = &export_result {
         println!("gRPC export error: {}", e);
         assert!(false, "gRPC export failed: {}", e);
     }
-    
+
     let export_response = export_result.unwrap();
     println!("gRPC export response: {:?}", export_response.is_ok());
-    
+
     if let Err(e) = &export_response {
         println!("gRPC export response error: {}", e);
         assert!(false, "gRPC export response failed: {}", e);
     }
-    
+
     println!("gRPC request completed successfully");
-    
+
     // Check if data reached object store
     sleep(Duration::from_secs(3)).await;
-    
+
     let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
     println!("Objects after gRPC test: {}", objects.len());
-    
+
     for obj in &objects {
         println!("  - {}", obj.location);
     }
-    
+
     // Check WAL status
     let unprocessed = acceptor_wal.get_unprocessed_entries().await.unwrap();
     println!("Unprocessed acceptor WAL entries: {}", unprocessed.len());
-    
+
     let writer_unprocessed = writer_wal.get_unprocessed_entries().await.unwrap();
-    println!("Unprocessed writer WAL entries: {}", writer_unprocessed.len());
-    
+    println!(
+        "Unprocessed writer WAL entries: {}",
+        writer_unprocessed.len()
+    );
+
     if objects.is_empty() {
         println!("❌ gRPC layer test failed - data did not reach object store");
-        
+
         if unprocessed.len() > 0 {
             println!("⚠️  Data stuck in acceptor WAL - issue in acceptor gRPC service processing");
         } else {
             println!("⚠️  Data processed from acceptor WAL but didn't reach writer - Flight communication issue");
         }
-        
+
         assert!(false, "gRPC service layer test failed");
     } else {
         println!("✅ gRPC layer test passed - data reached object store");
     }
-    
+
     println!("✓ gRPC service layer test completed");
 }
 
@@ -1045,9 +1100,9 @@ async fn test_grpc_service_layer() {
 #[tokio::test]
 async fn test_end_to_end_without_querier() {
     // This test removes the querier from the end-to-end test to see if that's causing interference
-    
+
     println!("Testing end-to-end without querier...");
-    
+
     let temp_dir = TempDir::new().unwrap();
     let wal_config = WalConfig {
         wal_dir: PathBuf::from(temp_dir.path()),
@@ -1063,7 +1118,7 @@ async fn test_end_to_end_without_querier() {
     // Try using Writer as base ServiceBootstrap (like working gRPC test)
     let service_bootstrap = ServiceBootstrap::new(
         Configuration::default(),
-        ServiceType::Writer,  // Changed from Acceptor
+        ServiceType::Writer, // Changed from Acceptor
         "127.0.0.1:50058".to_string(),
     )
     .await
@@ -1114,12 +1169,15 @@ async fn test_end_to_end_without_querier() {
 
     // Allow services to start and register
     sleep(Duration::from_secs(2)).await;
-    
+
     // Debug: Check what services are registered
     let trace_ingestion_services = flight_transport
         .discover_services_by_capability(ServiceCapability::TraceIngestion)
         .await;
-    println!("Services with TraceIngestion capability: {}", trace_ingestion_services.len());
+    println!(
+        "Services with TraceIngestion capability: {}",
+        trace_ingestion_services.len()
+    );
 
     // Step 1: Send trace data to acceptor (same as end-to-end)
     let trace_id = vec![0x42; 16];
@@ -1160,18 +1218,21 @@ async fn test_end_to_end_without_querier() {
 
     let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
     println!("Objects in store (no querier): {}", objects.len());
-    
+
     for obj in &objects {
         println!("  - {}", obj.location);
     }
 
     if objects.is_empty() {
         println!("❌ End-to-end without querier FAILED");
-        assert!(false, "No data found in object store - querier is not the issue");
+        assert!(
+            false,
+            "No data found in object store - querier is not the issue"
+        );
     } else {
         println!("✅ End-to-end without querier PASSED - querier was causing interference!");
     }
-    
+
     println!("✓ End-to-end without querier test completed");
 }
 
@@ -1180,9 +1241,9 @@ async fn test_end_to_end_without_querier() {
 async fn test_object_store_sharing_investigation() {
     // This test checks if object stores are properly shared between services
     // and if the querier interferes with writer's object store access
-    
+
     println!("Testing object store sharing between writer and querier...");
-    
+
     let temp_dir = TempDir::new().unwrap();
     let wal_config = WalConfig {
         wal_dir: PathBuf::from(temp_dir.path()),
@@ -1194,9 +1255,9 @@ async fn test_object_store_sharing_investigation() {
     // Create shared object store
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
     let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
-    
+
     println!("📦 Created shared object store");
-    
+
     // Create flight transport
     let service_bootstrap = ServiceBootstrap::new(
         Configuration::default(),
@@ -1224,20 +1285,26 @@ async fn test_object_store_sharing_investigation() {
             ServiceType::Writer,
             writer_addr.ip().to_string(),
             writer_addr.port(),
-            vec![ServiceCapability::TraceIngestion, ServiceCapability::Storage],
+            vec![
+                ServiceCapability::TraceIngestion,
+                ServiceCapability::Storage,
+            ],
         )
         .await
         .unwrap();
 
     sleep(Duration::from_millis(500)).await;
-    
+
     // Check object store BEFORE querier starts
     let objects_before_querier: Vec<_> = object_store.list(None).try_collect().await.unwrap();
-    println!("📋 Objects BEFORE querier starts: {}", objects_before_querier.len());
+    println!(
+        "📋 Objects BEFORE querier starts: {}",
+        objects_before_querier.len()
+    );
     for obj in &objects_before_querier {
         println!("  - {}", obj.location);
     }
-    
+
     // Write test data via writer
     let test_data = create_test_span_data();
     let schema = test_data.schema();
@@ -1250,24 +1317,30 @@ async fn test_object_store_sharing_investigation() {
         .expect("Failed to get writer client");
 
     let flight_stream = stream::iter(flight_data.into_iter());
-    let _put_result = client.do_put(flight_stream).await.expect("Flight put failed");
+    let _put_result = client
+        .do_put(flight_stream)
+        .await
+        .expect("Flight put failed");
 
     // Consume response stream
     let mut response_stream = _put_result.into_inner();
     while let Some(_) = response_stream.next().await {}
 
     sleep(Duration::from_secs(1)).await;
-    
+
     // Check object store AFTER writer writes data
     let objects_after_write: Vec<_> = object_store.list(None).try_collect().await.unwrap();
-    println!("📋 Objects AFTER writer writes: {}", objects_after_write.len());
+    println!(
+        "📋 Objects AFTER writer writes: {}",
+        objects_after_write.len()
+    );
     for obj in &objects_after_write {
         println!("  - {}", obj.location);
     }
-    
+
     // Step 2: Now start querier with SAME object store
     println!("🔍 Starting querier with shared object store...");
-    
+
     let querier_service = QuerierFlightService::new(object_store.clone(), flight_transport.clone());
     let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let querier_addr = querier_listener.local_addr().unwrap();
@@ -1289,17 +1362,20 @@ async fn test_object_store_sharing_investigation() {
         .unwrap();
 
     sleep(Duration::from_secs(1)).await;
-    
+
     // Check object store AFTER querier starts
     let objects_after_querier_start: Vec<_> = object_store.list(None).try_collect().await.unwrap();
-    println!("📋 Objects AFTER querier starts: {}", objects_after_querier_start.len());
+    println!(
+        "📋 Objects AFTER querier starts: {}",
+        objects_after_querier_start.len()
+    );
     for obj in &objects_after_querier_start {
         println!("  - {}", obj.location);
     }
-    
+
     // Step 3: Try to write more data via writer AFTER querier started
     println!("✍️  Writing MORE data via writer AFTER querier started...");
-    
+
     let test_data2 = create_test_span_data();
     let schema2 = test_data2.schema();
     let flight_data2 = arrow_flight::utils::batches_to_flight_data(&schema2, vec![test_data2])
@@ -1312,9 +1388,9 @@ async fn test_object_store_sharing_investigation() {
 
     let flight_stream2 = stream::iter(flight_data2.into_iter());
     let put_result2 = client2.do_put(flight_stream2).await;
-    
+
     println!("✍️  Second write result: {:?}", put_result2.is_ok());
-    
+
     if let Ok(response) = put_result2 {
         let mut response_stream2 = response.into_inner();
         while let Some(_) = response_stream2.next().await {}
@@ -1323,17 +1399,20 @@ async fn test_object_store_sharing_investigation() {
     }
 
     sleep(Duration::from_secs(1)).await;
-    
+
     // Check object store AFTER second write
     let objects_after_second_write: Vec<_> = object_store.list(None).try_collect().await.unwrap();
-    println!("📋 Objects AFTER second write: {}", objects_after_second_write.len());
+    println!(
+        "📋 Objects AFTER second write: {}",
+        objects_after_second_write.len()
+    );
     for obj in &objects_after_second_write {
         println!("  - {}", obj.location);
     }
-    
+
     // Step 4: Check if querier can see the files
     println!("🔍 Testing if querier can see the files...");
-    
+
     let mut querier_client = flight_transport
         .get_client_for_capability(ServiceCapability::QueryExecution)
         .await
@@ -1343,26 +1422,32 @@ async fn test_object_store_sharing_investigation() {
     let list_ticket = arrow_flight::Ticket::new("LIST FILES".to_string());
     let list_result = querier_client.do_get(list_ticket).await;
     println!("🔍 Querier list result: {:?}", list_result.is_ok());
-    
+
     // Summary analysis
     println!("\n📊 ANALYSIS:");
     println!("Objects before querier: {}", objects_before_querier.len());
     println!("Objects after write #1:  {}", objects_after_write.len());
-    println!("Objects after querier:  {}", objects_after_querier_start.len());
-    println!("Objects after write #2:  {}", objects_after_second_write.len());
-    
+    println!(
+        "Objects after querier:  {}",
+        objects_after_querier_start.len()
+    );
+    println!(
+        "Objects after write #2:  {}",
+        objects_after_second_write.len()
+    );
+
     if objects_after_write.len() != objects_after_querier_start.len() {
         println!("🚨 QUERIER STARTUP AFFECTED OBJECT STORE!");
     }
-    
+
     if objects_after_write.len() == objects_after_second_write.len() {
         println!("🚨 SECOND WRITE FAILED - querier prevents writes!");
     }
-    
+
     if objects_after_second_write.len() > objects_after_write.len() {
         println!("✅ Second write succeeded - no interference");
     }
-    
+
     println!("✓ Object store sharing investigation completed");
 }
 
@@ -1371,11 +1456,11 @@ async fn test_object_store_sharing_investigation() {
 async fn test_service_discovery_investigation() {
     // This test checks if service discovery is routing requests correctly
     // and if multiple services interfere with capability-based discovery
-    
+
     println!("Testing service discovery mechanism...");
-    
+
     let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
-    
+
     // Create flight transport
     let service_bootstrap = ServiceBootstrap::new(
         Configuration::default(),
@@ -1388,34 +1473,46 @@ async fn test_service_discovery_investigation() {
 
     // Step 1: Register ONLY writer service
     println!("🔧 Step 1: Registering ONLY writer service...");
-    
+
     let writer_id = flight_transport
         .register_flight_service(
             ServiceType::Writer,
             "127.0.0.1".to_string(),
             50001,
-            vec![ServiceCapability::TraceIngestion, ServiceCapability::Storage],
+            vec![
+                ServiceCapability::TraceIngestion,
+                ServiceCapability::Storage,
+            ],
         )
         .await
         .unwrap();
-    
+
     // Check discovery with only writer
     let trace_services_1 = flight_transport
         .discover_services_by_capability(ServiceCapability::TraceIngestion)
         .await;
-    println!("📋 TraceIngestion services (writer only): {}", trace_services_1.len());
+    println!(
+        "📋 TraceIngestion services (writer only): {}",
+        trace_services_1.len()
+    );
     for service in &trace_services_1 {
-        println!("  - {} ({}:{})", service.service_id, service.address, service.port);
+        println!(
+            "  - {} ({}:{})",
+            service.service_id, service.address, service.port
+        );
     }
-    
+
     let query_services_1 = flight_transport
         .discover_services_by_capability(ServiceCapability::QueryExecution)
         .await;
-    println!("📋 QueryExecution services (writer only): {}", query_services_1.len());
-    
+    println!(
+        "📋 QueryExecution services (writer only): {}",
+        query_services_1.len()
+    );
+
     // Step 2: Register querier service
     println!("🔧 Step 2: Adding querier service...");
-    
+
     let querier_id = flight_transport
         .register_flight_service(
             ServiceType::Querier,
@@ -1425,40 +1522,58 @@ async fn test_service_discovery_investigation() {
         )
         .await
         .unwrap();
-    
+
     // Check discovery with both services
     let trace_services_2 = flight_transport
         .discover_services_by_capability(ServiceCapability::TraceIngestion)
         .await;
-    println!("📋 TraceIngestion services (writer + querier): {}", trace_services_2.len());
+    println!(
+        "📋 TraceIngestion services (writer + querier): {}",
+        trace_services_2.len()
+    );
     for service in &trace_services_2 {
-        println!("  - {} ({}:{})", service.service_id, service.address, service.port);
+        println!(
+            "  - {} ({}:{})",
+            service.service_id, service.address, service.port
+        );
     }
-    
+
     let query_services_2 = flight_transport
         .discover_services_by_capability(ServiceCapability::QueryExecution)
         .await;
-    println!("📋 QueryExecution services (writer + querier): {}", query_services_2.len());
+    println!(
+        "📋 QueryExecution services (writer + querier): {}",
+        query_services_2.len()
+    );
     for service in &query_services_2 {
-        println!("  - {} ({}:{})", service.service_id, service.address, service.port);
+        println!(
+            "  - {} ({}:{})",
+            service.service_id, service.address, service.port
+        );
     }
-    
+
     // Step 3: Test get_client_for_capability routing
     println!("🔧 Step 3: Testing client routing...");
-    
+
     let trace_client_result = flight_transport
         .get_client_for_capability(ServiceCapability::TraceIngestion)
         .await;
-    println!("📡 TraceIngestion client result: {:?}", trace_client_result.is_ok());
-    
+    println!(
+        "📡 TraceIngestion client result: {:?}",
+        trace_client_result.is_ok()
+    );
+
     let query_client_result = flight_transport
         .get_client_for_capability(ServiceCapability::QueryExecution)
         .await;
-    println!("📡 QueryExecution client result: {:?}", query_client_result.is_ok());
-    
+    println!(
+        "📡 QueryExecution client result: {:?}",
+        query_client_result.is_ok()
+    );
+
     // Step 4: Check what happens if we register acceptor too
     println!("🔧 Step 4: Adding acceptor service...");
-    
+
     let acceptor_id = flight_transport
         .register_flight_service(
             ServiceType::Acceptor,
@@ -1468,27 +1583,39 @@ async fn test_service_discovery_investigation() {
         )
         .await
         .unwrap();
-    
+
     // Check discovery with all three services
     let trace_services_3 = flight_transport
         .discover_services_by_capability(ServiceCapability::TraceIngestion)
         .await;
-    println!("📋 TraceIngestion services (all): {}", trace_services_3.len());
+    println!(
+        "📋 TraceIngestion services (all): {}",
+        trace_services_3.len()
+    );
     for service in &trace_services_3 {
-        println!("  - {} ({}:{})", service.service_id, service.address, service.port);
+        println!(
+            "  - {} ({}:{})",
+            service.service_id, service.address, service.port
+        );
     }
-    
+
     let query_services_3 = flight_transport
         .discover_services_by_capability(ServiceCapability::QueryExecution)
         .await;
-    println!("📋 QueryExecution services (all): {}", query_services_3.len());
+    println!(
+        "📋 QueryExecution services (all): {}",
+        query_services_3.len()
+    );
     for service in &query_services_3 {
-        println!("  - {} ({}:{})", service.service_id, service.address, service.port);
+        println!(
+            "  - {} ({}:{})",
+            service.service_id, service.address, service.port
+        );
     }
-    
+
     // Step 5: Test multiple client requests to see if routing is consistent
     println!("🔧 Step 5: Testing routing consistency...");
-    
+
     for i in 1..=5 {
         let client_result = flight_transport
             .get_client_for_capability(ServiceCapability::TraceIngestion)
@@ -1499,25 +1626,40 @@ async fn test_service_discovery_investigation() {
             println!("❌ Request #{}: TraceIngestion client - FAILED", i);
         }
     }
-    
+
     // Step 6: Check internal service registry state
     println!("🔧 Step 6: Checking internal service registry...");
-    
+
     // Clean up services to test unregistration
-    flight_transport.unregister_service(writer_id).await.unwrap();
-    flight_transport.unregister_service(querier_id).await.unwrap();
-    flight_transport.unregister_service(acceptor_id).await.unwrap();
-    
+    flight_transport
+        .unregister_service(writer_id)
+        .await
+        .unwrap();
+    flight_transport
+        .unregister_service(querier_id)
+        .await
+        .unwrap();
+    flight_transport
+        .unregister_service(acceptor_id)
+        .await
+        .unwrap();
+
     let trace_services_final = flight_transport
         .discover_services_by_capability(ServiceCapability::TraceIngestion)
         .await;
-    println!("📋 TraceIngestion services (after cleanup): {}", trace_services_final.len());
-    
+    println!(
+        "📋 TraceIngestion services (after cleanup): {}",
+        trace_services_final.len()
+    );
+
     let query_services_final = flight_transport
         .discover_services_by_capability(ServiceCapability::QueryExecution)
         .await;
-    println!("📋 QueryExecution services (after cleanup): {}", query_services_final.len());
-    
+    println!(
+        "📋 QueryExecution services (after cleanup): {}",
+        query_services_final.len()
+    );
+
     println!("✓ Service discovery investigation completed");
 }
 
@@ -1526,9 +1668,9 @@ async fn test_service_discovery_investigation() {
 async fn test_end_to_end_discovery_debug() {
     // This test replicates the EXACT service registration from the failing end-to-end test
     // to see what the acceptor sees when it tries to get a TraceIngestion client
-    
+
     println!("Testing end-to-end discovery debug...");
-    
+
     let temp_dir = TempDir::new().unwrap();
     let _wal_config = WalConfig {
         wal_dir: PathBuf::from(temp_dir.path()),
@@ -1543,15 +1685,15 @@ async fn test_end_to_end_discovery_debug() {
     // EXACT SAME setup as failing end-to-end test
     let service_bootstrap = ServiceBootstrap::new(
         Configuration::default(),
-        ServiceType::Acceptor,  // Same as end-to-end
-        "127.0.0.1:4317".to_string(),  // Same as end-to-end
+        ServiceType::Acceptor,        // Same as end-to-end
+        "127.0.0.1:4317".to_string(), // Same as end-to-end
     )
     .await
     .unwrap();
     let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
 
     println!("🔧 Starting services in EXACT same order as end-to-end test...");
-    
+
     // Start writer (same registration as end-to-end)
     let _writer_id = flight_transport
         .register_flight_service(
@@ -1565,18 +1707,24 @@ async fn test_end_to_end_discovery_debug() {
         )
         .await
         .unwrap();
-    
+
     println!("✅ Writer registered");
-    
+
     // Check discovery after writer
     let services_after_writer = flight_transport
         .discover_services_by_capability(ServiceCapability::TraceIngestion)
         .await;
-    println!("📋 TraceIngestion services after writer: {}", services_after_writer.len());
+    println!(
+        "📋 TraceIngestion services after writer: {}",
+        services_after_writer.len()
+    );
     for service in &services_after_writer {
-        println!("  - Writer: {} ({}:{})", service.service_id, service.address, service.port);
+        println!(
+            "  - Writer: {} ({}:{})",
+            service.service_id, service.address, service.port
+        );
     }
-    
+
     // Start querier (same registration as end-to-end)
     let _querier_id = flight_transport
         .register_flight_service(
@@ -1587,30 +1735,36 @@ async fn test_end_to_end_discovery_debug() {
         )
         .await
         .unwrap();
-    
+
     println!("✅ Querier registered");
-    
+
     // Check discovery after querier - THIS IS THE KEY MOMENT
     let services_after_querier = flight_transport
         .discover_services_by_capability(ServiceCapability::TraceIngestion)
         .await;
-    println!("📋 TraceIngestion services after querier: {}", services_after_querier.len());
+    println!(
+        "📋 TraceIngestion services after querier: {}",
+        services_after_querier.len()
+    );
     for service in &services_after_querier {
-        println!("  - {} ({}:{})", service.service_id, service.address, service.port);
+        println!(
+            "  - {} ({}:{})",
+            service.service_id, service.address, service.port
+        );
     }
-    
+
     // Test getting client for TraceIngestion (what acceptor does)
     println!("🔧 Testing what acceptor sees when getting TraceIngestion client...");
-    
+
     let client_result = flight_transport
         .get_client_for_capability(ServiceCapability::TraceIngestion)
         .await;
-    
+
     println!("📡 Client result: {:?}", client_result.is_ok());
-    
+
     if let Ok(mut client) = client_result {
         println!("✅ Got TraceIngestion client successfully");
-        
+
         // Try to make a dummy call to see which service responds
         let test_data = create_test_span_data();
         let schema = test_data.schema();
@@ -1619,9 +1773,9 @@ async fn test_end_to_end_discovery_debug() {
 
         let flight_stream = stream::iter(flight_data.into_iter());
         let put_result = client.do_put(flight_stream).await;
-        
+
         println!("📡 do_put result: {:?}", put_result.is_ok());
-        
+
         if let Err(e) = put_result {
             println!("❌ do_put failed with: {}", e);
             if e.to_string().contains("read-only") {
@@ -1633,7 +1787,7 @@ async fn test_end_to_end_discovery_debug() {
     } else {
         println!("❌ Failed to get TraceIngestion client");
     }
-    
+
     println!("✓ End-to-end discovery debug completed");
 }
 
@@ -1641,11 +1795,11 @@ async fn test_end_to_end_discovery_debug() {
 #[tokio::test]
 async fn test_service_capability_conflicts() {
     // This test checks if there are any capability conflicts or overlaps
-    
+
     println!("Testing service capability conflicts...");
-    
+
     let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
-    
+
     let service_bootstrap = ServiceBootstrap::new(
         Configuration::default(),
         ServiceType::Writer,
@@ -1657,7 +1811,7 @@ async fn test_service_capability_conflicts() {
 
     // Test: What if querier accidentally registers with TraceIngestion capability?
     println!("🔧 Testing: What if querier registers with WRONG capabilities?");
-    
+
     let bad_querier_id = flight_transport
         .register_flight_service(
             ServiceType::Querier,
@@ -1667,39 +1821,53 @@ async fn test_service_capability_conflicts() {
         )
         .await
         .unwrap();
-    
+
     let trace_services = flight_transport
         .discover_services_by_capability(ServiceCapability::TraceIngestion)
         .await;
-    println!("📋 TraceIngestion services (bad querier): {}", trace_services.len());
+    println!(
+        "📋 TraceIngestion services (bad querier): {}",
+        trace_services.len()
+    );
     for service in &trace_services {
-        println!("  - {} ({}:{})", service.service_id, service.address, service.port);
+        println!(
+            "  - {} ({}:{})",
+            service.service_id, service.address, service.port
+        );
     }
-    
+
     // Test getting client - should get the querier (which will fail)
     let client_result = flight_transport
         .get_client_for_capability(ServiceCapability::TraceIngestion)
         .await;
-    
+
     if client_result.is_ok() {
-        println!("🚨 Got client for TraceIngestion from querier (this will cause 'read-only' errors)");
+        println!(
+            "🚨 Got client for TraceIngestion from querier (this will cause 'read-only' errors)"
+        );
     }
-    
-    flight_transport.unregister_service(bad_querier_id).await.unwrap();
-    
+
+    flight_transport
+        .unregister_service(bad_querier_id)
+        .await
+        .unwrap();
+
     // Test: Proper registration
     println!("🔧 Testing: Proper service registration");
-    
+
     let writer_id = flight_transport
         .register_flight_service(
             ServiceType::Writer,
             "127.0.0.1".to_string(),
             50071,
-            vec![ServiceCapability::TraceIngestion, ServiceCapability::Storage],
+            vec![
+                ServiceCapability::TraceIngestion,
+                ServiceCapability::Storage,
+            ],
         )
         .await
         .unwrap();
-    
+
     let querier_id = flight_transport
         .register_flight_service(
             ServiceType::Querier,
@@ -1709,26 +1877,44 @@ async fn test_service_capability_conflicts() {
         )
         .await
         .unwrap();
-    
+
     let trace_services_correct = flight_transport
         .discover_services_by_capability(ServiceCapability::TraceIngestion)
         .await;
-    println!("📋 TraceIngestion services (correct): {}", trace_services_correct.len());
+    println!(
+        "📋 TraceIngestion services (correct): {}",
+        trace_services_correct.len()
+    );
     for service in &trace_services_correct {
-        println!("  - {} ({}:{})", service.service_id, service.address, service.port);
+        println!(
+            "  - {} ({}:{})",
+            service.service_id, service.address, service.port
+        );
     }
-    
+
     let query_services_correct = flight_transport
         .discover_services_by_capability(ServiceCapability::QueryExecution)
         .await;
-    println!("📋 QueryExecution services (correct): {}", query_services_correct.len());
+    println!(
+        "📋 QueryExecution services (correct): {}",
+        query_services_correct.len()
+    );
     for service in &query_services_correct {
-        println!("  - {} ({}:{})", service.service_id, service.address, service.port);
+        println!(
+            "  - {} ({}:{})",
+            service.service_id, service.address, service.port
+        );
     }
-    
-    flight_transport.unregister_service(writer_id).await.unwrap();
-    flight_transport.unregister_service(querier_id).await.unwrap();
-    
+
+    flight_transport
+        .unregister_service(writer_id)
+        .await
+        .unwrap();
+    flight_transport
+        .unregister_service(querier_id)
+        .await
+        .unwrap();
+
     println!("✓ Service capability conflicts test completed");
 }
 

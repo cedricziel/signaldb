@@ -61,7 +61,6 @@ impl QuerierFlightService {
         Ok(batches)
     }
 
-
     /// Execute a query against the object store
     async fn execute_distributed_query(
         &self,
@@ -70,7 +69,7 @@ impl QuerierFlightService {
         // Query only the object store - data at rest
         // Writers are responsible for persisting data to object store
         // Querier should not depend on or know about writers
-        
+
         match self.execute_query(query).await {
             Ok(batches) => {
                 log::debug!("Retrieved {} batches from object store", batches.len());

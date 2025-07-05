@@ -40,7 +40,7 @@ impl FlightServiceMetadata {
     ) -> Self {
         // Extract just the host part if address contains port
         let host = address.split(':').next().unwrap_or("localhost");
-        let endpoint = format!("http://{}:{}", host, port);
+        let endpoint = format!("http://{host}:{port}");
         Self {
             service_id,
             service_type,
