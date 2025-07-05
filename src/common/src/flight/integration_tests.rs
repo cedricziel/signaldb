@@ -35,10 +35,7 @@ async fn create_test_postgres_config() -> (
     let host_ip = postgres_container.get_host().await.unwrap();
     let host_port = postgres_container.get_host_port_ipv4(5432).await.unwrap();
 
-    let dsn = format!(
-        "postgresql://postgres:postgres@{}:{}/postgres",
-        host_ip, host_port
-    );
+    let dsn = format!("postgresql://postgres:postgres@{host_ip}:{host_port}/postgres");
 
     let config = Configuration {
         database: DatabaseConfig { dsn: dsn.clone() },
@@ -133,13 +130,21 @@ async fn test_multiple_services_with_sqlite_catalog() {
     let querier_transport = querier_bootstrap.create_flight_transport();
 
     // The services are already registered with the catalog through ServiceBootstrap
-    // No need to register them again - just get their IDs for verification
+    // Both transports should see the services in the catalog
     let writer_services = writer_transport.list_services().await;
     let querier_services = querier_transport.list_services().await;
 
-    // Both transports start with empty local registries
-    assert_eq!(writer_services.len(), 0);
-    assert_eq!(querier_services.len(), 0);
+    // Both transports should see both services registered in the catalog
+    assert_eq!(
+        writer_services.len(),
+        2,
+        "Should see both writer and querier services"
+    );
+    assert_eq!(
+        querier_services.len(),
+        2,
+        "Should see both writer and querier services"
+    );
 
     // Test that both transports are healthy (can discover services)
     assert!(
@@ -165,7 +170,7 @@ async fn test_multiple_services_with_sqlite_catalog() {
     // Since both services were registered with ServiceBootstrap, they appear in catalog
     // The current implementation assumes all catalog services are writers with trace ingestion
     assert!(
-        trace_services.len() >= 1,
+        !trace_services.is_empty(),
         "Should have at least one service discovered"
     );
 }

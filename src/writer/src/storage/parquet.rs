@@ -71,7 +71,7 @@ mod tests {
         assert_eq!(read_batches[0].num_rows(), 1);
 
         // Cleanup
-        fs::remove_dir_all(&test_dir)?;
+        fs::remove_dir_all(test_dir)?;
 
         Ok(())
     }

@@ -1,10 +1,13 @@
 // Integration test for writer storage functionality using an in-memory object store.
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use common::wal::{Wal, WalConfig};
 use datafusion::arrow::array::{Int32Array, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use futures::TryStreamExt;
 use object_store::{memory::InMemory, ObjectStore};
+use tempfile::TempDir;
 
 use writer::{write_batch_to_object_store, WriterFlightService};
 
@@ -39,8 +42,7 @@ async fn test_write_batch_to_object_store() -> anyhow::Result<()> {
     }
     assert!(
         found,
-        "No parquet file found in object store at path: {}",
-        path
+        "No parquet file found in object store at path: {path}"
     );
     Ok(())
 }
@@ -50,8 +52,18 @@ async fn test_writer_flight_service_creation() -> anyhow::Result<()> {
     // Setup in-memory object store for testing
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::default());
 
-    // Create the WriterFlightService with the in-memory store
-    let _svc = WriterFlightService::new(object_store.clone());
+    // Setup temporary WAL for testing
+    let temp_dir = TempDir::new()?;
+    let wal_config = WalConfig {
+        wal_dir: PathBuf::from(temp_dir.path()),
+        max_segment_size: 1024 * 1024,
+        max_buffer_entries: 10,
+        flush_interval_secs: 1,
+    };
+    let wal = Arc::new(Wal::new(wal_config).await?);
+
+    // Create the WriterFlightService with the in-memory store and WAL
+    let _svc = WriterFlightService::new(object_store.clone(), wal);
 
     // If we get here, the service was created successfully
     Ok(())

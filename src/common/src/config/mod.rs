@@ -77,6 +77,33 @@ impl Default for DiscoveryConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WalConfig {
+    /// Directory where WAL files are stored
+    pub wal_dir: String,
+    /// Maximum size of a single WAL segment in bytes
+    pub max_segment_size: u64,
+    /// Maximum number of entries in memory buffer before forcing flush
+    pub max_buffer_entries: usize,
+    /// Maximum time to wait before forcing flush
+    #[serde(with = "humantime_serde")]
+    pub flush_interval: Duration,
+    /// Maximum size in bytes to buffer before flushing to object store
+    pub max_buffer_size_bytes: usize,
+}
+
+impl Default for WalConfig {
+    fn default() -> Self {
+        Self {
+            wal_dir: ".data/wal".to_string(),
+            max_segment_size: 64 * 1024 * 1024, // 64MB
+            max_buffer_entries: 1000,
+            flush_interval: Duration::from_secs(30),
+            max_buffer_size_bytes: 128 * 1024 * 1024, // 128MB
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Configuration {
     /// Database configuration (used for internal storage)
     pub database: DatabaseConfig,
@@ -84,6 +111,8 @@ pub struct Configuration {
     pub storage: StorageConfig,
     /// Service discovery configuration (enabled by default with SQLite)
     pub discovery: Option<DiscoveryConfig>,
+    /// WAL configuration (includes buffering policies)
+    pub wal: WalConfig,
 }
 
 impl Default for Configuration {
@@ -93,6 +122,7 @@ impl Default for Configuration {
             storage: StorageConfig::default(),
             // Enable discovery by default for configless operation
             discovery: Some(DiscoveryConfig::default()),
+            wal: WalConfig::default(),
         }
     }
 }

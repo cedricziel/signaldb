@@ -13,8 +13,9 @@ SignalDB is a distributed observability signal database built on the FDAP stack 
 cargo build                # Build all workspace members
 cargo test                 # Run all tests across workspace
 cargo run                  # Run in monolithic mode (all services)
+cargo clippy --workspace --all-targets --all-features  # Check for code quality issues
 cargo deny check           # License and security auditing
-cargo machete              # Check for unused dependencies
+cargo machete --with-metadata  # Check for unused dependencies (enhanced analysis)
 ```
 
 ### Running Individual Services
@@ -27,7 +28,7 @@ cargo run --bin querier    # Query execution engine (port 9000)
 
 ### Infrastructure
 ```bash
-docker compose up          # Start NATS, Grafana, and supporting services
+docker compose up          # Start PostgreSQL, Grafana, and supporting services
 ```
 
 ## Architecture Overview
@@ -39,19 +40,25 @@ docker compose up          # Start NATS, Grafana, and supporting services
 - **Writer** (`src/writer/`): Stateful ingestion service (the "Ingester")
 - **Querier** (`src/querier/`): Query execution engine for stored data
 - **Common** (`src/common/`): Shared configuration, discovery, and data models
-- **Messaging** (`src/messaging/`): Message queue abstraction (memory, NATS, JetStream)
 - **Tempo API** (`src/tempo-api/`): Grafana Tempo compatibility layer
 
 ### Data Flow
 
-**Write Path**: Client → Acceptor (OTLP) → Router → Writer(s) → WAL/Memory/Parquet
-**Query Path**: Client → Querier → Writers (Flight) + Storage (Parquet) → Merged results
+**Write Path**: Client → Acceptor (OTLP) → WAL → Writer (Flight) → Parquet Storage
+**Query Path**: Client → Router (HTTP) → Querier (Flight) → DataFusion → Parquet Files
 
-### Service Discovery
+### Service Discovery & Communication
 
-Two discovery mechanisms:
-- **NATS-based**: Uses NATS KV store with heartbeat TTL (preferred)
-- **Catalog-based**: PostgreSQL-backed metadata store with LISTEN/NOTIFY
+**Discovery mechanism**:
+- **Catalog-based**: PostgreSQL/SQLite-backed metadata store with heartbeat-based health checking
+- **ServiceBootstrap pattern**: Automatic service registration with capability-based discovery
+- **Flight transport**: High-performance inter-service communication with connection pooling
+
+**Service capabilities**:
+- **TraceIngestion**: Services that accept OTLP trace data (Acceptor)
+- **Storage**: Services that persist data to storage (Writer)
+- **QueryExecution**: Services that execute queries (Querier)
+- **Routing**: Services that provide HTTP APIs (Router)
 
 ### Configuration
 
@@ -69,26 +76,27 @@ The system uses Apache Arrow Flight extensively for inter-service communication.
 
 Services register themselves with discovery backends on startup. Look at existing patterns in acceptor/router for implementing new services.
 
-### Message Processing
+### Data Processing
 
-Use the messaging abstraction in `src/messaging/` for async batch processing. Supports acknowledgment patterns and different backends.
+**WAL Integration**:
+- Write-Ahead Log provides durability guarantees for incoming data
+- Acceptor writes to WAL before acknowledgment
+- Writer processes WAL entries and persists to Parquet
+- Automatic WAL entry marking and cleanup
+
+**Flight Communication**:
+- Apache Arrow Flight for zero-copy data transfer between services
+- Service discovery via capability-based routing
+- Connection pooling and automatic failover
+- Streaming support for large datasets
 
 ### Storage Integration
 
 Writers persist data to Parquet files via object_store abstraction. Storage adapters support filesystem, S3, Azure, GCP backends.
 
-## Current Development Status
-
-Active work areas (see `next-steps.md`):
-- Extracting Catalog setup into shared helper for microservices
-- Moving from polling to watch-based discovery mechanisms  
-- Adding graceful service deregistration
-- Separating monolithic binary into individual service binaries
-- Integrating configuration management across services
-
 ## Testing
 
-Integration tests are in workspace root `tests/` and individual component `tests/` directories. Some tests use testcontainers for NATS and PostgreSQL.
+Integration tests are in workspace root `tests/` and individual component `tests/` directories. Some tests use testcontainers for PostgreSQL.
 
 ## Deployment Modes
 
@@ -97,7 +105,72 @@ Signaldb has a microservices and a monolothic mode
 ## Development Memories
 - For arrow & parquet try using the ones re-exported by datafusion
 - We need to run cargo fmt after bigger chunks of work to apply the canonical formatting
-- Run cargo machete before committing and remove unused dependencies
+- Run cargo machete --with-metadata before committing and remove unused dependencies
 - We need to format the code before committing
 - Always run cargo commands from the workspace root
-- run cargo clippy and fix all warnings before committing
+- Run cargo clippy and fix all warnings before committing
+
+## Code Quality Standards
+
+### Clippy Compliance
+- Write clippy-compliant code from the start to maintain high code quality
+- Use direct variable interpolation in format strings: `format!("{variable}")` not `format!("{}", variable)`
+- Prefer `!is_empty()` over `len() > 0` for clarity
+- Use `vec![...]` instead of creating empty Vec and pushing elements
+- Avoid `assert!(false, ...)` - use `panic!(...)` or `unreachable!()` instead
+- Use `panic!("message")` for intentional panics rather than `assert!(false, "message")`
+
+### String Formatting Best Practices
+```rust
+// ✅ Good - direct variable interpolation
+format!("Service {service_id} at {address}")
+log::info!("Discovered {count} services with capability {capability:?}")
+
+// ❌ Avoid - positional arguments
+format!("Service {} at {}", service_id, address)
+log::info!("Discovered {} services with capability {:?}", count, capability)
+```
+
+### Collection Patterns
+```rust
+// ✅ Good - use vec! macro
+let items = vec![item1, item2, item3];
+
+// ❌ Avoid - push after creation
+let mut items = Vec::new();
+items.push(item1);
+items.push(item2);
+```
+
+### Error Handling
+```rust
+// ✅ Good - explicit panic
+panic!("Failed to initialize: {error}");
+
+// ❌ Avoid - assert false
+assert!(false, "Failed to initialize: {}", error);
+```
+
+## Dependency Management
+
+### Unused Dependency Detection
+- Always use `cargo machete --with-metadata` for comprehensive unused dependency detection
+- The basic `cargo machete` command may miss dependencies that are only unused in specific configurations
+- The `--with-metadata` flag provides enhanced analysis that catches more unused dependencies
+- Remove unused dependencies promptly to keep the dependency graph clean and reduce build times
+
+### Dependency Hygiene Best Practices
+```bash
+# ✅ Good - comprehensive dependency analysis
+cargo machete --with-metadata
+
+# ❌ Less effective - basic analysis may miss unused deps
+cargo machete
+```
+
+Benefits of clean dependency management:
+- Faster build times
+- Reduced security surface area
+- Smaller binary sizes
+- Easier dependency auditing
+- Less potential for dependency conflicts

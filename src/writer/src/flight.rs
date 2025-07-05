@@ -6,6 +6,7 @@ use arrow_flight::{
 };
 use bytes::Bytes;
 use common::flight::schema::FlightSchemas;
+use common::wal::{record_batch_to_bytes, Wal, WalOperation};
 use futures::stream::{self, BoxStream};
 use futures::StreamExt;
 use object_store::ObjectStore;
@@ -16,15 +17,17 @@ use uuid::Uuid;
 /// Flight service that ingests RecordBatches and writes them as Parquet files
 pub struct WriterFlightService {
     object_store: Arc<dyn ObjectStore>,
+    wal: Arc<Wal>,
     #[allow(dead_code)]
     schemas: FlightSchemas,
 }
 
 impl WriterFlightService {
-    /// Create a new WriterFlightService with shared object store
-    pub fn new(object_store: Arc<dyn ObjectStore>) -> Self {
+    /// Create a new WriterFlightService with shared object store and WAL
+    pub fn new(object_store: Arc<dyn ObjectStore>, wal: Arc<Wal>) -> Self {
         Self {
             object_store,
+            wal,
             schemas: FlightSchemas::new(),
         }
     }
@@ -86,16 +89,56 @@ impl FlightService for WriterFlightService {
         if data_vec.is_empty() {
             return Err(Status::invalid_argument("No FlightData received"));
         }
+
         // Convert FlightData stream into Arrow RecordBatches
-        // Convert incoming FlightData messages into Arrow RecordBatches
         let batches =
             flight_data_to_batches(&data_vec).map_err(|e| Status::internal(e.to_string()))?;
-        for batch in batches {
-            let path = format!("batch/{}.parquet", Uuid::new_v4());
-            write_batch_to_object_store(self.object_store.clone(), &path, batch)
+
+        // Write all batches to WAL first for durability (WAL serves as the buffer)
+        let mut wal_entry_ids = Vec::new();
+        for batch in &batches {
+            // Serialize RecordBatch for WAL storage
+            let batch_bytes = record_batch_to_bytes(batch)
+                .map_err(|e| Status::internal(format!("Failed to serialize batch: {e}")))?;
+
+            // Write to WAL - this ensures durability and serves as our buffer
+            let entry_id = self
+                .wal
+                .append(WalOperation::WriteTraces, batch_bytes)
                 .await
-                .map_err(|e| Status::internal(e.to_string()))?;
+                .map_err(|e| Status::internal(format!("Failed to write to WAL: {e}")))?;
+
+            wal_entry_ids.push(entry_id);
         }
+
+        // Force flush WAL to ensure durability before acknowledging
+        self.wal
+            .flush()
+            .await
+            .map_err(|e| Status::internal(format!("Failed to flush WAL: {e}")))?;
+
+        // Process entries from WAL to object store (synchronous for now)
+        for (batch, entry_id) in batches.iter().zip(wal_entry_ids.iter()) {
+            let path = format!("batch/{}.parquet", Uuid::new_v4());
+
+            match write_batch_to_object_store(self.object_store.clone(), &path, batch.clone()).await
+            {
+                Ok(_) => {
+                    // Mark WAL entry as processed after successful write
+                    if let Err(e) = self.wal.mark_processed(*entry_id).await {
+                        log::warn!("Failed to mark WAL entry {entry_id} as processed: {e}");
+                    }
+                    log::debug!("Successfully wrote batch {entry_id} to object store at {path}");
+                }
+                Err(e) => {
+                    log::error!("Failed to write batch {entry_id} to object store: {e}");
+                    return Err(Status::internal(format!(
+                        "Failed to write to object store: {e}"
+                    )));
+                }
+            }
+        }
+
         let result = PutResult {
             app_metadata: Bytes::new(),
         };

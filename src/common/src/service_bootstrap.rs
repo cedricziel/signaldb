@@ -69,8 +69,13 @@ impl ServiceBootstrap {
 
         log::info!("Registering {service_type} service {service_id} at {address} with catalog");
 
-        // Register as ingester for backward compatibility with existing catalog schema
-        catalog.register_ingester(service_id, &address).await?;
+        // Get default capabilities for this service type
+        let capabilities = Self::get_default_capabilities(&service_type);
+
+        // Register as ingester with service type and capabilities
+        catalog
+            .register_ingester(service_id, &address, service_type.clone(), &capabilities)
+            .await?;
 
         // Start heartbeat if discovery config is available
         let heartbeat_handle = if let Some(discovery_config) = &config.discovery {
@@ -189,6 +194,18 @@ impl ServiceBootstrap {
         Ok(ingesters)
     }
 
+    /// Discover services by capability
+    pub async fn discover_services_by_capability(
+        &self,
+        capability: crate::flight::transport::ServiceCapability,
+    ) -> Result<Vec<Ingester>> {
+        let services = self
+            .catalog
+            .discover_services_by_capability(capability)
+            .await?;
+        Ok(services)
+    }
+
     /// Discover all registered services (returns ingesters for now, extensible for other types)
     pub async fn discover_services(&self, _service_type: ServiceType) -> Result<Vec<Ingester>> {
         // For now, return ingesters since that's what the catalog supports
@@ -220,11 +237,13 @@ impl ServiceBootstrap {
         )
     }
 
-    /// Helper method to derive Flight capabilities from service type
-    pub fn default_flight_capabilities(&self) -> Vec<crate::flight::transport::ServiceCapability> {
+    /// Static method to get default capabilities for a service type
+    fn get_default_capabilities(
+        service_type: &ServiceType,
+    ) -> Vec<crate::flight::transport::ServiceCapability> {
         use crate::flight::transport::ServiceCapability;
 
-        match self.service_type {
+        match service_type {
             ServiceType::Acceptor => vec![ServiceCapability::TraceIngestion],
             ServiceType::Writer => vec![
                 ServiceCapability::TraceIngestion,
@@ -233,6 +252,11 @@ impl ServiceBootstrap {
             ServiceType::Router => vec![ServiceCapability::Routing],
             ServiceType::Querier => vec![ServiceCapability::QueryExecution],
         }
+    }
+
+    /// Helper method to derive Flight capabilities from service type
+    pub fn default_flight_capabilities(&self) -> Vec<crate::flight::transport::ServiceCapability> {
+        Self::get_default_capabilities(&self.service_type)
     }
 
     /// Get Flight endpoint from service address
@@ -313,7 +337,7 @@ mod tests {
 
         // Test with file-based SQLite DSN
         let test_dir = ".test_data/test_subdir";
-        let test_dsn = format!("sqlite:{}/test.db", test_dir);
+        let test_dsn = format!("sqlite:{test_dir}/test.db");
 
         // Clean up any existing test directory
         let _ = std::fs::remove_dir_all(".test_data");
@@ -474,7 +498,7 @@ mod tests {
         ];
 
         for (dsn, should_succeed) in test_cases {
-            let result = ServiceBootstrap::ensure_data_directory(&dsn);
+            let result = ServiceBootstrap::ensure_data_directory(dsn);
             if should_succeed {
                 assert!(
                     result.is_ok(),
@@ -483,7 +507,7 @@ mod tests {
                     result.err()
                 );
             } else {
-                assert!(result.is_err(), "DSN '{}' should fail", dsn);
+                assert!(result.is_err(), "DSN '{dsn}' should fail");
             }
         }
 

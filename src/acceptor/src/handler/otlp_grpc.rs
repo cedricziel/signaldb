@@ -1,17 +1,18 @@
 use std::sync::Arc;
 
 use common::flight::conversion::otlp_traces_to_arrow;
+use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
+use common::wal::{record_batch_to_bytes, Wal, WalOperation};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
-use tokio::sync::Mutex;
 // Flight protocol imports
-use arrow_flight::client::FlightClient;
 use arrow_flight::utils::batches_to_flight_data;
 use futures::{stream, StreamExt};
 
-#[derive(Debug)]
 pub struct TraceHandler {
-    /// Flight client for forwarding telemetry
-    flight_client: Arc<Mutex<FlightClient>>,
+    /// Flight transport for forwarding telemetry
+    flight_transport: Arc<InMemoryFlightTransport>,
+    /// WAL for durability
+    wal: Arc<Wal>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -47,9 +48,12 @@ impl MockTraceHandler {
 }
 
 impl TraceHandler {
-    /// Create a new handler with Flight client
-    pub fn new(flight_client: Arc<Mutex<FlightClient>>) -> Self {
-        Self { flight_client }
+    /// Create a new handler with Flight transport and WAL
+    pub fn new(flight_transport: Arc<InMemoryFlightTransport>, wal: Arc<Wal>) -> Self {
+        Self {
+            flight_transport,
+            wal,
+        }
     }
 
     pub async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
@@ -58,40 +62,93 @@ impl TraceHandler {
         // Convert OTLP traces to Arrow RecordBatch
         let record_batch = otlp_traces_to_arrow(&request);
 
-        // Forward via Flight protocol to writer
-        if let Ok(mut client) = self.flight_client.try_lock() {
-            let schema = record_batch.schema();
-            let flight_data = match batches_to_flight_data(&schema, vec![record_batch]) {
-                Ok(data) => data,
-                Err(e) => {
-                    log::error!("Failed to convert batch to flight data: {e}");
-                    return;
-                }
-            };
+        // Step 1: Write to WAL first for durability
+        let batch_bytes = match record_batch_to_bytes(&record_batch) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                log::error!("Failed to serialize record batch: {e}");
+                return;
+            }
+        };
 
-            let flight_stream = stream::iter(flight_data.into_iter().map(Ok));
+        let wal_entry_id = match self
+            .wal
+            .append(WalOperation::WriteTraces, batch_bytes.clone())
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                log::error!("Failed to write traces to WAL: {e}");
+                return;
+            }
+        };
 
-            match client.do_put(flight_stream).await {
-                Ok(mut response_stream) => {
-                    while let Some(response) = response_stream.next().await {
-                        match response {
-                            Ok(put_result) => {
-                                log::debug!("Flight put response: {put_result:?}");
-                            }
-                            Err(e) => {
-                                log::error!("Flight put error: {e}");
-                                return;
-                            }
+        // Flush WAL to ensure durability
+        if let Err(e) = self.wal.flush().await {
+            log::error!("Failed to flush WAL: {e}");
+            return;
+        }
+
+        log::debug!("Traces written to WAL with entry ID: {wal_entry_id}");
+
+        // Step 2: Forward from WAL to writer via Flight
+        // Get a Flight client for a writer service with storage capability (excludes acceptor)
+        let mut client = match self
+            .flight_transport
+            .get_client_for_capability(ServiceCapability::Storage)
+            .await
+        {
+            Ok(client) => client,
+            Err(e) => {
+                log::error!("Failed to get Flight client for storage service: {e}");
+                // Data remains in WAL for retry by background processor
+                return;
+            }
+        };
+
+        let schema = record_batch.schema();
+        let flight_data = match batches_to_flight_data(&schema, vec![record_batch]) {
+            Ok(data) => data,
+            Err(e) => {
+                log::error!("Failed to convert batch to flight data: {e}");
+                // Data remains in WAL for retry
+                return;
+            }
+        };
+
+        let flight_stream = stream::iter(flight_data);
+
+        match client.do_put(flight_stream).await {
+            Ok(response) => {
+                let mut response_stream = response.into_inner();
+                let mut success = true;
+                while let Some(result) = response_stream.next().await {
+                    match result {
+                        Ok(put_result) => {
+                            log::debug!("Flight put response: {put_result:?}");
+                        }
+                        Err(e) => {
+                            log::error!("Flight put error: {e}");
+                            success = false;
+                            break;
                         }
                     }
-                    log::debug!("Successfully forwarded traces via Flight protocol");
                 }
-                Err(e) => {
-                    log::error!("Failed to forward traces via Flight protocol: {e}");
+
+                if success {
+                    log::debug!("Successfully forwarded traces via Flight protocol");
+                    // Mark WAL entry as processed after successful forwarding
+                    if let Err(e) = self.wal.mark_processed(wal_entry_id).await {
+                        log::warn!("Failed to mark WAL entry {wal_entry_id} as processed: {e}");
+                    }
+                } else {
+                    log::error!("Failed to forward traces - data remains in WAL for retry");
                 }
             }
-        } else {
-            log::error!("Failed to acquire Flight client lock");
+            Err(e) => {
+                log::error!("Failed to forward traces via Flight protocol: {e}");
+                // Data remains in WAL for retry by background processor
+            }
         }
     }
 }

@@ -6,24 +6,126 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: secret
-  nats:
-    image: nats:2.10.12
-    ports:
-      - "4222:4222"
-      - "6222:6222"
-      - "8222:8222"
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: signaldb
+      POSTGRES_USER: signaldb
+      POSTGRES_PASSWORD: password
     volumes:
-      - nats-data:/data
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8222/healthz"]
+      test: ["CMD-SHELL", "pg_isready -U signaldb"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  signaldb-writer:
+    image: signaldb/writer:latest
+    environment:
+      SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
+      SIGNALDB_DISCOVERY_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
+      WRITER_FLIGHT_ADDR: "0.0.0.0:50051"
+      WRITER_ADVERTISE_ADDR: "signaldb-writer:50051"
+      # WAL persistence configuration - mounted to persistent volume
+      WRITER_WAL_DIR: "/data/wal"
+      SIGNALDB_STORAGE_ADAPTERS_LOCAL_URL: "file:///data/storage"
+    volumes:
+      # Persistent WAL storage to survive container restarts
+      - writer-wal:/data/wal
+      # Persistent data storage
+      - writer-data:/data/storage
+    ports:
+      - "50051:50051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "50051"]
       interval: 30s
       timeout: 10s
       retries: 3
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G
           cpus: '1'
 
+  signaldb-acceptor:
+    image: signaldb/acceptor:latest
+    environment:
+      SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
+      SIGNALDB_DISCOVERY_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
+      ACCEPTOR_GRPC_ADDR: "0.0.0.0:4317"
+      ACCEPTOR_HTTP_ADDR: "0.0.0.0:4318"
+      # WAL persistence for acceptor durability
+      ACCEPTOR_WAL_DIR: "/data/wal"
+    volumes:
+      - acceptor-wal:/data/wal
+    ports:
+      - "4317:4317"  # OTLP gRPC
+      - "4318:4318"  # OTLP HTTP
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "4317"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  signaldb-querier:
+    image: signaldb/querier:latest
+    environment:
+      SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
+      SIGNALDB_DISCOVERY_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
+      QUERIER_FLIGHT_ADDR: "0.0.0.0:50054"
+      QUERIER_ADVERTISE_ADDR: "signaldb-querier:50054"
+      SIGNALDB_STORAGE_ADAPTERS_LOCAL_URL: "file:///data/storage"
+    volumes:
+      - writer-data:/data/storage:ro  # Read-only access to writer data
+    ports:
+      - "50054:50054"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  signaldb-router:
+    image: signaldb/router:latest
+    environment:
+      SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
+      SIGNALDB_DISCOVERY_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
+      ROUTER_FLIGHT_ADDR: "0.0.0.0:50053"
+      ROUTER_HTTP_ADDR: "0.0.0.0:3001"
+    ports:
+      - "50053:50053"  # Flight
+      - "3001:3001"    # HTTP API
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
-  nats-data:
+  postgres-data:
+  # Persistent WAL storage - critical for durability
+  writer-wal:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/writer-wal
+  acceptor-wal:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/acceptor-wal
+  # Persistent data storage
+  writer-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/writer-storage

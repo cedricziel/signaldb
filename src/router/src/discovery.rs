@@ -261,6 +261,11 @@ mod tests {
                 id: uuid::Uuid::new_v4(),
                 address: "test:8080".to_string(),
                 last_seen: chrono::Utc::now(),
+                service_type: common::service_bootstrap::ServiceType::Writer,
+                capabilities: vec![
+                    common::flight::transport::ServiceCapability::TraceIngestion,
+                    common::flight::transport::ServiceCapability::Storage,
+                ],
             };
             services_guard.insert(mock_ingester.id, mock_ingester);
         }

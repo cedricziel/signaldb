@@ -11,13 +11,21 @@ tempo-api = { path = "../tempo-api", features = ["server"] }
 
 async-trait.workspace = true
 
-axum = { workspace = true, features = ["macros"] }
-tower-http = { workspace = true, features = ["trace"] }
 anyhow.workspace = true
 tokio.workspace = true
 log.workspace = true
 datafusion.workspace = true
 tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tonic.workspace = true
+arrow-flight.workspace = true
+object_store.workspace = true
+futures.workspace = true
+bytes.workspace = true
+url = "2.5"
 
 thiserror.workspace = true
+
+[[bin]]
+name = "signaldb-querier"
+path = "src/main.rs"

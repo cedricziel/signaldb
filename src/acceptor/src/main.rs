@@ -43,14 +43,14 @@ async fn main() -> Result<()> {
     // Spawn OTLP/gRPC acceptor
     let grpc_handle = tokio::spawn(async move {
         if let Err(e) = serve_otlp_grpc(grpc_init_tx, grpc_shutdown_rx, grpc_stopped_tx).await {
-            log::error!("OTLP/gRPC server error: {}", e);
+            log::error!("OTLP/gRPC server error: {e}");
         }
     });
 
     // Spawn OTLP/HTTP acceptor
     let http_handle = tokio::spawn(async move {
         if let Err(e) = serve_otlp_http(http_init_tx, http_shutdown_rx, http_stopped_tx).await {
-            log::error!("OTLP/HTTP server error: {}", e);
+            log::error!("OTLP/HTTP server error: {e}");
         }
     });
 
@@ -63,8 +63,8 @@ async fn main() -> Result<()> {
         .context("Failed to initialize OTLP/HTTP server")?;
 
     log::info!("✅ Acceptor service started successfully");
-    log::info!("📡 OTLP gRPC server listening on {}", grpc_addr);
-    log::info!("🌐 OTLP HTTP server listening on {}", http_addr);
+    log::info!("📡 OTLP gRPC server listening on {grpc_addr}");
+    log::info!("🌐 OTLP HTTP server listening on {http_addr}");
 
     // Wait for shutdown signal (Ctrl+C)
     tokio::signal::ctrl_c()
@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
 
     // Graceful deregistration using service bootstrap
     if let Err(e) = acceptor_bootstrap.shutdown().await {
-        log::error!("Failed to shutdown acceptor service bootstrap: {}", e);
+        log::error!("Failed to shutdown acceptor service bootstrap: {e}");
     }
 
     // Trigger shutdown

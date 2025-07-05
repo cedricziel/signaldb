@@ -21,14 +21,15 @@ use opentelemetry_proto::tonic::collector::{
 use tokio::net::TcpListener;
 use tokio::{
     fs::{create_dir_all, File},
-    sync::{oneshot, Mutex},
+    sync::oneshot,
 };
 // Service bootstrap and configuration
 use common::config::Configuration;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-// Flight protocol client
-use arrow_flight::client::FlightClient;
-use tonic::transport::Endpoint;
+// Flight protocol and transport
+use common::flight::transport::InMemoryFlightTransport;
+// WAL for durability
+use common::wal::{Wal, WalConfig};
 
 use crate::handler::otlp_grpc::TraceHandler;
 use crate::services::{
@@ -105,22 +106,36 @@ pub async fn serve_otlp_grpc(
 
     log::info!("Starting OTLP/gRPC acceptor on {addr}");
 
-    // Initialize Flight client to forward telemetry to writer
-    let flight_endpoint = std::env::var("FLIGHT_ENDPOINT").unwrap_or_else(|_| {
-        // Default Flight endpoint
-        "http://127.0.0.1:50051".to_string()
-    });
-    let endpoint = Endpoint::new(flight_endpoint)
-        .map_err(|e| anyhow::anyhow!("Invalid Flight endpoint: {}", e))?;
-    let channel = endpoint.connect().await?;
-    let flight_client = Arc::new(Mutex::new(FlightClient::new(channel)));
-    // Set up OTLP/gRPC services with Flight forwarding
-    let log_server = LogsServiceServer::new(LogAcceptorService::new(flight_client.clone()));
+    // Initialize Flight transport with catalog-aware discovery
+    let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
+
+    // Start background connection cleanup
+    flight_transport.start_connection_cleanup(std::time::Duration::from_secs(60));
+
+    // Initialize WAL for durability
+    let wal_config = WalConfig {
+        wal_dir: std::env::var("ACCEPTOR_WAL_DIR")
+            .unwrap_or_else(|_| ".wal/acceptor".to_string())
+            .into(),
+        ..Default::default()
+    };
+
+    let mut wal = Wal::new(wal_config)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to initialize WAL: {}", e))?;
+
+    // Start background WAL flush task
+    wal.start_background_flush();
+    let wal = Arc::new(wal);
+
+    // Set up OTLP/gRPC services with Flight forwarding and WAL
+    let log_server = LogsServiceServer::new(LogAcceptorService::new(flight_transport.clone()));
     let trace_server = TraceServiceServer::new(TraceAcceptorService::new(TraceHandler::new(
-        flight_client.clone(),
+        flight_transport.clone(),
+        wal.clone(),
     )));
     let metric_server =
-        MetricsServiceServer::new(MetricsAcceptorService::new(flight_client.clone()));
+        MetricsServiceServer::new(MetricsAcceptorService::new(flight_transport.clone()));
 
     init_tx
         .send(())
@@ -133,10 +148,7 @@ pub async fn serve_otlp_grpc(
             shutdown_rx.await.ok();
 
             log::info!("Shutting down OTLP acceptor");
-            // Graceful service bootstrap shutdown
-            if let Err(e) = service_bootstrap.shutdown().await {
-                log::error!("Failed to shutdown service bootstrap: {e}");
-            }
+            // Service bootstrap shutdown is handled via InMemoryFlightTransport's drop impl
         })
         .await
         .expect("Unable to start OTLP acceptor");
@@ -178,17 +190,7 @@ pub async fn serve_otlp_http(
 
     log::info!("Starting OTLP/HTTP acceptor on {addr}");
 
-    // Load configuration
-    let config = Configuration::load()
-        .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
-
-    // Initialize service bootstrap for catalog-based discovery
-    let advertise_addr =
-        std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| addr.to_string());
-
-    let service_bootstrap = ServiceBootstrap::new(config, ServiceType::Acceptor, advertise_addr)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to initialize service bootstrap: {}", e))?;
+    // Note: Service bootstrap is handled in the main function for the entire acceptor service
 
     let app = acceptor_router();
 
@@ -201,10 +203,7 @@ pub async fn serve_otlp_http(
         .with_graceful_shutdown(async {
             shutdown_rx.await.ok();
             log::info!("Shutting down OTLP/HTTP acceptor");
-            // Graceful service bootstrap shutdown
-            if let Err(e) = service_bootstrap.shutdown().await {
-                log::error!("Failed to shutdown service bootstrap: {e}");
-            }
+            // Service bootstrap shutdown is handled in the main function
         })
         .await?;
 
