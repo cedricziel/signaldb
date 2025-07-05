@@ -140,7 +140,10 @@ pub async fn search<S: RouterState>(
     };
 
     // Create Flight query for trace search
-    let search_params = format!("{query:?}"); // Simple debug format instead of JSON
+    let search_params = serde_json::to_string(&query).map_err(|e| {
+        log::error!("Failed to serialize search parameters: {e}");
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     let ticket = Ticket::new(format!("search_traces:{search_params}"));
 
     match client.do_get(ticket).await {
