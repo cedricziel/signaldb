@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+
+echo "Running pre-commit hooks..."
+
+# Check code formatting
+echo "Checking code formatting..."
+cargo fmt --all -- --check
+
+# Run clippy with warnings as errors
+echo "Running clippy..."
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Check for unused dependencies
+echo "Checking for unused dependencies..."
+cargo machete --with-metadata
+
+# License and security auditing
+echo "Running security and license auditing..."
+cargo deny check
+
+echo "All pre-commit checks passed!"
