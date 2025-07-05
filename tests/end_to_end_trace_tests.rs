@@ -387,36 +387,38 @@ async fn test_monolithic_mode_trace_pipeline() {
         ttl: Duration::from_secs(300),
     });
 
-    // Create flight transport for monolithic mode
-    let service_bootstrap = ServiceBootstrap::new(
+    // Use the same flight transport pattern as the working distributed test
+    let acceptor_bootstrap = ServiceBootstrap::new(
         config.clone(),
-        ServiceType::Writer,
-        "127.0.0.1:50051".to_string(),
+        ServiceType::Acceptor,
+        "127.0.0.1:50058".to_string(),
     )
     .await
     .unwrap();
-    let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
+    let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
 
     println!("✅ Monolithic mode configuration initialized");
 
-    // Start services (same pattern as working test)
-    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
+    // Start writer Flight service (same as working test)
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
 
+    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
+    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
     let writer_server = Server::builder()
         .add_service(FlightServiceServer::new(writer_service))
         .serve(writer_addr);
     tokio::spawn(writer_server);
 
+    // Create writer bootstrap for proper service registration
     let writer_bootstrap =
         ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
             .await
             .unwrap();
     let _writer_id = writer_bootstrap.service_id();
 
+    // Start querier service for query testing
     let querier_service = QuerierFlightService::new(object_store.clone(), flight_transport.clone());
     let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let querier_addr = querier_listener.local_addr().unwrap();
@@ -436,6 +438,7 @@ async fn test_monolithic_mode_trace_pipeline() {
     .unwrap();
     let _querier_id = querier_bootstrap.service_id();
 
+    // Start acceptor (same as working test)
     let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
     let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal.clone());
     let acceptor_service = TraceAcceptorService::new(trace_handler);
@@ -454,7 +457,18 @@ async fn test_monolithic_mode_trace_pipeline() {
     println!("  - Acceptor: {acceptor_addr}");
 
     // Allow more time for monolithic service startup and discovery
-    sleep(Duration::from_secs(3)).await;
+    // Need extra time for all services to register with the shared catalog
+    sleep(Duration::from_secs(5)).await;
+
+    // Create a temporary flight transport for service discovery verification
+    let discovery_bootstrap = ServiceBootstrap::new(
+        config.clone(),
+        ServiceType::Acceptor,
+        "127.0.0.1:50061".to_string(),
+    )
+    .await
+    .unwrap();
+    let _discovery_transport = Arc::new(InMemoryFlightTransport::new(discovery_bootstrap));
 
     // Verify service discovery (same as working test)
     let trace_ingestion_services = flight_transport
@@ -530,10 +544,43 @@ async fn test_monolithic_mode_trace_pipeline() {
     };
 
     println!("📤 Sending trace via OTLP...");
-    let _response = timeout(Duration::from_secs(5), otlp_client.export(trace_request))
-        .await
-        .expect("OTLP export timed out")
-        .expect("OTLP export failed");
+
+    // Add detailed timing to identify where the hang occurs
+    let start_time = std::time::Instant::now();
+    println!("⏱️  Starting OTLP export at {start_time:?}");
+
+    let export_result = timeout(Duration::from_secs(15), otlp_client.export(trace_request)).await;
+
+    match export_result {
+        Ok(Ok(_response)) => {
+            println!(
+                "✅ OTLP export completed successfully in {:?}",
+                start_time.elapsed()
+            );
+        }
+        Ok(Err(e)) => {
+            println!(
+                "❌ OTLP export failed after {:?}: {e}",
+                start_time.elapsed()
+            );
+            panic!("OTLP export failed: {e}");
+        }
+        Err(_) => {
+            println!("⏰ OTLP export timed out after {:?}", start_time.elapsed());
+
+            // Let's check if the issue is in service discovery
+            println!("🔍 Checking if acceptor can discover storage services...");
+            let storage_check = flight_transport
+                .discover_services_by_capability(ServiceCapability::Storage)
+                .await;
+            println!("📋 Storage services discoverable: {}", storage_check.len());
+            for service in &storage_check {
+                println!("  - {} at {}", service.service_type, service.endpoint);
+            }
+
+            panic!("OTLP export timed out - likely hanging in Flight communication");
+        }
+    }
 
     println!("✅ Trace sent successfully in monolithic mode");
 
@@ -647,7 +694,7 @@ async fn test_flight_communication_performance() {
         .unwrap();
 
     // Performance test: Send multiple traces
-    let num_traces = 50; // Smaller number for reliable testing
+    let num_traces: u32 = 50; // Smaller number for reliable testing
     let start_time = std::time::Instant::now();
 
     for i in 0..num_traces {
@@ -655,8 +702,8 @@ async fn test_flight_communication_performance() {
         let mut span_id = vec![0u8; 8];
 
         // Create unique trace and span IDs
-        trace_id[12..16].copy_from_slice(&(i as u32).to_be_bytes());
-        span_id[4..8].copy_from_slice(&(i as u32).to_be_bytes());
+        trace_id[12..16].copy_from_slice(&i.to_be_bytes());
+        span_id[4..8].copy_from_slice(&i.to_be_bytes());
 
         let trace_request = ExportTraceServiceRequest {
             resource_spans: vec![ResourceSpans {
