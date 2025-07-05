@@ -92,15 +92,15 @@ impl TraceHandler {
         log::debug!("Traces written to WAL with entry ID: {wal_entry_id}");
 
         // Step 2: Forward from WAL to writer via Flight
-        // Get a Flight client for a writer service with trace ingestion capability
+        // Get a Flight client for a writer service with storage capability (excludes acceptor)
         let mut client = match self
             .flight_transport
-            .get_client_for_capability(ServiceCapability::TraceIngestion)
+            .get_client_for_capability(ServiceCapability::Storage)
             .await
         {
             Ok(client) => client,
             Err(e) => {
-                log::error!("Failed to get Flight client for trace ingestion: {e}");
+                log::error!("Failed to get Flight client for storage service: {e}");
                 // Data remains in WAL for retry by background processor
                 return;
             }

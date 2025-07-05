@@ -38,15 +38,29 @@ async fn test_acceptor_writer_flow() {
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
     let wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
 
-    // Set up service discovery
-    let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
+    // Set up service discovery with shared SQLite database
+    let catalog_db_path = temp_dir.path().join("catalog.db");
+    let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
+
+    let mut config = Configuration::default();
+    config.discovery = Some(common::config::DiscoveryConfig {
+        dsn: catalog_dsn.clone(),
+        heartbeat_interval: std::time::Duration::from_secs(30),
+        poll_interval: std::time::Duration::from_secs(60),
+        ttl: std::time::Duration::from_secs(300),
+    });
+
     let service_bootstrap = ServiceBootstrap::new(
-        Configuration::default(),
+        config.clone(),
         ServiceType::Acceptor,
         "127.0.0.1:4317".to_string(),
     )
     .await
     .unwrap();
+    println!(
+        "🔍 Acceptor bootstrap address: {}",
+        service_bootstrap.address()
+    );
     let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
 
     // Start writer Flight service on a random port
@@ -61,26 +75,25 @@ async fn test_acceptor_writer_flow() {
 
     tokio::spawn(writer_server);
 
-    // Register writer with flight transport
-    let writer_id = flight_transport
-        .register_flight_service(
-            common::service_bootstrap::ServiceType::Writer,
-            writer_addr.ip().to_string(),
-            writer_addr.port(),
-            vec![
-                ServiceCapability::TraceIngestion,
-                ServiceCapability::Storage,
-            ],
-        )
-        .await
-        .unwrap();
+    // Create writer bootstrap for proper service registration
+    println!("🔍 Writer address to register: {writer_addr}");
+    let writer_bootstrap =
+        ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
+            .await
+            .unwrap();
+    println!(
+        "🔍 Writer bootstrap address: {}",
+        writer_bootstrap.address()
+    );
+
+    let writer_id = writer_bootstrap.service_id();
 
     // Give services time to start
     sleep(Duration::from_millis(200)).await;
 
     // Set up acceptor with flight transport
     let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal);
+    let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal.clone());
     let acceptor_service = TraceAcceptorService::new(trace_handler);
 
     // Start acceptor service on a random port
@@ -144,10 +157,57 @@ async fn test_acceptor_writer_flow() {
 
     println!("✓ Acceptor processed trace successfully");
 
+    // Debug: Check service discovery
+    let discovered_services = flight_transport
+        .discover_services_by_capability(ServiceCapability::TraceIngestion)
+        .await;
+    println!(
+        "🔍 Discovered TraceIngestion services: {:?}",
+        discovered_services.len()
+    );
+    for service in &discovered_services {
+        println!(
+            "  - ID: {}, Type: {:?}, Address: {}",
+            service.service_id, service.service_type, service.address
+        );
+    }
+
+    let storage_services = flight_transport
+        .discover_services_by_capability(ServiceCapability::Storage)
+        .await;
+    println!(
+        "🔍 Discovered Storage services: {:?}",
+        storage_services.len()
+    );
+    for service in &storage_services {
+        println!(
+            "  - ID: {}, Type: {:?}, Address: {}",
+            service.service_id, service.service_type, service.address
+        );
+    }
+
+    // Debug: Check acceptor WAL
+    let acceptor_wal_entries = acceptor_wal.get_unprocessed_entries().await.unwrap();
+    println!(
+        "🔍 Acceptor WAL unprocessed entries: {:?}",
+        acceptor_wal_entries.len()
+    );
+
+    // Debug: Check writer WAL
+    let writer_wal_entries = wal.get_unprocessed_entries().await.unwrap();
+    println!(
+        "🔍 Writer WAL unprocessed entries: {:?}",
+        writer_wal_entries.len()
+    );
+
     // Verify data reached object store via writer
-    sleep(Duration::from_millis(500)).await; // Allow time for async processing
+    sleep(Duration::from_millis(2000)).await; // Allow more time for async processing
 
     let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
+    println!("🔍 Objects in store: {:?}", objects.len());
+    for obj in &objects {
+        println!("  - {}", obj.location);
+    }
     assert!(
         !objects.is_empty(),
         "No objects found in store - data didn't reach writer"
@@ -177,41 +237,45 @@ async fn test_querier_integration() {
     // Set up object store with test data
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
 
-    // Set up service discovery
-    let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
+    // Set up test infrastructure
+    let temp_dir = TempDir::new().unwrap();
+
+    // Set up service discovery with shared SQLite database
+    let catalog_db_path = temp_dir.path().join("catalog.db");
+    let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
+
+    let mut config = Configuration::default();
+    config.discovery = Some(common::config::DiscoveryConfig {
+        dsn: catalog_dsn.clone(),
+        heartbeat_interval: std::time::Duration::from_secs(30),
+        poll_interval: std::time::Duration::from_secs(60),
+        ttl: std::time::Duration::from_secs(300),
+    });
+
+    // Start querier on random port first to get the address
+    let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let querier_addr = querier_listener.local_addr().unwrap();
+    drop(querier_listener);
+
+    // Create service bootstrap with the actual server address
     let service_bootstrap = ServiceBootstrap::new(
-        Configuration::default(),
+        config.clone(),
         ServiceType::Querier,
-        "127.0.0.1:50054".to_string(),
+        querier_addr.to_string(),
     )
     .await
     .unwrap();
+    let querier_id = service_bootstrap.service_id();
     let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
 
     // Create querier service
     let querier_service = QuerierFlightService::new(object_store.clone(), flight_transport.clone());
-
-    // Start querier on random port
-    let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let querier_addr = querier_listener.local_addr().unwrap();
-    drop(querier_listener);
 
     let querier_server = Server::builder()
         .add_service(FlightServiceServer::new(querier_service))
         .serve(querier_addr);
 
     tokio::spawn(querier_server);
-
-    // Register querier with flight transport
-    let querier_id = flight_transport
-        .register_flight_service(
-            common::service_bootstrap::ServiceType::Querier,
-            querier_addr.ip().to_string(),
-            querier_addr.port(),
-            vec![ServiceCapability::QueryExecution],
-        )
-        .await
-        .unwrap();
 
     sleep(Duration::from_millis(200)).await;
 
@@ -330,11 +394,22 @@ async fn test_end_to_end_pipeline() {
 
     // Shared infrastructure
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+    // Set up service discovery with shared SQLite database
+    let catalog_db_path = temp_dir.path().join("catalog.db");
+    let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
+
+    let mut config = Configuration::default();
+    config.discovery = Some(common::config::DiscoveryConfig {
+        dsn: catalog_dsn.clone(),
+        heartbeat_interval: std::time::Duration::from_secs(30),
+        poll_interval: std::time::Duration::from_secs(60),
+        ttl: std::time::Duration::from_secs(300),
+    });
 
     // Create shared flight transport for service discovery
     let service_bootstrap = ServiceBootstrap::new(
-        Configuration::default(),
+        config.clone(),
         ServiceType::Acceptor,
         "127.0.0.1:4317".to_string(),
     )
@@ -354,18 +429,13 @@ async fn test_end_to_end_pipeline() {
         .serve(writer_addr);
     tokio::spawn(writer_server);
 
-    let _writer_id = flight_transport
-        .register_flight_service(
-            common::service_bootstrap::ServiceType::Writer,
-            writer_addr.ip().to_string(),
-            writer_addr.port(),
-            vec![
-                ServiceCapability::TraceIngestion,
-                ServiceCapability::Storage,
-            ],
-        )
-        .await
-        .unwrap();
+    // Create writer bootstrap for proper service registration
+    let writer_bootstrap =
+        ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
+            .await
+            .unwrap();
+
+    let _writer_id = writer_bootstrap.service_id();
 
     // Start querier
     let querier_service = QuerierFlightService::new(object_store.clone(), flight_transport.clone());
@@ -378,15 +448,16 @@ async fn test_end_to_end_pipeline() {
         .serve(querier_addr);
     tokio::spawn(querier_server);
 
-    let _querier_id = flight_transport
-        .register_flight_service(
-            common::service_bootstrap::ServiceType::Querier,
-            querier_addr.ip().to_string(),
-            querier_addr.port(),
-            vec![ServiceCapability::QueryExecution],
-        )
-        .await
-        .unwrap();
+    // Create querier bootstrap for proper service registration
+    let querier_bootstrap = ServiceBootstrap::new(
+        config.clone(),
+        ServiceType::Querier,
+        querier_addr.to_string(),
+    )
+    .await
+    .unwrap();
+
+    let _querier_id = querier_bootstrap.service_id();
 
     // Start acceptor
     let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
@@ -494,17 +565,28 @@ async fn test_direct_acceptor_writer_flight() {
     };
 
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
-    // Create shared flight transport
-    let service_bootstrap = ServiceBootstrap::new(
-        Configuration::default(),
-        ServiceType::Writer,
+    // Set up service discovery with shared SQLite database
+    let catalog_db_path = temp_dir.path().join("catalog.db");
+    let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
+
+    let mut config = Configuration::default();
+    config.discovery = Some(common::config::DiscoveryConfig {
+        dsn: catalog_dsn.clone(),
+        heartbeat_interval: std::time::Duration::from_secs(30),
+        poll_interval: std::time::Duration::from_secs(60),
+        ttl: std::time::Duration::from_secs(300),
+    });
+
+    // Create shared flight transport from acceptor perspective
+    let acceptor_bootstrap = ServiceBootstrap::new(
+        config.clone(),
+        ServiceType::Acceptor,
         "127.0.0.1:50055".to_string(),
     )
     .await
     .unwrap();
-    let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
+    let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
 
     // Start writer
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
@@ -518,25 +600,19 @@ async fn test_direct_acceptor_writer_flight() {
         .serve(writer_addr);
     tokio::spawn(writer_server);
 
-    // Register writer
-    let _writer_id = flight_transport
-        .register_flight_service(
-            ServiceType::Writer,
-            writer_addr.ip().to_string(),
-            writer_addr.port(),
-            vec![
-                ServiceCapability::TraceIngestion,
-                ServiceCapability::Storage,
-            ],
-        )
-        .await
-        .unwrap();
+    // Create writer bootstrap for proper service registration
+    let writer_bootstrap =
+        ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
+            .await
+            .unwrap();
+
+    let _writer_id = writer_bootstrap.service_id();
 
     sleep(Duration::from_millis(500)).await;
 
     // Test 1: Can we get a Flight client for the writer?
     let client_result = flight_transport
-        .get_client_for_capability(ServiceCapability::TraceIngestion)
+        .get_client_for_capability(ServiceCapability::Storage)
         .await;
 
     println!("Flight client creation: {:?}", client_result.is_ok());
@@ -938,12 +1014,23 @@ async fn test_grpc_service_layer() {
     };
 
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+    // Set up service discovery with shared SQLite database
+    let catalog_db_path = temp_dir.path().join("catalog.db");
+    let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
+
+    let mut config = Configuration::default();
+    config.discovery = Some(common::config::DiscoveryConfig {
+        dsn: catalog_dsn.clone(),
+        heartbeat_interval: std::time::Duration::from_secs(30),
+        poll_interval: std::time::Duration::from_secs(60),
+        ttl: std::time::Duration::from_secs(300),
+    });
 
     // Create flight transport and writer (same setup as working simulation)
     let service_bootstrap = ServiceBootstrap::new(
-        Configuration::default(),
-        ServiceType::Writer,
+        config.clone(),
+        ServiceType::Acceptor,
         "127.0.0.1:50057".to_string(),
     )
     .await
@@ -962,19 +1049,13 @@ async fn test_grpc_service_layer() {
         .serve(writer_addr);
     tokio::spawn(writer_server);
 
-    // Register writer
-    let _writer_id = flight_transport
-        .register_flight_service(
-            ServiceType::Writer,
-            writer_addr.ip().to_string(),
-            writer_addr.port(),
-            vec![
-                ServiceCapability::TraceIngestion,
-                ServiceCapability::Storage,
-            ],
-        )
-        .await
-        .unwrap();
+    // Create writer bootstrap for proper service registration
+    let writer_bootstrap =
+        ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
+            .await
+            .unwrap();
+
+    let _writer_id = writer_bootstrap.service_id();
 
     sleep(Duration::from_millis(500)).await;
 
@@ -1110,17 +1191,28 @@ async fn test_end_to_end_without_querier() {
 
     // Shared infrastructure
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
-    // Try using Writer as base ServiceBootstrap (like working gRPC test)
-    let service_bootstrap = ServiceBootstrap::new(
-        Configuration::default(),
-        ServiceType::Writer, // Changed from Acceptor
+    // Set up service discovery with shared SQLite database
+    let catalog_db_path = temp_dir.path().join("catalog.db");
+    let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
+
+    let mut config = Configuration::default();
+    config.discovery = Some(common::config::DiscoveryConfig {
+        dsn: catalog_dsn.clone(),
+        heartbeat_interval: std::time::Duration::from_secs(30),
+        poll_interval: std::time::Duration::from_secs(60),
+        ttl: std::time::Duration::from_secs(300),
+    });
+
+    // Create acceptor bootstrap (services communicate with each other)
+    let acceptor_bootstrap = ServiceBootstrap::new(
+        config.clone(),
+        ServiceType::Acceptor,
         "127.0.0.1:50058".to_string(),
     )
     .await
     .unwrap();
-    let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
+    let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
 
     // Start writer (same as end-to-end)
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
@@ -1134,18 +1226,13 @@ async fn test_end_to_end_without_querier() {
         .serve(writer_addr);
     tokio::spawn(writer_server);
 
-    let _writer_id = flight_transport
-        .register_flight_service(
-            ServiceType::Writer,
-            writer_addr.ip().to_string(),
-            writer_addr.port(),
-            vec![
-                ServiceCapability::TraceIngestion,
-                ServiceCapability::Storage,
-            ],
-        )
-        .await
-        .unwrap();
+    // Create writer bootstrap for proper service registration
+    let writer_bootstrap =
+        ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
+            .await
+            .unwrap();
+
+    let _writer_id = writer_bootstrap.service_id();
 
     // Start acceptor (same as end-to-end)
     let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
@@ -1248,14 +1335,25 @@ async fn test_object_store_sharing_investigation() {
 
     // Create shared object store
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+    // Set up service discovery with shared SQLite database
+    let catalog_db_path = temp_dir.path().join("catalog.db");
+    let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
+
+    let mut config = Configuration::default();
+    config.discovery = Some(common::config::DiscoveryConfig {
+        dsn: catalog_dsn.clone(),
+        heartbeat_interval: std::time::Duration::from_secs(30),
+        poll_interval: std::time::Duration::from_secs(60),
+        ttl: std::time::Duration::from_secs(300),
+    });
 
     println!("📦 Created shared object store");
 
-    // Create flight transport
+    // Create flight transport with Acceptor bootstrap for service discovery
     let service_bootstrap = ServiceBootstrap::new(
-        Configuration::default(),
-        ServiceType::Writer,
+        config.clone(),
+        ServiceType::Acceptor,
         "127.0.0.1:50059".to_string(),
     )
     .await
@@ -1274,18 +1372,13 @@ async fn test_object_store_sharing_investigation() {
         .serve(writer_addr);
     tokio::spawn(writer_server);
 
-    let _writer_id = flight_transport
-        .register_flight_service(
-            ServiceType::Writer,
-            writer_addr.ip().to_string(),
-            writer_addr.port(),
-            vec![
-                ServiceCapability::TraceIngestion,
-                ServiceCapability::Storage,
-            ],
-        )
-        .await
-        .unwrap();
+    // Create writer bootstrap for proper service registration
+    let writer_bootstrap =
+        ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
+            .await
+            .unwrap();
+
+    let _writer_id = writer_bootstrap.service_id();
 
     sleep(Duration::from_millis(500)).await;
 
@@ -1306,7 +1399,7 @@ async fn test_object_store_sharing_investigation() {
         .expect("Failed to convert to flight data");
 
     let mut client = flight_transport
-        .get_client_for_capability(ServiceCapability::TraceIngestion)
+        .get_client_for_capability(ServiceCapability::Storage)
         .await
         .expect("Failed to get writer client");
 
@@ -1345,15 +1438,16 @@ async fn test_object_store_sharing_investigation() {
         .serve(querier_addr);
     tokio::spawn(querier_server);
 
-    let _querier_id = flight_transport
-        .register_flight_service(
-            ServiceType::Querier,
-            querier_addr.ip().to_string(),
-            querier_addr.port(),
-            vec![ServiceCapability::QueryExecution],
-        )
-        .await
-        .unwrap();
+    // Create querier bootstrap for proper service registration
+    let querier_bootstrap = ServiceBootstrap::new(
+        config.clone(),
+        ServiceType::Querier,
+        querier_addr.to_string(),
+    )
+    .await
+    .unwrap();
+
+    let _querier_id = querier_bootstrap.service_id();
 
     sleep(Duration::from_secs(1)).await;
 
@@ -1376,7 +1470,7 @@ async fn test_object_store_sharing_investigation() {
         .expect("Failed to convert to flight data");
 
     let mut client2 = flight_transport
-        .get_client_for_capability(ServiceCapability::TraceIngestion)
+        .get_client_for_capability(ServiceCapability::Storage)
         .await
         .expect("Failed to get writer client");
 

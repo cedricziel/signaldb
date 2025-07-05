@@ -38,13 +38,13 @@ impl FlightServiceMetadata {
         port: u16,
         capabilities: Vec<ServiceCapability>,
     ) -> Self {
-        // Extract just the host part if address contains port
+        // Extract just the host part for endpoint construction
         let host = address.split(':').next().unwrap_or("localhost");
         let endpoint = format!("http://{host}:{port}");
         Self {
             service_id,
             service_type,
-            address: host.to_string(), // Store just the host part
+            address, // Store the full address
             port,
             capabilities,
             endpoint,
