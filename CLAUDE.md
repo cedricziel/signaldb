@@ -15,7 +15,7 @@ cargo test                 # Run all tests across workspace
 cargo run                  # Run in monolithic mode (all services)
 cargo clippy --workspace --all-targets --all-features  # Check for code quality issues
 cargo deny check           # License and security auditing
-cargo machete              # Check for unused dependencies
+cargo machete --with-metadata  # Check for unused dependencies (enhanced analysis)
 ```
 
 ### Running Individual Services
@@ -96,7 +96,7 @@ Signaldb has a microservices and a monolothic mode
 ## Development Memories
 - For arrow & parquet try using the ones re-exported by datafusion
 - We need to run cargo fmt after bigger chunks of work to apply the canonical formatting
-- Run cargo machete before committing and remove unused dependencies
+- Run cargo machete --with-metadata before committing and remove unused dependencies
 - We need to format the code before committing
 - Always run cargo commands from the workspace root
 - Run cargo clippy and fix all warnings before committing
@@ -141,3 +141,27 @@ panic!("Failed to initialize: {error}");
 // ❌ Avoid - assert false
 assert!(false, "Failed to initialize: {}", error);
 ```
+
+## Dependency Management
+
+### Unused Dependency Detection
+- Always use `cargo machete --with-metadata` for comprehensive unused dependency detection
+- The basic `cargo machete` command may miss dependencies that are only unused in specific configurations
+- The `--with-metadata` flag provides enhanced analysis that catches more unused dependencies
+- Remove unused dependencies promptly to keep the dependency graph clean and reduce build times
+
+### Dependency Hygiene Best Practices
+```bash
+# ✅ Good - comprehensive dependency analysis
+cargo machete --with-metadata
+
+# ❌ Less effective - basic analysis may miss unused deps
+cargo machete
+```
+
+Benefits of clean dependency management:
+- Faster build times
+- Reduced security surface area  
+- Smaller binary sizes
+- Easier dependency auditing
+- Less potential for dependency conflicts
