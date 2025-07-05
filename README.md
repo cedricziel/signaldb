@@ -157,6 +157,51 @@ Environment variables:
 * `SIGNALDB_STORAGE_ADAPTERS_<NAME>_URL`: Storage URL for adapter
 * `SIGNALDB_STORAGE_ADAPTERS_<NAME>_PREFIX`: Storage prefix for adapter
 
+### WAL (Write-Ahead Log) Configuration
+
+SignalDB uses WAL for data durability. Configure persistent storage for production deployments:
+
+**Environment Variables:**
+
+* `WRITER_WAL_DIR`: WAL directory for writer service (default: `.wal/writer`)
+* `ACCEPTOR_WAL_DIR`: WAL directory for acceptor service (default: `.wal/acceptor`)
+
+⚠️ **Production Warning**: Default WAL directories use local paths that **do not persist** across container restarts. Configure persistent volumes for production deployments.
+
+**Example Docker Compose Configuration:**
+
+```yaml
+services:
+  signaldb-writer:
+    environment:
+      WRITER_WAL_DIR: "/data/wal"
+    volumes:
+      - writer-wal:/data/wal  # Persistent storage
+volumes:
+  writer-wal:
+    driver: local
+```
+
+**Example Kubernetes Configuration:**
+
+```yaml
+spec:
+  containers:
+  - name: writer
+    env:
+    - name: WRITER_WAL_DIR
+      value: "/data/wal"
+    volumeMounts:
+    - name: wal-storage
+      mountPath: /data/wal
+  volumes:
+  - name: wal-storage
+    persistentVolumeClaim:
+      claimName: writer-wal-pvc
+```
+
+For detailed WAL persistence configuration, see [docs/deployment/wal-persistence.md](docs/deployment/wal-persistence.md).
+
 ## What is the FDAP stack?
 
 The FDAP stack is a set of technologies that can be used to build a data acquisition and processing system.

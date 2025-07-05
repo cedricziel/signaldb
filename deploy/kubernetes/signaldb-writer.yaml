@@ -1,0 +1,115 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signaldb-writer
+  labels:
+    app: signaldb-writer
+    component: writer
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: signaldb-writer
+  template:
+    metadata:
+      labels:
+        app: signaldb-writer
+    spec:
+      containers:
+      - name: writer
+        image: signaldb/writer:latest
+        ports:
+        - containerPort: 50051
+          name: flight
+        env:
+        - name: SIGNALDB_DATABASE_DSN
+          value: "postgres://signaldb:password@postgres:5432/signaldb"
+        - name: SIGNALDB_DISCOVERY_DSN
+          value: "postgres://signaldb:password@postgres:5432/signaldb"
+        - name: WRITER_FLIGHT_ADDR
+          value: "0.0.0.0:50051"
+        - name: WRITER_ADVERTISE_ADDR
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        # WAL persistence configuration
+        - name: WRITER_WAL_DIR
+          value: "/data/wal"
+        - name: SIGNALDB_STORAGE_ADAPTERS_LOCAL_URL
+          value: "file:///data/storage"
+        volumeMounts:
+        - name: wal-storage
+          mountPath: /data/wal
+        - name: data-storage
+          mountPath: /data/storage
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: 250m
+          limits:
+            memory: 2Gi
+            cpu: 1000m
+        livenessProbe:
+          tcpSocket:
+            port: 50051
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 50051
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: wal-storage
+        persistentVolumeClaim:
+          claimName: signaldb-writer-wal
+      - name: data-storage
+        persistentVolumeClaim:
+          claimName: signaldb-writer-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: signaldb-writer-wal
+  labels:
+    app: signaldb-writer
+    component: wal
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # Uncomment and configure for specific storage classes
+  # storageClassName: fast-ssd
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: signaldb-writer-data
+  labels:
+    app: signaldb-writer
+    component: data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+  # Uncomment and configure for specific storage classes
+  # storageClassName: standard
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: signaldb-writer
+  labels:
+    app: signaldb-writer
+spec:
+  selector:
+    app: signaldb-writer
+  ports:
+  - name: flight
+    port: 50051
+    targetPort: 50051
+  type: ClusterIP
