@@ -6,7 +6,7 @@ use common::config::Configuration;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::{Wal, WalConfig};
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt};
 use object_store::{memory::InMemory, ObjectStore};
 use opentelemetry_proto::tonic::{
     collector::trace::v1::{trace_service_server::TraceServiceServer, ExportTraceServiceRequest},
@@ -221,13 +221,81 @@ async fn test_querier_integration() {
     );
     println!("✓ Querier service registered and discoverable");
 
-    // Test Flight client connection to querier
-    let _client = flight_transport
+    // Create sample test data and write to object store
+    let test_data = create_test_span_data();
+    let test_file_path = "batch/test_spans.parquet";
+    
+    writer::write_batch_to_object_store(
+        object_store.clone(),
+        test_file_path,
+        test_data.clone(),
+    )
+    .await
+    .expect("Failed to write test data to object store");
+    
+    println!("✓ Sample test data written to object store");
+
+    // Test Flight client connection and query execution
+    let mut client = flight_transport
         .get_client_for_capability(ServiceCapability::QueryExecution)
         .await
         .expect("Failed to get querier client");
 
     println!("✓ Successfully created Flight client for querier");
+
+    // Perform a real query against the test data
+    let query = format!("SELECT * FROM '{test_file_path}'");
+    let ticket = arrow_flight::Ticket::new(query.clone());
+    
+    let query_response = timeout(
+        Duration::from_secs(10),
+        client.do_get(ticket)
+    )
+    .await
+    .expect("Query timed out")
+    .expect("Query failed");
+
+    // Collect and verify query results
+    let mut result_batches = Vec::new();
+    let mut stream = query_response.into_inner();
+    
+    while let Some(flight_data) = stream.next().await {
+        let flight_data = flight_data.expect("Failed to read flight data");
+        if !flight_data.data_body.is_empty() || !flight_data.data_header.is_empty() {
+            // Convert flight data back to record batches for verification
+            // For this test, we'll mainly verify that we got some data back
+            result_batches.push(flight_data);
+        }
+    }
+    
+    assert!(!result_batches.is_empty(), "Query returned no results");
+    println!("✓ Query executed successfully and returned {} flight data chunks", result_batches.len());
+    
+    // Verify that the querier can handle a simple SQL query
+    let count_query = format!("SELECT COUNT(*) as row_count FROM '{test_file_path}'");
+    let count_ticket = arrow_flight::Ticket::new(count_query);
+    
+    let count_response = timeout(
+        Duration::from_secs(5),
+        client.do_get(count_ticket)
+    )
+    .await
+    .expect("Count query timed out")
+    .expect("Count query failed");
+    
+    let mut count_results = Vec::new();
+    let mut count_stream = count_response.into_inner();
+    
+    while let Some(flight_data) = count_stream.next().await {
+        let flight_data = flight_data.expect("Failed to read count flight data");
+        if !flight_data.data_body.is_empty() || !flight_data.data_header.is_empty() {
+            count_results.push(flight_data);
+        }
+    }
+    
+    assert!(!count_results.is_empty(), "Count query returned no results");
+    println!("✓ COUNT query executed successfully");
+    println!("✓ Querier core query functionality verified");
 
     // Clean up
     flight_transport
@@ -439,4 +507,61 @@ async fn test_end_to_end_pipeline() {
     assert!(!querier_services.is_empty(), "No querier services found");
     println!("✓ Step 3: Querier services discoverable via Flight transport");
     println!("✓ End-to-end pipeline test completed successfully!");
+}
+
+/// Helper function to create test span data for querier testing
+fn create_test_span_data() -> datafusion::arrow::record_batch::RecordBatch {
+    use datafusion::arrow::array::{
+        BooleanArray, RecordBatch, StringArray, UInt64Array,
+    };
+    use common::flight::schema::create_span_batch_schema;
+    
+    let schema = create_span_batch_schema();
+    
+    // Create sample span data with 3 test spans
+    let trace_ids = StringArray::from(vec![
+        "trace_001", "trace_001", "trace_002"
+    ]);
+    let span_ids = StringArray::from(vec![
+        "span_001", "span_002", "span_003"
+    ]);
+    let parent_span_ids = StringArray::from(vec![
+        None, Some("span_001"), None
+    ]);
+    let statuses = StringArray::from(vec![
+        "STATUS_CODE_OK", "STATUS_CODE_OK", "STATUS_CODE_ERROR"
+    ]);
+    let is_root = BooleanArray::from(vec![true, false, true]);
+    let names = StringArray::from(vec![
+        "root_operation", "child_operation", "another_root"
+    ]);
+    let service_names = StringArray::from(vec![
+        "test_service", "test_service", "other_service"
+    ]);
+    let span_kinds = StringArray::from(vec![
+        "SPAN_KIND_SERVER", "SPAN_KIND_INTERNAL", "SPAN_KIND_CLIENT"
+    ]);
+    let start_times = UInt64Array::from(vec![
+        1_000_000_000, 1_000_001_000, 1_000_002_000
+    ]);
+    let durations = UInt64Array::from(vec![
+        5_000_000, 2_000_000, 10_000_000
+    ]);
+    
+    RecordBatch::try_new(
+        std::sync::Arc::new(schema),
+        vec![
+            std::sync::Arc::new(trace_ids),
+            std::sync::Arc::new(span_ids),
+            std::sync::Arc::new(parent_span_ids),
+            std::sync::Arc::new(statuses),
+            std::sync::Arc::new(is_root),
+            std::sync::Arc::new(names),
+            std::sync::Arc::new(service_names),
+            std::sync::Arc::new(span_kinds),
+            std::sync::Arc::new(start_times),
+            std::sync::Arc::new(durations),
+        ],
+    )
+    .expect("Failed to create test record batch")
 }
