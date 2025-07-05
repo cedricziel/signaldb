@@ -51,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to register Flight service: {}", e))?;
 
-    log::info!("Writer Flight service registered with ID: {}", service_id);
+    log::info!("Writer Flight service registered with ID: {service_id}");
 
     // Initialize object store (local filesystem)
     let prefix = config.default_storage_prefix();
@@ -78,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create Flight ingestion service with WAL
     let flight_service = WriterFlightService::new(object_store.clone(), wal.clone());
-    log::info!("Starting Flight ingest service on {}", flight_addr);
+    log::info!("Starting Flight ingest service on {flight_addr}");
     let flight_handle = tokio::spawn(async move {
         Server::builder()
             .add_service(FlightServiceServer::new(flight_service))

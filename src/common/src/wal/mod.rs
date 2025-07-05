@@ -23,6 +23,8 @@ pub struct WalEntry {
     pub data_size: u64,
     /// Offset in the data file where the actual data is stored
     pub data_offset: u64,
+    /// Whether this entry has been processed
+    pub processed: bool,
 }
 
 /// Types of operations that can be logged in WAL
@@ -64,8 +66,8 @@ impl WalSegment {
     pub async fn new(wal_dir: &Path, segment_id: u64) -> Result<Self> {
         create_dir_all(wal_dir).await?;
 
-        let path = wal_dir.join(format!("wal-{:010}.log", segment_id));
-        let data_path = wal_dir.join(format!("wal-{:010}.data", segment_id));
+        let path = wal_dir.join(format!("wal-{segment_id:010}.log"));
+        let data_path = wal_dir.join(format!("wal-{segment_id:010}.data"));
 
         let file = Some(
             OpenOptions::new()
@@ -99,8 +101,8 @@ impl WalSegment {
 
     /// Load an existing WAL segment from disk
     pub async fn load(wal_dir: &Path, segment_id: u64) -> Result<Self> {
-        let path = wal_dir.join(format!("wal-{:010}.log", segment_id));
-        let data_path = wal_dir.join(format!("wal-{:010}.data", segment_id));
+        let path = wal_dir.join(format!("wal-{segment_id:010}.log"));
+        let data_path = wal_dir.join(format!("wal-{segment_id:010}.data"));
 
         if !path.exists() {
             return Self::new(wal_dir, segment_id).await;
@@ -172,8 +174,12 @@ impl WalSegment {
     }
 
     /// Append an entry to the WAL segment
-    pub async fn append(&mut self, operation: WalOperation, data: &[u8]) -> Result<Uuid> {
-        let entry_id = Uuid::new_v4();
+    pub async fn append(
+        &mut self,
+        entry_id: Uuid,
+        operation: WalOperation,
+        data: &[u8],
+    ) -> Result<Uuid> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -194,6 +200,7 @@ impl WalSegment {
             operation,
             data_size: data.len() as u64,
             data_offset,
+            processed: false,
         };
 
         // Serialize entry
@@ -260,12 +267,15 @@ impl Default for WalConfig {
     }
 }
 
+/// Type alias for WAL buffer entries
+type WalBuffer = Arc<RwLock<VecDeque<(Uuid, WalOperation, Vec<u8>)>>>;
+
 /// Write-Ahead Log implementation for durability
 pub struct Wal {
     config: WalConfig,
     current_segment: Arc<Mutex<WalSegment>>,
     next_segment_id: Arc<Mutex<u64>>,
-    buffer: Arc<RwLock<VecDeque<(WalOperation, Vec<u8>)>>>,
+    buffer: WalBuffer,
     flush_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -332,7 +342,7 @@ impl Wal {
                         Self::flush_buffer(&buffer, &current_segment, &config, &next_segment_id)
                             .await
                     {
-                        log::error!("Failed to flush WAL buffer: {}", e);
+                        log::error!("Failed to flush WAL buffer: {e}");
                     }
                 }
             }
@@ -343,10 +353,12 @@ impl Wal {
 
     /// Add an entry to the WAL
     pub async fn append(&self, operation: WalOperation, data: Vec<u8>) -> Result<Uuid> {
+        let entry_id = Uuid::new_v4();
+
         // Add to buffer first for batching
         {
             let mut buffer = self.buffer.write().await;
-            buffer.push_back((operation.clone(), data.clone()));
+            buffer.push_back((entry_id, operation.clone(), data.clone()));
         }
 
         // Check if we need to flush immediately
@@ -365,14 +377,12 @@ impl Wal {
             .await?;
         }
 
-        // For now, return a placeholder UUID. In practice, we'd want to track
-        // buffered entries properly
-        Ok(Uuid::new_v4())
+        Ok(entry_id)
     }
 
     /// Flush buffered entries to WAL
     async fn flush_buffer(
-        buffer: &Arc<RwLock<VecDeque<(WalOperation, Vec<u8>)>>>,
+        buffer: &WalBuffer,
         current_segment: &Arc<Mutex<WalSegment>>,
         config: &WalConfig,
         next_segment_id: &Arc<Mutex<u64>>,
@@ -392,7 +402,7 @@ impl Wal {
 
         let mut segment = current_segment.lock().await;
 
-        for (operation, data) in entries_to_flush {
+        for (entry_id, operation, data) in entries_to_flush {
             // Check if we need to rotate to a new segment
             if segment.size + data.len() as u64 > config.max_segment_size {
                 // Close current segment
@@ -409,7 +419,7 @@ impl Wal {
                 *segment = WalSegment::new(&config.wal_dir, new_segment_id).await?;
             }
 
-            segment.append(operation, &data).await?;
+            segment.append(entry_id, operation, &data).await?;
         }
 
         Ok(())
@@ -453,6 +463,62 @@ impl Wal {
         segment.close().await?;
 
         Ok(())
+    }
+
+    /// Mark a WAL entry as processed
+    pub async fn mark_processed(&self, entry_id: Uuid) -> Result<()> {
+        let mut segment = self.current_segment.lock().await;
+
+        // Find the entry and mark it as processed
+        for entry in &mut segment.entries {
+            if entry.id == entry_id {
+                entry.processed = true;
+                // TODO: Persist the processed state to disk
+                log::debug!("Marked WAL entry {entry_id} as processed");
+                return Ok(());
+            }
+        }
+
+        anyhow::bail!("WAL entry {} not found", entry_id)
+    }
+
+    /// Get all unprocessed entries
+    pub async fn get_unprocessed_entries(&self) -> Result<Vec<WalEntry>> {
+        let segment = self.current_segment.lock().await;
+        Ok(segment
+            .entries
+            .iter()
+            .filter(|e| !e.processed)
+            .cloned()
+            .collect())
+    }
+
+    /// Remove processed entries older than the retention period
+    pub async fn cleanup_processed_entries(&self, retention_secs: u64) -> Result<usize> {
+        let mut segment = self.current_segment.lock().await;
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let initial_count = segment.entries.len();
+
+        // Remove entries that are processed and older than retention period
+        segment.entries.retain(|entry| {
+            if entry.processed {
+                let entry_age = current_time - entry.timestamp;
+                entry_age < retention_secs
+            } else {
+                true // Keep unprocessed entries
+            }
+        });
+
+        let removed_count = initial_count - segment.entries.len();
+        if removed_count > 0 {
+            log::info!("Cleaned up {removed_count} processed WAL entries");
+        }
+
+        Ok(removed_count)
     }
 }
 

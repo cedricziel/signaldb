@@ -35,10 +35,7 @@ async fn main() -> Result<()> {
             .service_registry()
             .start_background_polling(poll_interval)
             .await;
-        log::info!(
-            "Started service registry background polling with interval: {:?}",
-            poll_interval
-        );
+        log::info!("Started service registry background polling with interval: {poll_interval:?}");
     }
 
     log::info!("Router service registered with catalog");
@@ -46,7 +43,7 @@ async fn main() -> Result<()> {
     // Create HTTP router
     let _app = create_router(state.clone());
     let http_handle = tokio::spawn(async move {
-        log::info!("Starting HTTP router on {}", http_addr);
+        log::info!("Starting HTTP router on {http_addr}");
 
         // For now, we'll skip starting the HTTP server due to compatibility issues with axum 0.7.9
         // This will be fixed in a future update
@@ -59,7 +56,7 @@ async fn main() -> Result<()> {
     // Start Flight service
     let flight_service = create_flight_service(state);
     let flight_handle = tokio::spawn(async move {
-        log::info!("Starting Flight service on {}", flight_addr);
+        log::info!("Starting Flight service on {flight_addr}");
 
         match Server::builder()
             .add_service(
@@ -69,13 +66,13 @@ async fn main() -> Result<()> {
             .await
         {
             Ok(_) => log::info!("Flight service stopped"),
-            Err(e) => log::error!("Flight service error: {}", e),
+            Err(e) => log::error!("Flight service error: {e}"),
         }
     });
 
     log::info!("✅ Router service started successfully");
-    log::info!("🛩️  Arrow Flight server listening on {}", flight_addr);
-    log::info!("🌐 HTTP API server on {} (currently disabled)", http_addr);
+    log::info!("🛩️  Arrow Flight server listening on {flight_addr}");
+    log::info!("🌐 HTTP API server on {http_addr} (currently disabled)");
 
     // Wait for ctrl+c
     tokio::signal::ctrl_c()
@@ -86,7 +83,7 @@ async fn main() -> Result<()> {
 
     // Graceful deregistration using service bootstrap
     if let Err(e) = router_bootstrap.shutdown().await {
-        log::error!("Failed to shutdown router service bootstrap: {}", e);
+        log::error!("Failed to shutdown router service bootstrap: {e}");
     }
 
     // Wait for servers to stop

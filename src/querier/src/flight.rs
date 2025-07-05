@@ -17,8 +17,10 @@ use tonic::{Request, Response, Status};
 
 /// Flight service for query execution against stored data
 pub struct QuerierFlightService {
+    #[allow(dead_code)]
     object_store: Arc<dyn ObjectStore>,
     flight_transport: Arc<InMemoryFlightTransport>,
+    #[allow(dead_code)]
     schemas: FlightSchemas,
     session_ctx: Arc<SessionContext>,
 }
@@ -51,7 +53,7 @@ impl QuerierFlightService {
         &self,
         sql: &str,
     ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error + Send + Sync>> {
-        log::info!("Executing query: {}", sql);
+        log::info!("Executing query: {sql}");
 
         let df = self.session_ctx.sql(sql).await?;
         let batches = df.collect().await?;
@@ -148,7 +150,7 @@ impl QuerierFlightService {
                 log::debug!("Retrieved {} batches from object store", batches.len());
                 all_batches.extend(batches);
             }
-            Err(e) => log::error!("Error querying object store: {}", e),
+            Err(e) => log::error!("Error querying object store: {e}"),
         }
 
         // Query writers (recent data that might not be in object store yet)
@@ -157,7 +159,7 @@ impl QuerierFlightService {
                 log::debug!("Retrieved {} batches from writers", batches.len());
                 all_batches.extend(batches);
             }
-            Err(e) => log::error!("Error querying writers: {}", e),
+            Err(e) => log::error!("Error querying writers: {e}"),
         }
 
         Ok(all_batches)
@@ -251,7 +253,7 @@ impl FlightService for QuerierFlightService {
     ) -> Result<Response<Self::DoGetStream>, Status> {
         let ticket = request.into_inner();
         let query = String::from_utf8(ticket.ticket.to_vec())
-            .map_err(|e| Status::invalid_argument(format!("Invalid query: {}", e)))?;
+            .map_err(|e| Status::invalid_argument(format!("Invalid query: {e}")))?;
 
         log::info!("Executing query via Flight: {}", query);
 
@@ -259,7 +261,7 @@ impl FlightService for QuerierFlightService {
         let batches = self
             .execute_distributed_query(&query)
             .await
-            .map_err(|e| Status::internal(format!("Query execution failed: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Query execution failed: {e}")))?;
 
         if batches.is_empty() {
             let out = stream::empty().boxed();
@@ -269,7 +271,7 @@ impl FlightService for QuerierFlightService {
         // Convert results to Flight data
         let schema = batches[0].schema();
         let flight_data = batches_to_flight_data(&schema, batches)
-            .map_err(|e| Status::internal(format!("Failed to convert results: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Failed to convert results: {e}")))?;
 
         let out = stream::iter(flight_data.into_iter().map(Ok)).boxed();
         Ok(Response::new(out))

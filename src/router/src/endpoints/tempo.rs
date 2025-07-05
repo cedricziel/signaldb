@@ -1,9 +1,12 @@
 use crate::RouterState;
+use arrow_flight::Ticket;
 use axum::{
     extract::{Path, Query, State},
     routing::get,
     Router,
 };
+use common::flight::transport::ServiceCapability;
+use futures::StreamExt;
 use std::collections::HashMap;
 use tempo_api::{self, TraceQueryParams};
 
@@ -48,17 +51,51 @@ pub async fn query_single_trace<S: RouterState>(
         services.len()
     );
 
-    if let Some(service) = state.service_registry().get_service_for_routing().await {
-        log::info!(
-            "Routing trace query {} to service at {}",
-            trace_id,
-            service.address
-        );
-        // TODO: Actually route the request to the service
-        // For now, we'll log the routing decision and return a mock trace
-    } else {
-        log::warn!("No services available to handle trace query for {trace_id}");
-        return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    // Get a Flight client for a querier service
+    let mut client = match state
+        .service_registry()
+        .get_flight_client_for_capability(ServiceCapability::QueryExecution)
+        .await
+    {
+        Ok(client) => client,
+        Err(e) => {
+            log::error!("Failed to get Flight client for query execution: {e}");
+            return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
+
+    // Create Flight query for trace lookup
+    let ticket = Ticket::new(format!("find_trace:{trace_id}"));
+
+    match client.do_get(ticket).await {
+        Ok(response) => {
+            let mut stream = response.into_inner();
+            let mut trace_data = Vec::new();
+
+            // Collect all flight data
+            while let Some(flight_data) = stream.next().await {
+                match flight_data {
+                    Ok(data) => trace_data.push(data),
+                    Err(e) => {
+                        log::error!("Error reading flight data: {e}");
+                        return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+                }
+            }
+
+            // Convert flight data to trace format
+            if !trace_data.is_empty() {
+                log::info!("Successfully queried trace {trace_id} from querier service");
+                // TODO: Convert Arrow data to Tempo trace format
+                // For now, return a trace indicating data was found
+            } else {
+                log::info!("No trace data found for trace {trace_id}");
+            }
+        }
+        Err(e) => {
+            log::error!("Flight query failed for trace {trace_id}: {e}");
+            return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        }
     }
 
     // Create a mock trace
@@ -89,12 +126,50 @@ pub async fn search<S: RouterState>(
         services.len()
     );
 
-    if let Some(service) = state.service_registry().get_service_for_routing().await {
-        log::info!("Routing trace search to service at {}", service.address);
-        // TODO: Actually route the request to the service
-    } else {
-        log::warn!("No services available to handle trace search");
-        return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    // Get a Flight client for a querier service
+    let mut client = match state
+        .service_registry()
+        .get_flight_client_for_capability(ServiceCapability::QueryExecution)
+        .await
+    {
+        Ok(client) => client,
+        Err(e) => {
+            log::error!("Failed to get Flight client for query execution: {e}");
+            return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
+
+    // Create Flight query for trace search
+    let search_params = format!("{query:?}"); // Simple debug format instead of JSON
+    let ticket = Ticket::new(format!("search_traces:{search_params}"));
+
+    match client.do_get(ticket).await {
+        Ok(response) => {
+            let mut stream = response.into_inner();
+            let mut search_results = Vec::new();
+
+            // Collect all flight data
+            while let Some(flight_data) = stream.next().await {
+                match flight_data {
+                    Ok(data) => search_results.push(data),
+                    Err(e) => {
+                        log::error!("Error reading flight data for search: {e}");
+                        return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+                }
+            }
+
+            if !search_results.is_empty() {
+                log::info!("Successfully executed trace search via Flight protocol");
+                // TODO: Convert Arrow data to Tempo search result format
+            } else {
+                log::info!("No search results found");
+            }
+        }
+        Err(e) => {
+            log::error!("Flight search query failed: {e}");
+            return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        }
     }
 
     // In a real implementation, you would:

@@ -89,7 +89,7 @@ impl TraceHandler {
             return;
         }
 
-        log::debug!("Traces written to WAL with entry ID: {}", wal_entry_id);
+        log::debug!("Traces written to WAL with entry ID: {wal_entry_id}");
 
         // Step 2: Forward from WAL to writer via Flight
         // Get a Flight client for a writer service with trace ingestion capability
@@ -137,8 +137,10 @@ impl TraceHandler {
 
                 if success {
                     log::debug!("Successfully forwarded traces via Flight protocol");
-                    // TODO: In production, mark WAL entry as processed rather than removing
-                    // This allows for cleanup by background process after retention period
+                    // Mark WAL entry as processed after successful forwarding
+                    if let Err(e) = self.wal.mark_processed(wal_entry_id).await {
+                        log::warn!("Failed to mark WAL entry {wal_entry_id} as processed: {e}");
+                    }
                 } else {
                     log::error!("Failed to forward traces - data remains in WAL for retry");
                 }

@@ -78,6 +78,7 @@ struct FlightConnection {
 }
 
 /// In-memory Flight transport that manages service registration and connection pooling
+#[derive(Clone)]
 pub struct InMemoryFlightTransport {
     /// ServiceBootstrap for catalog integration
     bootstrap: Arc<ServiceBootstrap>,

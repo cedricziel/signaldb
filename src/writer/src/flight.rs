@@ -94,20 +94,19 @@ impl FlightService for WriterFlightService {
         let batches =
             flight_data_to_batches(&data_vec).map_err(|e| Status::internal(e.to_string()))?;
 
+        // Write all batches to WAL first for durability (WAL serves as the buffer)
         let mut wal_entry_ids = Vec::new();
-
-        // Step 1: Write all batches to WAL first for durability
         for batch in &batches {
             // Serialize RecordBatch for WAL storage
             let batch_bytes = record_batch_to_bytes(batch)
-                .map_err(|e| Status::internal(format!("Failed to serialize batch: {}", e)))?;
+                .map_err(|e| Status::internal(format!("Failed to serialize batch: {e}")))?;
 
-            // Write to WAL - this ensures durability
+            // Write to WAL - this ensures durability and serves as our buffer
             let entry_id = self
                 .wal
                 .append(WalOperation::WriteTraces, batch_bytes)
                 .await
-                .map_err(|e| Status::internal(format!("Failed to write to WAL: {}", e)))?;
+                .map_err(|e| Status::internal(format!("Failed to write to WAL: {e}")))?;
 
             wal_entry_ids.push(entry_id);
         }
@@ -116,34 +115,25 @@ impl FlightService for WriterFlightService {
         self.wal
             .flush()
             .await
-            .map_err(|e| Status::internal(format!("Failed to flush WAL: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Failed to flush WAL: {e}")))?;
 
-        // Step 2: Process batches from WAL and write to object store
-        // Note: In a production system, this would be done by a background processor
-        // For now, we do it synchronously to maintain the interface contract
+        // Process entries from WAL to object store (synchronous for now)
         for (batch, entry_id) in batches.iter().zip(wal_entry_ids.iter()) {
             let path = format!("batch/{}.parquet", Uuid::new_v4());
 
-            // Attempt to write to object store
             match write_batch_to_object_store(self.object_store.clone(), &path, batch.clone()).await
             {
                 Ok(_) => {
-                    // Success: Data is durably stored in object store
-                    // TODO: In production, we would mark this WAL entry as processed
-                    // rather than immediately removing it, allowing for cleanup by
-                    // a background process after retention period
-                    log::debug!(
-                        "Successfully wrote batch {} to object store at {}",
-                        entry_id,
-                        path
-                    );
+                    // Mark WAL entry as processed after successful write
+                    if let Err(e) = self.wal.mark_processed(*entry_id).await {
+                        log::warn!("Failed to mark WAL entry {entry_id} as processed: {e}");
+                    }
+                    log::debug!("Successfully wrote batch {entry_id} to object store at {path}");
                 }
                 Err(e) => {
-                    // Failure: Data remains in WAL for retry
-                    log::error!("Failed to write batch {} to object store: {}", entry_id, e);
+                    log::error!("Failed to write batch {entry_id} to object store: {e}");
                     return Err(Status::internal(format!(
-                        "Failed to write to object store: {}",
-                        e
+                        "Failed to write to object store: {e}"
                     )));
                 }
             }
