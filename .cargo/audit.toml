@@ -1,0 +1,9 @@
+# Configuration for cargo-audit
+# See: https://docs.rs/cargo-audit/latest/cargo_audit/
+
+[advisories]
+ignore = [
+    # Advisory about a vulnerability in rsa, which we don't use, but it is pulled in via sqlx due
+    # to a bug in cargo. See https://github.com/shuttle-hq/shuttle/pull/1475 for context.
+    "RUSTSEC-2023-0071",
+]
