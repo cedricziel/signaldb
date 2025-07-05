@@ -13,6 +13,7 @@ SignalDB is a distributed observability signal database built on the FDAP stack 
 cargo build                # Build all workspace members
 cargo test                 # Run all tests across workspace
 cargo run                  # Run in monolithic mode (all services)
+cargo clippy --workspace --all-targets --all-features  # Check for code quality issues
 cargo deny check           # License and security auditing
 cargo machete              # Check for unused dependencies
 ```
@@ -98,4 +99,45 @@ Signaldb has a microservices and a monolothic mode
 - Run cargo machete before committing and remove unused dependencies
 - We need to format the code before committing
 - Always run cargo commands from the workspace root
-- run cargo clippy and fix all warnings before committing
+- Run cargo clippy and fix all warnings before committing
+
+## Code Quality Standards
+
+### Clippy Compliance
+- Write clippy-compliant code from the start to maintain high code quality
+- Use direct variable interpolation in format strings: `format!("{variable}")` not `format!("{}", variable)`
+- Prefer `!is_empty()` over `len() > 0` for clarity
+- Use `vec![...]` instead of creating empty Vec and pushing elements
+- Avoid `assert!(false, ...)` - use `panic!(...)` or `unreachable!()` instead
+- Use `panic!("message")` for intentional panics rather than `assert!(false, "message")`
+
+### String Formatting Best Practices
+```rust
+// ✅ Good - direct variable interpolation
+format!("Service {service_id} at {address}")
+log::info!("Discovered {count} services with capability {capability:?}")
+
+// ❌ Avoid - positional arguments
+format!("Service {} at {}", service_id, address)
+log::info!("Discovered {} services with capability {:?}", count, capability)
+```
+
+### Collection Patterns
+```rust
+// ✅ Good - use vec! macro
+let items = vec![item1, item2, item3];
+
+// ❌ Avoid - push after creation
+let mut items = Vec::new();
+items.push(item1);
+items.push(item2);
+```
+
+### Error Handling
+```rust
+// ✅ Good - explicit panic
+panic!("Failed to initialize: {error}");
+
+// ❌ Avoid - assert false
+assert!(false, "Failed to initialize: {}", error);
+```
