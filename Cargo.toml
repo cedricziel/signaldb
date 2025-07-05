@@ -8,6 +8,9 @@ rust-version = "1.82.0"
 
 publish = false
 
+[package.metadata.cargo-machete]
+ignored = ["cargo-husky"]
+
 [dependencies]
 acceptor = { path = "src/acceptor", features = ["testing"] }
 common = { path = "src/common" }
@@ -47,6 +50,15 @@ path = "examples/flight_client.rs"
 env_logger = "0.11.5"
 querier = { path = "src/querier" }
 testcontainers-modules = { workspace = true }
+
+[dev-dependencies.cargo-husky]
+version = "1"
+default-features = false
+features = [
+    "precommit-hook",
+    "run-cargo-fmt",
+    "run-cargo-clippy",
+]
 
 [workspace]
 resolver = "2"
