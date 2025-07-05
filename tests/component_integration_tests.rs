@@ -311,8 +311,8 @@ async fn test_router_tempo_integration() {
     let catalog = Catalog::new("sqlite::memory:").await.unwrap();
     let service_bootstrap = ServiceBootstrap::new(
         Configuration::default(),
-        ServiceType::Acceptor,
-        "127.0.0.1:4317".to_string(),
+        ServiceType::Router,
+        "127.0.0.1:50053".to_string(),
     )
     .await
     .unwrap();
