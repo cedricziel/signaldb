@@ -31,7 +31,7 @@ async fn test_acceptor_writer_flow() {
     let wal_config = WalConfig {
         wal_dir: PathBuf::from(temp_dir.path()),
         max_segment_size: 1024 * 1024,
-        max_buffer_entries: 10,
+        max_buffer_entries: 1,  // Force immediate flush for testing
         flush_interval_secs: 1, // Convert to seconds
     };
 
@@ -368,7 +368,7 @@ async fn test_end_to_end_pipeline() {
     let wal_config = WalConfig {
         wal_dir: PathBuf::from(temp_dir.path()),
         max_segment_size: 1024 * 1024,
-        max_buffer_entries: 10,
+        max_buffer_entries: 1, // Force immediate flush for testing
         flush_interval_secs: 1,
     };
 
@@ -376,37 +376,19 @@ async fn test_end_to_end_pipeline() {
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
     let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
-    // Create separate ServiceBootstrap instances for each service type
-    let writer_bootstrap = ServiceBootstrap::new(
-        Configuration::default(),
-        ServiceType::Writer,
-        "127.0.0.1:50051".to_string(),
-    )
-    .await
-    .unwrap();
-    let writer_flight_transport = Arc::new(InMemoryFlightTransport::new(writer_bootstrap));
-
-    let querier_bootstrap = ServiceBootstrap::new(
-        Configuration::default(),
-        ServiceType::Querier,
-        "127.0.0.1:50054".to_string(),
-    )
-    .await
-    .unwrap();
-    let querier_flight_transport = Arc::new(InMemoryFlightTransport::new(querier_bootstrap));
-
-    let acceptor_bootstrap = ServiceBootstrap::new(
+    // Create shared flight transport for service discovery
+    let service_bootstrap = ServiceBootstrap::new(
         Configuration::default(),
         ServiceType::Acceptor,
         "127.0.0.1:4317".to_string(),
     )
     .await
     .unwrap();
-    let acceptor_flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
+    let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
 
     // Start writer
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal);
+    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
@@ -416,7 +398,7 @@ async fn test_end_to_end_pipeline() {
         .serve(writer_addr);
     tokio::spawn(writer_server);
 
-    let _writer_id = writer_flight_transport
+    let _writer_id = flight_transport
         .register_flight_service(
             common::service_bootstrap::ServiceType::Writer,
             writer_addr.ip().to_string(),
@@ -430,8 +412,7 @@ async fn test_end_to_end_pipeline() {
         .unwrap();
 
     // Start querier
-    let querier_service =
-        QuerierFlightService::new(object_store.clone(), querier_flight_transport.clone());
+    let querier_service = QuerierFlightService::new(object_store.clone(), flight_transport.clone());
     let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let querier_addr = querier_listener.local_addr().unwrap();
     drop(querier_listener);
@@ -441,7 +422,7 @@ async fn test_end_to_end_pipeline() {
         .serve(querier_addr);
     tokio::spawn(querier_server);
 
-    let _querier_id = querier_flight_transport
+    let _querier_id = flight_transport
         .register_flight_service(
             common::service_bootstrap::ServiceType::Querier,
             querier_addr.ip().to_string(),
@@ -453,7 +434,7 @@ async fn test_end_to_end_pipeline() {
 
     // Start acceptor
     let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let trace_handler = TraceHandler::new(acceptor_flight_transport.clone(), acceptor_wal);
+    let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal);
     let acceptor_service = TraceAcceptorService::new(trace_handler);
     let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let acceptor_addr = acceptor_listener.local_addr().unwrap();
@@ -468,8 +449,17 @@ async fn test_end_to_end_pipeline() {
     // Focus on Flight service integration testing
     println!("✓ All Flight services started (acceptor, writer, querier)");
 
-    // Allow all services to start
-    sleep(Duration::from_millis(500)).await;
+    // Allow all services to start and register
+    sleep(Duration::from_secs(2)).await;
+
+    // Debug: Check what services are registered
+    let trace_ingestion_services = flight_transport
+        .discover_services_by_capability(ServiceCapability::TraceIngestion)
+        .await;
+    println!(
+        "Services with TraceIngestion capability: {}",
+        trace_ingestion_services.len()
+    );
 
     // Step 1: Send trace data to acceptor
     let trace_id = vec![0x42; 16]; // Distinctive trace ID
@@ -506,9 +496,14 @@ async fn test_end_to_end_pipeline() {
     println!("✓ Step 1: OTLP trace sent to acceptor");
 
     // Step 2: Allow time for processing and verify data in object store
-    sleep(Duration::from_secs(1)).await;
+    sleep(Duration::from_secs(3)).await;
 
     let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
+    println!("Objects in store: {}", objects.len());
+    for obj in &objects {
+        println!("  - {}", obj.location);
+    }
+    
     assert!(
         !objects.is_empty(),
         "No data found in object store after ingestion"
@@ -517,7 +512,7 @@ async fn test_end_to_end_pipeline() {
     println!("✓ Step 2: Data persisted to object store via writer");
 
     // Step 3: Verify Flight clients can connect to querier services
-    let querier_services = querier_flight_transport
+    let querier_services = flight_transport
         .discover_services_by_capability(
             common::flight::transport::ServiceCapability::QueryExecution,
         )
