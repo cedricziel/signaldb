@@ -1,29 +1,59 @@
 # WAL Persistence Configuration
 
-The Write-Ahead Log (WAL) is critical for data durability in SignalDB. This document describes how to configure persistent storage for the WAL to ensure data survives container or pod restarts.
+SignalDB implements Write-Ahead Logging (WAL) to provide durability guarantees for incoming observability data. This document describes WAL configuration, deployment patterns, and operational best practices.
 
 ## Overview
 
-SignalDB uses WAL (Write-Ahead Log) for durability across acceptor and writer services:
+✅ **Production Ready**: SignalDB's WAL implementation provides comprehensive durability with crash recovery, automatic replay, and configurable persistence policies.
 
-- **Writer Service**: Uses WAL at `WRITER_WAL_DIR` (default: `.wal/writer`)
+### WAL Architecture
+
+```
+OTLP Client → Acceptor → WAL (Disk) → Writer → Parquet Storage
+     ↓           ↓         ↓          ↓           ↓
+   gRPC/HTTP   Flight   fsync()   Flight   Object Store
+```
+
+### Durability Guarantees
+
+1. **Before Acknowledgment**: All OTLP data is written to WAL before client acknowledgment
+2. **Crash Recovery**: Unprocessed WAL entries are automatically replayed on service restart
+3. **Entry Tracking**: WAL entries are marked as processed only after successful storage
+4. **Configurable Flushing**: Supports both immediate and batched flush policies
+
+### Service WAL Usage
+
 - **Acceptor Service**: Uses WAL at `ACCEPTOR_WAL_DIR` (default: `.wal/acceptor`)
+- **Writer Service**: Uses WAL at `WRITER_WAL_DIR` (default: `.wal/writer`)
 
-⚠️ **Warning**: The default WAL directories are local paths that **will not persist** across container or pod restarts, potentially causing data loss.
+⚠️ **Production Warning**: Default WAL directories use local paths that **will not persist** across container or pod restarts. Configure persistent volumes for production deployments.
 
-## Environment Variables
+## Configuration
 
-### WRITER_WAL_DIR
-- **Description**: Directory path for the writer service WAL
-- **Default**: `.wal/writer`
-- **Required**: No (but recommended to override for production)
-- **Example**: `/data/wal/writer`
+### Environment Variables
 
-### ACCEPTOR_WAL_DIR  
-- **Description**: Directory path for the acceptor service WAL
-- **Default**: `.wal/acceptor`
-- **Required**: No (but recommended to override for production)
-- **Example**: `/data/wal/acceptor`
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ACCEPTOR_WAL_DIR` | `.wal/acceptor` | WAL directory for acceptor service |
+| `WRITER_WAL_DIR` | `.wal/writer` | WAL directory for writer service |
+| `WAL_MAX_SEGMENT_SIZE` | `1048576` (1MB) | Maximum size per WAL segment |
+| `WAL_MAX_BUFFER_ENTRIES` | `1000` | Buffer size before forced flush |
+| `WAL_FLUSH_INTERVAL_SECS` | `10` | Automatic flush interval in seconds |
+
+### TOML Configuration
+
+```toml
+[wal]
+max_segment_size = 1048576      # 1MB segments
+max_buffer_entries = 1000       # Buffer 1000 entries
+flush_interval_secs = 10        # Flush every 10 seconds
+
+[wal.acceptor]
+wal_dir = "/data/wal/acceptor"   # Persistent storage path
+
+[wal.writer] 
+wal_dir = "/data/wal/writer"     # Persistent storage path
+```
 
 ## Docker Compose Configuration
 
@@ -129,17 +159,36 @@ spec:
 | Production | `fast-ssd` | High-performance SSD |
 | High-volume | `ultra-ssd` | NVMe with high IOPS |
 
-## Directory Structure
+## WAL Implementation Details
+
+### Directory Structure
 
 The WAL uses a segment-based structure:
 
 ```
 /data/wal/
-├── segment-000001.wal    # Active segment
-├── segment-000002.wal    # Completed segment
-├── segment-000003.wal    # Completed segment
-└── .checkpoint           # Checkpoint metadata
+├── segments/
+│   ├── 000001.wal        # Active segment
+│   ├── 000002.wal        # Completed segment
+│   └── 000003.wal        # Completed segment
+└── metadata.json         # WAL metadata
 ```
+
+### Data Flow with WAL
+
+1. **Acceptor receives OTLP data**
+2. **Data written to Acceptor WAL** (durability checkpoint)
+3. **Client acknowledgment sent** (data is durable)
+4. **Data forwarded to Writer via Flight** (Storage capability)
+5. **Writer processes and stores to Parquet**
+6. **WAL entries marked as processed** (cleanup eligible)
+
+### Recovery Process
+
+On service restart:
+1. **WAL scan**: Identify unprocessed entries
+2. **Automatic replay**: Reprocess unprocessed entries
+3. **Resume normal operation**: Continue with new data
 
 ## Permissions
 
@@ -175,9 +224,33 @@ spec:
           readOnlyRootFilesystem: true
 ```
 
-## Monitoring and Alerting
+## Performance Tuning
 
-Monitor WAL health and storage usage:
+### For High Throughput
+
+```bash
+# Increase buffer size to reduce flush frequency
+export WAL_MAX_BUFFER_ENTRIES=10000
+
+# Use larger segments for efficiency  
+export WAL_MAX_SEGMENT_SIZE=10485760  # 10MB
+
+# Reduce flush interval for sustained writes
+export WAL_FLUSH_INTERVAL_SECS=5
+```
+
+### For Low Latency
+
+```bash
+# Immediate flushing (minimal buffering)
+export WAL_MAX_BUFFER_ENTRIES=1
+export WAL_FLUSH_INTERVAL_SECS=1
+
+# Smaller segments for faster rotation
+export WAL_MAX_SEGMENT_SIZE=1048576   # 1MB
+```
+
+## Monitoring and Alerting
 
 ### Key Metrics
 
@@ -185,6 +258,25 @@ Monitor WAL health and storage usage:
 - **WAL Segment Count**: Track number of segments
 - **WAL Flush Latency**: Monitor write performance
 - **WAL Errors**: Alert on WAL operation failures
+- **Unprocessed Entries**: Monitor processing lag
+
+### Health Check Endpoints
+
+```bash
+# Check WAL status
+curl http://acceptor:8080/health | jq '.wal'
+curl http://writer:8080/health | jq '.wal'
+
+# Example response
+{
+  "wal": {
+    "unprocessed_entries": 0,
+    "total_segments": 3,
+    "disk_usage_bytes": 2097152,
+    "last_flush": "2024-03-15T10:30:00Z"
+  }
+}
+```
 
 ### Example Prometheus Alerts
 
@@ -226,39 +318,122 @@ groups:
 
 ### Common Issues
 
-1. **Permission Denied**
-   - Solution: Check directory permissions and ownership
-   - Command: `ls -la /data/wal`
+#### "WAL directory not writable"
+```bash
+# Check permissions
+ls -la /data/wal/
+sudo chown -R signaldb:signaldb /data/wal/
+sudo chmod 755 /data/wal/
+```
 
-2. **No Space Left on Device**
-   - Solution: Increase storage allocation or clean up old segments
-   - Monitor: Disk usage and WAL segment count
+#### "High WAL disk usage"
+```bash
+# Check for stuck processing
+curl http://writer:8080/health | jq '.wal.unprocessed_entries'
 
-3. **WAL Corruption**
-   - Solution: Service will skip corrupted segments and log errors
-   - Recovery: May require data re-ingestion for affected timeframes
+# Check segment count
+ls -la /data/wal/segments/ | wc -l
+
+# Check if writer is processing WAL entries
+tail -f /var/log/signaldb/writer.log | grep "WAL entry processed"
+```
+
+#### "WAL segment corruption"
+```bash
+# Service will log corruption and skip bad segments
+tail -f /var/log/signaldb/acceptor.log | grep "WAL corruption"
+
+# Manual segment inspection (if needed)
+hexdump -C /data/wal/segments/000001.wal | head
+```
 
 ### Debug Commands
 
 ```bash
-# Check WAL directory contents
-ls -la /data/wal/
+# Enable WAL debug logging
+export RUST_LOG=signaldb_common::wal=debug
 
-# Monitor WAL disk usage
-df -h /data/wal
+# Check WAL directory structure
+tree /data/wal/
 
-# Check WAL file permissions
-find /data/wal -type f -exec ls -la {} \;
+# Monitor real-time WAL activity
+tail -f /var/log/signaldb/*.log | grep WAL
 
-# Monitor WAL flush activity
-tail -f /var/log/signaldb/writer.log | grep WAL
+# Check WAL metadata
+cat /data/wal/metadata.json | jq
+
+# Monitor WAL processing
+watch 'curl -s http://acceptor:8080/health | jq .wal'
 ```
+
+### Recovery Procedures
+
+#### Disaster Recovery
+
+1. **Stop affected services**:
+   ```bash
+   kubectl scale deployment signaldb-acceptor --replicas=0
+   kubectl scale deployment signaldb-writer --replicas=0
+   ```
+
+2. **Restore WAL data**:
+   ```bash
+   tar -xzf wal-backup-20240315.tar.gz -C /data/
+   ```
+
+3. **Restart services**:
+   ```bash
+   kubectl scale deployment signaldb-acceptor --replicas=2
+   kubectl scale deployment signaldb-writer --replicas=2
+   ```
+
+4. **Verify recovery**:
+   ```bash
+   # Check logs for WAL replay messages
+   kubectl logs -f deployment/signaldb-acceptor | grep "WAL replay"
+   ```
 
 ## Best Practices
 
-1. **Use Dedicated Storage**: Separate WAL from data storage for performance
-2. **Monitor Disk Space**: Set up alerts for disk usage
-3. **Regular Backups**: Implement automated WAL backup procedures
-4. **Test Recovery**: Regularly test WAL recovery procedures
-5. **Performance Tuning**: Adjust WAL configuration based on workload
-6. **Security**: Ensure WAL directories are not accessible to unauthorized users
+### Production Deployments
+
+1. **Use persistent storage** with appropriate IOPS (>3000 IOPS recommended)
+2. **Monitor WAL metrics** to detect processing delays
+3. **Set up automated backups** for WAL directories
+4. **Test recovery procedures** regularly
+5. **Size WAL storage** for 2-3x peak ingestion rates
+6. **Use fast storage** (NVMe SSD) for WAL directories
+7. **Separate WAL and data storage** to avoid I/O contention
+
+### Security
+
+1. **Encrypt WAL directories** at rest using filesystem encryption
+2. **Restrict access** to WAL directories (600/700 permissions)
+3. **Monitor access** to WAL files in security logs
+4. **Use dedicated service accounts** for WAL access
+
+### Operational Excellence
+
+1. **Implement comprehensive monitoring** with Prometheus metrics
+2. **Set up alerting** for WAL health and performance
+3. **Document recovery procedures** and train operations team
+4. **Regular disaster recovery testing** with WAL restore
+5. **Capacity planning** based on ingestion patterns
+6. **Performance benchmarking** under realistic loads
+
+### Storage Sizing Guidelines
+
+**Development**: 100MB - 1GB (default local directories)
+**Staging**: 1GB - 10GB (moderate ingestion rates)
+**Production**: 10GB - 100GB+ (depends on ingestion rate and retention)
+**High Volume**: 100GB+ with NVMe storage for optimal performance
+
+**Calculation Formula**:
+```
+WAL Size ≈ Ingestion Rate × Flush Interval × Safety Factor
+
+Example:
+- 1000 spans/sec × 100 bytes/span × 10 sec flush = 1MB/flush
+- With 3x safety factor: 3MB WAL storage per flush cycle
+- Daily retention: 3MB × 8640 flushes = ~25GB
+```

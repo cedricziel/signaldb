@@ -44,13 +44,21 @@ docker compose up          # Start PostgreSQL, Grafana, and supporting services
 
 ### Data Flow
 
-**Write Path**: Client → Acceptor (OTLP) → Router → Writer(s) → WAL/Memory/Parquet
-**Query Path**: Client → Querier → Writers (Flight) + Storage (Parquet) → Merged results
+**Write Path**: Client → Acceptor (OTLP) → WAL → Writer (Flight) → Parquet Storage
+**Query Path**: Client → Router (HTTP) → Querier (Flight) → DataFusion → Parquet Files
 
-### Service Discovery
+### Service Discovery & Communication
 
-Discovery mechanism:
+**Discovery mechanism**:
 - **Catalog-based**: PostgreSQL/SQLite-backed metadata store with heartbeat-based health checking
+- **ServiceBootstrap pattern**: Automatic service registration with capability-based discovery
+- **Flight transport**: High-performance inter-service communication with connection pooling
+
+**Service capabilities**:
+- **TraceIngestion**: Services that accept OTLP trace data (Acceptor)
+- **Storage**: Services that persist data to storage (Writer)
+- **QueryExecution**: Services that execute queries (Querier)
+- **Routing**: Services that provide HTTP APIs (Router)
 
 ### Configuration
 
@@ -70,20 +78,21 @@ Services register themselves with discovery backends on startup. Look at existin
 
 ### Data Processing
 
-Services use WAL (Write-Ahead Log) for durability and Apache Arrow Flight for high-performance inter-service communication.
+**WAL Integration**:
+- Write-Ahead Log provides durability guarantees for incoming data
+- Acceptor writes to WAL before acknowledgment
+- Writer processes WAL entries and persists to Parquet
+- Automatic WAL entry marking and cleanup
+
+**Flight Communication**:
+- Apache Arrow Flight for zero-copy data transfer between services
+- Service discovery via capability-based routing
+- Connection pooling and automatic failover
+- Streaming support for large datasets
 
 ### Storage Integration
 
 Writers persist data to Parquet files via object_store abstraction. Storage adapters support filesystem, S3, Azure, GCP backends.
-
-## Current Development Status
-
-Active work areas (see `next-steps.md`):
-- Extracting Catalog setup into shared helper for microservices
-- Moving from polling to watch-based discovery mechanisms  
-- Adding graceful service deregistration
-- Separating monolithic binary into individual service binaries
-- Integrating configuration management across services
 
 ## Testing
 
@@ -161,7 +170,7 @@ cargo machete
 
 Benefits of clean dependency management:
 - Faster build times
-- Reduced security surface area  
+- Reduced security surface area
 - Smaller binary sizes
 - Easier dependency auditing
 - Less potential for dependency conflicts
