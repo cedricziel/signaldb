@@ -456,6 +456,40 @@ async fn test_monolithic_mode_trace_pipeline() {
     // Allow more time for monolithic service startup and discovery
     sleep(Duration::from_secs(3)).await;
 
+    // Verify service discovery (same as working test)
+    let trace_ingestion_services = flight_transport
+        .discover_services_by_capability(ServiceCapability::TraceIngestion)
+        .await;
+    let query_services = flight_transport
+        .discover_services_by_capability(ServiceCapability::QueryExecution)
+        .await;
+    let storage_services = flight_transport
+        .discover_services_by_capability(ServiceCapability::Storage)
+        .await;
+
+    println!("📋 Monolithic Service Discovery Status:");
+    println!(
+        "  - TraceIngestion services: {}",
+        trace_ingestion_services.len()
+    );
+    println!("  - QueryExecution services: {}", query_services.len());
+    println!("  - Storage services: {}", storage_services.len());
+
+    assert!(
+        !trace_ingestion_services.is_empty(),
+        "No trace ingestion services found in monolithic mode"
+    );
+    assert!(
+        !query_services.is_empty(),
+        "No query execution services found in monolithic mode"
+    );
+    assert!(
+        !storage_services.is_empty(),
+        "No storage services found in monolithic mode"
+    );
+
+    println!("✅ Monolithic service discovery verification passed");
+
     // Test the pipeline (same data format as working test)
     let trace_id = vec![0xff; 16];
     let span_id = vec![0xaa; 8];
@@ -482,10 +516,20 @@ async fn test_monolithic_mode_trace_pipeline() {
     };
 
     let endpoint = format!("http://{acceptor_addr}");
-    let mut otlp_client = opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint)
-        .await
-        .unwrap();
+    println!("🔗 Attempting to connect to OTLP endpoint: {endpoint}");
 
+    let mut otlp_client = match opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint.clone()).await {
+        Ok(client) => {
+            println!("✅ Successfully connected to OTLP endpoint");
+            client
+        }
+        Err(e) => {
+            println!("❌ Failed to connect to OTLP endpoint {endpoint}: {e}");
+            panic!("OTLP connection failed: {e}");
+        }
+    };
+
+    println!("📤 Sending trace via OTLP...");
     let _response = timeout(Duration::from_secs(5), otlp_client.export(trace_request))
         .await
         .expect("OTLP export timed out")
