@@ -27,7 +27,7 @@ cargo run --bin querier    # Query execution engine (port 9000)
 
 ### Infrastructure
 ```bash
-docker compose up          # Start NATS, Grafana, and supporting services
+docker compose up          # Start PostgreSQL, Grafana, and supporting services
 ```
 
 ## Architecture Overview
@@ -39,7 +39,7 @@ docker compose up          # Start NATS, Grafana, and supporting services
 - **Writer** (`src/writer/`): Stateful ingestion service (the "Ingester")
 - **Querier** (`src/querier/`): Query execution engine for stored data
 - **Common** (`src/common/`): Shared configuration, discovery, and data models
-- **Messaging** (`src/messaging/`): Message queue abstraction (memory, NATS, JetStream)
+- **Messaging** (`src/messaging/`): Message queue abstraction (memory queues)
 - **Tempo API** (`src/tempo-api/`): Grafana Tempo compatibility layer
 
 ### Data Flow
@@ -49,9 +49,8 @@ docker compose up          # Start NATS, Grafana, and supporting services
 
 ### Service Discovery
 
-Two discovery mechanisms:
-- **NATS-based**: Uses NATS KV store with heartbeat TTL (preferred)
-- **Catalog-based**: PostgreSQL-backed metadata store with LISTEN/NOTIFY
+Discovery mechanism:
+- **Catalog-based**: PostgreSQL/SQLite-backed metadata store with heartbeat-based health checking
 
 ### Configuration
 
@@ -88,7 +87,7 @@ Active work areas (see `next-steps.md`):
 
 ## Testing
 
-Integration tests are in workspace root `tests/` and individual component `tests/` directories. Some tests use testcontainers for NATS and PostgreSQL.
+Integration tests are in workspace root `tests/` and individual component `tests/` directories. Some tests use testcontainers for PostgreSQL.
 
 ## Deployment Modes
 

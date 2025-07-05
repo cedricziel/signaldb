@@ -29,20 +29,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # NATS for messaging backend testing
-  nats:
-    image: nats:2.10.12
-    ports:
-      - "4222:4222"
-      - "6222:6222"
-      - "8222:8222"
-    command: ["-js"]
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8222/healthz"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
   # Test runner service
   signaldb-test:
     build:
@@ -53,12 +39,9 @@ services:
         condition: service_healthy
       postgres-15:
         condition: service_healthy
-      nats:
-        condition: service_healthy
     environment:
       - POSTGRES_13_URL=postgres://postgres:postgres@postgres-13:5432/signaldb_test
       - POSTGRES_15_URL=postgres://postgres:postgres@postgres-15:5432/signaldb_test
-      - NATS_URL=nats://nats:4222
       - RUST_LOG=info
       - RUST_BACKTRACE=1
     volumes:
