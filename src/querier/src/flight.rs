@@ -6,7 +6,7 @@ use arrow_flight::{
 };
 use bytes::Bytes;
 use common::flight::schema::{create_span_batch_schema, FlightSchemas};
-use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
+use common::flight::transport::InMemoryFlightTransport;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::context::SessionContext;
 use futures::stream::{self, BoxStream};
@@ -19,7 +19,7 @@ use tonic::{Request, Response, Status};
 pub struct QuerierFlightService {
     #[allow(dead_code)]
     object_store: Arc<dyn ObjectStore>,
-    flight_transport: Arc<InMemoryFlightTransport>,
+    _flight_transport: Arc<InMemoryFlightTransport>,
     #[allow(dead_code)]
     schemas: FlightSchemas,
     session_ctx: Arc<SessionContext>,
@@ -42,7 +42,7 @@ impl QuerierFlightService {
 
         Self {
             object_store,
-            flight_transport,
+            _flight_transport: flight_transport,
             schemas: FlightSchemas::new(),
             session_ctx,
         }
@@ -61,108 +61,26 @@ impl QuerierFlightService {
         Ok(batches)
     }
 
-    /// Discover and query data from writer services
-    async fn query_writers(
-        &self,
-        query: &str,
-    ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error + Send + Sync>> {
-        // Get available writer services with storage capability
-        let writers = self
-            .flight_transport
-            .discover_services_by_capability(ServiceCapability::Storage)
-            .await;
 
-        if writers.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut all_batches = Vec::new();
-
-        // Query each writer service via Flight
-        for writer in writers {
-            log::debug!("Querying writer service: {}", writer.service_id);
-
-            match self
-                .flight_transport
-                .get_flight_client(writer.service_id)
-                .await
-            {
-                Ok(mut client) => {
-                    // Create a ticket with the query
-                    let ticket = Ticket {
-                        ticket: query.as_bytes().to_vec().into(),
-                    };
-
-                    match client.do_get(ticket).await {
-                        Ok(response) => {
-                            let mut stream = response.into_inner();
-                            let mut flight_data = Vec::new();
-
-                            while let Some(data) = stream.next().await {
-                                match data {
-                                    Ok(data) => flight_data.push(data),
-                                    Err(e) => log::error!(
-                                        "Error reading from writer {}: {}",
-                                        writer.service_id,
-                                        e
-                                    ),
-                                }
-                            }
-
-                            // Convert Flight data back to RecordBatches
-                            if !flight_data.is_empty() {
-                                match arrow_flight::utils::flight_data_to_batches(&flight_data) {
-                                    Ok(batches) => all_batches.extend(batches),
-                                    Err(e) => log::error!(
-                                        "Error converting flight data from writer {}: {}",
-                                        writer.service_id,
-                                        e
-                                    ),
-                                }
-                            }
-                        }
-                        Err(e) => log::error!("Error querying writer {}: {}", writer.service_id, e),
-                    }
-                }
-                Err(e) => log::error!("Error connecting to writer {}: {}", writer.service_id, e),
-            }
-        }
-
-        Ok(all_batches)
-    }
-
-    /// Execute a distributed query across multiple data sources
+    /// Execute a query against the object store
     async fn execute_distributed_query(
         &self,
         query: &str,
     ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error + Send + Sync>> {
-        // For now, we'll focus on querying the object store directly
-        // In a full implementation, this would:
-        // 1. Parse the query to understand what data is needed
-        // 2. Query both object store (historical data) and writers (recent data)
-        // 3. Merge and deduplicate results
-
-        let mut all_batches = Vec::new();
-
-        // Query object store (historical data)
+        // Query only the object store - data at rest
+        // Writers are responsible for persisting data to object store
+        // Querier should not depend on or know about writers
+        
         match self.execute_query(query).await {
             Ok(batches) => {
                 log::debug!("Retrieved {} batches from object store", batches.len());
-                all_batches.extend(batches);
+                Ok(batches)
             }
-            Err(e) => log::error!("Error querying object store: {e}"),
-        }
-
-        // Query writers (recent data that might not be in object store yet)
-        match self.query_writers(query).await {
-            Ok(batches) => {
-                log::debug!("Retrieved {} batches from writers", batches.len());
-                all_batches.extend(batches);
+            Err(e) => {
+                log::error!("Error querying object store: {e}");
+                Err(e)
             }
-            Err(e) => log::error!("Error querying writers: {e}"),
         }
-
-        Ok(all_batches)
     }
 }
 

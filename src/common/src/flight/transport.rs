@@ -38,15 +38,13 @@ impl FlightServiceMetadata {
         port: u16,
         capabilities: Vec<ServiceCapability>,
     ) -> Self {
-        let endpoint = format!(
-            "http://{}:{}",
-            address.split(':').next().unwrap_or("localhost"),
-            port
-        );
+        // Extract just the host part if address contains port
+        let host = address.split(':').next().unwrap_or("localhost");
+        let endpoint = format!("http://{}:{}", host, port);
         Self {
             service_id,
             service_type,
-            address,
+            address: host.to_string(), // Store just the host part
             port,
             capabilities,
             endpoint,
@@ -127,7 +125,7 @@ impl InMemoryFlightTransport {
         port: u16,
         capabilities: Vec<ServiceCapability>,
     ) -> Result<Uuid, Box<dyn std::error::Error + Send + Sync>> {
-        let service_id = self.bootstrap.service_id();
+        let service_id = Uuid::new_v4(); // Generate unique ID for each service
         let metadata =
             FlightServiceMetadata::new(service_id, service_type, address, port, capabilities);
 
@@ -151,58 +149,17 @@ impl InMemoryFlightTransport {
         &self,
         capability: ServiceCapability,
     ) -> Vec<FlightServiceMetadata> {
-        // First get services from local registry
+        // Get services from local registry
         let local_services = {
             let services = self.services.read().await;
             services.values().cloned().collect::<Vec<_>>()
         };
 
-        // Filter by capability
-        let local_filtered =
-            FlightServiceMetadata::filter_by_capability(&local_services, &capability);
-
-        // Also discover services from catalog (all registered as ingesters currently)
-        let mut discovered = Vec::new();
-        if let Ok(ingesters) = self.bootstrap.discover_ingesters().await {
-            for ingester in ingesters {
-                // For now, assume all ingesters have trace ingestion capability
-                // This can be enhanced when we store capabilities in catalog
-                if matches!(
-                    capability,
-                    ServiceCapability::TraceIngestion | ServiceCapability::Storage
-                ) {
-                    let parts: Vec<&str> = ingester.address.split(':').collect();
-                    if parts.len() == 2 {
-                        if let Ok(port) = parts[1].parse::<u16>() {
-                            let metadata = FlightServiceMetadata::new(
-                                ingester.id,
-                                ServiceType::Writer, // Assume writer for now
-                                ingester.address.clone(),
-                                port,
-                                vec![
-                                    ServiceCapability::TraceIngestion,
-                                    ServiceCapability::Storage,
-                                ],
-                            );
-                            discovered.push(metadata);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Combine local and discovered services
-        let mut all_services: Vec<FlightServiceMetadata> =
-            local_filtered.into_iter().cloned().collect();
-        all_services.extend(discovered);
-
-        // Remove duplicates by service_id
-        let mut unique_services = HashMap::new();
-        for service in all_services {
-            unique_services.insert(service.service_id, service);
-        }
-
-        unique_services.into_values().collect()
+        // Filter by capability and return
+        FlightServiceMetadata::filter_by_capability(&local_services, &capability)
+            .into_iter()
+            .cloned()
+            .collect()
     }
 
     /// Get a Flight client for the specified service
