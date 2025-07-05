@@ -43,7 +43,7 @@ async fn test_acceptor_writer_flow() {
     let service_bootstrap = ServiceBootstrap::new(
         Configuration::default(),
         ServiceType::Acceptor,
-        "test-instance".to_string(),
+        "127.0.0.1:4317".to_string(),
     )
     .await
     .unwrap();
@@ -177,7 +177,7 @@ async fn test_querier_integration() {
     let service_bootstrap = ServiceBootstrap::new(
         Configuration::default(),
         ServiceType::Acceptor,
-        "test-instance".to_string(),
+        "127.0.0.1:4317".to_string(),
     )
     .await
     .unwrap();
@@ -244,7 +244,7 @@ async fn test_router_tempo_integration() {
     let service_bootstrap = ServiceBootstrap::new(
         Configuration::default(),
         ServiceType::Acceptor,
-        "test-instance".to_string(),
+        "127.0.0.1:4317".to_string(),
     )
     .await
     .unwrap();
@@ -312,7 +312,7 @@ async fn test_end_to_end_pipeline() {
     let service_bootstrap = ServiceBootstrap::new(
         Configuration::default(),
         ServiceType::Writer,
-        "test-instance".to_string(),
+        "127.0.0.1:50051".to_string(),
     )
     .await
     .unwrap();
