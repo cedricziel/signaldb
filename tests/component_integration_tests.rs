@@ -132,7 +132,7 @@ async fn test_acceptor_writer_flow() {
     };
 
     // Send trace to acceptor
-    let endpoint = format!("http://{}", acceptor_addr);
+    let endpoint = format!("http://{acceptor_addr}");
     let mut client = opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint)
         .await
         .unwrap();
@@ -406,7 +406,7 @@ async fn test_end_to_end_pipeline() {
         }],
     };
 
-    let endpoint = format!("http://{}", acceptor_addr);
+    let endpoint = format!("http://{acceptor_addr}");
     let mut otlp_client = opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint)
         .await
         .unwrap();
