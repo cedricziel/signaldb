@@ -224,15 +224,11 @@ async fn test_querier_integration() {
     // Create sample test data and write to object store
     let test_data = create_test_span_data();
     let test_file_path = "batch/test_spans.parquet";
-    
-    writer::write_batch_to_object_store(
-        object_store.clone(),
-        test_file_path,
-        test_data.clone(),
-    )
-    .await
-    .expect("Failed to write test data to object store");
-    
+
+    writer::write_batch_to_object_store(object_store.clone(), test_file_path, test_data.clone())
+        .await
+        .expect("Failed to write test data to object store");
+
     println!("✓ Sample test data written to object store");
 
     // Test Flight client connection and query execution
@@ -246,19 +242,16 @@ async fn test_querier_integration() {
     // Perform a real query against the test data
     let query = format!("SELECT * FROM '{test_file_path}'");
     let ticket = arrow_flight::Ticket::new(query.clone());
-    
-    let query_response = timeout(
-        Duration::from_secs(10),
-        client.do_get(ticket)
-    )
-    .await
-    .expect("Query timed out")
-    .expect("Query failed");
+
+    let query_response = timeout(Duration::from_secs(10), client.do_get(ticket))
+        .await
+        .expect("Query timed out")
+        .expect("Query failed");
 
     // Collect and verify query results
     let mut result_batches = Vec::new();
     let mut stream = query_response.into_inner();
-    
+
     while let Some(flight_data) = stream.next().await {
         let flight_data = flight_data.expect("Failed to read flight data");
         if !flight_data.data_body.is_empty() || !flight_data.data_header.is_empty() {
@@ -267,32 +260,32 @@ async fn test_querier_integration() {
             result_batches.push(flight_data);
         }
     }
-    
+
     assert!(!result_batches.is_empty(), "Query returned no results");
-    println!("✓ Query executed successfully and returned {} flight data chunks", result_batches.len());
-    
+    println!(
+        "✓ Query executed successfully and returned {} flight data chunks",
+        result_batches.len()
+    );
+
     // Verify that the querier can handle a simple SQL query
     let count_query = format!("SELECT COUNT(*) as row_count FROM '{test_file_path}'");
     let count_ticket = arrow_flight::Ticket::new(count_query);
-    
-    let count_response = timeout(
-        Duration::from_secs(5),
-        client.do_get(count_ticket)
-    )
-    .await
-    .expect("Count query timed out")
-    .expect("Count query failed");
-    
+
+    let count_response = timeout(Duration::from_secs(5), client.do_get(count_ticket))
+        .await
+        .expect("Count query timed out")
+        .expect("Count query failed");
+
     let mut count_results = Vec::new();
     let mut count_stream = count_response.into_inner();
-    
+
     while let Some(flight_data) = count_stream.next().await {
         let flight_data = flight_data.expect("Failed to read count flight data");
         if !flight_data.data_body.is_empty() || !flight_data.data_header.is_empty() {
             count_results.push(flight_data);
         }
     }
-    
+
     assert!(!count_results.is_empty(), "Count query returned no results");
     println!("✓ COUNT query executed successfully");
     println!("✓ Querier core query functionality verified");
@@ -377,14 +370,34 @@ async fn test_end_to_end_pipeline() {
     // Shared infrastructure
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
     let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
-    let service_bootstrap = ServiceBootstrap::new(
+
+    // Create separate ServiceBootstrap instances for each service type
+    let writer_bootstrap = ServiceBootstrap::new(
         Configuration::default(),
         ServiceType::Writer,
         "127.0.0.1:50051".to_string(),
     )
     .await
     .unwrap();
-    let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
+    let writer_flight_transport = Arc::new(InMemoryFlightTransport::new(writer_bootstrap));
+
+    let querier_bootstrap = ServiceBootstrap::new(
+        Configuration::default(),
+        ServiceType::Querier,
+        "127.0.0.1:50054".to_string(),
+    )
+    .await
+    .unwrap();
+    let querier_flight_transport = Arc::new(InMemoryFlightTransport::new(querier_bootstrap));
+
+    let acceptor_bootstrap = ServiceBootstrap::new(
+        Configuration::default(),
+        ServiceType::Acceptor,
+        "127.0.0.1:4317".to_string(),
+    )
+    .await
+    .unwrap();
+    let acceptor_flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
 
     // Start writer
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
@@ -398,7 +411,7 @@ async fn test_end_to_end_pipeline() {
         .serve(writer_addr);
     tokio::spawn(writer_server);
 
-    let _writer_id = flight_transport
+    let _writer_id = writer_flight_transport
         .register_flight_service(
             common::service_bootstrap::ServiceType::Writer,
             writer_addr.ip().to_string(),
@@ -412,7 +425,8 @@ async fn test_end_to_end_pipeline() {
         .unwrap();
 
     // Start querier
-    let querier_service = QuerierFlightService::new(object_store.clone(), flight_transport.clone());
+    let querier_service =
+        QuerierFlightService::new(object_store.clone(), querier_flight_transport.clone());
     let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let querier_addr = querier_listener.local_addr().unwrap();
     drop(querier_listener);
@@ -422,7 +436,7 @@ async fn test_end_to_end_pipeline() {
         .serve(querier_addr);
     tokio::spawn(querier_server);
 
-    let _querier_id = flight_transport
+    let _querier_id = querier_flight_transport
         .register_flight_service(
             common::service_bootstrap::ServiceType::Querier,
             querier_addr.ip().to_string(),
@@ -434,7 +448,7 @@ async fn test_end_to_end_pipeline() {
 
     // Start acceptor
     let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal);
+    let trace_handler = TraceHandler::new(acceptor_flight_transport.clone(), acceptor_wal);
     let acceptor_service = TraceAcceptorService::new(trace_handler);
     let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let acceptor_addr = acceptor_listener.local_addr().unwrap();
@@ -498,7 +512,7 @@ async fn test_end_to_end_pipeline() {
     println!("✓ Step 2: Data persisted to object store via writer");
 
     // Step 3: Verify Flight clients can connect to querier services
-    let querier_services = flight_transport
+    let querier_services = querier_flight_transport
         .discover_services_by_capability(
             common::flight::transport::ServiceCapability::QueryExecution,
         )
@@ -511,43 +525,31 @@ async fn test_end_to_end_pipeline() {
 
 /// Helper function to create test span data for querier testing
 fn create_test_span_data() -> datafusion::arrow::record_batch::RecordBatch {
-    use datafusion::arrow::array::{
-        BooleanArray, RecordBatch, StringArray, UInt64Array,
-    };
     use common::flight::schema::create_span_batch_schema;
-    
+    use datafusion::arrow::array::{BooleanArray, RecordBatch, StringArray, UInt64Array};
+
     let schema = create_span_batch_schema();
-    
+
     // Create sample span data with 3 test spans
-    let trace_ids = StringArray::from(vec![
-        "trace_001", "trace_001", "trace_002"
-    ]);
-    let span_ids = StringArray::from(vec![
-        "span_001", "span_002", "span_003"
-    ]);
-    let parent_span_ids = StringArray::from(vec![
-        None, Some("span_001"), None
-    ]);
+    let trace_ids = StringArray::from(vec!["trace_001", "trace_001", "trace_002"]);
+    let span_ids = StringArray::from(vec!["span_001", "span_002", "span_003"]);
+    let parent_span_ids = StringArray::from(vec![None, Some("span_001"), None]);
     let statuses = StringArray::from(vec![
-        "STATUS_CODE_OK", "STATUS_CODE_OK", "STATUS_CODE_ERROR"
+        "STATUS_CODE_OK",
+        "STATUS_CODE_OK",
+        "STATUS_CODE_ERROR",
     ]);
     let is_root = BooleanArray::from(vec![true, false, true]);
-    let names = StringArray::from(vec![
-        "root_operation", "child_operation", "another_root"
-    ]);
-    let service_names = StringArray::from(vec![
-        "test_service", "test_service", "other_service"
-    ]);
+    let names = StringArray::from(vec!["root_operation", "child_operation", "another_root"]);
+    let service_names = StringArray::from(vec!["test_service", "test_service", "other_service"]);
     let span_kinds = StringArray::from(vec![
-        "SPAN_KIND_SERVER", "SPAN_KIND_INTERNAL", "SPAN_KIND_CLIENT"
+        "SPAN_KIND_SERVER",
+        "SPAN_KIND_INTERNAL",
+        "SPAN_KIND_CLIENT",
     ]);
-    let start_times = UInt64Array::from(vec![
-        1_000_000_000, 1_000_001_000, 1_000_002_000
-    ]);
-    let durations = UInt64Array::from(vec![
-        5_000_000, 2_000_000, 10_000_000
-    ]);
-    
+    let start_times = UInt64Array::from(vec![1_000_000_000, 1_000_001_000, 1_000_002_000]);
+    let durations = UInt64Array::from(vec![5_000_000, 2_000_000, 10_000_000]);
+
     RecordBatch::try_new(
         std::sync::Arc::new(schema),
         vec![
