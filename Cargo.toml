@@ -77,7 +77,7 @@ async-stream = "0.3.0"
 futures = "0.3.31"
 
 # Use datafusion's reexported dependencies for consistency
-datafusion = { version = "47.0.0" }
+datafusion = { version = "47.0.0", default-features = false, features = ["parquet", "nested_expressions", "unicode_expressions"] }
 # Use same versions as datafusion for compatibility
 arrow-flight = { version = "55.2.0" }
 object_store = { version = "0.12.2", features = ["aws", "azure", "gcp"] }
@@ -98,7 +98,7 @@ opentelemetry-otlp = { version = "0.29.0" }
 opentelemetry-proto = "0.29.0"
 opentelemetry-semantic-conventions = "0.29.0"
 
-tokio = { version = "1.46.1", features = ["full"] }
+tokio = { version = "1.46.1", features = ["rt-multi-thread", "net", "fs", "sync", "time", "macros", "signal", "io-util"] }
 tokio-stream = { version = "0.1.17", features = ["sync", "net"] }
 tokio-test = "0.4.2"
 
