@@ -176,8 +176,8 @@ async fn test_querier_integration() {
     let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
     let service_bootstrap = ServiceBootstrap::new(
         Configuration::default(),
-        ServiceType::Acceptor,
-        "127.0.0.1:4317".to_string(),
+        ServiceType::Querier,
+        "127.0.0.1:50054".to_string(),
     )
     .await
     .unwrap();
