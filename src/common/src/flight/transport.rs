@@ -127,7 +127,9 @@ impl InMemoryFlightTransport {
         // Return the current service's ID for compatibility
         let service_id = self.bootstrap.service_id();
 
-        log::info!("Flight service registration requested - using catalog service ID: {service_id}");
+        log::info!(
+            "Flight service registration requested - using catalog service ID: {service_id}"
+        );
 
         Ok(service_id)
     }
