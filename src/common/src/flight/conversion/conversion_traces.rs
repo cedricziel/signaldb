@@ -728,8 +728,7 @@ mod tests {
         let span_id_bytes = hex::decode("0123456789abcdef").unwrap();
 
         // Create a span with attributes
-        let mut attributes = Vec::new();
-        attributes.push(KeyValue {
+        let attributes = vec![KeyValue {
             key: "attr1".to_string(),
             value: Some(AnyValue {
                 value: Some(
@@ -738,11 +737,10 @@ mod tests {
                     ),
                 ),
             }),
-        });
+        }];
 
         // Create events for the span
-        let mut events = Vec::new();
-        events.push(opentelemetry_proto::tonic::trace::v1::span::Event {
+        let events = vec![opentelemetry_proto::tonic::trace::v1::span::Event {
             time_unix_nano: 1500000000,
             name: "test-event".to_string(),
             attributes: vec![KeyValue {
@@ -756,7 +754,7 @@ mod tests {
                 }),
             }],
             dropped_attributes_count: 0,
-        });
+        }];
 
         // Create links for the span
         let mut links = Vec::new();
@@ -804,8 +802,7 @@ mod tests {
         };
 
         // Create resource attributes
-        let mut resource_attributes = Vec::new();
-        resource_attributes.push(KeyValue {
+        let resource_attributes = vec![KeyValue {
             key: "service.name".to_string(),
             value: Some(AnyValue {
                 value: Some(
@@ -814,7 +811,7 @@ mod tests {
                     ),
                 ),
             }),
-        });
+        }];
 
         // Create resource
         let resource = opentelemetry_proto::tonic::resource::v1::Resource {
@@ -1057,47 +1054,51 @@ mod tests {
         let span_id_bytes = hex::decode("0123456789abcdef").unwrap();
 
         // Create a span with attributes
-        let mut attributes = Vec::new();
-        attributes.push(KeyValue {
-            key: "attr1".to_string(),
-            value: Some(AnyValue {
-                value: Some(
-                    opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
-                        "value1".to_string(),
-                    ),
-                ),
-            }),
-        });
-        attributes.push(KeyValue {
-            key: "attr2".to_string(),
-            value: Some(AnyValue {
-                value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(42)),
-            }),
-        });
-
-        // Create events for the span
-        let mut events = Vec::new();
-        events.push(opentelemetry_proto::tonic::trace::v1::span::Event {
-            time_unix_nano: 1500000000,
-            name: "span-event".to_string(),
-            attributes: vec![KeyValue {
-                key: "event_key".to_string(),
+        let attributes = vec![
+            KeyValue {
+                key: "attr1".to_string(),
                 value: Some(AnyValue {
                     value: Some(
                         opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
-                            "event_val".to_string(),
+                            "value1".to_string(),
                         ),
                     ),
                 }),
-            }],
-            dropped_attributes_count: 0,
-        });
-        events.push(opentelemetry_proto::tonic::trace::v1::span::Event {
-            time_unix_nano: 1600000000,
-            name: "second-event".to_string(),
-            attributes: vec![],
-            dropped_attributes_count: 0,
-        });
+            },
+            KeyValue {
+                key: "attr2".to_string(),
+                value: Some(AnyValue {
+                    value: Some(
+                        opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(42),
+                    ),
+                }),
+            },
+        ];
+
+        // Create events for the span
+        let events = vec![
+            opentelemetry_proto::tonic::trace::v1::span::Event {
+                time_unix_nano: 1500000000,
+                name: "span-event".to_string(),
+                attributes: vec![KeyValue {
+                    key: "event_key".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(
+                            opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                                "event_val".to_string(),
+                            ),
+                        ),
+                    }),
+                }],
+                dropped_attributes_count: 0,
+            },
+            opentelemetry_proto::tonic::trace::v1::span::Event {
+                time_unix_nano: 1600000000,
+                name: "second-event".to_string(),
+                attributes: vec![],
+                dropped_attributes_count: 0,
+            },
+        ];
 
         // Create links for the span
         let mut links = Vec::new();
@@ -1143,8 +1144,7 @@ mod tests {
         };
 
         // Create resource attributes
-        let mut resource_attributes = Vec::new();
-        resource_attributes.push(KeyValue {
+        let resource_attributes = vec![KeyValue {
             key: "service.name".to_string(),
             value: Some(AnyValue {
                 value: Some(
@@ -1153,7 +1153,7 @@ mod tests {
                     ),
                 ),
             }),
-        });
+        }];
 
         // Create resource
         let resource = opentelemetry_proto::tonic::resource::v1::Resource {

@@ -15,4 +15,8 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 echo "Checking for unused dependencies..."
 cargo machete --with-metadata
 
+# License and security auditing
+echo "Running security and license auditing..."
+cargo deny check
+
 echo "All pre-commit checks passed!"
