@@ -128,10 +128,10 @@ impl Catalog {
             Catalog::Sqlite(pool) => {
                 let now = Utc::now().to_rfc3339();
                 let id_str = id.to_string();
-                let service_type_str = format!("{:?}", service_type);
+                let service_type_str = format!("{service_type:?}");
                 let capabilities_str = capabilities
                     .iter()
-                    .map(|c| format!("{:?}", c))
+                    .map(|c| format!("{c:?}"))
                     .collect::<Vec<_>>()
                     .join(",");
 
@@ -167,10 +167,10 @@ impl Catalog {
                 }
             }
             Catalog::Postgres(pool) => {
-                let service_type_str = format!("{:?}", service_type);
+                let service_type_str = format!("{service_type:?}");
                 let capabilities_str = capabilities
                     .iter()
-                    .map(|c| format!("{:?}", c))
+                    .map(|c| format!("{c:?}"))
                     .collect::<Vec<_>>()
                     .join(",");
 
