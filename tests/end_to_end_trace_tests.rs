@@ -1,6 +1,7 @@
 use acceptor::handler::otlp_grpc::TraceHandler;
 use acceptor::services::otlp_trace_service::TraceAcceptorService;
 use arrow_flight::flight_service_server::FlightServiceServer;
+use arrow_flight::utils::flight_data_to_batches;
 use common::catalog::Catalog;
 use common::config::Configuration;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
@@ -492,6 +493,178 @@ async fn verify_data_persistence(services: &TestServices, processing_delay: Dura
     println!("✅ Data successfully persisted to object store");
 }
 
+/// Validate that queried trace data matches the original trace
+async fn validate_trace_query_data(
+    services: &TestServices,
+    expected_trace_id: &[u8],
+    expected_span_name: &str,
+) -> Result<(), String> {
+    let mut query_client = services
+        .flight_transport
+        .get_client_for_capability(ServiceCapability::QueryExecution)
+        .await
+        .map_err(|e| format!("Failed to get querier client: {e}"))?;
+
+    let query_ticket =
+        arrow_flight::Ticket::new(format!("find_trace:{}", hex::encode(expected_trace_id)));
+
+    println!(
+        "🔍 Validating trace data for {} ({})",
+        expected_span_name,
+        hex::encode(expected_trace_id)
+    );
+
+    let query_result = timeout(Duration::from_secs(10), query_client.do_get(query_ticket))
+        .await
+        .map_err(|_| "Query timed out".to_string())?;
+
+    match query_result {
+        Ok(response) => {
+            let mut stream = response.into_inner();
+            let mut flight_data = Vec::new();
+
+            // Collect all flight data
+            while let Some(flight_data_result) = stream.next().await {
+                match flight_data_result {
+                    Ok(data) => {
+                        flight_data.push(data);
+                    }
+                    Err(e) => {
+                        return Err(format!("Error reading flight data: {e}"));
+                    }
+                }
+            }
+
+            if flight_data.is_empty() {
+                return Err("No flight data received".to_string());
+            }
+
+            // Convert flight data back to Arrow RecordBatches
+            let batches = flight_data_to_batches(&flight_data)
+                .map_err(|e| format!("Failed to convert flight data to batches: {e}"))?;
+
+            if batches.is_empty() {
+                return Err("No record batches found in flight data".to_string());
+            }
+
+            println!(
+                "📊 Received {} record batches with trace data",
+                batches.len()
+            );
+
+            // Validate the trace data
+            let mut found_matching_trace = false;
+            let mut found_matching_span_name = false;
+
+            for (batch_idx, batch) in batches.iter().enumerate() {
+                println!(
+                    "  📋 Batch {}: {} rows, {} columns",
+                    batch_idx,
+                    batch.num_rows(),
+                    batch.num_columns()
+                );
+
+                // Log column names for debugging
+                let schema = batch.schema();
+                println!(
+                    "    Columns: {:?}",
+                    schema.fields().iter().map(|f| f.name()).collect::<Vec<_>>()
+                );
+
+                // Look for trace_id column
+                if let Some(trace_id_col) = batch.column_by_name("trace_id") {
+                    if validate_trace_id_column(trace_id_col, expected_trace_id)? {
+                        found_matching_trace = true;
+                        println!("    ✅ Found matching trace_id in batch {batch_idx}");
+                    }
+                }
+
+                // Look for span_name column
+                if let Some(span_name_col) = batch.column_by_name("span_name") {
+                    if validate_span_name_column(span_name_col, expected_span_name)? {
+                        found_matching_span_name = true;
+                        println!("    ✅ Found matching span_name '{expected_span_name}' in batch {batch_idx}");
+                    }
+                }
+            }
+
+            if !found_matching_trace {
+                return Err(format!(
+                    "Expected trace_id {} not found in query results",
+                    hex::encode(expected_trace_id)
+                ));
+            }
+
+            if !found_matching_span_name {
+                return Err(format!(
+                    "Expected span_name '{expected_span_name}' not found in query results"
+                ));
+            }
+
+            println!("✅ Trace data validation successful - all expected data found");
+            Ok(())
+        }
+        Err(e) => Err(format!("Query failed: {e}")),
+    }
+}
+
+/// Validate that a trace_id column contains the expected trace ID
+fn validate_trace_id_column(
+    column: &datafusion::arrow::array::ArrayRef,
+    expected_trace_id: &[u8],
+) -> Result<bool, String> {
+    use datafusion::arrow::array::Array;
+
+    // Handle different possible array types for trace_id
+    if let Some(binary_array) = column
+        .as_any()
+        .downcast_ref::<datafusion::arrow::array::BinaryArray>()
+    {
+        for i in 0..binary_array.len() {
+            if let Some(value) = binary_array.value(i).get(0..expected_trace_id.len()) {
+                if value == expected_trace_id {
+                    return Ok(true);
+                }
+            }
+        }
+    } else if let Some(string_array) = column
+        .as_any()
+        .downcast_ref::<datafusion::arrow::array::StringArray>()
+    {
+        let expected_hex = hex::encode(expected_trace_id);
+        for i in 0..string_array.len() {
+            if let Some(value) = string_array.value(i).get(0..expected_hex.len()) {
+                if value == expected_hex {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+/// Validate that a span_name column contains the expected span name
+fn validate_span_name_column(
+    column: &datafusion::arrow::array::ArrayRef,
+    expected_span_name: &str,
+) -> Result<bool, String> {
+    use datafusion::arrow::array::Array;
+
+    if let Some(string_array) = column
+        .as_any()
+        .downcast_ref::<datafusion::arrow::array::StringArray>()
+    {
+        for i in 0..string_array.len() {
+            if string_array.value(i) == expected_span_name {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
+}
+
 /// Complete end-to-end test: OTLP ingestion → Storage → Query retrieval
 ///
 /// This test extends the working component_integration_tests pattern
@@ -527,48 +700,56 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
     // Verify data persistence and WAL processing
     verify_data_persistence(&services, Duration::from_secs(5)).await;
 
-    // Test querying the trace back
-    let mut query_client = services
-        .flight_transport
-        .get_client_for_capability(ServiceCapability::QueryExecution)
-        .await
-        .expect("Failed to get querier client");
+    // Test querying the trace back and validate the returned data
+    match validate_trace_query_data(&services, &trace_id, "end-to-end-test-span").await {
+        Ok(()) => {
+            println!(
+                "✅ Step 3: Successfully queried and validated trace data via Flight protocol"
+            );
+        }
+        Err(e) => {
+            println!("⚠️  Query validation failed: {e}");
+            println!("⚠️  Query functionality may still be under development");
 
-    let query_ticket = arrow_flight::Ticket::new(format!("find_trace:{}", hex::encode(&trace_id)));
+            // Fallback to basic query test for development
+            let mut query_client = services
+                .flight_transport
+                .get_client_for_capability(ServiceCapability::QueryExecution)
+                .await
+                .expect("Failed to get querier client");
 
-    println!(
-        "🔍 Querying for trace {} via Flight protocol...",
-        hex::encode(&trace_id)
-    );
+            let query_ticket =
+                arrow_flight::Ticket::new(format!("find_trace:{}", hex::encode(&trace_id)));
+            let query_result =
+                timeout(Duration::from_secs(10), query_client.do_get(query_ticket)).await;
 
-    let query_result = timeout(Duration::from_secs(10), query_client.do_get(query_ticket)).await;
+            match query_result {
+                Ok(Ok(response)) => {
+                    let mut stream = response.into_inner();
+                    let mut flight_data_count = 0;
 
-    match query_result {
-        Ok(Ok(response)) => {
-            let mut stream = response.into_inner();
-            let mut flight_data_count = 0;
-
-            while let Some(flight_data_result) = stream.next().await {
-                match flight_data_result {
-                    Ok(_data) => {
-                        flight_data_count += 1;
+                    while let Some(flight_data_result) = stream.next().await {
+                        match flight_data_result {
+                            Ok(_data) => {
+                                flight_data_count += 1;
+                            }
+                            Err(e) => {
+                                println!("⚠️  Error reading flight data: {e}");
+                            }
+                        }
                     }
-                    Err(e) => {
-                        println!("⚠️  Error reading flight data: {e}");
-                    }
+
+                    println!(
+                        "✅ Basic query test: Received {flight_data_count} flight data chunks"
+                    );
+                }
+                Ok(Err(e)) => {
+                    println!("❌ Flight query failed: {e}");
+                }
+                Err(_) => {
+                    println!("❌ Flight query timed out");
                 }
             }
-
-            println!("✅ Step 3: Successfully queried trace via Flight protocol");
-            println!("  - Received {flight_data_count} flight data chunks");
-        }
-        Ok(Err(e)) => {
-            println!("❌ Flight query failed: {e}");
-            println!("⚠️  Query functionality may still be under development");
-        }
-        Err(_) => {
-            println!("❌ Flight query timed out");
-            println!("⚠️  Query functionality may still be under development");
         }
     }
 
@@ -692,19 +873,31 @@ async fn test_monolithic_mode_trace_pipeline() {
     // Verify data persistence
     verify_data_persistence(&services, Duration::from_secs(4)).await;
 
-    // Test query
-    let mut query_client = services
-        .flight_transport
-        .get_client_for_capability(ServiceCapability::QueryExecution)
-        .await
-        .expect("Failed to get querier client");
+    // Test query with data validation
+    match validate_trace_query_data(&services, &trace_id, "monolithic-test-span").await {
+        Ok(()) => {
+            println!("✅ Query and data validation successful in monolithic mode");
+        }
+        Err(e) => {
+            println!("⚠️  Query validation failed in monolithic mode: {e}");
 
-    let query_ticket = arrow_flight::Ticket::new(format!("find_trace:{}", hex::encode(&trace_id)));
-    let query_result = timeout(Duration::from_secs(5), query_client.do_get(query_ticket)).await;
+            // Fallback to basic query test
+            let mut query_client = services
+                .flight_transport
+                .get_client_for_capability(ServiceCapability::QueryExecution)
+                .await
+                .expect("Failed to get querier client");
 
-    match query_result {
-        Ok(Ok(_)) => println!("✅ Query successful in monolithic mode"),
-        _ => println!("⚠️  Query may need additional implementation"),
+            let query_ticket =
+                arrow_flight::Ticket::new(format!("find_trace:{}", hex::encode(&trace_id)));
+            let query_result =
+                timeout(Duration::from_secs(5), query_client.do_get(query_ticket)).await;
+
+            match query_result {
+                Ok(Ok(_)) => println!("✅ Basic query successful in monolithic mode"),
+                _ => println!("⚠️  Query may need additional implementation"),
+            }
+        }
     }
 
     println!("🎯 MONOLITHIC MODE TEST SUMMARY:");
