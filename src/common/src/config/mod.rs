@@ -1,30 +1,29 @@
-use std::collections::HashMap;
 use std::time::Duration;
 use std::{error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
 
 use figment::{
-    providers::{Env, Format, Serialized, Toml},
     Figment,
+    providers::{Env, Format, Serialized, Toml},
 };
 
 use once_cell::sync::OnceCell;
 
 pub static CONFIG: OnceCell<Configuration> = OnceCell::new();
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StorageConfig {
-    default: String,
-    adapters: HashMap<String, ObjectStorageConfig>,
+    /// DSN for the storage backend (e.g., file:///path/to/storage, memory://, s3://bucket/prefix)
+    pub dsn: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub struct ObjectStorageConfig {
-    pub url: String,
-    pub prefix: String,
-    #[serde(rename = "type")]
-    pub storage_type: String,
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            dsn: "memory://".to_string(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -104,6 +103,53 @@ impl Default for WalConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SchemaConfig {
+    /// Type of catalog backend (sql, memory)
+    pub catalog_type: String,
+    /// URI for the catalog backend (e.g., sqlite://.data/catalog.db)
+    pub catalog_uri: String,
+}
+
+impl Default for SchemaConfig {
+    fn default() -> Self {
+        Self {
+            catalog_type: "sql".to_string(),
+            catalog_uri: "sqlite::memory:".to_string(),
+        }
+    }
+}
+
+// Keep IcebergConfig for backward compatibility
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IcebergConfig {
+    /// Type of catalog backend (postgresql, sqlite)
+    pub catalog_type: String,
+    /// URI for the catalog backend (e.g., postgres://..., sqlite://...)
+    pub catalog_uri: String,
+    /// Path to the warehouse directory for storing table data
+    pub warehouse_path: String,
+}
+
+impl Default for IcebergConfig {
+    fn default() -> Self {
+        Self {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            warehouse_path: ".data/warehouse".to_string(),
+        }
+    }
+}
+
+impl From<IcebergConfig> for SchemaConfig {
+    fn from(iceberg_config: IcebergConfig) -> Self {
+        Self {
+            catalog_type: iceberg_config.catalog_type, // Preserve original catalog_type
+            catalog_uri: iceberg_config.catalog_uri,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Configuration {
     /// Database configuration (used for internal storage)
     pub database: DatabaseConfig,
@@ -113,6 +159,10 @@ pub struct Configuration {
     pub discovery: Option<DiscoveryConfig>,
     /// WAL configuration (includes buffering policies)
     pub wal: WalConfig,
+    /// Schema configuration (defaults to in-memory provider)
+    pub schema: SchemaConfig,
+    /// Iceberg configuration (deprecated, use schema instead)
+    pub iceberg: Option<IcebergConfig>,
 }
 
 impl Default for Configuration {
@@ -123,6 +173,10 @@ impl Default for Configuration {
             // Enable discovery by default for configless operation
             discovery: Some(DiscoveryConfig::default()),
             wal: WalConfig::default(),
+            // Schema defaults to in-memory provider
+            schema: SchemaConfig::default(),
+            // Iceberg is optional and not enabled by default
+            iceberg: None,
         }
     }
 }
@@ -136,28 +190,10 @@ impl fmt::Display for Configuration {
 impl Error for Configuration {}
 
 impl Configuration {
-    pub fn default_storage_url(&self) -> String {
-        let default_storage = self.storage.default.clone();
-        self.storage
-            .adapters
-            .get(&default_storage)
-            .map(|config| config.url.clone())
-            .unwrap_or_else(|| String::from("file://.data/ds"))
-    }
-
-    pub fn default_storage_prefix(&self) -> String {
-        let default_storage = self.storage.default.clone();
-        self.storage
-            .adapters
-            .get(&default_storage)
-            .map(|config| config.prefix.clone())
-            .unwrap_or_else(|| String::from(".data"))
-    }
-
     pub fn load() -> Result<Self, Box<figment::Error>> {
         let config = Figment::from(Serialized::defaults(Configuration::default()))
             .merge(Toml::file("signaldb.toml"))
-            .merge(Env::prefixed("SIGNALDB__").split("__"))
+            .merge(Env::prefixed("SIGNALDB_").split("_"))
             .extract()
             .map_err(Box::new)?;
 
@@ -168,6 +204,7 @@ impl Configuration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use figment::Jail;
     use std::time::Duration;
 
     #[test]
@@ -201,71 +238,89 @@ mod tests {
 
     #[test]
     fn test_env_var_override() {
-        // Test environment variable parsing with double underscore separator
-        std::env::set_var("SIGNALDB__DATABASE__DSN", "sqlite://./test.db");
-        std::env::set_var("SIGNALDB__DISCOVERY__DSN", "sqlite://./discovery.db");
+        // Test environment variable parsing with single underscore separator
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB_DATABASE_DSN", "sqlite://./test.db");
+            jail.set_env("SIGNALDB_DISCOVERY_DSN", "sqlite://./discovery.db");
 
-        let config = Figment::from(Serialized::defaults(Configuration::default()))
-            .merge(Env::prefixed("SIGNALDB__").split("__"))
-            .extract::<Configuration>()
-            .unwrap();
+            let config = Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                .extract::<Configuration>()
+                .unwrap();
 
-        assert_eq!(config.database.dsn, "sqlite://./test.db");
+            assert_eq!(config.database.dsn, "sqlite://./test.db");
 
-        if let Some(discovery) = config.discovery {
-            assert_eq!(discovery.dsn, "sqlite://./discovery.db");
-        }
+            if let Some(discovery) = config.discovery {
+                assert_eq!(discovery.dsn, "sqlite://./discovery.db");
+            }
 
-        // Clean up
-        std::env::remove_var("SIGNALDB__DATABASE__DSN");
-        std::env::remove_var("SIGNALDB__DISCOVERY__DSN");
+            Ok(())
+        });
     }
 
     #[test]
     fn test_env_var_single_underscore_format() {
-        // Test that single underscore format works when used as a flat key
-        // This is actually valid since "DATABASE_DSN" could be interpreted as a top-level key
-        std::env::set_var("SIGNALDB__DATABASE_DSN", "sqlite://./test.db");
+        // Test that single underscore format works for nested configuration
+        // This is now the standard format for environment variables
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB_DATABASE_DSN", "sqlite://./test.db");
 
-        let config = Figment::from(Serialized::defaults(Configuration::default()))
-            .merge(Env::prefixed("SIGNALDB__").split("__"))
-            .extract::<Configuration>()
-            .unwrap();
+            let config = Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                .extract::<Configuration>()
+                .unwrap();
 
-        // This should work because "DATABASE_DSN" is treated as a single key
-        // and we're looking for nested "database.dsn" but figment is flexible
-        assert_eq!(config.database.dsn, "sqlite://./test.db");
+            // Should work with single underscore format
+            assert_eq!(config.database.dsn, "sqlite://./test.db");
 
-        // Clean up
-        std::env::remove_var("SIGNALDB__DATABASE_DSN");
+            Ok(())
+        });
     }
 
     #[test]
-    fn test_nested_storage_config_env_vars() {
-        // Test deeply nested storage configuration
-        std::env::set_var("SIGNALDB__STORAGE__DEFAULT", "local");
-        std::env::set_var(
-            "SIGNALDB__STORAGE__ADAPTERS__LOCAL__URL",
-            "file:///tmp/test",
+    fn test_storage_config_env_vars() {
+        // Test storage DSN configuration
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB_STORAGE_DSN", "file:///tmp/test");
+
+            let config = Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                .extract::<Configuration>()
+                .unwrap();
+
+            assert_eq!(config.storage.dsn, "file:///tmp/test");
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_iceberg_config_to_schema_config_conversion() {
+        // Test that catalog_type is preserved in From conversion
+        let iceberg_config = IcebergConfig {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            warehouse_path: "/tmp/warehouse".to_string(),
+        };
+
+        let schema_config: SchemaConfig = iceberg_config.into();
+
+        assert_eq!(schema_config.catalog_type, "memory");
+        assert_eq!(schema_config.catalog_uri, "memory://");
+
+        // Test with different catalog_type
+        let iceberg_config_sql = IcebergConfig {
+            catalog_type: "postgresql".to_string(),
+            catalog_uri: "postgres://localhost:5432/catalog".to_string(),
+            warehouse_path: "/data/warehouse".to_string(),
+        };
+
+        let schema_config_sql: SchemaConfig = iceberg_config_sql.into();
+
+        assert_eq!(schema_config_sql.catalog_type, "postgresql");
+        assert_eq!(
+            schema_config_sql.catalog_uri,
+            "postgres://localhost:5432/catalog"
         );
-        std::env::set_var("SIGNALDB__STORAGE__ADAPTERS__LOCAL__PREFIX", "test-prefix");
-        std::env::set_var("SIGNALDB__STORAGE__ADAPTERS__LOCAL__TYPE", "filesystem");
-
-        let config = Figment::from(Serialized::defaults(Configuration::default()))
-            .merge(Env::prefixed("SIGNALDB__").split("__"))
-            .extract::<Configuration>()
-            .unwrap();
-
-        assert_eq!(config.storage.default, "local");
-        let local_adapter = config.storage.adapters.get("local").unwrap();
-        assert_eq!(local_adapter.url, "file:///tmp/test");
-        assert_eq!(local_adapter.prefix, "test-prefix");
-        assert_eq!(local_adapter.storage_type, "filesystem");
-
-        // Clean up
-        std::env::remove_var("SIGNALDB__STORAGE__DEFAULT");
-        std::env::remove_var("SIGNALDB__STORAGE__ADAPTERS__LOCAL__URL");
-        std::env::remove_var("SIGNALDB__STORAGE__ADAPTERS__LOCAL__PREFIX");
-        std::env::remove_var("SIGNALDB__STORAGE__ADAPTERS__LOCAL__TYPE");
     }
 }

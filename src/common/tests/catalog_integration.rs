@@ -3,7 +3,7 @@ use common::flight::transport::ServiceCapability;
 use common::service_bootstrap::ServiceType;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 use uuid::Uuid;
 
 #[tokio::test]
@@ -43,12 +43,16 @@ async fn test_ingester_operations() {
     assert_eq!(ingesters[0].address, "127.0.0.1:8080");
     assert_eq!(ingesters[0].service_type, ServiceType::Writer);
     assert_eq!(ingesters[0].capabilities.len(), 2);
-    assert!(ingesters[0]
-        .capabilities
-        .contains(&ServiceCapability::TraceIngestion));
-    assert!(ingesters[0]
-        .capabilities
-        .contains(&ServiceCapability::Storage));
+    assert!(
+        ingesters[0]
+            .capabilities
+            .contains(&ServiceCapability::TraceIngestion)
+    );
+    assert!(
+        ingesters[0]
+            .capabilities
+            .contains(&ServiceCapability::Storage)
+    );
 
     // Test heartbeat does not error
     catalog.heartbeat(id).await.expect("Failed to heartbeat");

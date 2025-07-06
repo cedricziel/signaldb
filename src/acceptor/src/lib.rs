@@ -4,8 +4,8 @@ pub mod services;
 use std::{net::SocketAddr, sync::Arc, time::SystemTime};
 
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 use common::dataset::DataSet;
 use datafusion::arrow::datatypes::Schema;
@@ -20,7 +20,7 @@ use opentelemetry_proto::tonic::collector::{
 };
 use tokio::net::TcpListener;
 use tokio::{
-    fs::{create_dir_all, File},
+    fs::{File, create_dir_all},
     sync::oneshot,
 };
 // Service bootstrap and configuration
@@ -48,9 +48,9 @@ pub async fn get_parquet_writer(
         .set_writer_version(WriterVersion::PARQUET_2_0)
         .build();
 
-    // Get storage path from configuration instead of hardcoded path
-    let storage_url = config.default_storage_url();
-    let base_path = if let Some(path) = storage_url.strip_prefix("file://") {
+    // Get storage path from configuration DSN
+    let storage_dsn = &config.storage.dsn;
+    let base_path = if let Some(path) = storage_dsn.strip_prefix("file://") {
         path.to_string()
     } else {
         // Fallback to .data/ds if not a file:// URL

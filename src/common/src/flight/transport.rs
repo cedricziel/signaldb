@@ -429,9 +429,11 @@ mod tests {
 
         // Should find the router service that was registered during bootstrap
         assert!(!routing_services.is_empty());
-        assert!(routing_services
-            .iter()
-            .any(|s| s.service_type == ServiceType::Router));
+        assert!(
+            routing_services
+                .iter()
+                .any(|s| s.service_type == ServiceType::Router)
+        );
 
         // Test for capabilities that shouldn't exist
         let trace_services = transport

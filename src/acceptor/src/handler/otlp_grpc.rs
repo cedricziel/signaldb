@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use common::flight::conversion::otlp_traces_to_arrow;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
-use common::wal::{record_batch_to_bytes, Wal, WalOperation};
+use common::wal::{Wal, WalOperation, record_batch_to_bytes};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 // Flight protocol imports
 use arrow_flight::utils::batches_to_flight_data;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 
 pub struct TraceHandler {
     /// Flight transport for forwarding telemetry

@@ -183,9 +183,11 @@ mod tests {
         // Verify log schema
         let log_schema = schemas.log_schema;
         assert!(log_schema.field_with_name("time_unix_nano").is_ok());
-        assert!(log_schema
-            .field_with_name("observed_time_unix_nano")
-            .is_ok());
+        assert!(
+            log_schema
+                .field_with_name("observed_time_unix_nano")
+                .is_ok()
+        );
         assert!(log_schema.field_with_name("severity_number").is_ok());
         assert!(log_schema.field_with_name("severity_text").is_ok());
         assert!(log_schema.field_with_name("body").is_ok());
@@ -202,18 +204,22 @@ mod tests {
         assert!(metric_schema.field_with_name("name").is_ok());
         assert!(metric_schema.field_with_name("description").is_ok());
         assert!(metric_schema.field_with_name("unit").is_ok());
-        assert!(metric_schema
-            .field_with_name("start_time_unix_nano")
-            .is_ok());
+        assert!(
+            metric_schema
+                .field_with_name("start_time_unix_nano")
+                .is_ok()
+        );
         assert!(metric_schema.field_with_name("time_unix_nano").is_ok());
         assert!(metric_schema.field_with_name("attributes_json").is_ok());
         assert!(metric_schema.field_with_name("resource_json").is_ok());
         assert!(metric_schema.field_with_name("scope_json").is_ok());
         assert!(metric_schema.field_with_name("metric_type").is_ok());
         assert!(metric_schema.field_with_name("data_json").is_ok());
-        assert!(metric_schema
-            .field_with_name("aggregation_temporality")
-            .is_ok());
+        assert!(
+            metric_schema
+                .field_with_name("aggregation_temporality")
+                .is_ok()
+        );
         assert!(metric_schema.field_with_name("is_monotonic").is_ok());
     }
 

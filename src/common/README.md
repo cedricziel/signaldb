@@ -18,8 +18,20 @@ The common library is organized into several key modules:
 
 ### Configuration (`config/`)
 - **Configuration**: Centralized config loading from TOML files and environment variables
-- **Precedence**: Environment variables override TOML, which overrides defaults
+- **DSN-based Configuration**: Unified DSN format for database, storage, and schema configuration
+- **Precedence**: Environment variables (`SIGNALDB_*`) override TOML, which overrides defaults
 - **Validation**: Schema validation and default value handling
+
+### Storage (`storage/`)
+- **Object Store Integration**: DSN-based storage configuration with pluggable backends
+- **Supported Backends**: Local filesystem (`file://`) and in-memory (`memory://`)
+- **Future Support**: S3, Azure Blob, GCP Cloud Storage via DSN format
+
+### Schema Management (`schema/`)
+- **Iceberg Integration**: Direct use of Apache Iceberg's native Catalog trait
+- **SQL Catalog**: SQLite-based catalog for table metadata (in-memory or persistent)
+- **Memory Catalog**: In-memory catalog for testing and development
+- **Object Store Integration**: Tables backed by configured object storage
 
 ### Service Discovery (`service_bootstrap.rs`)
 - **ServiceBootstrap**: Automatic service registration and health checking
@@ -59,6 +71,7 @@ let config = Configuration::load()?;
 // Access configuration sections
 let db_config = &config.database;
 let storage_config = &config.storage;
+let schema_config = &config.schema;
 ```
 
 ### Service Discovery
@@ -73,6 +86,24 @@ let bootstrap = ServiceBootstrap::new(
 ).await?;
 
 // Service automatically registers and maintains heartbeat
+```
+
+### Schema and Storage Operations
+```rust
+use common::schema;
+use common::storage;
+
+// Create Iceberg catalog from configuration
+let catalog = schema::create_catalog_with_config(&config).await?;
+
+// Create object store from DSN
+let object_store = storage::create_object_store(&config.storage)?;
+
+// Create catalog with specific object store
+let catalog = schema::create_catalog_with_object_store(
+    &config.schema, 
+    object_store
+).await?;
 ```
 
 ### Catalog Operations
@@ -142,6 +173,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### Schema and Storage Integration Example
+```rust
+use common::{config::Configuration, schema, storage};
+use std::sync::Arc;
+
+// Load configuration and create integrated schema + storage
+let config = Configuration::load()?;
+
+// Create object store from DSN configuration
+let object_store = storage::create_object_store(&config.storage)?;
+
+// Create Iceberg catalog with the configured object store
+let catalog = schema::create_catalog_with_object_store(
+    &config.schema, 
+    object_store.clone()
+).await?;
+
+// Catalog is now ready for table operations with configured storage backend
+```
+
 ### Data Conversion Example
 ```rust
 use common::flight::conversion::conversion_traces::traces_to_record_batch;
@@ -180,28 +231,40 @@ let entry_id = wal.write(serde_json::to_vec(&data)?).await?;
 ```toml
 # signaldb.toml
 [database]
-url = "postgresql://user:pass@localhost/signaldb"
-connection_pool_size = 10
+dsn = "postgresql://user:pass@localhost/signaldb"
+# dsn = "sqlite://.data/signaldb.db"
 
 [storage]
-url = "file:///var/lib/signaldb/data"
-backend = "filesystem"
+dsn = "file:///.data/storage"
+# dsn = "memory://"                    # In-memory storage for testing
+# dsn = "s3://my-bucket/signaldb/"     # S3 storage (future)
 
-[queue]
-backend = "memory"
-capacity = 10000
+[schema]
+catalog_type = "sql"                   # sql (recommended) or memory
+catalog_uri = "sqlite::memory:"        # In-memory SQLite catalog
+# catalog_uri = "sqlite://.data/catalog.db"  # Persistent SQLite catalog
 
 [discovery]
-backend = "catalog"
-heartbeat_interval = 30
+dsn = "sqlite::memory:"               # In-memory service registry
+heartbeat_interval = "30s"
+poll_interval = "60s"
+ttl = "300s"
+
+[wal]
+wal_dir = ".data/wal"
+max_segment_size = 67108864           # 64MB
+max_buffer_entries = 1000
+flush_interval = "30s"
+max_buffer_size_bytes = 134217728     # 128MB
 ```
 
 ### Environment Variables
 ```bash
-# Override any configuration value
-SIGNALDB_DATABASE_URL=postgresql://...
-SIGNALDB_STORAGE_URL=s3://bucket/prefix
-SIGNALDB_DISCOVERY_BACKEND=catalog
+# Override any configuration value using single underscore notation
+SIGNALDB_DATABASE_DSN=postgresql://user:pass@localhost/signaldb
+SIGNALDB_STORAGE_DSN=s3://bucket/prefix
+SIGNALDB_SCHEMA_CATALOG_URI=sqlite:///data/catalog.db
+SIGNALDB_DISCOVERY_DSN=postgres://user:pass@localhost/discovery
 ```
 
 ### Service-Specific Configuration
@@ -232,8 +295,11 @@ struct MyServiceConfig {
 - **tonic**: gRPC framework
 
 ### Storage Dependencies
-- **object_store**: Multi-backend storage abstraction
+- **object_store**: Multi-backend storage abstraction (filesystem, memory, cloud)
 - **parquet**: Columnar storage format
+- **iceberg**: Table format and catalog management
+- **iceberg-catalog-memory**: In-memory catalog implementation
+- **url**: URL parsing for DSN configuration
 
 ## Testing
 
@@ -271,6 +337,8 @@ use common::{
     service_bootstrap::{ServiceBootstrap, ServiceType},
     flight::transport::InMemoryFlightTransport,
     wal::{Wal, WalConfig},
+    schema,
+    storage,
 };
 use std::sync::Arc;
 
@@ -282,6 +350,12 @@ pub async fn initialize_service(
     
     // Load configuration
     let config = Configuration::load()?;
+    
+    // Initialize schema catalog
+    let catalog = schema::create_catalog_with_config(&config).await?;
+    
+    // Initialize object store
+    let object_store = storage::create_object_store(&config.storage)?;
     
     // Initialize service discovery
     let bootstrap = ServiceBootstrap::new(
@@ -300,6 +374,8 @@ pub async fn initialize_service(
     let wal = Arc::new(wal);
     
     Ok(ServiceContext {
+        catalog,
+        object_store,
         transport,
         wal,
     })
@@ -312,6 +388,8 @@ The common library provides standardized error types:
 - **CatalogError**: Service discovery and metadata operations
 - **FlightError**: Inter-service communication failures
 - **WalError**: Write-ahead log operations
+- **SchemaError**: Iceberg catalog initialization and table operations
+- **StorageError**: Object store creation and access failures
 
 ### Performance Characteristics
 - **Configuration**: Loaded once at startup, cached in memory

@@ -6,9 +6,9 @@ use arrow_flight::{
 };
 use bytes::Bytes;
 use common::flight::schema::FlightSchemas;
-use common::wal::{record_batch_to_bytes, Wal, WalOperation};
-use futures::stream::{self, BoxStream};
+use common::wal::{Wal, WalOperation, record_batch_to_bytes};
 use futures::StreamExt;
+use futures::stream::{self, BoxStream};
 use object_store::ObjectStore;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};

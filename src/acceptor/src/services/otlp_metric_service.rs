@@ -1,15 +1,15 @@
 use std::sync::Arc;
 // Flight protocol imports
 use arrow_flight::utils::batches_to_flight_data;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 
 use common::flight::conversion::otlp_metrics_to_arrow;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use opentelemetry_proto::tonic::collector::metrics::v1::{
-    metrics_service_server::MetricsService, ExportMetricsServiceRequest,
-    ExportMetricsServiceResponse,
+    ExportMetricsServiceRequest, ExportMetricsServiceResponse,
+    metrics_service_server::MetricsService,
 };
-use tonic::{async_trait, Request, Response, Status};
+use tonic::{Request, Response, Status, async_trait};
 
 pub struct MetricsAcceptorService {
     flight_transport: Arc<InMemoryFlightTransport>,

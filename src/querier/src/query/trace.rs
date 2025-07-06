@@ -11,7 +11,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionContext},
 };
 
-use super::{error::QuerierError, FindTraceByIdParams, SearchQueryParams, TraceQuerier};
+use super::{FindTraceByIdParams, SearchQueryParams, TraceQuerier, error::QuerierError};
 
 #[allow(dead_code)]
 const SHALLOW_TRACE_BY_ID_QUERY: &str = "SELECT * FROM traces WHERE trace_id = '{trace_id}';";

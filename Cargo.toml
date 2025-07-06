@@ -1,10 +1,10 @@
 [package]
 name = "signaldb"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "AGPL-3.0"
 
-rust-version = "1.82.0"
+rust-version = "1.85.0"
 
 publish = false
 
@@ -74,9 +74,9 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "AGPL-3.0"
-rust-version = "1.82.0"
+rust-version = "1.85.0"
 
 [workspace.dependencies]
 acceptor = { path = "src/acceptor", features = ["testing"] }
@@ -93,6 +93,11 @@ datafusion = { version = "47.0.0", default-features = false, features = ["parque
 # Use same versions as datafusion for compatibility
 arrow-flight = { version = "55.2.0" }
 object_store = { version = "0.12.2", features = ["aws", "azure", "gcp"] }
+
+# Apache Iceberg support
+iceberg = { version = "0.5.1" }
+iceberg-datafusion = { version = "0.5.1" }
+iceberg-catalog-memory = { version = "0.5.1" }
 
 tonic = { version = "0.12.3", features = [
     "transport",
@@ -165,6 +170,7 @@ sqlx = { version = "0.8", default-features = false, features = [
     "chrono",
     "uuid",
 ] }
+url = "2.5"
 
 [profile.dev]
 split-debuginfo = "unpacked"

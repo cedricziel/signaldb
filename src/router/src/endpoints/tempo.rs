@@ -1,9 +1,9 @@
 use crate::RouterState;
 use arrow_flight::Ticket;
 use axum::{
+    Router,
     extract::{Path, Query, State},
     routing::get,
-    Router,
 };
 use common::flight::transport::ServiceCapability;
 use futures::StreamExt;
@@ -193,8 +193,8 @@ pub async fn search<S: RouterState>(
 ///
 /// See https://grafana.com/docs/tempo/latest/api_docs/#search-tags
 #[tracing::instrument]
-pub async fn search_tags(
-) -> Result<axum::Json<tempo_api::TagSearchResponse>, axum::http::StatusCode> {
+pub async fn search_tags()
+-> Result<axum::Json<tempo_api::TagSearchResponse>, axum::http::StatusCode> {
     let response = tempo_api::TagSearchResponse { tag_names: vec![] };
     Ok(axum::Json(response))
 }
