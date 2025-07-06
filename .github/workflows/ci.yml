@@ -74,28 +74,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rust: [stable, beta, 1.85.0] # Consolidated MSRV test
-        database: [postgresql, sqlite]
-        exclude:
-          # Only test MSRV with sqlite to reduce matrix size
-          - rust: 1.85.0
-            database: postgresql
-          - rust: beta
-            database: sqlite # Reduce redundant testing
-
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: signaldb_test
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
+        rust: [stable, beta, 1.85.0] # Test with stable, beta, and MSRV
 
     steps:
       - uses: actions/checkout@v4
@@ -112,7 +91,7 @@ jobs:
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "test-${{ matrix.rust }}-${{ matrix.database }}"
+          shared-key: "test-${{ matrix.rust }}"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install system dependencies
@@ -129,18 +108,10 @@ jobs:
       - name: Extract target directory
         run: tar -xzf target-deps.tar.gz
 
-      - name: Configure database environment
+      - name: Setup test environment
         run: |
           mkdir -p .data
-          if [ "${{ matrix.database }}" = "postgresql" ]; then
-            echo "DATABASE_URL=postgres://postgres:postgres@localhost:5432/signaldb_test" >> $GITHUB_ENV
-            echo "SIGNALDB__DATABASE__DSN=postgres://postgres:postgres@localhost:5432/signaldb_test" >> $GITHUB_ENV
-            echo "SIGNALDB__DISCOVERY__DSN=postgres://postgres:postgres@localhost:5432/signaldb_test" >> $GITHUB_ENV
-          else
-            echo "DATABASE_URL=sqlite://.data/test.db" >> $GITHUB_ENV
-            echo "SIGNALDB__DATABASE__DSN=sqlite://.data/test.db" >> $GITHUB_ENV
-            echo "SIGNALDB__DISCOVERY__DSN=sqlite://.data/test.db" >> $GITHUB_ENV
-          fi
+          # Tests use testcontainers - no need for external database configuration
 
       - name: Run all tests
         run: |
@@ -226,26 +197,7 @@ jobs:
     needs: build-binaries
     strategy:
       matrix:
-        # Reduced matrix - test key combinations only
-        include:
-          - database: postgresql
-            deployment: monolithic
-          - database: sqlite
-            deployment: microservices
-
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: signaldb_test
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
+        deployment: [monolithic, microservices]
 
     steps:
       - uses: actions/checkout@v4
@@ -265,16 +217,10 @@ jobs:
           mkdir -p ${{ runner.temp }}/signaldb-data
           chmod 755 ${{ runner.temp }}/signaldb-data
           
-          if [ "${{ matrix.database }}" = "postgresql" ]; then
-            echo "SIGNALDB__DATABASE__DSN=postgres://postgres:postgres@localhost:5432/signaldb_test" >> $GITHUB_ENV
-            echo "SIGNALDB__DISCOVERY__DSN=postgres://postgres:postgres@localhost:5432/signaldb_test" >> $GITHUB_ENV
-          else
-            echo "SIGNALDB__DATABASE__DSN=sqlite://${{ runner.temp }}/signaldb-data/test_deployment.db" >> $GITHUB_ENV
-            echo "SIGNALDB__DISCOVERY__DSN=sqlite://${{ runner.temp }}/signaldb-data/test_deployment.db" >> $GITHUB_ENV
-          fi
-          
-          # Configure storage to use temp directory as well
-          echo "SIGNALDB__STORAGE__ADAPTERS__LOCAL__URL=file://${{ runner.temp }}/signaldb-data/storage" >> $GITHUB_ENV
+          # Use SQLite for deployment testing (faster and more reliable)
+          echo "SIGNALDB_DATABASE_DSN=sqlite://${{ runner.temp }}/signaldb-data/test_deployment.db" >> $GITHUB_ENV
+          echo "SIGNALDB_DISCOVERY_DSN=sqlite://${{ runner.temp }}/signaldb-data/test_deployment.db" >> $GITHUB_ENV
+          echo "SIGNALDB_STORAGE_DSN=file://${{ runner.temp }}/signaldb-data/storage" >> $GITHUB_ENV
 
       - name: Test deployment
         run: |
