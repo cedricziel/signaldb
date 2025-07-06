@@ -24,6 +24,75 @@ use tokio::time::{sleep, timeout};
 use tonic::transport::Server;
 use writer::WriterFlightService;
 
+/// Expected service counts for readiness checking
+#[derive(Debug, Clone)]
+struct ExpectedServices {
+    trace_ingestion: usize,
+    query_execution: usize,
+    storage: usize,
+}
+
+/// Wait for service registration to complete by polling the flight transport
+/// until the expected service capabilities are all registered or timeout occurs
+async fn wait_for_service_registration(
+    flight_transport: &InMemoryFlightTransport,
+    expected: ExpectedServices,
+    timeout_duration: Duration,
+) -> Result<(), String> {
+    let start_time = std::time::Instant::now();
+    let mut attempts = 0;
+    
+    loop {
+        attempts += 1;
+        
+        // Check current service counts
+        let trace_ingestion_services = flight_transport
+            .discover_services_by_capability(ServiceCapability::TraceIngestion)
+            .await;
+        let query_services = flight_transport
+            .discover_services_by_capability(ServiceCapability::QueryExecution)
+            .await;
+        let storage_services = flight_transport
+            .discover_services_by_capability(ServiceCapability::Storage)
+            .await;
+        
+        let current_counts = ExpectedServices {
+            trace_ingestion: trace_ingestion_services.len(),
+            query_execution: query_services.len(),
+            storage: storage_services.len(),
+        };
+        
+        log::debug!(
+            "Service registration check (attempt {}): Expected {:?}, Current {:?}",
+            attempts, expected, current_counts
+        );
+        
+        // Check if all expected services are registered
+        if current_counts.trace_ingestion >= expected.trace_ingestion
+            && current_counts.query_execution >= expected.query_execution
+            && current_counts.storage >= expected.storage
+        {
+            println!(
+                "✅ All expected services registered after {:?} (attempt {})",
+                start_time.elapsed(),
+                attempts
+            );
+            return Ok(());
+        }
+        
+        // Check for timeout
+        if start_time.elapsed() >= timeout_duration {
+            return Err(format!(
+                "Service registration timeout after {:?}. Expected {:?}, but got {:?}",
+                timeout_duration, expected, current_counts
+            ));
+        }
+        
+        // Wait before next check
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// Test services configuration and shared resources
 struct TestServices {
     pub object_store: Arc<dyn ObjectStore>,
@@ -127,8 +196,16 @@ async fn setup_distributed_services() -> TestServices {
         .serve(acceptor_addr);
     tokio::spawn(acceptor_server);
 
-    // Allow services to start and register
-    sleep(Duration::from_secs(2)).await;
+    // Wait for all services to register with proper service readiness check
+    let expected_services = ExpectedServices {
+        trace_ingestion: 1, // acceptor
+        query_execution: 1, // querier  
+        storage: 1,         // writer
+    };
+    
+    wait_for_service_registration(&flight_transport, expected_services, Duration::from_secs(10))
+        .await
+        .expect("Failed to wait for service registration in distributed mode");
 
     TestServices {
         object_store,
@@ -214,9 +291,17 @@ async fn setup_monolithic_services() -> TestServices {
         .serve(acceptor_addr);
     tokio::spawn(acceptor_server);
 
-    // Allow more time for monolithic service startup and discovery
-    // Need extra time for all services to register with the shared catalog
-    sleep(Duration::from_secs(5)).await;
+    // Wait for all services to register with proper service readiness check
+    // Monolithic mode needs the same services as distributed mode
+    let expected_services = ExpectedServices {
+        trace_ingestion: 1, // acceptor
+        query_execution: 1, // querier  
+        storage: 1,         // writer
+    };
+    
+    wait_for_service_registration(&flight_transport, expected_services, Duration::from_secs(15))
+        .await
+        .expect("Failed to wait for service registration in monolithic mode");
 
     TestServices {
         object_store,

@@ -148,6 +148,7 @@ Signaldb has a microservices and a monolothic mode
 - We need to format the code before committing
 - Always run cargo commands from the workspace root
 - Run cargo clippy and fix all warnings before committing
+- Project uses Rust edition 2024, requires Rust 1.85.0+ minimum
 
 ## Code Quality Standards
 

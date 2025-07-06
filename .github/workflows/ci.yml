@@ -74,11 +74,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rust: [stable, beta, 1.82.0] # Consolidated MSRV test
+        rust: [stable, beta, 1.85.0] # Consolidated MSRV test
         database: [postgresql, sqlite]
         exclude:
           # Only test MSRV with sqlite to reduce matrix size
-          - rust: 1.82.0
+          - rust: 1.85.0
             database: postgresql
           - rust: beta
             database: sqlite # Reduce redundant testing

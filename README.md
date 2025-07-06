@@ -95,7 +95,7 @@ ttl = "300s"
 ## Development
 
 ### Prerequisites
-- Rust 1.70+
+- Rust 1.85.0+ (required for edition 2024)
 - Protocol Buffers compiler
 
 ### Building
