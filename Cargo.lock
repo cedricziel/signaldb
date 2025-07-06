@@ -901,6 +901,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
+ "async-trait",
  "bincode",
  "chrono",
  "datafusion",

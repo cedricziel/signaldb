@@ -104,6 +104,27 @@ impl Default for WalConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SchemaConfig {
+    /// Type of catalog backend (sql, memory)
+    pub catalog_type: String,
+    /// URI for the catalog backend (e.g., sqlite://.data/catalog.db)
+    pub catalog_uri: String,
+    /// Path to the warehouse directory for storing table data
+    pub warehouse_path: String,
+}
+
+impl Default for SchemaConfig {
+    fn default() -> Self {
+        Self {
+            catalog_type: "sql".to_string(),
+            catalog_uri: "sqlite::memory:".to_string(),
+            warehouse_path: ".data/warehouse".to_string(),
+        }
+    }
+}
+
+// Keep IcebergConfig for backward compatibility
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IcebergConfig {
     /// Type of catalog backend (postgresql, sqlite)
     pub catalog_type: String,
@@ -123,6 +144,16 @@ impl Default for IcebergConfig {
     }
 }
 
+impl From<IcebergConfig> for SchemaConfig {
+    fn from(iceberg_config: IcebergConfig) -> Self {
+        Self {
+            catalog_type: "sql".to_string(), // Map iceberg config to sql catalog type
+            catalog_uri: iceberg_config.catalog_uri,
+            warehouse_path: iceberg_config.warehouse_path,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Configuration {
     /// Database configuration (used for internal storage)
@@ -133,7 +164,9 @@ pub struct Configuration {
     pub discovery: Option<DiscoveryConfig>,
     /// WAL configuration (includes buffering policies)
     pub wal: WalConfig,
-    /// Iceberg configuration
+    /// Schema configuration (defaults to in-memory provider)
+    pub schema: SchemaConfig,
+    /// Iceberg configuration (deprecated, use schema instead)
     pub iceberg: Option<IcebergConfig>,
 }
 
@@ -145,6 +178,8 @@ impl Default for Configuration {
             // Enable discovery by default for configless operation
             discovery: Some(DiscoveryConfig::default()),
             wal: WalConfig::default(),
+            // Schema defaults to in-memory provider
+            schema: SchemaConfig::default(),
             // Iceberg is optional and not enabled by default
             iceberg: None,
         }

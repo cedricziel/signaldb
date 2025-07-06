@@ -17,6 +17,7 @@ bincode.workspace = true
 hex.workspace = true
 opentelemetry.workspace = true
 opentelemetry-proto.workspace = true
+async-trait.workspace = true
 
 figment.workspace = true
 once_cell.workspace = true
