@@ -1,5 +1,5 @@
 use opentelemetry_proto::tonic::collector::trace::v1::{
-    trace_service_server::TraceService, ExportTraceServiceRequest, ExportTraceServiceResponse,
+    ExportTraceServiceRequest, ExportTraceServiceResponse, trace_service_server::TraceService,
 };
 use tonic::{Request, Response, Status};
 
@@ -54,9 +54,9 @@ mod tests {
     use super::*;
     use crate::handler::otlp_grpc::MockTraceHandler;
     use opentelemetry_proto::tonic::{
-        common::v1::{any_value::Value, AnyValue, KeyValue},
+        common::v1::{AnyValue, KeyValue, any_value::Value},
         resource::v1::Resource,
-        trace::v1::{span::SpanKind, ResourceSpans, ScopeSpans, Span, Status as SpanStatus},
+        trace::v1::{ResourceSpans, ScopeSpans, Span, Status as SpanStatus, span::SpanKind},
     };
 
     #[tokio::test]

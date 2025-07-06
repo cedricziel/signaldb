@@ -1,10 +1,10 @@
 use std::vec;
 
 use tempo_api::tempopb::{
-    querier_server::Querier, trace_by_id_response::Status, SearchBlockRequest, SearchRequest,
-    SearchResponse, SearchTagValuesRequest, SearchTagValuesResponse, SearchTagValuesV2Response,
-    SearchTagsRequest, SearchTagsResponse, SearchTagsV2Response, SearchTagsV2Scope, TagValue,
-    TraceByIdRequest, TraceByIdResponse,
+    SearchBlockRequest, SearchRequest, SearchResponse, SearchTagValuesRequest,
+    SearchTagValuesResponse, SearchTagValuesV2Response, SearchTagsRequest, SearchTagsResponse,
+    SearchTagsV2Response, SearchTagsV2Scope, TagValue, TraceByIdRequest, TraceByIdResponse,
+    querier_server::Querier, trace_by_id_response::Status,
 };
 use tonic::Response;
 

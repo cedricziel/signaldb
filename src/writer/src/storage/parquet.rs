@@ -3,10 +3,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::parquet::{
-    arrow::{async_writer::ParquetObjectWriter, AsyncArrowWriter},
+    arrow::{AsyncArrowWriter, async_writer::ParquetObjectWriter},
     file::properties::{WriterProperties, WriterVersion},
 };
-use object_store::{path::Path, ObjectStore};
+use object_store::{ObjectStore, path::Path};
 
 /// Write a RecordBatch to object storage in Parquet format
 pub async fn write_batch_to_object_store(

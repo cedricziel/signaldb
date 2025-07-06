@@ -2,7 +2,7 @@ use acceptor::{serve_otlp_grpc, serve_otlp_http};
 use anyhow::{Context, Result};
 use common::config::Configuration;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use router::{create_flight_service, create_router, InMemoryStateImpl, RouterState};
+use router::{InMemoryStateImpl, RouterState, create_flight_service, create_router};
 use std::net::SocketAddr;
 use tokio::sync::oneshot;
 use tonic::transport::Server;

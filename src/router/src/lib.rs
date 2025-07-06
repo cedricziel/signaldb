@@ -1,4 +1,4 @@
-use axum::{http::StatusCode, response::IntoResponse, routing::get, Router};
+use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
 use common::catalog::Catalog;
 
 pub mod discovery;

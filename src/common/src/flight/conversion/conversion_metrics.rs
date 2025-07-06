@@ -10,16 +10,16 @@ use opentelemetry_proto::tonic::{
 use serde_json::{Map, Value as JsonValue};
 use std::sync::Arc;
 
-use opentelemetry_proto::tonic::metrics::v1::exemplar;
-use opentelemetry_proto::tonic::metrics::v1::exponential_histogram_data_point::Buckets;
-use opentelemetry_proto::tonic::metrics::v1::number_data_point;
 use opentelemetry_proto::tonic::metrics::v1::Exemplar;
 use opentelemetry_proto::tonic::metrics::v1::ExponentialHistogramDataPoint;
 use opentelemetry_proto::tonic::metrics::v1::HistogramDataPoint;
 use opentelemetry_proto::tonic::metrics::v1::NumberDataPoint;
 use opentelemetry_proto::tonic::metrics::v1::SummaryDataPoint;
+use opentelemetry_proto::tonic::metrics::v1::exemplar;
+use opentelemetry_proto::tonic::metrics::v1::exponential_histogram_data_point::Buckets;
+use opentelemetry_proto::tonic::metrics::v1::number_data_point;
 use opentelemetry_proto::tonic::metrics::v1::{
-    metric::Data, ExponentialHistogram, Gauge, Histogram, Metric, Sum, Summary,
+    ExponentialHistogram, Gauge, Histogram, Metric, Sum, Summary, metric::Data,
 };
 use std::collections::HashMap;
 

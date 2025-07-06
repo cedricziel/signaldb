@@ -6,10 +6,10 @@ use common::wal::{Wal, WalConfig};
 use datafusion::arrow::array::{Int32Array, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use futures::TryStreamExt;
-use object_store::{memory::InMemory, ObjectStore};
+use object_store::{ObjectStore, memory::InMemory};
 use tempfile::TempDir;
 
-use writer::{write_batch_to_object_store, WriterFlightService};
+use writer::{WriterFlightService, write_batch_to_object_store};
 
 #[tokio::test]
 async fn test_write_batch_to_object_store() -> anyhow::Result<()> {

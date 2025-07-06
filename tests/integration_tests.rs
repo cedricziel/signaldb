@@ -2,7 +2,7 @@ use acceptor::{
     handler::otlp_grpc::MockTraceHandler, services::otlp_trace_service::TraceAcceptorService,
 };
 use opentelemetry_proto::tonic::{
-    collector::trace::v1::{trace_service_server::TraceServiceServer, ExportTraceServiceRequest},
+    collector::trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
 };
 use std::time::Duration;

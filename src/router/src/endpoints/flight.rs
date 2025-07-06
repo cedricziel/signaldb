@@ -10,7 +10,7 @@ use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::{ipc, record_batch::RecordBatch};
 use futures::stream::BoxStream;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use std::collections::HashMap;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -256,7 +256,7 @@ impl<S: RouterState> FlightService for SignalDBFlightService<S> {
             _ => {
                 return Err(Status::invalid_argument(format!(
                     "Unknown query type: {query_type}"
-                )))
+                )));
             }
         };
 
@@ -292,7 +292,7 @@ impl<S: RouterState> FlightService for SignalDBFlightService<S> {
             _ => {
                 return Err(Status::invalid_argument(format!(
                     "Unknown query type: {query_type}"
-                )))
+                )));
             }
         };
 

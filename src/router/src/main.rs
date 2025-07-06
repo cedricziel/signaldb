@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use common::config::Configuration;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use router::{create_flight_service, create_router, InMemoryStateImpl, RouterState};
+use router::{InMemoryStateImpl, RouterState, create_flight_service, create_router};
 use std::net::SocketAddr;
 use tonic::transport::Server;
 

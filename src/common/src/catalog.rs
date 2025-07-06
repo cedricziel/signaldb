@@ -1,7 +1,7 @@
 use crate::flight::transport::ServiceCapability;
 use crate::service_bootstrap::ServiceType;
 use chrono::{DateTime, Utc};
-use sqlx::{query, PgPool, Row, SqlitePool};
+use sqlx::{PgPool, Row, SqlitePool, query};
 use uuid::Uuid;
 
 /// Catalog provides an interface to the catalog database (PostgreSQL or SQLite).

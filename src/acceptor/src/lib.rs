@@ -4,8 +4,8 @@ pub mod services;
 use std::{net::SocketAddr, sync::Arc, time::SystemTime};
 
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 use common::dataset::DataSet;
 use datafusion::arrow::datatypes::Schema;
@@ -20,7 +20,7 @@ use opentelemetry_proto::tonic::collector::{
 };
 use tokio::net::TcpListener;
 use tokio::{
-    fs::{create_dir_all, File},
+    fs::{File, create_dir_all},
     sync::oneshot,
 };
 // Service bootstrap and configuration

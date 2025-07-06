@@ -5,12 +5,12 @@ use arrow_flight::{
     SchemaResult, Ticket,
 };
 use bytes::Bytes;
-use common::flight::schema::{create_span_batch_schema, FlightSchemas};
+use common::flight::schema::{FlightSchemas, create_span_batch_schema};
 use common::flight::transport::InMemoryFlightTransport;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::context::SessionContext;
-use futures::stream::{self, BoxStream};
 use futures::StreamExt;
+use futures::stream::{self, BoxStream};
 use object_store::ObjectStore;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};

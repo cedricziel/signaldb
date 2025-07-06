@@ -8,13 +8,13 @@ use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::{Wal, WalConfig};
 use futures::{StreamExt, TryStreamExt};
-use object_store::{memory::InMemory, ObjectStore};
+use object_store::{ObjectStore, memory::InMemory};
 use opentelemetry_proto::tonic::{
-    collector::trace::v1::{trace_service_server::TraceServiceServer, ExportTraceServiceRequest},
+    collector::trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
 };
 use querier::flight::QuerierFlightService;
-use router::{discovery::ServiceRegistry, InMemoryStateImpl};
+use router::{InMemoryStateImpl, discovery::ServiceRegistry};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,10 +41,10 @@ async fn wait_for_service_registration(
 ) -> Result<(), String> {
     let start_time = std::time::Instant::now();
     let mut attempts = 0;
-    
+
     loop {
         attempts += 1;
-        
+
         // Check current service counts
         let trace_ingestion_services = flight_transport
             .discover_services_by_capability(ServiceCapability::TraceIngestion)
@@ -55,18 +55,17 @@ async fn wait_for_service_registration(
         let storage_services = flight_transport
             .discover_services_by_capability(ServiceCapability::Storage)
             .await;
-        
+
         let current_counts = ExpectedServices {
             trace_ingestion: trace_ingestion_services.len(),
             query_execution: query_services.len(),
             storage: storage_services.len(),
         };
-        
+
         log::debug!(
-            "Service registration check (attempt {}): Expected {:?}, Current {:?}",
-            attempts, expected, current_counts
+            "Service registration check (attempt {attempts}): Expected {expected:?}, Current {current_counts:?}"
         );
-        
+
         // Check if all expected services are registered
         if current_counts.trace_ingestion >= expected.trace_ingestion
             && current_counts.query_execution >= expected.query_execution
@@ -79,15 +78,14 @@ async fn wait_for_service_registration(
             );
             return Ok(());
         }
-        
+
         // Check for timeout
         if start_time.elapsed() >= timeout_duration {
             return Err(format!(
-                "Service registration timeout after {:?}. Expected {:?}, but got {:?}",
-                timeout_duration, expected, current_counts
+                "Service registration timeout after {timeout_duration:?}. Expected {expected:?}, but got {current_counts:?}"
             ));
         }
-        
+
         // Wait before next check
         sleep(Duration::from_millis(100)).await;
     }
@@ -199,13 +197,17 @@ async fn setup_distributed_services() -> TestServices {
     // Wait for all services to register with proper service readiness check
     let expected_services = ExpectedServices {
         trace_ingestion: 1, // acceptor
-        query_execution: 1, // querier  
+        query_execution: 1, // querier
         storage: 1,         // writer
     };
-    
-    wait_for_service_registration(&flight_transport, expected_services, Duration::from_secs(10))
-        .await
-        .expect("Failed to wait for service registration in distributed mode");
+
+    wait_for_service_registration(
+        &flight_transport,
+        expected_services,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("Failed to wait for service registration in distributed mode");
 
     TestServices {
         object_store,
@@ -295,13 +297,17 @@ async fn setup_monolithic_services() -> TestServices {
     // Monolithic mode needs the same services as distributed mode
     let expected_services = ExpectedServices {
         trace_ingestion: 1, // acceptor
-        query_execution: 1, // querier  
+        query_execution: 1, // querier
         storage: 1,         // writer
     };
-    
-    wait_for_service_registration(&flight_transport, expected_services, Duration::from_secs(15))
-        .await
-        .expect("Failed to wait for service registration in monolithic mode");
+
+    wait_for_service_registration(
+        &flight_transport,
+        expected_services,
+        Duration::from_secs(15),
+    )
+    .await
+    .expect("Failed to wait for service registration in monolithic mode");
 
     TestServices {
         object_store,
@@ -668,7 +674,9 @@ async fn validate_trace_query_data(
                 if let Some(span_name_col) = batch.column_by_name("span_name") {
                     if validate_span_name_column(span_name_col, expected_span_name)? {
                         found_matching_span_name = true;
-                        println!("    ✅ Found matching span_name '{expected_span_name}' in batch {batch_idx}");
+                        println!(
+                            "    ✅ Found matching span_name '{expected_span_name}' in batch {batch_idx}"
+                        );
                     }
                 }
             }

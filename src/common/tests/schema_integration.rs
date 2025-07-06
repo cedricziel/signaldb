@@ -88,8 +88,10 @@ async fn test_unsupported_catalog_type() {
 
     let result = create_catalog(config).await;
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Unsupported catalog type"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Unsupported catalog type")
+    );
 }

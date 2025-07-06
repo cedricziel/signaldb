@@ -6,10 +6,10 @@ use common::config::Configuration;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::{Wal, WalConfig};
-use futures::{stream, StreamExt, TryStreamExt};
-use object_store::{memory::InMemory, ObjectStore};
+use futures::{StreamExt, TryStreamExt, stream};
+use object_store::{ObjectStore, memory::InMemory};
 use opentelemetry_proto::tonic::{
-    collector::trace::v1::{trace_service_server::TraceServiceServer, ExportTraceServiceRequest},
+    collector::trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
 };
 use querier::flight::QuerierFlightService;
@@ -1163,7 +1163,9 @@ async fn test_grpc_service_layer() {
         if !unprocessed.is_empty() {
             println!("⚠️  Data stuck in acceptor WAL - issue in acceptor gRPC service processing");
         } else {
-            println!("⚠️  Data processed from acceptor WAL but didn't reach writer - Flight communication issue");
+            println!(
+                "⚠️  Data processed from acceptor WAL but didn't reach writer - Flight communication issue"
+            );
         }
 
         panic!("gRPC service layer test failed");

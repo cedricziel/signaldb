@@ -1,5 +1,5 @@
 use opentelemetry_proto::tonic::{
-    common::v1::{any_value::Value, AnyValue, ArrayValue, KeyValue, KeyValueList},
+    common::v1::{AnyValue, ArrayValue, KeyValue, KeyValueList, any_value::Value},
     resource::v1::Resource,
 };
 use serde_json::{Map, Value as JsonValue};
