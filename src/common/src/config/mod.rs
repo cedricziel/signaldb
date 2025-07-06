@@ -108,9 +108,6 @@ pub struct SchemaConfig {
     pub catalog_type: String,
     /// URI for the catalog backend (e.g., sqlite://.data/catalog.db)
     pub catalog_uri: String,
-    /// Storage adapter name to use (references StorageConfig.adapters)
-    /// If not specified, uses the default storage adapter
-    pub storage_adapter: Option<String>,
 }
 
 impl Default for SchemaConfig {
@@ -118,7 +115,6 @@ impl Default for SchemaConfig {
         Self {
             catalog_type: "sql".to_string(),
             catalog_uri: "sqlite::memory:".to_string(),
-            storage_adapter: None, // Uses default storage
         }
     }
 }
@@ -149,7 +145,6 @@ impl From<IcebergConfig> for SchemaConfig {
         Self {
             catalog_type: iceberg_config.catalog_type, // Preserve original catalog_type
             catalog_uri: iceberg_config.catalog_uri,
-            storage_adapter: None, // Uses default storage
         }
     }
 }
@@ -322,7 +317,6 @@ mod tests {
 
         assert_eq!(schema_config.catalog_type, "memory");
         assert_eq!(schema_config.catalog_uri, "memory://");
-        assert_eq!(schema_config.storage_adapter, None);
 
         // Test with different catalog_type
         let iceberg_config_sql = IcebergConfig {
@@ -338,6 +332,5 @@ mod tests {
             schema_config_sql.catalog_uri,
             "postgres://localhost:5432/catalog"
         );
-        assert_eq!(schema_config_sql.storage_adapter, None);
     }
 }

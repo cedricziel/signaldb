@@ -8,7 +8,6 @@ async fn test_iceberg_sql_catalog_basic_operations() {
     let config = SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: "sqlite::memory:".to_string(),
-        storage_adapter: None,
     };
 
     // Create catalog
