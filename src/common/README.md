@@ -235,7 +235,7 @@ dsn = "postgresql://user:pass@localhost/signaldb"
 # dsn = "sqlite://.data/signaldb.db"
 
 [storage]
-dsn = "file://.data/storage"
+dsn = "file:///.data/storage"
 # dsn = "memory://"                    # In-memory storage for testing
 # dsn = "s3://my-bucket/signaldb/"     # S3 storage (future)
 

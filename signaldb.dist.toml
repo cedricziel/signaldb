@@ -8,7 +8,7 @@ dsn = "sqlite://.data/signaldb.db"
 
 [storage]
 # Object storage for data files (Parquet, etc.)
-dsn = "file://.data/storage"
+dsn = "file:///.data/storage"
 # dsn = "memory://"                    # In-memory storage for testing
 # dsn = "s3://my-bucket/signaldb/"     # S3 storage (future)
 
