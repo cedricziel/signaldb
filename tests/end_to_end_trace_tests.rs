@@ -32,7 +32,7 @@ struct TestServices {
     pub writer_addr: std::net::SocketAddr,
     pub querier_addr: std::net::SocketAddr,
     pub config: Configuration,
-    pub temp_dir: TempDir,
+    pub _temp_dir: TempDir,
 }
 
 /// Set up test infrastructure with shared configuration
@@ -137,7 +137,7 @@ async fn setup_distributed_services() -> TestServices {
         writer_addr,
         querier_addr,
         config,
-        temp_dir,
+        _temp_dir: temp_dir,
     }
 }
 
@@ -225,7 +225,7 @@ async fn setup_monolithic_services() -> TestServices {
         writer_addr,
         querier_addr,
         config,
-        temp_dir,
+        _temp_dir: temp_dir,
     }
 }
 
@@ -465,7 +465,7 @@ async fn setup_performance_services() -> TestServices {
         writer_addr,
         querier_addr: "127.0.0.1:0".parse().unwrap(), // Not used in performance test
         config,
-        temp_dir,
+        _temp_dir: temp_dir,
     }
 }
 
