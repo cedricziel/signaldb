@@ -204,6 +204,7 @@ impl Configuration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use figment::Jail;
     use std::time::Duration;
 
     #[test]
@@ -238,69 +239,59 @@ mod tests {
     #[test]
     fn test_env_var_override() {
         // Test environment variable parsing with single underscore separator
-        unsafe {
-            std::env::set_var("SIGNALDB_DATABASE_DSN", "sqlite://./test.db");
-            std::env::set_var("SIGNALDB_DISCOVERY_DSN", "sqlite://./discovery.db");
-        }
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB_DATABASE_DSN", "sqlite://./test.db");
+            jail.set_env("SIGNALDB_DISCOVERY_DSN", "sqlite://./discovery.db");
 
-        let config = Figment::from(Serialized::defaults(Configuration::default()))
-            .merge(Env::prefixed("SIGNALDB_").split("_"))
-            .extract::<Configuration>()
-            .unwrap();
+            let config = Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                .extract::<Configuration>()
+                .unwrap();
 
-        assert_eq!(config.database.dsn, "sqlite://./test.db");
+            assert_eq!(config.database.dsn, "sqlite://./test.db");
 
-        if let Some(discovery) = config.discovery {
-            assert_eq!(discovery.dsn, "sqlite://./discovery.db");
-        }
+            if let Some(discovery) = config.discovery {
+                assert_eq!(discovery.dsn, "sqlite://./discovery.db");
+            }
 
-        // Clean up
-        unsafe {
-            std::env::remove_var("SIGNALDB_DATABASE_DSN");
-            std::env::remove_var("SIGNALDB_DISCOVERY_DSN");
-        }
+            Ok(())
+        });
     }
 
     #[test]
     fn test_env_var_single_underscore_format() {
         // Test that single underscore format works for nested configuration
         // This is now the standard format for environment variables
-        unsafe {
-            std::env::set_var("SIGNALDB_DATABASE_DSN", "sqlite://./test.db");
-        }
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB_DATABASE_DSN", "sqlite://./test.db");
 
-        let config = Figment::from(Serialized::defaults(Configuration::default()))
-            .merge(Env::prefixed("SIGNALDB_").split("_"))
-            .extract::<Configuration>()
-            .unwrap();
+            let config = Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                .extract::<Configuration>()
+                .unwrap();
 
-        // Should work with single underscore format
-        assert_eq!(config.database.dsn, "sqlite://./test.db");
+            // Should work with single underscore format
+            assert_eq!(config.database.dsn, "sqlite://./test.db");
 
-        // Clean up
-        unsafe {
-            std::env::remove_var("SIGNALDB_DATABASE_DSN");
-        }
+            Ok(())
+        });
     }
 
     #[test]
     fn test_storage_config_env_vars() {
         // Test storage DSN configuration
-        unsafe {
-            std::env::set_var("SIGNALDB_STORAGE_DSN", "file:///tmp/test");
-        }
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB_STORAGE_DSN", "file:///tmp/test");
 
-        let config = Figment::from(Serialized::defaults(Configuration::default()))
-            .merge(Env::prefixed("SIGNALDB_").split("_"))
-            .extract::<Configuration>()
-            .unwrap();
+            let config = Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                .extract::<Configuration>()
+                .unwrap();
 
-        assert_eq!(config.storage.dsn, "file:///tmp/test");
+            assert_eq!(config.storage.dsn, "file:///tmp/test");
 
-        // Clean up
-        unsafe {
-            std::env::remove_var("SIGNALDB_STORAGE_DSN");
-        }
+            Ok(())
+        });
     }
 
     #[test]

@@ -42,6 +42,7 @@ url.workspace = true
 testcontainers-modules.workspace = true
 testcontainers = { version = "0.24.0", features = ["blocking"] }
 tempfile.workspace = true
+figment = { workspace = true, features = ["test"] }
 
 [package.metadata.cargo-machete]
 ignored = ["humantime-serde", "testcontainers"]
