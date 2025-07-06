@@ -4,8 +4,6 @@ use common::config::Configuration;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::{Wal, WalConfig};
-use object_store::local::LocalFileSystem;
-use object_store::ObjectStore;
 use std::sync::Arc;
 use tokio::signal;
 use tonic::transport::Server;
@@ -53,12 +51,9 @@ async fn main() -> anyhow::Result<()> {
 
     log::info!("Writer Flight service registered with ID: {service_id}");
 
-    // Initialize object store (local filesystem)
-    let prefix = config.default_storage_prefix();
-    let object_store: Arc<dyn ObjectStore> = Arc::new(
-        LocalFileSystem::new_with_prefix(&prefix)
-            .context("Failed to initialize local object store")?,
-    );
+    // Initialize object store from configuration
+    let object_store = common::storage::create_object_store(&config.storage)
+        .context("Failed to initialize object store")?;
 
     // Initialize WAL for durability
     let wal_config = WalConfig {

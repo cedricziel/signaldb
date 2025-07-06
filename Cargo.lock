@@ -911,6 +911,7 @@ dependencies = [
  "iceberg",
  "iceberg-catalog-memory",
  "log",
+ "object_store",
  "once_cell",
  "opentelemetry",
  "opentelemetry-proto",
@@ -923,6 +924,7 @@ dependencies = [
  "testcontainers-modules",
  "tokio",
  "tonic",
+ "url",
  "uuid",
 ]
 

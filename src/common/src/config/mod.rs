@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::time::Duration;
 use std::{error::Error, fmt};
 
@@ -13,18 +12,18 @@ use once_cell::sync::OnceCell;
 
 pub static CONFIG: OnceCell<Configuration> = OnceCell::new();
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StorageConfig {
-    default: String,
-    adapters: HashMap<String, ObjectStorageConfig>,
+    /// DSN for the storage backend (e.g., file:///path/to/storage, memory://, s3://bucket/prefix)
+    pub dsn: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub struct ObjectStorageConfig {
-    pub url: String,
-    pub prefix: String,
-    #[serde(rename = "type")]
-    pub storage_type: String,
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            dsn: "memory://".to_string(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -109,8 +108,9 @@ pub struct SchemaConfig {
     pub catalog_type: String,
     /// URI for the catalog backend (e.g., sqlite://.data/catalog.db)
     pub catalog_uri: String,
-    /// Path to the warehouse directory for storing table data
-    pub warehouse_path: String,
+    /// Storage adapter name to use (references StorageConfig.adapters)
+    /// If not specified, uses the default storage adapter
+    pub storage_adapter: Option<String>,
 }
 
 impl Default for SchemaConfig {
@@ -118,7 +118,7 @@ impl Default for SchemaConfig {
         Self {
             catalog_type: "sql".to_string(),
             catalog_uri: "sqlite::memory:".to_string(),
-            warehouse_path: ".data/warehouse".to_string(),
+            storage_adapter: None, // Uses default storage
         }
     }
 }
@@ -149,7 +149,7 @@ impl From<IcebergConfig> for SchemaConfig {
         Self {
             catalog_type: "sql".to_string(), // Map iceberg config to sql catalog type
             catalog_uri: iceberg_config.catalog_uri,
-            warehouse_path: iceberg_config.warehouse_path,
+            storage_adapter: None, // Uses default storage
         }
     }
 }
@@ -195,24 +195,6 @@ impl fmt::Display for Configuration {
 impl Error for Configuration {}
 
 impl Configuration {
-    pub fn default_storage_url(&self) -> String {
-        let default_storage = self.storage.default.clone();
-        self.storage
-            .adapters
-            .get(&default_storage)
-            .map(|config| config.url.clone())
-            .unwrap_or_else(|| String::from("file://.data/ds"))
-    }
-
-    pub fn default_storage_prefix(&self) -> String {
-        let default_storage = self.storage.default.clone();
-        self.storage
-            .adapters
-            .get(&default_storage)
-            .map(|config| config.prefix.clone())
-            .unwrap_or_else(|| String::from(".data"))
-    }
-
     pub fn load() -> Result<Self, Box<figment::Error>> {
         let config = Figment::from(Serialized::defaults(Configuration::default()))
             .merge(Toml::file("signaldb.toml"))
@@ -300,31 +282,18 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_storage_config_env_vars() {
-        // Test deeply nested storage configuration
-        std::env::set_var("SIGNALDB__STORAGE__DEFAULT", "local");
-        std::env::set_var(
-            "SIGNALDB__STORAGE__ADAPTERS__LOCAL__URL",
-            "file:///tmp/test",
-        );
-        std::env::set_var("SIGNALDB__STORAGE__ADAPTERS__LOCAL__PREFIX", "test-prefix");
-        std::env::set_var("SIGNALDB__STORAGE__ADAPTERS__LOCAL__TYPE", "filesystem");
+    fn test_storage_config_env_vars() {
+        // Test storage DSN configuration
+        std::env::set_var("SIGNALDB__STORAGE__DSN", "file:///tmp/test");
 
         let config = Figment::from(Serialized::defaults(Configuration::default()))
             .merge(Env::prefixed("SIGNALDB__").split("__"))
             .extract::<Configuration>()
             .unwrap();
 
-        assert_eq!(config.storage.default, "local");
-        let local_adapter = config.storage.adapters.get("local").unwrap();
-        assert_eq!(local_adapter.url, "file:///tmp/test");
-        assert_eq!(local_adapter.prefix, "test-prefix");
-        assert_eq!(local_adapter.storage_type, "filesystem");
+        assert_eq!(config.storage.dsn, "file:///tmp/test");
 
         // Clean up
-        std::env::remove_var("SIGNALDB__STORAGE__DEFAULT");
-        std::env::remove_var("SIGNALDB__STORAGE__ADAPTERS__LOCAL__URL");
-        std::env::remove_var("SIGNALDB__STORAGE__ADAPTERS__LOCAL__PREFIX");
-        std::env::remove_var("SIGNALDB__STORAGE__ADAPTERS__LOCAL__TYPE");
+        std::env::remove_var("SIGNALDB__STORAGE__DSN");
     }
 }

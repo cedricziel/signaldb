@@ -2,17 +2,13 @@ use common::config::SchemaConfig;
 use common::schema::{create_catalog, create_default_catalog};
 use iceberg::NamespaceIdent;
 use std::collections::HashMap;
-use tempfile::TempDir;
 
 #[tokio::test]
 async fn test_memory_catalog() {
-    let temp_dir = TempDir::new().unwrap();
-    let warehouse_path = temp_dir.path().join("warehouse");
-
     let config = SchemaConfig {
         catalog_type: "memory".to_string(),
         catalog_uri: "memory://".to_string(),
-        warehouse_path: warehouse_path.to_string_lossy().to_string(),
+        storage_adapter: None,
     };
 
     let catalog = create_catalog(config).await.unwrap();
@@ -36,13 +32,10 @@ async fn test_memory_catalog() {
 
 #[tokio::test]
 async fn test_sql_catalog() {
-    let temp_dir = TempDir::new().unwrap();
-    let warehouse_path = temp_dir.path().join("warehouse");
-
     let config = SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: "sqlite::memory:".to_string(),
-        warehouse_path: warehouse_path.to_string_lossy().to_string(),
+        storage_adapter: None,
     };
 
     let catalog = create_catalog(config).await.unwrap();
@@ -90,7 +83,7 @@ async fn test_unsupported_catalog_type() {
     let config = SchemaConfig {
         catalog_type: "unsupported".to_string(),
         catalog_uri: "unsupported://".to_string(),
-        warehouse_path: ".data/warehouse".to_string(),
+        storage_adapter: None,
     };
 
     let result = create_catalog(config).await;

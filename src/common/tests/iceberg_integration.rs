@@ -2,20 +2,13 @@ use common::config::SchemaConfig;
 use common::schema::create_catalog;
 use iceberg::NamespaceIdent;
 use std::collections::HashMap;
-use tempfile::TempDir;
 
 #[tokio::test]
 async fn test_iceberg_sql_catalog_basic_operations() {
-    let temp_dir = TempDir::new().unwrap();
-    let warehouse_path = temp_dir.path().join("warehouse");
-
-    // Create warehouse directory
-    std::fs::create_dir_all(&warehouse_path).unwrap();
-
     let config = SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: "sqlite::memory:".to_string(),
-        warehouse_path: warehouse_path.to_string_lossy().to_string(),
+        storage_adapter: None,
     };
 
     // Create catalog

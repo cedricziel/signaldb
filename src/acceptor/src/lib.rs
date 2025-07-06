@@ -48,9 +48,9 @@ pub async fn get_parquet_writer(
         .set_writer_version(WriterVersion::PARQUET_2_0)
         .build();
 
-    // Get storage path from configuration instead of hardcoded path
-    let storage_url = config.default_storage_url();
-    let base_path = if let Some(path) = storage_url.strip_prefix("file://") {
+    // Get storage path from configuration DSN
+    let storage_dsn = &config.storage.dsn;
+    let base_path = if let Some(path) = storage_dsn.strip_prefix("file://") {
         path.to_string()
     } else {
         // Fallback to .data/ds if not a file:// URL
