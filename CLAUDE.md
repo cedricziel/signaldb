@@ -64,7 +64,7 @@ docker compose up          # Start PostgreSQL, Grafana, and supporting services
 
 Configuration precedence: defaults → TOML file (`signaldb.toml`) → environment variables (`SIGNALDB_*`)
 
-Key sections: `[database]`, `[storage]`, `[queue]`, `[discovery]`
+Key sections: `[database]`, `[storage]`, `[queue]`, `[discovery]`, `[iceberg]` (optional)
 
 ## Key Development Patterns
 
@@ -93,6 +93,22 @@ Services register themselves with discovery backends on startup. Look at existin
 ### Storage Integration
 
 Writers persist data to Parquet files via object_store abstraction. Storage adapters support filesystem, S3, Azure, GCP backends.
+
+### Apache Iceberg Integration (Phase 3)
+
+**Configuration**:
+```toml
+[iceberg]
+catalog_type = "memory"  # Currently supported: memory (foundation for future SQL backends)
+catalog_uri = "memory://"
+warehouse_path = "/tmp/signaldb/warehouse"
+```
+
+**Catalog Module**: Located in `src/common/src/iceberg/catalog.rs`
+- Memory catalog backend for basic testing and development
+- Foundation for future SQL catalog backends (PostgreSQL, SQLite)
+- Integrates with Iceberg ecosystem and DataFusion
+- Enables future table format migration capabilities
 
 ## Testing
 

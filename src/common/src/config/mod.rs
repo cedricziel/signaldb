@@ -104,6 +104,26 @@ impl Default for WalConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IcebergConfig {
+    /// Type of catalog backend (postgresql, sqlite)
+    pub catalog_type: String,
+    /// URI for the catalog backend (e.g., postgres://..., sqlite://...)
+    pub catalog_uri: String,
+    /// Path to the warehouse directory for storing table data
+    pub warehouse_path: String,
+}
+
+impl Default for IcebergConfig {
+    fn default() -> Self {
+        Self {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            warehouse_path: ".data/warehouse".to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Configuration {
     /// Database configuration (used for internal storage)
     pub database: DatabaseConfig,
@@ -113,6 +133,8 @@ pub struct Configuration {
     pub discovery: Option<DiscoveryConfig>,
     /// WAL configuration (includes buffering policies)
     pub wal: WalConfig,
+    /// Iceberg configuration
+    pub iceberg: Option<IcebergConfig>,
 }
 
 impl Default for Configuration {
@@ -123,6 +145,8 @@ impl Default for Configuration {
             // Enable discovery by default for configless operation
             discovery: Some(DiscoveryConfig::default()),
             wal: WalConfig::default(),
+            // Iceberg is optional and not enabled by default
+            iceberg: None,
         }
     }
 }
