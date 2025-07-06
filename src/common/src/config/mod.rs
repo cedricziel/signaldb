@@ -147,7 +147,7 @@ impl Default for IcebergConfig {
 impl From<IcebergConfig> for SchemaConfig {
     fn from(iceberg_config: IcebergConfig) -> Self {
         Self {
-            catalog_type: "sql".to_string(), // Map iceberg config to sql catalog type
+            catalog_type: iceberg_config.catalog_type, // Preserve original catalog_type
             catalog_uri: iceberg_config.catalog_uri,
             storage_adapter: None, // Uses default storage
         }
@@ -307,5 +307,37 @@ mod tests {
         unsafe {
             std::env::remove_var("SIGNALDB__STORAGE__DSN");
         }
+    }
+
+    #[test]
+    fn test_iceberg_config_to_schema_config_conversion() {
+        // Test that catalog_type is preserved in From conversion
+        let iceberg_config = IcebergConfig {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            warehouse_path: "/tmp/warehouse".to_string(),
+        };
+
+        let schema_config: SchemaConfig = iceberg_config.into();
+
+        assert_eq!(schema_config.catalog_type, "memory");
+        assert_eq!(schema_config.catalog_uri, "memory://");
+        assert_eq!(schema_config.storage_adapter, None);
+
+        // Test with different catalog_type
+        let iceberg_config_sql = IcebergConfig {
+            catalog_type: "postgresql".to_string(),
+            catalog_uri: "postgres://localhost:5432/catalog".to_string(),
+            warehouse_path: "/data/warehouse".to_string(),
+        };
+
+        let schema_config_sql: SchemaConfig = iceberg_config_sql.into();
+
+        assert_eq!(schema_config_sql.catalog_type, "postgresql");
+        assert_eq!(
+            schema_config_sql.catalog_uri,
+            "postgres://localhost:5432/catalog"
+        );
+        assert_eq!(schema_config_sql.storage_adapter, None);
     }
 }
