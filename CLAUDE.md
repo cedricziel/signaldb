@@ -68,7 +68,7 @@ docker compose up          # Start PostgreSQL, Grafana, and supporting services
 
 ### Configuration
 
-Configuration precedence: defaults → TOML file (`signaldb.toml`) → environment variables (`SIGNALDB__*`)
+Configuration precedence: defaults → TOML file (`signaldb.toml`) → environment variables (`SIGNALDB_*`)
 
 Copy `signaldb.dist.toml` to `signaldb.toml` and adjust for your environment.
 

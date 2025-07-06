@@ -34,6 +34,6 @@ flush_interval = "30s"
 max_buffer_size_bytes = 134217728     # 128MB
 
 # Environment variable examples:
-# SIGNALDB__DATABASE__DSN=postgres://user:pass@localhost/signaldb
-# SIGNALDB__STORAGE__DSN=file:///data/signaldb
-# SIGNALDB__SCHEMA__CATALOG_URI=sqlite:///data/catalog.db
+# SIGNALDB_DATABASE_DSN=postgres://user:pass@localhost/signaldb
+# SIGNALDB_STORAGE_DSN=file:///data/signaldb
+# SIGNALDB_SCHEMA_CATALOG_URI=sqlite:///data/catalog.db

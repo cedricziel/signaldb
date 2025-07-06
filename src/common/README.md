@@ -19,7 +19,7 @@ The common library is organized into several key modules:
 ### Configuration (`config/`)
 - **Configuration**: Centralized config loading from TOML files and environment variables
 - **DSN-based Configuration**: Unified DSN format for database, storage, and schema configuration
-- **Precedence**: Environment variables (`SIGNALDB__*`) override TOML, which overrides defaults
+- **Precedence**: Environment variables (`SIGNALDB_*`) override TOML, which overrides defaults
 - **Validation**: Schema validation and default value handling
 
 ### Storage (`storage/`)
@@ -260,11 +260,11 @@ max_buffer_size_bytes = 134217728     # 128MB
 
 ### Environment Variables
 ```bash
-# Override any configuration value using double underscore notation
-SIGNALDB__DATABASE__DSN=postgresql://user:pass@localhost/signaldb
-SIGNALDB__STORAGE__DSN=s3://bucket/prefix
-SIGNALDB__SCHEMA__CATALOG_URI=sqlite:///data/catalog.db
-SIGNALDB__DISCOVERY__DSN=postgres://user:pass@localhost/discovery
+# Override any configuration value using single underscore notation
+SIGNALDB_DATABASE_DSN=postgresql://user:pass@localhost/signaldb
+SIGNALDB_STORAGE_DSN=s3://bucket/prefix
+SIGNALDB_SCHEMA_CATALOG_URI=sqlite:///data/catalog.db
+SIGNALDB_DISCOVERY_DSN=postgres://user:pass@localhost/discovery
 ```
 
 ### Service-Specific Configuration

@@ -193,7 +193,7 @@ impl Configuration {
     pub fn load() -> Result<Self, Box<figment::Error>> {
         let config = Figment::from(Serialized::defaults(Configuration::default()))
             .merge(Toml::file("signaldb.toml"))
-            .merge(Env::prefixed("SIGNALDB__").split("__"))
+            .merge(Env::prefixed("SIGNALDB_").split("_"))
             .extract()
             .map_err(Box::new)?;
 
@@ -237,14 +237,14 @@ mod tests {
 
     #[test]
     fn test_env_var_override() {
-        // Test environment variable parsing with double underscore separator
+        // Test environment variable parsing with single underscore separator
         unsafe {
-            std::env::set_var("SIGNALDB__DATABASE__DSN", "sqlite://./test.db");
-            std::env::set_var("SIGNALDB__DISCOVERY__DSN", "sqlite://./discovery.db");
+            std::env::set_var("SIGNALDB_DATABASE_DSN", "sqlite://./test.db");
+            std::env::set_var("SIGNALDB_DISCOVERY_DSN", "sqlite://./discovery.db");
         }
 
         let config = Figment::from(Serialized::defaults(Configuration::default()))
-            .merge(Env::prefixed("SIGNALDB__").split("__"))
+            .merge(Env::prefixed("SIGNALDB_").split("_"))
             .extract::<Configuration>()
             .unwrap();
 
@@ -256,31 +256,30 @@ mod tests {
 
         // Clean up
         unsafe {
-            std::env::remove_var("SIGNALDB__DATABASE__DSN");
-            std::env::remove_var("SIGNALDB__DISCOVERY__DSN");
+            std::env::remove_var("SIGNALDB_DATABASE_DSN");
+            std::env::remove_var("SIGNALDB_DISCOVERY_DSN");
         }
     }
 
     #[test]
     fn test_env_var_single_underscore_format() {
-        // Test that single underscore format works when used as a flat key
-        // This is actually valid since "DATABASE_DSN" could be interpreted as a top-level key
+        // Test that single underscore format works for nested configuration
+        // This is now the standard format for environment variables
         unsafe {
-            std::env::set_var("SIGNALDB__DATABASE_DSN", "sqlite://./test.db");
+            std::env::set_var("SIGNALDB_DATABASE_DSN", "sqlite://./test.db");
         }
 
         let config = Figment::from(Serialized::defaults(Configuration::default()))
-            .merge(Env::prefixed("SIGNALDB__").split("__"))
+            .merge(Env::prefixed("SIGNALDB_").split("_"))
             .extract::<Configuration>()
             .unwrap();
 
-        // This should work because "DATABASE_DSN" is treated as a single key
-        // and we're looking for nested "database.dsn" but figment is flexible
+        // Should work with single underscore format
         assert_eq!(config.database.dsn, "sqlite://./test.db");
 
         // Clean up
         unsafe {
-            std::env::remove_var("SIGNALDB__DATABASE_DSN");
+            std::env::remove_var("SIGNALDB_DATABASE_DSN");
         }
     }
 
@@ -288,11 +287,11 @@ mod tests {
     fn test_storage_config_env_vars() {
         // Test storage DSN configuration
         unsafe {
-            std::env::set_var("SIGNALDB__STORAGE__DSN", "file:///tmp/test");
+            std::env::set_var("SIGNALDB_STORAGE_DSN", "file:///tmp/test");
         }
 
         let config = Figment::from(Serialized::defaults(Configuration::default()))
-            .merge(Env::prefixed("SIGNALDB__").split("__"))
+            .merge(Env::prefixed("SIGNALDB_").split("_"))
             .extract::<Configuration>()
             .unwrap();
 
@@ -300,7 +299,7 @@ mod tests {
 
         // Clean up
         unsafe {
-            std::env::remove_var("SIGNALDB__STORAGE__DSN");
+            std::env::remove_var("SIGNALDB_STORAGE_DSN");
         }
     }
 
