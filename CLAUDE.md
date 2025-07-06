@@ -8,6 +8,12 @@ SignalDB is a distributed observability signal database built on the FDAP stack 
 
 ## Development Commands
 
+### Configuration Setup
+```bash
+cp signaldb.dist.toml signaldb.toml  # Copy distribution config
+# Edit signaldb.toml for your environment
+```
+
 ### Build and Test
 ```bash
 cargo build                # Build all workspace members
@@ -62,9 +68,11 @@ docker compose up          # Start PostgreSQL, Grafana, and supporting services
 
 ### Configuration
 
-Configuration precedence: defaults → TOML file (`signaldb.toml`) → environment variables (`SIGNALDB_*`)
+Configuration precedence: defaults → TOML file (`signaldb.toml`) → environment variables (`SIGNALDB__*`)
 
-Key sections: `[database]`, `[storage]`, `[queue]`, `[discovery]`, `[iceberg]` (optional)
+Copy `signaldb.dist.toml` to `signaldb.toml` and adjust for your environment.
+
+Key sections: `[database]`, `[storage]`, `[discovery]`, `[wal]`, `[schema]`
 
 ## Key Development Patterns
 
@@ -92,23 +100,38 @@ Services register themselves with discovery backends on startup. Look at existin
 
 ### Storage Integration
 
-Writers persist data to Parquet files via object_store abstraction. Storage adapters support filesystem, S3, Azure, GCP backends.
+SignalDB uses a pluggable storage system with DSN-based configuration:
 
-### Apache Iceberg Integration (Phase 3)
-
-**Configuration**:
+**Storage Configuration**:
 ```toml
-[iceberg]
-catalog_type = "memory"  # Currently supported: memory (foundation for future SQL backends)
-catalog_uri = "memory://"
-warehouse_path = "/tmp/signaldb/warehouse"
+[storage]
+dsn = "file:///path/to/data"  # Local filesystem storage
+# dsn = "memory://"           # In-memory storage (for testing)
 ```
 
-**Catalog Module**: Located in `src/common/src/iceberg/catalog.rs`
-- Memory catalog backend for basic testing and development
-- Foundation for future SQL catalog backends (PostgreSQL, SQLite)
-- Integrates with Iceberg ecosystem and DataFusion
-- Enables future table format migration capabilities
+Supported storage backends:
+- **Local filesystem**: `file:///path/to/data`
+- **In-memory**: `memory://` (for testing and development)
+- **Future**: S3, Azure Blob, GCP Cloud Storage via DSN format
+
+### Schema and Catalog Integration
+
+SignalDB uses Apache Iceberg for table format and catalog management:
+
+**Schema Configuration**:
+```toml
+[schema]
+catalog_type = "sql"                    # sql (recommended) or memory
+catalog_uri = "sqlite::memory:"         # In-memory SQLite catalog
+# catalog_uri = "sqlite:///path/to/catalog.db"  # Persistent SQLite catalog
+```
+
+**Schema Module**: Located in `src/common/src/schema/`
+- Direct integration with Iceberg's native Catalog trait
+- SQL catalog backend with SQLite (in-memory or persistent)
+- Memory catalog backend for testing and development  
+- Foundation for future PostgreSQL catalog backends
+- Object store integration for table data storage
 
 ## Testing
 

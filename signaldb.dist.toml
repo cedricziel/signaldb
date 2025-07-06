@@ -1,15 +1,39 @@
+# SignalDB Distribution Configuration
+# Copy to signaldb.toml and adjust for your environment
+
 [database]
+# Database for internal metadata storage
 dsn = "sqlite://.data/signaldb.db"
+# dsn = "postgres://user:password@localhost/signaldb"
 
 [storage]
-default = "local"
+# Object storage for data files (Parquet, etc.)
+dsn = "file://.data/storage"
+# dsn = "memory://"                    # In-memory storage for testing
+# dsn = "s3://my-bucket/signaldb/"     # S3 storage (future)
 
-[storage.adapters.local]
-url = "file://.data/ds"
+[schema]
+# Iceberg catalog configuration for table metadata
+catalog_type = "sql"                   # sql (recommended) or memory
+catalog_uri = "sqlite::memory:"        # In-memory SQLite catalog
+# catalog_uri = "sqlite://.data/catalog.db"  # Persistent SQLite catalog
 
 [discovery]
-# Service discovery using catalog database
-dsn = "sqlite://.data/signaldb.db"
+# Service discovery configuration
+dsn = "sqlite::memory:"               # In-memory service registry
 heartbeat_interval = "30s"
 poll_interval = "60s"
 ttl = "300s"
+
+[wal]
+# Write-Ahead Log configuration
+wal_dir = ".data/wal"
+max_segment_size = 67108864           # 64MB
+max_buffer_entries = 1000
+flush_interval = "30s"
+max_buffer_size_bytes = 134217728     # 128MB
+
+# Environment variable examples:
+# SIGNALDB__DATABASE__DSN=postgres://user:pass@localhost/signaldb
+# SIGNALDB__STORAGE__DSN=file:///data/signaldb
+# SIGNALDB__SCHEMA__CATALOG_URI=sqlite:///data/catalog.db
