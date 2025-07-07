@@ -6495,6 +6495,7 @@ dependencies = [
  "common",
  "datafusion",
  "futures",
+ "iceberg",
  "log",
  "object_store",
  "tempfile",

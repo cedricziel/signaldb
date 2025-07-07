@@ -12,6 +12,9 @@ datafusion.workspace = true
 arrow-flight.workspace = true
 object_store.workspace = true
 
+# Iceberg support
+iceberg.workspace = true
+
 tokio.workspace = true
 futures.workspace = true
 
