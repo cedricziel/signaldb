@@ -247,3 +247,142 @@ pub async fn list_available_schemas() -> Json<serde_json::Value> {
         "schemas": schemas
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::InMemoryStateImpl;
+    use common::catalog::Catalog;
+    use common::config::{
+        Configuration, DefaultSchemas, SchemaConfig, TenantSchemaConfig, TenantsConfig,
+    };
+    use common::tenant_api::{CreateTenantRequest, TenantApi, UpdateTenantRequest};
+    use std::collections::HashMap;
+
+    async fn create_test_state() -> InMemoryStateImpl {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        // Create configuration with test tenant
+        let tenant_config = TenantSchemaConfig {
+            schema: Some(SchemaConfig {
+                catalog_type: "memory".to_string(),
+                catalog_uri: "memory://test".to_string(),
+                default_schemas: DefaultSchemas::default(),
+            }),
+            ..TenantSchemaConfig::default()
+        };
+
+        let mut tenants = HashMap::new();
+        tenants.insert("test-tenant".to_string(), tenant_config);
+
+        let config = Configuration {
+            tenants: TenantsConfig {
+                default_tenant: "test-tenant".to_string(),
+                tenants,
+            },
+            ..Configuration::default()
+        };
+
+        InMemoryStateImpl::new(catalog, config)
+    }
+
+    #[tokio::test]
+    async fn test_tenant_api_integration() {
+        let state = create_test_state().await;
+        let api = TenantApi::new(state.config().clone());
+
+        // Test listing tenants
+        let tenants = api.list_tenants();
+        assert_eq!(tenants.default_tenant, "test-tenant");
+        assert_eq!(tenants.tenants.len(), 1);
+        assert_eq!(tenants.tenants[0].tenant_id, "test-tenant");
+
+        // Test getting existing tenant
+        let tenant_info = api.get_tenant("test-tenant").unwrap();
+        assert_eq!(tenant_info.tenant_id, "test-tenant");
+        assert!(tenant_info.enabled);
+        assert!(tenant_info.schema.is_some());
+
+        // Test getting non-existent tenant
+        assert!(api.get_tenant("unknown-tenant").is_err());
+
+        // Test validation for create request
+        let valid_request = CreateTenantRequest {
+            tenant_id: "new-tenant".to_string(),
+            schema: None,
+            custom_schemas: None,
+            enabled: Some(true),
+        };
+        assert!(api.validate_create_tenant_request(&valid_request).is_ok());
+
+        // Test validation failure for empty tenant ID
+        let invalid_request = CreateTenantRequest {
+            tenant_id: "".to_string(),
+            schema: None,
+            custom_schemas: None,
+            enabled: Some(true),
+        };
+        assert!(
+            api.validate_create_tenant_request(&invalid_request)
+                .is_err()
+        );
+
+        // Test validation for update request
+        let update_request = UpdateTenantRequest {
+            schema: Some(SchemaConfig {
+                catalog_type: "sql".to_string(),
+                catalog_uri: "sqlite:///test.db".to_string(),
+                default_schemas: DefaultSchemas::default(),
+            }),
+            custom_schemas: None,
+            enabled: Some(false),
+        };
+        assert!(
+            api.validate_update_tenant_request("test-tenant", &update_request)
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_available_schemas() {
+        let schemas = TenantApi::get_available_table_schemas();
+
+        // Should include at least the basic schema types
+        let schema_names: Vec<String> = schemas.into_iter().map(|s| s.name).collect();
+        assert!(schema_names.contains(&"traces".to_string()));
+        assert!(schema_names.contains(&"logs".to_string()));
+        assert!(schema_names.contains(&"metrics_gauge".to_string()));
+        assert!(schema_names.contains(&"metrics_sum".to_string()));
+        assert!(schema_names.contains(&"metrics_histogram".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_tenant_schema_listing() {
+        let state = create_test_state().await;
+        let api = TenantApi::new(state.config().clone());
+
+        // Test listing schemas for existing tenant
+        let schemas_result = api.list_table_schemas("test-tenant");
+        assert!(schemas_result.is_ok());
+
+        // Test listing schemas for non-existent tenant
+        let schemas_result = api.list_table_schemas("unknown-tenant");
+        assert!(schemas_result.is_ok()); // Should still work but return default schemas
+    }
+
+    #[tokio::test]
+    async fn test_tenant_configuration_access() {
+        let state = create_test_state().await;
+
+        // Test that the state provides access to configuration
+        let config = state.config();
+        assert_eq!(config.get_default_tenant(), "test-tenant");
+        assert!(config.is_tenant_enabled("test-tenant"));
+        assert!(!config.is_tenant_enabled("unknown-tenant"));
+
+        // Test tenant schema config access
+        let tenant_schema = config.get_tenant_schema_config("test-tenant");
+        assert_eq!(tenant_schema.catalog_type, "memory");
+        assert_eq!(tenant_schema.catalog_uri, "memory://test");
+    }
+}
