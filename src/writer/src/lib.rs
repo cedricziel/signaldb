@@ -1,5 +1,11 @@
 pub mod storage;
-pub use storage::write_batch_to_object_store;
+pub use storage::{IcebergTableWriter, create_iceberg_writer, write_batch_to_object_store};
+
+pub mod processor;
+pub use processor::{ProcessorStats, WalProcessor};
 
 pub mod flight;
 pub use flight::WriterFlightService;
+
+pub mod flight_iceberg;
+pub use flight_iceberg::IcebergWriterFlightService;
