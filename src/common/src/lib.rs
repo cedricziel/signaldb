@@ -6,4 +6,5 @@ pub mod model;
 pub mod schema;
 pub mod service_bootstrap;
 pub mod storage;
+pub mod tenant_api;
 pub mod wal;
