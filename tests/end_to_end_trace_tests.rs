@@ -780,7 +780,7 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
         catalog.clone(),
         (*services.flight_transport).clone(),
     );
-    let _router_state = InMemoryStateImpl::new(catalog);
+    let _router_state = InMemoryStateImpl::new(catalog, services.config.clone());
 
     println!("✅ Router state initialized");
 

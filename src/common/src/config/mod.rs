@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 use std::{error::Error, fmt};
 
@@ -102,12 +103,47 @@ impl Default for WalConfig {
     }
 }
 
+/// Default schemas configuration for OpenTelemetry signal types
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DefaultSchemas {
+    /// Enable creation of traces table
+    #[serde(default = "default_true")]
+    pub traces_enabled: bool,
+    /// Enable creation of logs table
+    #[serde(default = "default_true")]
+    pub logs_enabled: bool,
+    /// Enable creation of metrics tables
+    #[serde(default = "default_true")]
+    pub metrics_enabled: bool,
+    /// Custom schema definitions (table_name -> schema_json)
+    #[serde(default)]
+    pub custom_schemas: HashMap<String, serde_json::Value>,
+}
+
+impl Default for DefaultSchemas {
+    fn default() -> Self {
+        Self {
+            traces_enabled: true,
+            logs_enabled: true,
+            metrics_enabled: true,
+            custom_schemas: HashMap::new(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SchemaConfig {
     /// Type of catalog backend (sql, memory)
     pub catalog_type: String,
     /// URI for the catalog backend (e.g., sqlite://.data/catalog.db)
     pub catalog_uri: String,
+    /// Default schemas to create for new tenants
+    #[serde(default)]
+    pub default_schemas: DefaultSchemas,
 }
 
 impl Default for SchemaConfig {
@@ -115,6 +151,46 @@ impl Default for SchemaConfig {
         Self {
             catalog_type: "sql".to_string(),
             catalog_uri: "sqlite::memory:".to_string(),
+            default_schemas: DefaultSchemas::default(),
+        }
+    }
+}
+
+/// Configuration for tenant-specific schema overrides
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TenantSchemaConfig {
+    /// Schema configuration that overrides global settings
+    pub schema: Option<SchemaConfig>,
+    /// Custom schema definitions for this tenant
+    pub custom_schemas: Option<HashMap<String, String>>,
+    /// Whether this tenant is enabled
+    pub enabled: bool,
+}
+
+impl Default for TenantSchemaConfig {
+    fn default() -> Self {
+        Self {
+            schema: None,
+            custom_schemas: None,
+            enabled: true,
+        }
+    }
+}
+
+/// Configuration for multi-tenant schema management
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TenantsConfig {
+    /// Default tenant ID when none is specified
+    pub default_tenant: String,
+    /// Per-tenant configuration overrides
+    pub tenants: HashMap<String, TenantSchemaConfig>,
+}
+
+impl Default for TenantsConfig {
+    fn default() -> Self {
+        Self {
+            default_tenant: "default".to_string(),
+            tenants: HashMap::new(),
         }
     }
 }
@@ -145,6 +221,7 @@ impl From<IcebergConfig> for SchemaConfig {
         Self {
             catalog_type: iceberg_config.catalog_type, // Preserve original catalog_type
             catalog_uri: iceberg_config.catalog_uri,
+            default_schemas: DefaultSchemas::default(),
         }
     }
 }
@@ -161,6 +238,8 @@ pub struct Configuration {
     pub wal: WalConfig,
     /// Schema configuration (defaults to in-memory provider)
     pub schema: SchemaConfig,
+    /// Multi-tenant configuration
+    pub tenants: TenantsConfig,
     /// Iceberg configuration (deprecated, use schema instead)
     pub iceberg: Option<IcebergConfig>,
 }
@@ -175,6 +254,8 @@ impl Default for Configuration {
             wal: WalConfig::default(),
             // Schema defaults to in-memory provider
             schema: SchemaConfig::default(),
+            // Tenants disabled by default
+            tenants: TenantsConfig::default(),
             // Iceberg is optional and not enabled by default
             iceberg: None,
         }
@@ -198,6 +279,40 @@ impl Configuration {
             .map_err(Box::new)?;
 
         Ok(config)
+    }
+
+    /// Get the effective schema configuration for a given tenant
+    pub fn get_tenant_schema_config(&self, tenant_id: &str) -> SchemaConfig {
+        if let Some(tenant_config) = self.tenants.tenants.get(tenant_id) {
+            if let Some(ref tenant_schema) = tenant_config.schema {
+                return tenant_schema.clone();
+            }
+        }
+
+        // Fall back to global schema config
+        self.schema.clone()
+    }
+
+    /// Check if a tenant is enabled
+    pub fn is_tenant_enabled(&self, tenant_id: &str) -> bool {
+        self.tenants
+            .tenants
+            .get(tenant_id)
+            .map(|config| config.enabled)
+            .unwrap_or_else(|| tenant_id == self.tenants.default_tenant)
+    }
+
+    /// Get the default tenant ID
+    pub fn get_default_tenant(&self) -> &str {
+        &self.tenants.default_tenant
+    }
+
+    /// Get custom schemas for a tenant
+    pub fn get_tenant_custom_schemas(&self, tenant_id: &str) -> Option<&HashMap<String, String>> {
+        self.tenants
+            .tenants
+            .get(tenant_id)
+            .and_then(|config| config.custom_schemas.as_ref())
     }
 }
 
@@ -322,5 +437,102 @@ mod tests {
             schema_config_sql.catalog_uri,
             "postgres://localhost:5432/catalog"
         );
+    }
+
+    #[test]
+    fn test_tenant_configuration_default() {
+        let config = Configuration::default();
+
+        // Default tenant should be "default"
+        assert_eq!(config.get_default_tenant(), "default");
+
+        // Should return global schema config for unknown tenants
+        let tenant_schema = config.get_tenant_schema_config("unknown-tenant");
+        assert_eq!(tenant_schema.catalog_type, config.schema.catalog_type);
+        assert_eq!(tenant_schema.catalog_uri, config.schema.catalog_uri);
+
+        // Default tenant should be enabled
+        assert!(config.is_tenant_enabled("default"));
+        // Unknown tenants should be disabled
+        assert!(!config.is_tenant_enabled("unknown-tenant"));
+
+        // No custom schemas for unknown tenants
+        assert!(config.get_tenant_custom_schemas("unknown-tenant").is_none());
+    }
+
+    #[test]
+    fn test_tenant_configuration_with_custom_tenant() {
+        let tenant_config = TenantSchemaConfig {
+            schema: Some(SchemaConfig {
+                catalog_type: "memory".to_string(),
+                catalog_uri: "memory://tenant".to_string(),
+                default_schemas: DefaultSchemas::default(),
+            }),
+            custom_schemas: Some({
+                let mut schemas = HashMap::new();
+                schemas.insert("traces".to_string(), "custom_traces_schema".to_string());
+                schemas
+            }),
+            ..TenantSchemaConfig::default()
+        };
+
+        let mut tenants = HashMap::new();
+        tenants.insert("tenant1".to_string(), tenant_config);
+
+        let config = Configuration {
+            tenants: TenantsConfig {
+                default_tenant: "tenant1".to_string(),
+                tenants,
+            },
+            ..Configuration::default()
+        };
+
+        assert_eq!(config.get_default_tenant(), "tenant1");
+
+        // Should return tenant-specific schema config
+        let tenant_schema = config.get_tenant_schema_config("tenant1");
+        assert_eq!(tenant_schema.catalog_type, "memory");
+        assert_eq!(tenant_schema.catalog_uri, "memory://tenant");
+
+        // Should fall back to global config for unknown tenant
+        let unknown_schema = config.get_tenant_schema_config("unknown");
+        assert_eq!(unknown_schema.catalog_type, config.schema.catalog_type);
+
+        // Configured tenant should be enabled
+        assert!(config.is_tenant_enabled("tenant1"));
+        // Unknown tenant should be disabled
+        assert!(!config.is_tenant_enabled("unknown"));
+
+        // Should return custom schemas for tenant
+        let custom_schemas = config.get_tenant_custom_schemas("tenant1");
+        assert!(custom_schemas.is_some());
+        assert_eq!(
+            custom_schemas.unwrap().get("traces"),
+            Some(&"custom_traces_schema".to_string())
+        );
+    }
+
+    #[test]
+    fn test_tenant_disabled_individual() {
+        let tenant_config = TenantSchemaConfig {
+            enabled: false,
+            ..TenantSchemaConfig::default()
+        };
+
+        let mut tenants = HashMap::new();
+        tenants.insert("disabled-tenant".to_string(), tenant_config);
+
+        let config = Configuration {
+            tenants: TenantsConfig {
+                default_tenant: "default".to_string(),
+                tenants,
+            },
+            ..Configuration::default()
+        };
+
+        // Tenant should be disabled
+        assert!(!config.is_tenant_enabled("disabled-tenant"));
+        // Default tenant should still be enabled
+        assert!(config.is_tenant_enabled("default"));
     }
 }

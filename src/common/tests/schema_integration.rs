@@ -8,6 +8,7 @@ async fn test_memory_catalog() {
     let config = SchemaConfig {
         catalog_type: "memory".to_string(),
         catalog_uri: "memory://".to_string(),
+        default_schemas: common::config::DefaultSchemas::default(),
     };
 
     let catalog = create_catalog(config).await.unwrap();
@@ -34,6 +35,7 @@ async fn test_sql_catalog() {
     let config = SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: "sqlite::memory:".to_string(),
+        default_schemas: common::config::DefaultSchemas::default(),
     };
 
     let catalog = create_catalog(config).await.unwrap();
@@ -81,6 +83,7 @@ async fn test_unsupported_catalog_type() {
     let config = SchemaConfig {
         catalog_type: "unsupported".to_string(),
         catalog_uri: "unsupported://".to_string(),
+        default_schemas: common::config::DefaultSchemas::default(),
     };
 
     let result = create_catalog(config).await;

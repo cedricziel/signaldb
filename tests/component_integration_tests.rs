@@ -342,7 +342,7 @@ async fn test_router_tempo_integration() {
         catalog.clone(),
         (*flight_transport).clone(),
     );
-    let _router_state = InMemoryStateImpl::new(catalog);
+    let _router_state = InMemoryStateImpl::new(catalog, Configuration::default());
 
     // Set up a mock querier service
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());

@@ -18,6 +18,16 @@ catalog_type = "sql"                   # sql (recommended) or memory
 catalog_uri = "sqlite::memory:"        # In-memory SQLite catalog
 # catalog_uri = "sqlite://.data/catalog.db"  # Persistent SQLite catalog
 
+# Default schemas to create for new tenants
+[schema.default_schemas]
+traces_enabled = true
+logs_enabled = true
+metrics_enabled = true
+
+# Custom schema definitions (optional)
+# [schema.default_schemas.custom_schemas]
+# my_custom_table = '''{"fields": [...]}'''
+
 [discovery]
 # Service discovery configuration
 dsn = "sqlite::memory:"               # In-memory service registry
@@ -33,7 +43,22 @@ max_buffer_entries = 1000
 flush_interval = "30s"
 max_buffer_size_bytes = 134217728     # 128MB
 
+[tenants]
+# Multi-tenant configuration (always active)
+default_tenant = "default"
+
+# Example tenant configuration
+# [tenants.tenants.tenant1]
+# enabled = true
+# [tenants.tenants.tenant1.schema]
+# catalog_type = "sql"
+# catalog_uri = "sqlite://.data/tenant1_catalog.db"
+# [tenants.tenants.tenant1.custom_schemas]
+# traces = "custom_traces_schema_definition"
+# logs = "custom_logs_schema_definition"
+
 # Environment variable examples:
 # SIGNALDB_DATABASE_DSN=postgres://user:pass@localhost/signaldb
 # SIGNALDB_STORAGE_DSN=file:///data/signaldb
 # SIGNALDB_SCHEMA_CATALOG_URI=sqlite:///data/catalog.db
+# SIGNALDB_TENANTS_DEFAULT_TENANT=my_tenant
