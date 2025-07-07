@@ -94,10 +94,11 @@ datafusion = { version = "47.0.0", default-features = false, features = ["parque
 arrow-flight = { version = "55.2.0" }
 object_store = { version = "0.12.2", features = ["aws", "azure", "gcp"] }
 
-# Apache Iceberg support
+# Apache Iceberg support (for schema management)
 iceberg = { version = "0.5.1" }
-iceberg-datafusion = { version = "0.5.1" }
 iceberg-catalog-memory = { version = "0.5.1" }
+# JanKaul's datafusion_iceberg (for write operations only)
+datafusion_iceberg = { version = "0.7.0" }
 
 tonic = { version = "0.12.3", features = [
     "transport",

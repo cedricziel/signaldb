@@ -12,9 +12,10 @@ datafusion.workspace = true
 arrow-flight.workspace = true
 object_store.workspace = true
 
-# Iceberg support
+# Apache Iceberg support (for compatibility)
 iceberg.workspace = true
-iceberg-datafusion.workspace = true
+# JanKaul's datafusion_iceberg (for write operations)
+datafusion_iceberg.workspace = true
 
 tokio.workspace = true
 futures.workspace = true

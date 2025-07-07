@@ -32,6 +32,7 @@ serde_json.workspace = true
 opentelemetry.workspace = true
 async-trait.workspace = true
 
+
 [[bin]]
 name = "signaldb-acceptor"
 path = "src/main.rs"
