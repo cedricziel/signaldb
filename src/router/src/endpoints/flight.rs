@@ -390,7 +390,7 @@ mod tests {
 
     async fn create_test_state() -> InMemoryStateImpl {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
-        InMemoryStateImpl::new(catalog)
+        InMemoryStateImpl::new(catalog, common::config::Configuration::default())
     }
 
     #[tokio::test]

@@ -462,25 +462,29 @@ mod tests {
 
     #[test]
     fn test_tenant_configuration_with_custom_tenant() {
-        let mut tenant_config = TenantSchemaConfig::default();
-        tenant_config.schema = Some(SchemaConfig {
-            catalog_type: "memory".to_string(),
-            catalog_uri: "memory://tenant".to_string(),
-            default_schemas: DefaultSchemas::default(),
-        });
-        tenant_config.custom_schemas = Some({
-            let mut schemas = HashMap::new();
-            schemas.insert("traces".to_string(), "custom_traces_schema".to_string());
-            schemas
-        });
+        let tenant_config = TenantSchemaConfig {
+            schema: Some(SchemaConfig {
+                catalog_type: "memory".to_string(),
+                catalog_uri: "memory://tenant".to_string(),
+                default_schemas: DefaultSchemas::default(),
+            }),
+            custom_schemas: Some({
+                let mut schemas = HashMap::new();
+                schemas.insert("traces".to_string(), "custom_traces_schema".to_string());
+                schemas
+            }),
+            ..TenantSchemaConfig::default()
+        };
 
         let mut tenants = HashMap::new();
         tenants.insert("tenant1".to_string(), tenant_config);
 
-        let mut config = Configuration::default();
-        config.tenants = TenantsConfig {
-            default_tenant: "tenant1".to_string(),
-            tenants,
+        let config = Configuration {
+            tenants: TenantsConfig {
+                default_tenant: "tenant1".to_string(),
+                tenants,
+            },
+            ..Configuration::default()
         };
 
         assert_eq!(config.get_default_tenant(), "tenant1");
@@ -510,16 +514,20 @@ mod tests {
 
     #[test]
     fn test_tenant_disabled_individual() {
-        let mut tenant_config = TenantSchemaConfig::default();
-        tenant_config.enabled = false;
+        let tenant_config = TenantSchemaConfig {
+            enabled: false,
+            ..TenantSchemaConfig::default()
+        };
 
         let mut tenants = HashMap::new();
         tenants.insert("disabled-tenant".to_string(), tenant_config);
 
-        let mut config = Configuration::default();
-        config.tenants = TenantsConfig {
-            default_tenant: "default".to_string(),
-            tenants,
+        let config = Configuration {
+            tenants: TenantsConfig {
+                default_tenant: "default".to_string(),
+                tenants,
+            },
+            ..Configuration::default()
         };
 
         // Tenant should be disabled

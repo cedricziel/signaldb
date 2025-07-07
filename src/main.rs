@@ -30,8 +30,8 @@ async fn main() -> Result<()> {
             .await
             .context("Failed to initialize router service bootstrap")?;
 
-    // Create router state with catalog access
-    let state = InMemoryStateImpl::new(router_bootstrap.catalog().clone());
+    // Create router state with catalog access and configuration
+    let state = InMemoryStateImpl::new(router_bootstrap.catalog().clone(), config.clone());
 
     // Start background service discovery polling
     if config.discovery.is_some() {
