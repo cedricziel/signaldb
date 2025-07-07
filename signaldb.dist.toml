@@ -18,6 +18,16 @@ catalog_type = "sql"                   # sql (recommended) or memory
 catalog_uri = "sqlite::memory:"        # In-memory SQLite catalog
 # catalog_uri = "sqlite://.data/catalog.db"  # Persistent SQLite catalog
 
+# Default schemas to create for new tenants
+[schema.default_schemas]
+traces_enabled = true
+logs_enabled = true
+metrics_enabled = true
+
+# Custom schema definitions (optional)
+# [schema.default_schemas.custom_schemas]
+# my_custom_table = '''{"fields": [...]}'''
+
 [discovery]
 # Service discovery configuration
 dsn = "sqlite::memory:"               # In-memory service registry

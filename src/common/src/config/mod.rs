@@ -103,12 +103,47 @@ impl Default for WalConfig {
     }
 }
 
+/// Default schemas configuration for OpenTelemetry signal types
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DefaultSchemas {
+    /// Enable creation of traces table
+    #[serde(default = "default_true")]
+    pub traces_enabled: bool,
+    /// Enable creation of logs table
+    #[serde(default = "default_true")]
+    pub logs_enabled: bool,
+    /// Enable creation of metrics tables
+    #[serde(default = "default_true")]
+    pub metrics_enabled: bool,
+    /// Custom schema definitions (table_name -> schema_json)
+    #[serde(default)]
+    pub custom_schemas: HashMap<String, serde_json::Value>,
+}
+
+impl Default for DefaultSchemas {
+    fn default() -> Self {
+        Self {
+            traces_enabled: true,
+            logs_enabled: true,
+            metrics_enabled: true,
+            custom_schemas: HashMap::new(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SchemaConfig {
     /// Type of catalog backend (sql, memory)
     pub catalog_type: String,
     /// URI for the catalog backend (e.g., sqlite://.data/catalog.db)
     pub catalog_uri: String,
+    /// Default schemas to create for new tenants
+    #[serde(default)]
+    pub default_schemas: DefaultSchemas,
 }
 
 impl Default for SchemaConfig {
@@ -116,6 +151,7 @@ impl Default for SchemaConfig {
         Self {
             catalog_type: "sql".to_string(),
             catalog_uri: "sqlite::memory:".to_string(),
+            default_schemas: DefaultSchemas::default(),
         }
     }
 }
@@ -185,6 +221,7 @@ impl From<IcebergConfig> for SchemaConfig {
         Self {
             catalog_type: iceberg_config.catalog_type, // Preserve original catalog_type
             catalog_uri: iceberg_config.catalog_uri,
+            default_schemas: DefaultSchemas::default(),
         }
     }
 }
@@ -429,6 +466,7 @@ mod tests {
         tenant_config.schema = Some(SchemaConfig {
             catalog_type: "memory".to_string(),
             catalog_uri: "memory://tenant".to_string(),
+            default_schemas: DefaultSchemas::default(),
         });
         tenant_config.custom_schemas = Some({
             let mut schemas = HashMap::new();

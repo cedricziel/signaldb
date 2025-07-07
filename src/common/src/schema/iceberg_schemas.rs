@@ -1,3 +1,4 @@
+use crate::config::DefaultSchemas;
 use anyhow::Result;
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
 use iceberg::spec::{PartitionSpec, Transform};
@@ -667,6 +668,7 @@ pub enum TableSchema {
     MetricsGauge,
     MetricsSum,
     MetricsHistogram,
+    Custom(String), // For custom schemas from configuration
 }
 
 impl TableSchema {
@@ -678,6 +680,9 @@ impl TableSchema {
             TableSchema::MetricsGauge => create_metrics_gauge_schema(),
             TableSchema::MetricsSum => create_metrics_sum_schema(),
             TableSchema::MetricsHistogram => create_metrics_histogram_schema(),
+            TableSchema::Custom(_) => Err(anyhow::anyhow!(
+                "Custom schemas must be loaded from configuration"
+            )),
         }
     }
 
@@ -689,21 +694,51 @@ impl TableSchema {
             TableSchema::MetricsGauge | TableSchema::MetricsSum | TableSchema::MetricsHistogram => {
                 create_metrics_partition_spec()
             }
+            TableSchema::Custom(_) => Err(anyhow::anyhow!(
+                "Custom partition specs must be defined in configuration"
+            )),
         }
     }
 
     /// Get the table name for this schema
-    pub fn table_name(&self) -> &'static str {
+    pub fn table_name(&self) -> &str {
         match self {
             TableSchema::Traces => "traces",
             TableSchema::Logs => "logs",
             TableSchema::MetricsGauge => "metrics_gauge",
             TableSchema::MetricsSum => "metrics_sum",
             TableSchema::MetricsHistogram => "metrics_histogram",
+            TableSchema::Custom(name) => name,
         }
     }
 
-    /// Get all available table schemas
+    /// Get all available table schemas based on configuration
+    pub fn all_from_config(config: &DefaultSchemas) -> Vec<TableSchema> {
+        let mut schemas = Vec::new();
+
+        if config.traces_enabled {
+            schemas.push(TableSchema::Traces);
+        }
+
+        if config.logs_enabled {
+            schemas.push(TableSchema::Logs);
+        }
+
+        if config.metrics_enabled {
+            schemas.push(TableSchema::MetricsGauge);
+            schemas.push(TableSchema::MetricsSum);
+            schemas.push(TableSchema::MetricsHistogram);
+        }
+
+        // Add custom schemas
+        for name in config.custom_schemas.keys() {
+            schemas.push(TableSchema::Custom(name.clone()));
+        }
+
+        schemas
+    }
+
+    /// Get all available table schemas (legacy method for backwards compatibility)
     pub fn all() -> Vec<TableSchema> {
         vec![
             TableSchema::Traces,

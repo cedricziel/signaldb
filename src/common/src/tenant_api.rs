@@ -236,7 +236,8 @@ impl TenantApi {
 
     /// List available table schemas for a tenant
     pub fn list_table_schemas(&self, tenant_id: &str) -> Result<ListTablesResponse> {
-        let tables = iceberg_schemas::TableSchema::all()
+        let default_schemas = &self.registry.config.schema.default_schemas;
+        let tables = iceberg_schemas::TableSchema::all_from_config(default_schemas)
             .into_iter()
             .map(|schema| {
                 let description = match schema {
@@ -246,6 +247,14 @@ impl TenantApi {
                     iceberg_schemas::TableSchema::MetricsSum => "OpenTelemetry sum/counter metrics",
                     iceberg_schemas::TableSchema::MetricsHistogram => {
                         "OpenTelemetry histogram metrics"
+                    }
+                    iceberg_schemas::TableSchema::Custom(ref name) => {
+                        // For custom schemas, use a generic description
+                        return TableInfo {
+                            name: name.clone(),
+                            schema_type: "custom".to_string(),
+                            description: format!("Custom table: {name}"),
+                        };
                     }
                 };
 
@@ -263,9 +272,11 @@ impl TenantApi {
         })
     }
 
-    /// Get available table schema types
+    /// Get available table schema types (uses default configuration)
     pub fn get_available_table_schemas() -> Vec<TableInfo> {
-        iceberg_schemas::TableSchema::all()
+        // Use default configuration when called statically
+        let default_config = crate::config::DefaultSchemas::default();
+        iceberg_schemas::TableSchema::all_from_config(&default_config)
             .into_iter()
             .map(|schema| {
                 let description = match schema {
@@ -275,6 +286,14 @@ impl TenantApi {
                     iceberg_schemas::TableSchema::MetricsSum => "OpenTelemetry sum/counter metrics",
                     iceberg_schemas::TableSchema::MetricsHistogram => {
                         "OpenTelemetry histogram metrics"
+                    }
+                    iceberg_schemas::TableSchema::Custom(ref name) => {
+                        // For custom schemas, use a generic description
+                        return TableInfo {
+                            name: name.clone(),
+                            schema_type: "custom".to_string(),
+                            description: format!("Custom table: {name}"),
+                        };
                     }
                 };
 
@@ -329,6 +348,7 @@ mod tests {
         tenant_config.schema = Some(SchemaConfig {
             catalog_type: "memory".to_string(),
             catalog_uri: "memory://".to_string(),
+            default_schemas: crate::config::DefaultSchemas::default(),
         });
 
         let mut tenants = HashMap::new();

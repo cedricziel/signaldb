@@ -144,10 +144,19 @@ impl TenantSchemaRegistry {
         _tenant_id: &str,
     ) -> Result<HashMap<String, iceberg::spec::Schema>> {
         let mut schemas = HashMap::new();
+        let default_schemas = &self.config.schema.default_schemas;
 
-        for table_schema in iceberg_schemas::TableSchema::all() {
-            let schema = table_schema.schema()?;
-            schemas.insert(table_schema.table_name().to_string(), schema);
+        for table_schema in iceberg_schemas::TableSchema::all_from_config(default_schemas) {
+            match &table_schema {
+                iceberg_schemas::TableSchema::Custom(_) => {
+                    // Skip custom schemas for now
+                    // TODO: Parse custom schema from JSON configuration
+                }
+                _ => {
+                    let schema = table_schema.schema()?;
+                    schemas.insert(table_schema.table_name().to_string(), schema);
+                }
+            }
         }
 
         Ok(schemas)
@@ -159,10 +168,19 @@ impl TenantSchemaRegistry {
         _tenant_id: &str,
     ) -> Result<HashMap<String, iceberg::spec::PartitionSpec>> {
         let mut partition_specs = HashMap::new();
+        let default_schemas = &self.config.schema.default_schemas;
 
-        for table_schema in iceberg_schemas::TableSchema::all() {
-            let partition_spec = table_schema.partition_spec()?;
-            partition_specs.insert(table_schema.table_name().to_string(), partition_spec);
+        for table_schema in iceberg_schemas::TableSchema::all_from_config(default_schemas) {
+            match &table_schema {
+                iceberg_schemas::TableSchema::Custom(_) => {
+                    // Skip custom schemas for now
+                    // TODO: Parse custom partition spec from configuration
+                }
+                _ => {
+                    let partition_spec = table_schema.partition_spec()?;
+                    partition_specs.insert(table_schema.table_name().to_string(), partition_spec);
+                }
+            }
         }
 
         Ok(partition_specs)
@@ -178,8 +196,11 @@ impl TenantSchemaRegistry {
             catalog.create_namespace(&namespace, HashMap::new()).await?;
         }
 
-        // Create all default tables
-        for table_schema in iceberg_schemas::TableSchema::all() {
+        // Get the default schemas configuration
+        let default_schemas = &self.config.schema.default_schemas;
+
+        // Create tables based on configuration
+        for table_schema in iceberg_schemas::TableSchema::all_from_config(default_schemas) {
             let table_name = table_schema.table_name();
             let table_ident = iceberg::TableIdent::new(namespace.clone(), table_name.to_string());
 
@@ -188,13 +209,25 @@ impl TenantSchemaRegistry {
                 continue; // Skip if table already exists
             }
 
-            // Create the table
-            let _schema = table_schema.schema()?;
-            let _partition_spec = table_schema.partition_spec()?;
+            // Create the table (skip custom schemas for now)
+            match &table_schema {
+                iceberg_schemas::TableSchema::Custom(name) => {
+                    log::info!(
+                        "Would create custom table '{name}' from configuration in namespace {namespace}"
+                    );
+                    // TODO: Parse and create custom schema from JSON configuration
+                }
+                _ => {
+                    let _schema = table_schema.schema()?;
+                    let _partition_spec = table_schema.partition_spec()?;
 
-            // For now, just log that we would create the table
-            // TODO: Find the correct table creation API for iceberg 0.5.1
-            log::info!("Would create table {table_name} with schema in namespace {namespace}");
+                    // For now, just log that we would create the table
+                    // TODO: Find the correct table creation API for iceberg 0.5.1
+                    log::info!(
+                        "Would create table {table_name} with schema in namespace {namespace}"
+                    );
+                }
+            }
         }
 
         Ok(())
@@ -222,7 +255,7 @@ impl TenantSchemaRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{TenantSchemaConfig, TenantsConfig};
+    use crate::config::{DefaultSchemas, TenantSchemaConfig, TenantsConfig};
     use std::collections::HashMap;
 
     #[tokio::test]
@@ -256,6 +289,7 @@ mod tests {
         tenant_config.schema = Some(SchemaConfig {
             catalog_type: "memory".to_string(),
             catalog_uri: "memory://".to_string(),
+            default_schemas: DefaultSchemas::default(),
         });
         tenant_config.custom_schemas = Some({
             let mut schemas = HashMap::new();
@@ -309,6 +343,7 @@ mod tests {
         tenant_config.schema = Some(SchemaConfig {
             catalog_type: "memory".to_string(),
             catalog_uri: "memory://".to_string(),
+            default_schemas: DefaultSchemas::default(),
         });
 
         let mut tenants = HashMap::new();
