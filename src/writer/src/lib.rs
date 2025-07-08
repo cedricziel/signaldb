@@ -9,3 +9,5 @@ pub use flight::WriterFlightService;
 
 pub mod flight_iceberg;
 pub use flight_iceberg::IcebergWriterFlightService;
+
+pub mod schema_bridge;
