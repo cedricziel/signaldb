@@ -5,6 +5,13 @@ use iceberg::spec::{
 };
 use std::sync::Arc;
 
+// Import types from iceberg-rust via datafusion_iceberg
+use iceberg_rust::catalog::Catalog as IcebergRustCatalog;
+
+// Note: JanKaul's iceberg-rust types are not directly available as imports
+// The datafusion_iceberg crate provides DataFusionTable which wraps the underlying iceberg-rust types
+// For now, we'll use the Apache Iceberg types and plan for future integration
+
 /// Bridge module for converting between Apache Iceberg and JanKaul's iceberg-rust formats
 /// This enables us to use Apache Iceberg for schema management while using JanKaul's
 /// datafusion_iceberg for actual data writing operations.
@@ -341,6 +348,317 @@ pub fn get_table_metadata_for_conversion(
     Ok((table_name, table_location))
 }
 
+/// Create a JanKaul iceberg-rust Table from ConvertedTableInfo
+/// This enables actual DataFusionTable registration for SQL operations
+pub async fn create_jankaul_table_from_converted(
+    table_info: &ConvertedTableInfo,
+    apache_catalog: &Arc<dyn iceberg::Catalog>,
+) -> Result<iceberg::table::Table> {
+    log::info!(
+        "Creating JanKaul Table from converted table info: {}",
+        table_info.name
+    );
+
+    // For now, we'll create an Apache Iceberg table and return it
+    // This is a temporary solution until full JanKaul table creation is implemented
+    // The key insight is that we need to properly create the table with the right catalog
+
+    // Create namespace and table identifier
+    let namespace = iceberg::NamespaceIdent::from_strs(vec!["default"])?;
+    let table_ident = iceberg::TableIdent::new(namespace.clone(), table_info.name.clone());
+
+    // Check if table already exists and load it
+    if apache_catalog.table_exists(&table_ident).await? {
+        log::debug!("Loading existing Apache Iceberg table: {}", table_info.name);
+        let table = apache_catalog.load_table(&table_ident).await?;
+        return Ok(table);
+    }
+
+    // Convert our schema back to Apache Iceberg format for table creation
+    let apache_schema = convert_converted_schema_to_apache(&table_info.schema)?;
+
+    // Create partition specs if any exist
+    let partition_spec = if !table_info.partition_specs.is_empty() {
+        convert_converted_partition_spec_to_apache(&table_info.partition_specs[0], &apache_schema)?
+    } else {
+        // Create unpartitioned spec
+        iceberg::spec::PartitionSpec::builder(apache_schema.clone())
+            .with_spec_id(1)
+            .build()?
+    };
+
+    // Create the table
+    log::debug!(
+        "Creating new Apache Iceberg table: {} at {}",
+        table_info.name,
+        table_info.location
+    );
+
+    // Create namespace if it doesn't exist
+    if !apache_catalog.namespace_exists(&namespace).await? {
+        apache_catalog
+            .create_namespace(&namespace, std::collections::HashMap::new())
+            .await?;
+    }
+
+    let table_creation = iceberg::TableCreation::builder()
+        .name(table_info.name.clone())
+        .schema(apache_schema)
+        .partition_spec(partition_spec)
+        .build();
+
+    let table = apache_catalog
+        .create_table(&namespace, table_creation)
+        .await?;
+
+    log::warn!(
+        "Created Apache Iceberg table instead of JanKaul table - full JanKaul integration pending"
+    );
+    log::info!("Successfully created table: {}", table_info.name);
+    Ok(table)
+}
+
+/// Convert ConvertedSchema back to Apache Iceberg Schema for table creation
+fn convert_converted_schema_to_apache(
+    converted_schema: &ConvertedSchema,
+) -> Result<iceberg::spec::Schema> {
+    log::debug!("Converting ConvertedSchema back to Apache Iceberg format");
+
+    let mut fields = Vec::new();
+
+    for field in &converted_schema.fields {
+        let apache_field = convert_converted_field_to_apache(field)?;
+        fields.push(apache_field);
+    }
+
+    let schema = iceberg::spec::Schema::builder()
+        .with_fields(fields)
+        .build()?;
+
+    log::debug!(
+        "Successfully converted schema with {} fields",
+        converted_schema.fields.len()
+    );
+    Ok(schema)
+}
+
+/// Convert ConvertedField back to Apache Iceberg NestedField
+fn convert_converted_field_to_apache(converted_field: &ConvertedField) -> Result<Arc<NestedField>> {
+    let field_type = convert_converted_type_to_apache(&converted_field.field_type)?;
+
+    let apache_field = if converted_field.required {
+        NestedField::required(converted_field.id, &converted_field.name, field_type)
+    } else {
+        NestedField::optional(converted_field.id, &converted_field.name, field_type)
+    };
+
+    Ok(Arc::new(apache_field))
+}
+
+/// Convert ConvertedType back to Apache Iceberg Type
+fn convert_converted_type_to_apache(converted_type: &ConvertedType) -> Result<ApacheType> {
+    match converted_type {
+        ConvertedType::Primitive(primitive) => {
+            let apache_primitive = convert_converted_primitive_to_apache(primitive)?;
+            Ok(ApacheType::Primitive(apache_primitive))
+        }
+        ConvertedType::Struct(_) => Err(anyhow::anyhow!(
+            "Struct type conversion from converted format not yet implemented"
+        )),
+        ConvertedType::List(_) => Err(anyhow::anyhow!(
+            "List type conversion from converted format not yet implemented"
+        )),
+        ConvertedType::Map { .. } => Err(anyhow::anyhow!(
+            "Map type conversion from converted format not yet implemented"
+        )),
+    }
+}
+
+/// Convert ConvertedPrimitiveType back to Apache Iceberg PrimitiveType
+fn convert_converted_primitive_to_apache(
+    converted_primitive: &ConvertedPrimitiveType,
+) -> Result<ApachePrimitiveType> {
+    let apache_primitive = match converted_primitive {
+        ConvertedPrimitiveType::Boolean => ApachePrimitiveType::Boolean,
+        ConvertedPrimitiveType::Int => ApachePrimitiveType::Int,
+        ConvertedPrimitiveType::Long => ApachePrimitiveType::Long,
+        ConvertedPrimitiveType::Float => ApachePrimitiveType::Float,
+        ConvertedPrimitiveType::Double => ApachePrimitiveType::Double,
+        ConvertedPrimitiveType::Date => ApachePrimitiveType::Date,
+        ConvertedPrimitiveType::Time => ApachePrimitiveType::Time,
+        ConvertedPrimitiveType::Timestamp => ApachePrimitiveType::Timestamp,
+        ConvertedPrimitiveType::Timestamptz => ApachePrimitiveType::Timestamptz,
+        ConvertedPrimitiveType::TimestampNs => ApachePrimitiveType::TimestampNs,
+        ConvertedPrimitiveType::TimestamptzNs => ApachePrimitiveType::TimestamptzNs,
+        ConvertedPrimitiveType::String => ApachePrimitiveType::String,
+        ConvertedPrimitiveType::Uuid => ApachePrimitiveType::Uuid,
+        ConvertedPrimitiveType::Fixed(size) => ApachePrimitiveType::Fixed(*size),
+        ConvertedPrimitiveType::Binary => ApachePrimitiveType::Binary,
+        ConvertedPrimitiveType::Decimal { precision, scale } => ApachePrimitiveType::Decimal {
+            precision: *precision,
+            scale: *scale,
+        },
+    };
+
+    Ok(apache_primitive)
+}
+
+/// Convert ConvertedPartitionSpec back to Apache Iceberg PartitionSpec
+fn convert_converted_partition_spec_to_apache(
+    converted_spec: &ConvertedPartitionSpec,
+    schema: &iceberg::spec::Schema,
+) -> Result<iceberg::spec::PartitionSpec> {
+    let mut builder =
+        iceberg::spec::PartitionSpec::builder(schema.clone()).with_spec_id(converted_spec.spec_id);
+
+    for field in &converted_spec.fields {
+        let transform = convert_converted_transform_to_apache(&field.transform)?;
+        builder = builder.add_partition_field(&field.name, &field.name, transform)?;
+    }
+
+    let spec = builder.build()?;
+    Ok(spec)
+}
+
+/// Convert ConvertedTransform back to Apache Iceberg Transform
+fn convert_converted_transform_to_apache(
+    converted_transform: &ConvertedTransform,
+) -> Result<iceberg::spec::Transform> {
+    let apache_transform = match converted_transform {
+        ConvertedTransform::Identity => iceberg::spec::Transform::Identity,
+        ConvertedTransform::Bucket(num_buckets) => iceberg::spec::Transform::Bucket(*num_buckets),
+        ConvertedTransform::Truncate(width) => iceberg::spec::Transform::Truncate(*width),
+        ConvertedTransform::Year => iceberg::spec::Transform::Year,
+        ConvertedTransform::Month => iceberg::spec::Transform::Month,
+        ConvertedTransform::Day => iceberg::spec::Transform::Day,
+        ConvertedTransform::Hour => iceberg::spec::Transform::Hour,
+        ConvertedTransform::Void => iceberg::spec::Transform::Void,
+        ConvertedTransform::Unknown => iceberg::spec::Transform::Unknown,
+    };
+
+    Ok(apache_transform)
+}
+
+/// Create a JanKaul SQL catalog for use with DataFusion
+/// This replaces the complex catalog adapter approach with a simpler pattern
+pub async fn create_jankaul_sql_catalog(
+    catalog_uri: &str,
+    catalog_name: &str,
+) -> Result<Arc<dyn IcebergRustCatalog>> {
+    log::info!("Creating JanKaul SQL catalog with URI: {catalog_uri}");
+
+    use iceberg_rust::object_store::ObjectStoreBuilder;
+    use iceberg_sql_catalog::SqlCatalog;
+
+    // Create an in-memory object store builder
+    let object_store_builder = ObjectStoreBuilder::memory();
+
+    let catalog = SqlCatalog::new(catalog_uri, catalog_name, object_store_builder)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create SQL catalog: {}", e))?;
+
+    let catalog_arc: Arc<dyn IcebergRustCatalog> = Arc::new(catalog);
+
+    log::info!("Successfully created JanKaul SQL catalog: {catalog_name}");
+    Ok(catalog_arc)
+}
+
+/// Convert our ConvertedTableInfo to create a table in JanKaul catalog
+pub async fn create_jankaul_table(
+    table_info: &ConvertedTableInfo,
+    catalog: Arc<dyn IcebergRustCatalog>,
+    namespace: &str,
+) -> Result<()> {
+    use iceberg_rust::catalog::identifier::Identifier;
+    use iceberg_rust::spec::schema::Schema;
+    use iceberg_rust::spec::types::StructField;
+    use iceberg_rust::spec::types::{PrimitiveType, Type};
+    use iceberg_rust::table::Table;
+
+    log::info!(
+        "Creating JanKaul table: {} in namespace: {}",
+        table_info.name,
+        namespace
+    );
+
+    // Build the schema from our converted fields
+    let mut schema_builder = Schema::builder();
+
+    for (index, field) in table_info.schema.fields.iter().enumerate() {
+        let field_type = match &field.field_type {
+            ConvertedType::Primitive(primitive) => {
+                let jankaul_primitive = match primitive {
+                    ConvertedPrimitiveType::Boolean => PrimitiveType::Boolean,
+                    ConvertedPrimitiveType::Int => PrimitiveType::Int,
+                    ConvertedPrimitiveType::Long => PrimitiveType::Long,
+                    ConvertedPrimitiveType::Float => PrimitiveType::Float,
+                    ConvertedPrimitiveType::Double => PrimitiveType::Double,
+                    ConvertedPrimitiveType::String => PrimitiveType::String,
+                    ConvertedPrimitiveType::Binary => PrimitiveType::Binary,
+                    ConvertedPrimitiveType::Decimal { precision, scale } => {
+                        PrimitiveType::Decimal {
+                            precision: *precision,
+                            scale: *scale,
+                        }
+                    }
+                    ConvertedPrimitiveType::Date => PrimitiveType::Date,
+                    ConvertedPrimitiveType::Time => PrimitiveType::Time,
+                    ConvertedPrimitiveType::Timestamp => PrimitiveType::Timestamp,
+                    ConvertedPrimitiveType::TimestampNs => PrimitiveType::Timestamp, // Map NS variant to regular timestamp
+                    ConvertedPrimitiveType::Timestamptz => PrimitiveType::Timestamptz,
+                    ConvertedPrimitiveType::TimestamptzNs => PrimitiveType::Timestamptz, // Map NS variant to regular timestamptz
+                    ConvertedPrimitiveType::Uuid => PrimitiveType::Uuid,
+                    ConvertedPrimitiveType::Fixed(size) => PrimitiveType::Fixed(*size),
+                };
+                Type::Primitive(jankaul_primitive)
+            }
+            ConvertedType::Struct(_) => {
+                log::warn!("Struct types not yet supported in JanKaul conversion");
+                return Err(anyhow::anyhow!("Struct types not yet supported"));
+            }
+            ConvertedType::List(_) => {
+                log::warn!("List types not yet supported in JanKaul conversion");
+                return Err(anyhow::anyhow!("List types not yet supported"));
+            }
+            ConvertedType::Map { key: _, value: _ } => {
+                log::warn!("Map types not yet supported in JanKaul conversion");
+                return Err(anyhow::anyhow!("Map types not yet supported"));
+            }
+        };
+
+        schema_builder.with_struct_field(StructField {
+            id: index as i32,
+            name: field.name.clone(),
+            required: field.required,
+            field_type,
+            doc: None,
+        });
+    }
+
+    let schema = schema_builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to build JanKaul schema: {}", e))?;
+
+    // Create the identifier for the table
+    let identifier = Identifier::new(&[namespace.to_string()], &table_info.name);
+
+    // Build and create the table
+    let _table = Table::builder()
+        .with_name(&table_info.name)
+        .with_location(format!("/{}/{}", namespace, table_info.name))
+        .with_schema(schema)
+        .build(identifier.namespace(), catalog.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create JanKaul table: {}", e))?;
+
+    log::info!(
+        "Successfully created JanKaul table: {}.{}",
+        namespace,
+        table_info.name
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,6 +768,49 @@ mod tests {
                 "Expected {expected_converted:?}, got {converted:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_jankaul_table_creation() {
+        use crate::schema_bridge::create_jankaul_sql_catalog;
+        use crate::schema_bridge::create_jankaul_table;
+
+        // Create a test table info
+        let table_info = ConvertedTableInfo {
+            name: "test_sql_insert".to_string(),
+            location: "/test/sql_insert".to_string(),
+            format_version: 2,
+            schema: ConvertedSchema {
+                schema_id: 0,
+                fields: vec![
+                    ConvertedField {
+                        id: 1,
+                        name: "id".to_string(),
+                        required: true,
+                        field_type: ConvertedType::Primitive(ConvertedPrimitiveType::Long),
+                    },
+                    ConvertedField {
+                        id: 2,
+                        name: "name".to_string(),
+                        required: false,
+                        field_type: ConvertedType::Primitive(ConvertedPrimitiveType::String),
+                    },
+                ],
+            },
+            partition_specs: vec![],
+        };
+
+        // Create JanKaul catalog
+        let catalog = create_jankaul_sql_catalog("sqlite://", "test_catalog")
+            .await
+            .unwrap();
+
+        // Create table in catalog
+        create_jankaul_table(&table_info, catalog.clone(), "default")
+            .await
+            .unwrap();
+
+        log::info!("Successfully created table in JanKaul catalog");
     }
 
     #[test]

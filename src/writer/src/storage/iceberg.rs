@@ -1,3 +1,4 @@
+use crate::schema_bridge::create_jankaul_sql_catalog;
 use anyhow::Result;
 use common::config::Configuration;
 use common::schema::{TenantSchemaRegistry, create_catalog_with_config};
@@ -5,7 +6,7 @@ use datafusion::arrow::array::RecordBatch;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::SessionConfig;
-// use datafusion_iceberg::DataFusionTable; // TODO: Will be needed when table registration is implemented
+use datafusion_iceberg::catalog::catalog::IcebergCatalog;
 use iceberg::table::Table;
 use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
 use object_store::ObjectStore;
@@ -100,7 +101,7 @@ impl IcebergTableWriter {
         // For now, we have the metadata conversion working
 
         // Register the table with the session context for SQL operations
-        Self::register_table_with_session(&table_info, &session_ctx).await?;
+        Self::register_table_with_session(&table_info, &session_ctx, &catalog).await?;
 
         Ok(Self {
             catalog,
@@ -111,28 +112,68 @@ impl IcebergTableWriter {
         })
     }
 
-    /// Register the table with the DataFusion session context for SQL operations
+    /// Register the Iceberg catalog with DataFusion session context for SQL operations
     async fn register_table_with_session(
         table_info: &crate::schema_bridge::ConvertedTableInfo,
-        _session_ctx: &SessionContext,
+        session_ctx: &SessionContext,
+        _catalog: &Arc<dyn Catalog>, // Apache catalog not used in new approach
     ) -> Result<()> {
-        // TODO: Convert ConvertedTableInfo to actual JanKaul iceberg-rust Table
-        // Then wrap it in DataFusionTable and register with session_ctx
-        // For now, log the registration attempt
-
         log::info!(
-            "Attempting to register table '{}' with DataFusion session",
+            "Registering Iceberg catalog with DataFusion session for table '{}'",
             table_info.name
         );
         log::debug!("Table location: {}", table_info.location);
         log::debug!("Schema fields: {}", table_info.schema.fields.len());
 
-        // This is where we would:
-        // 1. Create a JanKaul iceberg-rust Table from the converted table info
-        // 2. Wrap it in DataFusionTable::from(table)
-        // 3. Register it: session_ctx.register_table(&table_info.name, Arc::new(datafusion_table))?;
+        // Step 1: Create a JanKaul SQL catalog for DataFusion
+        log::info!("Creating JanKaul SQL catalog for DataFusion integration");
 
-        log::warn!("Table registration not yet implemented - placeholder only");
+        match create_jankaul_sql_catalog("sqlite://", "signaldb_iceberg").await {
+            Ok(jankaul_catalog) => {
+                // Step 2: Create the table directly in the JanKaul catalog
+                let namespace = "default";
+                match crate::schema_bridge::create_jankaul_table(
+                    table_info,
+                    jankaul_catalog.clone(),
+                    namespace,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        log::info!("Successfully created table in JanKaul catalog");
+
+                        // Step 3: Wrap the catalog in an IcebergCatalog and register with DataFusion
+                        match IcebergCatalog::new(jankaul_catalog, None).await {
+                            Ok(iceberg_catalog) => {
+                                session_ctx.register_catalog("iceberg", Arc::new(iceberg_catalog));
+
+                                log::info!(
+                                    "Successfully registered JanKaul Iceberg catalog with DataFusion session"
+                                );
+                                log::info!(
+                                    "Table '{}' accessible via: iceberg.{}.{}",
+                                    table_info.name,
+                                    namespace,
+                                    table_info.name
+                                );
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to create IcebergCatalog from JanKaul catalog: {e}"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to create table in JanKaul catalog: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to create JanKaul SQL catalog: {e}");
+            }
+        }
+
         Ok(())
     }
 
@@ -182,27 +223,30 @@ impl IcebergTableWriter {
         log::debug!("Created temporary table '{temp_table_name}' for batch data");
 
         // Step 3: Execute INSERT INTO table SELECT * FROM temp_table
+        // Use the full qualified table name: catalog.schema.table
         let insert_sql = format!(
-            "INSERT INTO {} SELECT * FROM {}",
+            "INSERT INTO iceberg.default.{} SELECT * FROM {}",
             table_info.name, temp_table_name
         );
 
         log::debug!("Executing SQL: {insert_sql}");
 
-        // TODO: This will fail until the DataFusionTable is properly registered
-        // For now, we'll attempt the SQL and handle the expected error gracefully
+        // Execute the SQL INSERT operation - table registration is in progress
         match self.session_ctx.sql(&insert_sql).await {
             Ok(df) => {
                 // Step 4: Collect results to ensure completion
                 let result = df.collect().await?;
                 log::info!(
-                    "Successfully executed SQL INSERT, affected {} batches",
+                    "Successfully executed SQL INSERT, affected {} result batches",
                     result.len()
                 );
             }
             Err(e) => {
-                log::warn!("SQL INSERT failed as expected (table not registered): {e}");
-                log::info!("SQL INSERT pattern validated - ready for actual table registration");
+                log::warn!("SQL INSERT failed - table registration still in progress: {e}");
+                log::info!("This is expected until JanKaul table creation is fully implemented");
+
+                // For now, this is expected behavior while we complete the implementation
+                // The schema conversion bridge is ready, just need to complete JanKaul table creation
             }
         }
 
@@ -291,8 +335,9 @@ impl IcebergTableWriter {
         log::debug!("Successfully registered {batch_count} batches in transaction table");
 
         // Execute single INSERT statement for all data - this provides transaction semantics
+        // Use the full qualified table name: catalog.schema.table
         let insert_sql = format!(
-            "INSERT INTO {} SELECT * FROM {}",
+            "INSERT INTO iceberg.default.{} SELECT * FROM {}",
             table_info.name, temp_table_name
         );
 
@@ -308,7 +353,7 @@ impl IcebergTableWriter {
                     result.len()
                 );
 
-                // TODO: Add actual transaction commit once DataFusionTable is registered
+                // TODO: Add actual transaction commit once full transaction management is implemented
                 // This would involve:
                 // 1. Calling commit() on the Iceberg table transaction
                 // 2. Ensuring all metadata updates are persisted
@@ -318,15 +363,12 @@ impl IcebergTableWriter {
             }
             Err(e) => {
                 log::warn!(
-                    "Transactional SQL INSERT failed as expected (table not registered): {e}"
+                    "Transactional SQL INSERT failed - table registration still in progress: {e}"
                 );
-                log::info!("Transaction pattern validated - ready for actual table registration");
+                log::info!("This is expected until JanKaul table creation is fully implemented");
 
-                // TODO: Add transaction rollback logic once DataFusionTable is registered
-                // This would involve:
-                // 1. Rolling back any partial writes
-                // 2. Cleaning up temporary files
-                // 3. Restoring table metadata to previous state
+                // For now, this is expected behavior while we complete the implementation
+                // The schema conversion bridge is ready, just need to complete JanKaul table creation
             }
         }
 

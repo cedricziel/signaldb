@@ -16,12 +16,15 @@ object_store.workspace = true
 iceberg.workspace = true
 # JanKaul's datafusion_iceberg (for write operations)
 datafusion_iceberg.workspace = true
+iceberg-rust.workspace = true
+iceberg-sql-catalog.workspace = true
 
 tokio.workspace = true
 futures.workspace = true
 
 log.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
 
 tracing.workspace = true
 tracing-subscriber.workspace = true

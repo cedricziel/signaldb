@@ -1,24 +1,21 @@
-# Build optimization for faster CI builds
+[build]
+# One cache shared by the top-level workspace *and*
+# any member crate you `cd` into.
+target-dir = "../target"
 
-# Link Time Optimization for smaller release binaries
 [profile.release]
-lto = true
+lto = "thin"      # 95 % of the perf at ~40 % of the link time
 opt-level = 3
-codegen-units = 1
+codegen-units = 8 # good perf / far quicker builds
 panic = "abort"
 
-# Faster compilation for development and testing
 [profile.dev]
-debug = true
-opt-level = 0
-overflow-checks = true
+incremental = true         # make intent explicit
+split-debuginfo = "packed" # macOS only; omit on Linux/Windows
 
-# Test profile optimizations
 [profile.test]
-debug = true
-opt-level = 1
+opt-level = 1 # keep if you already like the speed
+lto = "thin"  # optional – only if tests are perf-sensitive
 
-# Environment variables for consistent builds
 [env]
-# Ensure consistent behavior across different environments
 RUST_BACKTRACE = { value = "1", condition = { env_not_set = "RUST_BACKTRACE" } }
