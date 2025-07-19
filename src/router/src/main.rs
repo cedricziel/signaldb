@@ -1,23 +1,70 @@
 use anyhow::{Context, Result};
-use common::config::Configuration;
+use clap::{Parser, Subcommand};
+use common::cli::{CommonArgs, CommonCommands, utils};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use router::{InMemoryStateImpl, RouterState, create_flight_service, create_router};
 use std::net::SocketAddr;
 use tonic::transport::Server;
 
+#[derive(Parser)]
+#[command(name = "signaldb-router")]
+#[command(about = "SignalDB Router Service - routes queries and provides HTTP/Flight APIs")]
+#[command(version)]
+struct Cli {
+    #[command(flatten)]
+    common: CommonArgs,
+
+    #[command(subcommand)]
+    command: Option<RouterCommands>,
+
+    #[arg(long, help = "Arrow Flight server port", default_value = "50053")]
+    flight_port: u16,
+
+    #[arg(long, help = "HTTP API server port", default_value = "3000")]
+    http_port: u16,
+
+    #[arg(long, help = "Bind address for servers", default_value = "0.0.0.0")]
+    bind: String,
+}
+
+#[derive(Subcommand)]
+enum RouterCommands {
+    #[command(flatten)]
+    Common(CommonCommands),
+}
+
+impl Default for RouterCommands {
+    fn default() -> Self {
+        Self::Common(CommonCommands::Start)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt::init();
+    let cli = Cli::parse();
+
+    // Initialize logging based on CLI arguments
+    utils::init_logging(&cli.common);
 
     // Load application configuration
-    let config = Configuration::load().context("Failed to load configuration")?;
+    let config = utils::load_config(cli.common.config.as_ref())?;
+
+    // Handle common commands that don't require starting the service
+    let command = cli.command.unwrap_or_default();
+    let RouterCommands::Common(ref common_cmd) = command;
+    if utils::handle_common_command(common_cmd, &config).await? {
+        return Ok(()); // Command handled, exit early
+    }
 
     log::info!("Starting SignalDB Router Service");
 
-    // Standard ports for router services
-    let flight_addr = SocketAddr::from(([0, 0, 0, 0], 50053)); // Arrow Flight
-    let http_addr = SocketAddr::from(([0, 0, 0, 0], 3000)); // Tempo API
+    // Use CLI-provided ports or defaults
+    let bind_ip = cli
+        .bind
+        .parse::<std::net::IpAddr>()
+        .context("Invalid bind address")?;
+    let flight_addr = SocketAddr::new(bind_ip, cli.flight_port);
+    let http_addr = SocketAddr::new(bind_ip, cli.http_port);
 
     // Initialize router service bootstrap for catalog-based discovery
     let router_bootstrap =

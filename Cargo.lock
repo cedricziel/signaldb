@@ -10,6 +10,7 @@ dependencies = [
  "arrow-flight",
  "async-trait",
  "axum",
+ "clap",
  "common",
  "datafusion",
  "futures",
@@ -20,7 +21,6 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1038,6 +1038,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be92d32e80243a54711e5d7ce823c35c41c9d929dc4ab58e1276f625841aadf9"
 dependencies = [
  "clap_builder",
+ "clap_derive",
 ]
 
 [[package]]
@@ -1046,8 +1047,22 @@ version = "4.5.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "707eab41e9622f9139419d573eca0900137718000c517d47da73045f54331c3d"
 dependencies = [
+ "anstream",
  "anstyle",
  "clap_lex",
+ "strsim",
+]
+
+[[package]]
+name = "clap_derive"
+version = "4.5.41"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef4f52386a59ca4c860f7393bcf8abd8dfd91ecccc0f774635ff68e92eeef491"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.104",
 ]
 
 [[package]]
@@ -1081,6 +1096,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "chrono",
+ "clap",
  "datafusion",
  "figment",
  "hex",
@@ -1101,6 +1117,7 @@ dependencies = [
  "testcontainers-modules",
  "tokio",
  "tonic",
+ "tracing-subscriber",
  "url",
  "uuid",
 ]
@@ -4320,6 +4337,7 @@ dependencies = [
  "arrow-flight",
  "async-trait",
  "bytes",
+ "clap",
  "common",
  "datafusion",
  "futures",
@@ -4330,7 +4348,6 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
- "tracing-subscriber",
  "url",
 ]
 
@@ -4759,6 +4776,7 @@ dependencies = [
  "axum",
  "bytes",
  "chrono",
+ "clap",
  "common",
  "datafusion",
  "futures",
@@ -4769,7 +4787,6 @@ dependencies = [
  "tokio-test",
  "tonic",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
@@ -5196,12 +5213,12 @@ dependencies = [
  "anyhow",
  "arrow-flight",
  "cargo-husky",
+ "clap",
  "common",
  "log",
  "router",
  "tokio",
  "tonic",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -6932,6 +6949,7 @@ dependencies = [
  "arrow-flight",
  "async-trait",
  "bytes",
+ "clap",
  "common",
  "criterion",
  "datafusion",
@@ -6949,7 +6967,6 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 

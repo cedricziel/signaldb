@@ -180,16 +180,23 @@ jobs:
             cargo build --release -p acceptor --bin signaldb-acceptor
             cargo build --release -p router --bin signaldb-router
             cargo build --release -p writer --bin signaldb-writer
+            cargo build --release -p querier --bin signaldb-querier
           fi
 
       - name: Test binary execution
         run: |
           if [ "${{ matrix.deployment }}" = "monolithic" ]; then
             ./target/release/signaldb --help
+            ./target/release/signaldb --version
           else
-            ./target/release/signaldb-acceptor --help || echo "Acceptor help test"
-            ./target/release/signaldb-router --help || echo "Router help test"
-            ./target/release/signaldb-writer --help || echo "Writer help test"
+            ./target/release/signaldb-acceptor --help
+            ./target/release/signaldb-acceptor --version
+            ./target/release/signaldb-router --help
+            ./target/release/signaldb-router --version
+            ./target/release/signaldb-writer --help
+            ./target/release/signaldb-writer --version
+            ./target/release/signaldb-querier --help
+            ./target/release/signaldb-querier --version
           fi
 
       - name: Upload binaries

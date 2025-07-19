@@ -29,6 +29,9 @@ async-trait = "0.1.88"
 async-stream = "0.3.0"
 futures = "0.3.31"
 
+# CLI framework
+clap = { version = "4.5", features = ["derive", "env"] }
+
 # Use datafusion's reexported dependencies for consistency
 datafusion = { version = "47.0.0", default-features = false, features = [
     "parquet",

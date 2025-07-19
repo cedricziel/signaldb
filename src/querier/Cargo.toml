@@ -12,11 +12,11 @@ tempo-api = { path = "../tempo-api", features = ["server"] }
 async-trait.workspace = true
 
 anyhow.workspace = true
+clap.workspace = true
 tokio.workspace = true
 log.workspace = true
 datafusion.workspace = true
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tonic.workspace = true
 arrow-flight.workspace = true
 object_store.workspace = true
@@ -30,3 +30,4 @@ thiserror.workspace = true
 [[bin]]
 name = "signaldb-querier"
 path = "src/main.rs"
+
