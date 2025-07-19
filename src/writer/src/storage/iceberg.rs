@@ -12,7 +12,7 @@ use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
 use object_store::ObjectStore;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use uuid;
 
 /// Represents the state of a transaction
@@ -44,6 +44,30 @@ struct PendingOperation {
     timestamp: Instant,
 }
 
+/// Configuration for retry behavior
+#[derive(Debug, Clone)]
+pub struct RetryConfig {
+    /// Maximum number of retry attempts
+    pub max_attempts: u32,
+    /// Initial delay before first retry
+    pub initial_delay: Duration,
+    /// Maximum delay between retries
+    pub max_delay: Duration,
+    /// Multiplier for exponential backoff
+    pub backoff_multiplier: f64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            initial_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(5),
+            backoff_multiplier: 2.0,
+        }
+    }
+}
+
 /// Iceberg table writer that replaces direct Parquet file writing
 /// Provides ACID transactions and proper metadata tracking
 pub struct IcebergTableWriter {
@@ -60,6 +84,8 @@ pub struct IcebergTableWriter {
     transaction_state: TransactionState,
     /// Operations pending within the current transaction
     pending_operations: Vec<PendingOperation>,
+    /// Retry configuration for failed operations
+    retry_config: RetryConfig,
 }
 
 impl IcebergTableWriter {
@@ -157,6 +183,7 @@ impl IcebergTableWriter {
             table_registered: true, // Table was registered during initialization
             transaction_state: TransactionState::None,
             pending_operations: Vec::new(),
+            retry_config: RetryConfig::default(),
         })
     }
 
@@ -288,6 +315,56 @@ impl IcebergTableWriter {
         }
     }
 
+    /// Execute a function with retry logic and exponential backoff
+    async fn execute_with_retry<F, Fut, T>(&self, operation_name: &str, mut f: F) -> Result<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        let mut attempt = 0;
+        let mut delay = self.retry_config.initial_delay;
+
+        loop {
+            attempt += 1;
+            
+            match f().await {
+                Ok(result) => {
+                    if attempt > 1 {
+                        log::info!(
+                            "Operation '{operation_name}' succeeded after {attempt} attempts"
+                        );
+                    }
+                    return Ok(result);
+                }
+                Err(e) => {
+                    if attempt >= self.retry_config.max_attempts {
+                        log::error!(
+                            "Operation '{operation_name}' failed after {attempt} attempts: {e}"
+                        );
+                        return Err(anyhow::anyhow!(
+                            "Operation '{operation_name}' failed after {attempt} attempts: {e}"
+                        ));
+                    }
+
+                    log::warn!(
+                        "Operation '{operation_name}' attempt {attempt} failed: {e}. Retrying in {delay:?}"
+                    );
+
+                    // Sleep before retry
+                    tokio::time::sleep(delay).await;
+
+                    // Calculate next delay with exponential backoff
+                    delay = std::cmp::min(
+                        self.retry_config.max_delay,
+                        Duration::from_secs_f64(
+                            delay.as_secs_f64() * self.retry_config.backoff_multiplier,
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
     /// Execute an immediate write operation (outside of a transaction)
     async fn execute_immediate_write(&mut self, batch: RecordBatch) -> Result<()> {
         // Get table metadata for SQL operations
@@ -316,17 +393,33 @@ impl IcebergTableWriter {
 
         log::debug!("Executing SQL: {insert_sql}");
 
-        // Execute the SQL INSERT operation
-        let df = self.session_ctx.sql(&insert_sql).await.map_err(|e| {
-            log::error!("SQL INSERT failed: {e}");
-            anyhow::anyhow!("Failed to execute SQL INSERT: {}", e)
-        })?;
+        // Execute the SQL INSERT operation with retry logic
+        let session_ctx = self.session_ctx.clone();
+        let insert_sql_clone = insert_sql.clone();
+        
+        let df = self
+            .execute_with_retry("SQL INSERT", || {
+                let ctx = session_ctx.clone();
+                let sql = insert_sql_clone.clone();
+                async move {
+                    ctx.sql(&sql).await.map_err(|e| {
+                        anyhow::anyhow!("Failed to execute SQL INSERT: {}", e)
+                    })
+                }
+            })
+            .await?;
 
-        // Collect results to ensure completion
-        let result = df.collect().await.map_err(|e| {
-            log::error!("Failed to collect SQL INSERT results: {e}");
-            anyhow::anyhow!("Failed to collect SQL INSERT results: {}", e)
-        })?;
+        // Collect results to ensure completion with retry logic
+        let result = self
+            .execute_with_retry("SQL INSERT collection", || {
+                let df_clone = df.clone();
+                async move {
+                    df_clone.collect().await.map_err(|e| {
+                        anyhow::anyhow!("Failed to collect SQL INSERT results: {}", e)
+                    })
+                }
+            })
+            .await?;
 
         log::info!(
             "Successfully executed SQL INSERT, affected {} result batches",
@@ -512,7 +605,7 @@ impl IcebergTableWriter {
                 .register_batch(&operation.temp_table, operation.batch.clone())?;
         }
 
-        // Execute all SQL operations
+        // Execute all SQL operations with retry logic
         for (index, operation) in self.pending_operations.iter().enumerate() {
             log::debug!(
                 "Executing operation {}/{} in transaction {}: {}",
@@ -522,43 +615,40 @@ impl IcebergTableWriter {
                 operation.sql
             );
 
-            match self.session_ctx.sql(&operation.sql).await {
-                Ok(df) => {
-                    // Collect results to ensure completion
-                    match df.collect().await {
-                        Ok(_) => {
-                            success_count += 1;
-                            log::debug!(
-                                "Operation {}/{} completed successfully",
-                                index + 1,
-                                total_operations
-                            );
-                        }
-                        Err(e) => {
-                            log::error!(
-                                "Failed to collect results for operation {}/{}: {}",
-                                index + 1,
-                                total_operations,
-                                e
-                            );
+            // Use retry logic for each SQL operation
+            let session_ctx = self.session_ctx.clone();
+            let sql = operation.sql.clone();
+            let operation_name = format!("Transaction {} operation {}/{}", transaction_id, index + 1, total_operations);
 
-                            // Rollback on failure
-                            self.transaction_state = TransactionState::None;
-                            self.pending_operations.clear();
-
-                            return Err(anyhow::anyhow!(
-                                "Transaction {} failed at operation {}/{}: {}",
-                                transaction_id,
-                                index + 1,
-                                total_operations,
-                                e
-                            ));
-                        }
+            let execute_result = self
+                .execute_with_retry(&operation_name, || {
+                    let ctx = session_ctx.clone();
+                    let sql_query = sql.clone();
+                    async move {
+                        let df = ctx.sql(&sql_query).await.map_err(|e| {
+                            anyhow::anyhow!("Failed to execute SQL: {}", e)
+                        })?;
+                        
+                        // Collect results to ensure completion
+                        df.collect().await.map_err(|e| {
+                            anyhow::anyhow!("Failed to collect SQL results: {}", e)
+                        })
                     }
+                })
+                .await;
+
+            match execute_result {
+                Ok(_) => {
+                    success_count += 1;
+                    log::debug!(
+                        "Operation {}/{} completed successfully",
+                        index + 1,
+                        total_operations
+                    );
                 }
                 Err(e) => {
                     log::error!(
-                        "Failed to execute SQL for operation {}/{}: {}",
+                        "Operation {}/{} failed after all retry attempts: {}",
                         index + 1,
                         total_operations,
                         e
@@ -569,7 +659,7 @@ impl IcebergTableWriter {
                     self.pending_operations.clear();
 
                     return Err(anyhow::anyhow!(
-                        "Transaction {} failed at operation {}/{}: {}",
+                        "Transaction {} failed at operation {}/{} after retries: {}",
                         transaction_id,
                         index + 1,
                         total_operations,
@@ -666,6 +756,16 @@ impl IcebergTableWriter {
     /// Get table metadata
     pub fn table_metadata(&self) -> &iceberg::spec::TableMetadata {
         self.table.metadata()
+    }
+
+    /// Update retry configuration
+    pub fn set_retry_config(&mut self, retry_config: RetryConfig) {
+        self.retry_config = retry_config;
+    }
+
+    /// Get current retry configuration
+    pub fn retry_config(&self) -> &RetryConfig {
+        &self.retry_config
     }
 }
 
