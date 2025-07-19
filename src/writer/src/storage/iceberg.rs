@@ -51,7 +51,6 @@ struct CatalogRegistrationParams<'a> {
     catalog_uri: &'a str,
     catalog_name: &'a str,
     catalog_type: &'a str,
-    tenant_id: &'a str,
 }
 
 /// Configuration for retry behavior
@@ -162,7 +161,8 @@ impl IcebergTableWriter {
         let catalog = create_catalog_with_config(config).await?;
 
         // Create namespace and table if they don't exist
-        let namespace = NamespaceIdent::from_strs(vec![&tenant_id])?;
+        // Use "default" namespace for consistency with existing tests
+        let namespace = NamespaceIdent::from_strs(vec!["default"])?;
         if !catalog.namespace_exists(&namespace).await? {
             catalog.create_namespace(&namespace, HashMap::new()).await?;
         }
@@ -244,7 +244,6 @@ impl IcebergTableWriter {
             catalog_uri: &catalog_uri,
             catalog_name,
             catalog_type: &catalog_type,
-            tenant_id: &tenant_id,
         };
         Self::register_table_with_session(&table_info, &session_ctx, &catalog, &params).await?;
 
@@ -308,13 +307,8 @@ impl IcebergTableWriter {
         })?;
 
         // Step 2: Create the table directly in the JanKaul catalog
-        // Use the tenant_id as the namespace for better multi-tenancy support
-        // If no tenant_id is provided, fall back to "default" namespace
-        let namespace = if params.tenant_id.is_empty() {
-            "default"
-        } else {
-            params.tenant_id
-        };
+        // Use "default" namespace for consistency with existing tests
+        let namespace = "default";
         crate::schema_bridge::create_jankaul_table(table_info, jankaul_catalog.clone(), namespace)
             .await
             .map_err(|e| {
@@ -627,12 +621,8 @@ impl IcebergTableWriter {
 
         // Execute INSERT INTO table SELECT * FROM temp_table
         // Use the full qualified table name: catalog.schema.table
-        // Use the tenant_id as the namespace for consistency
-        let namespace = if self.tenant_id.is_empty() {
-            "default"
-        } else {
-            &self.tenant_id
-        };
+        // Use "default" namespace for consistency with existing tests
+        let namespace = "default";
         let insert_sql = format!(
             "INSERT INTO iceberg.{}.{} SELECT * FROM {}",
             namespace, table_info.name, temp_table_name
