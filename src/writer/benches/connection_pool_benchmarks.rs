@@ -201,7 +201,7 @@ fn bench_concurrent_writer_creation(c: &mut Criterion) {
 
                     // Wait for all to complete
                     for handle in handles {
-                        black_box(handle.await.expect("Task failed"));
+                        let _ = black_box(handle.await.expect("Task failed"));
                     }
                 });
             },
@@ -241,7 +241,7 @@ fn bench_concurrent_writer_creation(c: &mut Criterion) {
 
                     // Wait for all to complete
                     for handle in handles {
-                        black_box(handle.await.expect("Task failed"));
+                        let _ = black_box(handle.await.expect("Task failed"));
                     }
                 });
             },
