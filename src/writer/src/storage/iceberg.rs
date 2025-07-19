@@ -849,7 +849,25 @@ impl IcebergTableWriter {
                         e
                     );
 
-                    // Rollback on failure
+                    // Rollback on failure - clean up temporary tables first
+                    log::debug!(
+                        "Cleaning up {} temporary tables after transaction {} failure",
+                        self.pending_operations.len(),
+                        transaction_id
+                    );
+
+                    for operation in &self.pending_operations {
+                        if let Err(cleanup_err) =
+                            self.session_ctx.deregister_table(&operation.temp_table)
+                        {
+                            log::warn!(
+                                "Failed to deregister temporary table {} during rollback: {}",
+                                operation.temp_table,
+                                cleanup_err
+                            );
+                        }
+                    }
+
                     self.transaction_state = TransactionState::None;
                     self.pending_operations.clear();
 
@@ -864,7 +882,33 @@ impl IcebergTableWriter {
             }
         }
 
-        // All operations succeeded - clean up
+        // All operations succeeded - clean up temporary tables from session context
+        log::debug!(
+            "Cleaning up {} temporary tables from session context for transaction {}",
+            self.pending_operations.len(),
+            transaction_id
+        );
+
+        for operation in &self.pending_operations {
+            // Deregister the temporary table from the session context
+            // This prevents memory leaks by removing tables that are no longer needed
+            if let Err(e) = self.session_ctx.deregister_table(&operation.temp_table) {
+                // Log the error but don't fail the transaction since the operation succeeded
+                log::warn!(
+                    "Failed to deregister temporary table {} after successful transaction {}: {}",
+                    operation.temp_table,
+                    transaction_id,
+                    e
+                );
+            } else {
+                log::trace!(
+                    "Successfully deregistered temporary table {} from session context",
+                    operation.temp_table
+                );
+            }
+        }
+
+        // Clear pending operations and reset transaction state
         self.pending_operations.clear();
         self.transaction_state = TransactionState::None;
 
@@ -914,6 +958,29 @@ impl IcebergTableWriter {
             self.table.identifier(),
             self.pending_operations.len()
         );
+
+        // Clean up temporary tables from session context before discarding operations
+        log::debug!(
+            "Cleaning up {} temporary tables during rollback of transaction {}",
+            self.pending_operations.len(),
+            transaction_id
+        );
+
+        for operation in &self.pending_operations {
+            if let Err(e) = self.session_ctx.deregister_table(&operation.temp_table) {
+                log::warn!(
+                    "Failed to deregister temporary table {} during rollback of transaction {}: {}",
+                    operation.temp_table,
+                    transaction_id,
+                    e
+                );
+            } else {
+                log::trace!(
+                    "Successfully deregistered temporary table {} during rollback",
+                    operation.temp_table
+                );
+            }
+        }
 
         // Discard all pending operations
         let discarded_operations = self.pending_operations.len();
