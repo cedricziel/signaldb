@@ -673,7 +673,18 @@ async fn create_pooled_sql_catalog(
         .parse::<SqliteConnectOptions>()
         .map_err(|e| anyhow::anyhow!("Invalid SQLite connection URI: {}", e))?;
 
-    // Create connection pool with optimized settings
+    // TODO: Connection pooling implementation pending iceberg_sql_catalog support
+    // The iceberg_sql_catalog (v0.8.0) currently doesn't expose a way to use an external
+    // sqlx::Pool. The pool creation code below is ready for when this functionality
+    // is added to the library. For now, we create the pool to validate configuration
+    // but cannot use it with SqlCatalog::new().
+    //
+    // Future implementation should:
+    // 1. Check if iceberg_sql_catalog has added pool support
+    // 2. Use a constructor like SqlCatalog::with_pool(pool, catalog_name, object_store_builder)
+    // 3. Remove the direct SqlCatalog::new() call below
+
+    // Create connection pool with optimized settings (currently unused due to library limitations)
     let _pool = SqlitePoolOptions::new()
         .min_connections(pool_config.min_connections)
         .max_connections(pool_config.max_connections)
@@ -686,17 +697,16 @@ async fn create_pooled_sql_catalog(
         .map_err(|e| anyhow::anyhow!("Failed to create connection pool: {}", e))?;
 
     log::info!(
-        "Created SQLite connection pool with {} connections for catalog '{}'",
+        "Created SQLite connection pool with {} connections for catalog '{}' (awaiting library support)",
         pool_config.max_connections,
         catalog_name
     );
 
-    // Create catalog with pooled connections
-    // Note: iceberg_sql_catalog may not directly support sqlx::Pool yet
-    // For now, we'll create the catalog normally but have the pool infrastructure ready
+    // FIXME: Replace with pooled catalog creation once iceberg_sql_catalog supports it
+    // Currently falls back to non-pooled connection
     SqlCatalog::new(catalog_uri, catalog_name, object_store_builder)
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to create pooled SQL catalog: {}", e))
+        .map_err(|e| anyhow::anyhow!("Failed to create SQL catalog: {}", e))
 }
 
 /// Helper function to convert ConvertedPrimitiveType to JanKaul's PrimitiveType
