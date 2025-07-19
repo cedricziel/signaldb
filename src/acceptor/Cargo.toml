@@ -37,8 +37,5 @@ async-trait.workspace = true
 name = "signaldb-acceptor"
 path = "src/main.rs"
 
-[dev-dependencies]
-mockall.workspace = true
-
 [package.metadata.cargo-machete]
-ignored = ["tracing", "opentelemetry", "mockall"]
+ignored = ["tracing", "opentelemetry"]
