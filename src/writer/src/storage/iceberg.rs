@@ -45,6 +45,15 @@ struct PendingOperation {
     timestamp: Instant,
 }
 
+/// Parameters for catalog registration
+struct CatalogRegistrationParams<'a> {
+    pool_config: &'a CatalogPoolConfig,
+    catalog_uri: &'a str,
+    catalog_name: &'a str,
+    catalog_type: &'a str,
+    tenant_id: &'a str,
+}
+
 /// Configuration for retry behavior
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
@@ -230,16 +239,14 @@ impl IcebergTableWriter {
         let catalog_uri = config.schema.catalog_uri.clone();
         let catalog_name = "signaldb_iceberg"; // TODO: Make this configurable
         let catalog_type = config.schema.catalog_type.clone();
-        Self::register_table_with_session(
-            &table_info,
-            &session_ctx,
-            &catalog,
-            &pool_config,
-            &catalog_uri,
+        let params = CatalogRegistrationParams {
+            pool_config: &pool_config,
+            catalog_uri: &catalog_uri,
             catalog_name,
-            &catalog_type,
-        )
-        .await?;
+            catalog_type: &catalog_type,
+            tenant_id: &tenant_id,
+        };
+        Self::register_table_with_session(&table_info, &session_ctx, &catalog, &params).await?;
 
         Ok(Self {
             catalog,
@@ -265,10 +272,7 @@ impl IcebergTableWriter {
         table_info: &crate::schema_bridge::ConvertedTableInfo,
         session_ctx: &SessionContext,
         _catalog: &Arc<dyn Catalog>, // Apache catalog not used in new approach
-        pool_config: &CatalogPoolConfig,
-        catalog_uri: &str,
-        catalog_name: &str,
-        catalog_type: &str,
+        params: &CatalogRegistrationParams<'_>,
     ) -> Result<()> {
         log::info!(
             "Registering Iceberg catalog with DataFusion session for table '{}'",
@@ -276,12 +280,15 @@ impl IcebergTableWriter {
         );
         log::debug!("Table location: {}", table_info.location);
         log::debug!("Schema fields: {}", table_info.schema.fields.len());
-        log::debug!("Catalog type: {catalog_type}");
+        log::debug!("Catalog type: {}", params.catalog_type);
 
         // Only create JanKaul SQL catalog if the catalog type is SQL
         // For memory catalogs, skip DataFusion integration for now
-        if catalog_type != "sql" {
-            log::info!("Skipping DataFusion integration for non-SQL catalog type: {catalog_type}");
+        if params.catalog_type != "sql" {
+            log::info!(
+                "Skipping DataFusion integration for non-SQL catalog type: {}",
+                params.catalog_type
+            );
             // TODO: Implement DataFusion integration for memory catalogs
             return Ok(());
         }
@@ -290,9 +297,9 @@ impl IcebergTableWriter {
         log::info!("Creating JanKaul SQL catalog for DataFusion integration");
 
         let jankaul_catalog = create_jankaul_sql_catalog_with_pool(
-            catalog_uri,
-            catalog_name,
-            Some(pool_config.clone()),
+            params.catalog_uri,
+            params.catalog_name,
+            Some(params.pool_config.clone()),
         )
         .await
         .map_err(|e| {
@@ -301,7 +308,13 @@ impl IcebergTableWriter {
         })?;
 
         // Step 2: Create the table directly in the JanKaul catalog
-        let namespace = "default";
+        // Use the tenant_id as the namespace for better multi-tenancy support
+        // If no tenant_id is provided, fall back to "default" namespace
+        let namespace = if params.tenant_id.is_empty() {
+            "default"
+        } else {
+            params.tenant_id
+        };
         crate::schema_bridge::create_jankaul_table(table_info, jankaul_catalog.clone(), namespace)
             .await
             .map_err(|e| {
@@ -309,7 +322,7 @@ impl IcebergTableWriter {
                 anyhow::anyhow!("Failed to create table in JanKaul catalog: {}", e)
             })?;
 
-        log::info!("Successfully created table in JanKaul catalog");
+        log::info!("Successfully created table in JanKaul catalog with namespace '{namespace}'");
 
         // Step 3: Wrap the catalog in an IcebergCatalog and register with DataFusion
         let iceberg_catalog = IcebergCatalog::new(jankaul_catalog, None)
@@ -614,9 +627,15 @@ impl IcebergTableWriter {
 
         // Execute INSERT INTO table SELECT * FROM temp_table
         // Use the full qualified table name: catalog.schema.table
+        // Use the tenant_id as the namespace for consistency
+        let namespace = if self.tenant_id.is_empty() {
+            "default"
+        } else {
+            &self.tenant_id
+        };
         let insert_sql = format!(
-            "INSERT INTO iceberg.default.{} SELECT * FROM {}",
-            table_info.name, temp_table_name
+            "INSERT INTO iceberg.{}.{} SELECT * FROM {}",
+            namespace, table_info.name, temp_table_name
         );
 
         log::debug!("Executing SQL: {insert_sql}");
@@ -659,6 +678,11 @@ impl IcebergTableWriter {
             "Successfully wrote batch to Iceberg table {}",
             self.table.identifier()
         );
+
+        // Clean up temporary table to prevent memory leaks
+        if let Err(e) = self.session_ctx.deregister_table(&temp_table_name) {
+            log::warn!("Failed to clean up temporary table {temp_table_name}: {e}");
+        }
 
         Ok(())
     }
