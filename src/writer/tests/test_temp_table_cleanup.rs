@@ -1,6 +1,6 @@
 use common::config::Configuration;
 use datafusion::arrow::array::*;
-use datafusion::arrow::datatypes::{DataType, Field, Schema};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use datafusion::arrow::record_batch::RecordBatch;
 use object_store::memory::InMemory;
 use std::sync::Arc;
@@ -19,23 +19,68 @@ async fn test_temp_table_cleanup_on_commit() {
         .await
         .expect("Failed to create writer");
 
-    // Create test data
+    // Create test data matching metrics_gauge schema
     let schema = Arc::new(Schema::new(vec![
-        Field::new("timestamp", DataType::Int64, false),
-        Field::new("tenant_id", DataType::Utf8, false),
+        Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(
+            "start_timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            true,
+        ),
         Field::new("service_name", DataType::Utf8, false),
         Field::new("metric_name", DataType::Utf8, false),
+        Field::new("metric_description", DataType::Utf8, true),
+        Field::new("metric_unit", DataType::Utf8, true),
         Field::new("value", DataType::Float64, false),
+        Field::new("flags", DataType::Int32, true),
+        Field::new("resource_schema_url", DataType::Utf8, true),
+        Field::new("resource_attributes", DataType::Utf8, true),
+        Field::new("scope_name", DataType::Utf8, true),
+        Field::new("scope_version", DataType::Utf8, true),
+        Field::new("scope_schema_url", DataType::Utf8, true),
+        Field::new("scope_attributes", DataType::Utf8, true),
+        Field::new("scope_dropped_attr_count", DataType::Int32, true),
+        Field::new("attributes", DataType::Utf8, true),
+        Field::new("exemplars", DataType::Utf8, true),
+        Field::new("date_day", DataType::Date32, false),
+        Field::new("hour", DataType::Int32, false),
     ]));
 
     let batch1 = RecordBatch::try_new(
         schema.clone(),
         vec![
-            Arc::new(Int64Array::from(vec![1000, 2000])),
-            Arc::new(StringArray::from(vec![tenant_id, tenant_id])),
+            Arc::new(TimestampNanosecondArray::from(vec![1000000000, 2000000000])),
+            Arc::new(TimestampNanosecondArray::from(vec![
+                Some(1000000000),
+                Some(2000000000),
+            ])),
             Arc::new(StringArray::from(vec!["service1", "service2"])),
             Arc::new(StringArray::from(vec!["cpu_usage", "memory_usage"])),
+            Arc::new(StringArray::from(vec![
+                Some("CPU utilization"),
+                Some("Memory utilization"),
+            ])),
+            Arc::new(StringArray::from(vec![Some("percent"), Some("percent")])),
             Arc::new(Float64Array::from(vec![50.0, 75.0])),
+            Arc::new(Int32Array::from(vec![Some(0), Some(0)])),
+            Arc::new(StringArray::from(vec![None::<&str>, None])),
+            Arc::new(StringArray::from(vec![Some("{}"), Some("{}")])),
+            Arc::new(StringArray::from(vec![
+                Some("test_scope"),
+                Some("test_scope"),
+            ])),
+            Arc::new(StringArray::from(vec![Some("1.0.0"), Some("1.0.0")])),
+            Arc::new(StringArray::from(vec![None::<&str>, None])),
+            Arc::new(StringArray::from(vec![Some("{}"), Some("{}")])),
+            Arc::new(Int32Array::from(vec![Some(0), Some(0)])),
+            Arc::new(StringArray::from(vec![Some("{}"), Some("{}")])),
+            Arc::new(StringArray::from(vec![None::<&str>, None])),
+            Arc::new(Date32Array::from(vec![19000, 19000])),
+            Arc::new(Int32Array::from(vec![10, 10])),
         ],
     )
     .expect("Failed to create batch1");
@@ -43,11 +88,34 @@ async fn test_temp_table_cleanup_on_commit() {
     let batch2 = RecordBatch::try_new(
         schema.clone(),
         vec![
-            Arc::new(Int64Array::from(vec![3000, 4000])),
-            Arc::new(StringArray::from(vec![tenant_id, tenant_id])),
+            Arc::new(TimestampNanosecondArray::from(vec![3000000000, 4000000000])),
+            Arc::new(TimestampNanosecondArray::from(vec![
+                Some(3000000000),
+                Some(4000000000),
+            ])),
             Arc::new(StringArray::from(vec!["service3", "service4"])),
             Arc::new(StringArray::from(vec!["disk_usage", "network_usage"])),
+            Arc::new(StringArray::from(vec![
+                Some("Disk utilization"),
+                Some("Network utilization"),
+            ])),
+            Arc::new(StringArray::from(vec![Some("percent"), Some("bytes")])),
             Arc::new(Float64Array::from(vec![80.0, 90.0])),
+            Arc::new(Int32Array::from(vec![Some(0), Some(0)])),
+            Arc::new(StringArray::from(vec![None::<&str>, None])),
+            Arc::new(StringArray::from(vec![Some("{}"), Some("{}")])),
+            Arc::new(StringArray::from(vec![
+                Some("test_scope"),
+                Some("test_scope"),
+            ])),
+            Arc::new(StringArray::from(vec![Some("1.0.0"), Some("1.0.0")])),
+            Arc::new(StringArray::from(vec![None::<&str>, None])),
+            Arc::new(StringArray::from(vec![Some("{}"), Some("{}")])),
+            Arc::new(Int32Array::from(vec![Some(0), Some(0)])),
+            Arc::new(StringArray::from(vec![Some("{}"), Some("{}")])),
+            Arc::new(StringArray::from(vec![None::<&str>, None])),
+            Arc::new(Date32Array::from(vec![19000, 19000])),
+            Arc::new(Int32Array::from(vec![10, 10])),
         ],
     )
     .expect("Failed to create batch2");
