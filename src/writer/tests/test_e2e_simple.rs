@@ -71,18 +71,27 @@ fn create_simple_test_data(num_rows: usize) -> Result<RecordBatch> {
             Arc::new(TimestampNanosecondArray::from(vec![None; num_rows])),
             Arc::new(StringArray::from(vec!["e2e-simple-service"; num_rows])),
             Arc::new(StringArray::from(vec!["simple.metric"; num_rows])),
-            Arc::new(StringArray::from(vec![Some("Simple test metric"); num_rows])),
+            Arc::new(StringArray::from(vec![
+                Some("Simple test metric");
+                num_rows
+            ])),
             Arc::new(StringArray::from(vec![Some("count"); num_rows])),
             Arc::new(Float64Array::from(values)),
             Arc::new(Int32Array::from(vec![None; num_rows])),
             Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-            Arc::new(StringArray::from(vec![Some("{\"host\":\"simple-test\"}"); num_rows])),
+            Arc::new(StringArray::from(vec![
+                Some("{\"host\":\"simple-test\"}");
+                num_rows
+            ])),
             Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
             Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
             Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
             Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
             Arc::new(Int32Array::from(vec![None; num_rows])),
-            Arc::new(StringArray::from(vec![Some("{\"type\":\"simple\"}"); num_rows])),
+            Arc::new(StringArray::from(vec![
+                Some("{\"type\":\"simple\"}");
+                num_rows
+            ])),
             Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
             Arc::new(Date32Array::from(vec![19000; num_rows])),
             Arc::new(Int32Array::from(vec![10; num_rows])),
@@ -98,8 +107,13 @@ async fn test_simple_e2e_write() -> Result<()> {
     let object_store = Arc::new(InMemory::new());
 
     // Create writer
-    let mut writer =
-        create_iceberg_writer(&config, object_store.clone(), "simple_tenant", "metrics_gauge").await?;
+    let mut writer = create_iceberg_writer(
+        &config,
+        object_store.clone(),
+        "simple_tenant",
+        "metrics_gauge",
+    )
+    .await?;
 
     // Create simple test data
     let test_data = create_simple_test_data(10)?;
@@ -120,8 +134,13 @@ async fn test_simple_e2e_multi_batch() -> Result<()> {
     let config = create_simple_test_config();
     let object_store = Arc::new(InMemory::new());
 
-    let mut writer =
-        create_iceberg_writer(&config, object_store.clone(), "simple_tenant", "metrics_gauge").await?;
+    let mut writer = create_iceberg_writer(
+        &config,
+        object_store.clone(),
+        "simple_tenant",
+        "metrics_gauge",
+    )
+    .await?;
 
     // Create multiple small batches
     let batch1 = create_simple_test_data(5)?;
@@ -135,7 +154,10 @@ async fn test_simple_e2e_multi_batch() -> Result<()> {
     // Write batches transactionally
     writer.write_batches(vec![batch1, batch2, batch3]).await?;
 
-    log::info!("Successfully wrote {} rows in transaction", total_expected_rows);
+    log::info!(
+        "Successfully wrote {} rows in transaction",
+        total_expected_rows
+    );
 
     Ok(())
 }
@@ -145,8 +167,13 @@ async fn test_simple_e2e_transaction() -> Result<()> {
     let config = create_simple_test_config();
     let object_store = Arc::new(InMemory::new());
 
-    let mut writer =
-        create_iceberg_writer(&config, object_store.clone(), "simple_tenant", "metrics_gauge").await?;
+    let mut writer = create_iceberg_writer(
+        &config,
+        object_store.clone(),
+        "simple_tenant",
+        "metrics_gauge",
+    )
+    .await?;
 
     // Test basic transaction flow
     let txn_id = writer.begin_transaction().await?;
@@ -169,8 +196,13 @@ async fn test_simple_e2e_rollback() -> Result<()> {
     let config = create_simple_test_config();
     let object_store = Arc::new(InMemory::new());
 
-    let mut writer =
-        create_iceberg_writer(&config, object_store.clone(), "simple_tenant", "metrics_gauge").await?;
+    let mut writer = create_iceberg_writer(
+        &config,
+        object_store.clone(),
+        "simple_tenant",
+        "metrics_gauge",
+    )
+    .await?;
 
     // Test rollback
     let txn_id = writer.begin_transaction().await?;
