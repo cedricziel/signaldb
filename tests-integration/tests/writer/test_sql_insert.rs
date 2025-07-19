@@ -4,6 +4,7 @@ use datafusion::arrow::array::{RecordBatch, StringArray, TimestampNanosecondArra
 use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use object_store::memory::InMemory;
 use std::sync::Arc;
+use tests_integration::{create_test_config, create_test_object_store, init_test_logging};
 use writer::create_iceberg_writer;
 
 #[tokio::test]

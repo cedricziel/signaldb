@@ -1,61 +1,4 @@
-[package]
-name = "signaldb"
-version = "0.1.0"
-edition = "2024"
-license = "AGPL-3.0"
-
-rust-version = "1.85.0"
-
-publish = false
-
-[package.metadata.cargo-machete]
-ignored = ["cargo-husky"]
-
-[dependencies]
-acceptor = { path = "src/acceptor", features = ["testing"] }
-common = { path = "src/common" }
-router = { path = "src/router" }
-writer = { path = "src/writer" }
-uuid = { workspace = true }
-tempfile = "3.20.0"
-hex = "0.4"
-futures = "0.3.31"
-
-anyhow.workspace = true
-axum.workspace = true
-
-datafusion.workspace = true
-arrow-flight.workspace = true
-
-opentelemetry-proto.workspace = true
-tonic.workspace = true
-
-tokio.workspace = true
-
-tracing.workspace = true
-tracing-subscriber.workspace = true
-
-log.workspace = true
-
-serde_json.workspace = true
-figment.workspace = true
-
-object_store.workspace = true
-
-[[example]]
-name = "flight_client"
-path = "examples/flight_client.rs"
-
-[dev-dependencies]
-env_logger = "0.11.5"
-querier = { path = "src/querier" }
-testcontainers-modules = { workspace = true }
-
-[dev-dependencies.cargo-husky]
-version = "1"
-default-features = false
-features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"]
-
+# Virtual workspace - no root package
 [workspace]
 resolver = "2"
 members = [
@@ -64,8 +7,10 @@ members = [
     "src/querier",
     "src/router",
     "src/signal-producer",
+    "src/signaldb-bin",
     "src/tempo-api",
     "src/writer",
+    "tests-integration",
 ]
 
 [workspace.package]
@@ -185,6 +130,7 @@ sqlx = { version = "0.8", default-features = false, features = [
     "uuid",
 ] }
 url = "2.5"
+cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"] }
 
 [profile.dev]
 split-debuginfo = "unpacked"
