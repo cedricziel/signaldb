@@ -37,6 +37,10 @@ tonic.workspace = true
 iceberg.workspace = true
 iceberg-catalog-memory.workspace = true
 
+# JanKaul's iceberg-rust implementation
+iceberg-rust.workspace = true
+iceberg-sql-catalog.workspace = true
+
 object_store.workspace = true
 url.workspace = true
 

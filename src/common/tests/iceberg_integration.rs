@@ -1,6 +1,6 @@
 use common::config::SchemaConfig;
 use common::schema::create_catalog;
-use iceberg::NamespaceIdent;
+use iceberg_rust::catalog::namespace::Namespace;
 use std::collections::HashMap;
 
 #[tokio::test]
@@ -19,22 +19,25 @@ async fn test_iceberg_sql_catalog_basic_operations() {
     assert_eq!(namespaces.len(), 0);
 
     // Create a namespace
-    let namespace_ident = NamespaceIdent::from_strs(vec!["signaldb"]).unwrap();
+    let namespace = Namespace::try_new(&["signaldb".to_string()]).unwrap();
     catalog
-        .create_namespace(&namespace_ident, HashMap::new())
+        .create_namespace(&namespace, Some(HashMap::new()))
         .await
         .unwrap();
 
     // List namespaces again
     let namespaces = catalog.list_namespaces(None).await.unwrap();
     assert_eq!(namespaces.len(), 1);
-    assert_eq!(namespaces[0].to_string(), "signaldb");
+    assert_eq!(
+        format!("{:?}", namespaces[0]),
+        r#"Namespace { name: ["signaldb"] }"#
+    );
 
     // Creating the same namespace should be idempotent (this should not error)
     // Note: Iceberg catalogs typically handle this gracefully or return an error
     // that we can ignore for idempotency
     let result = catalog
-        .create_namespace(&namespace_ident, HashMap::new())
+        .create_namespace(&namespace, Some(HashMap::new()))
         .await;
 
     // Either it succeeds (idempotent) or fails with "already exists"

@@ -7,6 +7,15 @@ use std::sync::Arc;
 
 // Import types from iceberg-rust via datafusion_iceberg
 use iceberg_rust::catalog::Catalog as IcebergRustCatalog;
+use iceberg_rust::spec::partition::PartitionSpec as JankaulPartitionSpec;
+use iceberg_rust::spec::partition::{
+    PartitionField as JankaulPartitionField, PartitionSpecBuilder, Transform as JankaulTransform,
+};
+use iceberg_rust::spec::schema::Schema as JankaulSchema;
+use iceberg_rust::spec::types::{
+    PrimitiveType as JankaulPrimitiveType, StructField, StructType as JankaulStructType,
+    Type as JankaulType,
+};
 
 // Note: JanKaul's iceberg-rust types are not directly available as imports
 // The datafusion_iceberg crate provides DataFusionTable which wraps the underlying iceberg-rust types
@@ -20,6 +29,130 @@ use iceberg_rust::catalog::Catalog as IcebergRustCatalog;
 pub fn convert_schema_to_jankaul(apache_schema: &ApacheSchema) -> Result<ConvertedSchema> {
     // Delegate to the internal function which already implements the conversion logic
     convert_schema_to_jankaul_internal(apache_schema)
+}
+
+/// Create JanKaul Schema from ConvertedSchema
+pub fn create_jankaul_schema_from_converted(converted: &ConvertedSchema) -> Result<JankaulSchema> {
+    let mut fields = Vec::new();
+
+    for field in &converted.fields {
+        let jankaul_type = create_jankaul_type_from_converted(&field.field_type)?;
+        let struct_field = StructField {
+            id: field.id,
+            name: field.name.clone(),
+            required: field.required,
+            field_type: jankaul_type,
+            doc: None,
+        };
+        fields.push(struct_field);
+    }
+
+    let struct_type = JankaulStructType::new(fields);
+    Ok(JankaulSchema::from_struct_type(
+        struct_type,
+        converted.schema_id,
+        None,
+    ))
+}
+
+/// Create JanKaul Type from ConvertedType
+fn create_jankaul_type_from_converted(converted: &ConvertedType) -> Result<JankaulType> {
+    match converted {
+        ConvertedType::Primitive(primitive) => {
+            let jankaul_primitive = match primitive {
+                ConvertedPrimitiveType::Boolean => JankaulPrimitiveType::Boolean,
+                ConvertedPrimitiveType::Int => JankaulPrimitiveType::Int,
+                ConvertedPrimitiveType::Long => JankaulPrimitiveType::Long,
+                ConvertedPrimitiveType::Float => JankaulPrimitiveType::Float,
+                ConvertedPrimitiveType::Double => JankaulPrimitiveType::Double,
+                ConvertedPrimitiveType::String => JankaulPrimitiveType::String,
+                ConvertedPrimitiveType::Binary => JankaulPrimitiveType::Binary,
+                ConvertedPrimitiveType::Date => JankaulPrimitiveType::Date,
+                ConvertedPrimitiveType::Time => JankaulPrimitiveType::Time,
+                ConvertedPrimitiveType::Timestamp => JankaulPrimitiveType::Timestamp,
+                ConvertedPrimitiveType::Timestamptz => JankaulPrimitiveType::Timestamptz,
+                ConvertedPrimitiveType::Fixed(len) => JankaulPrimitiveType::Fixed(*len),
+                ConvertedPrimitiveType::Decimal { precision, scale } => {
+                    JankaulPrimitiveType::Decimal {
+                        precision: *precision,
+                        scale: *scale,
+                    }
+                }
+                ConvertedPrimitiveType::TimestampNs => JankaulPrimitiveType::Timestamp,
+                ConvertedPrimitiveType::TimestamptzNs => JankaulPrimitiveType::Timestamptz,
+                ConvertedPrimitiveType::Uuid => JankaulPrimitiveType::Uuid,
+            };
+            Ok(JankaulType::Primitive(jankaul_primitive))
+        }
+        ConvertedType::Struct(fields) => {
+            let mut jankaul_fields = Vec::new();
+            for field in fields {
+                let jankaul_type = create_jankaul_type_from_converted(&field.field_type)?;
+                let struct_field = StructField {
+                    id: field.id,
+                    name: field.name.clone(),
+                    required: field.required,
+                    field_type: jankaul_type,
+                    doc: None,
+                };
+                jankaul_fields.push(struct_field);
+            }
+            Ok(JankaulType::Struct(JankaulStructType::new(jankaul_fields)))
+        }
+        ConvertedType::List(element_type) => {
+            let element_type = create_jankaul_type_from_converted(element_type)?;
+            // List types in JanKaul need unique element IDs
+            // Using a simple incrementing ID starting from 1000 for list elements
+            Ok(JankaulType::List(iceberg_rust::spec::types::ListType {
+                element_id: 1000, // TODO: Use proper ID allocation
+                element: Box::new(element_type),
+                element_required: true, // Default to required for now
+            }))
+        }
+        ConvertedType::Map { key, value } => {
+            let key_type = create_jankaul_type_from_converted(key)?;
+            let value_type = create_jankaul_type_from_converted(value)?;
+            // Map types in JanKaul need unique key and value IDs
+            Ok(JankaulType::Map(iceberg_rust::spec::types::MapType {
+                key_id: 2000, // TODO: Use proper ID allocation
+                key: Box::new(key_type),
+                value_id: 2001, // TODO: Use proper ID allocation
+                value: Box::new(value_type),
+                value_required: true, // Default to required for now
+            }))
+        }
+    }
+}
+
+/// Create JanKaul PartitionSpec from ConvertedPartitionSpec
+pub fn create_jankaul_partition_spec_from_converted(
+    converted: &ConvertedPartitionSpec,
+) -> Result<JankaulPartitionSpec> {
+    let mut fields = Vec::new();
+
+    for field in &converted.fields {
+        let transform = match &field.transform {
+            ConvertedTransform::Identity => JankaulTransform::Identity,
+            ConvertedTransform::Void => JankaulTransform::Void,
+            ConvertedTransform::Year => JankaulTransform::Year,
+            ConvertedTransform::Month => JankaulTransform::Month,
+            ConvertedTransform::Day => JankaulTransform::Day,
+            ConvertedTransform::Hour => JankaulTransform::Hour,
+            ConvertedTransform::Bucket(n) => JankaulTransform::Bucket(*n),
+            ConvertedTransform::Truncate(w) => JankaulTransform::Truncate(*w),
+            ConvertedTransform::Unknown => return Err(anyhow::anyhow!("Unknown transform type")),
+        };
+
+        let partition_field =
+            JankaulPartitionField::new(field.source_id, field.field_id, &field.name, transform);
+        fields.push(partition_field);
+    }
+
+    PartitionSpecBuilder::default()
+        .with_spec_id(converted.spec_id)
+        .with_fields(fields)
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to build PartitionSpec: {}", e))
 }
 
 /// Convert a single Apache Iceberg NestedField to JanKaul's StructField representation

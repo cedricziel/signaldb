@@ -6,10 +6,11 @@ use datafusion::arrow::array::RecordBatch;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::SessionConfig;
-use datafusion_iceberg::catalog::catalog::IcebergCatalog;
-use iceberg::table::Table;
-use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
 use iceberg_rust::catalog::Catalog as IcebergRustCatalog;
+use iceberg_rust::catalog::create::CreateTableBuilder;
+use iceberg_rust::catalog::identifier::Identifier;
+use iceberg_rust::catalog::namespace::Namespace;
+use iceberg_rust::table::Table;
 use object_store::ObjectStore;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -43,14 +44,6 @@ struct PendingOperation {
     /// Timestamp when this operation was added
     #[allow(dead_code)] // Will be used for operation timeout
     timestamp: Instant,
-}
-
-/// Parameters for catalog registration
-struct CatalogRegistrationParams<'a> {
-    pool_config: &'a CatalogPoolConfig,
-    catalog_uri: &'a str,
-    catalog_name: &'a str,
-    catalog_type: &'a str,
 }
 
 /// Configuration for retry behavior
@@ -111,7 +104,7 @@ impl Default for BatchOptimizationConfig {
 /// Provides ACID transactions and proper metadata tracking
 pub struct IcebergTableWriter {
     #[allow(dead_code)] // Will be used for future operations
-    catalog: Arc<dyn Catalog>,
+    catalog: Arc<dyn IcebergRustCatalog>,
     table: Table,
     #[allow(dead_code)] // Will be used for data writing
     object_store: Arc<dyn ObjectStore>,
@@ -162,33 +155,55 @@ impl IcebergTableWriter {
 
         // Create namespace and table if they don't exist
         // Use "default" namespace for consistency with existing tests
-        let namespace = NamespaceIdent::from_strs(vec!["default"])?;
+        let namespace = Namespace::try_new(&["default".to_string()])?;
         if !catalog.namespace_exists(&namespace).await? {
-            catalog.create_namespace(&namespace, HashMap::new()).await?;
+            catalog
+                .create_namespace(&namespace, Some(HashMap::new()))
+                .await?;
         }
 
-        let table_ident = TableIdent::new(namespace.clone(), table_name.clone());
+        let table_ident = Identifier::new(&["default".to_string()], &table_name);
 
         // Check if table exists, create if not
-        let table = if catalog.table_exists(&table_ident).await? {
-            catalog.load_table(&table_ident).await?
+        let table = if catalog.tabular_exists(&table_ident).await? {
+            match catalog.clone().load_tabular(&table_ident).await? {
+                iceberg_rust::catalog::tabular::Tabular::Table(table) => table,
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "Expected table but found different tabular type"
+                    ));
+                }
+            }
         } else {
             // Create table with appropriate schema based on table name
             let registry = TenantSchemaRegistry::new(config.clone());
             let schemas = registry.get_schema_definitions(&tenant_id)?;
             let partition_specs = registry.get_partition_specifications(&tenant_id)?;
 
-            let schema = schemas
+            let apache_schema = schemas
                 .get(&table_name)
                 .ok_or_else(|| anyhow::anyhow!("No schema found for table: {}", table_name))?
                 .clone();
 
-            let partition_spec = partition_specs
+            let apache_partition_spec = partition_specs
                 .get(&table_name)
                 .ok_or_else(|| {
                     anyhow::anyhow!("No partition spec found for table: {}", table_name)
                 })?
                 .clone();
+
+            // Convert Apache Iceberg schema to JanKaul's format
+            let converted_schema = crate::schema_bridge::convert_schema_to_jankaul(&apache_schema)?;
+            let converted_partition_spec =
+                crate::schema_bridge::convert_partition_spec_to_jankaul(&apache_partition_spec)?;
+
+            // Create JanKaul Schema from converted data
+            let schema =
+                crate::schema_bridge::create_jankaul_schema_from_converted(&converted_schema)?;
+            let partition_spec =
+                crate::schema_bridge::create_jankaul_partition_spec_from_converted(
+                    &converted_partition_spec,
+                )?;
 
             // Create the table using the catalog
             log::info!("Creating new Iceberg table: {table_ident}");
@@ -201,15 +216,17 @@ impl IcebergTableWriter {
                 table_name
             );
 
-            let table_creation = TableCreation::builder()
-                .name(table_name.clone())
-                .schema(schema)
-                .partition_spec(partition_spec)
-                .location(table_location)
-                .build();
+            let table_creation = CreateTableBuilder::default()
+                .with_name(table_name.clone())
+                .with_schema(schema)
+                .with_partition_spec(partition_spec)
+                .with_location(table_location)
+                .create()
+                .map_err(|e| anyhow::anyhow!("Failed to build CreateTable: {}", e))?;
 
             catalog
-                .create_table(&namespace, table_creation)
+                .clone()
+                .create_table(table_ident.clone(), table_creation)
                 .await
                 .map_err(|e| {
                     anyhow::anyhow!("Failed to create Iceberg table {}: {}", table_ident, e)
@@ -220,32 +237,20 @@ impl IcebergTableWriter {
         let runtime_env = Arc::new(RuntimeEnv::default());
         let session_ctx = SessionContext::new_with_config_rt(SessionConfig::default(), runtime_env);
 
-        // Convert Apache Iceberg table to format suitable for DataFusion integration
-        let table_info = crate::schema_bridge::create_datafusion_table_from_apache(&table).await?;
-
+        // For now, we'll skip the conversion since we're using JanKaul's types directly
+        // The table is already in the correct format for use with datafusion_iceberg
         log::info!(
-            "Successfully converted Iceberg table metadata for DataFusion integration: {}",
-            table_info.name
+            "Successfully created/loaded Iceberg table: {}",
+            table.identifier()
         );
-        log::debug!("Table location: {}", table_info.location);
-        log::debug!("Schema has {} fields", table_info.schema.fields.len());
 
-        // TODO: Create actual DataFusionTable from converted table info and register it
-        // This requires implementing the final conversion step from ConvertedTableInfo to DataFusionTable
-        // For now, we have the metadata conversion working
+        let table_metadata = table.metadata();
+        let current_schema = table.current_schema(None)?;
+        log::debug!("Table location: {}", table_metadata.location);
+        log::debug!("Schema has {} fields", current_schema.fields().len());
 
-        // Register the table with the session context for SQL operations
-        let pool_config = pool_config.unwrap_or_default();
-        let catalog_uri = config.schema.catalog_uri.clone();
-        let catalog_name = "signaldb_iceberg"; // TODO: Make this configurable
-        let catalog_type = config.schema.catalog_type.clone();
-        let params = CatalogRegistrationParams {
-            pool_config: &pool_config,
-            catalog_uri: &catalog_uri,
-            catalog_name,
-            catalog_type: &catalog_type,
-        };
-        Self::register_table_with_session(&table_info, &session_ctx, &catalog, &params).await?;
+        // TODO: Register the table with DataFusion session context
+        // This will be implemented when we integrate datafusion_iceberg properly
 
         Ok(Self {
             catalog,
@@ -253,93 +258,17 @@ impl IcebergTableWriter {
             object_store,
             tenant_id,
             session_ctx,
-            table_registered: true, // Table was registered during initialization
+            table_registered: false, // Table registration deferred
             transaction_state: TransactionState::None,
             pending_operations: Vec::new(),
             retry_config: RetryConfig::default(),
-            pool_config,
+            pool_config: pool_config.unwrap_or_default(),
             batch_config: BatchOptimizationConfig::default(),
             cached_catalog: None,
             catalog_uri: config.schema.catalog_uri.clone(),
             catalog_name: "signaldb_iceberg".to_string(), // TODO: Make this configurable
             catalog_type: config.schema.catalog_type.clone(),
         })
-    }
-
-    /// Register the Iceberg catalog with DataFusion session context for SQL operations
-    async fn register_table_with_session(
-        table_info: &crate::schema_bridge::ConvertedTableInfo,
-        session_ctx: &SessionContext,
-        _catalog: &Arc<dyn Catalog>, // Apache catalog not used in new approach
-        params: &CatalogRegistrationParams<'_>,
-    ) -> Result<()> {
-        log::info!(
-            "Registering Iceberg catalog with DataFusion session for table '{}'",
-            table_info.name
-        );
-        log::debug!("Table location: {}", table_info.location);
-        log::debug!("Schema fields: {}", table_info.schema.fields.len());
-        log::debug!("Catalog type: {}", params.catalog_type);
-
-        // Only create JanKaul SQL catalog if the catalog type is SQL
-        // For memory catalogs, skip DataFusion integration for now
-        if params.catalog_type != "sql" {
-            log::info!(
-                "Skipping DataFusion integration for non-SQL catalog type: {}",
-                params.catalog_type
-            );
-            // TODO: Implement DataFusion integration for memory catalogs
-            return Ok(());
-        }
-
-        // Step 1: Create a JanKaul SQL catalog for DataFusion
-        log::info!("Creating JanKaul SQL catalog for DataFusion integration");
-
-        let jankaul_catalog = create_jankaul_sql_catalog_with_pool(
-            params.catalog_uri,
-            params.catalog_name,
-            Some(params.pool_config.clone()),
-        )
-        .await
-        .map_err(|e| {
-            log::error!("Failed to create JanKaul SQL catalog: {e}");
-            anyhow::anyhow!("Failed to create JanKaul SQL catalog: {}", e)
-        })?;
-
-        // Step 2: Create the table directly in the JanKaul catalog
-        // Use "default" namespace for consistency with existing tests
-        let namespace = "default";
-        crate::schema_bridge::create_jankaul_table(table_info, jankaul_catalog.clone(), namespace)
-            .await
-            .map_err(|e| {
-                log::error!("Failed to create table in JanKaul catalog: {e}");
-                anyhow::anyhow!("Failed to create table in JanKaul catalog: {}", e)
-            })?;
-
-        log::info!("Successfully created table in JanKaul catalog with namespace '{namespace}'");
-
-        // Step 3: Wrap the catalog in an IcebergCatalog and register with DataFusion
-        let iceberg_catalog = IcebergCatalog::new(jankaul_catalog, None)
-            .await
-            .map_err(|e| {
-                log::error!("Failed to create IcebergCatalog from JanKaul catalog: {e}");
-                anyhow::anyhow!(
-                    "Failed to create IcebergCatalog from JanKaul catalog: {}",
-                    e
-                )
-            })?;
-
-        session_ctx.register_catalog("iceberg", Arc::new(iceberg_catalog));
-
-        log::info!("Successfully registered JanKaul Iceberg catalog with DataFusion session");
-        log::info!(
-            "Table '{}' accessible via: iceberg.{}.{}",
-            table_info.name,
-            namespace,
-            table_info.name
-        );
-
-        Ok(())
     }
 
     /// Get or create a cached catalog for optimized operations
@@ -508,17 +437,15 @@ impl IcebergTableWriter {
                     batch.num_rows()
                 );
 
-                // Get table metadata for SQL operations
-                let table_info =
-                    crate::schema_bridge::create_datafusion_table_from_apache(&self.table).await?;
+                // TODO: Get table metadata for SQL operations when datafusion_iceberg is integrated
 
                 // Create temp table name
                 let temp_table_name = format!("txn_{}_{}", id, uuid::Uuid::new_v4().simple());
 
                 // Create the SQL statement
+                let table_name = self.table.identifier().name();
                 let insert_sql = format!(
-                    "INSERT INTO iceberg.default.{} SELECT * FROM {}",
-                    table_info.name, temp_table_name
+                    "INSERT INTO iceberg.default.{table_name} SELECT * FROM {temp_table_name}"
                 );
 
                 // Store the pending operation
@@ -602,15 +529,15 @@ impl IcebergTableWriter {
 
     /// Execute an immediate write operation (outside of a transaction)
     async fn execute_immediate_write(&mut self, batch: RecordBatch) -> Result<()> {
-        // Get table metadata for SQL operations
-        let table_info =
-            crate::schema_bridge::create_datafusion_table_from_apache(&self.table).await?;
+        // TODO: Get table metadata for SQL operations when datafusion_iceberg is integrated
 
+        let table_name = self.table.identifier().name();
+        let table_location = self.table.metadata().location.clone();
         log::debug!(
             "Executing immediate SQL INSERT for batch with {} rows to table {} (location: {})",
             batch.num_rows(),
-            table_info.name,
-            table_info.location
+            table_name,
+            table_location
         );
 
         // Register RecordBatch directly as temporary table
@@ -622,10 +549,10 @@ impl IcebergTableWriter {
         // Execute INSERT INTO table SELECT * FROM temp_table
         // Use the full qualified table name: catalog.schema.table
         // Use "default" namespace for consistency with existing tests
-        let namespace = "default";
+        let _namespace = "default";
         let insert_sql = format!(
             "INSERT INTO iceberg.{}.{} SELECT * FROM {}",
-            namespace, table_info.name, temp_table_name
+            "default", table_name, temp_table_name
         );
 
         log::debug!("Executing SQL: {insert_sql}");
@@ -1065,12 +992,12 @@ impl IcebergTableWriter {
     }
 
     /// Get table identifier
-    pub fn table_identifier(&self) -> &TableIdent {
+    pub fn table_identifier(&self) -> &Identifier {
         self.table.identifier()
     }
 
     /// Get table metadata
-    pub fn table_metadata(&self) -> &iceberg::spec::TableMetadata {
+    pub fn table_metadata(&self) -> &iceberg_rust::spec::table_metadata::TableMetadata {
         self.table.metadata()
     }
 
