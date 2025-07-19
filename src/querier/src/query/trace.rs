@@ -91,7 +91,21 @@ impl TraceQuerier for TraceService {
     ) -> Result<Option<model::trace::Trace>, QuerierError> {
         log::info!("Querying for trace_id: {}", params.trace_id);
 
-        let query = TRACE_BY_ID_QUERY.replace("{trace_id}", &params.trace_id);
+        // Register all parquet files in the batch directory as a table
+        // The session context should already have the object store registered
+        self.session_context
+            .register_parquet("traces", "batch/*.parquet", ParquetReadOptions::default())
+            .await
+            .map_err(|e| {
+                log::error!("Failed to register parquet files: {e:?}");
+                QuerierError::FailedToRegisterParquet(e)
+            })?;
+
+        // Now we can use the standard query
+        let query = format!(
+            "SELECT * FROM traces WHERE trace_id = '{}'",
+            params.trace_id
+        );
 
         let df = self.session_context.sql(&query).await.map_err(|e| {
             log::error!("Failed to execute query: {query:?}, {e:?}");

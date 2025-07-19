@@ -14,17 +14,17 @@ pub struct FindTraceByIdParams {
     pub end: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[allow(dead_code)]
 pub struct SearchQueryParams {
-    q: Option<String>,
-    tags: Option<String>,
-    min_duration: Option<i32>,
-    max_duration: Option<i32>,
-    limit: Option<i32>,
-    start: Option<i32>,
-    end: Option<i32>,
-    spss: Option<i32>,
+    pub q: Option<String>,
+    pub tags: Option<String>,
+    pub min_duration: Option<i32>,
+    pub max_duration: Option<i32>,
+    pub limit: Option<i32>,
+    pub start: Option<i32>,
+    pub end: Option<i32>,
+    pub spss: Option<i32>,
 }
 
 #[async_trait]

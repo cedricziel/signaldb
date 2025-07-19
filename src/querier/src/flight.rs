@@ -15,6 +15,17 @@ use object_store::ObjectStore;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
+use crate::query::trace::TraceService;
+use crate::query::{FindTraceByIdParams, SearchQueryParams, TraceQuerier};
+
+/// Represents different types of ticket requests
+#[derive(Debug)]
+enum TicketRequest {
+    FindTrace { trace_id: String },
+    SearchTraces { params: SearchQueryParams },
+    SqlQuery { sql: String },
+}
+
 /// Flight service for query execution against stored data
 pub struct QuerierFlightService {
     #[allow(dead_code)]
@@ -23,6 +34,7 @@ pub struct QuerierFlightService {
     #[allow(dead_code)]
     schemas: FlightSchemas,
     session_ctx: Arc<SessionContext>,
+    trace_service: TraceService,
 }
 
 impl QuerierFlightService {
@@ -40,12 +52,110 @@ impl QuerierFlightService {
             .runtime_env()
             .register_object_store(&url, object_store.clone());
 
+        // Create trace service for specialized trace queries
+        let trace_service = TraceService::new(session_ctx.as_ref().clone(), "traces".to_string());
+
         Self {
             object_store,
             _flight_transport: flight_transport,
             schemas: FlightSchemas::new(),
             session_ctx,
+            trace_service,
         }
+    }
+
+    /// Parse ticket content to determine query type and parameters
+    #[allow(clippy::result_large_err)]
+    fn parse_ticket(&self, ticket_content: &str) -> Result<TicketRequest, Status> {
+        if let Some(trace_id) = ticket_content.strip_prefix("find_trace:") {
+            log::info!("Parsing find_trace ticket for trace_id: {trace_id}");
+            return Ok(TicketRequest::FindTrace {
+                trace_id: trace_id.to_string(),
+            });
+        }
+
+        if let Some(search_params) = ticket_content.strip_prefix("search_traces:") {
+            log::info!("Parsing search_traces ticket with params: {search_params}");
+            let params: SearchQueryParams = serde_json::from_str(search_params)
+                .map_err(|e| Status::invalid_argument(format!("Invalid search parameters: {e}")))?;
+            return Ok(TicketRequest::SearchTraces { params });
+        }
+
+        // Fall back to raw SQL query
+        Ok(TicketRequest::SqlQuery {
+            sql: ticket_content.to_string(),
+        })
+    }
+
+    /// Convert internal trace model to Arrow RecordBatches
+    async fn trace_to_record_batches(
+        &self,
+        trace: &common::model::trace::Trace,
+    ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error + Send + Sync>> {
+        use datafusion::arrow::array::{BooleanArray, Int64Array, StringArray};
+
+        // Create schema matching the span batch schema
+        let schema = create_span_batch_schema();
+
+        // Collect all spans from the trace (including nested children)
+        let mut all_spans = Vec::new();
+        fn collect_spans(
+            spans: &[common::model::span::Span],
+            all_spans: &mut Vec<common::model::span::Span>,
+        ) {
+            for span in spans {
+                all_spans.push(span.clone());
+                collect_spans(&span.children, all_spans);
+            }
+        }
+        collect_spans(&trace.spans, &mut all_spans);
+
+        if all_spans.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Build arrays for each column
+        let mut trace_ids = Vec::new();
+        let mut span_ids = Vec::new();
+        let mut parent_span_ids = Vec::new();
+        let mut names = Vec::new();
+        let mut service_names = Vec::new();
+        let mut span_kinds = Vec::new();
+        let mut start_times = Vec::new();
+        let mut duration_nanos = Vec::new();
+        let mut statuses = Vec::new();
+        let mut is_roots = Vec::new();
+
+        for span in &all_spans {
+            trace_ids.push(span.trace_id.clone());
+            span_ids.push(span.span_id.clone());
+            parent_span_ids.push(span.parent_span_id.clone());
+            names.push(span.name.clone());
+            service_names.push(span.service_name.clone());
+            span_kinds.push(format!("{:?}", span.span_kind));
+            start_times.push(span.start_time_unix_nano as i64);
+            duration_nanos.push(span.duration_nano as i64);
+            statuses.push(format!("{:?}", span.status));
+            is_roots.push(span.is_root);
+        }
+
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![
+                Arc::new(StringArray::from(trace_ids)),
+                Arc::new(StringArray::from(span_ids)),
+                Arc::new(StringArray::from(parent_span_ids)),
+                Arc::new(StringArray::from(names)),
+                Arc::new(StringArray::from(service_names)),
+                Arc::new(StringArray::from(span_kinds)),
+                Arc::new(Int64Array::from(start_times)),
+                Arc::new(Int64Array::from(duration_nanos)),
+                Arc::new(StringArray::from(statuses)),
+                Arc::new(BooleanArray::from(is_roots)),
+            ],
+        )?;
+
+        Ok(vec![batch])
     }
 
     /// Execute a SQL query and return results as RecordBatches
@@ -177,16 +287,73 @@ impl FlightService for QuerierFlightService {
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
         let ticket = request.into_inner();
-        let query = String::from_utf8(ticket.ticket.to_vec())
-            .map_err(|e| Status::invalid_argument(format!("Invalid query: {e}")))?;
+        let ticket_content = String::from_utf8(ticket.ticket.to_vec())
+            .map_err(|e| Status::invalid_argument(format!("Invalid ticket: {e}")))?;
 
-        log::info!("Executing query via Flight: {}", query);
+        log::info!("Processing Flight ticket: {}", ticket_content);
 
-        // Execute distributed query
-        let batches = self
-            .execute_distributed_query(&query)
-            .await
-            .map_err(|e| Status::internal(format!("Query execution failed: {e}")))?;
+        // Parse ticket to determine request type
+        let ticket_request = self.parse_ticket(&ticket_content)?;
+        let batches = match ticket_request {
+            TicketRequest::FindTrace { trace_id } => {
+                log::info!("Executing find_trace for trace_id: {trace_id}");
+
+                let params = FindTraceByIdParams {
+                    trace_id,
+                    start: None,
+                    end: None,
+                };
+
+                match self.trace_service.find_by_id(params).await {
+                    Ok(Some(trace)) => {
+                        log::info!("Found trace with {} root spans", trace.spans.len());
+                        self.trace_to_record_batches(&trace).await.map_err(|e| {
+                            Status::internal(format!("Failed to convert trace to batches: {e}"))
+                        })?
+                    }
+                    Ok(None) => {
+                        log::info!("No trace found");
+                        vec![]
+                    }
+                    Err(e) => {
+                        log::error!("Error querying trace: {e:?}");
+                        return Err(Status::internal(format!("Trace query failed: {e:?}")));
+                    }
+                }
+            }
+            TicketRequest::SearchTraces { params } => {
+                log::info!("Executing search_traces with params: {params:?}");
+
+                match self.trace_service.find_traces(params).await {
+                    Ok(traces) => {
+                        log::info!("Found {} traces", traces.len());
+
+                        let mut all_batches = Vec::new();
+                        for trace in &traces {
+                            let trace_batches =
+                                self.trace_to_record_batches(trace).await.map_err(|e| {
+                                    Status::internal(format!(
+                                        "Failed to convert trace to batches: {e}"
+                                    ))
+                                })?;
+                            all_batches.extend(trace_batches);
+                        }
+                        all_batches
+                    }
+                    Err(e) => {
+                        log::error!("Error searching traces: {e:?}");
+                        return Err(Status::internal(format!("Trace search failed: {e:?}")));
+                    }
+                }
+            }
+            TicketRequest::SqlQuery { sql } => {
+                log::info!("Executing SQL query: {sql}");
+
+                self.execute_distributed_query(&sql)
+                    .await
+                    .map_err(|e| Status::internal(format!("Query execution failed: {e}")))?
+            }
+        };
 
         if batches.is_empty() {
             let out = stream::empty().boxed();

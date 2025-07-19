@@ -1,14 +1,23 @@
 use crate::RouterState;
-use arrow_flight::Ticket;
+use arrow_flight::{FlightData, Ticket};
 use axum::{
     Router,
     extract::{Path, Query, State},
     routing::get,
 };
 use common::flight::transport::ServiceCapability;
+use datafusion::arrow::{
+    array::{BooleanArray, Int64Array, StringArray},
+    ipc::reader::StreamReader,
+    record_batch::RecordBatch,
+};
 use futures::StreamExt;
 use std::collections::HashMap;
-use tempo_api::{self, TraceQueryParams};
+use std::io::Write;
+use tempo_api::{
+    self, MetricSeries, MetricsData, MetricsQueryParams, MetricsRangeQueryParams, MetricsResponse,
+    TraceQueryParams,
+};
 
 pub fn router<S: RouterState>() -> Router<S> {
     Router::new()
@@ -18,11 +27,481 @@ pub fn router<S: RouterState>() -> Router<S> {
         .route("/api/search/tags", get(search_tags))
         .route("/api/search/tag/:tag_name/values", get(search_tag_values))
         // v2 routes
+        .route("/api/v2/traces/:trace_id", get(query_single_trace::<S>)) // V2 uses same handler for now
         .route("/api/v2/search/tags", get(search_tags_v2))
         .route(
             "/api/v2/search/tag/:tag_name/values",
             get(search_tag_values_v2),
         )
+        // metrics endpoints
+        .route("/api/metrics/query", get(metrics_query::<S>))
+        .route("/api/metrics/query_range", get(metrics_query_range::<S>))
+}
+
+/// Convert Arrow FlightData to internal trace model, then to Tempo API format
+fn flight_data_to_tempo_trace(
+    flight_data: Vec<FlightData>,
+    trace_id: &str,
+) -> Result<Option<tempo_api::Trace>, Box<dyn std::error::Error + Send + Sync>> {
+    if flight_data.is_empty() {
+        return Ok(None);
+    }
+
+    // Convert FlightData to RecordBatches
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    for data in &flight_data {
+        cursor.write_all(&data.data_body)?;
+    }
+    cursor.set_position(0);
+
+    let reader = StreamReader::try_new(cursor, None)?;
+    let batches: Result<Vec<RecordBatch>, _> = reader.collect();
+    let batches = batches?;
+
+    if batches.is_empty() {
+        return Ok(None);
+    }
+
+    // Convert RecordBatches to internal trace model
+    let trace = record_batches_to_trace(batches, trace_id)?;
+
+    // Convert internal trace model to Tempo API format
+    let tempo_trace = internal_trace_to_tempo(&trace);
+
+    Ok(Some(tempo_trace))
+}
+
+/// Convert Arrow RecordBatches to internal trace model
+fn record_batches_to_trace(
+    batches: Vec<RecordBatch>,
+    trace_id: &str,
+) -> Result<common::model::trace::Trace, Box<dyn std::error::Error + Send + Sync>> {
+    let mut span_map: HashMap<String, common::model::span::Span> = HashMap::new();
+
+    // Process all batches and collect spans
+    for batch in batches {
+        for row_index in 0..batch.num_rows() {
+            let span_trace_id = batch
+                .column_by_name("trace_id")
+                .ok_or("Missing trace_id column")?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or("Invalid trace_id column type")?
+                .value(row_index)
+                .to_string();
+
+            // Only include spans that match the requested trace_id
+            if span_trace_id != trace_id {
+                continue;
+            }
+
+            let span_id = batch
+                .column_by_name("span_id")
+                .ok_or("Missing span_id column")?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or("Invalid span_id column type")?
+                .value(row_index)
+                .to_string();
+
+            let parent_span_id = batch
+                .column_by_name("parent_span_id")
+                .ok_or("Missing parent_span_id column")?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or("Invalid parent_span_id column type")?
+                .value(row_index)
+                .to_string();
+
+            let name = batch
+                .column_by_name("name")
+                .ok_or("Missing name column")?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or("Invalid name column type")?
+                .value(row_index)
+                .to_string();
+
+            let service_name = batch
+                .column_by_name("service_name")
+                .ok_or("Missing service_name column")?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or("Invalid service_name column type")?
+                .value(row_index)
+                .to_string();
+
+            let span_kind_str = batch
+                .column_by_name("span_kind")
+                .ok_or("Missing span_kind column")?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or("Invalid span_kind column type")?
+                .value(row_index);
+
+            let start_time_unix_nano = batch
+                .column_by_name("start_time_unix_nano")
+                .ok_or("Missing start_time_unix_nano column")?
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or("Invalid start_time_unix_nano column type")?
+                .value(row_index) as u64;
+
+            let duration_nano = batch
+                .column_by_name("duration_nano")
+                .ok_or("Missing duration_nano column")?
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or("Invalid duration_nano column type")?
+                .value(row_index) as u64;
+
+            let status_str = batch
+                .column_by_name("status")
+                .ok_or("Missing status column")?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or("Invalid status column type")?
+                .value(row_index);
+
+            let is_root = batch
+                .column_by_name("is_root")
+                .ok_or("Missing is_root column")?
+                .as_any()
+                .downcast_ref::<BooleanArray>()
+                .ok_or("Invalid is_root column type")?
+                .value(row_index);
+
+            let span = common::model::span::Span {
+                trace_id: span_trace_id,
+                span_id: span_id.clone(),
+                parent_span_id,
+                status: status_str
+                    .parse()
+                    .unwrap_or(common::model::span::SpanStatus::Unspecified),
+                is_root,
+                name,
+                service_name,
+                span_kind: span_kind_str
+                    .parse()
+                    .unwrap_or(common::model::span::SpanKind::Internal),
+                start_time_unix_nano,
+                duration_nano,
+                attributes: HashMap::new(), // TODO: Extract attributes if available
+                resource: HashMap::new(),   // TODO: Extract resource if available
+                children: Vec::new(),
+            };
+
+            span_map.insert(span_id, span);
+        }
+    }
+
+    // Build hierarchical structure
+    let mut root_spans = Vec::new();
+    let mut child_spans: HashMap<String, Vec<common::model::span::Span>> = HashMap::new();
+
+    for span in span_map.values() {
+        if span.is_root || span.parent_span_id == "00000000" || span.parent_span_id.is_empty() {
+            root_spans.push(span.clone());
+        } else {
+            child_spans
+                .entry(span.parent_span_id.clone())
+                .or_default()
+                .push(span.clone());
+        }
+    }
+
+    // Add children to parents
+    for (parent_id, children) in child_spans {
+        if let Some(parent) = span_map.get_mut(&parent_id) {
+            parent.children.extend(children);
+        }
+    }
+
+    Ok(common::model::trace::Trace {
+        trace_id: trace_id.to_string(),
+        spans: root_spans,
+    })
+}
+
+/// Convert internal trace model to Tempo API format
+fn internal_trace_to_tempo(trace: &common::model::trace::Trace) -> tempo_api::Trace {
+    use std::collections::HashMap;
+
+    // Find the earliest start time and calculate total duration
+    let mut earliest_start = u64::MAX;
+    let mut latest_end = 0u64;
+    let mut root_service_name = "unknown".to_string();
+    let mut root_trace_name = "unknown".to_string();
+
+    // Collect all spans including children
+    let mut all_spans = Vec::new();
+    fn collect_all_spans(
+        spans: &[common::model::span::Span],
+        all_spans: &mut Vec<common::model::span::Span>,
+    ) {
+        for span in spans {
+            all_spans.push(span.clone());
+            collect_all_spans(&span.children, all_spans);
+        }
+    }
+    collect_all_spans(&trace.spans, &mut all_spans);
+
+    // Find root span and calculate timing info
+    for span in &all_spans {
+        if span.is_root {
+            root_service_name = span.service_name.clone();
+            root_trace_name = span.name.clone();
+        }
+        if span.start_time_unix_nano < earliest_start {
+            earliest_start = span.start_time_unix_nano;
+        }
+        let end_time = span.start_time_unix_nano + span.duration_nano;
+        if end_time > latest_end {
+            latest_end = end_time;
+        }
+    }
+
+    let duration_ms = if earliest_start != u64::MAX && latest_end > earliest_start {
+        (latest_end - earliest_start) / 1_000_000 // Convert nanoseconds to milliseconds
+    } else {
+        0
+    };
+
+    // Convert spans to Tempo format
+    let tempo_spans: Vec<tempo_api::Span> = all_spans
+        .iter()
+        .map(|span| {
+            let mut attributes = HashMap::new();
+
+            // Add span attributes
+            for (key, value) in &span.attributes {
+                let tempo_value = match value {
+                    serde_json::Value::String(s) => tempo_api::Value::StringValue(s.clone()),
+                    serde_json::Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            tempo_api::Value::IntValue(i)
+                        } else if let Some(f) = n.as_f64() {
+                            tempo_api::Value::DoubleValue(f)
+                        } else {
+                            tempo_api::Value::StringValue(n.to_string())
+                        }
+                    }
+                    serde_json::Value::Bool(b) => tempo_api::Value::BoolValue(*b),
+                    _ => tempo_api::Value::StringValue(value.to_string()),
+                };
+
+                attributes.insert(
+                    key.clone(),
+                    tempo_api::Attribute {
+                        key: key.clone(),
+                        value: tempo_value,
+                    },
+                );
+            }
+
+            // Add resource attributes
+            for (key, value) in &span.resource {
+                let tempo_value = match value {
+                    serde_json::Value::String(s) => tempo_api::Value::StringValue(s.clone()),
+                    serde_json::Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            tempo_api::Value::IntValue(i)
+                        } else if let Some(f) = n.as_f64() {
+                            tempo_api::Value::DoubleValue(f)
+                        } else {
+                            tempo_api::Value::StringValue(n.to_string())
+                        }
+                    }
+                    serde_json::Value::Bool(b) => tempo_api::Value::BoolValue(*b),
+                    _ => tempo_api::Value::StringValue(value.to_string()),
+                };
+
+                attributes.insert(
+                    format!("resource.{key}"),
+                    tempo_api::Attribute {
+                        key: format!("resource.{key}"),
+                        value: tempo_value,
+                    },
+                );
+            }
+
+            tempo_api::Span {
+                span_id: span.span_id.clone(),
+                start_time_unix_nano: span.start_time_unix_nano.to_string(),
+                duration_nanos: span.duration_nano.to_string(),
+                attributes,
+            }
+        })
+        .collect();
+
+    let span_set = tempo_api::SpanSet {
+        spans: tempo_spans,
+        matched: all_spans.len() as u16,
+    };
+
+    tempo_api::Trace {
+        trace_id: trace.trace_id.clone(),
+        root_service_name,
+        root_trace_name,
+        start_time_unix_nano: earliest_start.to_string(),
+        duration_ms,
+        span_sets: vec![span_set],
+    }
+}
+
+/// Convert Arrow FlightData to Tempo search results
+fn flight_data_to_search_results(
+    flight_data: Vec<FlightData>,
+) -> Result<tempo_api::SearchResult, Box<dyn std::error::Error + Send + Sync>> {
+    if flight_data.is_empty() {
+        return Ok(tempo_api::SearchResult {
+            traces: vec![],
+            metrics: HashMap::new(),
+        });
+    }
+
+    // Convert FlightData to RecordBatches
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    for data in &flight_data {
+        cursor.write_all(&data.data_body)?;
+    }
+    cursor.set_position(0);
+
+    let reader = StreamReader::try_new(cursor, None)?;
+    let batches: Result<Vec<RecordBatch>, _> = reader.collect();
+    let batches = batches?;
+
+    if batches.is_empty() {
+        return Ok(tempo_api::SearchResult {
+            traces: vec![],
+            metrics: HashMap::new(),
+        });
+    }
+
+    // Group spans by trace_id
+    let mut traces_map: HashMap<String, Vec<common::model::span::Span>> = HashMap::new();
+
+    for batch in batches {
+        for row_index in 0..batch.num_rows() {
+            let trace_id = batch
+                .column_by_name("trace_id")
+                .ok_or("Missing trace_id column")?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or("Invalid trace_id column type")?
+                .value(row_index)
+                .to_string();
+
+            let span_id = batch
+                .column_by_name("span_id")
+                .ok_or("Missing span_id column")?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or("Invalid span_id column type")?
+                .value(row_index)
+                .to_string();
+
+            let parent_span_id = batch
+                .column_by_name("parent_span_id")
+                .ok_or("Missing parent_span_id column")?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or("Invalid parent_span_id column type")?
+                .value(row_index)
+                .to_string();
+
+            let name = batch
+                .column_by_name("name")
+                .ok_or("Missing name column")?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or("Invalid name column type")?
+                .value(row_index)
+                .to_string();
+
+            let service_name = batch
+                .column_by_name("service_name")
+                .ok_or("Missing service_name column")?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or("Invalid service_name column type")?
+                .value(row_index)
+                .to_string();
+
+            let span_kind_str = batch
+                .column_by_name("span_kind")
+                .ok_or("Missing span_kind column")?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or("Invalid span_kind column type")?
+                .value(row_index);
+
+            let start_time_unix_nano = batch
+                .column_by_name("start_time_unix_nano")
+                .ok_or("Missing start_time_unix_nano column")?
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or("Invalid start_time_unix_nano column type")?
+                .value(row_index) as u64;
+
+            let duration_nano = batch
+                .column_by_name("duration_nano")
+                .ok_or("Missing duration_nano column")?
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or("Invalid duration_nano column type")?
+                .value(row_index) as u64;
+
+            let status_str = batch
+                .column_by_name("status")
+                .ok_or("Missing status column")?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or("Invalid status column type")?
+                .value(row_index);
+
+            let is_root = batch
+                .column_by_name("is_root")
+                .ok_or("Missing is_root column")?
+                .as_any()
+                .downcast_ref::<BooleanArray>()
+                .ok_or("Invalid is_root column type")?
+                .value(row_index);
+
+            let span = common::model::span::Span {
+                trace_id: trace_id.clone(),
+                span_id,
+                parent_span_id,
+                status: status_str
+                    .parse()
+                    .unwrap_or(common::model::span::SpanStatus::Unspecified),
+                is_root,
+                name,
+                service_name,
+                span_kind: span_kind_str
+                    .parse()
+                    .unwrap_or(common::model::span::SpanKind::Internal),
+                start_time_unix_nano,
+                duration_nano,
+                attributes: HashMap::new(),
+                resource: HashMap::new(),
+                children: Vec::new(),
+            };
+
+            traces_map.entry(trace_id).or_default().push(span);
+        }
+    }
+
+    // Convert each trace to Tempo format
+    let mut traces = Vec::new();
+    for (trace_id, spans) in traces_map {
+        let trace = common::model::trace::Trace { trace_id, spans };
+        traces.push(internal_trace_to_tempo(&trace));
+    }
+
+    let metrics = HashMap::new(); // TODO: Add metrics if needed
+
+    Ok(tempo_api::SearchResult { traces, metrics })
 }
 
 /// GET /api/echo
@@ -84,12 +563,18 @@ pub async fn query_single_trace<S: RouterState>(
             }
 
             // Convert flight data to trace format
-            if !trace_data.is_empty() {
-                log::info!("Successfully queried trace {trace_id} from querier service");
-                // TODO: Convert Arrow data to Tempo trace format
-                // For now, return a trace indicating data was found
-            } else {
-                log::info!("No trace data found for trace {trace_id}");
+            match flight_data_to_tempo_trace(trace_data, &trace_id) {
+                Ok(Some(trace)) => {
+                    log::info!("Successfully converted trace {trace_id} to Tempo format");
+                    return Ok(axum::Json(trace));
+                }
+                Ok(None) => {
+                    log::info!("No trace data found for trace {trace_id}");
+                }
+                Err(e) => {
+                    log::error!("Failed to convert flight data to trace: {e}");
+                    return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+                }
             }
         }
         Err(e) => {
@@ -98,7 +583,7 @@ pub async fn query_single_trace<S: RouterState>(
         }
     }
 
-    // Create a mock trace
+    // Return empty trace if no data found
     let trace = tempo_api::Trace {
         trace_id,
         root_service_name: "unknown".to_string(),
@@ -162,11 +647,19 @@ pub async fn search<S: RouterState>(
                 }
             }
 
-            if !search_results.is_empty() {
-                log::info!("Successfully executed trace search via Flight protocol");
-                // TODO: Convert Arrow data to Tempo search result format
-            } else {
-                log::info!("No search results found");
+            // Convert flight data to search results
+            match flight_data_to_search_results(search_results) {
+                Ok(search_result) => {
+                    log::info!(
+                        "Successfully converted {} traces to Tempo search format",
+                        search_result.traces.len()
+                    );
+                    return Ok(axum::Json(search_result));
+                }
+                Err(e) => {
+                    log::error!("Failed to convert flight data to search results: {e}");
+                    return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+                }
             }
         }
         Err(e) => {
@@ -174,19 +667,6 @@ pub async fn search<S: RouterState>(
             return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
         }
     }
-
-    // In a real implementation, you would:
-    // 1. Subscribe to the arrow-traces topic
-    // 2. Filter traces based on query parameters
-    // 3. Convert Arrow to OTLP using arrow_to_otlp_traces
-    // 4. Convert OTLP to Tempo API format
-
-    let response = tempo_api::SearchResult {
-        traces: vec![],
-        metrics: HashMap::new(),
-    };
-
-    Ok(axum::Json(response))
 }
 
 /// GET /api/search/tags?scope=<resource|span|intrinsic>
@@ -226,6 +706,72 @@ pub async fn search_tag_values_v2(
     _q: Option<Query<String>>,
 ) -> Result<axum::Json<tempo_api::v2::TagValuesResponse>, axum::http::StatusCode> {
     let response = tempo_api::v2::TagValuesResponse { tag_values: vec![] };
+    Ok(axum::Json(response))
+}
+
+/// GET /api/metrics/query - Instant TraceQL metrics query
+#[tracing::instrument]
+pub async fn metrics_query<S: RouterState>(
+    _state: State<S>,
+    Query(params): Query<MetricsQueryParams>,
+) -> Result<axum::Json<MetricsResponse>, axum::http::StatusCode> {
+    log::info!("Metrics instant query: {:?}", params);
+
+    // For now, return a simple response indicating the endpoint is available
+    // Full implementation will parse TraceQL and execute queries
+
+    // Parse the TraceQL query to extract selector and metric function
+    // Example: "{service.name='api'}|count()" -> selector: service.name='api', function: count
+
+    let response = MetricsResponse {
+        status: "success".to_string(),
+        data: MetricsData {
+            result_type: "vector".to_string(),
+            result: vec![
+                // Example response structure
+                MetricSeries {
+                    metric: HashMap::new(),
+                    values: vec![(chrono::Utc::now().timestamp(), "0".to_string())],
+                },
+            ],
+        },
+    };
+
+    Ok(axum::Json(response))
+}
+
+/// GET /api/metrics/query_range - Range TraceQL metrics query with time series
+#[tracing::instrument]
+pub async fn metrics_query_range<S: RouterState>(
+    _state: State<S>,
+    Query(params): Query<MetricsRangeQueryParams>,
+) -> Result<axum::Json<MetricsResponse>, axum::http::StatusCode> {
+    log::info!("Metrics range query: {:?}", params);
+
+    // For now, return a simple response indicating the endpoint is available
+    // Full implementation will:
+    // 1. Parse TraceQL query
+    // 2. Execute time-bucketed SQL queries
+    // 3. Return time series data
+
+    let response = MetricsResponse {
+        status: "success".to_string(),
+        data: MetricsData {
+            result_type: "matrix".to_string(),
+            result: vec![
+                // Example time series response
+                MetricSeries {
+                    metric: HashMap::new(),
+                    values: vec![
+                        // Multiple timestamp-value pairs for time series
+                        (chrono::Utc::now().timestamp() - 300, "10".to_string()),
+                        (chrono::Utc::now().timestamp(), "15".to_string()),
+                    ],
+                },
+            ],
+        },
+    };
+
     Ok(axum::Json(response))
 }
 

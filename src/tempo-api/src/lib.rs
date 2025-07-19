@@ -35,6 +35,60 @@ pub struct TraceQueryParams {
     end: Option<String>,
 }
 
+/// Parameters for TraceQL metrics queries
+#[derive(Deserialize, Debug)]
+pub struct MetricsQueryParams {
+    /// TraceQL query with metrics function (e.g., "{service.name='api'}|count()")
+    pub q: String,
+    /// Start time (unix seconds)
+    pub start: Option<i64>,
+    /// End time (unix seconds)
+    pub end: Option<i64>,
+    /// Duration to look back from now (e.g., "1h")
+    pub since: Option<String>,
+}
+
+/// Parameters for range metrics queries (includes step for time series)
+#[derive(Deserialize, Debug)]
+pub struct MetricsRangeQueryParams {
+    /// TraceQL query with metrics function
+    pub q: String,
+    /// Start time (unix seconds)
+    pub start: Option<i64>,
+    /// End time (unix seconds)  
+    pub end: Option<i64>,
+    /// Duration to look back from now (e.g., "1h")
+    pub since: Option<String>,
+    /// Time series granularity in seconds (e.g., 60 for 1-minute buckets)
+    pub step: Option<i64>,
+    /// Maximum number of exemplar traces per series
+    pub exemplars: Option<i32>,
+}
+
+/// Prometheus-compatible metrics response
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct MetricsResponse {
+    pub status: String,
+    pub data: MetricsData,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct MetricsData {
+    #[serde(rename = "resultType")]
+    pub result_type: String,
+    pub result: Vec<MetricSeries>,
+}
+
+/// A single metric time series
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct MetricSeries {
+    /// Labels for this series (e.g., {"service.name": "api"})
+    pub metric: HashMap<String, String>,
+    /// For instant queries: single [timestamp, value] pair
+    /// For range queries: array of [timestamp, value] pairs
+    pub values: Vec<(i64, String)>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SearchQueryParams {
     pub q: Option<String>,

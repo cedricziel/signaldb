@@ -17,6 +17,7 @@ common = { path = "../src/common" }
 querier = { path = "../src/querier" }
 router = { path = "../src/router" }
 writer = { path = "../src/writer" }
+tempo-api = { path = "../src/tempo-api" }
 
 # External dependencies
 anyhow.workspace = true
@@ -30,6 +31,10 @@ log.workspace = true
 tempfile.workspace = true
 futures.workspace = true
 opentelemetry-proto.workspace = true
+axum.workspace = true
+tower = "0.5.2"
+serde_json.workspace = true
+hex = "0.4.3"
 
 # For test-specific utilities
 env_logger = "0.11.5"
