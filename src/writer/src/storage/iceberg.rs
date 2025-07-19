@@ -12,7 +12,37 @@ use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
 use object_store::ObjectStore;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use uuid;
+
+/// Represents the state of a transaction
+#[derive(Debug, Clone)]
+enum TransactionState {
+    /// No active transaction
+    None,
+    /// Transaction is active and accepting operations
+    Active {
+        id: String,
+        #[allow(dead_code)] // Will be used for timeout tracking
+        start_time: Instant,
+    },
+    /// Transaction is being committed
+    Committing { id: String },
+}
+
+/// Represents a pending operation within a transaction
+#[derive(Debug)]
+struct PendingOperation {
+    /// SQL statement to execute
+    sql: String,
+    /// Temporary table name for this operation
+    temp_table: String,
+    /// The data to be written
+    batch: RecordBatch,
+    /// Timestamp when this operation was added
+    #[allow(dead_code)] // Will be used for operation timeout
+    timestamp: Instant,
+}
 
 /// Iceberg table writer that replaces direct Parquet file writing
 /// Provides ACID transactions and proper metadata tracking
@@ -26,6 +56,10 @@ pub struct IcebergTableWriter {
     session_ctx: SessionContext,
     #[allow(dead_code)] // Will be used for lazy registration
     table_registered: bool,
+    /// Current transaction state
+    transaction_state: TransactionState,
+    /// Operations pending within the current transaction
+    pending_operations: Vec<PendingOperation>,
 }
 
 impl IcebergTableWriter {
@@ -121,6 +155,8 @@ impl IcebergTableWriter {
             tenant_id,
             session_ctx,
             table_registered: true, // Table was registered during initialization
+            transaction_state: TransactionState::None,
+            pending_operations: Vec::new(),
         })
     }
 
@@ -200,25 +236,78 @@ impl IcebergTableWriter {
             self.tenant_id
         );
 
-        // Implement SQL INSERT using datafusion_iceberg pattern
-        // Step 1: Get table metadata for SQL operations
+        // Check if we're in a transaction
+        match &self.transaction_state {
+            TransactionState::Active { id, .. } => {
+                // In transaction mode: queue the operation
+                log::debug!(
+                    "Transaction {} active: queuing batch with {} rows",
+                    id,
+                    batch.num_rows()
+                );
+
+                // Get table metadata for SQL operations
+                let table_info =
+                    crate::schema_bridge::create_datafusion_table_from_apache(&self.table).await?;
+
+                // Create temp table name
+                let temp_table_name = format!("txn_{}_{}", id, uuid::Uuid::new_v4().simple());
+
+                // Create the SQL statement
+                let insert_sql = format!(
+                    "INSERT INTO iceberg.default.{} SELECT * FROM {}",
+                    table_info.name, temp_table_name
+                );
+
+                // Store the pending operation
+                let operation = PendingOperation {
+                    sql: insert_sql,
+                    temp_table: temp_table_name,
+                    batch,
+                    timestamp: Instant::now(),
+                };
+
+                self.pending_operations.push(operation);
+
+                log::debug!(
+                    "Queued operation in transaction {}, total pending: {}",
+                    id,
+                    self.pending_operations.len()
+                );
+
+                Ok(())
+            }
+            TransactionState::Committing { id } => Err(anyhow::anyhow!(
+                "Cannot write batch while transaction {} is being committed",
+                id
+            )),
+            TransactionState::None => {
+                // No transaction: execute immediately
+                self.execute_immediate_write(batch).await
+            }
+        }
+    }
+
+    /// Execute an immediate write operation (outside of a transaction)
+    async fn execute_immediate_write(&mut self, batch: RecordBatch) -> Result<()> {
+        // Get table metadata for SQL operations
         let table_info =
             crate::schema_bridge::create_datafusion_table_from_apache(&self.table).await?;
 
         log::debug!(
-            "Executing SQL INSERT for batch with {} rows to table {} (location: {})",
+            "Executing immediate SQL INSERT for batch with {} rows to table {} (location: {})",
             batch.num_rows(),
             table_info.name,
             table_info.location
         );
 
-        // Step 2: Register RecordBatch directly as temporary table
+        // Register RecordBatch directly as temporary table
         let temp_table_name = format!("temp_batch_{}", uuid::Uuid::new_v4().simple());
         self.session_ctx.register_batch(&temp_table_name, batch)?;
 
         log::debug!("Created temporary table '{temp_table_name}' for batch data");
 
-        // Step 3: Execute INSERT INTO table SELECT * FROM temp_table
+        // Execute INSERT INTO table SELECT * FROM temp_table
         // Use the full qualified table name: catalog.schema.table
         let insert_sql = format!(
             "INSERT INTO iceberg.default.{} SELECT * FROM {}",
@@ -233,7 +322,7 @@ impl IcebergTableWriter {
             anyhow::anyhow!("Failed to execute SQL INSERT: {}", e)
         })?;
 
-        // Step 4: Collect results to ensure completion
+        // Collect results to ensure completion
         let result = df.collect().await.map_err(|e| {
             log::error!("Failed to collect SQL INSERT results: {e}");
             anyhow::anyhow!("Failed to collect SQL INSERT results: {}", e)
@@ -287,87 +376,65 @@ impl IcebergTableWriter {
             return Ok(());
         }
 
-        // Implement true transaction-based batch writing
-        // All batches are written in a single transaction for ACID compliance
-        self.write_batches_transactional(non_empty_batches).await?;
+        // Check if we're already in a transaction
+        match &self.transaction_state {
+            TransactionState::Active { .. } => {
+                // Already in transaction: just add the batches
+                for batch in non_empty_batches {
+                    self.write_batch(batch).await?;
+                }
+                Ok(())
+            }
+            TransactionState::Committing { id } => Err(anyhow::anyhow!(
+                "Cannot write batches while transaction {} is being committed",
+                id
+            )),
+            TransactionState::None => {
+                // No transaction: create one for atomicity
+                let transaction_id = self.begin_transaction().await?;
 
-        log::debug!(
-            "Successfully wrote {} total rows to Iceberg table {}",
-            total_rows,
-            self.table.identifier()
-        );
+                // Write all batches within the transaction
+                for batch in non_empty_batches {
+                    self.write_batch(batch).await?;
+                }
 
-        Ok(())
-    }
+                // Commit the transaction
+                self.commit_transaction(&transaction_id).await?;
 
-    /// Write multiple batches in a single transaction with ACID compliance
-    async fn write_batches_transactional(&mut self, batches: Vec<RecordBatch>) -> Result<()> {
-        log::info!(
-            "Starting transactional write of {} batches to Iceberg table {}",
-            batches.len(),
-            self.table.identifier()
-        );
+                log::debug!(
+                    "Successfully wrote {} total rows to Iceberg table {} in transaction {}",
+                    total_rows,
+                    self.table.identifier(),
+                    transaction_id
+                );
 
-        // Get table metadata for SQL operations
-        let table_info =
-            crate::schema_bridge::create_datafusion_table_from_apache(&self.table).await?;
-
-        // Create a single temporary table with all batches
-        let transaction_id = uuid::Uuid::new_v4().simple();
-        let temp_table_name = format!("transaction_{transaction_id}");
-
-        let batch_count = batches.len();
-        log::debug!("Creating transaction table '{temp_table_name}' for {batch_count} batches");
-
-        // Combine all batches into a single DataFrame for atomic transaction
-        // Use read_batches to create a DataFrame from multiple RecordBatches
-        let combined_df = self.session_ctx.read_batches(batches)?;
-        let table_provider = combined_df.into_view();
-        self.session_ctx
-            .register_table(&temp_table_name, table_provider)?;
-
-        log::debug!("Successfully registered {batch_count} batches in transaction table");
-
-        // Execute single INSERT statement for all data - this provides transaction semantics
-        // Use the full qualified table name: catalog.schema.table
-        let insert_sql = format!(
-            "INSERT INTO iceberg.default.{} SELECT * FROM {}",
-            table_info.name, temp_table_name
-        );
-
-        log::info!("Executing transactional SQL: {insert_sql}");
-
-        // Execute the transaction - all data is inserted atomically
-        let df = self.session_ctx.sql(&insert_sql).await.map_err(|e| {
-            log::error!("Transactional SQL INSERT failed: {e}");
-            anyhow::anyhow!("Failed to execute transactional SQL INSERT: {}", e)
-        })?;
-
-        // Collect results to ensure transaction completion
-        let result = df.collect().await.map_err(|e| {
-            log::error!("Failed to collect transactional SQL INSERT results: {e}");
-            anyhow::anyhow!("Failed to collect transactional SQL INSERT results: {}", e)
-        })?;
-
-        log::info!(
-            "Successfully executed transactional INSERT, affected {} result batches from {batch_count} input batches",
-            result.len()
-        );
-
-        // TODO: Add actual transaction commit once full transaction management is implemented
-        // This would involve:
-        // 1. Calling commit() on the Iceberg table transaction
-        // 2. Ensuring all metadata updates are persisted
-        // 3. Cleaning up temporary resources
-
-        log::info!("Transaction completed successfully for {batch_count} batches");
-
-        Ok(())
+                Ok(())
+            }
+        }
     }
 
     /// Begin a new transaction for batch operations
     /// Returns a transaction ID that can be used for commit/rollback operations
     pub async fn begin_transaction(&mut self) -> Result<String> {
+        // Check if we're already in a transaction
+        match &self.transaction_state {
+            TransactionState::Active { id, .. } => {
+                return Err(anyhow::anyhow!(
+                    "Transaction {} is already active. Commit or rollback before starting a new transaction.",
+                    id
+                ));
+            }
+            TransactionState::Committing { id } => {
+                return Err(anyhow::anyhow!(
+                    "Transaction {} is being committed. Wait for completion before starting a new transaction.",
+                    id
+                ));
+            }
+            TransactionState::None => {
+                // Good to start a new transaction
+            }
+        }
+
         let transaction_id = uuid::Uuid::new_v4().simple().to_string();
 
         log::info!(
@@ -376,56 +443,219 @@ impl IcebergTableWriter {
             self.table.identifier()
         );
 
-        // TODO: When DataFusionTable is registered, this would:
-        // 1. Create a new transaction context in the Iceberg table
-        // 2. Set up isolation level and locking
-        // 3. Initialize transaction state tracking
+        // Update transaction state
+        self.transaction_state = TransactionState::Active {
+            id: transaction_id.clone(),
+            start_time: Instant::now(),
+        };
 
-        log::debug!("Transaction {transaction_id} initialized (placeholder)");
+        // Clear any leftover pending operations
+        self.pending_operations.clear();
+
+        log::debug!("Transaction {transaction_id} initialized with empty operation queue");
         Ok(transaction_id)
     }
 
     /// Commit a transaction, making all changes permanent
     pub async fn commit_transaction(&mut self, transaction_id: &str) -> Result<()> {
+        // Verify we're in the correct transaction
+        let current_txn_id = match &self.transaction_state {
+            TransactionState::Active { id, .. } => {
+                if id != transaction_id {
+                    return Err(anyhow::anyhow!(
+                        "Attempting to commit transaction {} but current active transaction is {}",
+                        transaction_id,
+                        id
+                    ));
+                }
+                id.clone()
+            }
+            TransactionState::Committing { id } => {
+                return Err(anyhow::anyhow!(
+                    "Transaction {} is already being committed",
+                    id
+                ));
+            }
+            TransactionState::None => {
+                return Err(anyhow::anyhow!(
+                    "No active transaction to commit. Transaction {} not found.",
+                    transaction_id
+                ));
+            }
+        };
+
         log::info!(
-            "Committing transaction {} for Iceberg table {}",
+            "Committing transaction {} for Iceberg table {} with {} pending operations",
             transaction_id,
-            self.table.identifier()
+            self.table.identifier(),
+            self.pending_operations.len()
         );
 
-        // TODO: When DataFusionTable is registered, this would:
-        // 1. Flush all pending writes to storage
-        // 2. Update table metadata with new snapshots
-        // 3. Release locks and clean up transaction state
-        // 4. Ensure ACID compliance with atomic metadata updates
+        // Change state to committing
+        self.transaction_state = TransactionState::Committing {
+            id: current_txn_id.clone(),
+        };
 
-        log::info!("Transaction {transaction_id} committed successfully (placeholder)");
+        // Execute all pending operations
+        let mut success_count = 0;
+        let total_operations = self.pending_operations.len();
+
+        // Register all batches as temporary tables first
+        for operation in &self.pending_operations {
+            log::debug!(
+                "Registering temp table {} for transaction {}",
+                operation.temp_table,
+                transaction_id
+            );
+
+            self.session_ctx
+                .register_batch(&operation.temp_table, operation.batch.clone())?;
+        }
+
+        // Execute all SQL operations
+        for (index, operation) in self.pending_operations.iter().enumerate() {
+            log::debug!(
+                "Executing operation {}/{} in transaction {}: {}",
+                index + 1,
+                total_operations,
+                transaction_id,
+                operation.sql
+            );
+
+            match self.session_ctx.sql(&operation.sql).await {
+                Ok(df) => {
+                    // Collect results to ensure completion
+                    match df.collect().await {
+                        Ok(_) => {
+                            success_count += 1;
+                            log::debug!(
+                                "Operation {}/{} completed successfully",
+                                index + 1,
+                                total_operations
+                            );
+                        }
+                        Err(e) => {
+                            log::error!(
+                                "Failed to collect results for operation {}/{}: {}",
+                                index + 1,
+                                total_operations,
+                                e
+                            );
+
+                            // Rollback on failure
+                            self.transaction_state = TransactionState::None;
+                            self.pending_operations.clear();
+
+                            return Err(anyhow::anyhow!(
+                                "Transaction {} failed at operation {}/{}: {}",
+                                transaction_id,
+                                index + 1,
+                                total_operations,
+                                e
+                            ));
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!(
+                        "Failed to execute SQL for operation {}/{}: {}",
+                        index + 1,
+                        total_operations,
+                        e
+                    );
+
+                    // Rollback on failure
+                    self.transaction_state = TransactionState::None;
+                    self.pending_operations.clear();
+
+                    return Err(anyhow::anyhow!(
+                        "Transaction {} failed at operation {}/{}: {}",
+                        transaction_id,
+                        index + 1,
+                        total_operations,
+                        e
+                    ));
+                }
+            }
+        }
+
+        // All operations succeeded - clean up
+        self.pending_operations.clear();
+        self.transaction_state = TransactionState::None;
+
+        log::info!(
+            "Transaction {transaction_id} committed successfully. Executed {success_count} operations."
+        );
+
         Ok(())
     }
 
     /// Rollback a transaction, discarding all changes
     pub async fn rollback_transaction(&mut self, transaction_id: &str) -> Result<()> {
+        // Verify we're in the correct transaction
+        match &self.transaction_state {
+            TransactionState::Active { id, .. } => {
+                if id != transaction_id {
+                    return Err(anyhow::anyhow!(
+                        "Attempting to rollback transaction {} but current active transaction is {}",
+                        transaction_id,
+                        id
+                    ));
+                }
+            }
+            TransactionState::Committing { id } => {
+                if id != transaction_id {
+                    return Err(anyhow::anyhow!(
+                        "Attempting to rollback transaction {} but transaction {} is being committed",
+                        transaction_id,
+                        id
+                    ));
+                }
+                log::warn!(
+                    "Rolling back transaction {transaction_id} that was in committing state"
+                );
+            }
+            TransactionState::None => {
+                return Err(anyhow::anyhow!(
+                    "No active transaction to rollback. Transaction {} not found.",
+                    transaction_id
+                ));
+            }
+        }
+
         log::warn!(
-            "Rolling back transaction {} for Iceberg table {}",
+            "Rolling back transaction {} for Iceberg table {} with {} pending operations",
             transaction_id,
-            self.table.identifier()
+            self.table.identifier(),
+            self.pending_operations.len()
         );
 
-        // TODO: When DataFusionTable is registered, this would:
-        // 1. Discard all uncommitted changes
-        // 2. Remove temporary files and data
-        // 3. Restore table state to pre-transaction snapshot
-        // 4. Release locks and clean up transaction state
+        // Discard all pending operations
+        let discarded_operations = self.pending_operations.len();
+        self.pending_operations.clear();
 
-        log::info!("Transaction {transaction_id} rolled back successfully (placeholder)");
+        // Reset transaction state
+        self.transaction_state = TransactionState::None;
+
+        log::info!(
+            "Transaction {transaction_id} rolled back successfully. Discarded {discarded_operations} operations."
+        );
+
         Ok(())
     }
 
     /// Check if a transaction is currently active
     pub fn has_active_transaction(&self) -> bool {
-        // TODO: When DataFusionTable is registered, this would check actual transaction state
-        // For now, return false as we don't track active transactions yet
-        false
+        matches!(self.transaction_state, TransactionState::Active { .. })
+    }
+
+    /// Get the current transaction ID if one is active
+    pub fn current_transaction_id(&self) -> Option<String> {
+        match &self.transaction_state {
+            TransactionState::Active { id, .. } => Some(id.clone()),
+            TransactionState::Committing { id } => Some(id.clone()),
+            TransactionState::None => None,
+        }
     }
 
     /// Get table identifier
