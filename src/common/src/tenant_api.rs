@@ -344,20 +344,24 @@ mod tests {
 
     #[test]
     fn test_tenant_api_with_custom_tenant() {
-        let mut tenant_config = TenantSchemaConfig::default();
-        tenant_config.schema = Some(SchemaConfig {
-            catalog_type: "memory".to_string(),
-            catalog_uri: "memory://".to_string(),
-            default_schemas: crate::config::DefaultSchemas::default(),
-        });
+        let tenant_config = TenantSchemaConfig {
+            schema: Some(SchemaConfig {
+                catalog_type: "memory".to_string(),
+                catalog_uri: "memory://".to_string(),
+                default_schemas: crate::config::DefaultSchemas::default(),
+            }),
+            ..Default::default()
+        };
 
         let mut tenants = HashMap::new();
         tenants.insert("test-tenant".to_string(), tenant_config);
 
-        let mut config = Configuration::default();
-        config.tenants = TenantsConfig {
-            default_tenant: "test-tenant".to_string(),
-            tenants,
+        let config = Configuration {
+            tenants: TenantsConfig {
+                default_tenant: "test-tenant".to_string(),
+                tenants,
+            },
+            ..Default::default()
         };
 
         let api = TenantApi::new(config);
@@ -411,10 +415,12 @@ mod tests {
         let mut tenants = HashMap::new();
         tenants.insert("existing-tenant".to_string(), tenant_config);
 
-        let mut config = Configuration::default();
-        config.tenants = TenantsConfig {
-            default_tenant: "existing-tenant".to_string(),
-            tenants,
+        let config = Configuration {
+            tenants: TenantsConfig {
+                default_tenant: "existing-tenant".to_string(),
+                tenants,
+            },
+            ..Default::default()
         };
 
         let api = TenantApi::new(config);

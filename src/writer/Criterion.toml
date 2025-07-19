@@ -1,0 +1,11 @@
+[output]
+html = true
+csv = true
+
+[measurement]
+warm_up_time = "3s"
+measurement_time = "10s"
+sample_size = 20
+
+[plotting]
+html = true

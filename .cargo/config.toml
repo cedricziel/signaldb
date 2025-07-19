@@ -1,24 +1,30 @@
-# Build optimization for faster CI builds
-
-# Link Time Optimization for smaller release binaries
 [profile.release]
-lto = true
+lto = "thin"      # 95 % of the perf at ~40 % of the link time
 opt-level = 3
-codegen-units = 1
+codegen-units = 8 # good perf / far quicker builds
 panic = "abort"
 
-# Faster compilation for development and testing
 [profile.dev]
-debug = true
-opt-level = 0
-overflow-checks = true
+incremental = true         # make intent explicit
+split-debuginfo = "packed" # macOS only; omit on Linux/Windows
 
-# Test profile optimizations
 [profile.test]
-debug = true
-opt-level = 1
+opt-level = 0
+codegen-units = 256
+lto = "off"
+incremental = true
+debug = 1  # Reduced from 2
+split-debuginfo = "unpacked"
 
-# Environment variables for consistent builds
+[profile.ci-test]
+inherits = "test"
+debug = 0  # No debug info in CI
+strip = true  # Strip symbols
+
 [env]
-# Ensure consistent behavior across different environments
 RUST_BACKTRACE = { value = "1", condition = { env_not_set = "RUST_BACKTRACE" } }
+
+# Faster linking on Linux (requires mold linker to be installed)
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

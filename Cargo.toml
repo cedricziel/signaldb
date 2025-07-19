@@ -1,65 +1,4 @@
-[package]
-name = "signaldb"
-version = "0.1.0"
-edition = "2024"
-license = "AGPL-3.0"
-
-rust-version = "1.85.0"
-
-publish = false
-
-[package.metadata.cargo-machete]
-ignored = ["cargo-husky"]
-
-[dependencies]
-acceptor = { path = "src/acceptor", features = ["testing"] }
-common = { path = "src/common" }
-router = { path = "src/router" }
-writer = { path = "src/writer" }
-uuid = { workspace = true }
-tempfile = "3.20.0"
-hex = "0.4"
-futures = "0.3.31"
-
-anyhow.workspace = true
-axum.workspace = true
-
-datafusion.workspace = true
-arrow-flight.workspace = true
-
-opentelemetry-proto.workspace = true
-tonic.workspace = true
-
-tokio.workspace = true
-
-tracing.workspace = true
-tracing-subscriber.workspace = true
-
-log.workspace = true
-
-serde_json.workspace = true
-figment.workspace = true
-
-object_store.workspace = true
-
-[[example]]
-name = "flight_client"
-path = "examples/flight_client.rs"
-
-[dev-dependencies]
-env_logger = "0.11.5"
-querier = { path = "src/querier" }
-testcontainers-modules = { workspace = true }
-
-[dev-dependencies.cargo-husky]
-version = "1"
-default-features = false
-features = [
-    "precommit-hook",
-    "run-cargo-fmt",
-    "run-cargo-clippy",
-]
-
+# Virtual workspace - no root package
 [workspace]
 resolver = "2"
 members = [
@@ -68,8 +7,10 @@ members = [
     "src/querier",
     "src/router",
     "src/signal-producer",
+    "src/signaldb-bin",
     "src/tempo-api",
     "src/writer",
+    "tests-integration",
 ]
 
 [workspace.package]
@@ -89,15 +30,20 @@ async-stream = "0.3.0"
 futures = "0.3.31"
 
 # Use datafusion's reexported dependencies for consistency
-datafusion = { version = "47.0.0", default-features = false, features = ["parquet", "nested_expressions", "unicode_expressions"] }
+datafusion = { version = "47.0.0", default-features = false, features = [
+    "parquet",
+] }
 # Use same versions as datafusion for compatibility
 arrow-flight = { version = "55.2.0" }
-object_store = { version = "0.12.2", features = ["aws", "azure", "gcp"] }
+object_store = { version = "0.12.2", features = ["aws"] }
 
-# Apache Iceberg support
+# Apache Iceberg support (for schema management)
 iceberg = { version = "0.5.1" }
-iceberg-datafusion = { version = "0.5.1" }
 iceberg-catalog-memory = { version = "0.5.1" }
+# JanKaul's datafusion_iceberg (for write operations only)
+datafusion_iceberg = { version = "0.8.0" }
+iceberg-rust = { version = "0.8.0" }
+iceberg-sql-catalog = { version = "0.8.0" }
 
 tonic = { version = "0.12.3", features = [
     "transport",
@@ -115,7 +61,16 @@ opentelemetry-otlp = { version = "0.29.0" }
 opentelemetry-proto = "0.29.0"
 opentelemetry-semantic-conventions = "0.29.0"
 
-tokio = { version = "1.46.1", features = ["rt-multi-thread", "net", "fs", "sync", "time", "macros", "signal", "io-util"] }
+tokio = { version = "1.46.1", features = [
+    "rt-multi-thread",
+    "net",
+    "fs",
+    "sync",
+    "time",
+    "macros",
+    "signal",
+    "io-util",
+] }
 tokio-stream = { version = "0.1.17", features = ["sync", "net"] }
 tokio-test = "0.4.2"
 
@@ -145,32 +100,28 @@ once_cell = "1.21.1"
 
 bytes = "1"
 
-mockall = "0.13.1"
-
 uuid = { version = "1.17.0", features = ["serde"] }
 
 humantime-serde = "1.1.1"
-
-hyper = { version = "1.0.1", features = ["server", "http1"] }
 
 hex = "0.4"
 
 testcontainers-modules = { version = "0.12.1", features = ["postgres"] }
 tempfile = "3.20.0"
+rand = "0.8"
 
-ntest = "0.9.3"
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
 chrono = { version = "0.4", features = ["serde"] }
 sqlx = { version = "0.8", default-features = false, features = [
     "postgres",
     "sqlite",
-    "any",
-    "macros",
     "runtime-tokio-rustls",
     "chrono",
     "uuid",
 ] }
 url = "2.5"
+cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"] }
 
 [profile.dev]
 split-debuginfo = "unpacked"

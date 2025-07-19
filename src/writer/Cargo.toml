@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+benchmarks = ["dep:criterion", "dep:rand"]
+
 [dependencies]
 common.workspace = true
 
@@ -12,11 +16,19 @@ datafusion.workspace = true
 arrow-flight.workspace = true
 object_store.workspace = true
 
+# Apache Iceberg support (for compatibility)
+iceberg.workspace = true
+# JanKaul's datafusion_iceberg (for write operations)
+datafusion_iceberg.workspace = true
+iceberg-rust.workspace = true
+iceberg-sql-catalog.workspace = true
+
 tokio.workspace = true
 futures.workspace = true
 
 log.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
 
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -25,6 +37,11 @@ uuid.workspace = true
 bytes.workspace = true
 tonic.workspace = true
 tempfile.workspace = true
+sqlx.workspace = true
+
+# Optional dependencies for benchmarks
+criterion = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
 
 [[bin]]
 name = "signaldb-writer"
@@ -34,4 +51,5 @@ path = "src/main.rs"
 tokio-stream.workspace = true
 
 [package.metadata.cargo-machete]
-ignored = ["tracing", "tokio-stream"]
+# async-trait is used by the trait implementations
+ignored = ["async-trait", "tracing", "tokio-stream"]

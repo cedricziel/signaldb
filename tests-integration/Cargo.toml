@@ -1,0 +1,39 @@
+[package]
+name = "tests-integration"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "tests_integration"
+path = "src/lib.rs"
+
+[dependencies]
+# Workspace crates
+acceptor = { path = "../src/acceptor" }
+common = { path = "../src/common" }
+querier = { path = "../src/querier" }
+router = { path = "../src/router" }
+writer = { path = "../src/writer" }
+
+# External dependencies
+anyhow.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+datafusion.workspace = true
+arrow-flight.workspace = true
+object_store.workspace = true
+tonic.workspace = true
+log.workspace = true
+tempfile.workspace = true
+futures.workspace = true
+opentelemetry-proto.workspace = true
+
+# For test-specific utilities
+env_logger = "0.11.5"
+
+[package.metadata.cargo-machete]
+# These dependencies are used in integration tests under tests/ directory
+ignored = ["acceptor", "anyhow", "arrow-flight", "datafusion", "futures", "log", "opentelemetry-proto", "querier", "router", "tokio", "tokio-stream", "tonic", "writer"]

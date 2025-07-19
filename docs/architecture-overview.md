@@ -39,11 +39,18 @@ Database-backed service registry with capability routing:
 - **Heartbeat monitoring** with automatic TTL-based cleanup
 - **ServiceBootstrap pattern** for automatic registration
 
-### 4. Columnar Storage
+### 4. Iceberg Table Format
+Apache Iceberg provides ACID transactions and metadata management:
+- **ACID Transactions** with commit/rollback operations for data integrity
+- **Schema Evolution** supporting safe table structure changes
+- **Time Travel** enabling historical data queries and point-in-time recovery
+- **Metadata Management** with efficient partition and file tracking
+
+### 5. Columnar Storage
 Efficient Parquet storage with DataFusion query processing:
 - **Arrow-native processing** throughout the pipeline
 - **Columnar compression** for cost-effective storage
-- **SQL query capabilities** via DataFusion
+- **SQL query capabilities** via DataFusion with Iceberg integration
 - **Object store abstraction** supporting multiple backends
 
 ## System Architecture
@@ -99,11 +106,13 @@ Efficient Parquet storage with DataFusion query processing:
 - **Output**: Arrow data via Flight to Writers
 
 ### Writer  
-**Purpose**: Data persistence to object storage
+**Purpose**: Data persistence to Apache Iceberg tables with ACID transactions
 - **Capabilities**: Storage
 - **Input**: Arrow data via Flight from Acceptors
 - **WAL**: Processing state tracking and recovery
-- **Output**: Parquet files to object store
+- **Output**: Iceberg tables (Parquet + metadata) to object store
+- **Transactions**: Full ACID support with commit/rollback operations
+- **Optimization**: Intelligent batch processing and connection pooling
 
 ### Router
 **Purpose**: HTTP API and query routing
@@ -113,11 +122,12 @@ Efficient Parquet storage with DataFusion query processing:
 - **Output**: Query requests via Flight to Queriers
 
 ### Querier
-**Purpose**: Query execution against stored data
-- **Capabilities**: QueryExecution
-- **Engine**: DataFusion SQL processing
+**Purpose**: Query execution against Iceberg tables
+- **Capabilities**: QueryExecution  
+- **Engine**: DataFusion SQL processing with Iceberg integration
 - **Input**: Queries via Flight from Routers
-- **Storage**: Direct Parquet file access
+- **Storage**: Iceberg table access (Parquet + metadata)
+- **Features**: Schema evolution, time travel, partition pruning
 
 ## Service Discovery
 

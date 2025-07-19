@@ -285,25 +285,29 @@ mod tests {
 
     #[tokio::test]
     async fn test_tenant_schema_registry_with_custom_tenant() {
-        let mut tenant_config = TenantSchemaConfig::default();
-        tenant_config.schema = Some(SchemaConfig {
-            catalog_type: "memory".to_string(),
-            catalog_uri: "memory://".to_string(),
-            default_schemas: DefaultSchemas::default(),
-        });
-        tenant_config.custom_schemas = Some({
-            let mut schemas = HashMap::new();
-            schemas.insert("traces".to_string(), "custom_traces".to_string());
-            schemas
-        });
+        let tenant_config = TenantSchemaConfig {
+            schema: Some(SchemaConfig {
+                catalog_type: "memory".to_string(),
+                catalog_uri: "memory://".to_string(),
+                default_schemas: DefaultSchemas::default(),
+            }),
+            custom_schemas: Some({
+                let mut schemas = HashMap::new();
+                schemas.insert("traces".to_string(), "custom_traces".to_string());
+                schemas
+            }),
+            ..Default::default()
+        };
 
         let mut tenants = HashMap::new();
         tenants.insert("test-tenant".to_string(), tenant_config);
 
-        let mut config = Configuration::default();
-        config.tenants = TenantsConfig {
-            default_tenant: "test-tenant".to_string(),
-            tenants,
+        let config = Configuration {
+            tenants: TenantsConfig {
+                default_tenant: "test-tenant".to_string(),
+                tenants,
+            },
+            ..Default::default()
         };
 
         let mut registry = TenantSchemaRegistry::new(config);
@@ -339,20 +343,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_tenant_schema_registry_invalidation() {
-        let mut tenant_config = TenantSchemaConfig::default();
-        tenant_config.schema = Some(SchemaConfig {
-            catalog_type: "memory".to_string(),
-            catalog_uri: "memory://".to_string(),
-            default_schemas: DefaultSchemas::default(),
-        });
+        let tenant_config = TenantSchemaConfig {
+            schema: Some(SchemaConfig {
+                catalog_type: "memory".to_string(),
+                catalog_uri: "memory://".to_string(),
+                default_schemas: DefaultSchemas::default(),
+            }),
+            ..Default::default()
+        };
 
         let mut tenants = HashMap::new();
         tenants.insert("test-tenant".to_string(), tenant_config);
 
-        let mut config = Configuration::default();
-        config.tenants = TenantsConfig {
-            default_tenant: "test-tenant".to_string(),
-            tenants,
+        let config = Configuration {
+            tenants: TenantsConfig {
+                default_tenant: "test-tenant".to_string(),
+                tenants,
+            },
+            ..Default::default()
         };
 
         let mut registry = TenantSchemaRegistry::new(config);

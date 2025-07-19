@@ -45,4 +45,5 @@ tempfile.workspace = true
 figment = { workspace = true, features = ["test"] }
 
 [package.metadata.cargo-machete]
-ignored = ["humantime-serde", "testcontainers"]
+# async-trait is used by discovery backends
+ignored = ["async-trait", "humantime-serde", "testcontainers"]

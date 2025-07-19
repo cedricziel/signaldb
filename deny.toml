@@ -71,6 +71,7 @@ feature-depth = 1
 # output a note when they are encountered.
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste 1.x is unmaintained but is a dependency of datafusion. No security issues reported." },
+    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.8 is a transitive dependency of sqlx-mysql. We don't use MySQL features and the vulnerability is timing-based which isn't relevant for our use case." },
     #"RUSTSEC-0000-0000",
     #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
     #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish
@@ -98,6 +99,7 @@ allow = [
     "Zlib",
     "ISC",
     "MPL-2.0",
+    "CDLA-Permissive-2.0",
 ] # List of explicitly allowed licenses
 # See https://spdx.org/licenses/ for list of possible licenses
 # [possible values: any SPDX 3.11 short identifier (+ optional exception)].
