@@ -37,6 +37,7 @@ uuid.workspace = true
 bytes.workspace = true
 tonic.workspace = true
 tempfile.workspace = true
+sqlx.workspace = true
 
 # Optional dependencies for benchmarks
 criterion = { workspace = true, optional = true }

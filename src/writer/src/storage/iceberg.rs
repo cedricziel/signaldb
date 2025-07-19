@@ -1,4 +1,4 @@
-use crate::schema_bridge::create_jankaul_sql_catalog;
+use crate::schema_bridge::{CatalogPoolConfig, create_jankaul_sql_catalog_with_pool};
 use anyhow::Result;
 use common::config::Configuration;
 use common::schema::{TenantSchemaRegistry, create_catalog_with_config};
@@ -86,6 +86,8 @@ pub struct IcebergTableWriter {
     pending_operations: Vec<PendingOperation>,
     /// Retry configuration for failed operations
     retry_config: RetryConfig,
+    /// Connection pool configuration for catalog operations
+    pool_config: CatalogPoolConfig,
 }
 
 impl IcebergTableWriter {
@@ -95,6 +97,17 @@ impl IcebergTableWriter {
         object_store: Arc<dyn ObjectStore>,
         tenant_id: String,
         table_name: String,
+    ) -> Result<Self> {
+        Self::new_with_pool_config(config, object_store, tenant_id, table_name, None).await
+    }
+
+    /// Create a new IcebergTableWriter with custom connection pool configuration
+    pub async fn new_with_pool_config(
+        config: &Configuration,
+        object_store: Arc<dyn ObjectStore>,
+        tenant_id: String,
+        table_name: String,
+        pool_config: Option<CatalogPoolConfig>,
     ) -> Result<Self> {
         let catalog = create_catalog_with_config(config).await?;
 
@@ -172,7 +185,9 @@ impl IcebergTableWriter {
         // For now, we have the metadata conversion working
 
         // Register the table with the session context for SQL operations
-        Self::register_table_with_session(&table_info, &session_ctx, &catalog).await?;
+        let pool_config = pool_config.unwrap_or_default();
+        Self::register_table_with_session(&table_info, &session_ctx, &catalog, &pool_config)
+            .await?;
 
         Ok(Self {
             catalog,
@@ -184,6 +199,7 @@ impl IcebergTableWriter {
             transaction_state: TransactionState::None,
             pending_operations: Vec::new(),
             retry_config: RetryConfig::default(),
+            pool_config,
         })
     }
 
@@ -192,6 +208,7 @@ impl IcebergTableWriter {
         table_info: &crate::schema_bridge::ConvertedTableInfo,
         session_ctx: &SessionContext,
         _catalog: &Arc<dyn Catalog>, // Apache catalog not used in new approach
+        pool_config: &CatalogPoolConfig,
     ) -> Result<()> {
         log::info!(
             "Registering Iceberg catalog with DataFusion session for table '{}'",
@@ -203,12 +220,16 @@ impl IcebergTableWriter {
         // Step 1: Create a JanKaul SQL catalog for DataFusion
         log::info!("Creating JanKaul SQL catalog for DataFusion integration");
 
-        let jankaul_catalog = create_jankaul_sql_catalog("sqlite://", "signaldb_iceberg")
-            .await
-            .map_err(|e| {
-                log::error!("Failed to create JanKaul SQL catalog: {e}");
-                anyhow::anyhow!("Failed to create JanKaul SQL catalog: {}", e)
-            })?;
+        let jankaul_catalog = create_jankaul_sql_catalog_with_pool(
+            "sqlite://",
+            "signaldb_iceberg",
+            Some(pool_config.clone()),
+        )
+        .await
+        .map_err(|e| {
+            log::error!("Failed to create JanKaul SQL catalog: {e}");
+            anyhow::anyhow!("Failed to create JanKaul SQL catalog: {}", e)
+        })?;
 
         // Step 2: Create the table directly in the JanKaul catalog
         let namespace = "default";
@@ -774,6 +795,16 @@ impl IcebergTableWriter {
     pub fn retry_config(&self) -> &RetryConfig {
         &self.retry_config
     }
+
+    /// Update connection pool configuration
+    pub fn set_pool_config(&mut self, pool_config: CatalogPoolConfig) {
+        self.pool_config = pool_config;
+    }
+
+    /// Get current connection pool configuration
+    pub fn pool_config(&self) -> &CatalogPoolConfig {
+        &self.pool_config
+    }
 }
 
 /// Factory function to create IcebergTableWriter instances
@@ -784,6 +815,24 @@ pub async fn create_iceberg_writer(
     table_name: impl Into<String>,
 ) -> Result<IcebergTableWriter> {
     IcebergTableWriter::new(config, object_store, tenant_id.into(), table_name.into()).await
+}
+
+/// Factory function to create IcebergTableWriter instances with custom pool configuration
+pub async fn create_iceberg_writer_with_pool(
+    config: &Configuration,
+    object_store: Arc<dyn ObjectStore>,
+    tenant_id: impl Into<String>,
+    table_name: impl Into<String>,
+    pool_config: CatalogPoolConfig,
+) -> Result<IcebergTableWriter> {
+    IcebergTableWriter::new_with_pool_config(
+        config,
+        object_store,
+        tenant_id.into(),
+        table_name.into(),
+        Some(pool_config),
+    )
+    .await
 }
 
 #[cfg(test)]
