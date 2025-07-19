@@ -6,9 +6,10 @@ A high-performance observability data platform built with the FDAP stack (Flight
 
 Building a database for observability signals (metrics/logs/traces) with focus on:
 
-* **Cost-effective storage** - Efficient columnar storage with Parquet
+* **Cost-effective storage** - Efficient columnar storage with Apache Iceberg and Parquet
+* **ACID transactions** - Full transaction support with commit/rollback for data integrity
 * **Open standards ingestion** - Native OTLP, Prometheus, and other standard protocols
-* **Effective querying** - Fast SQL queries powered by DataFusion
+* **Effective querying** - Fast SQL queries powered by DataFusion with Iceberg table format
 * **Tool compatibility** - Seamless integration with Grafana, Perses, and other analysis tools
 * **Easy operation** - Configless deployments and flexible architecture
 
@@ -20,7 +21,9 @@ SignalDB is built on the FDAP stack with Apache Arrow Flight as the primary inte
 - **Flight-First Communication**: Apache Arrow Flight for zero-copy, high-throughput data transfer
 - **WAL-Based Durability**: Write-Ahead Log ensures data persistence and crash recovery
 - **Catalog-Based Discovery**: Database-backed service registry with automatic health monitoring
+- **Iceberg Table Format**: ACID transactions with Apache Iceberg for reliable data management
 - **Columnar Storage**: Efficient Parquet storage with DataFusion query processing
+- **Performance Optimization**: Intelligent batch processing and connection pooling
 
 ### Deployment Models
 
@@ -41,16 +44,16 @@ Independent services for scalable production deployments:
 
 **Write Path**: 
 ```
-OTLP Client → Acceptor → WAL → Writer → Parquet Storage
-     ↓           ↓        ↓       ↓           ↓
-   gRPC/HTTP   Flight   Disk   Flight   Object Store
+OTLP Client → Acceptor → WAL → Writer → Iceberg Tables (Parquet)
+     ↓           ↓        ↓       ↓              ↓
+   gRPC/HTTP   Flight   Disk   Flight    Object Store + ACID
 ```
 
 **Query Path**:
 ```
-Client → Router → Querier → DataFusion → Parquet Files
-   ↓       ↓        ↓          ↓           ↓
- HTTP   Flight   Flight   SQL Engine   Storage
+Client → Router → Querier → DataFusion → Iceberg Tables
+   ↓       ↓        ↓          ↓              ↓
+ HTTP   Flight   Flight   SQL Engine   Parquet + Metadata
 ```
 
 ### Service Discovery & Communication
@@ -60,6 +63,24 @@ All services register in a shared catalog for automatic discovery:
 - **Automatic service registration** with capability-based routing
 - **Connection pooling** and load balancing across available services
 - **Graceful shutdown** with proper service deregistration
+
+## Storage Architecture
+
+### Iceberg Table Format
+SignalDB uses Apache Iceberg as the table format for reliable data management:
+
+- **ACID Transactions**: Full transaction support with commit/rollback operations
+- **Schema Evolution**: Safe schema changes without data migration
+- **Time Travel**: Query historical data states and track changes over time
+- **Metadata Management**: Efficient table metadata and partition management
+- **Performance Optimization**: Intelligent batch processing and connection pooling
+
+### Storage Features
+- **Intelligent Batch Processing**: Automatic splitting of large batches (50K rows, 128MB default)
+- **Connection Pooling**: Optimized catalog operations with configurable pool settings
+- **Retry Logic**: Exponential backoff for transient failures with configurable policies
+- **Memory Management**: Memory-aware batch processing to prevent OOM issues
+- **Concurrent Processing**: Configurable concurrent batch processing for optimal throughput
 
 ## Database Support
 
@@ -161,6 +182,51 @@ dsn = "sqlite://.data/signaldb.db"  # SQLite database path (default)
 ```
 
 Environment variable: `SIGNALDB_DATABASE_DSN`
+
+### Iceberg Table Configuration
+
+SignalDB uses Apache Iceberg for table format and catalog management:
+
+```toml
+[schema]
+catalog_type = "sql"                    # sql (recommended) or memory
+catalog_uri = "sqlite::memory:"         # In-memory SQLite catalog
+# catalog_uri = "sqlite:///path/to/catalog.db"  # Persistent SQLite catalog
+
+# Default schemas to create for new tenants
+[schema.default_schemas]
+traces_enabled = true
+logs_enabled = true
+metrics_enabled = true
+```
+
+Environment variables:
+* `SIGNALDB_SCHEMA_CATALOG_TYPE`: Catalog backend type (sql or memory)
+* `SIGNALDB_SCHEMA_CATALOG_URI`: Catalog database connection string
+
+### Performance Optimization Configuration
+
+Configure batch processing and connection pooling for optimal performance:
+
+```toml
+# Example configuration for production workloads
+# These settings are automatically optimized and typically don't need adjustment
+
+# Connection pooling (managed automatically)
+# - Min connections: 2
+# - Max connections: 10  
+# - Connection timeout: 5 seconds
+# - Pool lifetime: 30 minutes
+
+# Batch optimization (automatic)
+# - Max rows per batch: 50,000
+# - Max memory per batch: 128MB
+# - Auto-splitting: enabled
+# - Concurrent batches: 4
+# - Catalog caching: enabled (5 min TTL)
+```
+
+These optimizations are enabled by default and automatically tuned for most workloads.
 
 ### Queue Configuration
 

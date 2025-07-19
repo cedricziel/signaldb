@@ -17,6 +17,7 @@ dsn = "file:///.data/storage"
 catalog_type = "sql"                   # sql (recommended) or memory
 catalog_uri = "sqlite::memory:"        # In-memory SQLite catalog
 # catalog_uri = "sqlite://.data/catalog.db"  # Persistent SQLite catalog
+# catalog_uri = "postgres://user:password@localhost:5432/iceberg"  # Production PostgreSQL
 
 # Default schemas to create for new tenants
 [schema.default_schemas]
@@ -27,6 +28,33 @@ metrics_enabled = true
 # Custom schema definitions (optional)
 # [schema.default_schemas.custom_schemas]
 # my_custom_table = '''{"fields": [...]}'''
+
+# Advanced Iceberg Configuration (all settings are optional and auto-optimized)
+# These provide fine-grained control for specialized workloads
+
+# [schema.optimization]
+# # Batch processing optimization (automatic by default)
+# max_rows_per_batch = 50000           # Maximum rows per batch before splitting
+# max_memory_per_batch_mb = 128        # Maximum memory per batch in MB
+# enable_auto_split = true             # Automatically split oversized batches
+# target_concurrent_batches = 4        # Number of batches to process concurrently
+# 
+# # Catalog caching for performance (enabled by default)
+# enable_catalog_caching = true        # Cache catalog connections
+# catalog_cache_ttl_seconds = 300      # Cache TTL in seconds (5 minutes)
+#
+# # Connection pooling for production (automatic by default)
+# min_connections = 2                  # Minimum pool connections
+# max_connections = 10                 # Maximum pool connections
+# connection_timeout_ms = 5000         # Connection timeout
+# idle_timeout_seconds = 300           # Idle connection timeout
+# max_lifetime_seconds = 1800          # Connection max lifetime
+#
+# # Retry logic for reliability (enabled by default)
+# max_retry_attempts = 3               # Maximum retry attempts
+# initial_retry_delay_ms = 100         # Initial retry delay
+# max_retry_delay_seconds = 5          # Maximum retry delay
+# retry_backoff_multiplier = 2.0       # Exponential backoff multiplier
 
 [discovery]
 # Service discovery configuration
@@ -60,5 +88,12 @@ default_tenant = "default"
 # Environment variable examples:
 # SIGNALDB_DATABASE_DSN=postgres://user:pass@localhost/signaldb
 # SIGNALDB_STORAGE_DSN=file:///data/signaldb
-# SIGNALDB_SCHEMA_CATALOG_URI=sqlite:///data/catalog.db
+# SIGNALDB_SCHEMA_CATALOG_TYPE=sql
+# SIGNALDB_SCHEMA_CATALOG_URI=postgres://user:pass@localhost:5432/iceberg
 # SIGNALDB_TENANTS_DEFAULT_TENANT=my_tenant
+
+# Production environment example with Iceberg:
+# SIGNALDB_DATABASE_DSN=postgres://signaldb:password@postgres:5432/signaldb_metadata
+# SIGNALDB_STORAGE_DSN=s3://my-data-bucket/iceberg-tables/
+# SIGNALDB_SCHEMA_CATALOG_TYPE=sql  
+# SIGNALDB_SCHEMA_CATALOG_URI=postgres://iceberg:password@postgres:5432/iceberg_catalog
