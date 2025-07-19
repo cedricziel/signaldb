@@ -948,16 +948,27 @@ mod tests {
 
             let converted = result.unwrap();
             // Compare using match expression for proper type checking
-            let matches = match (&converted, &expected_converted) {
-                (ConvertedPrimitiveType::String, ConvertedPrimitiveType::String) => true,
-                (ConvertedPrimitiveType::Long, ConvertedPrimitiveType::Long) => true,
-                (ConvertedPrimitiveType::Int, ConvertedPrimitiveType::Int) => true,
-                (ConvertedPrimitiveType::Double, ConvertedPrimitiveType::Double) => true,
-                (ConvertedPrimitiveType::Boolean, ConvertedPrimitiveType::Boolean) => true,
-                (ConvertedPrimitiveType::Date, ConvertedPrimitiveType::Date) => true,
-                (ConvertedPrimitiveType::TimestampNs, ConvertedPrimitiveType::TimestampNs) => true,
-                _ => false,
-            };
+            let matches = matches!(
+                (&converted, &expected_converted),
+                (
+                    ConvertedPrimitiveType::String,
+                    ConvertedPrimitiveType::String
+                ) | (ConvertedPrimitiveType::Long, ConvertedPrimitiveType::Long)
+                    | (ConvertedPrimitiveType::Int, ConvertedPrimitiveType::Int)
+                    | (
+                        ConvertedPrimitiveType::Double,
+                        ConvertedPrimitiveType::Double
+                    )
+                    | (
+                        ConvertedPrimitiveType::Boolean,
+                        ConvertedPrimitiveType::Boolean
+                    )
+                    | (ConvertedPrimitiveType::Date, ConvertedPrimitiveType::Date)
+                    | (
+                        ConvertedPrimitiveType::TimestampNs,
+                        ConvertedPrimitiveType::TimestampNs
+                    )
+            );
             assert!(
                 matches,
                 "Expected {expected_converted:?}, got {converted:?}"

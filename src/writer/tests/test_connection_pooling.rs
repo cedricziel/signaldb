@@ -1,6 +1,5 @@
 use anyhow::Result;
 use common::config::{Configuration, DefaultSchemas, SchemaConfig, StorageConfig};
-use futures;
 use object_store::memory::InMemory;
 use std::sync::Arc;
 use writer::{CatalogPoolConfig, create_iceberg_writer_with_pool}; // For join_all

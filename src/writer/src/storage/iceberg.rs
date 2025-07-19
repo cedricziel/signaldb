@@ -1127,14 +1127,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_iceberg_writer_with_memory_catalog() {
-        let mut config = Configuration::default();
-        config.schema = SchemaConfig {
-            catalog_type: "memory".to_string(),
-            catalog_uri: "memory://".to_string(),
-            default_schemas: Default::default(),
-        };
-        config.storage = StorageConfig {
-            dsn: "memory://".to_string(),
+        let config = Configuration {
+            schema: SchemaConfig {
+                catalog_type: "memory".to_string(),
+                catalog_uri: "memory://".to_string(),
+                default_schemas: Default::default(),
+            },
+            storage: StorageConfig {
+                dsn: "memory://".to_string(),
+            },
+            ..Default::default()
         };
 
         let object_store = Arc::new(InMemory::new());
@@ -1151,14 +1153,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_transaction_management() {
-        let mut config = Configuration::default();
-        config.schema = SchemaConfig {
-            catalog_type: "memory".to_string(),
-            catalog_uri: "memory://".to_string(),
-            default_schemas: Default::default(),
-        };
-        config.storage = StorageConfig {
-            dsn: "memory://".to_string(),
+        let config = Configuration {
+            schema: SchemaConfig {
+                catalog_type: "memory".to_string(),
+                catalog_uri: "memory://".to_string(),
+                default_schemas: Default::default(),
+            },
+            storage: StorageConfig {
+                dsn: "memory://".to_string(),
+            },
+            ..Default::default()
         };
 
         let object_store = Arc::new(InMemory::new());
@@ -1191,14 +1195,16 @@ mod tests {
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
         use std::sync::Arc;
 
-        let mut config = Configuration::default();
-        config.schema = SchemaConfig {
-            catalog_type: "memory".to_string(),
-            catalog_uri: "memory://".to_string(),
-            default_schemas: Default::default(),
-        };
-        config.storage = StorageConfig {
-            dsn: "memory://".to_string(),
+        let config = Configuration {
+            schema: SchemaConfig {
+                catalog_type: "memory".to_string(),
+                catalog_uri: "memory://".to_string(),
+                default_schemas: Default::default(),
+            },
+            storage: StorageConfig {
+                dsn: "memory://".to_string(),
+            },
+            ..Default::default()
         };
 
         let object_store = Arc::new(InMemory::new());
@@ -1244,9 +1250,9 @@ mod tests {
                 }
                 Err(e) => {
                     // Expected - table not registered with DataFusion session
-                    log::debug!("Expected failure due to table registration: {}", e);
+                    log::debug!("Expected failure due to table registration: {e}");
                     // Should not be a panic or compilation error
-                    assert!(e.to_string().len() > 0);
+                    assert!(!e.to_string().is_empty());
                 }
             }
         }
