@@ -145,7 +145,7 @@ fn bench_writer_creation_with_pool(c: &mut Criterion) {
         };
 
         group.bench_with_input(
-            BenchmarkId::from_parameter(format!("max_conn_{}", max_connections)),
+            BenchmarkId::from_parameter(format!("max_conn_{max_connections}")),
             &max_connections,
             |b, &_max_connections| {
                 b.to_async(&rt).iter(|| async {
@@ -272,7 +272,8 @@ fn bench_write_performance_comparison(c: &mut Criterion) {
             .expect("Failed to create writer");
 
             let batch_clone = batch.clone();
-            black_box(writer.write_batch(batch_clone).await.expect("Write failed"));
+            writer.write_batch(batch_clone).await.expect("Write failed");
+            black_box(());
         });
     });
 
@@ -299,7 +300,8 @@ fn bench_write_performance_comparison(c: &mut Criterion) {
             .expect("Failed to create writer");
 
             let batch_clone = batch.clone();
-            black_box(writer.write_batch(batch_clone).await.expect("Write failed"));
+            writer.write_batch(batch_clone).await.expect("Write failed");
+            black_box(());
         });
     });
 

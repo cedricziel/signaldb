@@ -11,19 +11,21 @@ use writer::{RetryConfig, create_iceberg_writer};
 
 #[tokio::test]
 async fn test_retry_config_default() -> Result<()> {
-    let mut config = Configuration::default();
-    config.schema = SchemaConfig {
-        catalog_type: "memory".to_string(),
-        catalog_uri: "memory://".to_string(),
-        default_schemas: DefaultSchemas {
-            traces_enabled: true,
-            logs_enabled: true,
-            metrics_enabled: true,
-            custom_schemas: Default::default(),
+    let config = Configuration {
+        schema: SchemaConfig {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            default_schemas: DefaultSchemas {
+                traces_enabled: true,
+                logs_enabled: true,
+                metrics_enabled: true,
+                custom_schemas: Default::default(),
+            },
         },
-    };
-    config.storage = StorageConfig {
-        dsn: "memory://".to_string(),
+        storage: StorageConfig {
+            dsn: "memory://".to_string(),
+        },
+        ..Default::default()
     };
 
     let object_store = Arc::new(InMemory::new());
@@ -43,19 +45,21 @@ async fn test_retry_config_default() -> Result<()> {
 
 #[tokio::test]
 async fn test_retry_config_custom() -> Result<()> {
-    let mut config = Configuration::default();
-    config.schema = SchemaConfig {
-        catalog_type: "memory".to_string(),
-        catalog_uri: "memory://".to_string(),
-        default_schemas: DefaultSchemas {
-            traces_enabled: true,
-            logs_enabled: true,
-            metrics_enabled: true,
-            custom_schemas: Default::default(),
+    let config = Configuration {
+        schema: SchemaConfig {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            default_schemas: DefaultSchemas {
+                traces_enabled: true,
+                logs_enabled: true,
+                metrics_enabled: true,
+                custom_schemas: Default::default(),
+            },
         },
-    };
-    config.storage = StorageConfig {
-        dsn: "memory://".to_string(),
+        storage: StorageConfig {
+            dsn: "memory://".to_string(),
+        },
+        ..Default::default()
     };
 
     let object_store = Arc::new(InMemory::new());
@@ -84,19 +88,21 @@ async fn test_retry_config_custom() -> Result<()> {
 
 #[tokio::test]
 async fn test_retry_logic_with_valid_batch() -> Result<()> {
-    let mut config = Configuration::default();
-    config.schema = SchemaConfig {
-        catalog_type: "memory".to_string(),
-        catalog_uri: "memory://".to_string(),
-        default_schemas: DefaultSchemas {
-            traces_enabled: true,
-            logs_enabled: true,
-            metrics_enabled: true,
-            custom_schemas: Default::default(),
+    let config = Configuration {
+        schema: SchemaConfig {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            default_schemas: DefaultSchemas {
+                traces_enabled: true,
+                logs_enabled: true,
+                metrics_enabled: true,
+                custom_schemas: Default::default(),
+            },
         },
-    };
-    config.storage = StorageConfig {
-        dsn: "memory://".to_string(),
+        storage: StorageConfig {
+            dsn: "memory://".to_string(),
+        },
+        ..Default::default()
     };
 
     let object_store = Arc::new(InMemory::new());
@@ -184,7 +190,7 @@ async fn test_retry_logic_with_valid_batch() -> Result<()> {
             // Make sure it's not a retry configuration error
             assert!(!error_msg.contains("max_attempts"));
             assert!(!error_msg.contains("backoff_multiplier"));
-            println!("Expected test environment failure: {}", e);
+            println!("Expected test environment failure: {e}");
         }
     }
 

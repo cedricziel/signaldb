@@ -11,19 +11,21 @@ use writer::create_iceberg_writer;
 #[tokio::test]
 async fn test_transaction_basic_flow() -> Result<()> {
     // Setup configuration
-    let mut config = Configuration::default();
-    config.schema = SchemaConfig {
-        catalog_type: "memory".to_string(),
-        catalog_uri: "memory://".to_string(),
-        default_schemas: DefaultSchemas {
-            traces_enabled: true,
-            logs_enabled: true,
-            metrics_enabled: true,
-            custom_schemas: Default::default(),
+    let config = Configuration {
+        schema: SchemaConfig {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            default_schemas: DefaultSchemas {
+                traces_enabled: true,
+                logs_enabled: true,
+                metrics_enabled: true,
+                custom_schemas: Default::default(),
+            },
         },
-    };
-    config.storage = StorageConfig {
-        dsn: "memory://".to_string(),
+        storage: StorageConfig {
+            dsn: "memory://".to_string(),
+        },
+        ..Default::default()
     };
 
     let object_store = Arc::new(InMemory::new());
@@ -106,19 +108,21 @@ async fn test_transaction_basic_flow() -> Result<()> {
 
 #[tokio::test]
 async fn test_transaction_rollback() -> Result<()> {
-    let mut config = Configuration::default();
-    config.schema = SchemaConfig {
-        catalog_type: "memory".to_string(),
-        catalog_uri: "memory://".to_string(),
-        default_schemas: DefaultSchemas {
-            traces_enabled: true,
-            logs_enabled: true,
-            metrics_enabled: true,
-            custom_schemas: Default::default(),
+    let config = Configuration {
+        schema: SchemaConfig {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            default_schemas: DefaultSchemas {
+                traces_enabled: true,
+                logs_enabled: true,
+                metrics_enabled: true,
+                custom_schemas: Default::default(),
+            },
         },
-    };
-    config.storage = StorageConfig {
-        dsn: "memory://".to_string(),
+        storage: StorageConfig {
+            dsn: "memory://".to_string(),
+        },
+        ..Default::default()
     };
 
     let object_store = Arc::new(InMemory::new());
@@ -201,19 +205,21 @@ async fn test_transaction_rollback() -> Result<()> {
 
 #[tokio::test]
 async fn test_transaction_errors() -> Result<()> {
-    let mut config = Configuration::default();
-    config.schema = SchemaConfig {
-        catalog_type: "memory".to_string(),
-        catalog_uri: "memory://".to_string(),
-        default_schemas: DefaultSchemas {
-            traces_enabled: true,
-            logs_enabled: true,
-            metrics_enabled: true,
-            custom_schemas: Default::default(),
+    let config = Configuration {
+        schema: SchemaConfig {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            default_schemas: DefaultSchemas {
+                traces_enabled: true,
+                logs_enabled: true,
+                metrics_enabled: true,
+                custom_schemas: Default::default(),
+            },
         },
-    };
-    config.storage = StorageConfig {
-        dsn: "memory://".to_string(),
+        storage: StorageConfig {
+            dsn: "memory://".to_string(),
+        },
+        ..Default::default()
     };
 
     let object_store = Arc::new(InMemory::new());
@@ -246,19 +252,21 @@ async fn test_transaction_errors() -> Result<()> {
 
 #[tokio::test]
 async fn test_write_batches_creates_transaction() -> Result<()> {
-    let mut config = Configuration::default();
-    config.schema = SchemaConfig {
-        catalog_type: "memory".to_string(),
-        catalog_uri: "memory://".to_string(),
-        default_schemas: DefaultSchemas {
-            traces_enabled: true,
-            logs_enabled: true,
-            metrics_enabled: true,
-            custom_schemas: Default::default(),
+    let config = Configuration {
+        schema: SchemaConfig {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            default_schemas: DefaultSchemas {
+                traces_enabled: true,
+                logs_enabled: true,
+                metrics_enabled: true,
+                custom_schemas: Default::default(),
+            },
         },
-    };
-    config.storage = StorageConfig {
-        dsn: "memory://".to_string(),
+        storage: StorageConfig {
+            dsn: "memory://".to_string(),
+        },
+        ..Default::default()
     };
 
     let object_store = Arc::new(InMemory::new());

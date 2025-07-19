@@ -37,19 +37,21 @@ async fn test_default_pool_config() {
 /// Test creating writer with custom pool configuration
 #[tokio::test]
 async fn test_writer_with_custom_pool_config() {
-    let mut config = Configuration::default();
-    config.schema = SchemaConfig {
-        catalog_type: "memory".to_string(),
-        catalog_uri: "memory://".to_string(),
-        default_schemas: DefaultSchemas {
-            traces_enabled: true,
-            logs_enabled: true,
-            metrics_enabled: true,
-            custom_schemas: Default::default(),
+    let config = Configuration {
+        schema: SchemaConfig {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            default_schemas: DefaultSchemas {
+                traces_enabled: true,
+                logs_enabled: true,
+                metrics_enabled: true,
+                custom_schemas: Default::default(),
+            },
         },
-    };
-    config.storage = StorageConfig {
-        dsn: "memory://".to_string(),
+        storage: StorageConfig {
+            dsn: "memory://".to_string(),
+        },
+        ..Default::default()
     };
 
     let pool_config = CatalogPoolConfig {
@@ -85,7 +87,7 @@ async fn test_writer_with_custom_pool_config() {
             // Expected in test environment - just verify it's not a pool config error
             let error_msg = e.to_string();
             assert!(!error_msg.contains("pool config"));
-            log::debug!("Expected test environment failure: {}", e);
+            log::debug!("Expected test environment failure: {e}");
         }
     }
 }
@@ -93,19 +95,21 @@ async fn test_writer_with_custom_pool_config() {
 /// Test pool configuration updates
 #[tokio::test]
 async fn test_pool_config_updates() {
-    let mut config = Configuration::default();
-    config.schema = SchemaConfig {
-        catalog_type: "memory".to_string(),
-        catalog_uri: "memory://".to_string(),
-        default_schemas: DefaultSchemas {
-            traces_enabled: true,
-            logs_enabled: true,
-            metrics_enabled: true,
-            custom_schemas: Default::default(),
+    let config = Configuration {
+        schema: SchemaConfig {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            default_schemas: DefaultSchemas {
+                traces_enabled: true,
+                logs_enabled: true,
+                metrics_enabled: true,
+                custom_schemas: Default::default(),
+            },
         },
-    };
-    config.storage = StorageConfig {
-        dsn: "memory://".to_string(),
+        storage: StorageConfig {
+            dsn: "memory://".to_string(),
+        },
+        ..Default::default()
     };
 
     let object_store = Arc::new(InMemory::new());
@@ -164,7 +168,7 @@ async fn test_memory_catalog_bypasses_pooling() -> Result<()> {
         }
         Err(e) => {
             // Expected in test environment
-            log::debug!("Expected test environment failure: {}", e);
+            log::debug!("Expected test environment failure: {e}");
         }
     }
 
@@ -193,19 +197,21 @@ async fn test_pool_config_validation() {
 /// Test concurrent writer creation with pooling
 #[tokio::test]
 async fn test_concurrent_writer_creation_with_pooling() {
-    let mut config = Configuration::default();
-    config.schema = SchemaConfig {
-        catalog_type: "memory".to_string(),
-        catalog_uri: "memory://".to_string(),
-        default_schemas: DefaultSchemas {
-            traces_enabled: true,
-            logs_enabled: true,
-            metrics_enabled: true,
-            custom_schemas: Default::default(),
+    let config = Configuration {
+        schema: SchemaConfig {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            default_schemas: DefaultSchemas {
+                traces_enabled: true,
+                logs_enabled: true,
+                metrics_enabled: true,
+                custom_schemas: Default::default(),
+            },
         },
-    };
-    config.storage = StorageConfig {
-        dsn: "memory://".to_string(),
+        storage: StorageConfig {
+            dsn: "memory://".to_string(),
+        },
+        ..Default::default()
     };
 
     let pool_config = CatalogPoolConfig {
@@ -248,7 +254,7 @@ async fn test_concurrent_writer_creation_with_pooling() {
             }
             Ok(Err(e)) => {
                 error_count += 1;
-                log::debug!("Expected test environment failure: {}", e);
+                log::debug!("Expected test environment failure: {e}");
             }
             Err(e) => {
                 error_count += 1;

@@ -320,7 +320,7 @@ async fn test_memory_optimization() {
         let test_batch = create_test_data(1000);
         let memory_usage = test_batch.get_array_memory_size();
 
-        log::info!("Test batch memory usage: {} bytes", memory_usage);
+        log::info!("Test batch memory usage: {memory_usage} bytes");
         assert!(memory_usage > 0);
     }
 }

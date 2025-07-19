@@ -144,7 +144,8 @@ fn bench_single_batch_writes(c: &mut Criterion) {
                     .expect("Failed to create writer");
 
                     let batch_clone = batch.clone();
-                    black_box(writer.write_batch(batch_clone).await.expect("Write failed"));
+                    writer.write_batch(batch_clone).await.expect("Write failed");
+                    black_box(());
                 });
             },
         );
@@ -332,7 +333,7 @@ fn bench_memory_patterns(c: &mut Criterion) {
         let memory_mb = (batch.get_array_memory_size() as f64) / (1024.0 * 1024.0);
 
         group.bench_with_input(
-            BenchmarkId::from_parameter(format!("{}_rows_{:.1}MB", batch_size, memory_mb)),
+            BenchmarkId::from_parameter(format!("{batch_size}_rows_{memory_mb:.1}MB")),
             batch_size,
             |b, &_batch_size| {
                 b.to_async(&rt).iter(|| async {
@@ -347,7 +348,8 @@ fn bench_memory_patterns(c: &mut Criterion) {
                     .expect("Failed to create writer");
 
                     let batch_clone = batch.clone();
-                    black_box(writer.write_batch(batch_clone).await.expect("Write failed"));
+                    writer.write_batch(batch_clone).await.expect("Write failed");
+                    black_box(());
                 });
             },
         );

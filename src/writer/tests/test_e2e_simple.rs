@@ -10,19 +10,21 @@ use writer::create_iceberg_writer;
 
 /// Simple E2E test configuration
 fn create_simple_test_config() -> Configuration {
-    let mut config = Configuration::default();
-    config.schema = SchemaConfig {
-        catalog_type: "memory".to_string(),
-        catalog_uri: "memory://".to_string(),
-        default_schemas: DefaultSchemas {
-            traces_enabled: true,
-            logs_enabled: true,
-            metrics_enabled: true,
-            custom_schemas: Default::default(),
+    let config = Configuration {
+        schema: SchemaConfig {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            default_schemas: DefaultSchemas {
+                traces_enabled: true,
+                logs_enabled: true,
+                metrics_enabled: true,
+                custom_schemas: Default::default(),
+            },
         },
-    };
-    config.storage = StorageConfig {
-        dsn: "memory://".to_string(),
+        storage: StorageConfig {
+            dsn: "memory://".to_string(),
+        },
+        ..Default::default()
     };
     config
 }
@@ -119,12 +121,12 @@ async fn test_simple_e2e_write() -> Result<()> {
     let test_data = create_simple_test_data(10)?;
     let expected_rows = test_data.num_rows();
 
-    log::info!("Writing {} rows to Iceberg table", expected_rows);
+    log::info!("Writing {expected_rows} rows to Iceberg table");
 
     // Write the data - this should succeed if our implementation is working
     writer.write_batch(test_data).await?;
 
-    log::info!("Successfully wrote {} rows", expected_rows);
+    log::info!("Successfully wrote {expected_rows} rows");
 
     Ok(())
 }
@@ -149,15 +151,12 @@ async fn test_simple_e2e_multi_batch() -> Result<()> {
 
     let total_expected_rows = batch1.num_rows() + batch2.num_rows() + batch3.num_rows();
 
-    log::info!("Writing {} total rows in 3 batches", total_expected_rows);
+    log::info!("Writing {total_expected_rows} total rows in 3 batches");
 
     // Write batches transactionally
     writer.write_batches(vec![batch1, batch2, batch3]).await?;
 
-    log::info!(
-        "Successfully wrote {} rows in transaction",
-        total_expected_rows
-    );
+    log::info!("Successfully wrote {total_expected_rows} rows in transaction");
 
     Ok(())
 }

@@ -1121,7 +1121,7 @@ mod tests {
             // The error should not be about table creation not being implemented
             assert!(!e.to_string().contains("Table creation not yet implemented"));
             // It's okay to fail for other reasons like catalog setup in tests
-            log::debug!("Expected failure due to test environment: {}", e);
+            log::debug!("Expected failure due to test environment: {e}");
         }
     }
 
@@ -1147,7 +1147,7 @@ mod tests {
         // This might work or fail due to test environment setup, but not due to "not implemented"
         if let Err(e) = result {
             assert!(!e.to_string().contains("Table creation not yet implemented"));
-            log::debug!("Expected failure due to test environment: {}", e);
+            log::debug!("Expected failure due to test environment: {e}");
         }
     }
 
