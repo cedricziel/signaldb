@@ -11,21 +11,22 @@ use writer::create_iceberg_writer;
 
 /// Create test configuration for benchmarking
 fn create_benchmark_config() -> Configuration {
-    let mut config = Configuration::default();
-    config.schema = SchemaConfig {
-        catalog_type: "memory".to_string(),
-        catalog_uri: "memory://".to_string(),
-        default_schemas: DefaultSchemas {
-            traces_enabled: true,
-            logs_enabled: true,
-            metrics_enabled: true,
-            custom_schemas: Default::default(),
+    Configuration {
+        schema: SchemaConfig {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            default_schemas: DefaultSchemas {
+                traces_enabled: true,
+                logs_enabled: true,
+                metrics_enabled: true,
+                custom_schemas: Default::default(),
+            },
         },
-    };
-    config.storage = StorageConfig {
-        dsn: "memory://".to_string(),
-    };
-    config
+        storage: StorageConfig {
+            dsn: "memory://".to_string(),
+        },
+        ..Default::default()
+    }
 }
 
 /// Create test data for benchmarking with specified number of rows
@@ -129,7 +130,7 @@ fn bench_single_batch_writes(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(*size as u64));
         group.bench_with_input(
-            BenchmarkId::from_parameter(format!("{}_rows_{:.1}MB", size, batch_size_mb)),
+            BenchmarkId::from_parameter(format!("{size}_rows_{batch_size_mb:.1}MB")),
             size,
             |b, &_size| {
                 b.to_async(&rt).iter(|| async {
@@ -169,7 +170,7 @@ fn bench_multi_batch_writes(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(total_rows as u64));
         group.bench_with_input(
-            BenchmarkId::from_parameter(format!("{}_batches_{}_rows", num_batches, total_rows)),
+            BenchmarkId::from_parameter(format!("{num_batches}_batches_{total_rows}_rows")),
             num_batches,
             |b, &_num_batches| {
                 b.to_async(&rt).iter(|| async {
@@ -184,12 +185,11 @@ fn bench_multi_batch_writes(c: &mut Criterion) {
                     .expect("Failed to create writer");
 
                     let batches_clone = batches.clone();
-                    black_box(
-                        writer
-                            .write_batches(batches_clone)
-                            .await
-                            .expect("Write failed"),
-                    );
+                    writer
+                        .write_batches(batches_clone)
+                        .await
+                        .expect("Write failed");
+                    black_box(());
                 });
             },
         );
@@ -219,7 +219,8 @@ fn bench_transaction_overhead(c: &mut Criterion) {
             .expect("Failed to create writer");
 
             let batch_clone = batch.clone();
-            black_box(writer.write_batch(batch_clone).await.expect("Write failed"));
+            writer.write_batch(batch_clone).await.expect("Write failed");
+            black_box(());
         });
     });
 
@@ -239,12 +240,11 @@ fn bench_transaction_overhead(c: &mut Criterion) {
             let txn_id = writer.begin_transaction().await.expect("Begin failed");
             let batch_clone = batch.clone();
             writer.write_batch(batch_clone).await.expect("Write failed");
-            black_box(
-                writer
-                    .commit_transaction(&txn_id)
-                    .await
-                    .expect("Commit failed"),
-            );
+            writer
+                .commit_transaction(&txn_id)
+                .await
+                .expect("Commit failed");
+            black_box(());
         });
     });
 
@@ -284,7 +284,7 @@ fn bench_concurrent_writes(c: &mut Criterion) {
         let batch = create_benchmark_data(500); // Smaller batches for concurrent test
 
         group.bench_with_input(
-            BenchmarkId::from_parameter(format!("{}_writers", num_writers)),
+            BenchmarkId::from_parameter(format!("{num_writers}_writers")),
             num_writers,
             |b, &num_writers| {
                 b.to_async(&rt).iter(|| async {
@@ -311,7 +311,8 @@ fn bench_concurrent_writes(c: &mut Criterion) {
 
                     // Wait for all writers to complete
                     for handle in handles {
-                        black_box(handle.await.expect("Task failed"));
+                        handle.await.expect("Task failed");
+                        black_box(());
                     }
                 });
             },

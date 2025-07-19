@@ -10,7 +10,7 @@ use writer::create_iceberg_writer;
 
 /// Simple E2E test configuration
 fn create_simple_test_config() -> Configuration {
-    let config = Configuration {
+    Configuration {
         schema: SchemaConfig {
             catalog_type: "memory".to_string(),
             catalog_uri: "memory://".to_string(),
@@ -25,8 +25,7 @@ fn create_simple_test_config() -> Configuration {
             dsn: "memory://".to_string(),
         },
         ..Default::default()
-    };
-    config
+    }
 }
 
 /// Create simple test data for metrics_gauge table

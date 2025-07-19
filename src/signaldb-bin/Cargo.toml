@@ -25,3 +25,7 @@ log.workspace = true
 
 [dev-dependencies]
 cargo-husky.workspace = true
+
+[package.metadata.cargo-machete]
+# cargo-husky is used for git hooks configuration
+ignored = ["cargo-husky"]

@@ -22,22 +22,18 @@ writer = { path = "../src/writer" }
 anyhow.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
-tokio-test.workspace = true
 datafusion.workspace = true
 arrow-flight.workspace = true
 object_store.workspace = true
 tonic.workspace = true
-tracing.workspace = true
 log.workspace = true
 tempfile.workspace = true
-uuid.workspace = true
 futures.workspace = true
-testcontainers-modules.workspace = true
-rand.workspace = true
-
-# Test framework dependencies
-criterion.workspace = true
-ntest.workspace = true
+opentelemetry-proto.workspace = true
 
 # For test-specific utilities
 env_logger = "0.11.5"
+
+[package.metadata.cargo-machete]
+# These dependencies are used in integration tests under tests/ directory
+ignored = ["acceptor", "anyhow", "arrow-flight", "datafusion", "futures", "log", "opentelemetry-proto", "querier", "router", "tokio", "tokio-stream", "tonic", "writer"]

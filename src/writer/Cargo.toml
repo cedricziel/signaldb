@@ -51,4 +51,5 @@ path = "src/main.rs"
 tokio-stream.workspace = true
 
 [package.metadata.cargo-machete]
-ignored = ["tracing", "tokio-stream"]
+# async-trait is used by the trait implementations
+ignored = ["async-trait", "tracing", "tokio-stream"]

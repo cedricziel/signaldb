@@ -1,27 +1,51 @@
 #!/bin/sh
+# Exit on any error - makes all checks fatal
 set -e
+# Exit on undefined variables
+set -u
+# Exit on pipe failures
+set -o pipefail
 
 echo "Running pre-commit hooks..."
+echo "Note: All checks are fatal - any failure will prevent commit"
 
 # Check that code compiles
 echo "Checking code compilation..."
-cargo check --all-targets --all-features
+cargo check --all-targets --all-features || {
+    echo "❌ FATAL: Code compilation failed! Fix compilation errors before committing."
+    exit 1
+}
 
 # Check code formatting
 echo "Checking code formatting..."
-cargo fmt --all -- --check
+cargo fmt --all -- --check || {
+    echo "❌ FATAL: Code formatting check failed!"
+    echo "Run 'cargo fmt' to fix formatting issues."
+    exit 1
+}
 
 # Run clippy with warnings as errors
 echo "Running clippy..."
-cargo clippy --all-targets --all-features -- -D warnings
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings || {
+    echo "❌ FATAL: Clippy found issues!"
+    echo "Fix all clippy warnings before committing."
+    exit 1
+}
 
 # Check for unused dependencies
 echo "Checking for unused dependencies..."
-cargo machete --with-metadata
+cargo machete --with-metadata || {
+    echo "❌ FATAL: Found unused dependencies!"
+    echo "Remove unused dependencies or update cargo-machete ignores."
+    exit 1
+}
 
 # License and security auditing
 echo "Running security and license auditing..."
-cargo deny check
+cargo deny check || {
+    echo "❌ FATAL: Security or license audit failed!"
+    echo "Review and fix security/license issues before committing."
+    exit 1
+}
 
-echo "All pre-commit checks passed!"
+echo "✅ All pre-commit checks passed!"

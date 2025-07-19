@@ -232,7 +232,7 @@ async fn test_concurrent_writer_creation_with_pooling() {
             create_iceberg_writer_with_pool(
                 &config,
                 object_store,
-                &format!("tenant_{}", i),
+                &format!("tenant_{i}"),
                 "metrics_gauge",
                 pool_config,
             )
@@ -258,16 +258,12 @@ async fn test_concurrent_writer_creation_with_pooling() {
             }
             Err(e) => {
                 error_count += 1;
-                log::debug!("Task join error: {}", e);
+                log::debug!("Task join error: {e}");
             }
         }
     }
 
     // At least some should not panic or have pool-related errors
     assert!(success_count > 0 || error_count > 0); // No hangs
-    log::info!(
-        "Concurrent creation: {} successes, {} errors",
-        success_count,
-        error_count
-    );
+    log::info!("Concurrent creation: {success_count} successes, {error_count} errors");
 }

@@ -9,21 +9,22 @@ use writer::{BatchOptimizationConfig, CatalogPoolConfig, create_iceberg_writer_w
 
 /// Create test configuration for optimization tests
 fn create_test_config() -> Configuration {
-    let mut config = Configuration::default();
-    config.schema = SchemaConfig {
-        catalog_type: "memory".to_string(),
-        catalog_uri: "memory://".to_string(),
-        default_schemas: DefaultSchemas {
-            traces_enabled: true,
-            logs_enabled: true,
-            metrics_enabled: true,
-            custom_schemas: Default::default(),
+    Configuration {
+        schema: SchemaConfig {
+            catalog_type: "memory".to_string(),
+            catalog_uri: "memory://".to_string(),
+            default_schemas: DefaultSchemas {
+                traces_enabled: true,
+                logs_enabled: true,
+                metrics_enabled: true,
+                custom_schemas: Default::default(),
+            },
         },
-    };
-    config.storage = StorageConfig {
-        dsn: "memory://".to_string(),
-    };
-    config
+        storage: StorageConfig {
+            dsn: "memory://".to_string(),
+        },
+        ..Default::default()
+    }
 }
 
 /// Create test data with specified number of rows
