@@ -7,7 +7,7 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use object_store::memory::InMemory;
 use std::sync::Arc;
 use std::time::Duration;
-use writer::{create_iceberg_writer, RetryConfig};
+use writer::{RetryConfig, create_iceberg_writer};
 
 #[tokio::test]
 async fn test_retry_config_default() -> Result<()> {
@@ -72,7 +72,7 @@ async fn test_retry_config_custom() -> Result<()> {
     };
 
     writer.set_retry_config(custom_retry_config.clone());
-    
+
     let retry_config = writer.retry_config();
     assert_eq!(retry_config.max_attempts, 5);
     assert_eq!(retry_config.initial_delay, Duration::from_millis(50));
@@ -171,7 +171,7 @@ async fn test_retry_logic_with_valid_batch() -> Result<()> {
 
     // This should succeed (possibly after retries if there are transient issues)
     let result = writer.write_batch(batch).await;
-    
+
     // We expect success for valid data, but we allow for test environment issues
     match result {
         Ok(_) => {

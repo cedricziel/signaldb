@@ -1,5 +1,7 @@
 pub mod storage;
-pub use storage::{IcebergTableWriter, create_iceberg_writer, write_batch_to_object_store, RetryConfig};
+pub use storage::{
+    IcebergTableWriter, RetryConfig, create_iceberg_writer, write_batch_to_object_store,
+};
 
 pub mod processor;
 pub use processor::{ProcessorStats, WalProcessor};

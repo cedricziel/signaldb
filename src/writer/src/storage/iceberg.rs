@@ -326,7 +326,7 @@ impl IcebergTableWriter {
 
         loop {
             attempt += 1;
-            
+
             match f().await {
                 Ok(result) => {
                     if attempt > 1 {
@@ -396,15 +396,15 @@ impl IcebergTableWriter {
         // Execute the SQL INSERT operation with retry logic
         let session_ctx = self.session_ctx.clone();
         let insert_sql_clone = insert_sql.clone();
-        
+
         let df = self
             .execute_with_retry("SQL INSERT", || {
                 let ctx = session_ctx.clone();
                 let sql = insert_sql_clone.clone();
                 async move {
-                    ctx.sql(&sql).await.map_err(|e| {
-                        anyhow::anyhow!("Failed to execute SQL INSERT: {}", e)
-                    })
+                    ctx.sql(&sql)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Failed to execute SQL INSERT: {}", e))
                 }
             })
             .await?;
@@ -414,9 +414,10 @@ impl IcebergTableWriter {
             .execute_with_retry("SQL INSERT collection", || {
                 let df_clone = df.clone();
                 async move {
-                    df_clone.collect().await.map_err(|e| {
-                        anyhow::anyhow!("Failed to collect SQL INSERT results: {}", e)
-                    })
+                    df_clone
+                        .collect()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Failed to collect SQL INSERT results: {}", e))
                 }
             })
             .await?;
@@ -618,21 +619,27 @@ impl IcebergTableWriter {
             // Use retry logic for each SQL operation
             let session_ctx = self.session_ctx.clone();
             let sql = operation.sql.clone();
-            let operation_name = format!("Transaction {} operation {}/{}", transaction_id, index + 1, total_operations);
+            let operation_name = format!(
+                "Transaction {} operation {}/{}",
+                transaction_id,
+                index + 1,
+                total_operations
+            );
 
             let execute_result = self
                 .execute_with_retry(&operation_name, || {
                     let ctx = session_ctx.clone();
                     let sql_query = sql.clone();
                     async move {
-                        let df = ctx.sql(&sql_query).await.map_err(|e| {
-                            anyhow::anyhow!("Failed to execute SQL: {}", e)
-                        })?;
-                        
+                        let df = ctx
+                            .sql(&sql_query)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("Failed to execute SQL: {}", e))?;
+
                         // Collect results to ensure completion
-                        df.collect().await.map_err(|e| {
-                            anyhow::anyhow!("Failed to collect SQL results: {}", e)
-                        })
+                        df.collect()
+                            .await
+                            .map_err(|e| anyhow::anyhow!("Failed to collect SQL results: {}", e))
                     }
                 })
                 .await;
