@@ -169,8 +169,10 @@ hex = "0.4"
 
 testcontainers-modules = { version = "0.12.1", features = ["postgres"] }
 tempfile = "3.20.0"
+rand = "0.8"
 
 ntest = "0.9.3"
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
 chrono = { version = "0.4", features = ["serde"] }
 sqlx = { version = "0.8", default-features = false, features = [

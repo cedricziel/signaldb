@@ -19,8 +19,8 @@ echo "📊 Running benchmarks with criterion..."
 echo "This may take 10-15 minutes to complete all benchmarks."
 echo ""
 
-# Run the benchmarks
-cargo bench --bench iceberg_benchmarks
+# Run the benchmarks with the benchmarks feature enabled
+cargo bench --bench iceberg_benchmarks --features benchmarks
 
 echo ""
 echo "✅ Benchmarks completed!"

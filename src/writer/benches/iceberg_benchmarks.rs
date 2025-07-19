@@ -1,5 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use common::config::{Configuration, DefaultSchemas, SchemaConfig, StorageConfig};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use datafusion::arrow::array::{
     Date32Array, Float64Array, Int32Array, RecordBatch, StringArray, TimestampNanosecondArray,
 };
@@ -81,7 +81,9 @@ fn create_benchmark_data(num_rows: usize) -> RecordBatch {
                 metric_names.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(vec![
-                Some("Benchmark metric for performance testing");
+                Some(
+                    "Benchmark metric for performance testing"
+                );
                 num_rows
             ])),
             Arc::new(StringArray::from(vec![Some("count"); num_rows])),
@@ -89,7 +91,9 @@ fn create_benchmark_data(num_rows: usize) -> RecordBatch {
             Arc::new(Int32Array::from(vec![None; num_rows])),
             Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
             Arc::new(StringArray::from(vec![
-                Some("{\"service.version\":\"1.0\",\"host\":\"benchmark-host\"}");
+                Some(
+                    "{\"service.version\":\"1.0\",\"host\":\"benchmark-host\"}"
+                );
                 num_rows
             ])),
             Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
@@ -98,7 +102,9 @@ fn create_benchmark_data(num_rows: usize) -> RecordBatch {
             Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
             Arc::new(Int32Array::from(vec![None; num_rows])),
             Arc::new(StringArray::from(vec![
-                Some("{\"metric.type\":\"gauge\",\"benchmark\":\"true\"}");
+                Some(
+                    "{\"metric.type\":\"gauge\",\"benchmark\":\"true\"}"
+                );
                 num_rows
             ])),
             Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
