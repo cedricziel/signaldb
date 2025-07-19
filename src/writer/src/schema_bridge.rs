@@ -728,6 +728,125 @@ fn converted_to_jankaul_primitive(
     }
 }
 
+/// Helper struct to manage field ID allocation ensuring global uniqueness
+struct FieldIdAllocator {
+    next_id: i32,
+}
+
+impl FieldIdAllocator {
+    fn new(start_id: i32) -> Self {
+        Self { next_id: start_id }
+    }
+
+    fn allocate(&mut self) -> i32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+}
+
+/// Find the maximum field ID in a list of fields (recursively)
+fn find_max_field_id(fields: &[ConvertedField]) -> i32 {
+    let mut max_id = 0;
+
+    for field in fields {
+        max_id = max_id.max(field.id);
+
+        // Check nested fields
+        if let ConvertedType::Struct(nested_fields) = &field.field_type {
+            max_id = max_id.max(find_max_field_id(nested_fields));
+        }
+    }
+
+    max_id
+}
+
+/// Convert a ConvertedType to JanKaul's Type, allocating IDs as needed
+fn convert_field_type(
+    converted_type: &ConvertedType,
+    id_allocator: &mut FieldIdAllocator,
+) -> Result<iceberg_rust::spec::types::Type> {
+    use iceberg_rust::spec::types::{ListType, MapType, StructField, StructType, Type};
+
+    match converted_type {
+        ConvertedType::Primitive(primitive) => {
+            Ok(Type::Primitive(converted_to_jankaul_primitive(primitive)))
+        }
+        ConvertedType::Struct(fields) => {
+            // Convert nested struct fields
+            let mut struct_fields = Vec::new();
+            for nested_field in fields {
+                let nested_field_type = match &nested_field.field_type {
+                    ConvertedType::Primitive(p) => {
+                        Type::Primitive(converted_to_jankaul_primitive(p))
+                    }
+                    _ => {
+                        log::warn!("Nested complex types in structs not yet supported");
+                        return Err(anyhow::anyhow!(
+                            "Nested complex types in structs not yet supported"
+                        ));
+                    }
+                };
+
+                struct_fields.push(StructField {
+                    id: nested_field.id, // Use the original field ID
+                    name: nested_field.name.clone(),
+                    required: nested_field.required,
+                    field_type: nested_field_type,
+                    doc: None,
+                });
+            }
+            // Create a StructType from the fields
+            let struct_type = StructType::new(struct_fields);
+            Ok(Type::Struct(struct_type))
+        }
+        ConvertedType::List(element_type) => {
+            // Convert list element type
+            let element_field_type = match element_type.as_ref() {
+                ConvertedType::Primitive(p) => Type::Primitive(converted_to_jankaul_primitive(p)),
+                _ => {
+                    log::warn!("Nested complex types in lists not yet supported");
+                    return Err(anyhow::anyhow!(
+                        "Nested complex types in lists not yet supported"
+                    ));
+                }
+            };
+
+            Ok(Type::List(ListType {
+                element_id: id_allocator.allocate(), // Use globally unique ID
+                element_required: true,
+                element: Box::new(element_field_type),
+            }))
+        }
+        ConvertedType::Map { key, value } => {
+            // Convert map key and value types
+            let key_type = match key.as_ref() {
+                ConvertedType::Primitive(p) => Type::Primitive(converted_to_jankaul_primitive(p)),
+                _ => {
+                    log::warn!("Complex map key types not yet supported");
+                    return Err(anyhow::anyhow!("Complex map key types not yet supported"));
+                }
+            };
+
+            let value_type = match value.as_ref() {
+                ConvertedType::Primitive(p) => Type::Primitive(converted_to_jankaul_primitive(p)),
+                _ => {
+                    log::warn!("Complex map value types not yet supported");
+                    return Err(anyhow::anyhow!("Complex map value types not yet supported"));
+                }
+            };
+
+            Ok(Type::Map(MapType {
+                key_id: id_allocator.allocate(), // Use globally unique ID for key
+                key: Box::new(key_type),
+                value_id: id_allocator.allocate(), // Use globally unique ID for value
+                value: Box::new(value_type),
+                value_required: true, // Values are required by default
+            }))
+        }
+    }
+}
+
 /// Convert our ConvertedTableInfo to create a table in JanKaul catalog
 pub async fn create_jankaul_table(
     table_info: &ConvertedTableInfo,
@@ -737,7 +856,6 @@ pub async fn create_jankaul_table(
     use iceberg_rust::catalog::identifier::Identifier;
     use iceberg_rust::spec::schema::Schema;
     use iceberg_rust::spec::types::StructField;
-    use iceberg_rust::spec::types::Type;
     use iceberg_rust::table::Table;
 
     log::info!(
@@ -749,96 +867,15 @@ pub async fn create_jankaul_table(
     // Build the schema from our converted fields
     let mut schema_builder = Schema::builder();
 
-    for (index, field) in table_info.schema.fields.iter().enumerate() {
-        let field_type = match &field.field_type {
-            ConvertedType::Primitive(primitive) => {
-                Type::Primitive(converted_to_jankaul_primitive(primitive))
-            }
-            ConvertedType::Struct(fields) => {
-                // Convert nested struct fields
-                let mut struct_fields = Vec::new();
-                for (nested_idx, nested_field) in fields.iter().enumerate() {
-                    let nested_field_type = match &nested_field.field_type {
-                        ConvertedType::Primitive(p) => {
-                            Type::Primitive(converted_to_jankaul_primitive(p))
-                        }
-                        _ => {
-                            log::warn!("Nested complex types in structs not yet supported");
-                            return Err(anyhow::anyhow!(
-                                "Nested complex types in structs not yet supported"
-                            ));
-                        }
-                    };
+    // Find the maximum field ID in the schema to start allocation after it
+    let max_id = find_max_field_id(&table_info.schema.fields);
+    let mut id_allocator = FieldIdAllocator::new(max_id + 1);
 
-                    struct_fields.push(StructField {
-                        id: nested_idx as i32,
-                        name: nested_field.name.clone(),
-                        required: nested_field.required,
-                        field_type: nested_field_type,
-                        doc: None,
-                    });
-                }
-                // Create a StructType from the fields
-                use iceberg_rust::spec::types::StructType;
-                let struct_type = StructType::new(struct_fields);
-                Type::Struct(struct_type)
-            }
-            ConvertedType::List(element_type) => {
-                // Convert list element type
-                let element_field_type = match element_type.as_ref() {
-                    ConvertedType::Primitive(p) => {
-                        Type::Primitive(converted_to_jankaul_primitive(p))
-                    }
-                    _ => {
-                        log::warn!("Nested complex types in lists not yet supported");
-                        return Err(anyhow::anyhow!(
-                            "Nested complex types in lists not yet supported"
-                        ));
-                    }
-                };
-
-                use iceberg_rust::spec::types::ListType;
-                Type::List(ListType {
-                    element_id: 0, // Default element ID for lists
-                    element_required: true,
-                    element: Box::new(element_field_type),
-                })
-            }
-            ConvertedType::Map { key, value } => {
-                // Convert map key and value types
-                let key_type = match key.as_ref() {
-                    ConvertedType::Primitive(p) => {
-                        Type::Primitive(converted_to_jankaul_primitive(p))
-                    }
-                    _ => {
-                        log::warn!("Complex map key types not yet supported");
-                        return Err(anyhow::anyhow!("Complex map key types not yet supported"));
-                    }
-                };
-
-                let value_type = match value.as_ref() {
-                    ConvertedType::Primitive(p) => {
-                        Type::Primitive(converted_to_jankaul_primitive(p))
-                    }
-                    _ => {
-                        log::warn!("Complex map value types not yet supported");
-                        return Err(anyhow::anyhow!("Complex map value types not yet supported"));
-                    }
-                };
-
-                use iceberg_rust::spec::types::MapType;
-                Type::Map(MapType {
-                    key_id: 0, // Default key ID for maps
-                    key: Box::new(key_type),
-                    value_id: 1, // Default value ID for maps
-                    value: Box::new(value_type),
-                    value_required: true, // Values are required by default
-                })
-            }
-        };
+    for field in &table_info.schema.fields {
+        let field_type = convert_field_type(&field.field_type, &mut id_allocator)?;
 
         schema_builder.with_struct_field(StructField {
-            id: index as i32,
+            id: field.id, // Use the original field ID from ConvertedField
             name: field.name.clone(),
             required: field.required,
             field_type,
