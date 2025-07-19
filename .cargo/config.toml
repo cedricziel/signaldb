@@ -1,8 +1,3 @@
-[build]
-# One cache shared by the top-level workspace *and*
-# any member crate you `cd` into.
-target-dir = "../target"
-
 [profile.release]
 lto = "thin"      # 95 % of the perf at ~40 % of the link time
 opt-level = 3
