@@ -722,6 +722,35 @@ async fn create_pooled_sql_catalog(
         .map_err(|e| anyhow::anyhow!("Failed to create pooled SQL catalog: {}", e))
 }
 
+/// Helper function to convert ConvertedPrimitiveType to JanKaul's PrimitiveType
+fn converted_to_jankaul_primitive(
+    primitive: &ConvertedPrimitiveType,
+) -> iceberg_rust::spec::types::PrimitiveType {
+    use iceberg_rust::spec::types::PrimitiveType;
+
+    match primitive {
+        ConvertedPrimitiveType::Boolean => PrimitiveType::Boolean,
+        ConvertedPrimitiveType::Int => PrimitiveType::Int,
+        ConvertedPrimitiveType::Long => PrimitiveType::Long,
+        ConvertedPrimitiveType::Float => PrimitiveType::Float,
+        ConvertedPrimitiveType::Double => PrimitiveType::Double,
+        ConvertedPrimitiveType::String => PrimitiveType::String,
+        ConvertedPrimitiveType::Binary => PrimitiveType::Binary,
+        ConvertedPrimitiveType::Decimal { precision, scale } => PrimitiveType::Decimal {
+            precision: *precision,
+            scale: *scale,
+        },
+        ConvertedPrimitiveType::Date => PrimitiveType::Date,
+        ConvertedPrimitiveType::Time => PrimitiveType::Time,
+        ConvertedPrimitiveType::Timestamp => PrimitiveType::Timestamp,
+        ConvertedPrimitiveType::TimestampNs => PrimitiveType::Timestamp, // Map NS variant to regular timestamp
+        ConvertedPrimitiveType::Timestamptz => PrimitiveType::Timestamptz,
+        ConvertedPrimitiveType::TimestamptzNs => PrimitiveType::Timestamptz, // Map NS variant to regular timestamptz
+        ConvertedPrimitiveType::Uuid => PrimitiveType::Uuid,
+        ConvertedPrimitiveType::Fixed(size) => PrimitiveType::Fixed(*size),
+    }
+}
+
 /// Convert our ConvertedTableInfo to create a table in JanKaul catalog
 pub async fn create_jankaul_table(
     table_info: &ConvertedTableInfo,
@@ -731,7 +760,7 @@ pub async fn create_jankaul_table(
     use iceberg_rust::catalog::identifier::Identifier;
     use iceberg_rust::spec::schema::Schema;
     use iceberg_rust::spec::types::StructField;
-    use iceberg_rust::spec::types::{PrimitiveType, Type};
+    use iceberg_rust::spec::types::Type;
     use iceberg_rust::table::Table;
 
     log::info!(
@@ -746,30 +775,7 @@ pub async fn create_jankaul_table(
     for (index, field) in table_info.schema.fields.iter().enumerate() {
         let field_type = match &field.field_type {
             ConvertedType::Primitive(primitive) => {
-                let jankaul_primitive = match primitive {
-                    ConvertedPrimitiveType::Boolean => PrimitiveType::Boolean,
-                    ConvertedPrimitiveType::Int => PrimitiveType::Int,
-                    ConvertedPrimitiveType::Long => PrimitiveType::Long,
-                    ConvertedPrimitiveType::Float => PrimitiveType::Float,
-                    ConvertedPrimitiveType::Double => PrimitiveType::Double,
-                    ConvertedPrimitiveType::String => PrimitiveType::String,
-                    ConvertedPrimitiveType::Binary => PrimitiveType::Binary,
-                    ConvertedPrimitiveType::Decimal { precision, scale } => {
-                        PrimitiveType::Decimal {
-                            precision: *precision,
-                            scale: *scale,
-                        }
-                    }
-                    ConvertedPrimitiveType::Date => PrimitiveType::Date,
-                    ConvertedPrimitiveType::Time => PrimitiveType::Time,
-                    ConvertedPrimitiveType::Timestamp => PrimitiveType::Timestamp,
-                    ConvertedPrimitiveType::TimestampNs => PrimitiveType::Timestamp, // Map NS variant to regular timestamp
-                    ConvertedPrimitiveType::Timestamptz => PrimitiveType::Timestamptz,
-                    ConvertedPrimitiveType::TimestamptzNs => PrimitiveType::Timestamptz, // Map NS variant to regular timestamptz
-                    ConvertedPrimitiveType::Uuid => PrimitiveType::Uuid,
-                    ConvertedPrimitiveType::Fixed(size) => PrimitiveType::Fixed(*size),
-                };
-                Type::Primitive(jankaul_primitive)
+                Type::Primitive(converted_to_jankaul_primitive(primitive))
             }
             ConvertedType::Struct(fields) => {
                 // Convert nested struct fields
@@ -777,30 +783,7 @@ pub async fn create_jankaul_table(
                 for (nested_idx, nested_field) in fields.iter().enumerate() {
                     let nested_field_type = match &nested_field.field_type {
                         ConvertedType::Primitive(p) => {
-                            let prim_type = match p {
-                                ConvertedPrimitiveType::Boolean => PrimitiveType::Boolean,
-                                ConvertedPrimitiveType::Int => PrimitiveType::Int,
-                                ConvertedPrimitiveType::Long => PrimitiveType::Long,
-                                ConvertedPrimitiveType::Float => PrimitiveType::Float,
-                                ConvertedPrimitiveType::Double => PrimitiveType::Double,
-                                ConvertedPrimitiveType::String => PrimitiveType::String,
-                                ConvertedPrimitiveType::Binary => PrimitiveType::Binary,
-                                ConvertedPrimitiveType::Decimal { precision, scale } => {
-                                    PrimitiveType::Decimal {
-                                        precision: *precision,
-                                        scale: *scale,
-                                    }
-                                }
-                                ConvertedPrimitiveType::Date => PrimitiveType::Date,
-                                ConvertedPrimitiveType::Time => PrimitiveType::Time,
-                                ConvertedPrimitiveType::Timestamp => PrimitiveType::Timestamp,
-                                ConvertedPrimitiveType::TimestampNs => PrimitiveType::Timestamp,
-                                ConvertedPrimitiveType::Timestamptz => PrimitiveType::Timestamptz,
-                                ConvertedPrimitiveType::TimestamptzNs => PrimitiveType::Timestamptz,
-                                ConvertedPrimitiveType::Uuid => PrimitiveType::Uuid,
-                                ConvertedPrimitiveType::Fixed(size) => PrimitiveType::Fixed(*size),
-                            };
-                            Type::Primitive(prim_type)
+                            Type::Primitive(converted_to_jankaul_primitive(p))
                         }
                         _ => {
                             log::warn!("Nested complex types in structs not yet supported");
@@ -827,30 +810,7 @@ pub async fn create_jankaul_table(
                 // Convert list element type
                 let element_field_type = match element_type.as_ref() {
                     ConvertedType::Primitive(p) => {
-                        let prim_type = match p {
-                            ConvertedPrimitiveType::Boolean => PrimitiveType::Boolean,
-                            ConvertedPrimitiveType::Int => PrimitiveType::Int,
-                            ConvertedPrimitiveType::Long => PrimitiveType::Long,
-                            ConvertedPrimitiveType::Float => PrimitiveType::Float,
-                            ConvertedPrimitiveType::Double => PrimitiveType::Double,
-                            ConvertedPrimitiveType::String => PrimitiveType::String,
-                            ConvertedPrimitiveType::Binary => PrimitiveType::Binary,
-                            ConvertedPrimitiveType::Decimal { precision, scale } => {
-                                PrimitiveType::Decimal {
-                                    precision: *precision,
-                                    scale: *scale,
-                                }
-                            }
-                            ConvertedPrimitiveType::Date => PrimitiveType::Date,
-                            ConvertedPrimitiveType::Time => PrimitiveType::Time,
-                            ConvertedPrimitiveType::Timestamp => PrimitiveType::Timestamp,
-                            ConvertedPrimitiveType::TimestampNs => PrimitiveType::Timestamp,
-                            ConvertedPrimitiveType::Timestamptz => PrimitiveType::Timestamptz,
-                            ConvertedPrimitiveType::TimestamptzNs => PrimitiveType::Timestamptz,
-                            ConvertedPrimitiveType::Uuid => PrimitiveType::Uuid,
-                            ConvertedPrimitiveType::Fixed(size) => PrimitiveType::Fixed(*size),
-                        };
-                        Type::Primitive(prim_type)
+                        Type::Primitive(converted_to_jankaul_primitive(p))
                     }
                     _ => {
                         log::warn!("Nested complex types in lists not yet supported");
@@ -871,30 +831,7 @@ pub async fn create_jankaul_table(
                 // Convert map key and value types
                 let key_type = match key.as_ref() {
                     ConvertedType::Primitive(p) => {
-                        let prim_type = match p {
-                            ConvertedPrimitiveType::Boolean => PrimitiveType::Boolean,
-                            ConvertedPrimitiveType::Int => PrimitiveType::Int,
-                            ConvertedPrimitiveType::Long => PrimitiveType::Long,
-                            ConvertedPrimitiveType::Float => PrimitiveType::Float,
-                            ConvertedPrimitiveType::Double => PrimitiveType::Double,
-                            ConvertedPrimitiveType::String => PrimitiveType::String,
-                            ConvertedPrimitiveType::Binary => PrimitiveType::Binary,
-                            ConvertedPrimitiveType::Decimal { precision, scale } => {
-                                PrimitiveType::Decimal {
-                                    precision: *precision,
-                                    scale: *scale,
-                                }
-                            }
-                            ConvertedPrimitiveType::Date => PrimitiveType::Date,
-                            ConvertedPrimitiveType::Time => PrimitiveType::Time,
-                            ConvertedPrimitiveType::Timestamp => PrimitiveType::Timestamp,
-                            ConvertedPrimitiveType::TimestampNs => PrimitiveType::Timestamp,
-                            ConvertedPrimitiveType::Timestamptz => PrimitiveType::Timestamptz,
-                            ConvertedPrimitiveType::TimestamptzNs => PrimitiveType::Timestamptz,
-                            ConvertedPrimitiveType::Uuid => PrimitiveType::Uuid,
-                            ConvertedPrimitiveType::Fixed(size) => PrimitiveType::Fixed(*size),
-                        };
-                        Type::Primitive(prim_type)
+                        Type::Primitive(converted_to_jankaul_primitive(p))
                     }
                     _ => {
                         log::warn!("Complex map key types not yet supported");
@@ -904,30 +841,7 @@ pub async fn create_jankaul_table(
 
                 let value_type = match value.as_ref() {
                     ConvertedType::Primitive(p) => {
-                        let prim_type = match p {
-                            ConvertedPrimitiveType::Boolean => PrimitiveType::Boolean,
-                            ConvertedPrimitiveType::Int => PrimitiveType::Int,
-                            ConvertedPrimitiveType::Long => PrimitiveType::Long,
-                            ConvertedPrimitiveType::Float => PrimitiveType::Float,
-                            ConvertedPrimitiveType::Double => PrimitiveType::Double,
-                            ConvertedPrimitiveType::String => PrimitiveType::String,
-                            ConvertedPrimitiveType::Binary => PrimitiveType::Binary,
-                            ConvertedPrimitiveType::Decimal { precision, scale } => {
-                                PrimitiveType::Decimal {
-                                    precision: *precision,
-                                    scale: *scale,
-                                }
-                            }
-                            ConvertedPrimitiveType::Date => PrimitiveType::Date,
-                            ConvertedPrimitiveType::Time => PrimitiveType::Time,
-                            ConvertedPrimitiveType::Timestamp => PrimitiveType::Timestamp,
-                            ConvertedPrimitiveType::TimestampNs => PrimitiveType::Timestamp,
-                            ConvertedPrimitiveType::Timestamptz => PrimitiveType::Timestamptz,
-                            ConvertedPrimitiveType::TimestamptzNs => PrimitiveType::Timestamptz,
-                            ConvertedPrimitiveType::Uuid => PrimitiveType::Uuid,
-                            ConvertedPrimitiveType::Fixed(size) => PrimitiveType::Fixed(*size),
-                        };
-                        Type::Primitive(prim_type)
+                        Type::Primitive(converted_to_jankaul_primitive(p))
                     }
                     _ => {
                         log::warn!("Complex map value types not yet supported");
