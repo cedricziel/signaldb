@@ -168,8 +168,12 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: brew install protobuf
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
       - name: Build binaries
         run: |
+          export RUSTC_WRAPPER=sccache
           if [ "${{ matrix.deployment }}" = "monolithic" ]; then
             cargo build --release -p signaldb-bin --bin signaldb
           else
@@ -255,8 +259,12 @@ jobs:
         with:
           cache: true
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
       - name: Install security tools
         run: |
+          export RUSTC_WRAPPER=sccache
           cargo install cargo-audit cargo-deny cargo-machete
 
       - name: Run security audit
@@ -309,7 +317,10 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y protobuf-compiler mold clang
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov
@@ -322,7 +333,9 @@ jobs:
           echo "SIGNALDB_DISCOVERY_DSN=postgres://postgres:postgres@localhost:5432/signaldb_test" >> $GITHUB_ENV
 
       - name: Generate coverage report
-        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+        run: |
+          export RUSTC_WRAPPER=sccache
+          cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
