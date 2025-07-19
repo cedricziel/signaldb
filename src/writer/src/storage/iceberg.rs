@@ -9,6 +9,7 @@ use datafusion::prelude::SessionConfig;
 use datafusion_iceberg::catalog::catalog::IcebergCatalog;
 use iceberg::table::Table;
 use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
+use iceberg_rust::catalog::Catalog as IcebergRustCatalog;
 use object_store::ObjectStore;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -57,6 +58,23 @@ pub struct RetryConfig {
     pub backoff_multiplier: f64,
 }
 
+/// Configuration for optimal batch processing and memory management
+#[derive(Debug, Clone)]
+pub struct BatchOptimizationConfig {
+    /// Maximum number of rows per batch (splits larger batches)
+    pub max_rows_per_batch: usize,
+    /// Maximum memory size per batch in bytes (splits if exceeded)
+    pub max_memory_per_batch_bytes: usize,
+    /// Enable automatic batch splitting for large datasets
+    pub enable_auto_split: bool,
+    /// Target number of batches to process concurrently
+    pub target_concurrent_batches: usize,
+    /// Enable catalog caching to reduce overhead
+    pub enable_catalog_caching: bool,
+    /// Catalog cache TTL in seconds
+    pub catalog_cache_ttl_seconds: u64,
+}
+
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
@@ -64,6 +82,19 @@ impl Default for RetryConfig {
             initial_delay: Duration::from_millis(100),
             max_delay: Duration::from_secs(5),
             backoff_multiplier: 2.0,
+        }
+    }
+}
+
+impl Default for BatchOptimizationConfig {
+    fn default() -> Self {
+        Self {
+            max_rows_per_batch: 50_000,                    // 50K rows max per batch
+            max_memory_per_batch_bytes: 128 * 1024 * 1024, // 128MB max per batch
+            enable_auto_split: true,                       // Enable automatic splitting
+            target_concurrent_batches: 4,                  // Process 4 batches concurrently
+            enable_catalog_caching: true,                  // Enable catalog reuse
+            catalog_cache_ttl_seconds: 300,                // 5 minute cache TTL
         }
     }
 }
@@ -88,6 +119,10 @@ pub struct IcebergTableWriter {
     retry_config: RetryConfig,
     /// Connection pool configuration for catalog operations
     pool_config: CatalogPoolConfig,
+    /// Batch optimization configuration for performance tuning
+    batch_config: BatchOptimizationConfig,
+    /// Cached catalog for optimized operations
+    cached_catalog: Option<(Arc<dyn IcebergRustCatalog>, Instant)>,
 }
 
 impl IcebergTableWriter {
@@ -200,6 +235,8 @@ impl IcebergTableWriter {
             pending_operations: Vec::new(),
             retry_config: RetryConfig::default(),
             pool_config,
+            batch_config: BatchOptimizationConfig::default(),
+            cached_catalog: None,
         })
     }
 
@@ -266,6 +303,107 @@ impl IcebergTableWriter {
         Ok(())
     }
 
+    /// Get or create a cached catalog for optimized operations
+    #[allow(dead_code)] // Reserved for future catalog optimization usage
+    async fn get_cached_catalog(
+        &mut self,
+        pool_config: &CatalogPoolConfig,
+    ) -> Result<Arc<dyn IcebergRustCatalog>> {
+        if !self.batch_config.enable_catalog_caching {
+            // Caching disabled, create new catalog
+            return create_jankaul_sql_catalog_with_pool(
+                "sqlite://",
+                "signaldb_iceberg",
+                Some(pool_config.clone()),
+            )
+            .await;
+        }
+
+        // Check if cached catalog is still valid
+        if let Some((cached_catalog, timestamp)) = &self.cached_catalog {
+            let cache_age = timestamp.elapsed().as_secs();
+            if cache_age < self.batch_config.catalog_cache_ttl_seconds {
+                log::debug!("Using cached catalog (age: {cache_age}s)");
+                return Ok(cached_catalog.clone());
+            } else {
+                log::debug!("Cached catalog expired (age: {cache_age}s), creating new one");
+            }
+        }
+
+        // Create new catalog and cache it
+        log::debug!(
+            "Creating new catalog and caching for {} seconds",
+            self.batch_config.catalog_cache_ttl_seconds
+        );
+        let catalog = create_jankaul_sql_catalog_with_pool(
+            "sqlite://",
+            "signaldb_iceberg",
+            Some(pool_config.clone()),
+        )
+        .await?;
+
+        self.cached_catalog = Some((catalog.clone(), Instant::now()));
+        Ok(catalog)
+    }
+
+    /// Split a large batch into smaller optimized batches based on configuration
+    fn split_batch_if_needed(&self, batch: RecordBatch) -> Vec<RecordBatch> {
+        if !self.batch_config.enable_auto_split {
+            return vec![batch];
+        }
+
+        let row_count = batch.num_rows();
+        let memory_size = batch.get_array_memory_size();
+
+        // Check if batch needs splitting
+        let needs_split = row_count > self.batch_config.max_rows_per_batch
+            || memory_size > self.batch_config.max_memory_per_batch_bytes;
+
+        if !needs_split {
+            log::debug!("Batch within limits (rows: {row_count}, memory: {memory_size} bytes)");
+            return vec![batch];
+        }
+
+        // Calculate optimal split size
+        let max_rows_per_split = std::cmp::min(
+            self.batch_config.max_rows_per_batch,
+            if memory_size > 0 {
+                (self.batch_config.max_memory_per_batch_bytes * row_count) / memory_size
+            } else {
+                self.batch_config.max_rows_per_batch
+            },
+        );
+
+        log::info!(
+            "Splitting large batch: {row_count} rows ({memory_size} bytes) into chunks of {max_rows_per_split} rows"
+        );
+
+        // Split the batch into smaller chunks
+        let mut result_batches = Vec::new();
+        let mut start_idx = 0;
+
+        while start_idx < row_count {
+            let end_idx = std::cmp::min(start_idx + max_rows_per_split, row_count);
+
+            let split_batch = batch.slice(start_idx, end_idx - start_idx);
+            log::debug!(
+                "Created split batch: {} rows (indices {}-{})",
+                split_batch.num_rows(),
+                start_idx,
+                end_idx
+            );
+            result_batches.push(split_batch);
+
+            start_idx = end_idx;
+        }
+
+        log::info!(
+            "Successfully split batch into {} smaller batches",
+            result_batches.len()
+        );
+        result_batches
+    }
+
     /// Write a batch of data to the Iceberg table with transaction support
     pub async fn write_batch(&mut self, batch: RecordBatch) -> Result<()> {
         // Validate input
@@ -277,11 +415,40 @@ impl IcebergTableWriter {
             return Ok(());
         }
 
+        // Apply batch optimization (splitting if needed)
+        let optimized_batches = self.split_batch_if_needed(batch);
+        let total_batches = optimized_batches.len();
+        let total_rows: usize = optimized_batches.iter().map(|b| b.num_rows()).sum();
+
         log::info!(
-            "Writing batch with {} rows to Iceberg table {} for tenant {}",
-            batch.num_rows(),
+            "Writing {} optimized batches with {} total rows to Iceberg table {} for tenant {}",
+            total_batches,
+            total_rows,
             self.table.identifier(),
             self.tenant_id
+        );
+
+        // Process each optimized batch
+        for (i, optimized_batch) in optimized_batches.into_iter().enumerate() {
+            log::debug!(
+                "Processing optimized batch {}/{} with {} rows",
+                i + 1,
+                total_batches,
+                optimized_batch.num_rows()
+            );
+
+            self.write_single_batch(optimized_batch).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Write a single batch (internal method)
+    async fn write_single_batch(&mut self, batch: RecordBatch) -> Result<()> {
+        log::debug!(
+            "Writing single batch with {} rows to Iceberg table {}",
+            batch.num_rows(),
+            self.table.identifier()
         );
 
         // Check if we're in a transaction
@@ -804,6 +971,37 @@ impl IcebergTableWriter {
     /// Get current connection pool configuration
     pub fn pool_config(&self) -> &CatalogPoolConfig {
         &self.pool_config
+    }
+
+    /// Update batch optimization configuration
+    pub fn set_batch_config(&mut self, batch_config: BatchOptimizationConfig) {
+        // Clear cached catalog if caching settings changed
+        if !batch_config.enable_catalog_caching {
+            self.cached_catalog = None;
+        }
+        self.batch_config = batch_config;
+    }
+
+    /// Get current batch optimization configuration
+    pub fn batch_config(&self) -> &BatchOptimizationConfig {
+        &self.batch_config
+    }
+
+    /// Get statistics about cached catalog
+    pub fn catalog_cache_info(&self) -> Option<(u64, bool)> {
+        self.cached_catalog.as_ref().map(|(_, timestamp)| {
+            let age_seconds = timestamp.elapsed().as_secs();
+            let is_expired = age_seconds >= self.batch_config.catalog_cache_ttl_seconds;
+            (age_seconds, is_expired)
+        })
+    }
+
+    /// Clear the cached catalog (forces recreation on next use)
+    pub fn clear_catalog_cache(&mut self) {
+        if self.cached_catalog.is_some() {
+            log::debug!("Manually clearing cached catalog");
+            self.cached_catalog = None;
+        }
     }
 }
 
