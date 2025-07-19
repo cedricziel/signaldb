@@ -4340,7 +4340,9 @@ dependencies = [
  "clap",
  "common",
  "datafusion",
+ "datafusion_iceberg",
  "futures",
+ "iceberg-rust",
  "log",
  "object_store",
  "serde",
@@ -4351,6 +4353,7 @@ dependencies = [
  "tonic",
  "tracing",
  "url",
+ "writer",
 ]
 
 [[package]]

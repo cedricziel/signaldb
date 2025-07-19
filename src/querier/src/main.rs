@@ -92,8 +92,14 @@ async fn main() -> anyhow::Result<()> {
     let object_store = common::storage::create_object_store(&config.storage)
         .context("Failed to initialize object store")?;
 
-    // Create Flight query service
-    let flight_service = QuerierFlightService::new(object_store.clone(), flight_transport.clone());
+    // Create Flight query service with Iceberg support
+    let flight_service = QuerierFlightService::new_with_iceberg(
+        object_store.clone(),
+        flight_transport.clone(),
+        &config,
+    )
+    .await
+    .context("Failed to create querier flight service with Iceberg")?;
     log::info!("Starting Flight query service on {flight_addr}");
     let flight_handle = tokio::spawn(async move {
         Server::builder()

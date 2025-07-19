@@ -8,7 +8,7 @@ use common::model::{
 };
 use datafusion::{
     arrow::array::{BooleanArray, Int64Array, StringArray},
-    prelude::{ParquetReadOptions, SessionContext},
+    prelude::SessionContext,
 };
 
 use super::{FindTraceByIdParams, SearchQueryParams, TraceQuerier, error::QuerierError};
@@ -91,19 +91,10 @@ impl TraceQuerier for TraceService {
     ) -> Result<Option<model::trace::Trace>, QuerierError> {
         log::info!("Querying for trace_id: {}", params.trace_id);
 
-        // Register all parquet files in the batch directory as a table
-        // The session context should already have the object store registered
-        self.session_context
-            .register_parquet("traces", "batch/*.parquet", ParquetReadOptions::default())
-            .await
-            .map_err(|e| {
-                log::error!("Failed to register parquet files: {e:?}");
-                QuerierError::FailedToRegisterParquet(e)
-            })?;
-
-        // Now we can use the standard query
+        // Query directly from the Iceberg table
+        // The table should already be available via the catalog
         let query = format!(
-            "SELECT * FROM traces WHERE trace_id = '{}'",
+            "SELECT * FROM iceberg.default.traces WHERE trace_id = '{}'",
             params.trace_id
         );
 
@@ -275,14 +266,14 @@ impl TraceQuerier for TraceService {
         &self,
         _query: SearchQueryParams,
     ) -> Result<Vec<model::trace::Trace>, QuerierError> {
-        let ctx = SessionContext::new();
-        ctx.register_parquet("traces", &self.traces_path, ParquetReadOptions::default())
+        // Use the existing session context that should have Iceberg catalog registered
+        let query = "SELECT * FROM iceberg.default.traces;";
+
+        let df = self
+            .session_context
+            .sql(query)
             .await
-            .map_err(QuerierError::FailedToRegisterParquet)?;
-
-        let query = "SELECT * FROM traces;";
-
-        let df = ctx.sql(query).await.map_err(QuerierError::QueryFailed)?;
+            .map_err(QuerierError::QueryFailed)?;
 
         let results = df.collect().await.map_err(QuerierError::QueryFailed)?;
 

@@ -35,6 +35,8 @@ pub struct QuerierFlightService {
     schemas: FlightSchemas,
     session_ctx: Arc<SessionContext>,
     trace_service: TraceService,
+    #[allow(dead_code)]
+    iceberg_catalog: Option<Arc<dyn iceberg_rust::catalog::Catalog>>,
 }
 
 impl QuerierFlightService {
@@ -61,7 +63,50 @@ impl QuerierFlightService {
             schemas: FlightSchemas::new(),
             session_ctx,
             trace_service,
+            iceberg_catalog: None,
         }
+    }
+
+    /// Create a new QuerierFlightService with Iceberg catalog
+    pub async fn new_with_iceberg(
+        object_store: Arc<dyn ObjectStore>,
+        flight_transport: Arc<InMemoryFlightTransport>,
+        config: &common::config::Configuration,
+    ) -> anyhow::Result<Self> {
+        let session_ctx = Arc::new(SessionContext::new());
+
+        // Register object store with DataFusion for querying Parquet files
+        let url = url::Url::parse("file://").unwrap();
+        session_ctx
+            .runtime_env()
+            .register_object_store(&url, object_store.clone());
+
+        // Create Iceberg SQL catalog using JanKaul's implementation
+        let iceberg_catalog =
+            writer::create_jankaul_sql_catalog(&config.schema.catalog_uri, "signaldb").await?;
+
+        // Create datafusion_iceberg catalog wrapper
+        let datafusion_catalog = datafusion_iceberg::catalog::catalog::IcebergCatalog::new(
+            iceberg_catalog.clone(),
+            None, // No specific branch
+        )
+        .await?;
+
+        // Register the iceberg catalog with DataFusion
+        session_ctx.register_catalog("iceberg", Arc::new(datafusion_catalog));
+        log::info!("Registered Iceberg catalog with DataFusion");
+
+        // Create trace service for specialized trace queries
+        let trace_service = TraceService::new(session_ctx.as_ref().clone(), "traces".to_string());
+
+        Ok(Self {
+            object_store,
+            _flight_transport: flight_transport,
+            schemas: FlightSchemas::new(),
+            session_ctx,
+            trace_service,
+            iceberg_catalog: Some(iceberg_catalog),
+        })
     }
 
     /// Parse ticket content to determine query type and parameters
