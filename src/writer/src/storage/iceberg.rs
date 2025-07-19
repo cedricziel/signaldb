@@ -24,6 +24,8 @@ pub struct IcebergTableWriter {
     object_store: Arc<dyn ObjectStore>,
     tenant_id: String,
     session_ctx: SessionContext,
+    #[allow(dead_code)] // Will be used for lazy registration
+    table_registered: bool,
 }
 
 impl IcebergTableWriter {
@@ -68,10 +70,19 @@ impl IcebergTableWriter {
             // Create the table using the catalog
             log::info!("Creating new Iceberg table: {table_ident}");
 
+            // Construct table location based on storage configuration
+            let table_location = format!(
+                "{}/{}/{}",
+                config.storage.dsn.trim_end_matches('/'),
+                tenant_id,
+                table_name
+            );
+
             let table_creation = TableCreation::builder()
                 .name(table_name.clone())
                 .schema(schema)
                 .partition_spec(partition_spec)
+                .location(table_location)
                 .build();
 
             catalog
@@ -109,6 +120,7 @@ impl IcebergTableWriter {
             object_store,
             tenant_id,
             session_ctx,
+            table_registered: true, // Table was registered during initialization
         })
     }
 
@@ -128,51 +140,44 @@ impl IcebergTableWriter {
         // Step 1: Create a JanKaul SQL catalog for DataFusion
         log::info!("Creating JanKaul SQL catalog for DataFusion integration");
 
-        match create_jankaul_sql_catalog("sqlite://", "signaldb_iceberg").await {
-            Ok(jankaul_catalog) => {
-                // Step 2: Create the table directly in the JanKaul catalog
-                let namespace = "default";
-                match crate::schema_bridge::create_jankaul_table(
-                    table_info,
-                    jankaul_catalog.clone(),
-                    namespace,
+        let jankaul_catalog = create_jankaul_sql_catalog("sqlite://", "signaldb_iceberg")
+            .await
+            .map_err(|e| {
+                log::error!("Failed to create JanKaul SQL catalog: {e}");
+                anyhow::anyhow!("Failed to create JanKaul SQL catalog: {}", e)
+            })?;
+
+        // Step 2: Create the table directly in the JanKaul catalog
+        let namespace = "default";
+        crate::schema_bridge::create_jankaul_table(table_info, jankaul_catalog.clone(), namespace)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to create table in JanKaul catalog: {e}");
+                anyhow::anyhow!("Failed to create table in JanKaul catalog: {}", e)
+            })?;
+
+        log::info!("Successfully created table in JanKaul catalog");
+
+        // Step 3: Wrap the catalog in an IcebergCatalog and register with DataFusion
+        let iceberg_catalog = IcebergCatalog::new(jankaul_catalog, None)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to create IcebergCatalog from JanKaul catalog: {e}");
+                anyhow::anyhow!(
+                    "Failed to create IcebergCatalog from JanKaul catalog: {}",
+                    e
                 )
-                .await
-                {
-                    Ok(()) => {
-                        log::info!("Successfully created table in JanKaul catalog");
+            })?;
 
-                        // Step 3: Wrap the catalog in an IcebergCatalog and register with DataFusion
-                        match IcebergCatalog::new(jankaul_catalog, None).await {
-                            Ok(iceberg_catalog) => {
-                                session_ctx.register_catalog("iceberg", Arc::new(iceberg_catalog));
+        session_ctx.register_catalog("iceberg", Arc::new(iceberg_catalog));
 
-                                log::info!(
-                                    "Successfully registered JanKaul Iceberg catalog with DataFusion session"
-                                );
-                                log::info!(
-                                    "Table '{}' accessible via: iceberg.{}.{}",
-                                    table_info.name,
-                                    namespace,
-                                    table_info.name
-                                );
-                            }
-                            Err(e) => {
-                                log::warn!(
-                                    "Failed to create IcebergCatalog from JanKaul catalog: {e}"
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to create table in JanKaul catalog: {e}");
-                    }
-                }
-            }
-            Err(e) => {
-                log::warn!("Failed to create JanKaul SQL catalog: {e}");
-            }
-        }
+        log::info!("Successfully registered JanKaul Iceberg catalog with DataFusion session");
+        log::info!(
+            "Table '{}' accessible via: iceberg.{}.{}",
+            table_info.name,
+            namespace,
+            table_info.name
+        );
 
         Ok(())
     }
@@ -193,15 +198,6 @@ impl IcebergTableWriter {
             batch.num_rows(),
             self.table.identifier(),
             self.tenant_id
-        );
-
-        // For now, implement a placeholder approach until datafusion_iceberg integration is complete
-        // This demonstrates the interface but doesn't actually write to Iceberg yet
-
-        log::info!(
-            "Writing {} rows to Iceberg table {} using placeholder implementation",
-            batch.num_rows(),
-            self.table.identifier()
         );
 
         // Implement SQL INSERT using datafusion_iceberg pattern
@@ -231,24 +227,22 @@ impl IcebergTableWriter {
 
         log::debug!("Executing SQL: {insert_sql}");
 
-        // Execute the SQL INSERT operation - table registration is in progress
-        match self.session_ctx.sql(&insert_sql).await {
-            Ok(df) => {
-                // Step 4: Collect results to ensure completion
-                let result = df.collect().await?;
-                log::info!(
-                    "Successfully executed SQL INSERT, affected {} result batches",
-                    result.len()
-                );
-            }
-            Err(e) => {
-                log::warn!("SQL INSERT failed - table registration still in progress: {e}");
-                log::info!("This is expected until JanKaul table creation is fully implemented");
+        // Execute the SQL INSERT operation
+        let df = self.session_ctx.sql(&insert_sql).await.map_err(|e| {
+            log::error!("SQL INSERT failed: {e}");
+            anyhow::anyhow!("Failed to execute SQL INSERT: {}", e)
+        })?;
 
-                // For now, this is expected behavior while we complete the implementation
-                // The schema conversion bridge is ready, just need to complete JanKaul table creation
-            }
-        }
+        // Step 4: Collect results to ensure completion
+        let result = df.collect().await.map_err(|e| {
+            log::error!("Failed to collect SQL INSERT results: {e}");
+            anyhow::anyhow!("Failed to collect SQL INSERT results: {}", e)
+        })?;
+
+        log::info!(
+            "Successfully executed SQL INSERT, affected {} result batches",
+            result.len()
+        );
 
         log::debug!(
             "Successfully wrote batch to Iceberg table {}",
@@ -344,33 +338,29 @@ impl IcebergTableWriter {
         log::info!("Executing transactional SQL: {insert_sql}");
 
         // Execute the transaction - all data is inserted atomically
-        match self.session_ctx.sql(&insert_sql).await {
-            Ok(df) => {
-                // Collect results to ensure transaction completion
-                let result = df.collect().await?;
-                log::info!(
-                    "Successfully executed transactional INSERT, affected {} result batches from {batch_count} input batches",
-                    result.len()
-                );
+        let df = self.session_ctx.sql(&insert_sql).await.map_err(|e| {
+            log::error!("Transactional SQL INSERT failed: {e}");
+            anyhow::anyhow!("Failed to execute transactional SQL INSERT: {}", e)
+        })?;
 
-                // TODO: Add actual transaction commit once full transaction management is implemented
-                // This would involve:
-                // 1. Calling commit() on the Iceberg table transaction
-                // 2. Ensuring all metadata updates are persisted
-                // 3. Cleaning up temporary resources
+        // Collect results to ensure transaction completion
+        let result = df.collect().await.map_err(|e| {
+            log::error!("Failed to collect transactional SQL INSERT results: {e}");
+            anyhow::anyhow!("Failed to collect transactional SQL INSERT results: {}", e)
+        })?;
 
-                log::info!("Transaction completed successfully for {batch_count} batches");
-            }
-            Err(e) => {
-                log::warn!(
-                    "Transactional SQL INSERT failed - table registration still in progress: {e}"
-                );
-                log::info!("This is expected until JanKaul table creation is fully implemented");
+        log::info!(
+            "Successfully executed transactional INSERT, affected {} result batches from {batch_count} input batches",
+            result.len()
+        );
 
-                // For now, this is expected behavior while we complete the implementation
-                // The schema conversion bridge is ready, just need to complete JanKaul table creation
-            }
-        }
+        // TODO: Add actual transaction commit once full transaction management is implemented
+        // This would involve:
+        // 1. Calling commit() on the Iceberg table transaction
+        // 2. Ensuring all metadata updates are persisted
+        // 3. Cleaning up temporary resources
+
+        log::info!("Transaction completed successfully for {batch_count} batches");
 
         Ok(())
     }
