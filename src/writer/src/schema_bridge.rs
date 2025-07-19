@@ -17,32 +17,9 @@ use iceberg_rust::catalog::Catalog as IcebergRustCatalog;
 /// datafusion_iceberg for actual data writing operations.
 ///
 /// Convert Apache Iceberg Schema to JanKaul's iceberg-rust format
-pub fn convert_schema_to_jankaul(apache_schema: &ApacheSchema) -> Result<()> {
-    let struct_type = apache_schema.as_struct();
-    let apache_fields = struct_type.fields();
-    log::debug!(
-        "Converting Apache Iceberg schema to JanKaul format with {} fields",
-        apache_fields.len()
-    );
-
-    // Convert each field from NestedField to StructField format
-    let mut converted_fields = Vec::new();
-
-    for field in apache_fields {
-        let converted_field = convert_nested_field_to_struct_field(field)?;
-        converted_fields.push(converted_field);
-        log::debug!("Converted field: {} (id: {})", field.name, field.id);
-    }
-
-    // At this point we have converted the fields but we need the actual JanKaul types
-    // to complete the schema construction. For now, we'll return success since we've
-    // validated that the conversion logic works.
-
-    log::info!(
-        "Successfully converted {} fields from Apache Iceberg to JanKaul format",
-        converted_fields.len()
-    );
-    Ok(())
+pub fn convert_schema_to_jankaul(apache_schema: &ApacheSchema) -> Result<ConvertedSchema> {
+    // Delegate to the internal function which already implements the conversion logic
+    convert_schema_to_jankaul_internal(apache_schema)
 }
 
 /// Convert a single Apache Iceberg NestedField to JanKaul's StructField representation
