@@ -21,6 +21,7 @@ iceberg.workspace = true
 # JanKaul's iceberg-rust (for write operations)
 iceberg-rust.workspace = true
 iceberg-sql-catalog.workspace = true
+datafusion_iceberg.workspace = true
 
 tokio.workspace = true
 futures.workspace = true

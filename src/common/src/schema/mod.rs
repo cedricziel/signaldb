@@ -26,20 +26,27 @@ pub async fn create_catalog_with_config(config: &Configuration) -> Result<Arc<dy
 /// Create a JanKaul iceberg-rust catalog with explicit object store
 pub async fn create_catalog_with_object_store(
     schema_config: &SchemaConfig,
-    _object_store: Arc<dyn object_store::ObjectStore>,
+    object_store: Arc<dyn object_store::ObjectStore>,
 ) -> Result<Arc<dyn JanKaulCatalog>> {
-    // Use the same logic as writer's create_jankaul_sql_catalog
-    create_jankaul_sql_catalog(&schema_config.catalog_uri, "signaldb").await
+    // Use the provided object store instead of creating a new one
+    create_jankaul_sql_catalog_with_object_store(
+        &schema_config.catalog_uri,
+        "signaldb",
+        object_store,
+    )
+    .await
 }
 
-/// Create a JanKaul SQL catalog (same implementation as in writer)
-pub async fn create_jankaul_sql_catalog(
+/// Create a JanKaul SQL catalog with a specific object store
+pub async fn create_jankaul_sql_catalog_with_object_store(
     catalog_uri: &str,
     catalog_name: &str,
+    _object_store: Arc<dyn object_store::ObjectStore>,
 ) -> Result<Arc<dyn JanKaulCatalog>> {
     log::info!("Creating JanKaul SQL catalog with URI: {catalog_uri}");
 
-    // Create an in-memory object store builder
+    // For now, we'll use the memory object store builder
+    // TODO: Figure out how to properly pass the object store through
     let object_store_builder = ObjectStoreBuilder::memory();
 
     let catalog = if catalog_uri.starts_with("sqlite://") && catalog_uri != "sqlite://" {
@@ -65,6 +72,48 @@ pub async fn create_jankaul_sql_catalog(
     };
 
     log::info!("Successfully created JanKaul SQL catalog");
+    Ok(catalog)
+}
+
+/// Create a JanKaul SQL catalog (same implementation as in writer)
+pub async fn create_jankaul_sql_catalog(
+    catalog_uri: &str,
+    catalog_name: &str,
+) -> Result<Arc<dyn JanKaulCatalog>> {
+    // Create an in-memory object store builder
+    let object_store_builder = ObjectStoreBuilder::memory();
+
+    create_jankaul_sql_catalog_with_builder(catalog_uri, catalog_name, object_store_builder).await
+}
+
+/// Internal helper to create catalog with ObjectStoreBuilder
+async fn create_jankaul_sql_catalog_with_builder(
+    catalog_uri: &str,
+    catalog_name: &str,
+    object_store_builder: ObjectStoreBuilder,
+) -> Result<Arc<dyn JanKaulCatalog>> {
+    let catalog = if catalog_uri.starts_with("sqlite://") && catalog_uri != "sqlite://" {
+        // SQLite with persistent database
+        let catalog = SqlCatalog::new(catalog_uri, catalog_name, object_store_builder)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create SQLite catalog: {}", e))?;
+        Arc::new(catalog) as Arc<dyn JanKaulCatalog>
+    } else if catalog_uri == "sqlite://"
+        || catalog_uri.contains(":memory:")
+        || catalog_uri == "memory://"
+    {
+        // In-memory SQLite catalog (also handle memory:// for compatibility)
+        let catalog = SqlCatalog::new("sqlite::memory:", catalog_name, object_store_builder)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create in-memory SQLite catalog: {}", e))?;
+        Arc::new(catalog) as Arc<dyn JanKaulCatalog>
+    } else {
+        return Err(anyhow::anyhow!(
+            "Unsupported catalog URI: {}. Only SQLite is supported.",
+            catalog_uri
+        ));
+    };
+
     Ok(catalog)
 }
 

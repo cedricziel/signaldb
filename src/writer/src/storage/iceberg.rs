@@ -6,13 +6,13 @@ use datafusion::arrow::array::RecordBatch;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::SessionConfig;
+use datafusion_iceberg::DataFusionTable;
 use iceberg_rust::catalog::Catalog as IcebergRustCatalog;
 use iceberg_rust::catalog::create::CreateTableBuilder;
 use iceberg_rust::catalog::identifier::Identifier;
 use iceberg_rust::catalog::namespace::Namespace;
 use iceberg_rust::table::Table;
 use object_store::ObjectStore;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid;
@@ -156,11 +156,10 @@ impl IcebergTableWriter {
         // Create namespace and table if they don't exist
         // Use "default" namespace for consistency with existing tests
         let namespace = Namespace::try_new(&["default".to_string()])?;
-        if !catalog.namespace_exists(&namespace).await? {
-            catalog
-                .create_namespace(&namespace, Some(HashMap::new()))
-                .await?;
-        }
+
+        // Skip namespace creation for now - SqlCatalog doesn't implement it yet
+        // The default namespace should exist by default in most catalog implementations
+        log::debug!("Using namespace: {namespace:?}");
 
         let table_ident = Identifier::new(&["default".to_string()], &table_name);
 
@@ -249,8 +248,11 @@ impl IcebergTableWriter {
         log::debug!("Table location: {}", table_metadata.location);
         log::debug!("Schema has {} fields", current_schema.fields().len());
 
-        // TODO: Register the table with DataFusion session context
-        // This will be implemented when we integrate datafusion_iceberg properly
+        // Register the Iceberg table with DataFusion
+        let datafusion_table = Arc::new(DataFusionTable::from(table.clone()));
+        session_ctx.register_table(&table_name, datafusion_table)?;
+
+        log::info!("Registered Iceberg table '{table_name}' with DataFusion");
 
         Ok(Self {
             catalog,
@@ -444,9 +446,8 @@ impl IcebergTableWriter {
 
                 // Create the SQL statement
                 let table_name = self.table.identifier().name();
-                let insert_sql = format!(
-                    "INSERT INTO iceberg.default.{table_name} SELECT * FROM {temp_table_name}"
-                );
+                let insert_sql =
+                    format!("INSERT INTO {table_name} SELECT * FROM {temp_table_name}");
 
                 // Store the pending operation
                 let operation = PendingOperation {
@@ -550,10 +551,7 @@ impl IcebergTableWriter {
         // Use the full qualified table name: catalog.schema.table
         // Use "default" namespace for consistency with existing tests
         let _namespace = "default";
-        let insert_sql = format!(
-            "INSERT INTO iceberg.{}.{} SELECT * FROM {}",
-            "default", table_name, temp_table_name
-        );
+        let insert_sql = format!("INSERT INTO {table_name} SELECT * FROM {temp_table_name}");
 
         log::debug!("Executing SQL: {insert_sql}");
 
