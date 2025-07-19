@@ -9,6 +9,7 @@ use tempo_api::tempopb::{
 use tonic::Response;
 
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 pub struct SignalDBQuerier {}
 
 #[tonic::async_trait]

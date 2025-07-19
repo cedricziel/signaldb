@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+#[allow(dead_code)]
 pub mod tempopb {
     include!("generated/tempopb.rs");
 
