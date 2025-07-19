@@ -44,7 +44,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y protobuf-compiler mold clang
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -97,7 +97,10 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y protobuf-compiler mold clang
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
 
       # Download pre-compiled dependencies
       - name: Download target artifact
@@ -115,9 +118,11 @@ jobs:
 
       - name: Run all tests
         run: |
-          cargo test --workspace --all-features
+          export RUSTC_WRAPPER=sccache
+          cargo test --profile ci-test --workspace --all-features
         env:
           RUST_LOG: warn # Reduced log level for faster tests
+          RUST_BACKTRACE: 1
 
   # Build jobs - only run after tests pass
   build-binaries:
@@ -157,7 +162,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y protobuf-compiler mold clang
 
       - name: Install system dependencies (macOS)
         if: matrix.os == 'macos-latest'
@@ -166,7 +171,7 @@ jobs:
       - name: Build binaries
         run: |
           if [ "${{ matrix.deployment }}" = "monolithic" ]; then
-            cargo build --release --bin signaldb
+            cargo build --release -p signaldb-bin --bin signaldb
           else
             cargo build --release -p acceptor --bin signaldb-acceptor
             cargo build --release -p router --bin signaldb-router
@@ -216,7 +221,7 @@ jobs:
           # Create writable data directory
           mkdir -p ${{ runner.temp }}/signaldb-data
           chmod 755 ${{ runner.temp }}/signaldb-data
-          
+
           # Use SQLite for deployment testing (faster and more reliable)
           echo "SIGNALDB_DATABASE_DSN=sqlite://${{ runner.temp }}/signaldb-data/test_deployment.db" >> $GITHUB_ENV
           echo "SIGNALDB_DISCOVERY_DSN=sqlite://${{ runner.temp }}/signaldb-data/test_deployment.db" >> $GITHUB_ENV
