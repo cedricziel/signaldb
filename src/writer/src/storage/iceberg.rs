@@ -123,6 +123,12 @@ pub struct IcebergTableWriter {
     batch_config: BatchOptimizationConfig,
     /// Cached catalog for optimized operations
     cached_catalog: Option<(Arc<dyn IcebergRustCatalog>, Instant)>,
+    /// Catalog configuration from the system config
+    catalog_uri: String,
+    /// Catalog name for iceberg-rust operations
+    catalog_name: String,
+    /// Catalog type (sql or memory)
+    catalog_type: String,
 }
 
 impl IcebergTableWriter {
@@ -221,8 +227,19 @@ impl IcebergTableWriter {
 
         // Register the table with the session context for SQL operations
         let pool_config = pool_config.unwrap_or_default();
-        Self::register_table_with_session(&table_info, &session_ctx, &catalog, &pool_config)
-            .await?;
+        let catalog_uri = config.schema.catalog_uri.clone();
+        let catalog_name = "signaldb_iceberg"; // TODO: Make this configurable
+        let catalog_type = config.schema.catalog_type.clone();
+        Self::register_table_with_session(
+            &table_info,
+            &session_ctx,
+            &catalog,
+            &pool_config,
+            &catalog_uri,
+            catalog_name,
+            &catalog_type,
+        )
+        .await?;
 
         Ok(Self {
             catalog,
@@ -237,6 +254,9 @@ impl IcebergTableWriter {
             pool_config,
             batch_config: BatchOptimizationConfig::default(),
             cached_catalog: None,
+            catalog_uri: config.schema.catalog_uri.clone(),
+            catalog_name: "signaldb_iceberg".to_string(), // TODO: Make this configurable
+            catalog_type: config.schema.catalog_type.clone(),
         })
     }
 
@@ -246,6 +266,9 @@ impl IcebergTableWriter {
         session_ctx: &SessionContext,
         _catalog: &Arc<dyn Catalog>, // Apache catalog not used in new approach
         pool_config: &CatalogPoolConfig,
+        catalog_uri: &str,
+        catalog_name: &str,
+        catalog_type: &str,
     ) -> Result<()> {
         log::info!(
             "Registering Iceberg catalog with DataFusion session for table '{}'",
@@ -253,13 +276,22 @@ impl IcebergTableWriter {
         );
         log::debug!("Table location: {}", table_info.location);
         log::debug!("Schema fields: {}", table_info.schema.fields.len());
+        log::debug!("Catalog type: {catalog_type}");
+
+        // Only create JanKaul SQL catalog if the catalog type is SQL
+        // For memory catalogs, skip DataFusion integration for now
+        if catalog_type != "sql" {
+            log::info!("Skipping DataFusion integration for non-SQL catalog type: {catalog_type}");
+            // TODO: Implement DataFusion integration for memory catalogs
+            return Ok(());
+        }
 
         // Step 1: Create a JanKaul SQL catalog for DataFusion
         log::info!("Creating JanKaul SQL catalog for DataFusion integration");
 
         let jankaul_catalog = create_jankaul_sql_catalog_with_pool(
-            "sqlite://",
-            "signaldb_iceberg",
+            catalog_uri,
+            catalog_name,
             Some(pool_config.clone()),
         )
         .await
@@ -309,11 +341,19 @@ impl IcebergTableWriter {
         &mut self,
         pool_config: &CatalogPoolConfig,
     ) -> Result<Arc<dyn IcebergRustCatalog>> {
+        // Only create JanKaul SQL catalog for SQL catalog types
+        if self.catalog_type != "sql" {
+            return Err(anyhow::anyhow!(
+                "Cached catalog operations not supported for catalog type: {}",
+                self.catalog_type
+            ));
+        }
+
         if !self.batch_config.enable_catalog_caching {
             // Caching disabled, create new catalog
             return create_jankaul_sql_catalog_with_pool(
-                "sqlite://",
-                "signaldb_iceberg",
+                &self.catalog_uri,
+                &self.catalog_name,
                 Some(pool_config.clone()),
             )
             .await;
@@ -336,8 +376,8 @@ impl IcebergTableWriter {
             self.batch_config.catalog_cache_ttl_seconds
         );
         let catalog = create_jankaul_sql_catalog_with_pool(
-            "sqlite://",
-            "signaldb_iceberg",
+            &self.catalog_uri,
+            &self.catalog_name,
             Some(pool_config.clone()),
         )
         .await?;

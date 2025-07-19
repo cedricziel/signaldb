@@ -13,8 +13,8 @@ async fn test_transaction_basic_flow() -> Result<()> {
     // Setup configuration
     let config = Configuration {
         schema: SchemaConfig {
-            catalog_type: "memory".to_string(),
-            catalog_uri: "memory://".to_string(),
+            catalog_type: "sql".to_string(),
+            catalog_uri: "sqlite::memory:".to_string(),
             default_schemas: DefaultSchemas {
                 traces_enabled: true,
                 logs_enabled: true,
@@ -110,8 +110,8 @@ async fn test_transaction_basic_flow() -> Result<()> {
 async fn test_transaction_rollback() -> Result<()> {
     let config = Configuration {
         schema: SchemaConfig {
-            catalog_type: "memory".to_string(),
-            catalog_uri: "memory://".to_string(),
+            catalog_type: "sql".to_string(),
+            catalog_uri: "sqlite::memory:".to_string(),
             default_schemas: DefaultSchemas {
                 traces_enabled: true,
                 logs_enabled: true,
@@ -207,8 +207,8 @@ async fn test_transaction_rollback() -> Result<()> {
 async fn test_transaction_errors() -> Result<()> {
     let config = Configuration {
         schema: SchemaConfig {
-            catalog_type: "memory".to_string(),
-            catalog_uri: "memory://".to_string(),
+            catalog_type: "sql".to_string(),
+            catalog_uri: "sqlite::memory:".to_string(),
             default_schemas: DefaultSchemas {
                 traces_enabled: true,
                 logs_enabled: true,
@@ -254,8 +254,8 @@ async fn test_transaction_errors() -> Result<()> {
 async fn test_write_batches_creates_transaction() -> Result<()> {
     let config = Configuration {
         schema: SchemaConfig {
-            catalog_type: "memory".to_string(),
-            catalog_uri: "memory://".to_string(),
+            catalog_type: "sql".to_string(),
+            catalog_uri: "sqlite::memory:".to_string(),
             default_schemas: DefaultSchemas {
                 traces_enabled: true,
                 logs_enabled: true,

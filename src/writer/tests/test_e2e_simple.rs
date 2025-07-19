@@ -12,8 +12,8 @@ use writer::create_iceberg_writer;
 fn create_simple_test_config() -> Configuration {
     Configuration {
         schema: SchemaConfig {
-            catalog_type: "memory".to_string(),
-            catalog_uri: "memory://".to_string(),
+            catalog_type: "sql".to_string(),
+            catalog_uri: "sqlite::memory:".to_string(),
             default_schemas: DefaultSchemas {
                 traces_enabled: true,
                 logs_enabled: true,
