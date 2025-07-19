@@ -13,3 +13,4 @@ pub mod flight_iceberg;
 pub use flight_iceberg::IcebergWriterFlightService;
 
 pub mod schema_bridge;
+pub use schema_bridge::create_jankaul_sql_catalog;
