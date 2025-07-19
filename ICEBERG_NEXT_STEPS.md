@@ -2,65 +2,70 @@
 
 ## Current Status ✅
 
-As of commit `6562f75`, we have successfully established the foundation for JanKaul's `datafusion_iceberg` integration:
+As of latest commits (`b11ae80`, `e24f767`), we have successfully implemented core Iceberg-DataFusion functionality:
 
 - **Hybrid Architecture**: Apache Iceberg 0.5.1 (schema management) + JanKaul's datafusion_iceberg 0.7.0 (writing)
-- **All Modules Compile**: Clean compilation without errors
-- **Interface Ready**: `write_batch()` and `write_batches()` methods implemented with placeholder logic
-- **Transaction Boundaries**: Defined for ACID operations
-- **Error Handling**: Comprehensive logging and error propagation
+- **Schema Bridge Complete**: Full conversion between Apache and JanKaul formats with all types supported
+- **SQL INSERT Working**: DataFusion SQL layer successfully persisting data to Iceberg tables
+- **Integration Tests Passing**: All 4 SQL INSERT tests validate data persistence for different table types
+- **Transaction Framework**: Placeholder methods ready for real implementation
 
 ## Next Implementation Steps 🚀
 
-### 1. Schema Conversion Bridge (Priority: High)
+### 1. Schema Conversion Bridge (Priority: High) ✅ COMPLETED
 
 **Objective**: Convert between Apache Iceberg and JanKaul's table formats
 
-**Tasks**:
-- Create conversion functions for `iceberg::spec::Schema` → `iceberg_rust::spec::schema::Schema`
-- Convert `iceberg::spec::PartitionSpec` → `iceberg_rust::spec::partition::PartitionSpec`
-- Handle field type mappings between the two implementations
-- Convert table metadata structures
+**Completed Tasks**:
+- ✅ Created conversion functions for `iceberg::spec::Schema` → `iceberg_rust::spec::schema::Schema`
+- ✅ Converted `iceberg::spec::PartitionSpec` → `iceberg_rust::spec::partition::PartitionSpec`
+- ✅ Handled all field type mappings including primitives, structs, lists, and maps
+- ✅ Converted table metadata structures with proper nullability handling
+- ✅ Added comprehensive unit tests (12 tests passing)
 
 **Implementation Location**: `src/writer/src/schema_bridge.rs`
 
-### 2. DataFusionTable Integration (Priority: High)
+### 2. DataFusionTable Integration (Priority: High) ✅ COMPLETED
 
 **Objective**: Create proper `DataFusionTable` instances from Apache Iceberg tables
 
-**Tasks**:
-- Use converted schema/partition specs to create JanKaul's `Table` objects
-- Initialize `DataFusionTable` instances for SQL operations
-- Register tables with DataFusion `SessionContext` for INSERT operations
-- Handle table location and metadata configuration
+**Completed Tasks**:
+- ✅ Used converted schema/partition specs to create JanKaul's `Table` objects
+- ✅ Created JanKaul SQL catalog and registered with DataFusion
+- ✅ Registered tables with DataFusion `SessionContext` for INSERT operations
+- ✅ Handled table location and metadata configuration
+- ✅ Implemented `IcebergCatalog` wrapper for DataFusion integration
 
-**Implementation Location**: Update `src/writer/src/storage/iceberg.rs`
+**Implementation Location**: `src/writer/src/storage/iceberg.rs`
 
-### 3. SQL INSERT Implementation (Priority: High)
+### 3. SQL INSERT Implementation (Priority: High) ✅ COMPLETED
 
 **Objective**: Use datafusion_iceberg's SQL capabilities for actual data writes
 
-**Tasks**:
-- Replace placeholder `write_batch()` with real SQL INSERT
-- Create temporary views from RecordBatch data
-- Execute `INSERT INTO table SELECT * FROM temp_view` statements
-- Handle column mapping and data type conversions
+**Completed Tasks**:
+- ✅ Replaced placeholder `write_batch()` with real SQL INSERT implementation
+- ✅ Created temporary tables from RecordBatch data using `register_batch()`
+- ✅ Execute `INSERT INTO iceberg.default.table SELECT * FROM temp_table` statements
+- ✅ Handled column mapping and data type conversions
+- ✅ Implemented transactional batch writing with `write_batches_transactional()`
+- ✅ Added integration tests for all table types (metrics_gauge, logs, traces)
 
-**Example Pattern**:
+**Implementation Pattern**:
 ```rust
-// Create temporary view from RecordBatch
-let temp_view = format!("temp_batch_{}", uuid::Uuid::new_v4().simple());
-let df = session_ctx.read_batch(batch)?;
-df.create_view(&temp_view, false).await?;
+// Register RecordBatch as temporary table
+let temp_table_name = format!("temp_batch_{}", uuid::Uuid::new_v4().simple());
+self.session_ctx.register_batch(&temp_table_name, batch)?;
 
-// Execute INSERT
-session_ctx.sql(&format!("INSERT INTO {} SELECT * FROM {}", table_name, temp_view))
-    .await?
-    .collect()
-    .await?;
+// Execute SQL INSERT
+let insert_sql = format!(
+    "INSERT INTO iceberg.default.{} SELECT * FROM {}",
+    table_info.name, temp_table_name
+);
+let df = self.session_ctx.sql(&insert_sql).await?;
+df.collect().await?;
 ```
 
-### 4. Transaction Management (Priority: Medium)
+### 4. Transaction Management (Priority: High)
 
 **Objective**: Implement proper commit/rollback logic using JanKaul's APIs
 
@@ -70,7 +75,7 @@ session_ctx.sql(&format!("INSERT INTO {} SELECT * FROM {}", table_name, temp_vie
 - Add rollback capabilities on write failures
 - Ensure ACID compliance across multi-batch operations
 
-### 5. Error Recovery & Performance (Priority: Medium)
+### 5. Error Recovery & Performance (Priority: High)
 
 **Objective**: Add robustness and optimization
 
@@ -110,22 +115,46 @@ session_ctx.sql(&format!("INSERT INTO {} SELECT * FROM {}", table_name, temp_vie
 
 ## Success Criteria
 
-✅ **Phase 1 (Current)**: Foundation established, all modules compile
-🎯 **Phase 2**: Schema conversion working, DataFusionTable creation
-🎯 **Phase 3**: SQL INSERT operations writing real data to Iceberg tables
-🎯 **Phase 4**: Transaction management and error recovery complete
+✅ **Phase 1**: Foundation established, all modules compile
+✅ **Phase 2**: Schema conversion working, DataFusionTable creation
+✅ **Phase 3**: SQL INSERT operations writing real data to Iceberg tables
+🎯 **Phase 4 (Current)**: Transaction management and error recovery implementation
 🎯 **Phase 5**: Performance optimized, ready for production
 
-## Implementation Order
+## Implementation Progress & Remaining Work
 
-1. **Schema Bridge** (1-2 days): Core conversion logic
-2. **DataFusionTable Integration** (1-2 days): Table provider setup
-3. **SQL INSERT** (2-3 days): Real data writing functionality  
-4. **Transaction Management** (1-2 days): ACID compliance
-5. **Testing & Polish** (2-3 days): Robustness and performance
+### Completed ✅
+1. **Schema Bridge** (Completed): Full type conversion with comprehensive tests
+2. **DataFusionTable Integration** (Completed): JanKaul catalog and table registration
+3. **SQL INSERT** (Completed): Working data persistence with integration tests
 
-**Total Estimated Time**: 7-12 days for complete implementation
+### Remaining Work 🚀
+4. **Transaction Management** (1-2 days): Real ACID compliance implementation
+5. **Error Recovery** (1-2 days): Retry logic and failure handling
+6. **Performance Optimization** (2-3 days): Batch sizing, connection pooling
+7. **Production Readiness** (2-3 days): Benchmarks, monitoring, documentation
+
+**Estimated Time to Production**: 6-10 days
+
+## Recent Achievements 🎉
+
+### Schema Bridge Implementation
+- Implemented complete type conversion system in `schema_bridge.rs`
+- Support for all Iceberg types: primitives, structs, lists, maps
+- Proper handling of nullability and field IDs
+- 12 comprehensive unit tests ensuring correctness
+
+### SQL INSERT Functionality
+- Full SQL INSERT implementation using DataFusion's SQL layer
+- Transactional batch writing support
+- Integration with JanKaul's iceberg-datafusion catalog
+- 4 integration tests covering all table types
+
+### Test Coverage
+- `test_sql_insert.rs`: Validates data persistence for metrics_gauge, logs, and traces
+- Empty batch handling tests
+- Multi-batch transactional write tests
 
 ---
 
-This foundation provides a solid base for incrementally completing the full Iceberg write functionality while maintaining system stability.
+The core Iceberg write functionality is now operational. The remaining work focuses on production hardening: real transaction management, error recovery, performance optimization, and comprehensive monitoring.
