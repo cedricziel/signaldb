@@ -17,10 +17,10 @@ router = { path = "../router" }
 
 # Essential external dependencies
 anyhow.workspace = true
+clap.workspace = true
 tokio.workspace = true
 tonic.workspace = true
 arrow-flight.workspace = true
-tracing-subscriber.workspace = true
 log.workspace = true
 
 [dev-dependencies]

@@ -1,19 +1,53 @@
 use acceptor::{serve_otlp_grpc, serve_otlp_http};
 use anyhow::{Context, Result};
-use common::config::Configuration;
+use clap::{Parser, Subcommand};
+use common::cli::{CommonArgs, CommonCommands, utils};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use router::{InMemoryStateImpl, RouterState, create_flight_service, create_router};
 use std::net::SocketAddr;
 use tokio::sync::oneshot;
 use tonic::transport::Server;
 
+#[derive(Parser)]
+#[command(name = "signaldb")]
+#[command(about = "SignalDB - distributed observability signal database (monolithic mode)")]
+#[command(version)]
+struct Cli {
+    #[command(flatten)]
+    common: CommonArgs,
+
+    #[command(subcommand)]
+    command: Option<SignalDbCommands>,
+}
+
+#[derive(Subcommand)]
+enum SignalDbCommands {
+    #[command(flatten)]
+    Common(CommonCommands),
+}
+
+impl Default for SignalDbCommands {
+    fn default() -> Self {
+        Self::Common(CommonCommands::Start)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt::init();
+    let cli = Cli::parse();
+
+    // Initialize logging based on CLI arguments
+    utils::init_logging(&cli.common);
 
     // Load application configuration
-    let config = Configuration::load().context("Failed to load configuration")?;
+    let config = utils::load_config(cli.common.config.as_ref())?;
+
+    // Handle common commands that don't require starting the service
+    let command = cli.command.unwrap_or_default();
+    let SignalDbCommands::Common(ref common_cmd) = command;
+    if utils::handle_common_command(common_cmd, &config).await? {
+        return Ok(()); // Command handled, exit early
+    }
 
     log::info!("Loaded configuration:");
     log::info!("  Database DSN: {}", config.database.dsn);

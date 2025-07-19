@@ -1,27 +1,72 @@
 use anyhow::Context;
 use arrow_flight::flight_service_server::FlightServiceServer;
-use common::config::Configuration;
+use clap::{Parser, Subcommand};
+use common::cli::{CommonArgs, CommonCommands, utils};
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::{Wal, WalConfig};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::signal;
 use tonic::transport::Server;
 use writer::WriterFlightService;
 
+#[derive(Parser)]
+#[command(name = "signaldb-writer")]
+#[command(about = "SignalDB Writer Service - ingests and stores observability data")]
+#[command(version)]
+struct Cli {
+    #[command(flatten)]
+    common: CommonArgs,
+
+    #[command(subcommand)]
+    command: Option<WriterCommands>,
+
+    #[arg(long, help = "Arrow Flight server port", default_value = "50061")]
+    flight_port: u16,
+
+    #[arg(long, help = "WAL directory path", default_value = ".wal/writer")]
+    wal_dir: PathBuf,
+
+    #[arg(long, help = "Bind address for servers", default_value = "0.0.0.0")]
+    bind: String,
+}
+
+#[derive(Subcommand)]
+enum WriterCommands {
+    #[command(flatten)]
+    Common(CommonCommands),
+}
+
+impl Default for WriterCommands {
+    fn default() -> Self {
+        Self::Common(CommonCommands::Start)
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt::init();
+    let cli = Cli::parse();
+
+    // Initialize logging based on CLI arguments
+    utils::init_logging(&cli.common);
 
     // Load configuration
-    let config = Configuration::load().context("Failed to load configuration")?;
+    let config = utils::load_config(cli.common.config.as_ref())?;
+
+    // Handle common commands that don't require starting the service
+    let command = cli.command.unwrap_or_default();
+    let WriterCommands::Common(ref common_cmd) = command;
+    if utils::handle_common_command(common_cmd, &config).await? {
+        return Ok(()); // Command handled, exit early
+    }
 
     // Get Flight address for service registration
-    let flight_addr = std::env::var("WRITER_FLIGHT_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:50061".to_string())
-        .parse::<std::net::SocketAddr>()
-        .context("Invalid WRITER_FLIGHT_ADDR")?;
+    let bind_ip = cli
+        .bind
+        .parse::<std::net::IpAddr>()
+        .context("Invalid bind address")?;
+    let flight_addr = std::net::SocketAddr::new(bind_ip, cli.flight_port);
 
     // Initialize service bootstrap for catalog-based discovery
     let advertise_addr =
@@ -57,9 +102,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize WAL for durability
     let wal_config = WalConfig {
-        wal_dir: std::env::var("WRITER_WAL_DIR")
-            .unwrap_or_else(|_| ".wal/writer".to_string())
-            .into(),
+        wal_dir: cli.wal_dir,
         ..Default::default()
     };
 

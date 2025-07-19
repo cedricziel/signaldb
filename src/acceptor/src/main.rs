@@ -1,23 +1,70 @@
 use acceptor::{serve_otlp_grpc, serve_otlp_http};
 use anyhow::{Context, Result};
-use common::config::Configuration;
+use clap::{Parser, Subcommand};
+use common::cli::{CommonArgs, CommonCommands, utils};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use std::net::SocketAddr;
 use tokio::sync::oneshot;
 
+#[derive(Parser)]
+#[command(name = "signaldb-acceptor")]
+#[command(about = "SignalDB OTLP Acceptor Service - ingests observability data via OTLP protocols")]
+#[command(version)]
+struct Cli {
+    #[command(flatten)]
+    common: CommonArgs,
+
+    #[command(subcommand)]
+    command: Option<AcceptorCommands>,
+
+    #[arg(long, help = "OTLP gRPC server port", default_value = "4317")]
+    grpc_port: u16,
+
+    #[arg(long, help = "OTLP HTTP server port", default_value = "4318")]
+    http_port: u16,
+
+    #[arg(long, help = "Bind address for servers", default_value = "0.0.0.0")]
+    bind: String,
+}
+
+#[derive(Subcommand)]
+enum AcceptorCommands {
+    #[command(flatten)]
+    Common(CommonCommands),
+}
+
+impl Default for AcceptorCommands {
+    fn default() -> Self {
+        Self::Common(CommonCommands::Start)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt::init();
+    let cli = Cli::parse();
+
+    // Initialize logging based on CLI arguments
+    utils::init_logging(&cli.common);
 
     // Load application configuration
-    let config = Configuration::load().context("Failed to load configuration")?;
+    let config = utils::load_config(cli.common.config.as_ref())?;
+
+    // Handle common commands that don't require starting the service
+    let command = cli.command.unwrap_or_default();
+    let AcceptorCommands::Common(ref common_cmd) = command;
+    if utils::handle_common_command(common_cmd, &config).await? {
+        return Ok(()); // Command handled, exit early
+    }
 
     log::info!("Starting SignalDB Acceptor Service");
 
-    // Standard OTLP ports
-    let grpc_addr = SocketAddr::from(([0, 0, 0, 0], 4317)); // Standard OTLP gRPC port
-    let http_addr = SocketAddr::from(([0, 0, 0, 0], 4318)); // Standard OTLP HTTP port
+    // Use CLI-provided ports or defaults
+    let bind_ip = cli
+        .bind
+        .parse::<std::net::IpAddr>()
+        .context("Invalid bind address")?;
+    let grpc_addr = SocketAddr::new(bind_ip, cli.grpc_port);
+    let http_addr = SocketAddr::new(bind_ip, cli.http_port);
 
     // Initialize acceptor service bootstrap for catalog-based discovery
     let acceptor_bootstrap = ServiceBootstrap::new(

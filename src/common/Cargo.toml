@@ -19,7 +19,9 @@ opentelemetry.workspace = true
 opentelemetry-proto.workspace = true
 async-trait.workspace = true
 
+clap.workspace = true
 figment.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 once_cell.workspace = true
 tokio.workspace = true
 
