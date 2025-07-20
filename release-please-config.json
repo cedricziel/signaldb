@@ -1,7 +1,107 @@
 {
   "plugins": ["cargo-workspace"],
   "packages": {
-    ".": {
+    "src/acceptor": {
+      "release-type": "rust",
+      "include-component-in-tag": true,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "draft": false,
+      "prerelease": false,
+      "changelog-sections": [
+        {"type": "feat", "section": "Features"},
+        {"type": "fix", "section": "Bug Fixes"},
+        {"type": "perf", "section": "Performance Improvements"},
+        {"type": "revert", "section": "Reverts"},
+        {"type": "docs", "section": "Documentation"},
+        {"type": "style", "section": "Styles"},
+        {"type": "refactor", "section": "Code Refactoring"},
+        {"type": "test", "section": "Tests"},
+        {"type": "build", "section": "Build System"},
+        {"type": "ci", "section": "Continuous Integration"}
+      ]
+    },
+    "src/common": {
+      "release-type": "rust",
+      "include-component-in-tag": true,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "draft": false,
+      "prerelease": false,
+      "changelog-sections": [
+        {"type": "feat", "section": "Features"},
+        {"type": "fix", "section": "Bug Fixes"},
+        {"type": "perf", "section": "Performance Improvements"},
+        {"type": "revert", "section": "Reverts"},
+        {"type": "docs", "section": "Documentation"},
+        {"type": "style", "section": "Styles"},
+        {"type": "refactor", "section": "Code Refactoring"},
+        {"type": "test", "section": "Tests"},
+        {"type": "build", "section": "Build System"},
+        {"type": "ci", "section": "Continuous Integration"}
+      ]
+    },
+    "src/querier": {
+      "release-type": "rust",
+      "include-component-in-tag": true,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "draft": false,
+      "prerelease": false,
+      "changelog-sections": [
+        {"type": "feat", "section": "Features"},
+        {"type": "fix", "section": "Bug Fixes"},
+        {"type": "perf", "section": "Performance Improvements"},
+        {"type": "revert", "section": "Reverts"},
+        {"type": "docs", "section": "Documentation"},
+        {"type": "style", "section": "Styles"},
+        {"type": "refactor", "section": "Code Refactoring"},
+        {"type": "test", "section": "Tests"},
+        {"type": "build", "section": "Build System"},
+        {"type": "ci", "section": "Continuous Integration"}
+      ]
+    },
+    "src/router": {
+      "release-type": "rust",
+      "include-component-in-tag": true,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "draft": false,
+      "prerelease": false,
+      "changelog-sections": [
+        {"type": "feat", "section": "Features"},
+        {"type": "fix", "section": "Bug Fixes"},
+        {"type": "perf", "section": "Performance Improvements"},
+        {"type": "revert", "section": "Reverts"},
+        {"type": "docs", "section": "Documentation"},
+        {"type": "style", "section": "Styles"},
+        {"type": "refactor", "section": "Code Refactoring"},
+        {"type": "test", "section": "Tests"},
+        {"type": "build", "section": "Build System"},
+        {"type": "ci", "section": "Continuous Integration"}
+      ]
+    },
+    "src/signal-producer": {
+      "release-type": "rust",
+      "include-component-in-tag": true,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "draft": false,
+      "prerelease": false,
+      "changelog-sections": [
+        {"type": "feat", "section": "Features"},
+        {"type": "fix", "section": "Bug Fixes"},
+        {"type": "perf", "section": "Performance Improvements"},
+        {"type": "revert", "section": "Reverts"},
+        {"type": "docs", "section": "Documentation"},
+        {"type": "style", "section": "Styles"},
+        {"type": "refactor", "section": "Code Refactoring"},
+        {"type": "test", "section": "Tests"},
+        {"type": "build", "section": "Build System"},
+        {"type": "ci", "section": "Continuous Integration"}
+      ]
+    },
+    "src/signaldb-bin": {
       "release-type": "rust",
       "include-component-in-tag": false,
       "bump-minor-pre-major": true,
@@ -20,10 +120,50 @@
         {"type": "build", "section": "Build System"},
         {"type": "ci", "section": "Continuous Integration"}
       ]
+    },
+    "src/tempo-api": {
+      "release-type": "rust",
+      "include-component-in-tag": true,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "draft": false,
+      "prerelease": false,
+      "changelog-sections": [
+        {"type": "feat", "section": "Features"},
+        {"type": "fix", "section": "Bug Fixes"},
+        {"type": "perf", "section": "Performance Improvements"},
+        {"type": "revert", "section": "Reverts"},
+        {"type": "docs", "section": "Documentation"},
+        {"type": "style", "section": "Styles"},
+        {"type": "refactor", "section": "Code Refactoring"},
+        {"type": "test", "section": "Tests"},
+        {"type": "build", "section": "Build System"},
+        {"type": "ci", "section": "Continuous Integration"}
+      ]
+    },
+    "src/writer": {
+      "release-type": "rust",
+      "include-component-in-tag": true,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "draft": false,
+      "prerelease": false,
+      "changelog-sections": [
+        {"type": "feat", "section": "Features"},
+        {"type": "fix", "section": "Bug Fixes"},
+        {"type": "perf", "section": "Performance Improvements"},
+        {"type": "revert", "section": "Reverts"},
+        {"type": "docs", "section": "Documentation"},
+        {"type": "style", "section": "Styles"},
+        {"type": "refactor", "section": "Code Refactoring"},
+        {"type": "test", "section": "Tests"},
+        {"type": "build", "section": "Build System"},
+        {"type": "ci", "section": "Continuous Integration"}
+      ]
     }
   },
-  "separate-pull-requests": true,
-  "group-pull-request-title-pattern": "chore: release${component} ${version}",
+  "separate-pull-requests": false,
+  "group-pull-request-title-pattern": "chore: release v${version}",
   "release-search-depth": 400,
   "commit-search-depth": 400
 }
