@@ -32,6 +32,26 @@ pub fn transform_trace_v1_to_v2(batch: RecordBatch) -> Result<RecordBatch> {
     let v2_schema = SCHEMA_DEFINITIONS.resolve_trace_schema("v2")?;
     let arrow_schema = create_arrow_schema_from_resolved(&v2_schema)?;
 
+    // Debug logging to understand the schema mismatch
+    log::debug!(
+        "Transforming v1 batch with {} columns to v2 with {} expected fields",
+        batch.num_columns(),
+        v2_schema.fields.len()
+    );
+    log::debug!(
+        "v1 columns: {:?}",
+        batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name())
+            .collect::<Vec<_>>()
+    );
+    log::debug!(
+        "v2 expected fields: {:?}",
+        v2_schema.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
+    );
+
     let mut new_columns: Vec<ArrayRef> = Vec::new();
 
     // Process each v2 field
@@ -145,8 +165,15 @@ pub fn transform_trace_v1_to_v2(batch: RecordBatch) -> Result<RecordBatch> {
         new_columns.push(column);
     }
 
-    RecordBatch::try_new(arrow_schema, new_columns)
-        .map_err(|e| anyhow!("Failed to create transformed RecordBatch: {}", e))
+    let result = RecordBatch::try_new(arrow_schema, new_columns)
+        .map_err(|e| anyhow!("Failed to create transformed RecordBatch: {}", e))?;
+
+    log::debug!(
+        "Transformation complete: created v2 batch with {} columns",
+        result.num_columns()
+    );
+
+    Ok(result)
 }
 
 /// Get column by name from RecordBatch

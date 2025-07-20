@@ -1,4 +1,5 @@
 use crate::schema_bridge::{CatalogPoolConfig, create_jankaul_sql_catalog_with_pool};
+use crate::schema_transform::transform_trace_v1_to_v2;
 use anyhow::Result;
 use common::config::Configuration;
 use common::schema::{create_catalog_with_config, iceberg_schemas};
@@ -177,7 +178,20 @@ impl IcebergTableWriter {
             // Create table with appropriate schema based on table name
             // Use TOML-based schema definitions
             let apache_schema = match table_name.as_str() {
-                "traces" => iceberg_schemas::create_traces_schema()?,
+                "traces" => {
+                    let schema = iceberg_schemas::create_traces_schema()?;
+                    log::debug!(
+                        "Creating traces table with {} fields: {:?}",
+                        schema.as_struct().fields().len(),
+                        schema
+                            .as_struct()
+                            .fields()
+                            .iter()
+                            .map(|f| f.name.as_str())
+                            .collect::<Vec<_>>()
+                    );
+                    schema
+                }
                 "logs" => iceberg_schemas::create_logs_schema()?,
                 "metrics_gauge" => iceberg_schemas::create_metrics_gauge_schema()?,
                 "metrics_sum" => iceberg_schemas::create_metrics_sum_schema()?,
@@ -392,6 +406,36 @@ impl IcebergTableWriter {
         result_batches
     }
 
+    /// Apply schema transformation if the batch has v1 schema but table expects v2
+    fn apply_schema_transformation_if_needed(&self, batch: RecordBatch) -> Result<RecordBatch> {
+        // Detect schema version based on column count and field names
+        let num_columns = batch.num_columns();
+        let field_names: Vec<String> = batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+
+        // v1 schema has 16 columns and contains "name" field (which becomes "span_name" in v2)
+        // v2 schema has 25 columns and contains "span_name" field
+        let is_v1_schema = num_columns == 16 && field_names.contains(&"name".to_string());
+        let is_v2_schema = num_columns == 25 && field_names.contains(&"span_name".to_string());
+
+        if is_v1_schema {
+            log::debug!("Detected v1 schema batch, applying v1->v2 transformation");
+            transform_trace_v1_to_v2(batch)
+        } else if is_v2_schema {
+            log::debug!("Detected v2 schema batch, no transformation needed");
+            Ok(batch)
+        } else {
+            log::warn!(
+                "Unknown schema detected: {num_columns} columns with fields: {field_names:?}. Assuming no transformation needed."
+            );
+            Ok(batch)
+        }
+    }
+
     /// Write a batch of data to the Iceberg table with transaction support
     pub async fn write_batch(&mut self, batch: RecordBatch) -> Result<()> {
         // Validate input
@@ -459,11 +503,18 @@ impl IcebergTableWriter {
                 let insert_sql =
                     format!("INSERT INTO {table_name} SELECT * FROM {temp_table_name}");
 
+                // Apply schema transformation if needed
+                let transformed_batch = if table_name == "traces" {
+                    self.apply_schema_transformation_if_needed(batch)?
+                } else {
+                    batch
+                };
+
                 // Store the pending operation
                 let operation = PendingOperation {
                     sql: insert_sql,
                     temp_table: temp_table_name,
-                    batch,
+                    batch: transformed_batch,
                     timestamp: Instant::now(),
                 };
 
@@ -549,6 +600,28 @@ impl IcebergTableWriter {
             batch.num_rows(),
             table_name,
             table_location
+        );
+
+        // Debug: Check schema compatibility before registering batch
+        let target_table_schema = self.table.metadata().current_schema(None)?;
+        log::debug!(
+            "Target Iceberg table has {} fields: {:?}",
+            target_table_schema.fields().len(),
+            target_table_schema
+                .fields()
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        log::debug!(
+            "Temporary table (RecordBatch) has {} columns: {:?}",
+            batch.num_columns(),
+            batch
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| f.name())
+                .collect::<Vec<_>>()
         );
 
         // Register RecordBatch directly as temporary table
@@ -792,6 +865,33 @@ impl IcebergTableWriter {
                 transaction_id,
                 operation.sql
             );
+
+            // Debug: Check schema compatibility for INSERT operations
+            if operation.sql.contains("INSERT INTO") && operation.sql.contains("SELECT * FROM") {
+                let target_table_schema = self.table.metadata().current_schema(None)?;
+                log::debug!(
+                    "Transaction {}: Target table has {} fields: {:?}",
+                    transaction_id,
+                    target_table_schema.fields().len(),
+                    target_table_schema
+                        .fields()
+                        .iter()
+                        .map(|f| f.name.as_str())
+                        .collect::<Vec<_>>()
+                );
+                log::debug!(
+                    "Transaction {}: Temp table batch has {} columns: {:?}",
+                    transaction_id,
+                    operation.batch.num_columns(),
+                    operation
+                        .batch
+                        .schema()
+                        .fields()
+                        .iter()
+                        .map(|f| f.name())
+                        .collect::<Vec<_>>()
+                );
+            }
 
             // Use retry logic for each SQL operation
             let session_ctx = self.session_ctx.clone();
