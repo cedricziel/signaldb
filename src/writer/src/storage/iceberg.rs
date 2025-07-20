@@ -215,10 +215,22 @@ impl IcebergTableWriter {
                 }
             };
 
+            log::debug!(
+                "Apache partition spec for {}: {} fields",
+                table_name,
+                apache_partition_spec.fields().len()
+            );
+
             // Convert Apache Iceberg schema to JanKaul's format
             let converted_schema = crate::schema_bridge::convert_schema_to_jankaul(&apache_schema)?;
             let converted_partition_spec =
                 crate::schema_bridge::convert_partition_spec_to_jankaul(&apache_partition_spec)?;
+
+            log::debug!(
+                "Converted partition spec for {}: {} fields",
+                table_name,
+                converted_partition_spec.fields.len()
+            );
 
             // Create JanKaul Schema from converted data
             let schema =
@@ -239,13 +251,29 @@ impl IcebergTableWriter {
                 table_name
             );
 
-            let table_creation = CreateTableBuilder::default()
-                .with_name(table_name.clone())
-                .with_schema(schema)
-                .with_partition_spec(partition_spec)
-                .with_location(table_location)
-                .create()
-                .map_err(|e| anyhow::anyhow!("Failed to build CreateTable: {}", e))?;
+            // TODO: Temporarily disable partitioning to debug InvalidFormat error
+            // The partition spec seems to cause issues when datafusion_iceberg reads the table
+            let table_creation = if false {
+                // Temporarily disabled - partition spec causes InvalidFormat error on read
+                CreateTableBuilder::default()
+                    .with_name(table_name.clone())
+                    .with_schema(schema)
+                    .with_partition_spec(partition_spec)
+                    .with_location(table_location)
+                    .create()
+                    .map_err(|e| anyhow::anyhow!("Failed to build CreateTable: {}", e))?
+            } else {
+                // Create unpartitioned table for now
+                log::warn!(
+                    "Creating unpartitioned table {table_name} due to partition spec compatibility issues"
+                );
+                CreateTableBuilder::default()
+                    .with_name(table_name.clone())
+                    .with_schema(schema)
+                    .with_location(table_location)
+                    .create()
+                    .map_err(|e| anyhow::anyhow!("Failed to build CreateTable: {}", e))?
+            };
 
             catalog
                 .clone()

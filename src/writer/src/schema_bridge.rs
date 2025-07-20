@@ -143,6 +143,14 @@ pub fn create_jankaul_partition_spec_from_converted(
             ConvertedTransform::Unknown => return Err(anyhow::anyhow!("Unknown transform type")),
         };
 
+        log::debug!(
+            "Creating JanKaul partition field: {} (source_id: {}, field_id: {}, transform: {:?})",
+            field.name,
+            field.source_id,
+            field.field_id,
+            transform
+        );
+
         let partition_field =
             JankaulPartitionField::new(field.source_id, field.field_id, &field.name, transform);
         fields.push(partition_field);
@@ -311,9 +319,11 @@ pub fn convert_partition_spec_to_jankaul(
         };
         converted_fields.push(converted_field);
         log::debug!(
-            "Converted partition field: {} (source_id: {})",
+            "Converted Apache partition field: {} (field_id: {}, source_id: {}, transform: {:?})",
             field.name,
-            field.source_id
+            field.field_id,
+            field.source_id,
+            field.transform
         );
     }
 

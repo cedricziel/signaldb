@@ -177,8 +177,8 @@ impl TraceQuerier for TraceService {
                         .unwrap()
                         .value(row_index),
                     name: batch
-                        .column_by_name("name")
-                        .expect("unable to find column 'name'")
+                        .column_by_name("span_name")
+                        .expect("unable to find column 'span_name'")
                         .as_any()
                         .downcast_ref::<StringArray>()
                         .unwrap()
@@ -212,8 +212,8 @@ impl TraceQuerier for TraceService {
                         .unwrap()
                         .value(row_index) as u64,
                     duration_nano: batch
-                        .column_by_name("duration_nano")
-                        .expect("unable to find column 'duration_nano'")
+                        .column_by_name("duration_nanos")
+                        .expect("unable to find column 'duration_nanos'")
                         .as_any()
                         .downcast_ref::<Int64Array>()
                         .unwrap()
@@ -320,8 +320,8 @@ impl TraceQuerier for TraceService {
                         .unwrap()
                         .value(row_index),
                     name: batch
-                        .column_by_name("name")
-                        .expect("unable to find column 'name'")
+                        .column_by_name("span_name")
+                        .expect("unable to find column 'span_name'")
                         .as_any()
                         .downcast_ref::<StringArray>()
                         .unwrap()
@@ -353,8 +353,8 @@ impl TraceQuerier for TraceService {
                         .unwrap()
                         .value(row_index) as u64,
                     duration_nano: batch
-                        .column_by_name("duration_nano")
-                        .expect("unable to find column 'duration_nano'")
+                        .column_by_name("duration_nanos")
+                        .expect("unable to find column 'duration_nanos'")
                         .as_any()
                         .downcast_ref::<Int64Array>()
                         .unwrap()
@@ -446,7 +446,7 @@ mod tests {
         assert_eq!(span_id, "span1");
 
         let name = batch
-            .column_by_name("name")
+            .column_by_name("span_name")
             .unwrap()
             .as_any()
             .downcast_ref::<StringArray>()

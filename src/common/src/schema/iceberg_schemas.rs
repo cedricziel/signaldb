@@ -637,4 +637,57 @@ mod tests {
             assert!(!table_schema.table_name().is_empty());
         }
     }
+
+    #[test]
+    fn test_partition_field_ids() {
+        // Get the traces schema
+        let schema = create_traces_schema().unwrap();
+
+        println!("Traces schema fields:");
+        for field in schema.as_struct().fields() {
+            println!("  Field ID: {}, Name: {}", field.id, field.name);
+        }
+
+        // Get the partition spec
+        let partition_spec = create_traces_partition_spec().unwrap();
+
+        println!("\nPartition spec:");
+        println!("  Spec ID: {}", partition_spec.spec_id());
+        for field in partition_spec.fields() {
+            println!(
+                "  Partition field: {} (field_id: {}, source_id: {})",
+                field.name, field.field_id, field.source_id
+            );
+        }
+
+        // Find date_day and hour field IDs
+        let date_day_field = schema
+            .field_by_name("date_day")
+            .expect("date_day field not found");
+        let hour_field = schema.field_by_name("hour").expect("hour field not found");
+
+        println!("\ndate_day field ID: {}", date_day_field.id);
+        println!("hour field ID: {}", hour_field.id);
+
+        // Verify partition field source IDs match schema field IDs
+        let date_day_partition = partition_spec
+            .fields()
+            .iter()
+            .find(|f| f.name == "date_day")
+            .expect("date_day partition field not found");
+        let hour_partition = partition_spec
+            .fields()
+            .iter()
+            .find(|f| f.name == "hour")
+            .expect("hour partition field not found");
+
+        assert_eq!(
+            date_day_partition.source_id, date_day_field.id,
+            "date_day partition source_id should match schema field id"
+        );
+        assert_eq!(
+            hour_partition.source_id, hour_field.id,
+            "hour partition source_id should match schema field id"
+        );
+    }
 }
