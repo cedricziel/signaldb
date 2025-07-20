@@ -1,4 +1,5 @@
 use crate::processor::WalProcessor;
+use crate::schema_transform::{extract_schema_version, transform_trace_v1_to_v2};
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::utils::flight_data_to_batches;
 use arrow_flight::{
@@ -8,6 +9,7 @@ use bytes::Bytes;
 use common::config::Configuration;
 use common::flight::schema::FlightSchemas;
 use common::wal::{Wal, WalOperation, record_batch_to_bytes};
+use datafusion::arrow::datatypes::SchemaRef;
 use futures::StreamExt;
 use futures::stream::{self, BoxStream};
 use object_store::ObjectStore;
@@ -106,10 +108,29 @@ impl FlightService for IcebergWriterFlightService {
     ) -> Result<Response<Self::DoPutStream>, Status> {
         let mut inbound = request.into_inner();
         let mut data_vec = Vec::new();
+        let mut schema_version = None;
+        let mut schema_ref: Option<SchemaRef> = None;
+
         while let Some(msg) = inbound.next().await {
             let d = msg.map_err(|e| Status::internal(e.to_string()))?;
+
+            // Extract schema version from the first FlightData message (which contains metadata)
+            if schema_version.is_none() && !d.app_metadata.is_empty() {
+                match extract_schema_version(&d.app_metadata) {
+                    Ok(version) => {
+                        log::info!("Received data with schema version: {version}");
+                        schema_version = Some(version);
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to extract schema version: {e}, assuming v1");
+                        schema_version = Some("v1".to_string());
+                    }
+                }
+            }
+
             data_vec.push(d);
         }
+
         if data_vec.is_empty() {
             return Err(Status::invalid_argument("No FlightData received"));
         }
@@ -118,9 +139,37 @@ impl FlightService for IcebergWriterFlightService {
         let batches =
             flight_data_to_batches(&data_vec).map_err(|e| Status::internal(e.to_string()))?;
 
+        // Transform batches if needed based on schema version
+        let transformed_batches = if let Some(ref version) = schema_version {
+            if version == "v1" {
+                // Transform v1 to v2 for Iceberg storage
+                let mut transformed = Vec::new();
+                for batch in batches {
+                    match transform_trace_v1_to_v2(batch) {
+                        Ok(transformed_batch) => {
+                            if schema_ref.is_none() {
+                                schema_ref = Some(transformed_batch.schema());
+                            }
+                            transformed.push(transformed_batch);
+                        }
+                        Err(e) => {
+                            return Err(Status::internal(format!(
+                                "Schema transformation failed: {e}"
+                            )));
+                        }
+                    }
+                }
+                transformed
+            } else {
+                batches
+            }
+        } else {
+            batches
+        };
+
         // Write all batches to WAL first for durability
         let mut wal_entry_ids = Vec::new();
-        for batch in &batches {
+        for batch in &transformed_batches {
             // Serialize RecordBatch for WAL storage
             let batch_bytes = record_batch_to_bytes(batch)
                 .map_err(|e| Status::internal(format!("Failed to serialize batch: {e}")))?;

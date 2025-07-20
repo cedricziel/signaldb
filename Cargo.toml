@@ -125,6 +125,7 @@ sqlx = { version = "0.8", default-features = false, features = [
 ] }
 url = "2.5"
 cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"] }
+toml = "0.8"
 
 [profile.dev]
 split-debuginfo = "unpacked"

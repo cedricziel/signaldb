@@ -1,7 +1,7 @@
 use crate::schema_bridge::{CatalogPoolConfig, create_jankaul_sql_catalog_with_pool};
 use anyhow::Result;
 use common::config::Configuration;
-use common::schema::{TenantSchemaRegistry, create_catalog_with_config};
+use common::schema::{create_catalog_with_config, iceberg_schemas};
 use datafusion::arrow::array::RecordBatch;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -175,21 +175,31 @@ impl IcebergTableWriter {
             }
         } else {
             // Create table with appropriate schema based on table name
-            let registry = TenantSchemaRegistry::new(config.clone());
-            let schemas = registry.get_schema_definitions(&tenant_id)?;
-            let partition_specs = registry.get_partition_specifications(&tenant_id)?;
+            // Use TOML-based schema definitions
+            let apache_schema = match table_name.as_str() {
+                "traces" => iceberg_schemas::create_traces_schema()?,
+                "logs" => iceberg_schemas::create_logs_schema()?,
+                "metrics_gauge" => iceberg_schemas::create_metrics_gauge_schema()?,
+                "metrics_sum" => iceberg_schemas::create_metrics_sum_schema()?,
+                "metrics_histogram" => iceberg_schemas::create_metrics_histogram_schema()?,
+                _ => {
+                    return Err(anyhow::anyhow!("Unknown table name: {}", table_name));
+                }
+            };
 
-            let apache_schema = schemas
-                .get(&table_name)
-                .ok_or_else(|| anyhow::anyhow!("No schema found for table: {}", table_name))?
-                .clone();
-
-            let apache_partition_spec = partition_specs
-                .get(&table_name)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("No partition spec found for table: {}", table_name)
-                })?
-                .clone();
+            let apache_partition_spec = match table_name.as_str() {
+                "traces" => iceberg_schemas::create_traces_partition_spec()?,
+                "logs" => iceberg_schemas::create_logs_partition_spec()?,
+                "metrics_gauge" | "metrics_sum" | "metrics_histogram" => {
+                    iceberg_schemas::create_metrics_partition_spec()?
+                }
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "Unknown table name for partition spec: {}",
+                        table_name
+                    ));
+                }
+            };
 
             // Convert Apache Iceberg schema to JanKaul's format
             let converted_schema = crate::schema_bridge::convert_schema_to_jankaul(&apache_schema)?;
@@ -268,7 +278,7 @@ impl IcebergTableWriter {
             batch_config: BatchOptimizationConfig::default(),
             cached_catalog: None,
             catalog_uri: config.schema.catalog_uri.clone(),
-            catalog_name: "signaldb_iceberg".to_string(), // TODO: Make this configurable
+            catalog_name: "signaldb".to_string(), // Use consistent catalog name
             catalog_type: config.schema.catalog_type.clone(),
         })
     }

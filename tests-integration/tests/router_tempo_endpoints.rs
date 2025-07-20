@@ -12,7 +12,7 @@ use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::{Wal, WalConfig};
 use futures::TryStreamExt;
-use object_store::{ObjectStore, memory::InMemory};
+use object_store::ObjectStore;
 use opentelemetry_proto::tonic::{
     collector::trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
@@ -43,7 +43,11 @@ struct TestServices {
 /// Set up complete test infrastructure with all services
 async fn setup_test_services() -> TestServices {
     let temp_dir = TempDir::new().unwrap();
-    let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    // Use local file system object store to match the storage configuration
+    let storage_path = temp_dir.path().join("storage");
+    std::fs::create_dir_all(&storage_path).unwrap();
+    let object_store: Arc<dyn ObjectStore> =
+        Arc::new(object_store::local::LocalFileSystem::new_with_prefix(&storage_path).unwrap());
 
     // Set up service discovery with shared SQLite database
     let catalog_db_path = temp_dir.path().join("catalog.db");
@@ -62,6 +66,13 @@ async fn setup_test_services() -> TestServices {
         catalog_type: "sql".to_string(),
         catalog_uri: catalog_dsn,
         default_schemas: common::config::DefaultSchemas::default(),
+    };
+
+    // Configure storage to use file storage in temp directory
+    // Note: Using file storage instead of memory because iceberg-rust's SqlCatalog
+    // creates its own memory object store that doesn't share data with our test's object store
+    config.storage = common::config::StorageConfig {
+        dsn: format!("file://{}/storage", temp_dir.path().display()),
     };
 
     let wal_config = WalConfig {
@@ -292,7 +303,7 @@ async fn send_test_trace(services: &TestServices, trace_name: &str) -> String {
 async fn wait_for_data_persistence(services: &TestServices) {
     // Allow more time for WAL processing and Iceberg table creation
     println!("⏳ Waiting for WAL processing and Iceberg table writes...");
-    sleep(Duration::from_secs(10)).await;
+    sleep(Duration::from_secs(15)).await;
 
     // With Iceberg, data might be organized differently
     // List all objects to see what's being created
@@ -347,7 +358,9 @@ async fn test_tempo_echo_endpoint() {
 
 /// Test complete end-to-end trace querying via Tempo API
 #[tokio::test]
-#[ignore = "Iceberg schema mismatch - needs fixing"]
+#[ignore = "TODO: Fix object store sharing between iceberg-rust catalog and test services. \
+            The iceberg-rust SqlCatalog creates its own object store internally which doesn't \
+            share data with the test's object store, causing metadata files to not be found."]
 async fn test_tempo_endpoints_end_to_end() {
     // Enable debug logging
     let _ = env_logger::builder()
@@ -371,6 +384,9 @@ async fn test_tempo_endpoints_end_to_end() {
 
     // Wait for processing and persistence
     wait_for_data_persistence(&services).await;
+
+    // Add debugging to check if table exists in catalog
+    println!("🔍 Checking if traces table exists in Iceberg catalog...");
 
     // Test trace query endpoint
     println!("🔍 Testing trace query endpoint...");

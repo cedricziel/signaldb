@@ -38,6 +38,8 @@ bytes.workspace = true
 tonic.workspace = true
 tempfile.workspace = true
 sqlx.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
 
 # Optional dependencies for benchmarks
 criterion = { workspace = true, optional = true }

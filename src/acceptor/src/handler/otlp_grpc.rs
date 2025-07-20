@@ -6,6 +6,7 @@ use common::wal::{Wal, WalOperation, record_batch_to_bytes};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 // Flight protocol imports
 use arrow_flight::utils::batches_to_flight_data;
+use bytes::Bytes;
 use futures::{StreamExt, stream};
 
 pub struct TraceHandler {
@@ -62,6 +63,12 @@ impl TraceHandler {
         // Convert OTLP traces to Arrow RecordBatch
         let record_batch = otlp_traces_to_arrow(&request);
 
+        // Add schema version metadata (v1 for OTLP conversion)
+        let metadata = serde_json::json!({
+            "schema_version": "v1",
+            "signal_type": "traces"
+        });
+
         // Step 1: Write to WAL first for durability
         let batch_bytes = match record_batch_to_bytes(&record_batch) {
             Ok(bytes) => bytes,
@@ -107,7 +114,7 @@ impl TraceHandler {
         };
 
         let schema = record_batch.schema();
-        let flight_data = match batches_to_flight_data(&schema, vec![record_batch]) {
+        let mut flight_data = match batches_to_flight_data(&schema, vec![record_batch]) {
             Ok(data) => data,
             Err(e) => {
                 log::error!("Failed to convert batch to flight data: {e}");
@@ -115,6 +122,12 @@ impl TraceHandler {
                 return;
             }
         };
+
+        // Add metadata to the first FlightData message (which contains the schema)
+        if !flight_data.is_empty() {
+            let metadata_bytes = metadata.to_string().into_bytes();
+            flight_data[0].app_metadata = Bytes::from(metadata_bytes);
+        }
 
         let flight_stream = stream::iter(flight_data);
 

@@ -1,244 +1,28 @@
 use crate::config::DefaultSchemas;
+use crate::schema::SCHEMA_DEFINITIONS;
 use anyhow::Result;
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
 use iceberg::spec::{PartitionSpec, Transform};
 use std::sync::Arc;
 
-/// Create Iceberg schema for traces table
-/// Based on ClickHouse traces_table.sql schema but adapted for Iceberg
+/// Create Iceberg schema for traces table using TOML definitions
 pub fn create_traces_schema() -> Result<Schema> {
-    let fields = vec![
-        // Core span identification
-        Arc::new(NestedField::required(
-            1,
-            "trace_id",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::required(
-            2,
-            "span_id",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            3,
-            "parent_span_id",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            4,
-            "trace_state",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        // Timing information
-        Arc::new(NestedField::required(
-            5,
-            "timestamp",
-            Type::Primitive(PrimitiveType::TimestampNs),
-        )),
-        Arc::new(NestedField::required(
-            6,
-            "duration_nanos",
-            Type::Primitive(PrimitiveType::Long),
-        )),
-        // Span metadata
-        Arc::new(NestedField::required(
-            7,
-            "span_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::required(
-            8,
-            "span_kind",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::required(
-            9,
-            "service_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        // Status
-        Arc::new(NestedField::required(
-            10,
-            "status_code",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            11,
-            "status_message",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        // Resource and scope information
-        Arc::new(NestedField::optional(
-            12,
-            "resource_schema_url",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            13,
-            "resource_attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        Arc::new(NestedField::optional(
-            14,
-            "scope_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            15,
-            "scope_version",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            16,
-            "scope_schema_url",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            17,
-            "scope_attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        Arc::new(NestedField::optional(
-            18,
-            "span_attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        // Events - stored as JSON array string for simplicity
-        Arc::new(NestedField::optional(
-            19,
-            "events",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        // Links - stored as JSON array string for simplicity
-        Arc::new(NestedField::optional(
-            20,
-            "links",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        // Additional fields for query optimization
-        Arc::new(NestedField::required(
-            21,
-            "date_day",
-            Type::Primitive(PrimitiveType::Date),
-        )), // Partition key
-        Arc::new(NestedField::required(
-            22,
-            "hour",
-            Type::Primitive(PrimitiveType::Int),
-        )), // Sub-partition key
-    ];
+    // Get the current trace schema version from TOML
+    let current_version = SCHEMA_DEFINITIONS.current_trace_version();
+    let resolved_schema = SCHEMA_DEFINITIONS.resolve_trace_schema(current_version)?;
 
-    Schema::builder()
-        .with_fields(fields)
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to create traces schema: {}", e))
+    // Convert resolved schema to Iceberg schema
+    resolved_schema.to_iceberg_schema()
 }
 
-/// Create Iceberg schema for logs table
-/// Based on ClickHouse logs_table.sql schema but adapted for Iceberg
+/// Create Iceberg schema for logs table using TOML definitions
 pub fn create_logs_schema() -> Result<Schema> {
-    let fields = vec![
-        // Core log identification
-        Arc::new(NestedField::required(
-            1,
-            "timestamp",
-            Type::Primitive(PrimitiveType::TimestampNs),
-        )),
-        Arc::new(NestedField::optional(
-            2,
-            "observed_timestamp",
-            Type::Primitive(PrimitiveType::TimestampNs),
-        )),
-        // Trace context
-        Arc::new(NestedField::optional(
-            3,
-            "trace_id",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            4,
-            "span_id",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            5,
-            "trace_flags",
-            Type::Primitive(PrimitiveType::Int),
-        )),
-        // Log content
-        Arc::new(NestedField::optional(
-            6,
-            "severity_text",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            7,
-            "severity_number",
-            Type::Primitive(PrimitiveType::Int),
-        )),
-        Arc::new(NestedField::required(
-            8,
-            "service_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            9,
-            "body",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        // Resource and scope information
-        Arc::new(NestedField::optional(
-            10,
-            "resource_schema_url",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            11,
-            "resource_attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        Arc::new(NestedField::optional(
-            12,
-            "scope_schema_url",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            13,
-            "scope_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            14,
-            "scope_version",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            15,
-            "scope_attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        Arc::new(NestedField::optional(
-            16,
-            "log_attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        // Additional fields for query optimization
-        Arc::new(NestedField::required(
-            17,
-            "date_day",
-            Type::Primitive(PrimitiveType::Date),
-        )), // Partition key
-        Arc::new(NestedField::required(
-            18,
-            "hour",
-            Type::Primitive(PrimitiveType::Int),
-        )), // Sub-partition key
-    ];
+    // Get the current log schema version from TOML
+    let current_version = SCHEMA_DEFINITIONS.metadata.current_log_version.as_str();
+    let resolved_schema = SCHEMA_DEFINITIONS.resolve_log_schema(current_version)?;
 
-    Schema::builder()
-        .with_fields(fields)
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to create logs schema: {}", e))
+    // Convert resolved schema to Iceberg schema
+    resolved_schema.to_iceberg_schema()
 }
 
 /// Create Iceberg schema for metrics gauge table
@@ -627,10 +411,18 @@ pub fn create_metrics_histogram_schema() -> Result<Schema> {
 /// Partitions by date (daily) and sub-partitions by hour for better query performance
 pub fn create_traces_partition_spec() -> Result<PartitionSpec> {
     let schema = create_traces_schema()?;
-    PartitionSpec::builder(schema)
-        .with_spec_id(1)
-        .add_partition_field("date_day", "date_day", Transform::Identity)?
-        .add_partition_field("hour", "hour", Transform::Identity)?
+    let current_version = SCHEMA_DEFINITIONS.current_trace_version();
+    let resolved_schema = SCHEMA_DEFINITIONS.resolve_trace_schema(current_version)?;
+
+    let mut builder = PartitionSpec::builder(schema).with_spec_id(1);
+
+    // Add partition fields from TOML definition
+    for partition_field in &resolved_schema.partition_by {
+        builder =
+            builder.add_partition_field(partition_field, partition_field, Transform::Identity)?;
+    }
+
+    builder
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to create traces partition spec: {}", e))
 }

@@ -12,8 +12,21 @@ use iceberg_catalog_memory::MemoryCatalog;
 use iceberg_rust::catalog::Catalog as JanKaulCatalog;
 use iceberg_rust::object_store::ObjectStoreBuilder;
 use iceberg_sql_catalog::SqlCatalog;
+use once_cell::sync::Lazy;
 
 pub mod iceberg_schemas;
+pub mod schema_parser;
+
+use self::schema_parser::SchemaDefinitions;
+
+/// Embedded schema definitions from schemas.toml
+pub const SCHEMA_DEFINITIONS_TOML: &str = include_str!("../../../../schemas.toml");
+
+/// Parsed schema definitions
+pub static SCHEMA_DEFINITIONS: Lazy<SchemaDefinitions> = Lazy::new(|| {
+    SchemaDefinitions::from_toml(SCHEMA_DEFINITIONS_TOML)
+        .expect("Failed to load built-in schema definitions")
+});
 
 /// Create a JanKaul iceberg-rust catalog from full configuration
 pub async fn create_catalog_with_config(config: &Configuration) -> Result<Arc<dyn JanKaulCatalog>> {
