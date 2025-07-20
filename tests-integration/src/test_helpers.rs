@@ -20,11 +20,17 @@ impl MinioTestContext {
         // Get connection details
         let host_port = container.get_host_port_ipv4(9000).await?;
 
-        // Create DSN with embedded credentials
-        // Format: s3://access_key:secret_key@host:port/bucket
-        let dsn = Url::parse(&format!(
-            "s3://minioadmin:minioadmin@127.0.0.1:{host_port}/signaldb-test"
-        ))?;
+        // Create DSN without embedded credentials
+        // Store the endpoint information separately from the bucket name
+        let dsn = Url::parse(&format!("s3://127.0.0.1:{host_port}/signaldb-test"))?;
+
+        // Set MinIO credentials as environment variables for JanKaul
+        unsafe {
+            std::env::set_var("AWS_ACCESS_KEY_ID", "minioadmin");
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", "minioadmin");
+            std::env::set_var("AWS_ENDPOINT_URL", format!("http://127.0.0.1:{host_port}"));
+            std::env::set_var("AWS_DEFAULT_REGION", "us-east-1");
+        }
 
         // Create the test bucket
         create_test_bucket(&dsn).await?;
@@ -40,15 +46,17 @@ async fn create_test_bucket(dsn: &Url) -> Result<()> {
         dsn.host_str().unwrap(),
         dsn.port().unwrap_or(9000)
     );
-    let access_key = dsn.username();
-    let secret_key = dsn.password().unwrap_or("");
     let bucket = dsn.path().trim_start_matches('/');
 
-    // Create S3 client configuration
+    // Create S3 client configuration using environment variables
     let shared_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .endpoint_url(&endpoint)
         .credentials_provider(Credentials::new(
-            access_key, secret_key, None, None, "minio",
+            "minioadmin",
+            "minioadmin",
+            None,
+            None,
+            "minio",
         ))
         .region(Region::new("us-east-1"))
         .load()

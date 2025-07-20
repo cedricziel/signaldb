@@ -46,13 +46,16 @@ struct TestServices {
 async fn setup_test_services() -> TestServices {
     let temp_dir = TempDir::new().unwrap();
 
-    // Create MinIO test context
-    let minio = MinioTestContext::new().await.unwrap();
-    println!("✅ MinIO container started with DSN: {}", minio.dsn);
+    // Use filesystem storage for now due to JanKaul S3 URL bug
+    // TODO: Switch back to MinIO once the URL construction issue is resolved
+    let storage_path = temp_dir.path().join("storage");
+    std::fs::create_dir_all(&storage_path).unwrap();
+    let storage_dsn = format!("file://{}", storage_path.display());
+    println!("✅ Using filesystem storage at: {storage_dsn}");
 
-    // Create object store from MinIO DSN
-    let object_store = common::storage::create_object_store_from_dsn(minio.dsn.as_str())
-        .expect("Failed to create object store from MinIO DSN");
+    // Create object store from filesystem DSN
+    let object_store = common::storage::create_object_store_from_dsn(&storage_dsn)
+        .expect("Failed to create object store from filesystem DSN");
 
     // Set up service discovery with shared SQLite database
     let catalog_db_path = temp_dir.path().join("catalog.db");
@@ -73,9 +76,9 @@ async fn setup_test_services() -> TestServices {
         default_schemas: common::config::DefaultSchemas::default(),
     };
 
-    // Configure storage to use MinIO
+    // Configure storage to use filesystem
     config.storage = common::config::StorageConfig {
-        dsn: minio.dsn.to_string(),
+        dsn: storage_dsn.clone(),
     };
 
     let wal_config = WalConfig {
@@ -197,7 +200,7 @@ async fn setup_test_services() -> TestServices {
         _querier_addr: querier_addr,
         config,
         _temp_dir: temp_dir,
-        _minio: Some(minio),
+        _minio: None, // Using filesystem storage instead
     }
 }
 
