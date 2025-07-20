@@ -17,3 +17,5 @@ pub mod schema_bridge;
 pub use schema_bridge::{
     CatalogPoolConfig, create_jankaul_sql_catalog, create_jankaul_sql_catalog_with_pool,
 };
+
+pub mod schema_transform;

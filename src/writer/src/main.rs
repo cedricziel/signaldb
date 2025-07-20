@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::signal;
 use tonic::transport::Server;
-use writer::WriterFlightService;
+use writer::IcebergWriterFlightService;
 
 #[derive(Parser)]
 #[command(name = "signaldb-writer")]
@@ -114,8 +114,15 @@ async fn main() -> anyhow::Result<()> {
     wal.start_background_flush();
     let wal = Arc::new(wal);
 
-    // Create Flight ingestion service with WAL
-    let flight_service = WriterFlightService::new(object_store.clone(), wal.clone());
+    // Create Iceberg-based Flight ingestion service with WAL
+    let flight_service =
+        IcebergWriterFlightService::new(config.clone(), object_store.clone(), wal.clone());
+
+    // Start background WAL processing for Iceberg writes
+    flight_service
+        .start_background_processing()
+        .await
+        .context("Failed to start background WAL processing")?;
     log::info!("Starting Flight ingest service on {flight_addr}");
     let flight_handle = tokio::spawn(async move {
         Server::builder()

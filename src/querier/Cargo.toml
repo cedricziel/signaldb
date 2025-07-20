@@ -23,7 +23,10 @@ object_store.workspace = true
 futures.workspace = true
 bytes.workspace = true
 url = "2.5"
-
+serde.workspace = true
+serde_json.workspace = true
+iceberg-rust.workspace = true
+datafusion_iceberg.workspace = true
 
 thiserror.workspace = true
 

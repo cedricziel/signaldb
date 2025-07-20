@@ -18,10 +18,10 @@ object_store.workspace = true
 
 # Apache Iceberg support (for compatibility)
 iceberg.workspace = true
-# JanKaul's datafusion_iceberg (for write operations)
-datafusion_iceberg.workspace = true
+# JanKaul's iceberg-rust (for write operations)
 iceberg-rust.workspace = true
 iceberg-sql-catalog.workspace = true
+datafusion_iceberg.workspace = true
 
 tokio.workspace = true
 futures.workspace = true
@@ -38,6 +38,8 @@ bytes.workspace = true
 tonic.workspace = true
 tempfile.workspace = true
 sqlx.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
 
 # Optional dependencies for benchmarks
 criterion = { workspace = true, optional = true }

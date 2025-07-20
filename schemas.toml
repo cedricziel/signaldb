@@ -1,0 +1,170 @@
+# SignalDB Schema Definitions
+# Each schema version includes all fields from previous versions plus additions
+
+[metadata]
+description = "SignalDB built-in table schemas"
+current_trace_version = "v2"
+current_log_version = "v1"
+current_metric_version = "v1"
+
+# ==============================================================================
+# TRACES TABLE SCHEMAS
+# ==============================================================================
+
+[traces.v1]
+description = "Initial traces schema matching OTLP Flight conversion"
+fields = [
+    { name = "trace_id", type = "string", required = true },
+    { name = "span_id", type = "string", required = true },
+    { name = "parent_span_id", type = "string", required = false },
+    { name = "name", type = "string", required = true },
+    { name = "service_name", type = "string", required = true },
+    { name = "start_time_unix_nano", type = "uint64", required = true },
+    { name = "end_time_unix_nano", type = "uint64", required = true },
+    { name = "duration_nano", type = "uint64", required = true },
+    { name = "span_kind", type = "string", required = true },
+    { name = "status_code", type = "string", required = true },
+    { name = "status_message", type = "string", required = false },
+    { name = "is_root", type = "boolean", required = true },
+    { name = "attributes_json", type = "string", required = false },
+    { name = "resource_json", type = "string", required = false },
+    { name = "events", type = "list<struct>", required = false },
+    { name = "links", type = "list<struct>", required = false },
+]
+
+[traces.v2]
+description = "Iceberg-compatible traces schema with partitioning fields"
+inherits = "v1"
+field_renames = [
+    { from = "name", to = "span_name" },
+    { from = "duration_nano", to = "duration_nanos" },
+    { from = "attributes_json", to = "span_attributes" },
+    { from = "resource_json", to = "resource_attributes" },
+]
+field_additions = [
+    { name = "trace_state", type = "string", required = false },
+    { name = "timestamp", type = "timestamp_ns", required = true, computed = "start_time_unix_nano" },
+    { name = "resource_schema_url", type = "string", required = false },
+    { name = "scope_name", type = "string", required = false },
+    { name = "scope_version", type = "string", required = false },
+    { name = "scope_schema_url", type = "string", required = false },
+    { name = "scope_attributes", type = "string", required = false },
+    { name = "date_day", type = "date", required = true, computed = "date_from_timestamp" },
+    { name = "hour", type = "int32", required = true, computed = "hour_from_timestamp" },
+]
+partition_by = ["date_day", "hour"]
+
+# ==============================================================================
+# LOGS TABLE SCHEMAS
+# ==============================================================================
+
+[logs.v1]
+description = "Initial logs schema"
+fields = [
+    { name = "timestamp", type = "timestamp_ns", required = true },
+    { name = "observed_timestamp", type = "timestamp_ns", required = false },
+    { name = "trace_id", type = "string", required = false },
+    { name = "span_id", type = "string", required = false },
+    { name = "trace_flags", type = "int32", required = false },
+    { name = "severity_text", type = "string", required = false },
+    { name = "severity_number", type = "int32", required = false },
+    { name = "service_name", type = "string", required = true },
+    { name = "body", type = "string", required = false },
+    { name = "resource_schema_url", type = "string", required = false },
+    { name = "resource_attributes", type = "string", required = false },
+    { name = "scope_schema_url", type = "string", required = false },
+    { name = "scope_name", type = "string", required = false },
+    { name = "scope_version", type = "string", required = false },
+    { name = "scope_attributes", type = "string", required = false },
+    { name = "log_attributes", type = "string", required = false },
+    { name = "date_day", type = "date", required = true, computed = "date_from_timestamp" },
+    { name = "hour", type = "int32", required = true, computed = "hour_from_timestamp" },
+]
+partition_by = ["date_day", "hour"]
+
+# ==============================================================================
+# METRICS TABLE SCHEMAS
+# ==============================================================================
+
+[metrics_gauge.v1]
+description = "Gauge metrics schema"
+fields = [
+    { name = "timestamp", type = "timestamp_ns", required = true },
+    { name = "start_timestamp", type = "timestamp_ns", required = false },
+    { name = "service_name", type = "string", required = true },
+    { name = "metric_name", type = "string", required = true },
+    { name = "metric_description", type = "string", required = false },
+    { name = "metric_unit", type = "string", required = false },
+    { name = "value", type = "double", required = true },
+    { name = "flags", type = "int32", required = false },
+    { name = "resource_schema_url", type = "string", required = false },
+    { name = "resource_attributes", type = "string", required = false },
+    { name = "scope_name", type = "string", required = false },
+    { name = "scope_version", type = "string", required = false },
+    { name = "scope_schema_url", type = "string", required = false },
+    { name = "scope_attributes", type = "string", required = false },
+    { name = "scope_dropped_attr_count", type = "int32", required = false },
+    { name = "attributes", type = "string", required = false },
+    { name = "exemplars", type = "string", required = false },
+    { name = "date_day", type = "date", required = true, computed = "date_from_timestamp" },
+    { name = "hour", type = "int32", required = true, computed = "hour_from_timestamp" },
+]
+partition_by = ["date_day", "hour"]
+
+[metrics_sum.v1]
+description = "Sum metrics schema"
+fields = [
+    { name = "timestamp", type = "timestamp_ns", required = true },
+    { name = "start_timestamp", type = "timestamp_ns", required = false },
+    { name = "service_name", type = "string", required = true },
+    { name = "metric_name", type = "string", required = true },
+    { name = "metric_description", type = "string", required = false },
+    { name = "metric_unit", type = "string", required = false },
+    { name = "value", type = "double", required = true },
+    { name = "flags", type = "int32", required = false },
+    { name = "aggregation_temporality", type = "int32", required = true },
+    { name = "is_monotonic", type = "boolean", required = true },
+    { name = "resource_schema_url", type = "string", required = false },
+    { name = "resource_attributes", type = "string", required = false },
+    { name = "scope_name", type = "string", required = false },
+    { name = "scope_version", type = "string", required = false },
+    { name = "scope_schema_url", type = "string", required = false },
+    { name = "scope_attributes", type = "string", required = false },
+    { name = "scope_dropped_attr_count", type = "int32", required = false },
+    { name = "attributes", type = "string", required = false },
+    { name = "exemplars", type = "string", required = false },
+    { name = "date_day", type = "date", required = true, computed = "date_from_timestamp" },
+    { name = "hour", type = "int32", required = true, computed = "hour_from_timestamp" },
+]
+partition_by = ["date_day", "hour"]
+
+[metrics_histogram.v1]
+description = "Histogram metrics schema"
+fields = [
+    { name = "timestamp", type = "timestamp_ns", required = true },
+    { name = "start_timestamp", type = "timestamp_ns", required = false },
+    { name = "service_name", type = "string", required = true },
+    { name = "metric_name", type = "string", required = true },
+    { name = "metric_description", type = "string", required = false },
+    { name = "metric_unit", type = "string", required = false },
+    { name = "count", type = "int64", required = true },
+    { name = "sum", type = "double", required = false },
+    { name = "min", type = "double", required = false },
+    { name = "max", type = "double", required = false },
+    { name = "bucket_counts", type = "string", required = false },
+    { name = "explicit_bounds", type = "string", required = false },
+    { name = "flags", type = "int32", required = false },
+    { name = "aggregation_temporality", type = "int32", required = true },
+    { name = "resource_schema_url", type = "string", required = false },
+    { name = "resource_attributes", type = "string", required = false },
+    { name = "scope_name", type = "string", required = false },
+    { name = "scope_version", type = "string", required = false },
+    { name = "scope_schema_url", type = "string", required = false },
+    { name = "scope_attributes", type = "string", required = false },
+    { name = "scope_dropped_attr_count", type = "int32", required = false },
+    { name = "attributes", type = "string", required = false },
+    { name = "exemplars", type = "string", required = false },
+    { name = "date_day", type = "date", required = true, computed = "date_from_timestamp" },
+    { name = "hour", type = "int32", required = true, computed = "hour_from_timestamp" },
+]
+partition_by = ["date_day", "hour"]

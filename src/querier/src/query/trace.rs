@@ -8,7 +8,7 @@ use common::model::{
 };
 use datafusion::{
     arrow::array::{BooleanArray, Int64Array, StringArray},
-    prelude::{ParquetReadOptions, SessionContext},
+    prelude::SessionContext,
 };
 
 use super::{FindTraceByIdParams, SearchQueryParams, TraceQuerier, error::QuerierError};
@@ -91,7 +91,12 @@ impl TraceQuerier for TraceService {
     ) -> Result<Option<model::trace::Trace>, QuerierError> {
         log::info!("Querying for trace_id: {}", params.trace_id);
 
-        let query = TRACE_BY_ID_QUERY.replace("{trace_id}", &params.trace_id);
+        // Query directly from the Iceberg table
+        // The table should already be available via the catalog
+        let query = format!(
+            "SELECT * FROM iceberg.default.traces WHERE trace_id = '{}'",
+            params.trace_id
+        );
 
         let df = self.session_context.sql(&query).await.map_err(|e| {
             log::error!("Failed to execute query: {query:?}, {e:?}");
@@ -172,8 +177,8 @@ impl TraceQuerier for TraceService {
                         .unwrap()
                         .value(row_index),
                     name: batch
-                        .column_by_name("name")
-                        .expect("unable to find column 'name'")
+                        .column_by_name("span_name")
+                        .expect("unable to find column 'span_name'")
                         .as_any()
                         .downcast_ref::<StringArray>()
                         .unwrap()
@@ -207,8 +212,8 @@ impl TraceQuerier for TraceService {
                         .unwrap()
                         .value(row_index) as u64,
                     duration_nano: batch
-                        .column_by_name("duration_nano")
-                        .expect("unable to find column 'duration_nano'")
+                        .column_by_name("duration_nanos")
+                        .expect("unable to find column 'duration_nanos'")
                         .as_any()
                         .downcast_ref::<Int64Array>()
                         .unwrap()
@@ -261,14 +266,14 @@ impl TraceQuerier for TraceService {
         &self,
         _query: SearchQueryParams,
     ) -> Result<Vec<model::trace::Trace>, QuerierError> {
-        let ctx = SessionContext::new();
-        ctx.register_parquet("traces", &self.traces_path, ParquetReadOptions::default())
+        // Use the existing session context that should have Iceberg catalog registered
+        let query = "SELECT * FROM iceberg.default.traces;";
+
+        let df = self
+            .session_context
+            .sql(query)
             .await
-            .map_err(QuerierError::FailedToRegisterParquet)?;
-
-        let query = "SELECT * FROM traces;";
-
-        let df = ctx.sql(query).await.map_err(QuerierError::QueryFailed)?;
+            .map_err(QuerierError::QueryFailed)?;
 
         let results = df.collect().await.map_err(QuerierError::QueryFailed)?;
 
@@ -315,8 +320,8 @@ impl TraceQuerier for TraceService {
                         .unwrap()
                         .value(row_index),
                     name: batch
-                        .column_by_name("name")
-                        .expect("unable to find column 'name'")
+                        .column_by_name("span_name")
+                        .expect("unable to find column 'span_name'")
                         .as_any()
                         .downcast_ref::<StringArray>()
                         .unwrap()
@@ -348,8 +353,8 @@ impl TraceQuerier for TraceService {
                         .unwrap()
                         .value(row_index) as u64,
                     duration_nano: batch
-                        .column_by_name("duration_nano")
-                        .expect("unable to find column 'duration_nano'")
+                        .column_by_name("duration_nanos")
+                        .expect("unable to find column 'duration_nanos'")
                         .as_any()
                         .downcast_ref::<Int64Array>()
                         .unwrap()
@@ -441,7 +446,7 @@ mod tests {
         assert_eq!(span_id, "span1");
 
         let name = batch
-            .column_by_name("name")
+            .column_by_name("span_name")
             .unwrap()
             .as_any()
             .downcast_ref::<StringArray>()

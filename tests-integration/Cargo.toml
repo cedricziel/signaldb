@@ -17,6 +17,7 @@ common = { path = "../src/common" }
 querier = { path = "../src/querier" }
 router = { path = "../src/router" }
 writer = { path = "../src/writer" }
+tempo-api = { path = "../src/tempo-api" }
 
 # External dependencies
 anyhow.workspace = true
@@ -30,9 +31,18 @@ log.workspace = true
 tempfile.workspace = true
 futures.workspace = true
 opentelemetry-proto.workspace = true
+axum.workspace = true
+tower.workspace = true
+serde_json.workspace = true
+hex.workspace = true
 
 # For test-specific utilities
-env_logger = "0.11.5"
+env_logger.workspace = true
+url.workspace = true
+testcontainers-modules = { workspace = true, features = ["minio", "postgres"] }
+aws-config.workspace = true
+aws-sdk-s3.workspace = true
+aws-credential-types.workspace = true
 
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory

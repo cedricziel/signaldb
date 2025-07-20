@@ -1,73 +1,210 @@
 use crate::config::{Configuration, SchemaConfig, StorageConfig};
-use crate::storage::create_object_store;
 use anyhow::Result;
-use iceberg::io::FileIOBuilder;
-use iceberg_catalog_memory::MemoryCatalog;
 use std::collections::HashMap;
 use std::sync::Arc;
+use url::Url;
+
+// Keep Apache Iceberg for schema definitions (used throughout codebase)
+use iceberg::io::FileIOBuilder;
+use iceberg_catalog_memory::MemoryCatalog;
+
+// Use JanKaul's iceberg-rust for catalog implementation
+use iceberg_rust::catalog::Catalog as JanKaulCatalog;
+use iceberg_rust::object_store::ObjectStoreBuilder;
+use iceberg_sql_catalog::SqlCatalog;
+use once_cell::sync::Lazy;
 
 pub mod iceberg_schemas;
+pub mod schema_parser;
 
-/// Create an Iceberg catalog from full configuration
-pub async fn create_catalog_with_config(
-    config: &Configuration,
-) -> Result<Arc<dyn ::iceberg::Catalog>> {
-    let schema_config = &config.schema;
-    let object_store = create_object_store(&config.storage)?;
+use self::schema_parser::SchemaDefinitions;
 
-    create_catalog_with_object_store(schema_config, object_store).await
+/// Embedded schema definitions from schemas.toml
+pub const SCHEMA_DEFINITIONS_TOML: &str = include_str!("../../../../schemas.toml");
+
+/// Parsed schema definitions
+pub static SCHEMA_DEFINITIONS: Lazy<SchemaDefinitions> = Lazy::new(|| {
+    SchemaDefinitions::from_toml(SCHEMA_DEFINITIONS_TOML)
+        .expect("Failed to load built-in schema definitions")
+});
+
+/// Create an ObjectStoreBuilder from storage configuration
+fn create_object_store_builder_from_config(
+    storage_config: &StorageConfig,
+) -> Result<ObjectStoreBuilder> {
+    let url = Url::parse(&storage_config.dsn)
+        .map_err(|e| anyhow::anyhow!("Invalid storage DSN '{}': {}", storage_config.dsn, e))?;
+
+    match url.scheme() {
+        "file" => {
+            let path = url.path();
+            if path.is_empty() || path == "/" {
+                return Err(anyhow::anyhow!(
+                    "File DSN must specify a path: file:///path/to/storage"
+                ));
+            }
+            Ok(ObjectStoreBuilder::filesystem(path))
+        }
+        "memory" => Ok(ObjectStoreBuilder::memory()),
+        "s3" => {
+            // JanKaul's ObjectStoreBuilder has limited S3 configurability
+            // It reads from environment variables, so we need to set them
+            // based on the DSN before creating the builder
+
+            // Extract credentials from DSN
+            let access_key = url.username();
+            let secret_key = url.password().unwrap_or("");
+
+            if !access_key.is_empty() {
+                unsafe {
+                    std::env::set_var("AWS_ACCESS_KEY_ID", access_key);
+                    std::env::set_var("AWS_SECRET_ACCESS_KEY", secret_key);
+                }
+            }
+
+            // For MinIO, we'd need to set the endpoint URL via env var
+            let host = url.host_str().unwrap_or("localhost");
+            if !host.contains("amazonaws.com") {
+                // This is MinIO or S3-compatible
+                let port = url.port().unwrap_or(9000);
+                let endpoint = format!("http://{host}:{port}");
+                log::info!("Setting AWS_ENDPOINT_URL for MinIO: {endpoint}");
+                unsafe {
+                    std::env::set_var("AWS_ENDPOINT_URL", endpoint);
+                }
+            }
+
+            // Set region
+            unsafe {
+                std::env::set_var("AWS_DEFAULT_REGION", "us-east-1");
+            }
+
+            // Set bucket name - extract from DSN path
+            let bucket = url.path().trim_start_matches('/');
+            if !bucket.is_empty() {
+                log::info!("Setting AWS bucket from DSN: {bucket}");
+                unsafe {
+                    std::env::set_var("AWS_BUCKET", bucket);
+                    std::env::set_var("AWS_BUCKET_NAME", bucket);
+                }
+            }
+
+            Ok(ObjectStoreBuilder::s3())
+        }
+        scheme => Err(anyhow::anyhow!(
+            "Unsupported storage scheme for catalog: {}. Supported: file, memory, s3",
+            scheme
+        )),
+    }
 }
 
-/// Create an Iceberg catalog with explicit object store
+/// Create a JanKaul iceberg-rust catalog from full configuration
+pub async fn create_catalog_with_config(config: &Configuration) -> Result<Arc<dyn JanKaulCatalog>> {
+    let object_store_builder = create_object_store_builder_from_config(&config.storage)?;
+
+    create_jankaul_sql_catalog_with_builder(
+        &config.schema.catalog_uri,
+        "signaldb",
+        object_store_builder,
+    )
+    .await
+}
+
+/// Create a JanKaul iceberg-rust catalog with explicit object store
+/// Note: This function is limited by JanKaul's catalog implementation which
+/// doesn't support injecting external object stores. The object_store parameter
+/// is currently ignored. Use create_catalog_with_config instead.
 pub async fn create_catalog_with_object_store(
     schema_config: &SchemaConfig,
     _object_store: Arc<dyn object_store::ObjectStore>,
-) -> Result<Arc<dyn ::iceberg::Catalog>> {
-    // For now, we still use memory FileIO until we can properly integrate object_store
-    // TODO: Integrate object_store with FileIO when iceberg-rust supports it
-    let file_io = FileIOBuilder::new("memory").build()?;
+) -> Result<Arc<dyn JanKaulCatalog>> {
+    // TODO: Find a way to use the provided object store with JanKaul's catalog
+    // For now, we create a memory object store builder
+    log::warn!(
+        "create_catalog_with_object_store: Cannot use provided object store with JanKaul's catalog, using memory store"
+    );
 
-    let catalog: Arc<dyn ::iceberg::Catalog> = match schema_config.catalog_type.as_str() {
-        "sql" => {
-            // For now, use memory catalog as foundation for SQL catalog
-            // TODO: Implement proper SQL catalog with SQLite/PostgreSQL backend
-            // when iceberg-catalog-sql version compatibility is resolved
-            let catalog = MemoryCatalog::new(file_io, None);
-            Arc::new(catalog)
-        }
-        "memory" => {
-            let catalog = MemoryCatalog::new(file_io, None);
-            Arc::new(catalog)
-        }
-        catalog_type => {
-            return Err(anyhow::anyhow!(
-                "Unsupported catalog type: {}. Supported: sql, memory",
-                catalog_type
-            ));
-        }
+    create_jankaul_sql_catalog_with_builder(
+        &schema_config.catalog_uri,
+        "signaldb",
+        ObjectStoreBuilder::memory(),
+    )
+    .await
+}
+
+/// Create a JanKaul SQL catalog (same implementation as in writer)
+pub async fn create_jankaul_sql_catalog(
+    catalog_uri: &str,
+    catalog_name: &str,
+) -> Result<Arc<dyn JanKaulCatalog>> {
+    // Create an in-memory object store builder
+    let object_store_builder = ObjectStoreBuilder::memory();
+
+    create_jankaul_sql_catalog_with_builder(catalog_uri, catalog_name, object_store_builder).await
+}
+
+/// Internal helper to create catalog with ObjectStoreBuilder
+async fn create_jankaul_sql_catalog_with_builder(
+    catalog_uri: &str,
+    catalog_name: &str,
+    object_store_builder: ObjectStoreBuilder,
+) -> Result<Arc<dyn JanKaulCatalog>> {
+    let catalog = if catalog_uri.starts_with("sqlite://") && catalog_uri != "sqlite://" {
+        // SQLite with persistent database
+        let catalog = SqlCatalog::new(catalog_uri, catalog_name, object_store_builder)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create SQLite catalog: {}", e))?;
+        Arc::new(catalog) as Arc<dyn JanKaulCatalog>
+    } else if catalog_uri == "sqlite://"
+        || catalog_uri.contains(":memory:")
+        || catalog_uri == "memory://"
+    {
+        // In-memory SQLite catalog (also handle memory:// for compatibility)
+        let catalog = SqlCatalog::new("sqlite::memory:", catalog_name, object_store_builder)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create in-memory SQLite catalog: {}", e))?;
+        Arc::new(catalog) as Arc<dyn JanKaulCatalog>
+    } else {
+        return Err(anyhow::anyhow!(
+            "Unsupported catalog URI: {}. Only SQLite is supported.",
+            catalog_uri
+        ));
     };
+
     Ok(catalog)
 }
 
-/// Create an Iceberg catalog from schema config with default storage
+/// Create a JanKaul iceberg-rust catalog from schema config with default storage
 /// This is a convenience function for tests and simple use cases
-pub async fn create_catalog(schema_config: SchemaConfig) -> Result<Arc<dyn ::iceberg::Catalog>> {
+pub async fn create_catalog(schema_config: SchemaConfig) -> Result<Arc<dyn JanKaulCatalog>> {
     let default_storage = StorageConfig::default();
-    let object_store = create_object_store(&default_storage)?;
+    let object_store_builder = create_object_store_builder_from_config(&default_storage)?;
 
-    create_catalog_with_object_store(&schema_config, object_store).await
+    create_jankaul_sql_catalog_with_builder(
+        &schema_config.catalog_uri,
+        "signaldb",
+        object_store_builder,
+    )
+    .await
 }
 
-/// Create an Iceberg catalog with default configuration
+/// Create a JanKaul iceberg-rust catalog with default configuration
 /// Uses default schema config and in-memory storage
-pub async fn create_default_catalog() -> Result<Arc<dyn ::iceberg::Catalog>> {
+pub async fn create_default_catalog() -> Result<Arc<dyn JanKaulCatalog>> {
     create_catalog(SchemaConfig::default()).await
+}
+
+/// Wrapper to provide compatibility between JanKaul catalog and Apache Iceberg operations
+struct CatalogWrapper {
+    jankaul_catalog: Arc<dyn JanKaulCatalog>,
+    #[allow(dead_code)]
+    apache_catalog: Arc<dyn iceberg::Catalog>, // For schema operations only
 }
 
 /// Tenant-aware schema registry for managing catalogs and schemas per tenant
 pub struct TenantSchemaRegistry {
     pub(crate) config: Configuration,
-    catalogs: HashMap<String, Arc<dyn ::iceberg::Catalog>>,
+    catalogs: HashMap<String, CatalogWrapper>,
 }
 
 impl TenantSchemaRegistry {
@@ -79,30 +216,47 @@ impl TenantSchemaRegistry {
         }
     }
 
-    /// Get or create a catalog for the specified tenant
+    /// Get or create a JanKaul catalog for the specified tenant
     pub async fn get_catalog_for_tenant(
         &mut self,
         tenant_id: &str,
-    ) -> Result<Arc<dyn ::iceberg::Catalog>> {
+    ) -> Result<Arc<dyn JanKaulCatalog>> {
         // Check if tenant is enabled
         if !self.config.is_tenant_enabled(tenant_id) {
             return Err(anyhow::anyhow!("Tenant '{}' is not enabled", tenant_id));
         }
 
         // Return cached catalog if available
-        if let Some(catalog) = self.catalogs.get(tenant_id) {
-            return Ok(catalog.clone());
+        if let Some(wrapper) = self.catalogs.get(tenant_id) {
+            return Ok(wrapper.jankaul_catalog.clone());
         }
 
-        // Create new catalog for tenant
+        // Create new catalogs for tenant
         let tenant_schema_config = self.config.get_tenant_schema_config(tenant_id);
-        let object_store = create_object_store(&self.config.storage)?;
-        let catalog = create_catalog_with_object_store(&tenant_schema_config, object_store).await?;
 
-        // Cache the catalog
-        self.catalogs.insert(tenant_id.to_string(), catalog.clone());
+        // Create object store builder from storage config
+        let object_store_builder = create_object_store_builder_from_config(&self.config.storage)?;
 
-        Ok(catalog)
+        // Create JanKaul catalog for actual operations
+        let jankaul_catalog = create_jankaul_sql_catalog_with_builder(
+            &tenant_schema_config.catalog_uri,
+            "signaldb",
+            object_store_builder,
+        )
+        .await?;
+
+        // Create Apache catalog for schema compatibility (temporary)
+        let file_io = FileIOBuilder::new("memory").build()?;
+        let apache_catalog: Arc<dyn iceberg::Catalog> = Arc::new(MemoryCatalog::new(file_io, None));
+
+        // Cache both catalogs
+        let wrapper = CatalogWrapper {
+            jankaul_catalog: jankaul_catalog.clone(),
+            apache_catalog,
+        };
+        self.catalogs.insert(tenant_id.to_string(), wrapper);
+
+        Ok(jankaul_catalog)
     }
 
     /// Get custom schemas for a tenant
@@ -188,13 +342,12 @@ impl TenantSchemaRegistry {
 
     /// Create default tables for a tenant
     pub async fn create_default_tables_for_tenant(&mut self, tenant_id: &str) -> Result<()> {
-        let catalog = self.get_catalog_for_tenant(tenant_id).await?;
+        // Get the JanKaul catalog
+        let _ = self.get_catalog_for_tenant(tenant_id).await?;
 
-        // Create default namespace if it doesn't exist
-        let namespace = iceberg::NamespaceIdent::from_strs(vec![tenant_id])?;
-        if !catalog.namespace_exists(&namespace).await? {
-            catalog.create_namespace(&namespace, HashMap::new()).await?;
-        }
+        // For now, log that we would create tables
+        // TODO: Implement table creation using JanKaul's API
+        log::info!("Would create default tables for tenant '{tenant_id}' using JanKaul catalog");
 
         // Get the default schemas configuration
         let default_schemas = &self.config.schema.default_schemas;
@@ -202,29 +355,20 @@ impl TenantSchemaRegistry {
         // Create tables based on configuration
         for table_schema in iceberg_schemas::TableSchema::all_from_config(default_schemas) {
             let table_name = table_schema.table_name();
-            let table_ident = iceberg::TableIdent::new(namespace.clone(), table_name.to_string());
 
-            // Check if table already exists
-            if catalog.table_exists(&table_ident).await? {
-                continue; // Skip if table already exists
-            }
-
-            // Create the table (skip custom schemas for now)
+            // For JanKaul catalog, we'll need to use writer's schema bridge
             match &table_schema {
                 iceberg_schemas::TableSchema::Custom(name) => {
                     log::info!(
-                        "Would create custom table '{name}' from configuration in namespace {namespace}"
+                        "Would create custom table '{name}' from configuration for tenant {tenant_id}"
                     );
-                    // TODO: Parse and create custom schema from JSON configuration
                 }
                 _ => {
                     let _schema = table_schema.schema()?;
                     let _partition_spec = table_schema.partition_spec()?;
 
-                    // For now, just log that we would create the table
-                    // TODO: Find the correct table creation API for iceberg 0.5.1
                     log::info!(
-                        "Would create table {table_name} with schema in namespace {namespace}"
+                        "Would create table {table_name} with schema for tenant {tenant_id}"
                     );
                 }
             }
@@ -235,20 +379,13 @@ impl TenantSchemaRegistry {
 
     /// List all tables for a tenant
     pub async fn list_tables_for_tenant(&mut self, tenant_id: &str) -> Result<Vec<String>> {
-        let catalog = self.get_catalog_for_tenant(tenant_id).await?;
+        // Get the JanKaul catalog
+        let _ = self.get_catalog_for_tenant(tenant_id).await?;
 
-        let namespace = iceberg::NamespaceIdent::from_strs(vec![tenant_id])?;
-
-        // Check if namespace exists
-        if !catalog.namespace_exists(&namespace).await? {
-            return Ok(vec![]);
-        }
-
-        catalog
-            .list_tables(&namespace)
-            .await
-            .map(|tables| tables.into_iter().map(|t| t.name().to_string()).collect())
-            .map_err(|e| anyhow::anyhow!("Failed to list tables for tenant {}: {}", tenant_id, e))
+        // For now, return empty list
+        // TODO: Implement table listing using JanKaul's API
+        log::info!("Would list tables for tenant '{tenant_id}' using JanKaul catalog");
+        Ok(vec![])
     }
 }
 

@@ -1,6 +1,6 @@
 use common::config::SchemaConfig;
 use common::schema::{create_catalog, create_default_catalog};
-use iceberg::NamespaceIdent;
+use iceberg_rust::catalog::namespace::Namespace;
 use std::collections::HashMap;
 
 #[tokio::test]
@@ -18,16 +18,19 @@ async fn test_memory_catalog() {
     assert_eq!(namespaces.len(), 0);
 
     // Create a namespace
-    let namespace_ident = NamespaceIdent::from_strs(vec!["signaldb"]).unwrap();
+    let namespace = Namespace::try_new(&["signaldb".to_string()]).unwrap();
     catalog
-        .create_namespace(&namespace_ident, HashMap::new())
+        .create_namespace(&namespace, Some(HashMap::new()))
         .await
         .unwrap();
 
     // List namespaces again
     let namespaces = catalog.list_namespaces(None).await.unwrap();
     assert_eq!(namespaces.len(), 1);
-    assert_eq!(namespaces[0].to_string(), "signaldb");
+    assert_eq!(
+        format!("{:?}", namespaces[0]),
+        r#"Namespace { name: ["signaldb"] }"#
+    );
 }
 
 #[tokio::test]
@@ -45,16 +48,19 @@ async fn test_sql_catalog() {
     assert_eq!(namespaces.len(), 0);
 
     // Create a namespace
-    let namespace_ident = NamespaceIdent::from_strs(vec!["signaldb"]).unwrap();
+    let namespace = Namespace::try_new(&["signaldb".to_string()]).unwrap();
     catalog
-        .create_namespace(&namespace_ident, HashMap::new())
+        .create_namespace(&namespace, Some(HashMap::new()))
         .await
         .unwrap();
 
     // List namespaces again
     let namespaces = catalog.list_namespaces(None).await.unwrap();
     assert_eq!(namespaces.len(), 1);
-    assert_eq!(namespaces[0].to_string(), "signaldb");
+    assert_eq!(
+        format!("{:?}", namespaces[0]),
+        r#"Namespace { name: ["signaldb"] }"#
+    );
 }
 
 #[tokio::test]
@@ -66,16 +72,19 @@ async fn test_default_catalog() {
     assert_eq!(namespaces.len(), 0);
 
     // Create a namespace
-    let namespace_ident = NamespaceIdent::from_strs(vec!["signaldb"]).unwrap();
+    let namespace = Namespace::try_new(&["signaldb".to_string()]).unwrap();
     catalog
-        .create_namespace(&namespace_ident, HashMap::new())
+        .create_namespace(&namespace, Some(HashMap::new()))
         .await
         .unwrap();
 
     // List namespaces again
     let namespaces = catalog.list_namespaces(None).await.unwrap();
     assert_eq!(namespaces.len(), 1);
-    assert_eq!(namespaces[0].to_string(), "signaldb");
+    assert_eq!(
+        format!("{:?}", namespaces[0]),
+        r#"Namespace { name: ["signaldb"] }"#
+    );
 }
 
 #[tokio::test]

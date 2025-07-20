@@ -108,7 +108,10 @@ uuid = { version = "1.17.0", features = ["serde"] }
 humantime-serde = "1.1.1"
 
 hex = "0.4"
+env_logger = "0.11.5"
+tower = "0.5.2"
 
+testcontainers = "0.24.0"
 testcontainers-modules = { version = "0.12.1", features = ["postgres"] }
 tempfile = "3.20.0"
 rand = "0.8"
@@ -125,6 +128,12 @@ sqlx = { version = "0.8", default-features = false, features = [
 ] }
 url = "2.5"
 cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"] }
+toml = "0.8"
+
+# AWS SDK dependencies
+aws-config = "1.5.10"
+aws-sdk-s3 = "1.61.0"
+aws-credential-types = "1.2.1"
 
 [profile.dev]
 split-debuginfo = "unpacked"
