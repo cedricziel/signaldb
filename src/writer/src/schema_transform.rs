@@ -4,8 +4,8 @@ use common::schema::SCHEMA_DEFINITIONS;
 use common::schema::schema_parser::ResolvedSchema;
 use datafusion::arrow::{
     array::{
-        Array, ArrayRef, Date32Array, Int32Array, StringArray, TimestampNanosecondArray,
-        UInt64Array,
+        Array, ArrayRef, Date32Array, Int32Array, Int64Array, StringArray,
+        TimestampNanosecondArray, UInt64Array,
     },
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
@@ -58,16 +58,31 @@ pub fn transform_trace_v1_to_v2(batch: RecordBatch) -> Result<RecordBatch> {
     for field in &v2_schema.fields {
         let column = match field.name.as_str() {
             // Direct mappings (same name in v1 and v2)
-            "trace_id"
-            | "span_id"
-            | "parent_span_id"
-            | "service_name"
-            | "start_time_unix_nano"
-            | "end_time_unix_nano"
-            | "span_kind"
-            | "status_code"
-            | "status_message"
-            | "is_root" => get_column_by_name(&batch, &field.name)?,
+            "trace_id" | "span_id" | "parent_span_id" | "service_name" | "span_kind"
+            | "status_code" | "status_message" | "is_root" => {
+                get_column_by_name(&batch, &field.name)?
+            }
+
+            // UInt64 fields that need to be converted to Int64 for Iceberg compatibility
+            "start_time_unix_nano" | "end_time_unix_nano" => {
+                let col = get_column_by_name(&batch, &field.name)?;
+                let uint_array = col
+                    .as_any()
+                    .downcast_ref::<UInt64Array>()
+                    .ok_or_else(|| anyhow!("{} is not UInt64Array", field.name))?;
+
+                let int_values: Vec<Option<i64>> = (0..uint_array.len())
+                    .map(|i| {
+                        if uint_array.is_null(i) {
+                            None
+                        } else {
+                            Some(uint_array.value(i) as i64)
+                        }
+                    })
+                    .collect();
+
+                Arc::new(Int64Array::from(int_values))
+            }
 
             // Complex types converted to JSON strings
             "events" | "links" => {
@@ -79,7 +94,26 @@ pub fn transform_trace_v1_to_v2(batch: RecordBatch) -> Result<RecordBatch> {
 
             // Renamed fields
             "span_name" => get_column_by_name(&batch, "name")?,
-            "duration_nanos" => get_column_by_name(&batch, "duration_nano")?,
+            "duration_nanos" => {
+                // Convert UInt64 to Int64 for Iceberg compatibility
+                let col = get_column_by_name(&batch, "duration_nano")?;
+                let uint_array = col
+                    .as_any()
+                    .downcast_ref::<UInt64Array>()
+                    .ok_or_else(|| anyhow!("duration_nano is not UInt64Array"))?;
+
+                let int_values: Vec<Option<i64>> = (0..uint_array.len())
+                    .map(|i| {
+                        if uint_array.is_null(i) {
+                            None
+                        } else {
+                            Some(uint_array.value(i) as i64)
+                        }
+                    })
+                    .collect();
+
+                Arc::new(Int64Array::from(int_values))
+            }
             "span_attributes" => get_column_by_name(&batch, "attributes_json")?,
             "resource_attributes" => get_column_by_name(&batch, "resource_json")?,
 
@@ -194,7 +228,7 @@ fn create_arrow_schema_from_resolved(resolved: &ResolvedSchema) -> Result<Arc<Sc
             "string" => DataType::Utf8,
             "int32" => DataType::Int32,
             "int64" => DataType::Int64,
-            "uint64" => DataType::UInt64,
+            "uint64" => DataType::Int64, // Map uint64 to Int64 for Iceberg compatibility
             "double" => DataType::Float64,
             "boolean" => DataType::Boolean,
             "timestamp_ns" => {
