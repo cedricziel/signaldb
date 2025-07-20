@@ -32,12 +32,17 @@ tempfile.workspace = true
 futures.workspace = true
 opentelemetry-proto.workspace = true
 axum.workspace = true
-tower = "0.5.2"
+tower.workspace = true
 serde_json.workspace = true
-hex = "0.4.3"
+hex.workspace = true
 
 # For test-specific utilities
-env_logger = "0.11.5"
+env_logger.workspace = true
+url.workspace = true
+testcontainers-modules = { workspace = true, features = ["minio", "postgres"] }
+aws-config.workspace = true
+aws-sdk-s3.workspace = true
+aws-credential-types.workspace = true
 
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory

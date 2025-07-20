@@ -3,6 +3,8 @@ use common::config::Configuration;
 use std::sync::Arc;
 use tempfile::TempDir;
 
+pub mod test_helpers;
+
 /// Create a test configuration with temporary directories
 pub fn create_test_config() -> (Configuration, TempDir) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");

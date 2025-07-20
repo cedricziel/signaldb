@@ -1,8 +1,8 @@
 use crate::config::{Configuration, SchemaConfig, StorageConfig};
-use crate::storage::create_object_store;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
+use url::Url;
 
 // Keep Apache Iceberg for schema definitions (used throughout codebase)
 use iceberg::io::FileIOBuilder;
@@ -28,64 +28,108 @@ pub static SCHEMA_DEFINITIONS: Lazy<SchemaDefinitions> = Lazy::new(|| {
         .expect("Failed to load built-in schema definitions")
 });
 
-/// Create a JanKaul iceberg-rust catalog from full configuration
-pub async fn create_catalog_with_config(config: &Configuration) -> Result<Arc<dyn JanKaulCatalog>> {
-    let schema_config = &config.schema;
-    let object_store = create_object_store(&config.storage)?;
+/// Create an ObjectStoreBuilder from storage configuration
+fn create_object_store_builder_from_config(
+    storage_config: &StorageConfig,
+) -> Result<ObjectStoreBuilder> {
+    let url = Url::parse(&storage_config.dsn)
+        .map_err(|e| anyhow::anyhow!("Invalid storage DSN '{}': {}", storage_config.dsn, e))?;
 
-    create_catalog_with_object_store(schema_config, object_store).await
+    match url.scheme() {
+        "file" => {
+            let path = url.path();
+            if path.is_empty() || path == "/" {
+                return Err(anyhow::anyhow!(
+                    "File DSN must specify a path: file:///path/to/storage"
+                ));
+            }
+            Ok(ObjectStoreBuilder::filesystem(path))
+        }
+        "memory" => Ok(ObjectStoreBuilder::memory()),
+        "s3" => {
+            // JanKaul's ObjectStoreBuilder has limited S3 configurability
+            // It reads from environment variables, so we need to set them
+            // based on the DSN before creating the builder
+
+            // Extract credentials from DSN
+            let access_key = url.username();
+            let secret_key = url.password().unwrap_or("");
+
+            if !access_key.is_empty() {
+                unsafe {
+                    std::env::set_var("AWS_ACCESS_KEY_ID", access_key);
+                    std::env::set_var("AWS_SECRET_ACCESS_KEY", secret_key);
+                }
+            }
+
+            // For MinIO, we'd need to set the endpoint URL via env var
+            let host = url.host_str().unwrap_or("localhost");
+            if !host.contains("amazonaws.com") {
+                // This is MinIO or S3-compatible
+                let port = url.port().unwrap_or(9000);
+                let endpoint = format!("http://{host}:{port}");
+                log::info!("Setting AWS_ENDPOINT_URL for MinIO: {endpoint}");
+                unsafe {
+                    std::env::set_var("AWS_ENDPOINT_URL", endpoint);
+                }
+            }
+
+            // Set region
+            unsafe {
+                std::env::set_var("AWS_DEFAULT_REGION", "us-east-1");
+            }
+
+            // Set bucket name - extract from DSN path
+            let bucket = url.path().trim_start_matches('/');
+            if !bucket.is_empty() {
+                log::info!("Setting AWS bucket from DSN: {bucket}");
+                unsafe {
+                    std::env::set_var("AWS_BUCKET", bucket);
+                    std::env::set_var("AWS_BUCKET_NAME", bucket);
+                }
+            }
+
+            Ok(ObjectStoreBuilder::s3())
+        }
+        scheme => Err(anyhow::anyhow!(
+            "Unsupported storage scheme for catalog: {}. Supported: file, memory, s3",
+            scheme
+        )),
+    }
 }
 
-/// Create a JanKaul iceberg-rust catalog with explicit object store
-pub async fn create_catalog_with_object_store(
-    schema_config: &SchemaConfig,
-    object_store: Arc<dyn object_store::ObjectStore>,
-) -> Result<Arc<dyn JanKaulCatalog>> {
-    // Use the provided object store instead of creating a new one
-    create_jankaul_sql_catalog_with_object_store(
-        &schema_config.catalog_uri,
+/// Create a JanKaul iceberg-rust catalog from full configuration
+pub async fn create_catalog_with_config(config: &Configuration) -> Result<Arc<dyn JanKaulCatalog>> {
+    let object_store_builder = create_object_store_builder_from_config(&config.storage)?;
+
+    create_jankaul_sql_catalog_with_builder(
+        &config.schema.catalog_uri,
         "signaldb",
-        object_store,
+        object_store_builder,
     )
     .await
 }
 
-/// Create a JanKaul SQL catalog with a specific object store
-pub async fn create_jankaul_sql_catalog_with_object_store(
-    catalog_uri: &str,
-    catalog_name: &str,
+/// Create a JanKaul iceberg-rust catalog with explicit object store
+/// Note: This function is limited by JanKaul's catalog implementation which
+/// doesn't support injecting external object stores. The object_store parameter
+/// is currently ignored. Use create_catalog_with_config instead.
+pub async fn create_catalog_with_object_store(
+    schema_config: &SchemaConfig,
     _object_store: Arc<dyn object_store::ObjectStore>,
 ) -> Result<Arc<dyn JanKaulCatalog>> {
-    log::info!("Creating JanKaul SQL catalog with URI: {catalog_uri}");
+    // TODO: Find a way to use the provided object store with JanKaul's catalog
+    // For now, we create a memory object store builder
+    log::warn!(
+        "create_catalog_with_object_store: Cannot use provided object store with JanKaul's catalog, using memory store"
+    );
 
-    // For now, we'll use the memory object store builder
-    // TODO: Figure out how to properly pass the object store through
-    let object_store_builder = ObjectStoreBuilder::memory();
-
-    let catalog = if catalog_uri.starts_with("sqlite://") && catalog_uri != "sqlite://" {
-        // SQLite with persistent database
-        let catalog = SqlCatalog::new(catalog_uri, catalog_name, object_store_builder)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create SQLite catalog: {}", e))?;
-        Arc::new(catalog) as Arc<dyn JanKaulCatalog>
-    } else if catalog_uri == "sqlite://"
-        || catalog_uri.contains(":memory:")
-        || catalog_uri == "memory://"
-    {
-        // In-memory SQLite catalog (also handle memory:// for compatibility)
-        let catalog = SqlCatalog::new("sqlite::memory:", catalog_name, object_store_builder)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create in-memory SQLite catalog: {}", e))?;
-        Arc::new(catalog) as Arc<dyn JanKaulCatalog>
-    } else {
-        return Err(anyhow::anyhow!(
-            "Unsupported catalog URI: {}. Only SQLite is supported.",
-            catalog_uri
-        ));
-    };
-
-    log::info!("Successfully created JanKaul SQL catalog");
-    Ok(catalog)
+    create_jankaul_sql_catalog_with_builder(
+        &schema_config.catalog_uri,
+        "signaldb",
+        ObjectStoreBuilder::memory(),
+    )
+    .await
 }
 
 /// Create a JanKaul SQL catalog (same implementation as in writer)
@@ -134,9 +178,14 @@ async fn create_jankaul_sql_catalog_with_builder(
 /// This is a convenience function for tests and simple use cases
 pub async fn create_catalog(schema_config: SchemaConfig) -> Result<Arc<dyn JanKaulCatalog>> {
     let default_storage = StorageConfig::default();
-    let object_store = create_object_store(&default_storage)?;
+    let object_store_builder = create_object_store_builder_from_config(&default_storage)?;
 
-    create_catalog_with_object_store(&schema_config, object_store).await
+    create_jankaul_sql_catalog_with_builder(
+        &schema_config.catalog_uri,
+        "signaldb",
+        object_store_builder,
+    )
+    .await
 }
 
 /// Create a JanKaul iceberg-rust catalog with default configuration
@@ -184,11 +233,17 @@ impl TenantSchemaRegistry {
 
         // Create new catalogs for tenant
         let tenant_schema_config = self.config.get_tenant_schema_config(tenant_id);
-        let object_store = create_object_store(&self.config.storage)?;
+
+        // Create object store builder from storage config
+        let object_store_builder = create_object_store_builder_from_config(&self.config.storage)?;
 
         // Create JanKaul catalog for actual operations
-        let jankaul_catalog =
-            create_catalog_with_object_store(&tenant_schema_config, object_store.clone()).await?;
+        let jankaul_catalog = create_jankaul_sql_catalog_with_builder(
+            &tenant_schema_config.catalog_uri,
+            "signaldb",
+            object_store_builder,
+        )
+        .await?;
 
         // Create Apache catalog for schema compatibility (temporary)
         let file_io = FileIOBuilder::new("memory").build()?;

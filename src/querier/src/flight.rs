@@ -81,9 +81,8 @@ impl QuerierFlightService {
             .runtime_env()
             .register_object_store(&url, object_store.clone());
 
-        // Create Iceberg SQL catalog using JanKaul's implementation
-        let iceberg_catalog =
-            writer::create_jankaul_sql_catalog(&config.schema.catalog_uri, "signaldb").await?;
+        // Create Iceberg SQL catalog using common module to ensure proper storage configuration
+        let iceberg_catalog = common::schema::create_catalog_with_config(config).await?;
 
         // Create datafusion_iceberg catalog wrapper
         let datafusion_catalog = datafusion_iceberg::catalog::catalog::IcebergCatalog::new(

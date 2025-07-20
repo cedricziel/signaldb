@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
+use tests_integration::test_helpers::MinioTestContext;
 use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
 use tonic::transport::Server;
@@ -38,16 +39,20 @@ struct TestServices {
     pub _querier_addr: std::net::SocketAddr,
     pub config: Configuration,
     pub _temp_dir: TempDir,
+    pub _minio: Option<MinioTestContext>,
 }
 
 /// Set up complete test infrastructure with all services
 async fn setup_test_services() -> TestServices {
     let temp_dir = TempDir::new().unwrap();
-    // Use local file system object store to match the storage configuration
-    let storage_path = temp_dir.path().join("storage");
-    std::fs::create_dir_all(&storage_path).unwrap();
-    let object_store: Arc<dyn ObjectStore> =
-        Arc::new(object_store::local::LocalFileSystem::new_with_prefix(&storage_path).unwrap());
+
+    // Create MinIO test context
+    let minio = MinioTestContext::new().await.unwrap();
+    println!("✅ MinIO container started with DSN: {}", minio.dsn);
+
+    // Create object store from MinIO DSN
+    let object_store = common::storage::create_object_store_from_dsn(minio.dsn.as_str())
+        .expect("Failed to create object store from MinIO DSN");
 
     // Set up service discovery with shared SQLite database
     let catalog_db_path = temp_dir.path().join("catalog.db");
@@ -61,18 +66,16 @@ async fn setup_test_services() -> TestServices {
         ttl: Duration::from_secs(300),
     });
 
-    // Configure Iceberg catalog
+    // Configure Iceberg catalog to use SQLite
     config.schema = common::config::SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: catalog_dsn,
         default_schemas: common::config::DefaultSchemas::default(),
     };
 
-    // Configure storage to use file storage in temp directory
-    // Note: Using file storage instead of memory because iceberg-rust's SqlCatalog
-    // creates its own memory object store that doesn't share data with our test's object store
+    // Configure storage to use MinIO
     config.storage = common::config::StorageConfig {
-        dsn: format!("file://{}/storage", temp_dir.path().display()),
+        dsn: minio.dsn.to_string(),
     };
 
     let wal_config = WalConfig {
@@ -194,6 +197,7 @@ async fn setup_test_services() -> TestServices {
         _querier_addr: querier_addr,
         config,
         _temp_dir: temp_dir,
+        _minio: Some(minio),
     }
 }
 
@@ -314,16 +318,27 @@ async fn wait_for_data_persistence(services: &TestServices) {
         .await
         .unwrap();
 
+    println!("✅ Found {} objects in object store:", objects.len());
+    for obj in &objects {
+        println!("  📁 Object: {}", obj.location);
+    }
+
     if objects.is_empty() {
-        println!(
-            "⚠️  No objects found in object store - this is expected with Iceberg catalog-only mode"
-        );
-        // With Iceberg, data might be stored through the catalog, not directly in object store
-        // This is not necessarily an error
-    } else {
-        println!("✅ Found {} objects in object store:", objects.len());
-        for obj in &objects {
-            println!("  📁 Object: {}", obj.location);
+        println!("⚠️  No objects found yet - waiting a bit more for Iceberg writes...");
+        sleep(Duration::from_secs(5)).await;
+
+        // Try again
+        let objects: Vec<_> = services
+            .object_store
+            .list(None)
+            .try_collect()
+            .await
+            .unwrap();
+
+        if objects.is_empty() {
+            println!("⚠️  Still no objects - Iceberg may be buffering writes");
+        } else {
+            println!("✅ Found {} objects after additional wait", objects.len());
         }
     }
 }
@@ -358,9 +373,6 @@ async fn test_tempo_echo_endpoint() {
 
 /// Test complete end-to-end trace querying via Tempo API
 #[tokio::test]
-#[ignore = "TODO: Fix object store sharing between iceberg-rust catalog and test services. \
-            The iceberg-rust SqlCatalog creates its own object store internally which doesn't \
-            share data with the test's object store, causing metadata files to not be found."]
 async fn test_tempo_endpoints_end_to_end() {
     // Enable debug logging
     let _ = env_logger::builder()

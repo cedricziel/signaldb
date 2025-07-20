@@ -47,7 +47,7 @@ toml.workspace = true
 
 [dev-dependencies]
 testcontainers-modules.workspace = true
-testcontainers = { version = "0.24.0", features = ["blocking"] }
+testcontainers = { workspace = true, features = ["blocking"] }
 tempfile.workspace = true
 figment = { workspace = true, features = ["test"] }
 
