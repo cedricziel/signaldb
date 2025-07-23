@@ -24,4 +24,7 @@ uuid = { workspace = true }
 # For atomic operations on object storage
 parking_lot = "0.12"
 
+# For compression support
+flate2 = "1.0"
+
 [dev-dependencies]

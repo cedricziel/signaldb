@@ -6,11 +6,13 @@ mod handler;
 mod kafka_protocol;
 mod metadata;
 mod produce;
+mod record_batch;
 mod request;
 mod response;
 
 pub use handler::ConnectionHandler;
 pub use produce::{ProduceRequest, ProduceResponse};
+pub use record_batch::{Record, RecordBatch, RecordHeader};
 pub use request::{KafkaRequest, RequestType};
 pub use response::KafkaResponse;
 

@@ -418,7 +418,7 @@ impl ConnectionHandler {
                     continue;
                 }
 
-                // Parse record batch (simplified for now - we'll need a proper parser)
+                // Parse record batch
                 if partition_data.records.is_empty() {
                     // Empty batch
                     partition_responses.push(ProducePartitionResponse {
@@ -431,34 +431,108 @@ impl ConnectionHandler {
                     continue;
                 }
 
-                // For now, create a single message from the raw bytes
-                // In reality, we'd parse the RecordBatch format
-                let timestamp = chrono::Utc::now().timestamp_millis();
+                // Parse the RecordBatch v2 format
+                let record_batch =
+                    match crate::protocol::RecordBatch::parse(&partition_data.records) {
+                        Ok(batch) => batch,
+                        Err(e) => {
+                            error!("Failed to parse record batch: {}", e);
+                            partition_responses.push(ProducePartitionResponse {
+                                partition_index,
+                                error_code: ERROR_INVALID_REQUEST,
+                                base_offset: -1,
+                                log_append_time_ms: -1,
+                                log_start_offset: -1,
+                            });
+                            continue;
+                        }
+                    };
 
-                // Assign offsets
+                // Validate producer ID/epoch if present
+                if record_batch.producer_id >= 0 {
+                    let valid = self
+                        .state_manager
+                        .messages()
+                        .validate_producer_sequence(
+                            record_batch.producer_id,
+                            record_batch.producer_epoch,
+                            topic_name,
+                            partition_index,
+                            record_batch.base_sequence,
+                        )
+                        .await?;
+
+                    if !valid {
+                        partition_responses.push(ProducePartitionResponse {
+                            partition_index,
+                            error_code: ERROR_INVALID_REQUEST,
+                            base_offset: -1,
+                            log_append_time_ms: -1,
+                            log_start_offset: -1,
+                        });
+                        continue;
+                    }
+                }
+
+                // Assign offsets for all messages in the batch
+                let message_count = record_batch.records.len();
+                if message_count == 0 {
+                    partition_responses.push(ProducePartitionResponse {
+                        partition_index,
+                        error_code: ERROR_NONE,
+                        base_offset: -1,
+                        log_append_time_ms: -1,
+                        log_start_offset: 0,
+                    });
+                    continue;
+                }
+
                 let base_offset = self
                     .state_manager
                     .messages()
-                    .assign_next_offset(topic_name, partition_index)
+                    .assign_offsets(topic_name, partition_index, message_count)
                     .await?;
 
-                // Create Kafka message
-                let message = KafkaMessage {
-                    topic: topic_name.clone(),
-                    partition: partition_index,
-                    offset: base_offset,
-                    timestamp,
-                    key: None,
-                    value: partition_data.records,
-                    headers: std::collections::HashMap::new(),
-                    producer_id: None,
-                    producer_epoch: None,
-                    sequence: None,
-                };
+                // Convert records to KafkaMessages and write them
+                let mut write_errors = false;
+                for (i, record) in record_batch.records.iter().enumerate() {
+                    let offset = base_offset + i as i64;
+                    let timestamp = record_batch.record_timestamp(record);
+                    let headers = crate::protocol::RecordBatch::headers_map(record);
 
-                // Write to batch writer
-                if let Err(e) = self.batch_writer.write(message).await {
-                    error!("Failed to write message: {}", e);
+                    let message = KafkaMessage {
+                        topic: topic_name.clone(),
+                        partition: partition_index,
+                        offset,
+                        timestamp,
+                        key: record.key.clone(),
+                        value: record.value.clone(),
+                        headers,
+                        producer_id: if record_batch.producer_id >= 0 {
+                            Some(record_batch.producer_id)
+                        } else {
+                            None
+                        },
+                        producer_epoch: if record_batch.producer_id >= 0 {
+                            Some(record_batch.producer_epoch)
+                        } else {
+                            None
+                        },
+                        sequence: if record_batch.producer_id >= 0 {
+                            Some(record_batch.base_sequence + i as i32)
+                        } else {
+                            None
+                        },
+                    };
+
+                    if let Err(e) = self.batch_writer.write(message).await {
+                        error!("Failed to write message: {}", e);
+                        write_errors = true;
+                        break;
+                    }
+                }
+
+                if write_errors {
                     partition_responses.push(ProducePartitionResponse {
                         partition_index,
                         error_code: ERROR_UNKNOWN,
@@ -481,7 +555,7 @@ impl ConnectionHandler {
                     partition_index,
                     error_code: ERROR_NONE,
                     base_offset,
-                    log_append_time_ms: timestamp,
+                    log_append_time_ms: record_batch.max_timestamp,
                     log_start_offset,
                 });
             }

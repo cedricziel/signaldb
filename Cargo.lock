@@ -3244,6 +3244,7 @@ dependencies = [
  "clap",
  "common",
  "datafusion",
+ "flate2",
  "futures",
  "object_store",
  "parking_lot",
