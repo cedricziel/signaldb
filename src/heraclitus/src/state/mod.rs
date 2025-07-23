@@ -9,7 +9,7 @@ mod producer;
 
 pub use consumer_group::ConsumerGroupManager;
 pub use messages::MessageManager;
-pub use metadata::MetadataManager;
+pub use metadata::{MetadataManager, TopicMetadata};
 pub use producer::ProducerStateManager;
 
 pub struct StateManager {

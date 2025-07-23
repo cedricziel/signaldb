@@ -7,6 +7,10 @@ pub mod storage;
 pub use config::HeraclitusConfig;
 pub use error::{HeraclitusError, Result};
 
+// Re-export commonly used types for integration tests
+pub use protocol::{CompressionType, RecordBatch, RecordBatchBuilder};
+pub use storage::KafkaMessage;
+
 use common::service_bootstrap::ServiceBootstrap;
 use std::sync::Arc;
 use storage::BatchWriter;

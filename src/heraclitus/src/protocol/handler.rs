@@ -371,18 +371,40 @@ impl ConnectionHandler {
                 Ok(None) => {
                     // Auto-create topic with default partitions
                     info!("Auto-creating topic {}", topic_name);
-                    // For now, return an error - auto-create will be implemented later
-                    topic_responses.push(ProduceTopicResponse {
+
+                    // Create topic with 1 partition for simplicity
+                    use crate::state::TopicMetadata;
+                    use std::collections::HashMap;
+                    let new_metadata = TopicMetadata {
                         name: topic_name.clone(),
-                        partitions: vec![ProducePartitionResponse {
-                            partition_index: 0,
-                            error_code: ERROR_TOPIC_NOT_FOUND,
-                            base_offset: -1,
-                            log_append_time_ms: -1,
-                            log_start_offset: -1,
-                        }],
-                    });
-                    continue;
+                        partitions: 1,
+                        replication_factor: 1,
+                        config: HashMap::new(),
+                        created_at: chrono::Utc::now(),
+                    };
+
+                    match self
+                        .state_manager
+                        .metadata()
+                        .create_topic(new_metadata.clone())
+                        .await
+                    {
+                        Ok(_) => new_metadata,
+                        Err(e) => {
+                            error!("Failed to auto-create topic {}: {}", topic_name, e);
+                            topic_responses.push(ProduceTopicResponse {
+                                name: topic_name.clone(),
+                                partitions: vec![ProducePartitionResponse {
+                                    partition_index: 0,
+                                    error_code: ERROR_UNKNOWN,
+                                    base_offset: -1,
+                                    log_append_time_ms: -1,
+                                    log_start_offset: -1,
+                                }],
+                            });
+                            continue;
+                        }
+                    }
                 }
                 Err(e) => {
                     error!("Failed to get topic metadata: {}", e);
@@ -754,6 +776,10 @@ impl ConnectionHandler {
 
                 // Read messages from storage
                 let max_messages = (fetch_partition.partition_max_bytes / 100).max(1) as usize; // Rough estimate
+                debug!(
+                    "Fetching messages: topic={}, partition={}, offset={}, max_messages={}",
+                    topic_name, partition_index, fetch_partition.fetch_offset, max_messages
+                );
                 let messages = match message_reader
                     .read_messages(
                         topic_name,
@@ -763,7 +789,10 @@ impl ConnectionHandler {
                     )
                     .await
                 {
-                    Ok(messages) => messages,
+                    Ok(messages) => {
+                        debug!("Read {} messages from storage", messages.len());
+                        messages
+                    }
                     Err(e) => {
                         error!("Failed to read messages: {}", e);
                         partition_responses.push(FetchPartitionResponse {

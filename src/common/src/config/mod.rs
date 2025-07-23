@@ -336,6 +336,16 @@ impl Configuration {
         Ok(config)
     }
 
+    pub fn load_from_path(path: &std::path::Path) -> Result<Self, Box<figment::Error>> {
+        let config = Figment::from(Serialized::defaults(Configuration::default()))
+            .merge(Toml::file(path))
+            .merge(Env::prefixed("SIGNALDB_").split("_"))
+            .extract()
+            .map_err(Box::new)?;
+
+        Ok(config)
+    }
+
     /// Get the effective schema configuration for a given tenant
     pub fn get_tenant_schema_config(&self, tenant_id: &str) -> SchemaConfig {
         if let Some(tenant_config) = self.tenants.tenants.get(tenant_id) {

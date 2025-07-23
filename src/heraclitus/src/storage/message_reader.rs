@@ -7,10 +7,10 @@ use datafusion::arrow::array::{
 };
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use object_store::{ObjectMeta, ObjectStore};
+use object_store::{ObjectMeta, ObjectStore, path::Path as ObjectPath};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, info};
 
 pub struct MessageReader {
     object_store: Arc<dyn ObjectStore>,
@@ -32,13 +32,19 @@ impl MessageReader {
         start_offset: i64,
         max_messages: usize,
     ) -> Result<Vec<KafkaMessage>> {
-        debug!(
+        info!(
             "Reading messages from topic {} partition {} starting at offset {}",
             topic, partition, start_offset
         );
 
         // List all segments for this partition
         let segments = self.list_segments(topic, partition).await?;
+        info!(
+            "Found {} segments for topic {} partition {}",
+            segments.len(),
+            topic,
+            partition
+        );
 
         let mut messages = Vec::new();
         let mut current_offset = start_offset;
@@ -70,9 +76,13 @@ impl MessageReader {
     async fn list_segments(&self, topic: &str, partition: i32) -> Result<Vec<ObjectMeta>> {
         let mut segments = Vec::new();
 
-        // List all hour directories
-        let base_path = self.layout.messages_path(topic, partition, "");
-        let _prefix = base_path.as_ref().trim_end_matches('/');
+        // Build the base path without the hour component to list all hour directories
+        let base_path = ObjectPath::from(format!(
+            "{}/messages/topic={}/partition={}/",
+            self.layout.prefix, topic, partition
+        ));
+
+        info!("Listing segments from path: {}", base_path);
 
         let mut stream = self.object_store.list(Some(&base_path));
 

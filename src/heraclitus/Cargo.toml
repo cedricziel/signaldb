@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[[bin]]
+name = "heraclitus"
+path = "src/main.rs"
+
 [dependencies]
 # Workspace dependencies
 common = { workspace = true }

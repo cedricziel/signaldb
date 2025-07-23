@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{Duration, interval};
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 pub struct BatchWriter {
     object_store: Arc<dyn ObjectStore>,
@@ -166,9 +166,12 @@ impl BatchWriter {
         }
 
         // Upload to object storage
+        info!("Writing segment to path: {}", path);
         object_store.put(&path, buffer.into()).await?;
 
-        debug!("Successfully wrote segment {segment_id} for topic {topic} partition {partition}");
+        info!(
+            "Successfully wrote segment {segment_id} for topic {topic} partition {partition} to {path}"
+        );
 
         Ok(())
     }
