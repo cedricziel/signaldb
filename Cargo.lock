@@ -3243,6 +3243,7 @@ dependencies = [
  "chrono",
  "clap",
  "common",
+ "crc32c",
  "datafusion",
  "flate2",
  "futures",

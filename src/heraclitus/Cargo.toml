@@ -27,4 +27,7 @@ parking_lot = "0.12"
 # For compression support
 flate2 = "1.0"
 
+# For CRC32C checksums in Kafka protocol
+crc32c = "0.6"
+
 [dev-dependencies]

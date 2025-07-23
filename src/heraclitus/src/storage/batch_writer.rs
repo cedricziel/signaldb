@@ -187,4 +187,14 @@ impl BatchWriter {
         size += 8 + 2 + 4; // producer fields
         size
     }
+
+    /// Get a reference to the object store
+    pub fn object_store(&self) -> Arc<dyn ObjectStore> {
+        self.object_store.clone()
+    }
+
+    /// Get a reference to the storage layout
+    pub fn layout(&self) -> &ObjectStorageLayout {
+        &self.layout
+    }
 }

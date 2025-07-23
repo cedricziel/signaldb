@@ -157,16 +157,11 @@ pub const API_KEY_LEAVE_GROUP: i16 = 13;
 pub const API_KEY_SYNC_GROUP: i16 = 14;
 
 // Error codes
-#[allow(dead_code)] // Will be used when protocol is fully implemented
 pub const ERROR_NONE: i16 = 0;
-#[allow(dead_code)] // Will be used when protocol is fully implemented
 pub const ERROR_UNKNOWN: i16 = -1;
-#[allow(dead_code)] // Will be used when protocol is fully implemented
 pub const ERROR_INVALID_REQUEST: i16 = 42;
 pub const ERROR_UNSUPPORTED_VERSION: i16 = 35;
-#[allow(dead_code)] // Will be used when protocol is fully implemented
 pub const ERROR_TOPIC_NOT_FOUND: i16 = 3;
-#[allow(dead_code)] // Will be used when protocol is fully implemented
 pub const ERROR_INVALID_REQUIRED_ACKS: i16 = 21;
 #[allow(dead_code)] // Will be used when protocol is fully implemented
 pub const ERROR_TOPIC_AUTHORIZATION_FAILED: i16 = 29;

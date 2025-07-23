@@ -2,17 +2,21 @@ use crate::{error::Result, state::StateManager, storage::BatchWriter};
 use std::sync::Arc;
 use tokio::net::TcpStream;
 
+mod fetch;
 mod handler;
 mod kafka_protocol;
 mod metadata;
 mod produce;
 mod record_batch;
+mod record_batch_builder;
 mod request;
 mod response;
 
+pub use fetch::{FetchPartitionResponse, FetchRequest, FetchResponse, FetchTopicResponse};
 pub use handler::ConnectionHandler;
 pub use produce::{ProduceRequest, ProduceResponse};
 pub use record_batch::{Record, RecordBatch, RecordHeader};
+pub use record_batch_builder::{CompressionType, RecordBatchBuilder};
 pub use request::{KafkaRequest, RequestType};
 pub use response::KafkaResponse;
 

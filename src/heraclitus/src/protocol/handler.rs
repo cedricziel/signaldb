@@ -171,8 +171,8 @@ impl ConnectionHandler {
                 self.handle_produce_request(request).await
             }
             RequestType::Fetch => {
-                warn!("Fetch request not yet implemented");
-                self.create_unsupported_response(request.correlation_id)
+                debug!("Handling fetch request");
+                self.handle_fetch_request(request).await
             }
             _ => {
                 warn!(
@@ -605,5 +605,231 @@ impl ConnectionHandler {
         response.put_i16(error_code);
 
         Ok(response.to_vec())
+    }
+
+    /// Handle fetch request
+    async fn handle_fetch_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::fetch::{
+            FetchPartitionResponse, FetchRequest, FetchResponse, FetchTopicResponse,
+        };
+        use crate::protocol::kafka_protocol::*;
+        use crate::protocol::{CompressionType, RecordBatchBuilder};
+        use crate::storage::MessageReader;
+
+        // Parse fetch request
+        let mut cursor = Cursor::new(&request.body[..]);
+        let fetch_req = FetchRequest::parse(&mut cursor, request.api_version)?;
+
+        debug!(
+            "Fetch request: replica_id={}, max_wait_ms={}, min_bytes={}, topics={}",
+            fetch_req.replica_id,
+            fetch_req.max_wait_ms,
+            fetch_req.min_bytes,
+            fetch_req.topics.len()
+        );
+
+        // Create message reader
+        let message_reader = MessageReader::new(
+            self.batch_writer.object_store(),
+            self.batch_writer.layout().clone(),
+        );
+
+        // Process each topic
+        let mut topic_responses = Vec::new();
+        let mut total_bytes = 0;
+
+        for fetch_topic in fetch_req.topics {
+            let topic_name = &fetch_topic.topic;
+
+            // Check if topic exists
+            let topic_metadata = match self.state_manager.metadata().get_topic(topic_name).await {
+                Ok(Some(metadata)) => metadata,
+                Ok(None) => {
+                    // Topic not found
+                    topic_responses.push(FetchTopicResponse {
+                        topic: topic_name.clone(),
+                        partitions: vec![FetchPartitionResponse {
+                            partition: 0,
+                            error_code: ERROR_TOPIC_NOT_FOUND,
+                            high_watermark: -1,
+                            last_stable_offset: -1,
+                            log_start_offset: -1,
+                            aborted_transactions: vec![],
+                            preferred_read_replica: -1,
+                            records: vec![],
+                        }],
+                    });
+                    continue;
+                }
+                Err(e) => {
+                    error!("Failed to get topic metadata: {}", e);
+                    topic_responses.push(FetchTopicResponse {
+                        topic: topic_name.clone(),
+                        partitions: vec![FetchPartitionResponse {
+                            partition: 0,
+                            error_code: ERROR_UNKNOWN,
+                            high_watermark: -1,
+                            last_stable_offset: -1,
+                            log_start_offset: -1,
+                            aborted_transactions: vec![],
+                            preferred_read_replica: -1,
+                            records: vec![],
+                        }],
+                    });
+                    continue;
+                }
+            };
+
+            // Process each partition
+            let mut partition_responses = Vec::new();
+
+            for fetch_partition in fetch_topic.partitions {
+                let partition_index = fetch_partition.partition;
+
+                // Validate partition exists
+                if partition_index < 0 || partition_index >= topic_metadata.partitions {
+                    partition_responses.push(FetchPartitionResponse {
+                        partition: partition_index,
+                        error_code: ERROR_UNKNOWN,
+                        high_watermark: -1,
+                        last_stable_offset: -1,
+                        log_start_offset: -1,
+                        aborted_transactions: vec![],
+                        preferred_read_replica: -1,
+                        records: vec![],
+                    });
+                    continue;
+                }
+
+                // Get partition info
+                let high_watermark = self
+                    .state_manager
+                    .messages()
+                    .get_high_water_mark(topic_name, partition_index)
+                    .await
+                    .unwrap_or(0);
+
+                let log_start_offset = self
+                    .state_manager
+                    .messages()
+                    .get_log_start_offset(topic_name, partition_index)
+                    .await
+                    .unwrap_or(0);
+
+                // Check if fetch offset is valid
+                if fetch_partition.fetch_offset > high_watermark {
+                    // Offset out of range
+                    partition_responses.push(FetchPartitionResponse {
+                        partition: partition_index,
+                        error_code: ERROR_NONE, // Kafka returns NONE for offset out of range in fetch
+                        high_watermark,
+                        last_stable_offset: high_watermark,
+                        log_start_offset,
+                        aborted_transactions: vec![],
+                        preferred_read_replica: -1,
+                        records: vec![],
+                    });
+                    continue;
+                }
+
+                // Calculate how many messages to fetch
+                let remaining_bytes = fetch_req.max_bytes.saturating_sub(total_bytes as i32);
+                if remaining_bytes <= 0 {
+                    // We've hit the max bytes limit
+                    partition_responses.push(FetchPartitionResponse {
+                        partition: partition_index,
+                        error_code: ERROR_NONE,
+                        high_watermark,
+                        last_stable_offset: high_watermark,
+                        log_start_offset,
+                        aborted_transactions: vec![],
+                        preferred_read_replica: -1,
+                        records: vec![],
+                    });
+                    continue;
+                }
+
+                // Read messages from storage
+                let max_messages = (fetch_partition.partition_max_bytes / 100).max(1) as usize; // Rough estimate
+                let messages = match message_reader
+                    .read_messages(
+                        topic_name,
+                        partition_index,
+                        fetch_partition.fetch_offset,
+                        max_messages,
+                    )
+                    .await
+                {
+                    Ok(messages) => messages,
+                    Err(e) => {
+                        error!("Failed to read messages: {}", e);
+                        partition_responses.push(FetchPartitionResponse {
+                            partition: partition_index,
+                            error_code: ERROR_UNKNOWN,
+                            high_watermark,
+                            last_stable_offset: high_watermark,
+                            log_start_offset,
+                            aborted_transactions: vec![],
+                            preferred_read_replica: -1,
+                            records: vec![],
+                        });
+                        continue;
+                    }
+                };
+
+                // Build RecordBatch from messages
+                let records = if messages.is_empty() {
+                    vec![]
+                } else {
+                    let mut builder = RecordBatchBuilder::new(CompressionType::None);
+                    builder.add_messages(messages);
+                    match builder.build() {
+                        Ok(batch) => batch,
+                        Err(e) => {
+                            error!("Failed to build record batch: {}", e);
+                            vec![]
+                        }
+                    }
+                };
+
+                total_bytes += records.len();
+
+                partition_responses.push(FetchPartitionResponse {
+                    partition: partition_index,
+                    error_code: ERROR_NONE,
+                    high_watermark,
+                    last_stable_offset: high_watermark,
+                    log_start_offset,
+                    aborted_transactions: vec![],
+                    preferred_read_replica: -1,
+                    records,
+                });
+            }
+
+            topic_responses.push(FetchTopicResponse {
+                topic: topic_name.clone(),
+                partitions: partition_responses,
+            });
+        }
+
+        let response = FetchResponse {
+            throttle_time_ms: 0,
+            error_code: ERROR_NONE,
+            session_id: 0, // No session support yet
+            responses: topic_responses,
+        };
+
+        // Encode response
+        let response_body = response.encode(request.api_version)?;
+
+        // Build complete response with header
+        let mut full_response = BytesMut::new();
+        write_response_header(&mut full_response, request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
     }
 }
