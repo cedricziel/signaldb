@@ -18,9 +18,9 @@ async fn test_rdkafka_produce_consume() -> Result<()> {
 
     // Find available port and start Heraclitus
     let kafka_port = find_available_port().await?;
-    let heraclitus = HeraclitusTestContext::new(&minio, kafka_port).await?;
+    let _heraclitus = HeraclitusTestContext::new(&minio, kafka_port).await?;
 
-    let bootstrap_servers = heraclitus.kafka_addr();
+    let bootstrap_servers = format!("127.0.0.1:{kafka_port}");
     let topic = "rdkafka-test-topic";
 
     // Create producer
@@ -43,6 +43,8 @@ async fn test_rdkafka_produce_consume() -> Result<()> {
     // Test 1: Produce a single message
     let key = "test-key-1";
     let value = "test-value-1";
+
+    println!("Attempting to produce message to topic: {topic}");
 
     let delivery_result = producer
         .send(
@@ -139,9 +141,9 @@ async fn test_rdkafka_metadata() -> Result<()> {
 
     // Find available port and start Heraclitus
     let kafka_port = find_available_port().await?;
-    let heraclitus = HeraclitusTestContext::new(&minio, kafka_port).await?;
+    let _heraclitus = HeraclitusTestContext::new(&minio, kafka_port).await?;
 
-    let bootstrap_servers = heraclitus.kafka_addr();
+    let bootstrap_servers = format!("127.0.0.1:{kafka_port}");
 
     // Create a client
     let consumer: StreamConsumer = ClientConfig::new()
@@ -174,9 +176,9 @@ async fn test_rdkafka_error_handling() -> Result<()> {
 
     // Find available port and start Heraclitus
     let kafka_port = find_available_port().await?;
-    let heraclitus = HeraclitusTestContext::new(&minio, kafka_port).await?;
+    let _heraclitus = HeraclitusTestContext::new(&minio, kafka_port).await?;
 
-    let bootstrap_servers = heraclitus.kafka_addr();
+    let bootstrap_servers = format!("127.0.0.1:{kafka_port}");
 
     // Create consumer
     let consumer: StreamConsumer = ClientConfig::new()

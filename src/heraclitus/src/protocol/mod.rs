@@ -2,6 +2,7 @@ use crate::{error::Result, state::StateManager, storage::BatchWriter};
 use std::sync::Arc;
 use tokio::net::TcpStream;
 
+mod api_versions;
 mod fetch;
 mod handler;
 mod kafka_protocol;

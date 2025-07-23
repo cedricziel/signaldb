@@ -3266,8 +3266,6 @@ dependencies = [
  "aws-sdk-s3",
  "bytes",
  "chrono",
- "common",
- "env_logger",
  "heraclitus",
  "rdkafka",
  "tempfile",

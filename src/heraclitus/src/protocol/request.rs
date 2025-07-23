@@ -11,6 +11,7 @@ pub enum RequestType {
     Heartbeat,
     LeaveGroup,
     SyncGroup,
+    ApiVersions,
 }
 
 #[derive(Debug)]
@@ -43,6 +44,7 @@ impl KafkaRequest {
             12 => RequestType::Heartbeat,
             13 => RequestType::LeaveGroup,
             14 => RequestType::SyncGroup,
+            18 => RequestType::ApiVersions,
             _ => {
                 return Err(crate::error::HeraclitusError::Protocol(format!(
                     "Unsupported API key: {api_key}"

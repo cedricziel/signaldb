@@ -130,7 +130,7 @@ impl ConnectionHandler {
         let mut cursor = Cursor::new(&frame[..]);
         let header = crate::protocol::kafka_protocol::read_request_header(&mut cursor)?;
 
-        debug!(
+        info!(
             "Processing request: api_key={}, api_version={}, correlation_id={}, client_id={:?}",
             header.api_key, header.api_version, header.correlation_id, header.client_id
         );
@@ -162,6 +162,10 @@ impl ConnectionHandler {
         // For now, return unsupported operation error for all requests
         // This will be implemented incrementally
         match request.request_type {
+            RequestType::ApiVersions => {
+                debug!("Handling API versions request");
+                self.handle_api_versions_request(request).await
+            }
             RequestType::Metadata => {
                 debug!("Handling metadata request");
                 self.handle_metadata_request(request).await
@@ -204,6 +208,32 @@ impl ConnectionHandler {
         response.extend_from_slice(&ERROR_UNSUPPORTED_VERSION.to_be_bytes());
 
         Ok(response.to_vec())
+    }
+
+    /// Handle API versions request
+    async fn handle_api_versions_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::api_versions::{ApiVersionsRequest, ApiVersionsResponse};
+        use crate::protocol::kafka_protocol::*;
+
+        // Parse API versions request
+        let mut cursor = Cursor::new(&request.body[..]);
+        let _api_req = ApiVersionsRequest::parse(&mut cursor, request.api_version)?;
+
+        // Build response
+        let response = ApiVersionsResponse::new();
+
+        // Encode response
+        let response_body = response.encode(request.api_version)?;
+
+        // Build complete response with header
+        let mut full_response = BytesMut::new();
+        write_response_header(&mut full_response, request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
     }
 
     /// Handle metadata request
