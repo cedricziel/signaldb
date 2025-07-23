@@ -3,9 +3,6 @@ use std::time::Duration;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HeraclitusConfig {
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-
     #[serde(default = "default_kafka_port")]
     pub kafka_port: u16,
 
@@ -55,7 +52,6 @@ pub struct CacheConfig {
 impl Default for HeraclitusConfig {
     fn default() -> Self {
         Self {
-            enabled: default_enabled(),
             kafka_port: default_kafka_port(),
             state: StateConfig::default(),
             batching: BatchingConfig::default(),
@@ -101,10 +97,28 @@ impl HeraclitusConfig {
     pub fn metadata_cache_ttl(&self) -> Duration {
         Duration::from_secs(self.state.metadata_cache_ttl_sec)
     }
-}
 
-fn default_enabled() -> bool {
-    false
+    /// Create HeraclitusConfig from common Configuration
+    pub fn from_common_config(config: common::config::Configuration) -> Self {
+        let heraclitus_config = &config.heraclitus;
+        Self {
+            kafka_port: heraclitus_config.kafka_port,
+            state: StateConfig {
+                prefix: heraclitus_config.state_prefix.clone(),
+                metadata_cache_ttl_sec: 60, // Default 60 seconds
+            },
+            batching: BatchingConfig {
+                max_batch_size: heraclitus_config.batch_size,
+                max_batch_bytes: 10 * 1024 * 1024, // 10MB default
+                max_batch_delay_ms: heraclitus_config.batch_timeout_ms,
+            },
+            cache: CacheConfig {
+                segment_cache_size_mb: (heraclitus_config.segment_size_mb as usize) * 16, // Cache 16 segments
+                prefetch_segments: 3,
+            },
+            common_config: config,
+        }
+    }
 }
 
 fn default_kafka_port() -> u16 {

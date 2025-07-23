@@ -6147,6 +6147,7 @@ dependencies = [
  "cargo-husky",
  "clap",
  "common",
+ "heraclitus",
  "log",
  "router",
  "tokio",

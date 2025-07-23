@@ -28,7 +28,7 @@ impl HeraclitusAgent {
         let service_address = format!("0.0.0.0:{}", config.kafka_port);
         let service_bootstrap = ServiceBootstrap::new(
             config.common_config.clone(),
-            common::service_bootstrap::ServiceType::Router, // Kafka agent acts like a router
+            common::service_bootstrap::ServiceType::Heraclitus,
             service_address,
         )
         .await

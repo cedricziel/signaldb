@@ -559,6 +559,7 @@ fn parse_capabilities(s: &str) -> Vec<ServiceCapability> {
             "QueryExecution" => Some(ServiceCapability::QueryExecution),
             "Routing" => Some(ServiceCapability::Routing),
             "Storage" => Some(ServiceCapability::Storage),
+            "KafkaIngestion" => Some(ServiceCapability::KafkaIngestion),
             _ => None,
         })
         .collect()

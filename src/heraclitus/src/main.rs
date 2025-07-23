@@ -50,13 +50,10 @@ async fn main() -> Result<()> {
 
     info!("Starting Heraclitus Kafka-compatible agent");
 
-    // Create Heraclitus config
-    let heraclitus_config = HeraclitusConfig {
-        enabled: true,
-        kafka_port: cli.kafka_port,
-        common_config: config,
-        ..Default::default()
-    };
+    // Create Heraclitus config from common configuration
+    let mut heraclitus_config = HeraclitusConfig::from_common_config(config);
+    // Override with CLI args if provided
+    heraclitus_config.kafka_port = cli.kafka_port;
 
     // Create and run the agent
     let agent = HeraclitusAgent::new(heraclitus_config).await?;

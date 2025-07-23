@@ -16,6 +16,8 @@ pub enum ServiceCapability {
     Routing,
     /// Service provides data storage
     Storage,
+    /// Service provides Kafka-compatible ingestion
+    KafkaIngestion,
 }
 
 /// Metadata about a registered Flight service
