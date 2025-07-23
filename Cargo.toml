@@ -114,7 +114,7 @@ tower = "0.5.2"
 testcontainers = "0.24.0"
 testcontainers-modules = { version = "0.12.1", features = ["postgres"] }
 tempfile = "3.20.0"
-rand = "0.8"
+rand = "0.9"
 
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
