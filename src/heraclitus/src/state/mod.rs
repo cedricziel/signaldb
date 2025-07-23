@@ -3,10 +3,12 @@ use object_store::ObjectStore;
 use std::sync::Arc;
 
 mod consumer_group;
+mod messages;
 mod metadata;
 mod producer;
 
 pub use consumer_group::ConsumerGroupManager;
+pub use messages::MessageManager;
 pub use metadata::MetadataManager;
 pub use producer::ProducerStateManager;
 
@@ -14,6 +16,7 @@ pub struct StateManager {
     object_store: Arc<dyn ObjectStore>,
     layout: ObjectStorageLayout,
     metadata: MetadataManager,
+    messages: MessageManager,
     consumer_groups: ConsumerGroupManager,
     producers: ProducerStateManager,
 }
@@ -28,6 +31,9 @@ impl StateManager {
             config.metadata_cache_ttl_sec,
         );
 
+        let messages = MessageManager::new(object_store.clone(), layout.clone());
+        messages.initialize().await?;
+
         let consumer_groups = ConsumerGroupManager::new(object_store.clone(), layout.clone());
 
         let producers = ProducerStateManager::new(object_store.clone(), layout.clone());
@@ -36,6 +42,7 @@ impl StateManager {
             object_store,
             layout,
             metadata,
+            messages,
             consumer_groups,
             producers,
         })
@@ -43,6 +50,10 @@ impl StateManager {
 
     pub fn metadata(&self) -> &MetadataManager {
         &self.metadata
+    }
+
+    pub fn messages(&self) -> &MessageManager {
+        &self.messages
     }
 
     pub fn consumer_groups(&self) -> &ConsumerGroupManager {

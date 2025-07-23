@@ -9,13 +9,15 @@ pub use error::{HeraclitusError, Result};
 
 use common::service_bootstrap::ServiceBootstrap;
 use std::sync::Arc;
+use storage::BatchWriter;
 use tokio::net::TcpListener;
 use tracing::{error, info};
 
 pub struct HeraclitusAgent {
     config: HeraclitusConfig,
-    #[allow(dead_code)] // Will be used when protocol is fully implemented
+    #[allow(dead_code)] // Will be used for direct state access when needed
     state_manager: Arc<state::StateManager>,
+    batch_writer: Arc<BatchWriter>,
     protocol_handler: protocol::ProtocolHandler,
     _service_bootstrap: ServiceBootstrap,
 }
@@ -40,15 +42,26 @@ impl HeraclitusAgent {
 
         // Initialize state manager (all state in object storage)
         let state_manager =
-            Arc::new(state::StateManager::new(object_store, config.state.clone()).await?);
+            Arc::new(state::StateManager::new(object_store.clone(), config.state.clone()).await?);
+
+        // Create batch writer for message storage
+        let batch_writer = Arc::new(BatchWriter::new(
+            object_store,
+            state_manager.layout().clone(),
+            config.batching.clone(),
+        ));
 
         // Create protocol handler
-        let protocol_handler =
-            protocol::ProtocolHandler::new(state_manager.clone(), config.kafka_port);
+        let protocol_handler = protocol::ProtocolHandler::new(
+            state_manager.clone(),
+            batch_writer.clone(),
+            config.kafka_port,
+        );
 
         Ok(Self {
             config,
             state_manager,
+            batch_writer,
             protocol_handler,
             _service_bootstrap: service_bootstrap,
         })
@@ -57,6 +70,10 @@ impl HeraclitusAgent {
     pub async fn run(&self) -> Result<()> {
         let port = self.config.kafka_port;
         info!("Starting Heraclitus agent on port {port}");
+
+        // Start the batch writer flush timer
+        self.batch_writer.start_flush_timer().await;
+        info!("Started batch writer flush timer");
 
         let listener = TcpListener::bind(format!("0.0.0.0:{port}"))
             .await

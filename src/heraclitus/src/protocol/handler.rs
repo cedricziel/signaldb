@@ -1,5 +1,5 @@
-use crate::{error::Result, state::StateManager};
-use bytes::{Buf, BytesMut};
+use crate::{error::Result, state::StateManager, storage::BatchWriter};
+use bytes::{Buf, BufMut, BytesMut};
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -9,16 +9,23 @@ use tracing::{debug, error, info, warn};
 pub struct ConnectionHandler {
     socket: TcpStream,
     state_manager: Arc<StateManager>,
+    batch_writer: Arc<BatchWriter>,
     port: u16,
     read_buffer: BytesMut,
     write_buffer: BytesMut,
 }
 
 impl ConnectionHandler {
-    pub fn new(socket: TcpStream, state_manager: Arc<StateManager>, port: u16) -> Self {
+    pub fn new(
+        socket: TcpStream,
+        state_manager: Arc<StateManager>,
+        batch_writer: Arc<BatchWriter>,
+        port: u16,
+    ) -> Self {
         Self {
             socket,
             state_manager,
+            batch_writer,
             port,
             read_buffer: BytesMut::with_capacity(8192),
             write_buffer: BytesMut::with_capacity(8192),
@@ -160,8 +167,8 @@ impl ConnectionHandler {
                 self.handle_metadata_request(request).await
             }
             RequestType::Produce => {
-                warn!("Produce request not yet implemented");
-                self.create_unsupported_response(request.correlation_id)
+                debug!("Handling produce request");
+                self.handle_produce_request(request).await
             }
             RequestType::Fetch => {
                 warn!("Fetch request not yet implemented");
@@ -320,5 +327,209 @@ impl ConnectionHandler {
         full_response.extend_from_slice(&response_body);
 
         Ok(full_response.to_vec())
+    }
+
+    /// Handle produce request
+    async fn handle_produce_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::kafka_protocol::*;
+        use crate::protocol::produce::{
+            ProducePartitionResponse, ProduceRequest, ProduceResponse, ProduceTopicResponse,
+        };
+        use crate::storage::KafkaMessage;
+
+        // Parse produce request
+        let mut cursor = Cursor::new(&request.body[..]);
+        let produce_req = ProduceRequest::parse(&mut cursor, request.api_version)?;
+
+        debug!(
+            "Produce request: acks={}, timeout_ms={}, topics={}",
+            produce_req.acks,
+            produce_req.timeout_ms,
+            produce_req.topics.len()
+        );
+
+        // Validate acks value
+        if produce_req.acks < -1 || produce_req.acks > 1 {
+            return self.create_error_produce_response(
+                request.correlation_id,
+                ERROR_INVALID_REQUIRED_ACKS,
+            );
+        }
+
+        // Process each topic
+        let mut topic_responses = Vec::new();
+
+        for topic_data in produce_req.topics {
+            let topic_name = &topic_data.name;
+
+            // Check if topic exists (auto-create if needed)
+            let topic_metadata = match self.state_manager.metadata().get_topic(topic_name).await {
+                Ok(Some(metadata)) => metadata,
+                Ok(None) => {
+                    // Auto-create topic with default partitions
+                    info!("Auto-creating topic {}", topic_name);
+                    // For now, return an error - auto-create will be implemented later
+                    topic_responses.push(ProduceTopicResponse {
+                        name: topic_name.clone(),
+                        partitions: vec![ProducePartitionResponse {
+                            partition_index: 0,
+                            error_code: ERROR_TOPIC_NOT_FOUND,
+                            base_offset: -1,
+                            log_append_time_ms: -1,
+                            log_start_offset: -1,
+                        }],
+                    });
+                    continue;
+                }
+                Err(e) => {
+                    error!("Failed to get topic metadata: {}", e);
+                    topic_responses.push(ProduceTopicResponse {
+                        name: topic_name.clone(),
+                        partitions: vec![ProducePartitionResponse {
+                            partition_index: 0,
+                            error_code: ERROR_UNKNOWN,
+                            base_offset: -1,
+                            log_append_time_ms: -1,
+                            log_start_offset: -1,
+                        }],
+                    });
+                    continue;
+                }
+            };
+
+            // Process each partition
+            let mut partition_responses = Vec::new();
+
+            for partition_data in topic_data.partitions {
+                let partition_index = partition_data.partition_index;
+
+                // Validate partition exists
+                if partition_index < 0 || partition_index >= topic_metadata.partitions {
+                    partition_responses.push(ProducePartitionResponse {
+                        partition_index,
+                        error_code: ERROR_TOPIC_NOT_FOUND,
+                        base_offset: -1,
+                        log_append_time_ms: -1,
+                        log_start_offset: -1,
+                    });
+                    continue;
+                }
+
+                // Parse record batch (simplified for now - we'll need a proper parser)
+                if partition_data.records.is_empty() {
+                    // Empty batch
+                    partition_responses.push(ProducePartitionResponse {
+                        partition_index,
+                        error_code: ERROR_NONE,
+                        base_offset: -1,
+                        log_append_time_ms: -1,
+                        log_start_offset: 0,
+                    });
+                    continue;
+                }
+
+                // For now, create a single message from the raw bytes
+                // In reality, we'd parse the RecordBatch format
+                let timestamp = chrono::Utc::now().timestamp_millis();
+
+                // Assign offsets
+                let base_offset = self
+                    .state_manager
+                    .messages()
+                    .assign_next_offset(topic_name, partition_index)
+                    .await?;
+
+                // Create Kafka message
+                let message = KafkaMessage {
+                    topic: topic_name.clone(),
+                    partition: partition_index,
+                    offset: base_offset,
+                    timestamp,
+                    key: None,
+                    value: partition_data.records,
+                    headers: std::collections::HashMap::new(),
+                    producer_id: None,
+                    producer_epoch: None,
+                    sequence: None,
+                };
+
+                // Write to batch writer
+                if let Err(e) = self.batch_writer.write(message).await {
+                    error!("Failed to write message: {}", e);
+                    partition_responses.push(ProducePartitionResponse {
+                        partition_index,
+                        error_code: ERROR_UNKNOWN,
+                        base_offset: -1,
+                        log_append_time_ms: -1,
+                        log_start_offset: -1,
+                    });
+                    continue;
+                }
+
+                // Get log start offset
+                let log_start_offset = self
+                    .state_manager
+                    .messages()
+                    .get_log_start_offset(topic_name, partition_index)
+                    .await
+                    .unwrap_or(0);
+
+                partition_responses.push(ProducePartitionResponse {
+                    partition_index,
+                    error_code: ERROR_NONE,
+                    base_offset,
+                    log_append_time_ms: timestamp,
+                    log_start_offset,
+                });
+            }
+
+            topic_responses.push(ProduceTopicResponse {
+                name: topic_name.clone(),
+                partitions: partition_responses,
+            });
+        }
+
+        let response = ProduceResponse {
+            responses: topic_responses,
+            throttle_time_ms: 0,
+        };
+
+        // Encode response
+        let response_body = response.encode(request.api_version)?;
+
+        // Build complete response with header
+        let mut full_response = BytesMut::new();
+        write_response_header(&mut full_response, request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
+    }
+
+    /// Create an error produce response
+    fn create_error_produce_response(
+        &self,
+        correlation_id: i32,
+        error_code: i16,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::kafka_protocol::*;
+
+        let mut response = BytesMut::new();
+
+        // Write response header
+        write_response_header(&mut response, correlation_id);
+
+        // Write empty topics array
+        response.put_i32(0);
+
+        // Write throttle_time_ms
+        response.put_i32(0);
+
+        // Write the global error code
+        response.put_i16(error_code);
+
+        Ok(response.to_vec())
     }
 }
