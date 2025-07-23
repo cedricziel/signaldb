@@ -1,4 +1,5 @@
 use crate::{error::Result, storage::ObjectStorageLayout};
+use futures::StreamExt;
 use object_store::ObjectStore;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -94,5 +95,24 @@ impl MetadataManager {
         }
 
         Ok(())
+    }
+
+    pub async fn list_topics(&self) -> Result<Vec<String>> {
+        // List all objects in the topics metadata directory
+        let prefix = self.layout.metadata_path("topics/");
+        let mut topics = Vec::new();
+
+        let mut stream = self.object_store.list(Some(&prefix));
+        while let Some(result) = stream.next().await {
+            let meta = result?;
+            if let Some(location) = meta.location.filename() {
+                if location.ends_with(".json") {
+                    let topic_name = location.strip_suffix(".json").unwrap_or(location);
+                    topics.push(topic_name.to_string());
+                }
+            }
+        }
+
+        Ok(topics)
     }
 }

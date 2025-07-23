@@ -4,6 +4,7 @@ use tokio::net::TcpStream;
 
 mod handler;
 mod kafka_protocol;
+mod metadata;
 mod request;
 mod response;
 
@@ -14,7 +15,6 @@ pub use response::KafkaResponse;
 #[derive(Clone)]
 pub struct ProtocolHandler {
     state_manager: Arc<StateManager>,
-    #[allow(dead_code)] // Will be used when protocol is fully implemented
     port: u16,
 }
 
@@ -27,7 +27,7 @@ impl ProtocolHandler {
     }
 
     pub async fn handle_connection(&self, socket: TcpStream) -> Result<()> {
-        let handler = ConnectionHandler::new(socket, self.state_manager.clone());
+        let handler = ConnectionHandler::new(socket, self.state_manager.clone(), self.port);
         handler.run().await
     }
 }

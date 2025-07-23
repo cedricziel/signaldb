@@ -1,7 +1,6 @@
 use bytes::{Buf, BufMut, BytesMut};
 use std::io::Cursor;
 
-#[allow(dead_code)] // Will be used when protocol is fully implemented
 #[derive(Debug)]
 pub struct RequestHeader {
     pub api_key: i16,
@@ -16,7 +15,6 @@ pub struct ResponseHeader {
     pub correlation_id: i32,
 }
 
-#[allow(dead_code)] // Will be used when protocol is fully implemented
 pub fn read_request_header(buf: &mut Cursor<&[u8]>) -> Result<RequestHeader, std::io::Error> {
     if buf.remaining() < 8 {
         return Err(std::io::Error::new(
@@ -40,7 +38,6 @@ pub fn read_request_header(buf: &mut Cursor<&[u8]>) -> Result<RequestHeader, std
     })
 }
 
-#[allow(dead_code)] // Will be used when protocol is fully implemented
 pub fn write_response_header(buf: &mut BytesMut, correlation_id: i32) {
     buf.put_i32(correlation_id);
 }
@@ -77,7 +74,6 @@ pub fn read_string(buf: &mut Cursor<&[u8]>) -> Result<String, std::io::Error> {
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid UTF-8 string"))
 }
 
-#[allow(dead_code)] // Will be used when protocol is fully implemented
 pub fn read_nullable_string(buf: &mut Cursor<&[u8]>) -> Result<Option<String>, std::io::Error> {
     if buf.remaining() < 2 {
         return Err(std::io::Error::new(
@@ -167,7 +163,6 @@ pub const ERROR_NONE: i16 = 0;
 pub const ERROR_UNKNOWN: i16 = -1;
 #[allow(dead_code)] // Will be used when protocol is fully implemented
 pub const ERROR_INVALID_REQUEST: i16 = 42;
-#[allow(dead_code)] // Will be used when protocol is fully implemented
 pub const ERROR_UNSUPPORTED_VERSION: i16 = 35;
 #[allow(dead_code)] // Will be used when protocol is fully implemented
 pub const ERROR_TOPIC_NOT_FOUND: i16 = 3;
