@@ -1,5 +1,3 @@
-use object_store::path::Path as ObjectPath;
-
 mod batch_writer;
 mod message_reader;
 mod schema;
@@ -7,6 +5,8 @@ mod schema;
 pub use batch_writer::BatchWriter;
 pub use message_reader::MessageReader;
 pub use schema::{KafkaMessage, KafkaMessageBatch};
+
+use object_store::path::Path as ObjectPath;
 
 #[derive(Clone)]
 pub struct ObjectStorageLayout {

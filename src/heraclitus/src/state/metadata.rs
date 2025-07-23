@@ -116,3 +116,102 @@ impl MetadataManager {
         Ok(topics)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use object_store::memory::InMemory;
+    use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn test_create_and_get_topic() {
+        let object_store = Arc::new(InMemory::new());
+        let layout = ObjectStorageLayout::new("test/");
+        let manager = MetadataManager::new(object_store, layout, 60);
+
+        let metadata = TopicMetadata {
+            name: "test-topic".to_string(),
+            partitions: 3,
+            replication_factor: 1,
+            config: HashMap::new(),
+            created_at: chrono::Utc::now(),
+        };
+
+        // Create topic
+        manager.create_topic(metadata.clone()).await.unwrap();
+
+        // Get topic
+        let retrieved = manager.get_topic("test-topic").await.unwrap();
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.name, "test-topic");
+        assert_eq!(retrieved.partitions, 3);
+        assert_eq!(retrieved.replication_factor, 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_nonexistent_topic() {
+        let object_store = Arc::new(InMemory::new());
+        let layout = ObjectStorageLayout::new("test/");
+        let manager = MetadataManager::new(object_store, layout, 60);
+
+        let result = manager.get_topic("nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_list_topics() {
+        let object_store = Arc::new(InMemory::new());
+        let layout = ObjectStorageLayout::new("test/");
+        let manager = MetadataManager::new(object_store, layout, 60);
+
+        // Create multiple topics
+        for i in 0..3 {
+            let metadata = TopicMetadata {
+                name: format!("topic-{i}"),
+                partitions: 1,
+                replication_factor: 1,
+                config: HashMap::new(),
+                created_at: chrono::Utc::now(),
+            };
+            manager.create_topic(metadata).await.unwrap();
+        }
+
+        // List topics
+        let topics = manager.list_topics().await.unwrap();
+        assert_eq!(topics.len(), 3);
+        assert!(topics.contains(&"topic-0".to_string()));
+        assert!(topics.contains(&"topic-1".to_string()));
+        assert!(topics.contains(&"topic-2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_cache_functionality() {
+        let object_store = Arc::new(InMemory::new());
+        let layout = ObjectStorageLayout::new("test/");
+        let manager = MetadataManager::new(object_store, layout.clone(), 60);
+
+        let metadata = TopicMetadata {
+            name: "cached-topic".to_string(),
+            partitions: 2,
+            replication_factor: 1,
+            config: HashMap::new(),
+            created_at: chrono::Utc::now(),
+        };
+
+        // Create topic
+        manager.create_topic(metadata.clone()).await.unwrap();
+
+        // First get - loads from storage
+        let _ = manager.get_topic("cached-topic").await.unwrap();
+
+        // Remove from object storage to verify cache is used
+        let path = layout.metadata_path("topics/cached-topic.json");
+        manager.object_store.delete(&path).await.unwrap();
+
+        // Second get - should come from cache
+        let cached = manager.get_topic("cached-topic").await.unwrap();
+        assert!(cached.is_some());
+        assert_eq!(cached.unwrap().name, "cached-topic");
+    }
+}

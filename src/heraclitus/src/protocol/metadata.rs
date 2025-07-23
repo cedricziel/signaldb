@@ -129,3 +129,185 @@ fn read_nullable_string_array(buf: &mut Cursor<&[u8]>) -> Result<Option<Vec<Stri
 
     Ok(Some(strings))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::{BufMut, BytesMut};
+    use std::io::Cursor;
+
+    #[test]
+    fn test_metadata_request_parse_all_topics() {
+        let mut buf = BytesMut::new();
+        buf.put_i32(-1); // Null array = all topics
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let request = MetadataRequest::parse(&mut cursor, 0).unwrap();
+
+        assert!(request.topics.is_none());
+    }
+
+    #[test]
+    fn test_metadata_request_parse_specific_topics() {
+        let mut buf = BytesMut::new();
+        buf.put_i32(2); // Array with 2 topics
+
+        // First topic
+        let topic1 = "events";
+        buf.put_i16(topic1.len() as i16);
+        buf.put_slice(topic1.as_bytes());
+
+        // Second topic
+        let topic2 = "logs";
+        buf.put_i16(topic2.len() as i16);
+        buf.put_slice(topic2.as_bytes());
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let request = MetadataRequest::parse(&mut cursor, 0).unwrap();
+
+        assert!(request.topics.is_some());
+        let topics = request.topics.unwrap();
+        assert_eq!(topics.len(), 2);
+        assert_eq!(topics[0], "events");
+        assert_eq!(topics[1], "logs");
+    }
+
+    #[test]
+    fn test_metadata_request_parse_empty_topics() {
+        let mut buf = BytesMut::new();
+        buf.put_i32(0); // Empty array
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let request = MetadataRequest::parse(&mut cursor, 0).unwrap();
+
+        assert!(request.topics.is_some());
+        let topics = request.topics.unwrap();
+        assert_eq!(topics.len(), 0);
+    }
+
+    #[test]
+    fn test_metadata_response_encode_no_topics() {
+        let response = MetadataResponse {
+            brokers: vec![BrokerMetadata {
+                node_id: 1,
+                host: "localhost".to_string(),
+                port: 9092,
+            }],
+            topics: vec![],
+        };
+
+        let encoded = response.encode(0).unwrap();
+        let mut cursor = Cursor::new(&encoded[..]);
+
+        // Check brokers
+        assert_eq!(cursor.get_i32(), 1); // 1 broker
+        assert_eq!(cursor.get_i32(), 1); // node_id
+        let host_len = cursor.get_i16() as usize;
+        let mut host_bytes = vec![0u8; host_len];
+        cursor.copy_to_slice(&mut host_bytes);
+        assert_eq!(String::from_utf8(host_bytes).unwrap(), "localhost");
+        assert_eq!(cursor.get_i32(), 9092);
+
+        // Check topics
+        assert_eq!(cursor.get_i32(), 0); // 0 topics
+    }
+
+    #[test]
+    fn test_metadata_response_encode_with_topics() {
+        let response = MetadataResponse {
+            brokers: vec![BrokerMetadata {
+                node_id: 0,
+                host: "broker1".to_string(),
+                port: 9092,
+            }],
+            topics: vec![TopicMetadata {
+                error_code: 0,
+                name: "test-topic".to_string(),
+                partitions: vec![
+                    PartitionMetadata {
+                        error_code: 0,
+                        partition_id: 0,
+                        leader: 0,
+                        replicas: vec![0],
+                        isr: vec![0],
+                    },
+                    PartitionMetadata {
+                        error_code: 0,
+                        partition_id: 1,
+                        leader: 0,
+                        replicas: vec![0],
+                        isr: vec![0],
+                    },
+                ],
+            }],
+        };
+
+        let encoded = response.encode(0).unwrap();
+        let mut cursor = Cursor::new(&encoded[..]);
+
+        // Check brokers
+        assert_eq!(cursor.get_i32(), 1); // 1 broker
+        assert_eq!(cursor.get_i32(), 0); // node_id
+        let host_len = cursor.get_i16() as usize;
+        let mut host_bytes = vec![0u8; host_len];
+        cursor.copy_to_slice(&mut host_bytes);
+        assert_eq!(String::from_utf8(host_bytes).unwrap(), "broker1");
+        assert_eq!(cursor.get_i32(), 9092);
+
+        // Check topics
+        assert_eq!(cursor.get_i32(), 1); // 1 topic
+        assert_eq!(cursor.get_i16(), 0); // error_code
+        let topic_len = cursor.get_i16() as usize;
+        let mut topic_bytes = vec![0u8; topic_len];
+        cursor.copy_to_slice(&mut topic_bytes);
+        assert_eq!(String::from_utf8(topic_bytes).unwrap(), "test-topic");
+
+        // Check partitions
+        assert_eq!(cursor.get_i32(), 2); // 2 partitions
+
+        // First partition
+        assert_eq!(cursor.get_i16(), 0); // error_code
+        assert_eq!(cursor.get_i32(), 0); // partition_id
+        assert_eq!(cursor.get_i32(), 0); // leader
+        assert_eq!(cursor.get_i32(), 1); // replicas count
+        assert_eq!(cursor.get_i32(), 0); // replica id
+        assert_eq!(cursor.get_i32(), 1); // isr count
+        assert_eq!(cursor.get_i32(), 0); // isr id
+
+        // Second partition
+        assert_eq!(cursor.get_i16(), 0); // error_code
+        assert_eq!(cursor.get_i32(), 1); // partition_id
+        assert_eq!(cursor.get_i32(), 0); // leader
+        assert_eq!(cursor.get_i32(), 1); // replicas count
+        assert_eq!(cursor.get_i32(), 0); // replica id
+        assert_eq!(cursor.get_i32(), 1); // isr count
+        assert_eq!(cursor.get_i32(), 0); // isr id
+    }
+
+    #[test]
+    fn test_metadata_response_encode_with_error() {
+        let response = MetadataResponse {
+            brokers: vec![],
+            topics: vec![TopicMetadata {
+                error_code: ERROR_TOPIC_NOT_FOUND,
+                name: "missing-topic".to_string(),
+                partitions: vec![],
+            }],
+        };
+
+        let encoded = response.encode(0).unwrap();
+        let mut cursor = Cursor::new(&encoded[..]);
+
+        // Check brokers
+        assert_eq!(cursor.get_i32(), 0); // 0 brokers
+
+        // Check topics
+        assert_eq!(cursor.get_i32(), 1); // 1 topic
+        assert_eq!(cursor.get_i16(), ERROR_TOPIC_NOT_FOUND); // error_code
+        let topic_len = cursor.get_i16() as usize;
+        let mut topic_bytes = vec![0u8; topic_len];
+        cursor.copy_to_slice(&mut topic_bytes);
+        assert_eq!(String::from_utf8(topic_bytes).unwrap(), "missing-topic");
+        assert_eq!(cursor.get_i32(), 0); // 0 partitions
+    }
+}

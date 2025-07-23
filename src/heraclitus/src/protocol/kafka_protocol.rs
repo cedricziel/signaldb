@@ -166,3 +166,130 @@ pub const ERROR_INVALID_REQUEST: i16 = 42;
 pub const ERROR_UNSUPPORTED_VERSION: i16 = 35;
 #[allow(dead_code)] // Will be used when protocol is fully implemented
 pub const ERROR_TOPIC_NOT_FOUND: i16 = 3;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::{BufMut, BytesMut};
+    use std::io::Cursor;
+
+    #[test]
+    fn test_read_request_header() {
+        let mut buf = BytesMut::new();
+        buf.put_i16(3); // API key (metadata)
+        buf.put_i16(0); // API version
+        buf.put_i32(123); // Correlation ID
+        buf.put_i16(11); // Client ID length
+        buf.put_slice(b"test-client"); // Client ID
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let header = read_request_header(&mut cursor).unwrap();
+
+        assert_eq!(header.api_key, 3);
+        assert_eq!(header.api_version, 0);
+        assert_eq!(header.correlation_id, 123);
+        assert_eq!(header.client_id, Some("test-client".to_string()));
+    }
+
+    #[test]
+    fn test_read_request_header_null_client_id() {
+        let mut buf = BytesMut::new();
+        buf.put_i16(1); // API key
+        buf.put_i16(0); // API version
+        buf.put_i32(456); // Correlation ID
+        buf.put_i16(-1); // Null client ID
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let header = read_request_header(&mut cursor).unwrap();
+
+        assert_eq!(header.api_key, 1);
+        assert_eq!(header.api_version, 0);
+        assert_eq!(header.correlation_id, 456);
+        assert_eq!(header.client_id, None);
+    }
+
+    #[test]
+    fn test_read_request_header_insufficient_data() {
+        let mut buf = BytesMut::new();
+        buf.put_i16(1); // API key
+        buf.put_i16(0); // API version
+        // Missing correlation ID and client ID
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let result = read_request_header(&mut cursor);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_write_response_header() {
+        let mut buf = BytesMut::new();
+        write_response_header(&mut buf, 789);
+
+        let mut cursor = Cursor::new(&buf[..]);
+        assert_eq!(cursor.get_i32(), 789);
+    }
+
+    #[test]
+    fn test_read_write_string() {
+        let test_str = "hello kafka";
+        let mut buf = BytesMut::new();
+        write_string(&mut buf, test_str);
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let result = read_string(&mut cursor).unwrap();
+        assert_eq!(result, test_str);
+    }
+
+    #[test]
+    fn test_read_write_nullable_string() {
+        // Test with Some value
+        let mut buf = BytesMut::new();
+        write_nullable_string(&mut buf, Some("test"));
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let result = read_nullable_string(&mut cursor).unwrap();
+        assert_eq!(result, Some("test".to_string()));
+
+        // Test with None
+        let mut buf = BytesMut::new();
+        write_nullable_string(&mut buf, None);
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let result = read_nullable_string(&mut cursor).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_write_bytes() {
+        let test_bytes = b"binary data";
+        let mut buf = BytesMut::new();
+        write_bytes(&mut buf, test_bytes);
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let len = cursor.get_i32();
+        assert_eq!(len, test_bytes.len() as i32);
+
+        let mut data = vec![0u8; len as usize];
+        cursor.copy_to_slice(&mut data);
+        assert_eq!(&data[..], test_bytes);
+    }
+
+    #[test]
+    fn test_write_nullable_bytes() {
+        // Test with Some value
+        let mut buf = BytesMut::new();
+        write_nullable_bytes(&mut buf, Some(b"data"));
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let len = cursor.get_i32();
+        assert_eq!(len, 4);
+
+        // Test with None
+        let mut buf = BytesMut::new();
+        write_nullable_bytes(&mut buf, None);
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let len = cursor.get_i32();
+        assert_eq!(len, -1);
+    }
+}
