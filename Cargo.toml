@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "src/acceptor",
     "src/common",
+    "src/heraclitus",
     "src/querier",
     "src/router",
     "src/signal-producer",

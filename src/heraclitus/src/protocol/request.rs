@@ -1,0 +1,62 @@
+#[derive(Debug, Clone)]
+pub enum RequestType {
+    Produce,
+    Fetch,
+    ListOffsets,
+    Metadata,
+    OffsetCommit,
+    OffsetFetch,
+    FindCoordinator,
+    JoinGroup,
+    Heartbeat,
+    LeaveGroup,
+    SyncGroup,
+}
+
+#[derive(Debug)]
+pub struct KafkaRequest {
+    pub api_key: i16,
+    pub api_version: i16,
+    pub correlation_id: i32,
+    pub client_id: Option<String>,
+    pub request_type: RequestType,
+    pub body: Vec<u8>,
+}
+
+impl KafkaRequest {
+    pub fn new(
+        api_key: i16,
+        api_version: i16,
+        correlation_id: i32,
+        client_id: Option<String>,
+        body: Vec<u8>,
+    ) -> Result<Self, crate::error::HeraclitusError> {
+        let request_type = match api_key {
+            0 => RequestType::Produce,
+            1 => RequestType::Fetch,
+            2 => RequestType::ListOffsets,
+            3 => RequestType::Metadata,
+            8 => RequestType::OffsetCommit,
+            9 => RequestType::OffsetFetch,
+            10 => RequestType::FindCoordinator,
+            11 => RequestType::JoinGroup,
+            12 => RequestType::Heartbeat,
+            13 => RequestType::LeaveGroup,
+            14 => RequestType::SyncGroup,
+            _ => {
+                return Err(crate::error::HeraclitusError::Protocol(format!(
+                    "Unsupported API key: {api_key}"
+                )));
+            }
+        };
+
+        Ok(Self {
+            api_key,
+            api_version,
+            correlation_id,
+            client_id,
+            request_type,
+            body,
+        })
+    }
+}
