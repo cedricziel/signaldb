@@ -3276,6 +3276,7 @@ dependencies = [
  "object_store",
  "parking_lot",
  "prometheus",
+ "rdkafka",
  "reqwest",
  "serde",
  "serde_json",

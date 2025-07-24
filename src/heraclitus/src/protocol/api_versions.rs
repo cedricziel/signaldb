@@ -83,7 +83,7 @@ impl ApiVersionsResponse {
             ApiVersion {
                 api_key: 1,
                 min_version: 0,
-                max_version: 0,
+                max_version: 11,
             }, // Fetch
             ApiVersion {
                 api_key: 2,
@@ -93,7 +93,7 @@ impl ApiVersionsResponse {
             ApiVersion {
                 api_key: 3,
                 min_version: 0,
-                max_version: 0,
+                max_version: 10,
             }, // Metadata
             ApiVersion {
                 api_key: 8,

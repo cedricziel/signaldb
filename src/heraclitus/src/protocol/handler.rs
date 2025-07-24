@@ -383,6 +383,8 @@ impl ConnectionHandler {
                             topics.push(ProtoTopicMetadata {
                                 error_code: ERROR_NONE,
                                 name: topic_meta.name.clone(),
+                                topic_id: None,     // No topic IDs implemented yet
+                                is_internal: false, // User topics are not internal
                                 partitions: (0..topic_meta.partitions)
                                     .map(|partition_id| PartitionMetadata {
                                         error_code: ERROR_NONE,
@@ -392,6 +394,7 @@ impl ConnectionHandler {
                                         isr: vec![0],
                                     })
                                     .collect(),
+                                topic_authorized_operations: -1, // No authorization info available
                             });
                         }
                         Ok(None) => {
@@ -420,6 +423,8 @@ impl ConnectionHandler {
                                     topics.push(ProtoTopicMetadata {
                                         error_code: ERROR_NONE,
                                         name: topic_name.clone(),
+                                        topic_id: None, // No topic IDs implemented yet
+                                        is_internal: false, // Auto-created topics are not internal
                                         partitions: vec![PartitionMetadata {
                                             error_code: ERROR_NONE,
                                             partition_id: 0,
@@ -427,6 +432,7 @@ impl ConnectionHandler {
                                             replicas: vec![0],
                                             isr: vec![0],
                                         }],
+                                        topic_authorized_operations: -1, // No authorization info available
                                     });
                                 }
                                 Err(e) => {
@@ -434,7 +440,10 @@ impl ConnectionHandler {
                                     topics.push(ProtoTopicMetadata {
                                         error_code: ERROR_TOPIC_NOT_FOUND,
                                         name: topic_name.clone(),
+                                        topic_id: None,
+                                        is_internal: false,
                                         partitions: vec![],
+                                        topic_authorized_operations: -1,
                                     });
                                 }
                             }
@@ -444,7 +453,10 @@ impl ConnectionHandler {
                             topics.push(ProtoTopicMetadata {
                                 error_code: ERROR_UNKNOWN,
                                 name: topic_name.clone(),
+                                topic_id: None,
+                                is_internal: false,
                                 partitions: vec![],
+                                topic_authorized_operations: -1,
                             });
                         }
                     }
@@ -460,6 +472,8 @@ impl ConnectionHandler {
                                     topics.push(ProtoTopicMetadata {
                                         error_code: ERROR_NONE,
                                         name: topic_meta.name.clone(),
+                                        topic_id: None, // No topic IDs implemented yet
+                                        is_internal: false, // User topics are not internal
                                         partitions: (0..topic_meta.partitions)
                                             .map(|partition_id| PartitionMetadata {
                                                 error_code: ERROR_NONE,
@@ -469,6 +483,7 @@ impl ConnectionHandler {
                                                 isr: vec![0],
                                             })
                                             .collect(),
+                                        topic_authorized_operations: -1, // No authorization info available
                                     });
                                 }
                                 Ok(None) => {
@@ -491,11 +506,14 @@ impl ConnectionHandler {
         }
 
         let response = MetadataResponse {
+            throttle_time_ms: 0,
             brokers: vec![BrokerMetadata {
                 node_id: 0,
                 host: broker_host,
                 port: broker_port as i32,
             }],
+            cluster_id: None, // No cluster ID for now
+            controller_id: 0, // This broker is the controller
             topics,
         };
 
@@ -1759,7 +1777,16 @@ impl ConnectionHandler {
         };
 
         let mut cursor = Cursor::new(&request.body[..]);
-        let fetch_req = OffsetFetchRequest::parse(&mut cursor, request.api_version)?;
+        debug!(
+            "OffsetFetch handler: parsing request v{}, body length: {}",
+            request.api_version,
+            request.body.len()
+        );
+        let fetch_req =
+            OffsetFetchRequest::parse(&mut cursor, request.api_version).map_err(|e| {
+                error!("Failed to parse OffsetFetch request: {}", e);
+                e
+            })?;
 
         // Get all committed offsets for the group
         let group_offsets = self

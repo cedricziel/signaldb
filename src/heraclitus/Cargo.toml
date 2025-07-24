@@ -45,3 +45,4 @@ prometheus = { version = "0.14", features = ["process"] }
 tempfile = "3.0"
 walkdir = "2.5"
 reqwest = { version = "0.12", features = ["json"] }
+rdkafka = { version = "0.36", features = ["tokio"] }

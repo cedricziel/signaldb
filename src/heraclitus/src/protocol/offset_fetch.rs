@@ -1,6 +1,7 @@
 use crate::error::Result;
 use bytes::{Buf, BufMut, BytesMut};
 use std::io::Cursor;
+use tracing::debug;
 
 /// Kafka OffsetFetch Request (API Key 9)
 #[derive(Debug)]
@@ -43,8 +44,29 @@ pub struct OffsetFetchResponsePartition {
 impl OffsetFetchRequest {
     /// Parse an OffsetFetch request from bytes
     pub fn parse(cursor: &mut Cursor<&[u8]>, api_version: i16) -> Result<Self> {
-        // group_id: string
-        let group_id = crate::protocol::kafka_protocol::read_string(cursor)?;
+        let is_compact = api_version >= 6;
+
+        debug!(
+            "Parsing OffsetFetch request v{}, is_compact={}",
+            api_version, is_compact
+        );
+
+        // group_id: string/compact string
+        let group_id = if is_compact {
+            debug!(
+                "Reading compact group_id string, cursor position: {}",
+                cursor.position()
+            );
+            let group_id = read_compact_string(cursor)?;
+            debug!(
+                "Read group_id: '{}', cursor position: {}",
+                group_id,
+                cursor.position()
+            );
+            group_id
+        } else {
+            crate::protocol::kafka_protocol::read_string(cursor)?
+        };
 
         // topics: nullable array (null means fetch all)
         let topics = if api_version <= 1 {
@@ -55,19 +77,44 @@ impl OffsetFetchRequest {
             } else {
                 let mut topics = Vec::with_capacity(topic_count as usize);
                 for _ in 0..topic_count {
-                    topics.push(Self::parse_topic(cursor)?);
+                    topics.push(Self::parse_topic(cursor, api_version)?);
+                }
+                Some(topics)
+            }
+        } else if is_compact {
+            // In v6+, use compact array
+            debug!(
+                "Reading compact topics array, cursor position: {}",
+                cursor.position()
+            );
+            let topic_count_raw = read_unsigned_varint(cursor)?;
+            let topic_count = topic_count_raw as i32 - 1;
+            debug!(
+                "Compact topics count: {} (raw={}), cursor position: {}",
+                topic_count,
+                topic_count_raw,
+                cursor.position()
+            );
+            if topic_count == -1 {
+                debug!("Null topics array - all topics requested");
+                None // Null array means all topics
+            } else {
+                let mut topics = Vec::with_capacity(topic_count as usize);
+                for i in 0..topic_count {
+                    debug!("Parsing topic {} of {}", i + 1, topic_count);
+                    topics.push(Self::parse_topic(cursor, api_version)?);
                 }
                 Some(topics)
             }
         } else {
-            // In v2+, topics can be null (represented as -1 length)
+            // In v2-v5, topics can be null (represented as -1 length)
             let topic_count = cursor.get_i32();
             if topic_count == -1 {
                 None // Null array means all topics
             } else {
                 let mut topics = Vec::with_capacity(topic_count as usize);
                 for _ in 0..topic_count {
-                    topics.push(Self::parse_topic(cursor)?);
+                    topics.push(Self::parse_topic(cursor, api_version)?);
                 }
                 Some(topics)
             }
@@ -81,7 +128,7 @@ impl OffsetFetchRequest {
         };
 
         // Handle tagged fields for newer versions
-        if api_version >= 6 {
+        if is_compact {
             // Read tagged fields (empty for now)
             let _num_tagged_fields = read_unsigned_varint(cursor)?;
         }
@@ -93,16 +140,43 @@ impl OffsetFetchRequest {
         })
     }
 
-    fn parse_topic(cursor: &mut Cursor<&[u8]>) -> Result<OffsetFetchTopic> {
-        // name: string
-        let name = crate::protocol::kafka_protocol::read_string(cursor)?;
+    fn parse_topic(cursor: &mut Cursor<&[u8]>, api_version: i16) -> Result<OffsetFetchTopic> {
+        let is_compact = api_version >= 6;
 
-        // partition_indexes: [int32]
-        let partition_count = cursor.get_i32();
+        debug!("Parsing topic, cursor position: {}", cursor.position());
+
+        // name: string/compact string
+        let name = if is_compact {
+            debug!(
+                "Reading compact topic name, cursor position: {}",
+                cursor.position()
+            );
+            let name = read_compact_string(cursor)?;
+            debug!(
+                "Read topic name: '{}', cursor position: {}",
+                name,
+                cursor.position()
+            );
+            name
+        } else {
+            crate::protocol::kafka_protocol::read_string(cursor)?
+        };
+
+        // partition_indexes: [int32]/compact array
+        let partition_count = if is_compact {
+            read_unsigned_varint(cursor)? as i32 - 1
+        } else {
+            cursor.get_i32()
+        };
+
         let mut partition_indexes = Vec::with_capacity(partition_count as usize);
-
         for _ in 0..partition_count {
             partition_indexes.push(cursor.get_i32());
+        }
+
+        // Tagged fields for compact versions
+        if is_compact {
+            let _num_tagged_fields = read_unsigned_varint(cursor)?;
         }
 
         Ok(OffsetFetchTopic {
@@ -135,6 +209,7 @@ impl OffsetFetchResponse {
     /// Encode the response to bytes
     pub fn encode(&self, api_version: i16) -> Result<Vec<u8>> {
         let mut buf = BytesMut::new();
+        let is_compact = api_version >= 6;
 
         // throttle_time_ms: int32 (v3+)
         if api_version >= 3 {
@@ -142,14 +217,28 @@ impl OffsetFetchResponse {
         }
 
         // topics: [topic]
-        buf.put_i32(self.topics.len() as i32);
+        if is_compact {
+            // Compact array length (actual length + 1)
+            write_unsigned_varint(&mut buf, (self.topics.len() + 1) as u32);
+        } else {
+            buf.put_i32(self.topics.len() as i32);
+        }
 
         for topic in &self.topics {
-            // name: string
-            crate::protocol::kafka_protocol::write_string(&mut buf, &topic.name);
+            // name: string/compact string
+            if is_compact {
+                write_compact_string(&mut buf, &topic.name);
+            } else {
+                crate::protocol::kafka_protocol::write_string(&mut buf, &topic.name);
+            }
 
             // partitions: [partition]
-            buf.put_i32(topic.partitions.len() as i32);
+            if is_compact {
+                // Compact array length (actual length + 1)
+                write_unsigned_varint(&mut buf, (topic.partitions.len() + 1) as u32);
+            } else {
+                buf.put_i32(topic.partitions.len() as i32);
+            }
 
             for partition in &topic.partitions {
                 // partition_index: int32
@@ -163,14 +252,28 @@ impl OffsetFetchResponse {
                     buf.put_i32(partition.committed_leader_epoch);
                 }
 
-                // metadata: nullable string
-                crate::protocol::kafka_protocol::write_nullable_string(
-                    &mut buf,
-                    partition.metadata.as_deref(),
-                );
+                // metadata: nullable string/compact nullable string
+                if is_compact {
+                    write_compact_nullable_string(&mut buf, partition.metadata.as_deref());
+                } else {
+                    crate::protocol::kafka_protocol::write_nullable_string(
+                        &mut buf,
+                        partition.metadata.as_deref(),
+                    );
+                }
 
                 // error_code: int16
                 buf.put_i16(partition.error_code);
+
+                // Tagged fields for partitions in compact versions
+                if is_compact {
+                    write_unsigned_varint(&mut buf, 0);
+                }
+            }
+
+            // Tagged fields for topics in compact versions
+            if is_compact {
+                write_unsigned_varint(&mut buf, 0);
             }
         }
 
@@ -180,7 +283,7 @@ impl OffsetFetchResponse {
         }
 
         // Handle tagged fields for newer versions
-        if api_version >= 6 {
+        if is_compact {
             // Write empty tagged fields
             write_unsigned_varint(&mut buf, 0);
         }
@@ -255,6 +358,63 @@ fn write_unsigned_varint(buffer: &mut BytesMut, mut value: u32) {
         value >>= 7;
     }
     buffer.put_u8((value & 0x7F) as u8);
+}
+
+fn read_compact_string(cursor: &mut Cursor<&[u8]>) -> Result<String> {
+    let len = read_unsigned_varint(cursor)? as usize;
+    debug!(
+        "read_compact_string: length={}, cursor pos={}",
+        len,
+        cursor.position()
+    );
+
+    if len == 0 {
+        // In compact protocol, 0 means null - for non-nullable strings, return empty string
+        debug!("read_compact_string: null string (len=0), returning empty");
+        return Ok(String::new());
+    }
+
+    let actual_len = len - 1;
+    if actual_len == 0 {
+        debug!("read_compact_string: empty string (len=1), returning empty");
+        return Ok(String::new());
+    }
+
+    if cursor.remaining() < actual_len {
+        return Err(crate::error::HeraclitusError::Protocol(format!(
+            "Not enough bytes for compact string: needed {}, got {} at position {}",
+            actual_len,
+            cursor.remaining(),
+            cursor.position()
+        )));
+    }
+
+    let mut bytes = vec![0u8; actual_len];
+    cursor.copy_to_slice(&mut bytes);
+
+    let result = String::from_utf8(bytes).map_err(|e| {
+        crate::error::HeraclitusError::Protocol(format!("Invalid UTF-8 in compact string: {e}"))
+    })?;
+
+    debug!(
+        "read_compact_string: successfully read '{}', cursor pos={}",
+        result,
+        cursor.position()
+    );
+    Ok(result)
+}
+
+fn write_compact_string(buffer: &mut BytesMut, s: &str) {
+    let bytes = s.as_bytes();
+    write_unsigned_varint(buffer, (bytes.len() + 1) as u32);
+    buffer.put_slice(bytes);
+}
+
+fn write_compact_nullable_string(buffer: &mut BytesMut, s: Option<&str>) {
+    match s {
+        Some(str) => write_compact_string(buffer, str),
+        None => write_unsigned_varint(buffer, 0), // Null is represented as 0
+    }
 }
 
 #[cfg(test)]
