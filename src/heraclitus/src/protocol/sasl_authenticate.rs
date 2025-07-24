@@ -16,9 +16,9 @@ impl SaslAuthenticateRequest {
 
         // Validate API version
         if api_version > 2 {
-            return Err(crate::error::HeraclitusError::InvalidRequest(
-                format!("Unsupported SaslAuthenticate API version: {}", api_version),
-            ));
+            return Err(crate::error::HeraclitusError::InvalidRequest(format!(
+                "Unsupported SaslAuthenticate API version: {api_version}"
+            )));
         }
 
         Ok(SaslAuthenticateRequest { auth_bytes })
@@ -80,7 +80,7 @@ impl SaslAuthenticateResponse {
 pub fn parse_plain_auth_bytes(auth_bytes: &[u8]) -> Result<(String, String)> {
     // Split by null bytes
     let parts: Vec<&[u8]> = auth_bytes.split(|&b| b == 0).collect();
-    
+
     if parts.len() != 3 {
         return Err(crate::error::HeraclitusError::InvalidRequest(
             "Invalid SASL/PLAIN auth format".to_string(),
@@ -90,11 +90,11 @@ pub fn parse_plain_auth_bytes(auth_bytes: &[u8]) -> Result<(String, String)> {
     // parts[0] is authzid (ignored)
     // parts[1] is username (authcid)
     // parts[2] is password
-    
+
     let username = String::from_utf8(parts[1].to_vec()).map_err(|_| {
         crate::error::HeraclitusError::InvalidRequest("Invalid UTF-8 in username".to_string())
     })?;
-    
+
     let password = String::from_utf8(parts[2].to_vec()).map_err(|_| {
         crate::error::HeraclitusError::InvalidRequest("Invalid UTF-8 in password".to_string())
     })?;

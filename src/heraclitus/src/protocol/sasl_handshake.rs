@@ -16,9 +16,9 @@ impl SaslHandshakeRequest {
 
         // Validate API version
         if api_version > 1 {
-            return Err(crate::error::HeraclitusError::InvalidRequest(
-                format!("Unsupported SaslHandshake API version: {}", api_version),
-            ));
+            return Err(crate::error::HeraclitusError::InvalidRequest(format!(
+                "Unsupported SaslHandshake API version: {api_version}"
+            )));
         }
 
         Ok(SaslHandshakeRequest { mechanism })
@@ -85,7 +85,8 @@ mod tests {
 
     #[test]
     fn test_encode_sasl_handshake_response() {
-        let response = SaslHandshakeResponse::new(vec!["PLAIN".to_string(), "SCRAM-SHA-256".to_string()]);
+        let response =
+            SaslHandshakeResponse::new(vec!["PLAIN".to_string(), "SCRAM-SHA-256".to_string()]);
         let encoded = response.encode(0).unwrap();
 
         let mut cursor = Cursor::new(&encoded[..]);

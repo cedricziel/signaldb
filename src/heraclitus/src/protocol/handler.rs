@@ -169,7 +169,9 @@ impl ConnectionHandler {
         // Check authentication for non-exempt requests
         if self.auth_config.enabled && !self.authenticated {
             match request.request_type {
-                RequestType::ApiVersions | RequestType::SaslHandshake | RequestType::SaslAuthenticate => {
+                RequestType::ApiVersions
+                | RequestType::SaslHandshake
+                | RequestType::SaslAuthenticate => {
                     // These requests are allowed before authentication
                 }
                 _ => {
@@ -1957,7 +1959,10 @@ impl ConnectionHandler {
         let mut cursor = Cursor::new(&request.body[..]);
         let handshake_req = SaslHandshakeRequest::parse(&mut cursor, request.api_version)?;
 
-        debug!("SASL handshake request: mechanism={}", handshake_req.mechanism);
+        debug!(
+            "SASL handshake request: mechanism={}",
+            handshake_req.mechanism
+        );
 
         // Check if the requested mechanism is supported
         let response = if handshake_req.mechanism == self.auth_config.mechanism {
@@ -1986,7 +1991,7 @@ impl ConnectionHandler {
     ) -> Result<Vec<u8>> {
         use crate::protocol::kafka_protocol::*;
         use crate::protocol::sasl_authenticate::{
-            parse_plain_auth_bytes, SaslAuthenticateRequest, SaslAuthenticateResponse,
+            SaslAuthenticateRequest, SaslAuthenticateResponse, parse_plain_auth_bytes,
         };
 
         // Parse request
@@ -2000,9 +2005,10 @@ impl ConnectionHandler {
             match parse_plain_auth_bytes(&auth_req.auth_bytes) {
                 Ok((username, password)) => {
                     // Check credentials
-                    if let (Some(expected_user), Some(expected_pass)) = 
-                        (&self.auth_config.plain_username, &self.auth_config.plain_password) 
-                    {
+                    if let (Some(expected_user), Some(expected_pass)) = (
+                        &self.auth_config.plain_username,
+                        &self.auth_config.plain_password,
+                    ) {
                         if &username == expected_user && &password == expected_pass {
                             // Authentication successful
                             self.authenticated = true;
