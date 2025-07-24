@@ -121,6 +121,11 @@ impl ApiVersionsResponse {
                 max_version: 4,
             }, // Heartbeat
             ApiVersion {
+                api_key: 13,
+                min_version: 0,
+                max_version: 4,
+            }, // LeaveGroup
+            ApiVersion {
                 api_key: 14,
                 min_version: 0,
                 max_version: 5,

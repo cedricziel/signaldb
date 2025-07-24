@@ -9,6 +9,7 @@ mod handler;
 mod heartbeat;
 mod join_group;
 mod kafka_protocol;
+mod leave_group;
 pub mod list_offsets;
 mod message_set;
 mod metadata;

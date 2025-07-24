@@ -206,12 +206,9 @@ impl ConnectionHandler {
                 debug!("Handling offset fetch request");
                 self.handle_offset_fetch_request(request).await
             }
-            _ => {
-                warn!(
-                    "Request type {:?} not yet implemented",
-                    request.request_type
-                );
-                self.create_unsupported_response(request.correlation_id)
+            RequestType::LeaveGroup => {
+                debug!("Handling leave group request");
+                self.handle_leave_group_request(request).await
             }
         }
     }
@@ -224,6 +221,7 @@ impl ConnectionHandler {
     }
 
     /// Create an unsupported operation response
+    #[allow(dead_code)]
     fn create_unsupported_response(&self, correlation_id: i32) -> Result<Vec<u8>> {
         use crate::protocol::kafka_protocol::*;
 
@@ -1751,6 +1749,150 @@ impl ConnectionHandler {
 
         // Create success response
         let response = OffsetFetchResponse::new(response_topics);
+        let response_body = response.encode(request.api_version)?;
+
+        // Build complete response with header
+        let mut full_response = BytesMut::new();
+        write_response_header(&mut full_response, request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
+    }
+
+    async fn handle_leave_group_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::kafka_protocol::{
+            ERROR_COORDINATOR_NOT_AVAILABLE, write_response_header,
+        };
+        use crate::protocol::leave_group::{LeaveGroupRequest, LeaveGroupResponse};
+
+        let mut cursor = Cursor::new(&request.body[..]);
+        let leave_req = LeaveGroupRequest::parse(&mut cursor, request.api_version)?;
+
+        debug!(
+            "LeaveGroup request: group_id={}, member_id={}, batch_size={}",
+            leave_req.group_id,
+            leave_req.member_id,
+            leave_req.members.as_ref().map(|m| m.len()).unwrap_or(1)
+        );
+
+        // Get consumer group state
+        let mut group_state = match self
+            .state_manager
+            .consumer_groups()
+            .get_group(&leave_req.group_id)
+            .await?
+        {
+            Some(state) => state,
+            None => {
+                // Group doesn't exist
+                let response = LeaveGroupResponse::error(ERROR_COORDINATOR_NOT_AVAILABLE);
+                let response_body = response.encode(request.api_version)?;
+                let mut full_response = BytesMut::new();
+                write_response_header(&mut full_response, request.correlation_id);
+                full_response.extend_from_slice(&response_body);
+                return Ok(full_response.to_vec());
+            }
+        };
+
+        // Handle different API versions
+        if request.api_version <= 2 {
+            // v0-v2: single member leaving
+            if !group_state.members.contains_key(&leave_req.member_id) {
+                // Member doesn't exist - this is actually OK for LeaveGroup
+                debug!(
+                    "Member {} not found in group {}, already left",
+                    leave_req.member_id, leave_req.group_id
+                );
+            } else {
+                // Remove the member
+                group_state.members.remove(&leave_req.member_id);
+                info!(
+                    "Member {} left group {}",
+                    leave_req.member_id, leave_req.group_id
+                );
+
+                // If the leader left, elect a new leader
+                if Some(&leave_req.member_id) == group_state.leader.as_ref() {
+                    group_state.leader = group_state.members.keys().next().cloned();
+                    if let Some(ref new_leader) = group_state.leader {
+                        info!("New group leader elected: {}", new_leader);
+                    }
+                }
+
+                // If this was the last member, reset the group
+                if group_state.members.is_empty() {
+                    info!("Group {} is now empty", leave_req.group_id);
+                    group_state.generation_id += 1;
+                    group_state.leader = None;
+                    group_state.protocol = None;
+                } else {
+                    // Trigger rebalance for remaining members
+                    group_state.generation_id += 1;
+                    info!(
+                        "Rebalance triggered for group {} (generation {})",
+                        leave_req.group_id, group_state.generation_id
+                    );
+                }
+            }
+        } else {
+            // v3+: batch member leaving
+            if let Some(ref members) = leave_req.members {
+                let mut removed_count = 0;
+                let mut leader_left = false;
+
+                for member in members {
+                    if group_state.members.remove(&member.member_id).is_some() {
+                        removed_count += 1;
+                        info!(
+                            "Member {} left group {}",
+                            member.member_id, leave_req.group_id
+                        );
+
+                        // Check if the leader left
+                        if Some(&member.member_id) == group_state.leader.as_ref() {
+                            leader_left = true;
+                        }
+                    }
+                }
+
+                // If the leader left, elect a new leader
+                if leader_left {
+                    group_state.leader = group_state.members.keys().next().cloned();
+                    if let Some(ref new_leader) = group_state.leader {
+                        info!("New group leader elected: {}", new_leader);
+                    }
+                }
+
+                // If members were removed, update group state
+                if removed_count > 0 {
+                    if group_state.members.is_empty() {
+                        info!("Group {} is now empty", leave_req.group_id);
+                        group_state.generation_id += 1;
+                        group_state.leader = None;
+                        group_state.protocol = None;
+                    } else {
+                        // Trigger rebalance for remaining members
+                        group_state.generation_id += 1;
+                        info!(
+                            "Rebalance triggered for group {} (generation {}), {} members removed",
+                            leave_req.group_id, group_state.generation_id, removed_count
+                        );
+                    }
+                }
+            }
+        }
+
+        // Save updated group state
+        self.state_manager
+            .consumer_groups()
+            .save_group(&group_state)
+            .await?;
+
+        // Create success response
+        let response = LeaveGroupResponse::success();
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header

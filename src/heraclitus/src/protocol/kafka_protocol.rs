@@ -190,6 +190,7 @@ pub const API_KEY_SYNC_GROUP: i16 = 14;
 pub const ERROR_NONE: i16 = 0;
 pub const ERROR_UNKNOWN: i16 = -1;
 pub const ERROR_INVALID_REQUEST: i16 = 42;
+#[allow(dead_code)]
 pub const ERROR_UNSUPPORTED_VERSION: i16 = 35;
 pub const ERROR_TOPIC_NOT_FOUND: i16 = 3;
 pub const ERROR_UNKNOWN_TOPIC_OR_PARTITION: i16 = 3; // Same as TOPIC_NOT_FOUND
