@@ -54,16 +54,49 @@ impl RecordBatch {
     pub fn parse(data: &[u8]) -> Result<Self> {
         let mut cursor = Cursor::new(data);
 
-        // Check if we have at least the header
-        if data.len() < 61 {
-            // Minimum size for batch header
-            return Err(HeraclitusError::Protocol(
-                "Insufficient data for RecordBatch header".to_string(),
-            ));
+        // Check if we have enough data to read base_offset and batch_length
+        if data.len() < 12 {
+            return Err(HeraclitusError::Protocol(format!(
+                "Insufficient data for RecordBatch: got {} bytes, need at least 12",
+                data.len()
+            )));
         }
 
         let base_offset = cursor.get_i64();
         let batch_length = cursor.get_i32();
+
+        // The batch_length doesn't include the offset and length fields (first 12 bytes)
+        // Check if we have enough data for the rest of the batch
+        if data.len() < 12 + batch_length as usize {
+            return Err(HeraclitusError::Protocol(format!(
+                "RecordBatch incomplete: expected {} bytes total, got {}",
+                12 + batch_length as usize,
+                data.len()
+            )));
+        }
+
+        // Check minimum batch header size (excluding offset and length)
+        // A batch with no records still needs at least 49 bytes for the header
+        if batch_length < 49 {
+            // This might be an empty batch or a different format
+            // For now, let's see what the magic byte is
+            if cursor.remaining() >= 5 {
+                // Skip partition_leader_epoch
+                cursor.get_i32();
+                let magic = cursor.get_i8();
+
+                if magic != 2 {
+                    return Err(HeraclitusError::Protocol(format!(
+                        "Unsupported magic byte: {magic}. Only v2 (magic=2) is supported"
+                    )));
+                }
+            }
+
+            return Err(HeraclitusError::Protocol(format!(
+                "RecordBatch too small: batch_length={batch_length}, this might be an empty batch which is not yet supported"
+            )));
+        }
+
         let partition_leader_epoch = cursor.get_i32();
         let magic = cursor.get_i8();
 

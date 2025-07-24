@@ -22,22 +22,28 @@ async fn test_produce_with_compression() -> Result<()> {
     let _heraclitus = HeraclitusTestContext::new(&minio, kafka_port).await?;
 
     // Test each compression type
-    for compression_type in [
+    for (idx, compression_type) in [
         CompressionType::None,
         CompressionType::Gzip,
         CompressionType::Snappy,
         CompressionType::Lz4,
         CompressionType::Zstd,
-    ] {
+    ]
+    .iter()
+    .enumerate()
+    {
         println!("Testing {compression_type:?} compression");
+
+        // Use a unique topic for each compression type
+        let topic_name = format!("test-topic-{idx}");
 
         // Connect to Heraclitus
         let mut stream = TcpStream::connect(format!("127.0.0.1:{kafka_port}")).await?;
 
         // Build a compressed batch
-        let mut builder = RecordBatchBuilder::new(compression_type);
+        let mut builder = RecordBatchBuilder::new(*compression_type);
         builder.add_message(KafkaMessage {
-            topic: "test-topic".to_string(),
+            topic: topic_name.clone(),
             partition: 0,
             offset: 0,
             timestamp: 1000,
@@ -52,7 +58,7 @@ async fn test_produce_with_compression() -> Result<()> {
         let record_batch_data = builder.build()?;
 
         // Send produce request
-        send_produce_request(&mut stream, "test-topic", 0, record_batch_data).await?;
+        send_produce_request(&mut stream, &topic_name, 0, record_batch_data).await?;
 
         // Read produce response
         let response = read_response(&mut stream).await?;

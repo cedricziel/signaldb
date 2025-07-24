@@ -413,7 +413,7 @@ impl ConnectionHandler {
         use crate::storage::KafkaMessage;
 
         // Parse produce request
-        debug!("Produce request body length: {}", request.body.len());
+        info!("Produce request body length: {}", request.body.len());
         let mut cursor = Cursor::new(&request.body[..]);
         let produce_req = ProduceRequest::parse(&mut cursor, request.api_version)?;
 
@@ -528,24 +528,76 @@ impl ConnectionHandler {
                 }
 
                 // Parse the RecordBatch v2 format
-                debug!(
+                info!(
                     "Parsing record batch of {} bytes for partition {}",
                     partition_data.records.len(),
                     partition_index
                 );
+
+                // Log first few bytes to understand the format
+                if !partition_data.records.is_empty() {
+                    let preview_len = std::cmp::min(16, partition_data.records.len());
+                    let preview: Vec<String> = partition_data.records[..preview_len]
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect();
+                    info!(
+                        "First {} bytes of record batch: {}",
+                        preview_len,
+                        preview.join(" ")
+                    );
+                }
+
+                // Try to parse as RecordBatch v2 first, then fall back to MessageSet
                 let record_batch =
                     match crate::protocol::RecordBatch::parse(&partition_data.records) {
                         Ok(batch) => batch,
                         Err(e) => {
-                            error!("Failed to parse record batch: {}", e);
-                            partition_responses.push(ProducePartitionResponse {
-                                partition_index,
-                                error_code: ERROR_INVALID_REQUEST,
-                                base_offset: -1,
-                                log_append_time_ms: -1,
-                                log_start_offset: -1,
-                            });
-                            continue;
+                            // Try parsing as old MessageSet format
+                            info!("RecordBatch parse failed: {}, trying MessageSet format", e);
+
+                            match crate::protocol::message_set::MessageSet::parse(
+                                &partition_data.records,
+                            ) {
+                                Ok(message_set) => {
+                                    info!(
+                                        "Successfully parsed as MessageSet with {} messages",
+                                        message_set.messages.len()
+                                    );
+                                    // Convert MessageSet to RecordBatch
+                                    match message_set.to_record_batch() {
+                                        Ok(batch) => batch,
+                                        Err(e) => {
+                                            error!(
+                                                "Failed to convert MessageSet to RecordBatch: {}",
+                                                e
+                                            );
+                                            partition_responses.push(ProducePartitionResponse {
+                                                partition_index,
+                                                error_code: ERROR_INVALID_REQUEST,
+                                                base_offset: -1,
+                                                log_append_time_ms: -1,
+                                                log_start_offset: -1,
+                                            });
+                                            continue;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "Failed to parse as both RecordBatch and MessageSet: {}",
+                                        e
+                                    );
+                                    partition_responses.push(ProducePartitionResponse {
+                                        partition_index,
+                                        error_code: ERROR_INVALID_REQUEST,
+                                        base_offset: -1,
+                                        log_append_time_ms: -1,
+                                        log_start_offset: -1,
+                                    });
+                                    continue;
+                                }
+                            }
                         }
                     };
 
