@@ -136,6 +136,11 @@ impl ApiVersionsResponse {
                 max_version: 4,
             }, // DescribeGroups
             ApiVersion {
+                api_key: 16,
+                min_version: 0,
+                max_version: 4,
+            }, // ListGroups
+            ApiVersion {
                 api_key: 17,
                 min_version: 0,
                 max_version: 1,

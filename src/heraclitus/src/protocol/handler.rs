@@ -263,6 +263,10 @@ impl ConnectionHandler {
                 debug!("Handling describe groups request");
                 self.handle_describe_groups_request(request).await
             }
+            RequestType::ListGroups => {
+                debug!("Handling list groups request");
+                self.handle_list_groups_request(request).await
+            }
             RequestType::DeleteTopics => {
                 debug!("Handling delete topics request");
                 self.handle_delete_topics_request(request).await
@@ -2368,6 +2372,77 @@ impl ConnectionHandler {
 
         // Create response
         let response = DeleteTopicsResponse::new(topic_errors);
+        let response_body = response.encode(request.api_version)?;
+
+        // Build complete response with header
+        let mut full_response = BytesMut::new();
+        write_response_header(&mut full_response, request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
+    }
+
+    /// Handle list groups request
+    async fn handle_list_groups_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::describe_groups::determine_group_state;
+        use crate::protocol::kafka_protocol::*;
+        use crate::protocol::list_groups::{ListGroupsRequest, ListGroupsResponse, ListedGroup};
+
+        // Parse list groups request
+        let mut cursor = Cursor::new(&request.body[..]);
+        let list_req = ListGroupsRequest::parse(&mut cursor, request.api_version)?;
+
+        debug!(
+            "ListGroups request with states filter: {:?}",
+            list_req.states_filter
+        );
+
+        // List all consumer groups
+        let all_groups = self.state_manager.consumer_groups().list_groups().await?;
+
+        debug!("Found {} consumer groups total", all_groups.len());
+
+        // Build list of groups
+        let mut listed_groups = Vec::new();
+
+        for group_id in all_groups {
+            // Get group metadata
+            match self
+                .state_manager
+                .consumer_groups()
+                .get_group(&group_id)
+                .await?
+            {
+                Some(group_state) => {
+                    let state = determine_group_state(&group_state);
+
+                    // Apply state filter if provided (v4+)
+                    if let Some(ref states_filter) = list_req.states_filter {
+                        if !states_filter.is_empty() && !states_filter.iter().any(|s| s == state) {
+                            continue; // Skip this group
+                        }
+                    }
+
+                    listed_groups.push(ListedGroup {
+                        group_id: group_id.clone(),
+                        protocol_type: group_state.protocol_type.clone(),
+                        group_state: state.to_string(),
+                    });
+                }
+                None => {
+                    // Group was listed but doesn't exist anymore - skip it
+                    debug!("Group {} was listed but no longer exists", group_id);
+                }
+            }
+        }
+
+        debug!("Returning {} groups after filtering", listed_groups.len());
+
+        // Create response
+        let response = ListGroupsResponse::new(listed_groups);
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header

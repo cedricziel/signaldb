@@ -16,6 +16,7 @@ mod init_producer_id;
 mod join_group;
 mod kafka_protocol;
 mod leave_group;
+mod list_groups;
 pub mod list_offsets;
 mod message_set;
 mod metadata;

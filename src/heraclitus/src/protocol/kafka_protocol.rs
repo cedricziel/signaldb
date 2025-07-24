@@ -188,6 +188,8 @@ pub const API_KEY_SYNC_GROUP: i16 = 14;
 #[allow(dead_code)] // Will be used when protocol is fully implemented
 pub const API_KEY_DESCRIBE_GROUPS: i16 = 15;
 #[allow(dead_code)] // Will be used when protocol is fully implemented
+pub const API_KEY_LIST_GROUPS: i16 = 16;
+#[allow(dead_code)] // Will be used when protocol is fully implemented
 pub const API_KEY_DELETE_TOPICS: i16 = 20;
 
 // Error codes

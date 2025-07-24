@@ -45,6 +45,10 @@ impl ObjectStorageLayout {
         ))
     }
 
+    pub fn consumer_groups_prefix(&self) -> String {
+        format!("{}/metadata/consumer-groups/", self.prefix)
+    }
+
     pub fn coordination_path(&self, path: &str) -> ObjectPath {
         ObjectPath::from(format!("{}/coordination/{}", self.prefix, path))
     }

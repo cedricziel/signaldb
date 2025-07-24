@@ -3,6 +3,7 @@ use object_store::ObjectStore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::warn;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConsumerGroupState {
@@ -120,5 +121,40 @@ impl ConsumerGroupManager {
         self.object_store.put(&path, bytes.into()).await?;
 
         Ok(())
+    }
+
+    pub async fn list_groups(&self) -> Result<Vec<String>> {
+        use futures::StreamExt;
+
+        // List all objects in the consumer-groups prefix
+        let prefix = self.layout.consumer_groups_prefix();
+        let prefix_path = object_store::path::Path::from(prefix.clone());
+        let stream = self.object_store.list(Some(&prefix_path));
+
+        let mut group_ids = std::collections::HashSet::new();
+
+        // Extract group IDs from the paths
+        futures::pin_mut!(stream);
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(meta) => {
+                    // Path format: consumer-groups/{group-id}/state.json
+                    let path = meta.location.as_ref();
+                    if let Some(stripped) = path.strip_prefix(&prefix) {
+                        // Extract group ID from path
+                        if let Some(group_id) = stripped.split('/').next() {
+                            if !group_id.is_empty() {
+                                group_ids.insert(group_id.to_string());
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Error listing consumer groups: {}", e);
+                }
+            }
+        }
+
+        Ok(group_ids.into_iter().collect())
     }
 }
