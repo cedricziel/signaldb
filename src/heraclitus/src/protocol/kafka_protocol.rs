@@ -197,6 +197,8 @@ pub const ERROR_INVALID_REQUIRED_ACKS: i16 = 21;
 #[allow(dead_code)] // Will be used when protocol is fully implemented
 pub const ERROR_TOPIC_AUTHORIZATION_FAILED: i16 = 29;
 pub const ERROR_OFFSET_NOT_AVAILABLE: i16 = 78;
+pub const ERROR_UNKNOWN_MEMBER_ID: i16 = 25;
+pub const ERROR_ILLEGAL_GENERATION: i16 = 22;
 
 #[cfg(test)]
 mod tests {

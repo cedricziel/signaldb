@@ -190,6 +190,10 @@ impl ConnectionHandler {
                 debug!("Handling join group request");
                 self.handle_join_group_request(request).await
             }
+            RequestType::SyncGroup => {
+                debug!("Handling sync group request");
+                self.handle_sync_group_request(request).await
+            }
             _ => {
                 warn!(
                     "Request type {:?} not yet implemented",
@@ -1330,6 +1334,114 @@ impl ConnectionHandler {
                 member_id,
             )
         };
+
+        // Encode response
+        let response_body = response.encode(request.api_version)?;
+
+        // Build complete response with header
+        let mut full_response = BytesMut::new();
+        write_response_header(&mut full_response, request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
+    }
+
+    /// Handle sync group request
+    async fn handle_sync_group_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::kafka_protocol::*;
+        use crate::protocol::sync_group::{
+            ConsumerProtocolAssignment, SyncGroupRequest, SyncGroupResponse,
+        };
+        use std::collections::HashMap;
+
+        // Parse sync group request
+        let mut cursor = Cursor::new(&request.body[..]);
+        let sync_req = SyncGroupRequest::parse(&mut cursor, request.api_version)?;
+
+        debug!(
+            "SyncGroup request: group_id={}, generation_id={}, member_id={}, assignments={}",
+            sync_req.group_id,
+            sync_req.generation_id,
+            sync_req.member_id,
+            sync_req.group_assignments.len()
+        );
+
+        // Get the consumer group state
+        let group_state = match self
+            .state_manager
+            .consumer_groups()
+            .get_group(&sync_req.group_id)
+            .await?
+        {
+            Some(state) => state,
+            None => {
+                // Group doesn't exist
+                let response = SyncGroupResponse::error(ERROR_UNKNOWN_MEMBER_ID);
+                let response_body = response.encode(request.api_version)?;
+                let mut full_response = BytesMut::new();
+                write_response_header(&mut full_response, request.correlation_id);
+                full_response.extend_from_slice(&response_body);
+                return Ok(full_response.to_vec());
+            }
+        };
+
+        // Validate generation ID
+        if sync_req.generation_id != group_state.generation_id {
+            let response = SyncGroupResponse::error(ERROR_ILLEGAL_GENERATION);
+            let response_body = response.encode(request.api_version)?;
+            let mut full_response = BytesMut::new();
+            write_response_header(&mut full_response, request.correlation_id);
+            full_response.extend_from_slice(&response_body);
+            return Ok(full_response.to_vec());
+        }
+
+        // Check if member exists
+        if !group_state.members.contains_key(&sync_req.member_id) {
+            let response = SyncGroupResponse::error(ERROR_UNKNOWN_MEMBER_ID);
+            let response_body = response.encode(request.api_version)?;
+            let mut full_response = BytesMut::new();
+            write_response_header(&mut full_response, request.correlation_id);
+            full_response.extend_from_slice(&response_body);
+            return Ok(full_response.to_vec());
+        }
+
+        // For the leader, store the assignments
+        let assignment = if Some(&sync_req.member_id) == group_state.leader.as_ref()
+            && !sync_req.group_assignments.is_empty()
+        {
+            // Leader is providing assignments for all members
+            // For now, we'll just return the assignment for this member
+            // In a full implementation, we'd store all assignments and return them to respective members
+            sync_req
+                .group_assignments
+                .get(&sync_req.member_id)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            // For followers or if no assignments provided, create a simple assignment
+            // In a real implementation, followers would wait for the leader's assignment
+            // For now, we'll create a basic assignment
+
+            // Get all topics the group is interested in
+            let topics = self.state_manager.metadata().list_topics().await?;
+
+            if !topics.is_empty() {
+                // Simple assignment: give this member partition 0 of the first topic
+                let mut topic_partitions = HashMap::new();
+                topic_partitions.insert(topics[0].clone(), vec![0]);
+
+                let assignment = ConsumerProtocolAssignment::new(topic_partitions);
+                assignment.encode()
+            } else {
+                Vec::new()
+            }
+        };
+
+        // Create response
+        let response = SyncGroupResponse::new(assignment);
 
         // Encode response
         let response_body = response.encode(request.api_version)?;

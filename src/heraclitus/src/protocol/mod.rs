@@ -16,6 +16,7 @@ mod record_batch;
 mod record_batch_builder;
 mod request;
 mod response;
+mod sync_group;
 
 pub use fetch::{FetchPartitionResponse, FetchRequest, FetchResponse, FetchTopicResponse};
 pub use handler::ConnectionHandler;

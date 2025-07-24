@@ -106,6 +106,11 @@ impl ApiVersionsResponse {
                 max_version: 7,
             }, // JoinGroup
             ApiVersion {
+                api_key: 14,
+                min_version: 0,
+                max_version: 5,
+            }, // SyncGroup
+            ApiVersion {
                 api_key: 18,
                 min_version: 0,
                 max_version: 3,
