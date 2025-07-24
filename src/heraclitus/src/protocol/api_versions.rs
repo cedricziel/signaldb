@@ -131,6 +131,11 @@ impl ApiVersionsResponse {
                 max_version: 5,
             }, // SyncGroup
             ApiVersion {
+                api_key: 15,
+                min_version: 0,
+                max_version: 4,
+            }, // DescribeGroups
+            ApiVersion {
                 api_key: 17,
                 min_version: 0,
                 max_version: 1,

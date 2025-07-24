@@ -259,6 +259,10 @@ impl ConnectionHandler {
                 debug!("Handling leave group request");
                 self.handle_leave_group_request(request).await
             }
+            RequestType::DescribeGroups => {
+                debug!("Handling describe groups request");
+                self.handle_describe_groups_request(request).await
+            }
             RequestType::SaslHandshake => {
                 debug!("Handling SASL handshake request");
                 self.handle_sasl_handshake_request(request).await
@@ -1997,6 +2001,103 @@ impl ConnectionHandler {
         Ok(full_response.to_vec())
     }
 
+    /// Handle describe groups request
+    async fn handle_describe_groups_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::describe_groups::{
+            DescribeGroupsRequest, DescribeGroupsResponse, GroupDescription, MemberDescription,
+            determine_group_state,
+        };
+        use crate::protocol::kafka_protocol::*;
+
+        // Parse request
+        let mut cursor = Cursor::new(&request.body[..]);
+        let describe_req = DescribeGroupsRequest::parse(&mut cursor, request.api_version)?;
+
+        debug!(
+            "DescribeGroups request for {} groups",
+            describe_req.group_ids.len()
+        );
+
+        // Build response with group descriptions
+        let mut groups = Vec::new();
+
+        for group_id in &describe_req.group_ids {
+            match self
+                .state_manager
+                .consumer_groups()
+                .get_group(group_id)
+                .await?
+            {
+                Some(group_state) => {
+                    let state_str = determine_group_state(&group_state);
+                    debug!(
+                        "Found group {}: state={}, {} members",
+                        group_id,
+                        state_str,
+                        group_state.members.len()
+                    );
+
+                    // Build member descriptions
+                    let mut members = Vec::new();
+
+                    // Get member metadata from JoinGroup state
+                    let metadata_map = self.get_group_member_metadata(group_id).await?;
+                    let assignment_map = self.get_group_member_assignments(group_id).await?;
+
+                    for (member_id, member_state) in &group_state.members {
+                        let metadata = metadata_map.get(member_id).cloned().unwrap_or_default();
+                        let assignment = assignment_map.get(member_id).cloned().unwrap_or_default();
+
+                        members.push(MemberDescription {
+                            member_id: member_id.clone(),
+                            group_instance_id: None, // v4+ feature
+                            client_id: member_state.client_id.clone(),
+                            client_host: member_state.client_host.clone(),
+                            member_metadata: metadata,
+                            member_assignment: assignment,
+                        });
+                    }
+
+                    groups.push(GroupDescription {
+                        error_code: ERROR_NONE,
+                        group_id: group_id.clone(),
+                        state: state_str.to_string(),
+                        protocol_type: group_state.protocol_type.clone(),
+                        protocol_data: group_state.protocol.clone().unwrap_or_default(),
+                        members,
+                        authorized_operations: -2147483648, // All operations allowed
+                    });
+                }
+                None => {
+                    debug!("Group {} not found", group_id);
+                    groups.push(GroupDescription {
+                        error_code: ERROR_GROUP_ID_NOT_FOUND,
+                        group_id: group_id.clone(),
+                        state: String::new(),
+                        protocol_type: String::new(),
+                        protocol_data: String::new(),
+                        members: Vec::new(),
+                        authorized_operations: -2147483648,
+                    });
+                }
+            }
+        }
+
+        // Create response
+        let response = DescribeGroupsResponse::new(groups);
+        let response_body = response.encode(request.api_version)?;
+
+        // Build complete response with header
+        let mut full_response = BytesMut::new();
+        write_response_header(&mut full_response, request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
+    }
+
     /// Create an authentication error response
     fn create_auth_error_response(&self, correlation_id: i32) -> Result<Vec<u8>> {
         use crate::protocol::kafka_protocol::*;
@@ -2358,6 +2459,45 @@ impl ConnectionHandler {
         full_response.extend_from_slice(&response_body);
 
         Ok(full_response.to_vec())
+    }
+
+    /// Get member metadata from storage
+    async fn get_group_member_metadata(&self, group_id: &str) -> Result<HashMap<String, Vec<u8>>> {
+        let path = self
+            .state_manager
+            .layout()
+            .consumer_group_path(group_id, "member_metadata.json");
+
+        match self.state_manager.object_store().get(&path).await {
+            Ok(get_result) => {
+                let bytes = get_result.bytes().await?;
+                let metadata: HashMap<String, Vec<u8>> = serde_json::from_slice(&bytes)?;
+                Ok(metadata)
+            }
+            Err(object_store::Error::NotFound { .. }) => Ok(HashMap::new()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Get member assignments from storage
+    async fn get_group_member_assignments(
+        &self,
+        group_id: &str,
+    ) -> Result<HashMap<String, Vec<u8>>> {
+        let path = self
+            .state_manager
+            .layout()
+            .consumer_group_path(group_id, "member_assignments.json");
+
+        match self.state_manager.object_store().get(&path).await {
+            Ok(get_result) => {
+                let bytes = get_result.bytes().await?;
+                let assignments: HashMap<String, Vec<u8>> = serde_json::from_slice(&bytes)?;
+                Ok(assignments)
+            }
+            Err(object_store::Error::NotFound { .. }) => Ok(HashMap::new()),
+            Err(e) => Err(e.into()),
+        }
     }
 }
 

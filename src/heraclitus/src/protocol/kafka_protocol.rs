@@ -185,6 +185,8 @@ pub const API_KEY_HEARTBEAT: i16 = 12;
 pub const API_KEY_LEAVE_GROUP: i16 = 13;
 #[allow(dead_code)] // Will be used when protocol is fully implemented
 pub const API_KEY_SYNC_GROUP: i16 = 14;
+#[allow(dead_code)] // Will be used when protocol is fully implemented
+pub const API_KEY_DESCRIBE_GROUPS: i16 = 15;
 
 // Error codes
 pub const ERROR_NONE: i16 = 0;
@@ -206,6 +208,7 @@ pub const ERROR_REBALANCE_IN_PROGRESS: i16 = 27;
 pub const ERROR_SESSION_TIMEOUT: i16 = 10;
 pub const ERROR_COORDINATOR_NOT_AVAILABLE: i16 = 15;
 pub const ERROR_NOT_COORDINATOR: i16 = 16;
+pub const ERROR_GROUP_ID_NOT_FOUND: i16 = 69;
 pub const ERROR_UNSUPPORTED_SASL_MECHANISM: i16 = 33;
 pub const ERROR_SASL_AUTHENTICATION_FAILED: i16 = 58;
 pub const ERROR_TOPIC_ALREADY_EXISTS: i16 = 36;
