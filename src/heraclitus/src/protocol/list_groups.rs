@@ -60,14 +60,6 @@ impl ListGroupsResponse {
         }
     }
 
-    pub fn error(error_code: i16) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            error_code,
-            groups: Vec::new(),
-        }
-    }
-
     pub fn encode(&self, version: i16) -> Result<Vec<u8>> {
         let mut buf = BytesMut::new();
 

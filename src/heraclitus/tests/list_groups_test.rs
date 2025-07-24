@@ -48,7 +48,7 @@ dsn = "file://{}"
         .expect("Failed to connect to Kafka");
 
     // First test - list groups when there are none
-    let mut list_body = BytesMut::new();
+    let list_body = BytesMut::new();
     // No states filter for v0
 
     // Build complete request
@@ -87,7 +87,6 @@ dsn = "file://{}"
         response_buf[offset + 2],
         response_buf[offset + 3],
     ]);
-    offset += 4;
     assert_eq!(group_count, 0); // No groups yet
 
     // Now create some consumer groups
@@ -153,13 +152,13 @@ dsn = "file://{}"
         stream.read_exact(&mut response_buf).await.unwrap();
 
         // Check that join was successful
-        let mut offset = 4; // Skip correlation ID
+        let offset = 4; // Skip correlation ID
         let error_code = i16::from_be_bytes([response_buf[offset], response_buf[offset + 1]]);
         assert_eq!(error_code, 0, "JoinGroup should succeed");
     }
 
     // Now test ListGroups again - should return all groups
-    let mut list_body = BytesMut::new();
+    let list_body = BytesMut::new();
     // No states filter for v0
 
     // Build complete request
