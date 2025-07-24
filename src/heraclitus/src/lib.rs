@@ -1,5 +1,7 @@
 pub mod config;
 pub mod error;
+pub mod http;
+pub mod metrics;
 pub mod protocol;
 pub mod state;
 pub mod storage;
@@ -24,11 +26,24 @@ pub struct HeraclitusAgent {
     batch_writer: Arc<BatchWriter>,
     protocol_handler: protocol::ProtocolHandler,
     _service_bootstrap: ServiceBootstrap,
+    metrics_registry: Arc<prometheus::Registry>,
+    #[allow(dead_code)] // Used indirectly through components
+    metrics: Arc<metrics::Metrics>,
 }
 
 impl HeraclitusAgent {
     pub async fn new(config: HeraclitusConfig) -> Result<Self> {
         info!("Initializing Heraclitus Kafka-compatible agent");
+
+        // Initialize metrics
+        let (metrics_registry, metrics) = if config.metrics.enabled {
+            metrics::create_metrics_registry(&config.metrics.prefix)?
+        } else {
+            // Create empty registry if metrics are disabled
+            let registry = Arc::new(prometheus::Registry::new());
+            let metrics = Arc::new(metrics::Metrics::new(&registry, &config.metrics.prefix)?);
+            (registry, metrics)
+        };
 
         // Initialize service discovery
         let service_address = format!("0.0.0.0:{}", config.kafka_port);
@@ -53,14 +68,16 @@ impl HeraclitusAgent {
             object_store,
             state_manager.layout().clone(),
             config.batching.clone(),
+            metrics.clone(),
         ));
 
-        // Create protocol handler
+        // Create protocol handler with metrics
         let protocol_handler = protocol::ProtocolHandler::new(
             state_manager.clone(),
             batch_writer.clone(),
             config.kafka_port,
             Arc::new(config.auth.clone()),
+            metrics.clone(),
         );
 
         Ok(Self {
@@ -69,26 +86,43 @@ impl HeraclitusAgent {
             batch_writer,
             protocol_handler,
             _service_bootstrap: service_bootstrap,
+            metrics_registry,
+            metrics,
         })
     }
 
     pub async fn run(&self) -> Result<()> {
-        let port = self.config.kafka_port;
-        info!("Starting Heraclitus agent on port {port}");
+        let kafka_port = self.config.kafka_port;
+        let http_port = self.config.http_port;
+
+        info!("Starting Heraclitus agent - Kafka: {kafka_port}, HTTP: {http_port}");
 
         // Start the batch writer flush timer
         self.batch_writer.start_flush_timer().await;
         info!("Started batch writer flush timer");
 
-        let listener = TcpListener::bind(format!("0.0.0.0:{port}"))
+        // Start HTTP server for metrics and health
+        let metrics_registry = self.metrics_registry.clone();
+        let http_handle = tokio::spawn(async move {
+            if let Err(e) = http::run_http_server(http_port, metrics_registry).await {
+                error!("HTTP server error: {}", e);
+            }
+        });
+
+        // Start Kafka protocol server
+        let listener = TcpListener::bind(format!("0.0.0.0:{kafka_port}"))
             .await
             .map_err(|e| HeraclitusError::Network(e.to_string()))?;
 
-        info!("Heraclitus agent listening on port {port}");
+        info!("Heraclitus Kafka server listening on port {kafka_port}");
+
+        // Handle graceful shutdown
+        let shutdown_signal = tokio::signal::ctrl_c();
+        tokio::pin!(shutdown_signal);
 
         loop {
-            match listener.accept().await {
-                Ok((socket, addr)) => {
+            tokio::select! {
+                Ok((socket, addr)) = listener.accept() => {
                     info!("New Kafka client connection from {addr}");
                     let handler = self.protocol_handler.clone();
 
@@ -98,10 +132,24 @@ impl HeraclitusAgent {
                         }
                     });
                 }
-                Err(e) => {
-                    error!("Error accepting connection: {e}");
+                _ = &mut shutdown_signal => {
+                    info!("Received shutdown signal, starting graceful shutdown");
+                    break;
                 }
             }
         }
+
+        // Graceful shutdown
+        info!("Shutting down Heraclitus agent...");
+
+        // TODO: Close active connections gracefully
+        // TODO: Flush pending batches
+        // TODO: Deregister from service discovery
+
+        // Wait for HTTP server to finish
+        http_handle.abort();
+
+        info!("Heraclitus agent shutdown complete");
+        Ok(())
     }
 }

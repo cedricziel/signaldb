@@ -1,4 +1,6 @@
-use crate::{config::AuthConfig, error::Result, state::StateManager, storage::BatchWriter};
+use crate::{
+    config::AuthConfig, error::Result, metrics::Metrics, state::StateManager, storage::BatchWriter,
+};
 use bytes::{Buf, BufMut, BytesMut};
 use std::io::Cursor;
 use std::sync::Arc;
@@ -16,6 +18,7 @@ pub struct ConnectionHandler {
     auth_config: Arc<AuthConfig>,
     authenticated: bool,
     username: Option<String>,
+    metrics: Arc<Metrics>,
 }
 
 impl ConnectionHandler {
@@ -25,7 +28,12 @@ impl ConnectionHandler {
         batch_writer: Arc<BatchWriter>,
         port: u16,
         auth_config: Arc<AuthConfig>,
+        metrics: Arc<Metrics>,
     ) -> Self {
+        // Track new connection
+        metrics.connection.active_connections.inc();
+        metrics.connection.total_connections.inc();
+
         Self {
             socket,
             state_manager,
@@ -36,6 +44,7 @@ impl ConnectionHandler {
             auth_config: auth_config.clone(),
             authenticated: !auth_config.enabled, // If auth is disabled, consider connection authenticated
             username: None,
+            metrics,
         }
     }
 
@@ -57,10 +66,12 @@ impl ConnectionHandler {
                         }
                         Err(e) => {
                             error!("Failed to process request: {e}");
+                            self.metrics.connection.connection_errors.inc();
                             // Try to send error response
                             let error_response = self.create_error_response(e);
                             if let Err(write_err) = self.write_frame(error_response).await {
                                 error!("Failed to write error response: {write_err}");
+                                self.metrics.connection.connection_errors.inc();
                                 return Err(write_err);
                             }
                         }
@@ -73,6 +84,7 @@ impl ConnectionHandler {
                 }
                 Err(e) => {
                     error!("Failed to read frame: {e}");
+                    self.metrics.connection.connection_errors.inc();
                     return Err(e);
                 }
             }
@@ -165,6 +177,16 @@ impl ConnectionHandler {
         request: crate::protocol::request::KafkaRequest,
     ) -> Result<Vec<u8>> {
         use crate::protocol::request::RequestType;
+        use std::time::Instant;
+
+        // Track request metrics
+        let start_time = Instant::now();
+        let request_type = request.request_type.clone();
+        self.metrics
+            .protocol
+            .request_count
+            .with_label_values(&[&request_type.to_string()])
+            .inc();
 
         // Check authentication for non-exempt requests
         if self.auth_config.enabled && !self.authenticated {
@@ -182,7 +204,7 @@ impl ConnectionHandler {
             }
         }
 
-        match request.request_type {
+        let result = match request.request_type {
             RequestType::ApiVersions => {
                 debug!("Handling API versions request");
                 self.handle_api_versions_request(request).await
@@ -239,7 +261,17 @@ impl ConnectionHandler {
                 debug!("Handling SASL authenticate request");
                 self.handle_sasl_authenticate_request(request).await
             }
-        }
+        };
+
+        // Track request latency
+        let elapsed = start_time.elapsed();
+        self.metrics
+            .protocol
+            .request_duration
+            .with_label_values(&[&request_type.to_string()])
+            .observe(elapsed.as_secs_f64());
+
+        result
     }
 
     /// Create an error response for a given error
@@ -2056,5 +2088,12 @@ impl ConnectionHandler {
         full_response.extend_from_slice(&response_body);
 
         Ok(full_response.to_vec())
+    }
+}
+
+impl Drop for ConnectionHandler {
+    fn drop(&mut self) {
+        // Decrement active connections counter
+        self.metrics.connection.active_connections.dec();
     }
 }

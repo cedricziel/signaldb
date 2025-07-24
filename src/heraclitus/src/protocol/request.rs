@@ -16,6 +16,27 @@ pub enum RequestType {
     SaslAuthenticate,
 }
 
+impl std::fmt::Display for RequestType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RequestType::Produce => write!(f, "produce"),
+            RequestType::Fetch => write!(f, "fetch"),
+            RequestType::ListOffsets => write!(f, "list_offsets"),
+            RequestType::Metadata => write!(f, "metadata"),
+            RequestType::OffsetCommit => write!(f, "offset_commit"),
+            RequestType::OffsetFetch => write!(f, "offset_fetch"),
+            RequestType::FindCoordinator => write!(f, "find_coordinator"),
+            RequestType::JoinGroup => write!(f, "join_group"),
+            RequestType::Heartbeat => write!(f, "heartbeat"),
+            RequestType::LeaveGroup => write!(f, "leave_group"),
+            RequestType::SyncGroup => write!(f, "sync_group"),
+            RequestType::ApiVersions => write!(f, "api_versions"),
+            RequestType::SaslHandshake => write!(f, "sasl_handshake"),
+            RequestType::SaslAuthenticate => write!(f, "sasl_authenticate"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct KafkaRequest {
     pub api_key: i16,

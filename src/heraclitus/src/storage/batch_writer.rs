@@ -1,6 +1,7 @@
 use crate::{
     config::BatchingConfig,
     error::Result,
+    metrics::Metrics,
     storage::{KafkaMessage, KafkaMessageBatch, ObjectStorageLayout},
 };
 use chrono::{DateTime, Utc};
@@ -17,6 +18,7 @@ pub struct BatchWriter {
     layout: ObjectStorageLayout,
     config: BatchingConfig,
     batches: Arc<Mutex<HashMap<(String, i32), PendingBatch>>>,
+    metrics: Arc<Metrics>,
 }
 
 struct PendingBatch {
@@ -30,12 +32,14 @@ impl BatchWriter {
         object_store: Arc<dyn ObjectStore>,
         layout: ObjectStorageLayout,
         config: BatchingConfig,
+        metrics: Arc<Metrics>,
     ) -> Self {
         Self {
             object_store,
             layout,
             config,
             batches: Arc::new(Mutex::new(HashMap::new())),
+            metrics,
         }
     }
 
@@ -44,6 +48,7 @@ impl BatchWriter {
         let config = self.config.clone();
         let object_store = self.object_store.clone();
         let layout = self.layout.clone();
+        let metrics = self.metrics.clone();
 
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_millis(config.max_batch_delay_ms));
@@ -72,10 +77,12 @@ impl BatchWriter {
                             &topic,
                             partition,
                             batch.batch,
+                            &metrics,
                         )
                         .await
                         {
                             error!("Failed to flush batch: {e}");
+                            metrics.storage.flush_errors.inc();
                         }
 
                         batches_guard = batches.lock().await;
@@ -89,6 +96,13 @@ impl BatchWriter {
         let topic = message.topic.clone();
         let partition = message.partition;
         let message_size = Self::estimate_message_size(&message);
+
+        // Update metrics
+        self.metrics.storage.messages_written.inc();
+        self.metrics
+            .storage
+            .bytes_written
+            .inc_by(message_size as u64);
 
         let mut batches = self.batches.lock().await;
 
@@ -104,9 +118,17 @@ impl BatchWriter {
         batch.size_bytes += message_size;
 
         // Check if we should flush
-        if batch.batch.messages.len() >= self.config.max_batch_size
-            || batch.size_bytes >= self.config.max_batch_bytes
-        {
+        let should_flush = batch.batch.messages.len() >= self.config.max_batch_size
+            || batch.size_bytes >= self.config.max_batch_bytes;
+
+        // Update pending messages metric
+        let pending_count = batches
+            .values()
+            .map(|b| b.batch.messages.len())
+            .sum::<usize>() as i64;
+        self.metrics.storage.pending_messages.set(pending_count);
+
+        if should_flush {
             let pending_batch = batches.remove(&(topic.clone(), partition)).unwrap();
             drop(batches); // Release lock before I/O
 
@@ -116,6 +138,7 @@ impl BatchWriter {
                 &topic,
                 partition,
                 pending_batch.batch,
+                &self.metrics,
             )
             .await?;
         }
@@ -129,6 +152,7 @@ impl BatchWriter {
         topic: &str,
         partition: i32,
         batch: KafkaMessageBatch,
+        metrics: &Arc<Metrics>,
     ) -> Result<()> {
         if batch.messages.is_empty() {
             return Ok(());
@@ -172,6 +196,9 @@ impl BatchWriter {
         info!(
             "Successfully wrote segment {segment_id} for topic {topic} partition {partition} to {path}"
         );
+
+        // Update metrics
+        metrics.storage.batches_flushed.inc();
 
         Ok(())
     }

@@ -37,5 +37,9 @@ zstd = "0.13"           # Zstandard compression
 # For CRC32C checksums in Kafka protocol
 crc32c = "0.6"
 
+# For HTTP server and metrics
+axum = { workspace = true }
+prometheus = { version = "0.14", features = ["process"] }
+
 [dev-dependencies]
 tempfile = "3.0"

@@ -1,4 +1,6 @@
-use crate::{config::AuthConfig, error::Result, state::StateManager, storage::BatchWriter};
+use crate::{
+    config::AuthConfig, error::Result, metrics::Metrics, state::StateManager, storage::BatchWriter,
+};
 use std::sync::Arc;
 use tokio::net::TcpStream;
 
@@ -38,6 +40,7 @@ pub struct ProtocolHandler {
     batch_writer: Arc<BatchWriter>,
     port: u16,
     auth_config: Arc<AuthConfig>,
+    metrics: Arc<Metrics>,
 }
 
 impl ProtocolHandler {
@@ -46,12 +49,14 @@ impl ProtocolHandler {
         batch_writer: Arc<BatchWriter>,
         port: u16,
         auth_config: Arc<AuthConfig>,
+        metrics: Arc<Metrics>,
     ) -> Self {
         Self {
             state_manager,
             batch_writer,
             port,
             auth_config,
+            metrics,
         }
     }
 
@@ -62,6 +67,7 @@ impl ProtocolHandler {
             self.batch_writer.clone(),
             self.port,
             self.auth_config.clone(),
+            self.metrics.clone(),
         );
         handler.run().await
     }

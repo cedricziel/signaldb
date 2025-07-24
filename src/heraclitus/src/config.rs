@@ -6,6 +6,9 @@ pub struct HeraclitusConfig {
     #[serde(default = "default_kafka_port")]
     pub kafka_port: u16,
 
+    #[serde(default = "default_http_port")]
+    pub http_port: u16,
+
     #[serde(default)]
     pub state: StateConfig,
 
@@ -17,6 +20,12 @@ pub struct HeraclitusConfig {
 
     #[serde(default)]
     pub auth: AuthConfig,
+
+    #[serde(default)]
+    pub metrics: MetricsConfig,
+
+    #[serde(default = "default_shutdown_timeout_sec")]
+    pub shutdown_timeout_sec: u64,
 
     #[serde(skip)]
     pub common_config: common::config::Configuration,
@@ -67,14 +76,26 @@ pub struct AuthConfig {
     pub plain_password: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MetricsConfig {
+    #[serde(default = "default_metrics_enabled")]
+    pub enabled: bool,
+
+    #[serde(default = "default_metrics_prefix")]
+    pub prefix: String,
+}
+
 impl Default for HeraclitusConfig {
     fn default() -> Self {
         Self {
             kafka_port: default_kafka_port(),
+            http_port: default_http_port(),
             state: StateConfig::default(),
             batching: BatchingConfig::default(),
             cache: CacheConfig::default(),
             auth: AuthConfig::default(),
+            metrics: MetricsConfig::default(),
+            shutdown_timeout_sec: default_shutdown_timeout_sec(),
             common_config: common::config::Configuration::default(),
         }
     }
@@ -119,6 +140,15 @@ impl Default for AuthConfig {
     }
 }
 
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_metrics_enabled(),
+            prefix: default_metrics_prefix(),
+        }
+    }
+}
+
 impl HeraclitusConfig {
     pub fn batch_delay_duration(&self) -> Duration {
         Duration::from_millis(self.batching.max_batch_delay_ms)
@@ -133,6 +163,7 @@ impl HeraclitusConfig {
         let heraclitus_config = &config.heraclitus;
         Self {
             kafka_port: heraclitus_config.kafka_port,
+            http_port: default_http_port(), // Use default for now
             state: StateConfig {
                 prefix: heraclitus_config.state_prefix.clone(),
                 metadata_cache_ttl_sec: 60, // Default 60 seconds
@@ -146,7 +177,9 @@ impl HeraclitusConfig {
                 segment_cache_size_mb: (heraclitus_config.segment_size_mb as usize) * 16, // Cache 16 segments
                 prefetch_segments: 3,
             },
-            auth: AuthConfig::default(), // Use defaults for now
+            auth: AuthConfig::default(),       // Use defaults for now
+            metrics: MetricsConfig::default(), // Use defaults for now
+            shutdown_timeout_sec: default_shutdown_timeout_sec(),
             common_config: config,
         }
     }
@@ -186,4 +219,20 @@ fn default_prefetch_segments() -> usize {
 
 fn default_auth_mechanism() -> String {
     "PLAIN".to_string()
+}
+
+fn default_http_port() -> u16 {
+    9093
+}
+
+fn default_metrics_enabled() -> bool {
+    true
+}
+
+fn default_metrics_prefix() -> String {
+    "heraclitus_".to_string()
+}
+
+fn default_shutdown_timeout_sec() -> u64 {
+    30
 }
