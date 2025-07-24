@@ -4,6 +4,7 @@ use tokio::net::TcpStream;
 
 mod api_versions;
 mod fetch;
+mod find_coordinator;
 mod handler;
 mod kafka_protocol;
 pub mod list_offsets;

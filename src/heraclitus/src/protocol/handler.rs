@@ -182,6 +182,10 @@ impl ConnectionHandler {
                 debug!("Handling list offsets request");
                 self.handle_list_offsets_request(request).await
             }
+            RequestType::FindCoordinator => {
+                debug!("Handling find coordinator request");
+                self.handle_find_coordinator_request(request).await
+            }
             _ => {
                 warn!(
                     "Request type {:?} not yet implemented",
@@ -1141,6 +1145,54 @@ impl ConnectionHandler {
             throttle_time_ms: 0,
             topics: topic_responses,
         };
+
+        // Encode response
+        let response_body = response.encode(request.api_version)?;
+
+        // Build complete response with header
+        let mut full_response = BytesMut::new();
+        write_response_header(&mut full_response, request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
+    }
+
+    /// Handle find coordinator request
+    async fn handle_find_coordinator_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::find_coordinator::{FindCoordinatorRequest, FindCoordinatorResponse};
+        use crate::protocol::kafka_protocol::*;
+
+        // Parse find coordinator request
+        let mut cursor = Cursor::new(&request.body[..]);
+        let find_coord_req = FindCoordinatorRequest::parse(&mut cursor, request.api_version)?;
+
+        debug!(
+            "FindCoordinator request: key={}, key_type={}",
+            find_coord_req.key, find_coord_req.key_type
+        );
+
+        // For now, we only support group coordinators (key_type = 0)
+        if find_coord_req.key_type != 0 {
+            let response = FindCoordinatorResponse::error(
+                ERROR_INVALID_REQUEST,
+                "Only group coordinators are supported".to_string(),
+            );
+            let response_body = response.encode(request.api_version)?;
+            let mut full_response = BytesMut::new();
+            write_response_header(&mut full_response, request.correlation_id);
+            full_response.extend_from_slice(&response_body);
+            return Ok(full_response.to_vec());
+        }
+
+        // Return ourselves as the coordinator
+        // Get our advertised address
+        let host = self.socket.local_addr()?.ip().to_string();
+        let port = self.port as i32;
+
+        let response = FindCoordinatorResponse::new(0, host, port);
 
         // Encode response
         let response_body = response.encode(request.api_version)?;
