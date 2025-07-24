@@ -86,7 +86,7 @@ dsn = "file://{}"
     heraclitus_config.kafka_port = 19092; // Use a different port for tests
 
     // Start agent
-    let agent = HeraclitusAgent::new(heraclitus_config).await.unwrap();
+    let mut agent = HeraclitusAgent::new(heraclitus_config).await.unwrap();
 
     tokio::spawn(async move {
         agent.run().await.unwrap();
@@ -156,7 +156,7 @@ dsn = "file://{}"
     heraclitus_config.kafka_port = 19093; // Use a different port for tests
 
     // Start agent
-    let agent = HeraclitusAgent::new(heraclitus_config).await.unwrap();
+    let mut agent = HeraclitusAgent::new(heraclitus_config).await.unwrap();
 
     tokio::spawn(async move {
         agent.run().await.unwrap();
@@ -219,7 +219,7 @@ dsn = "file://{}"
     heraclitus_config.kafka_port = 19094; // Use a different port for tests
 
     // Start agent
-    let agent = HeraclitusAgent::new(heraclitus_config).await.unwrap();
+    let mut agent = HeraclitusAgent::new(heraclitus_config).await.unwrap();
 
     tokio::spawn(async move {
         agent.run().await.unwrap();

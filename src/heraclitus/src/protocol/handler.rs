@@ -20,6 +20,8 @@ pub struct ConnectionHandler {
     authenticated: bool,
     username: Option<String>,
     metrics: Arc<Metrics>,
+    // Track consumer group membership for cleanup
+    consumer_groups: Vec<(String, String)>, // (group_id, member_id)
 }
 
 impl ConnectionHandler {
@@ -46,6 +48,7 @@ impl ConnectionHandler {
             authenticated: !auth_config.enabled, // If auth is disabled, consider connection authenticated
             username: None,
             metrics,
+            consumer_groups: Vec::new(),
         }
     }
 
@@ -1391,6 +1394,10 @@ impl ConnectionHandler {
             .save_group(&group_state)
             .await?;
 
+        // Track this consumer group membership for cleanup on disconnect
+        self.consumer_groups
+            .push((join_req.group_id.clone(), member_id.clone()));
+
         // Build response
         let response = if Some(&member_id) == group_state.leader.as_ref() {
             // Leader gets member list
@@ -1963,6 +1970,21 @@ impl ConnectionHandler {
             .save_group(&group_state)
             .await?;
 
+        // Remove this member from our tracking list
+        if request.api_version < 3 {
+            // v0-v2: single member
+            self.consumer_groups
+                .retain(|(g, m)| !(g == &leave_req.group_id && m == &leave_req.member_id));
+        } else {
+            // v3+: batch members
+            if let Some(ref members) = leave_req.members {
+                for member in members {
+                    self.consumer_groups
+                        .retain(|(g, m)| !(g == &leave_req.group_id && m == &member.member_id));
+                }
+            }
+        }
+
         // Create success response
         let response = LeaveGroupResponse::success();
         let response_body = response.encode(request.api_version)?;
@@ -2343,5 +2365,23 @@ impl Drop for ConnectionHandler {
     fn drop(&mut self) {
         // Decrement active connections counter
         self.metrics.connection.active_connections.dec();
+
+        // Clean up consumer group memberships
+        if !self.consumer_groups.is_empty() {
+            info!(
+                "Connection closing, {} consumer group memberships will be cleaned up by session timeout",
+                self.consumer_groups.len()
+            );
+
+            // Since Drop is synchronous, we can't do async cleanup here
+            // Instead, we'll rely on session timeout detection to clean up members
+            // This is similar to how Kafka handles ungraceful disconnections
+            for (group_id, member_id) in &self.consumer_groups {
+                debug!(
+                    "Member {} in group {} disconnected without LeaveGroup",
+                    member_id, group_id
+                );
+            }
+        }
     }
 }

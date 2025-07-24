@@ -148,7 +148,7 @@ async fn main() -> Result<()> {
         );
 
         match heraclitus::HeraclitusAgent::new(heraclitus_config).await {
-            Ok(agent) => {
+            Ok(mut agent) => {
                 if let Err(e) = agent.run().await {
                     log::error!("Heraclitus service error: {e}");
                 }

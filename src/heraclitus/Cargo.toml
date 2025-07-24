@@ -43,3 +43,5 @@ prometheus = { version = "0.14", features = ["process"] }
 
 [dev-dependencies]
 tempfile = "3.0"
+walkdir = "2.5"
+reqwest = { version = "0.12", features = ["json"] }

@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
     heraclitus_config.kafka_port = cli.kafka_port;
 
     // Create and run the agent
-    let agent = HeraclitusAgent::new(heraclitus_config).await?;
+    let mut agent = HeraclitusAgent::new(heraclitus_config).await?;
 
     match agent.run().await {
         Ok(_) => {

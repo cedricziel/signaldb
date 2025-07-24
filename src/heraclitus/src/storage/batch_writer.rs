@@ -92,6 +92,58 @@ impl BatchWriter {
         });
     }
 
+    /// Flush all pending batches to storage - used during shutdown
+    pub async fn flush_all_pending(&self) -> Result<()> {
+        info!("Flushing all pending batches before shutdown");
+
+        let batches_to_flush = {
+            let mut batches = self.batches.lock().await;
+            let pending: Vec<_> = batches
+                .drain()
+                .map(|((topic, partition), batch)| {
+                    info!(
+                        "Flushing batch for topic '{}' partition {} with {} messages",
+                        topic,
+                        partition,
+                        batch.batch.messages.len()
+                    );
+                    (topic, partition, batch)
+                })
+                .collect();
+            pending
+        };
+
+        let mut flush_errors = 0;
+        for (topic, partition, batch) in batches_to_flush {
+            if let Err(e) = Self::flush_batch(
+                &self.object_store,
+                &self.layout,
+                &topic,
+                partition,
+                batch.batch,
+                &self.metrics,
+            )
+            .await
+            {
+                error!("Failed to flush batch during shutdown: {e}");
+                flush_errors += 1;
+                self.metrics.storage.flush_errors.inc();
+            }
+        }
+
+        // Reset pending messages metric
+        self.metrics.storage.pending_messages.set(0);
+
+        if flush_errors > 0 {
+            Err(crate::error::HeraclitusError::Storage(format!(
+                "Failed to flush {flush_errors} batches during shutdown"
+            )))
+        } else {
+            info!("Successfully flushed all pending batches");
+            Ok(())
+        }
+    }
+
     pub async fn write(&self, message: KafkaMessage) -> Result<()> {
         let topic = message.topic.clone();
         let partition = message.partition;
