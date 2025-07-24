@@ -178,6 +178,10 @@ impl ConnectionHandler {
                 debug!("Handling fetch request");
                 self.handle_fetch_request(request).await
             }
+            RequestType::ListOffsets => {
+                debug!("Handling list offsets request");
+                self.handle_list_offsets_request(request).await
+            }
             _ => {
                 warn!(
                     "Request type {:?} not yet implemented",
@@ -409,6 +413,7 @@ impl ConnectionHandler {
         use crate::storage::KafkaMessage;
 
         // Parse produce request
+        debug!("Produce request body length: {}", request.body.len());
         let mut cursor = Cursor::new(&request.body[..]);
         let produce_req = ProduceRequest::parse(&mut cursor, request.api_version)?;
 
@@ -511,6 +516,7 @@ impl ConnectionHandler {
                 // Parse record batch
                 if partition_data.records.is_empty() {
                     // Empty batch
+                    debug!("Empty record batch for partition {}", partition_index);
                     partition_responses.push(ProducePartitionResponse {
                         partition_index,
                         error_code: ERROR_NONE,
@@ -522,6 +528,11 @@ impl ConnectionHandler {
                 }
 
                 // Parse the RecordBatch v2 format
+                debug!(
+                    "Parsing record batch of {} bytes for partition {}",
+                    partition_data.records.len(),
+                    partition_index
+                );
                 let record_batch =
                     match crate::protocol::RecordBatch::parse(&partition_data.records) {
                         Ok(batch) => batch,
@@ -917,6 +928,166 @@ impl ConnectionHandler {
             error_code: ERROR_NONE,
             session_id: 0, // No session support yet
             responses: topic_responses,
+        };
+
+        // Encode response
+        let response_body = response.encode(request.api_version)?;
+
+        // Build complete response with header
+        let mut full_response = BytesMut::new();
+        write_response_header(&mut full_response, request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
+    }
+
+    /// Handle list offsets request
+    async fn handle_list_offsets_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::kafka_protocol::*;
+        use crate::protocol::list_offsets::{
+            EARLIEST_TIMESTAMP, LATEST_TIMESTAMP, ListOffsetsPartitionResponse, ListOffsetsRequest,
+            ListOffsetsResponse, ListOffsetsTopicResponse,
+        };
+
+        // Parse list offsets request
+        let mut cursor = Cursor::new(&request.body[..]);
+        let list_offsets_req = ListOffsetsRequest::parse(&mut cursor, request.api_version)?;
+
+        debug!(
+            "List offsets request: replica_id={}, topics={}",
+            list_offsets_req.replica_id,
+            list_offsets_req.topics.len()
+        );
+
+        // Process each topic
+        let mut topic_responses = Vec::new();
+
+        for topic in list_offsets_req.topics {
+            let topic_name = &topic.name;
+
+            // Check if topic exists
+            let topic_metadata = match self.state_manager.metadata().get_topic(topic_name).await {
+                Ok(Some(metadata)) => metadata,
+                Ok(None) => {
+                    // Topic not found
+                    let mut partition_responses = Vec::new();
+                    for partition in topic.partitions {
+                        partition_responses.push(ListOffsetsPartitionResponse {
+                            partition_index: partition.partition_index,
+                            error_code: ERROR_TOPIC_NOT_FOUND,
+                            timestamp: partition.timestamp,
+                            offset: -1,
+                            old_style_offsets: vec![],
+                        });
+                    }
+                    topic_responses.push(ListOffsetsTopicResponse {
+                        name: topic_name.clone(),
+                        partitions: partition_responses,
+                    });
+                    continue;
+                }
+                Err(e) => {
+                    error!("Failed to get topic metadata: {}", e);
+                    let mut partition_responses = Vec::new();
+                    for partition in topic.partitions {
+                        partition_responses.push(ListOffsetsPartitionResponse {
+                            partition_index: partition.partition_index,
+                            error_code: ERROR_UNKNOWN,
+                            timestamp: partition.timestamp,
+                            offset: -1,
+                            old_style_offsets: vec![],
+                        });
+                    }
+                    topic_responses.push(ListOffsetsTopicResponse {
+                        name: topic_name.clone(),
+                        partitions: partition_responses,
+                    });
+                    continue;
+                }
+            };
+
+            // Process each partition
+            let mut partition_responses = Vec::new();
+
+            for partition in topic.partitions {
+                let partition_index = partition.partition_index;
+
+                // Validate partition exists
+                if partition_index < 0 || partition_index >= topic_metadata.partitions {
+                    partition_responses.push(ListOffsetsPartitionResponse {
+                        partition_index,
+                        error_code: ERROR_UNKNOWN_TOPIC_OR_PARTITION,
+                        timestamp: partition.timestamp,
+                        offset: -1,
+                        old_style_offsets: vec![],
+                    });
+                    continue;
+                }
+
+                // Get the requested offset based on timestamp
+                let offset = match partition.timestamp {
+                    EARLIEST_TIMESTAMP => {
+                        // Get the earliest available offset (log start offset)
+                        self.state_manager
+                            .messages()
+                            .get_log_start_offset(topic_name, partition_index)
+                            .await
+                            .unwrap_or(0)
+                    }
+                    LATEST_TIMESTAMP => {
+                        // Get the latest offset (high water mark)
+                        self.state_manager
+                            .messages()
+                            .get_high_water_mark(topic_name, partition_index)
+                            .await
+                            .unwrap_or(0)
+                    }
+                    timestamp => {
+                        // For specific timestamp, find the first offset with timestamp >= requested
+                        // For now, we'll return an error as we don't have timestamp-based indexing
+                        warn!(
+                            "Timestamp-based offset lookup not yet implemented: {}",
+                            timestamp
+                        );
+                        -1
+                    }
+                };
+
+                if offset >= 0 {
+                    partition_responses.push(ListOffsetsPartitionResponse {
+                        partition_index,
+                        error_code: ERROR_NONE,
+                        timestamp: partition.timestamp,
+                        offset,
+                        old_style_offsets: if request.api_version == 0 {
+                            vec![offset]
+                        } else {
+                            vec![]
+                        },
+                    });
+                } else {
+                    partition_responses.push(ListOffsetsPartitionResponse {
+                        partition_index,
+                        error_code: ERROR_OFFSET_NOT_AVAILABLE,
+                        timestamp: partition.timestamp,
+                        offset: -1,
+                        old_style_offsets: vec![],
+                    });
+                }
+            }
+
+            topic_responses.push(ListOffsetsTopicResponse {
+                name: topic_name.clone(),
+                partitions: partition_responses,
+            });
+        }
+
+        let response = ListOffsetsResponse {
+            throttle_time_ms: 0,
+            topics: topic_responses,
         };
 
         // Encode response

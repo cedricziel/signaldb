@@ -6,6 +6,7 @@ mod api_versions;
 mod fetch;
 mod handler;
 mod kafka_protocol;
+pub mod list_offsets;
 mod metadata;
 mod produce;
 mod record_batch;

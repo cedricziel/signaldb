@@ -162,9 +162,11 @@ pub const ERROR_UNKNOWN: i16 = -1;
 pub const ERROR_INVALID_REQUEST: i16 = 42;
 pub const ERROR_UNSUPPORTED_VERSION: i16 = 35;
 pub const ERROR_TOPIC_NOT_FOUND: i16 = 3;
+pub const ERROR_UNKNOWN_TOPIC_OR_PARTITION: i16 = 3; // Same as TOPIC_NOT_FOUND
 pub const ERROR_INVALID_REQUIRED_ACKS: i16 = 21;
 #[allow(dead_code)] // Will be used when protocol is fully implemented
 pub const ERROR_TOPIC_AUTHORIZATION_FAILED: i16 = 29;
+pub const ERROR_OFFSET_NOT_AVAILABLE: i16 = 78;
 
 #[cfg(test)]
 mod tests {
