@@ -21,6 +21,7 @@ pub struct ConsumerGroupMember {
     pub client_host: String,
     pub session_timeout_ms: i32,
     pub rebalance_timeout_ms: i32,
+    pub last_heartbeat_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

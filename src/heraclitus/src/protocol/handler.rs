@@ -194,6 +194,10 @@ impl ConnectionHandler {
                 debug!("Handling sync group request");
                 self.handle_sync_group_request(request).await
             }
+            RequestType::Heartbeat => {
+                debug!("Handling heartbeat request");
+                self.handle_heartbeat_request(request).await
+            }
             _ => {
                 warn!(
                     "Request type {:?} not yet implemented",
@@ -1280,6 +1284,10 @@ impl ConnectionHandler {
                 client_host,
                 session_timeout_ms: join_req.session_timeout_ms,
                 rebalance_timeout_ms: join_req.rebalance_timeout_ms,
+                last_heartbeat_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64,
             },
         );
 
@@ -1452,5 +1460,82 @@ impl ConnectionHandler {
         full_response.extend_from_slice(&response_body);
 
         Ok(full_response.to_vec())
+    }
+
+    async fn handle_heartbeat_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::heartbeat::{HeartbeatRequest, HeartbeatResponse};
+        use crate::protocol::kafka_protocol::{
+            ERROR_COORDINATOR_NOT_AVAILABLE, ERROR_ILLEGAL_GENERATION, ERROR_UNKNOWN_MEMBER_ID,
+            write_response_header,
+        };
+
+        let mut cursor = Cursor::new(&request.body[..]);
+        let heartbeat_req = HeartbeatRequest::parse(&mut cursor, request.api_version)?;
+
+        // Get consumer group state
+        let mut group_state = match self
+            .state_manager
+            .consumer_groups()
+            .get_group(&heartbeat_req.group_id)
+            .await?
+        {
+            Some(state) => state,
+            None => {
+                // Group doesn't exist
+                let response = HeartbeatResponse::error(ERROR_COORDINATOR_NOT_AVAILABLE);
+                let response_body = response.encode(request.api_version)?;
+                let mut full_response = BytesMut::new();
+                write_response_header(&mut full_response, request.correlation_id);
+                full_response.extend_from_slice(&response_body);
+                return Ok(full_response.to_vec());
+            }
+        };
+
+        // Validate generation ID
+        if heartbeat_req.generation_id != group_state.generation_id {
+            let response = HeartbeatResponse::error(ERROR_ILLEGAL_GENERATION);
+            let response_body = response.encode(request.api_version)?;
+            let mut full_response = BytesMut::new();
+            write_response_header(&mut full_response, request.correlation_id);
+            full_response.extend_from_slice(&response_body);
+            return Ok(full_response.to_vec());
+        }
+
+        // Check if member exists
+        if let Some(member) = group_state.members.get_mut(&heartbeat_req.member_id) {
+            // Update last heartbeat timestamp
+            member.last_heartbeat_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+
+            // Save updated group state
+            self.state_manager
+                .consumer_groups()
+                .save_group(&group_state)
+                .await?;
+
+            // Check if rebalance is in progress
+            // For now, we'll assume no rebalance is in progress
+            // In a full implementation, we'd track rebalance state
+
+            let response = HeartbeatResponse::success();
+            let response_body = response.encode(request.api_version)?;
+            let mut full_response = BytesMut::new();
+            write_response_header(&mut full_response, request.correlation_id);
+            full_response.extend_from_slice(&response_body);
+            Ok(full_response.to_vec())
+        } else {
+            // Member doesn't exist
+            let response = HeartbeatResponse::error(ERROR_UNKNOWN_MEMBER_ID);
+            let response_body = response.encode(request.api_version)?;
+            let mut full_response = BytesMut::new();
+            write_response_header(&mut full_response, request.correlation_id);
+            full_response.extend_from_slice(&response_body);
+            Ok(full_response.to_vec())
+        }
     }
 }
