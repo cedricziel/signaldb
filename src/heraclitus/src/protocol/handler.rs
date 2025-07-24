@@ -2,6 +2,7 @@ use crate::{
     config::AuthConfig, error::Result, metrics::Metrics, state::StateManager, storage::BatchWriter,
 };
 use bytes::{Buf, BufMut, BytesMut};
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -182,10 +183,12 @@ impl ConnectionHandler {
         // Track request metrics
         let start_time = Instant::now();
         let request_type = request.request_type.clone();
+        let api_key_str = request.api_key.to_string();
+        let api_version_str = request.api_version.to_string();
         self.metrics
             .protocol
             .request_count
-            .with_label_values(&[&request_type.to_string()])
+            .with_label_values(&[&api_key_str, &request_type.to_string(), &api_version_str])
             .inc();
 
         // Check authentication for non-exempt requests
@@ -261,6 +264,10 @@ impl ConnectionHandler {
                 debug!("Handling SASL authenticate request");
                 self.handle_sasl_authenticate_request(request).await
             }
+            RequestType::CreateTopics => {
+                debug!("Handling create topics request");
+                self.handle_create_topics_request(request).await
+            }
         };
 
         // Track request latency
@@ -268,7 +275,7 @@ impl ConnectionHandler {
         self.metrics
             .protocol
             .request_duration
-            .with_label_values(&[&request_type.to_string()])
+            .with_label_values(&[&api_key_str, &request_type.to_string(), &api_version_str])
             .observe(elapsed.as_secs_f64());
 
         result
@@ -2078,6 +2085,178 @@ impl ConnectionHandler {
                 "Unsupported mechanism".to_string(),
             )
         };
+
+        // Encode response
+        let response_body = response.encode(request.api_version)?;
+
+        // Build complete response with header
+        let mut full_response = BytesMut::new();
+        write_response_header(&mut full_response, request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
+    }
+
+    /// Handle create topics request
+    async fn handle_create_topics_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::create_topics::{
+            CreateTopicResponse, CreateTopicsRequest, CreateTopicsResponse,
+        };
+        use crate::protocol::kafka_protocol::*;
+
+        // Parse create topics request
+        let mut cursor = Cursor::new(&request.body[..]);
+        let create_req = CreateTopicsRequest::parse(&mut cursor, request.api_version)?;
+
+        debug!(
+            "CreateTopics request: {} topics, timeout={}ms, validate_only={}",
+            create_req.topics.len(),
+            create_req.timeout_ms,
+            create_req.validate_only
+        );
+
+        // Process each topic creation request
+        let mut topic_responses = Vec::new();
+
+        for topic in create_req.topics {
+            // Validate topic name
+            if topic.name.is_empty() {
+                topic_responses.push(CreateTopicResponse::error(
+                    topic.name,
+                    ERROR_INVALID_TOPIC_EXCEPTION,
+                    "Topic name cannot be empty".to_string(),
+                ));
+                continue;
+            }
+
+            // Check if topic already exists
+            match self.state_manager.metadata().get_topic(&topic.name).await {
+                Ok(Some(_)) => {
+                    // Topic already exists
+                    topic_responses.push(CreateTopicResponse::error(
+                        topic.name,
+                        ERROR_TOPIC_ALREADY_EXISTS,
+                        "Topic already exists".to_string(),
+                    ));
+                }
+                Ok(None) => {
+                    // Topic doesn't exist, create it
+                    if !create_req.validate_only {
+                        // Use provided partition count or default
+                        let num_partitions = if topic.num_partitions > 0 {
+                            topic.num_partitions
+                        } else {
+                            1 // Default to 1 partition
+                        };
+
+                        // Process assignments if provided
+                        if !topic.assignments.is_empty() {
+                            debug!(
+                                "Topic '{}' has {} explicit partition assignments",
+                                topic.name,
+                                topic.assignments.len()
+                            );
+                            // Validate partition assignments
+                            for assignment in &topic.assignments {
+                                debug!(
+                                    "Partition {} assigned to brokers: {:?}",
+                                    assignment.partition_index, assignment.broker_ids
+                                );
+                                // In a real implementation, we would validate broker IDs exist
+                            }
+                        }
+
+                        // Process configs if provided
+                        let mut topic_config = HashMap::new();
+                        for config in &topic.configs {
+                            if let Some(value) = &config.value {
+                                topic_config.insert(config.name.clone(), value.clone());
+                            }
+                        }
+
+                        // Create TopicMetadata
+                        let topic_metadata = crate::state::TopicMetadata {
+                            name: topic.name.clone(),
+                            partitions: num_partitions,
+                            replication_factor: topic.replication_factor,
+                            config: topic_config,
+                            created_at: chrono::Utc::now(),
+                        };
+
+                        match self
+                            .state_manager
+                            .metadata()
+                            .create_topic(topic_metadata)
+                            .await
+                        {
+                            Ok(_) => {
+                                info!(
+                                    "Created topic '{}' with {} partitions",
+                                    topic.name, num_partitions
+                                );
+                                topic_responses.push(CreateTopicResponse::success(
+                                    topic.name,
+                                    num_partitions,
+                                    topic.replication_factor,
+                                ));
+                            }
+                            Err(e) => {
+                                error!("Failed to create topic '{}': {}", topic.name, e);
+                                topic_responses.push(CreateTopicResponse::error(
+                                    topic.name,
+                                    ERROR_UNKNOWN_SERVER_ERROR,
+                                    format!("Failed to create topic: {e}"),
+                                ));
+                            }
+                        }
+                    } else {
+                        // Validation only - still check assignments and configs
+                        if !topic.assignments.is_empty() {
+                            debug!(
+                                "Validating topic '{}' with {} partition assignments",
+                                topic.name,
+                                topic.assignments.len()
+                            );
+                            for assignment in &topic.assignments {
+                                debug!(
+                                    "Validating partition {} would be assigned to brokers: {:?}",
+                                    assignment.partition_index, assignment.broker_ids
+                                );
+                            }
+                        }
+
+                        if !topic.configs.is_empty() {
+                            debug!(
+                                "Validating topic '{}' with {} configs",
+                                topic.name,
+                                topic.configs.len()
+                            );
+                        }
+
+                        // Report success for validation
+                        topic_responses.push(CreateTopicResponse::success(
+                            topic.name,
+                            topic.num_partitions.max(1),
+                            topic.replication_factor,
+                        ));
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to check topic existence: {}", e);
+                    topic_responses.push(CreateTopicResponse::error(
+                        topic.name,
+                        ERROR_UNKNOWN_SERVER_ERROR,
+                        format!("Failed to check topic: {e}"),
+                    ));
+                }
+            }
+        }
+
+        // Create response
+        let response = CreateTopicsResponse::new(topic_responses);
 
         // Encode response
         let response_body = response.encode(request.api_version)?;

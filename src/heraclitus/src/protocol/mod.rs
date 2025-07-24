@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 
 mod api_versions;
+mod create_topics;
 mod fetch;
 mod find_coordinator;
 mod handler;

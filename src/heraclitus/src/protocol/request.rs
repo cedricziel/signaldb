@@ -14,6 +14,7 @@ pub enum RequestType {
     ApiVersions,
     SaslHandshake,
     SaslAuthenticate,
+    CreateTopics,
 }
 
 impl std::fmt::Display for RequestType {
@@ -33,6 +34,7 @@ impl std::fmt::Display for RequestType {
             RequestType::ApiVersions => write!(f, "api_versions"),
             RequestType::SaslHandshake => write!(f, "sasl_handshake"),
             RequestType::SaslAuthenticate => write!(f, "sasl_authenticate"),
+            RequestType::CreateTopics => write!(f, "create_topics"),
         }
     }
 }
@@ -69,6 +71,7 @@ impl KafkaRequest {
             14 => RequestType::SyncGroup,
             17 => RequestType::SaslHandshake,
             18 => RequestType::ApiVersions,
+            19 => RequestType::CreateTopics,
             36 => RequestType::SaslAuthenticate,
             _ => {
                 return Err(crate::error::HeraclitusError::Protocol(format!(
