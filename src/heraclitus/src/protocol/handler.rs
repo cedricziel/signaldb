@@ -268,6 +268,10 @@ impl ConnectionHandler {
                 debug!("Handling create topics request");
                 self.handle_create_topics_request(request).await
             }
+            RequestType::InitProducerId => {
+                debug!("Handling init producer id request");
+                self.handle_init_producer_id_request(request).await
+            }
         };
 
         // Track request latency
@@ -2092,6 +2096,71 @@ impl ConnectionHandler {
         // Build complete response with header
         let mut full_response = BytesMut::new();
         write_response_header(&mut full_response, request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
+    }
+
+    /// Handle init producer id request
+    async fn handle_init_producer_id_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::init_producer_id::{InitProducerIdRequest, InitProducerIdResponse};
+        use std::sync::atomic::{AtomicI64, Ordering};
+
+        // Parse init producer id request
+        let mut cursor = Cursor::new(&request.body[..]);
+        let init_req = InitProducerIdRequest::parse(&mut cursor, request.api_version)?;
+
+        debug!(
+            "InitProducerId request: transactional_id={:?}, timeout={}ms",
+            init_req.transactional_id, init_req.transaction_timeout_ms
+        );
+
+        // For now, we'll generate a simple producer ID
+        // In a production system, this would need to be coordinated across brokers
+        static PRODUCER_ID_COUNTER: AtomicI64 = AtomicI64::new(1000);
+
+        let response = if init_req.transactional_id.is_some() {
+            // Transactional producers are not supported yet
+            InitProducerIdResponse::error(35) // NOT_COORDINATOR
+        } else {
+            // Generate a new producer ID for idempotent producer
+            let producer_id = PRODUCER_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+            let producer_epoch = 0; // Start with epoch 0
+
+            // Save producer state
+            let producer_state = crate::state::producer::ProducerState {
+                producer_id,
+                producer_epoch,
+                sequence_numbers: std::collections::HashMap::new(),
+            };
+
+            match self
+                .state_manager
+                .producers()
+                .save_producer_state(&producer_state)
+                .await
+            {
+                Ok(_) => {
+                    info!("Initialized producer ID: {producer_id}");
+                    InitProducerIdResponse::new(producer_id, producer_epoch)
+                }
+                Err(e) => {
+                    error!("Failed to save producer state: {}", e);
+                    InitProducerIdResponse::error(1) // UNKNOWN_SERVER_ERROR
+                }
+            }
+        };
+
+        // Encode response
+        let response_body = response.encode(request.api_version)?;
+
+        // Build full response
+        let mut full_response = BytesMut::new();
+        full_response.put_i32((response_body.len() + 4) as i32); // Size including correlation id
+        full_response.put_i32(request.correlation_id);
         full_response.extend_from_slice(&response_body);
 
         Ok(full_response.to_vec())

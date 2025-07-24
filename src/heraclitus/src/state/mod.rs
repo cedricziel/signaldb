@@ -5,7 +5,7 @@ use std::sync::Arc;
 pub mod consumer_group;
 mod messages;
 mod metadata;
-mod producer;
+pub mod producer;
 
 pub use consumer_group::{ConsumerGroupManager, ConsumerGroupMember, ConsumerGroupState};
 pub use messages::MessageManager;

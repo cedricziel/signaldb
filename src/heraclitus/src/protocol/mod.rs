@@ -10,6 +10,7 @@ mod fetch;
 mod find_coordinator;
 mod handler;
 mod heartbeat;
+mod init_producer_id;
 mod join_group;
 mod kafka_protocol;
 mod leave_group;

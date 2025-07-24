@@ -146,6 +146,11 @@ impl ApiVersionsResponse {
                 max_version: 5,
             }, // CreateTopics
             ApiVersion {
+                api_key: 22,
+                min_version: 0,
+                max_version: 4,
+            }, // InitProducerId
+            ApiVersion {
                 api_key: 36,
                 min_version: 0,
                 max_version: 2,
