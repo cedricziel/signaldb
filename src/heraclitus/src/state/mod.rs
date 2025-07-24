@@ -2,7 +2,7 @@ use crate::{config::StateConfig, error::Result, storage::ObjectStorageLayout};
 use object_store::ObjectStore;
 use std::sync::Arc;
 
-mod consumer_group;
+pub mod consumer_group;
 mod messages;
 mod metadata;
 mod producer;

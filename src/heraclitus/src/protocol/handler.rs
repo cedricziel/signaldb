@@ -202,6 +202,10 @@ impl ConnectionHandler {
                 debug!("Handling offset commit request");
                 self.handle_offset_commit_request(request).await
             }
+            RequestType::OffsetFetch => {
+                debug!("Handling offset fetch request");
+                self.handle_offset_fetch_request(request).await
+            }
             _ => {
                 warn!(
                     "Request type {:?} not yet implemented",
@@ -1645,6 +1649,108 @@ impl ConnectionHandler {
 
         // Create success response
         let response = OffsetCommitResponse::new(response_topics);
+        let response_body = response.encode(request.api_version)?;
+
+        // Build complete response with header
+        let mut full_response = BytesMut::new();
+        write_response_header(&mut full_response, request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
+    }
+
+    async fn handle_offset_fetch_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::kafka_protocol::write_response_header;
+        use crate::protocol::offset_fetch::{
+            OffsetFetchRequest, OffsetFetchResponse, OffsetFetchResponsePartition,
+            OffsetFetchResponseTopic,
+        };
+
+        let mut cursor = Cursor::new(&request.body[..]);
+        let fetch_req = OffsetFetchRequest::parse(&mut cursor, request.api_version)?;
+
+        // Get all committed offsets for the group
+        let group_offsets = self
+            .state_manager
+            .consumer_groups()
+            .get_offsets(&fetch_req.group_id)
+            .await?;
+
+        let mut response_topics = Vec::new();
+
+        if let Some(requested_topics) = &fetch_req.topics {
+            // Client requested specific topics/partitions
+            for topic in requested_topics {
+                let mut response_partitions = Vec::new();
+
+                for &partition_index in &topic.partition_indexes {
+                    let partition_response = if let Some(offset_info) =
+                        group_offsets.get(&(topic.name.clone(), partition_index))
+                    {
+                        // We have a committed offset for this partition
+                        OffsetFetchResponsePartition::success(
+                            partition_index,
+                            offset_info.offset,
+                            offset_info.metadata.clone(),
+                        )
+                    } else {
+                        // No committed offset for this partition
+                        OffsetFetchResponsePartition::no_offset(partition_index)
+                    };
+
+                    response_partitions.push(partition_response);
+                }
+
+                response_topics.push(OffsetFetchResponseTopic {
+                    name: topic.name.clone(),
+                    partitions: response_partitions,
+                });
+            }
+        } else {
+            // Client wants all committed offsets for the group
+            // Group by topic name
+            let mut topics_map: std::collections::HashMap<
+                String,
+                std::collections::HashMap<i32, &crate::state::consumer_group::TopicPartitionOffset>,
+            > = std::collections::HashMap::new();
+
+            for ((topic, partition), offset_info) in &group_offsets {
+                topics_map
+                    .entry(topic.clone())
+                    .or_default()
+                    .insert(*partition, offset_info);
+            }
+
+            // Convert to response format
+            for (topic_name, partitions) in topics_map {
+                let mut response_partitions = Vec::new();
+
+                for (partition_index, offset_info) in partitions {
+                    response_partitions.push(OffsetFetchResponsePartition::success(
+                        partition_index,
+                        offset_info.offset,
+                        offset_info.metadata.clone(),
+                    ));
+                }
+
+                // Sort partitions by index for consistent output
+                response_partitions.sort_by_key(|p| p.partition_index);
+
+                response_topics.push(OffsetFetchResponseTopic {
+                    name: topic_name,
+                    partitions: response_partitions,
+                });
+            }
+
+            // Sort topics by name for consistent output
+            response_topics.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+
+        // Create success response
+        let response = OffsetFetchResponse::new(response_topics);
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header

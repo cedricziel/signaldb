@@ -101,6 +101,11 @@ impl ApiVersionsResponse {
                 max_version: 8,
             }, // OffsetCommit
             ApiVersion {
+                api_key: 9,
+                min_version: 0,
+                max_version: 8,
+            }, // OffsetFetch
+            ApiVersion {
                 api_key: 10,
                 min_version: 0,
                 max_version: 4,

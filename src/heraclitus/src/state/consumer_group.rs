@@ -97,17 +97,22 @@ impl ConsumerGroupManager {
         group_id: &str,
         offsets: &[(String, i32, i64, Option<String>)],
     ) -> Result<()> {
-        let offset_records: Vec<TopicPartitionOffset> = offsets
-            .iter()
-            .map(
-                |(topic, partition, offset, metadata)| TopicPartitionOffset {
-                    topic: topic.clone(),
-                    partition: *partition,
-                    offset: *offset,
-                    metadata: metadata.clone(),
-                },
-            )
-            .collect();
+        // First, get existing offsets to merge with new ones
+        let mut existing_offsets = self.get_offsets(group_id).await?;
+
+        // Update existing offsets with new ones
+        for (topic, partition, offset, metadata) in offsets {
+            let offset_record = TopicPartitionOffset {
+                topic: topic.clone(),
+                partition: *partition,
+                offset: *offset,
+                metadata: metadata.clone(),
+            };
+            existing_offsets.insert((topic.clone(), *partition), offset_record);
+        }
+
+        // Convert back to vector for serialization
+        let offset_records: Vec<TopicPartitionOffset> = existing_offsets.into_values().collect();
 
         let path = self.layout.consumer_group_path(group_id, "offsets.json");
         let bytes = serde_json::to_vec(&offset_records)?;
