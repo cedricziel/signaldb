@@ -186,6 +186,10 @@ impl ConnectionHandler {
                 debug!("Handling find coordinator request");
                 self.handle_find_coordinator_request(request).await
             }
+            RequestType::JoinGroup => {
+                debug!("Handling join group request");
+                self.handle_join_group_request(request).await
+            }
             _ => {
                 warn!(
                     "Request type {:?} not yet implemented",
@@ -1193,6 +1197,139 @@ impl ConnectionHandler {
         let port = self.port as i32;
 
         let response = FindCoordinatorResponse::new(0, host, port);
+
+        // Encode response
+        let response_body = response.encode(request.api_version)?;
+
+        // Build complete response with header
+        let mut full_response = BytesMut::new();
+        write_response_header(&mut full_response, request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
+    }
+
+    /// Handle join group request
+    async fn handle_join_group_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::join_group::{JoinGroupMember, JoinGroupRequest, JoinGroupResponse};
+        use crate::protocol::kafka_protocol::*;
+        use crate::state::{ConsumerGroupMember, ConsumerGroupState};
+        use std::collections::HashMap;
+
+        // Parse join group request
+        let mut cursor = Cursor::new(&request.body[..]);
+        let join_req = JoinGroupRequest::parse(&mut cursor, request.api_version)?;
+
+        debug!(
+            "JoinGroup request: group_id={}, member_id={}, protocol_type={}, protocols={:?}",
+            join_req.group_id,
+            join_req.member_id,
+            join_req.protocol_type,
+            join_req
+                .protocols
+                .iter()
+                .map(|p| &p.name)
+                .collect::<Vec<_>>()
+        );
+
+        // Get or create consumer group
+        let mut group_state = match self
+            .state_manager
+            .consumer_groups()
+            .get_group(&join_req.group_id)
+            .await?
+        {
+            Some(state) => state,
+            None => {
+                // Create new group
+                ConsumerGroupState {
+                    group_id: join_req.group_id.clone(),
+                    generation_id: 0,
+                    protocol_type: join_req.protocol_type.clone(),
+                    protocol: None,
+                    leader: None,
+                    members: HashMap::new(),
+                }
+            }
+        };
+
+        // Generate member ID if empty (new member)
+        let member_id = if join_req.member_id.is_empty() {
+            format!("consumer-{}-{}", join_req.group_id, uuid::Uuid::new_v4())
+        } else {
+            join_req.member_id.clone()
+        };
+
+        // Check if this is a rebalance or new join
+        let is_new_member = !group_state.members.contains_key(&member_id);
+
+        // Add/update member
+        let client_host = self.socket.peer_addr()?.ip().to_string();
+        group_state.members.insert(
+            member_id.clone(),
+            ConsumerGroupMember {
+                member_id: member_id.clone(),
+                client_id: request.client_id.clone().unwrap_or_default(),
+                client_host,
+                session_timeout_ms: join_req.session_timeout_ms,
+                rebalance_timeout_ms: join_req.rebalance_timeout_ms,
+            },
+        );
+
+        // If group is empty or new member joined, trigger rebalance
+        if is_new_member || group_state.leader.is_none() {
+            // Increment generation
+            group_state.generation_id += 1;
+
+            // Select leader (first member)
+            if group_state.leader.is_none() {
+                group_state.leader = Some(member_id.clone());
+            }
+
+            // Select common protocol (for now, just use the first one)
+            if !join_req.protocols.is_empty() {
+                group_state.protocol = Some(join_req.protocols[0].name.clone());
+            }
+        }
+
+        // Save group state
+        self.state_manager
+            .consumer_groups()
+            .save_group(&group_state)
+            .await?;
+
+        // Build response
+        let response = if Some(&member_id) == group_state.leader.as_ref() {
+            // Leader gets member list
+            let members: Vec<JoinGroupMember> = join_req
+                .protocols
+                .iter()
+                .map(|protocol| JoinGroupMember {
+                    member_id: member_id.clone(),
+                    group_instance_id: join_req.group_instance_id.clone(),
+                    metadata: protocol.metadata.clone(),
+                })
+                .collect();
+
+            JoinGroupResponse::new_leader(
+                group_state.generation_id,
+                group_state.protocol.unwrap_or_default(),
+                group_state.leader.unwrap_or_default(),
+                member_id,
+                members,
+            )
+        } else {
+            // Followers don't get member list
+            JoinGroupResponse::new_follower(
+                group_state.generation_id,
+                group_state.protocol.unwrap_or_default(),
+                group_state.leader.unwrap_or_default(),
+                member_id,
+            )
+        };
 
         // Encode response
         let response_body = response.encode(request.api_version)?;

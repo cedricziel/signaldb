@@ -7,7 +7,7 @@ mod messages;
 mod metadata;
 mod producer;
 
-pub use consumer_group::ConsumerGroupManager;
+pub use consumer_group::{ConsumerGroupManager, ConsumerGroupMember, ConsumerGroupState};
 pub use messages::MessageManager;
 pub use metadata::{MetadataManager, TopicMetadata};
 pub use producer::ProducerStateManager;

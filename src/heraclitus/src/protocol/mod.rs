@@ -6,6 +6,7 @@ mod api_versions;
 mod fetch;
 mod find_coordinator;
 mod handler;
+mod join_group;
 mod kafka_protocol;
 pub mod list_offsets;
 mod message_set;

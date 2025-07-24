@@ -96,6 +96,16 @@ impl ApiVersionsResponse {
                 max_version: 0,
             }, // Metadata
             ApiVersion {
+                api_key: 10,
+                min_version: 0,
+                max_version: 4,
+            }, // FindCoordinator
+            ApiVersion {
+                api_key: 11,
+                min_version: 0,
+                max_version: 7,
+            }, // JoinGroup
+            ApiVersion {
                 api_key: 18,
                 min_version: 0,
                 max_version: 3,

@@ -103,6 +103,36 @@ pub fn read_nullable_string(buf: &mut Cursor<&[u8]>) -> Result<Option<String>, s
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid UTF-8 string"))
 }
 
+/// Read bytes from buffer
+pub fn read_bytes(buf: &mut Cursor<&[u8]>) -> Result<Vec<u8>, std::io::Error> {
+    if buf.remaining() < 4 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "Not enough bytes for byte array length",
+        ));
+    }
+
+    let len = buf.get_i32();
+    if len < 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Negative byte array length",
+        ));
+    }
+
+    let len = len as usize;
+    if buf.remaining() < len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "Not enough bytes for byte array data",
+        ));
+    }
+
+    let mut bytes = vec![0u8; len];
+    buf.copy_to_slice(&mut bytes);
+    Ok(bytes)
+}
+
 #[allow(dead_code)] // Will be used when protocol is fully implemented
 pub fn write_string(buf: &mut BytesMut, s: &str) {
     let bytes = s.as_bytes();
