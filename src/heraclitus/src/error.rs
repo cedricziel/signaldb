@@ -10,6 +10,7 @@ pub enum HeraclitusError {
     NotFound(String),
     InvalidState(String),
     Timeout(String),
+    InvalidRequest(String),
 }
 
 impl fmt::Display for HeraclitusError {
@@ -23,6 +24,7 @@ impl fmt::Display for HeraclitusError {
             Self::NotFound(e) => write!(f, "Not found: {e}"),
             Self::InvalidState(e) => write!(f, "Invalid state: {e}"),
             Self::Timeout(e) => write!(f, "Timeout: {e}"),
+            Self::InvalidRequest(e) => write!(f, "Invalid request: {e}"),
         }
     }
 }

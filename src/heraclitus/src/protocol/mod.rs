@@ -1,4 +1,4 @@
-use crate::{error::Result, state::StateManager, storage::BatchWriter};
+use crate::{config::AuthConfig, error::Result, state::StateManager, storage::BatchWriter};
 use std::sync::Arc;
 use tokio::net::TcpStream;
 
@@ -20,6 +20,8 @@ mod record_batch;
 mod record_batch_builder;
 mod request;
 mod response;
+mod sasl_authenticate;
+mod sasl_handshake;
 mod sync_group;
 
 pub use fetch::{FetchPartitionResponse, FetchRequest, FetchResponse, FetchTopicResponse};
@@ -35,6 +37,7 @@ pub struct ProtocolHandler {
     state_manager: Arc<StateManager>,
     batch_writer: Arc<BatchWriter>,
     port: u16,
+    auth_config: Arc<AuthConfig>,
 }
 
 impl ProtocolHandler {
@@ -42,11 +45,13 @@ impl ProtocolHandler {
         state_manager: Arc<StateManager>,
         batch_writer: Arc<BatchWriter>,
         port: u16,
+        auth_config: Arc<AuthConfig>,
     ) -> Self {
         Self {
             state_manager,
             batch_writer,
             port,
+            auth_config,
         }
     }
 
@@ -56,6 +61,7 @@ impl ProtocolHandler {
             self.state_manager.clone(),
             self.batch_writer.clone(),
             self.port,
+            self.auth_config.clone(),
         );
         handler.run().await
     }

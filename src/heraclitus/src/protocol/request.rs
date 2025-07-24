@@ -12,6 +12,8 @@ pub enum RequestType {
     LeaveGroup,
     SyncGroup,
     ApiVersions,
+    SaslHandshake,
+    SaslAuthenticate,
 }
 
 #[derive(Debug)]
@@ -44,7 +46,9 @@ impl KafkaRequest {
             12 => RequestType::Heartbeat,
             13 => RequestType::LeaveGroup,
             14 => RequestType::SyncGroup,
+            17 => RequestType::SaslHandshake,
             18 => RequestType::ApiVersions,
+            36 => RequestType::SaslAuthenticate,
             _ => {
                 return Err(crate::error::HeraclitusError::Protocol(format!(
                     "Unsupported API key: {api_key}"

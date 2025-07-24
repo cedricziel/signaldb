@@ -15,6 +15,9 @@ pub struct HeraclitusConfig {
     #[serde(default)]
     pub cache: CacheConfig,
 
+    #[serde(default)]
+    pub auth: AuthConfig,
+
     #[serde(skip)]
     pub common_config: common::config::Configuration,
 }
@@ -49,6 +52,21 @@ pub struct CacheConfig {
     pub prefetch_segments: usize,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AuthConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default = "default_auth_mechanism")]
+    pub mechanism: String,
+
+    #[serde(default)]
+    pub plain_username: Option<String>,
+
+    #[serde(default)]
+    pub plain_password: Option<String>,
+}
+
 impl Default for HeraclitusConfig {
     fn default() -> Self {
         Self {
@@ -56,6 +74,7 @@ impl Default for HeraclitusConfig {
             state: StateConfig::default(),
             batching: BatchingConfig::default(),
             cache: CacheConfig::default(),
+            auth: AuthConfig::default(),
             common_config: common::config::Configuration::default(),
         }
     }
@@ -89,6 +108,17 @@ impl Default for CacheConfig {
     }
 }
 
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mechanism: default_auth_mechanism(),
+            plain_username: None,
+            plain_password: None,
+        }
+    }
+}
+
 impl HeraclitusConfig {
     pub fn batch_delay_duration(&self) -> Duration {
         Duration::from_millis(self.batching.max_batch_delay_ms)
@@ -116,6 +146,7 @@ impl HeraclitusConfig {
                 segment_cache_size_mb: (heraclitus_config.segment_size_mb as usize) * 16, // Cache 16 segments
                 prefetch_segments: 3,
             },
+            auth: AuthConfig::default(), // Use defaults for now
             common_config: config,
         }
     }
@@ -151,4 +182,8 @@ fn default_segment_cache_size_mb() -> usize {
 
 fn default_prefetch_segments() -> usize {
     3
+}
+
+fn default_auth_mechanism() -> String {
+    "PLAIN".to_string()
 }

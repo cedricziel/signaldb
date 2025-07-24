@@ -38,3 +38,4 @@ zstd = "0.13"           # Zstandard compression
 crc32c = "0.6"
 
 [dev-dependencies]
+tempfile = "3.0"

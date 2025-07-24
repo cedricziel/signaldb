@@ -3253,6 +3253,7 @@ dependencies = [
  "serde",
  "serde_json",
  "snap",
+ "tempfile",
  "tokio",
  "tracing",
  "uuid",

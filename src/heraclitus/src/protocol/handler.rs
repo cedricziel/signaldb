@@ -1,4 +1,4 @@
-use crate::{error::Result, state::StateManager, storage::BatchWriter};
+use crate::{config::AuthConfig, error::Result, state::StateManager, storage::BatchWriter};
 use bytes::{Buf, BufMut, BytesMut};
 use std::io::Cursor;
 use std::sync::Arc;
@@ -13,6 +13,9 @@ pub struct ConnectionHandler {
     port: u16,
     read_buffer: BytesMut,
     write_buffer: BytesMut,
+    auth_config: Arc<AuthConfig>,
+    authenticated: bool,
+    username: Option<String>,
 }
 
 impl ConnectionHandler {
@@ -21,6 +24,7 @@ impl ConnectionHandler {
         state_manager: Arc<StateManager>,
         batch_writer: Arc<BatchWriter>,
         port: u16,
+        auth_config: Arc<AuthConfig>,
     ) -> Self {
         Self {
             socket,
@@ -29,6 +33,9 @@ impl ConnectionHandler {
             port,
             read_buffer: BytesMut::with_capacity(8192),
             write_buffer: BytesMut::with_capacity(8192),
+            auth_config: auth_config.clone(),
+            authenticated: !auth_config.enabled, // If auth is disabled, consider connection authenticated
+            username: None,
         }
     }
 
@@ -159,8 +166,20 @@ impl ConnectionHandler {
     ) -> Result<Vec<u8>> {
         use crate::protocol::request::RequestType;
 
-        // For now, return unsupported operation error for all requests
-        // This will be implemented incrementally
+        // Check authentication for non-exempt requests
+        if self.auth_config.enabled && !self.authenticated {
+            match request.request_type {
+                RequestType::ApiVersions | RequestType::SaslHandshake | RequestType::SaslAuthenticate => {
+                    // These requests are allowed before authentication
+                }
+                _ => {
+                    // All other requests require authentication
+                    warn!("Unauthenticated request: {:?}", request.request_type);
+                    return self.create_auth_error_response(request.correlation_id);
+                }
+            }
+        }
+
         match request.request_type {
             RequestType::ApiVersions => {
                 debug!("Handling API versions request");
@@ -209,6 +228,14 @@ impl ConnectionHandler {
             RequestType::LeaveGroup => {
                 debug!("Handling leave group request");
                 self.handle_leave_group_request(request).await
+            }
+            RequestType::SaslHandshake => {
+                debug!("Handling SASL handshake request");
+                self.handle_sasl_handshake_request(request).await
+            }
+            RequestType::SaslAuthenticate => {
+                debug!("Handling SASL authenticate request");
+                self.handle_sasl_authenticate_request(request).await
             }
         }
     }
@@ -1893,6 +1920,128 @@ impl ConnectionHandler {
 
         // Create success response
         let response = LeaveGroupResponse::success();
+        let response_body = response.encode(request.api_version)?;
+
+        // Build complete response with header
+        let mut full_response = BytesMut::new();
+        write_response_header(&mut full_response, request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
+    }
+
+    /// Create an authentication error response
+    fn create_auth_error_response(&self, correlation_id: i32) -> Result<Vec<u8>> {
+        use crate::protocol::kafka_protocol::*;
+
+        let mut response = BytesMut::new();
+
+        // Write response header
+        write_response_header(&mut response, correlation_id);
+
+        // Write error code for authentication required
+        response.extend_from_slice(&ERROR_SASL_AUTHENTICATION_FAILED.to_be_bytes());
+
+        Ok(response.to_vec())
+    }
+
+    /// Handle SASL handshake request
+    async fn handle_sasl_handshake_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::kafka_protocol::*;
+        use crate::protocol::sasl_handshake::{SaslHandshakeRequest, SaslHandshakeResponse};
+
+        // Parse request
+        let mut cursor = Cursor::new(&request.body[..]);
+        let handshake_req = SaslHandshakeRequest::parse(&mut cursor, request.api_version)?;
+
+        debug!("SASL handshake request: mechanism={}", handshake_req.mechanism);
+
+        // Check if the requested mechanism is supported
+        let response = if handshake_req.mechanism == self.auth_config.mechanism {
+            // Return the supported mechanisms (just PLAIN for now)
+            SaslHandshakeResponse::new(vec![self.auth_config.mechanism.clone()])
+        } else {
+            // Unsupported mechanism
+            SaslHandshakeResponse::error(ERROR_UNSUPPORTED_SASL_MECHANISM)
+        };
+
+        // Encode response
+        let response_body = response.encode(request.api_version)?;
+
+        // Build complete response with header
+        let mut full_response = BytesMut::new();
+        write_response_header(&mut full_response, request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
+    }
+
+    /// Handle SASL authenticate request
+    async fn handle_sasl_authenticate_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::kafka_protocol::*;
+        use crate::protocol::sasl_authenticate::{
+            parse_plain_auth_bytes, SaslAuthenticateRequest, SaslAuthenticateResponse,
+        };
+
+        // Parse request
+        let mut cursor = Cursor::new(&request.body[..]);
+        let auth_req = SaslAuthenticateRequest::parse(&mut cursor, request.api_version)?;
+
+        debug!("SASL authenticate request received");
+
+        // Handle PLAIN mechanism authentication
+        let response = if self.auth_config.mechanism == "PLAIN" {
+            match parse_plain_auth_bytes(&auth_req.auth_bytes) {
+                Ok((username, password)) => {
+                    // Check credentials
+                    if let (Some(expected_user), Some(expected_pass)) = 
+                        (&self.auth_config.plain_username, &self.auth_config.plain_password) 
+                    {
+                        if &username == expected_user && &password == expected_pass {
+                            // Authentication successful
+                            self.authenticated = true;
+                            self.username = Some(username);
+                            info!("Client authenticated as user: {}", expected_user);
+                            SaslAuthenticateResponse::success()
+                        } else {
+                            warn!("Authentication failed for user: {}", username);
+                            SaslAuthenticateResponse::error(
+                                ERROR_SASL_AUTHENTICATION_FAILED,
+                                "Authentication failed".to_string(),
+                            )
+                        }
+                    } else {
+                        // No credentials configured
+                        error!("SASL/PLAIN authentication enabled but no credentials configured");
+                        SaslAuthenticateResponse::error(
+                            ERROR_SASL_AUTHENTICATION_FAILED,
+                            "Server misconfiguration".to_string(),
+                        )
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to parse SASL/PLAIN auth bytes: {}", e);
+                    SaslAuthenticateResponse::error(
+                        ERROR_SASL_AUTHENTICATION_FAILED,
+                        "Invalid auth format".to_string(),
+                    )
+                }
+            }
+        } else {
+            // Unsupported mechanism (shouldn't happen if handshake was successful)
+            SaslAuthenticateResponse::error(
+                ERROR_UNSUPPORTED_SASL_MECHANISM,
+                "Unsupported mechanism".to_string(),
+            )
+        };
+
+        // Encode response
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header

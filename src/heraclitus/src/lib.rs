@@ -60,6 +60,7 @@ impl HeraclitusAgent {
             state_manager.clone(),
             batch_writer.clone(),
             config.kafka_port,
+            Arc::new(config.auth.clone()),
         );
 
         Ok(Self {
