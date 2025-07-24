@@ -198,6 +198,10 @@ impl ConnectionHandler {
                 debug!("Handling heartbeat request");
                 self.handle_heartbeat_request(request).await
             }
+            RequestType::OffsetCommit => {
+                debug!("Handling offset commit request");
+                self.handle_offset_commit_request(request).await
+            }
             _ => {
                 warn!(
                     "Request type {:?} not yet implemented",
@@ -1537,5 +1541,117 @@ impl ConnectionHandler {
             full_response.extend_from_slice(&response_body);
             Ok(full_response.to_vec())
         }
+    }
+
+    async fn handle_offset_commit_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::kafka_protocol::write_response_header;
+        use crate::protocol::offset_commit::{
+            OffsetCommitRequest, OffsetCommitResponse, OffsetCommitResponsePartition,
+            OffsetCommitResponseTopic,
+        };
+
+        let mut cursor = Cursor::new(&request.body[..]);
+        let commit_req = OffsetCommitRequest::parse(&mut cursor, request.api_version)?;
+
+        // For v0, we don't have generation/member validation
+        // For v1+, we should validate the consumer group membership
+        if request.api_version >= 1 {
+            // Get consumer group state
+            let group_state = match self
+                .state_manager
+                .consumer_groups()
+                .get_group(&commit_req.group_id)
+                .await?
+            {
+                Some(state) => state,
+                None => {
+                    // Group doesn't exist - return NOT_COORDINATOR error
+                    let response = OffsetCommitResponse::error_all(
+                        &commit_req.topics,
+                        crate::protocol::kafka_protocol::ERROR_NOT_COORDINATOR,
+                    );
+                    let response_body = response.encode(request.api_version)?;
+                    let mut full_response = BytesMut::new();
+                    write_response_header(&mut full_response, request.correlation_id);
+                    full_response.extend_from_slice(&response_body);
+                    return Ok(full_response.to_vec());
+                }
+            };
+
+            // Validate generation ID
+            if commit_req.generation_id != group_state.generation_id {
+                let response = OffsetCommitResponse::error_all(
+                    &commit_req.topics,
+                    crate::protocol::kafka_protocol::ERROR_ILLEGAL_GENERATION,
+                );
+                let response_body = response.encode(request.api_version)?;
+                let mut full_response = BytesMut::new();
+                write_response_header(&mut full_response, request.correlation_id);
+                full_response.extend_from_slice(&response_body);
+                return Ok(full_response.to_vec());
+            }
+
+            // Check if member exists
+            if !group_state.members.contains_key(&commit_req.member_id) {
+                let response = OffsetCommitResponse::error_all(
+                    &commit_req.topics,
+                    crate::protocol::kafka_protocol::ERROR_UNKNOWN_MEMBER_ID,
+                );
+                let response_body = response.encode(request.api_version)?;
+                let mut full_response = BytesMut::new();
+                write_response_header(&mut full_response, request.correlation_id);
+                full_response.extend_from_slice(&response_body);
+                return Ok(full_response.to_vec());
+            }
+        }
+
+        // Prepare offsets to save
+        let mut offsets_to_save = Vec::new();
+        let mut response_topics = Vec::new();
+
+        for topic in &commit_req.topics {
+            let mut response_partitions = Vec::new();
+
+            for partition in &topic.partitions {
+                // Save the offset
+                offsets_to_save.push((
+                    topic.name.clone(),
+                    partition.partition_index,
+                    partition.committed_offset,
+                    partition.metadata.clone(),
+                ));
+
+                // Add success response for this partition
+                response_partitions.push(OffsetCommitResponsePartition {
+                    partition_index: partition.partition_index,
+                    error_code: 0, // SUCCESS
+                });
+            }
+
+            response_topics.push(OffsetCommitResponseTopic {
+                name: topic.name.clone(),
+                partitions: response_partitions,
+            });
+        }
+
+        // Save all offsets
+        self.state_manager
+            .consumer_groups()
+            .save_offsets(&commit_req.group_id, &offsets_to_save)
+            .await?;
+
+        // Create success response
+        let response = OffsetCommitResponse::new(response_topics);
+        let response_body = response.encode(request.api_version)?;
+
+        // Build complete response with header
+        let mut full_response = BytesMut::new();
+        write_response_header(&mut full_response, request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
     }
 }

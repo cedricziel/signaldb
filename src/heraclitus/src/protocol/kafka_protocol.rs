@@ -204,6 +204,7 @@ pub const ERROR_REBALANCE_IN_PROGRESS: i16 = 27;
 #[allow(dead_code)]
 pub const ERROR_SESSION_TIMEOUT: i16 = 10;
 pub const ERROR_COORDINATOR_NOT_AVAILABLE: i16 = 15;
+pub const ERROR_NOT_COORDINATOR: i16 = 16;
 
 #[cfg(test)]
 mod tests {

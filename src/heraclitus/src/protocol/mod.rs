@@ -12,6 +12,7 @@ mod kafka_protocol;
 pub mod list_offsets;
 mod message_set;
 mod metadata;
+mod offset_commit;
 mod produce;
 mod record_batch;
 mod record_batch_builder;

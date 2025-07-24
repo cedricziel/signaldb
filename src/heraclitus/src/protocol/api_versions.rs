@@ -96,6 +96,11 @@ impl ApiVersionsResponse {
                 max_version: 0,
             }, // Metadata
             ApiVersion {
+                api_key: 8,
+                min_version: 0,
+                max_version: 8,
+            }, // OffsetCommit
+            ApiVersion {
                 api_key: 10,
                 min_version: 0,
                 max_version: 4,
