@@ -264,10 +264,21 @@ impl RecordBatchBuilder {
                     .finish()
                     .map_err(|e| HeraclitusError::Protocol(format!("Gzip compression failed: {e}")))
             }
-            _ => Err(HeraclitusError::Protocol(format!(
-                "Compression type {:?} not yet supported",
-                self.compression_type
-            ))),
+            CompressionType::Snappy => {
+                let mut encoder = snap::raw::Encoder::new();
+                encoder.compress_vec(&data).map_err(|e| {
+                    HeraclitusError::Protocol(format!("Snappy compression failed: {e}"))
+                })
+            }
+            CompressionType::Lz4 => {
+                // Kafka uses LZ4 block format without the frame header
+                lz4::block::compress(&data, None, true)
+                    .map_err(|e| HeraclitusError::Protocol(format!("LZ4 compression failed: {e}")))
+            }
+            CompressionType::Zstd => {
+                zstd::encode_all(data.as_slice(), 3) // Use compression level 3 (Kafka default)
+                    .map_err(|e| HeraclitusError::Protocol(format!("Zstd compression failed: {e}")))
+            }
         }
     }
 }

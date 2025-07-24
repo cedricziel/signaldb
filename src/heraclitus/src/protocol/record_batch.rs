@@ -146,9 +146,19 @@ impl RecordBatch {
                 })?;
                 Ok(decompressed)
             }
-            _ => Err(HeraclitusError::Protocol(format!(
-                "Compression type {compression_type:?} not yet supported"
-            ))),
+            CompressionType::Snappy => {
+                snap::raw::Decoder::new().decompress_vec(data).map_err(|e| {
+                    HeraclitusError::Protocol(format!("Snappy decompression failed: {e}"))
+                })
+            }
+            CompressionType::Lz4 => {
+                // Kafka uses LZ4 block format without the frame header
+                lz4::block::decompress(data, None).map_err(|e| {
+                    HeraclitusError::Protocol(format!("LZ4 decompression failed: {e}"))
+                })
+            }
+            CompressionType::Zstd => zstd::decode_all(data)
+                .map_err(|e| HeraclitusError::Protocol(format!("Zstd decompression failed: {e}"))),
         }
     }
 

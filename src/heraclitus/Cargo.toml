@@ -29,7 +29,10 @@ uuid = { workspace = true }
 parking_lot = "0.12"
 
 # For compression support
-flate2 = "1.0"
+flate2 = "1.0"          # Gzip compression
+snap = "1.1"            # Snappy compression
+lz4 = "1.24"            # LZ4 compression
+zstd = "0.13"           # Zstandard compression
 
 # For CRC32C checksums in Kafka protocol
 crc32c = "0.6"
