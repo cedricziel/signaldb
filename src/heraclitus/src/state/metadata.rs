@@ -97,6 +97,23 @@ impl MetadataManager {
         Ok(())
     }
 
+    pub async fn delete_topic(&self, topic_name: &str) -> Result<()> {
+        let path = self
+            .layout
+            .metadata_path(&format!("topics/{topic_name}.json"));
+
+        // Delete from object storage
+        self.object_store.delete(&path).await?;
+
+        // Remove from cache
+        {
+            let mut cache = self.cache.write();
+            cache.topics.remove(topic_name);
+        }
+
+        Ok(())
+    }
+
     pub async fn list_topics(&self) -> Result<Vec<String>> {
         // List all objects in the topics metadata directory
         let prefix = self.layout.metadata_path("topics/");

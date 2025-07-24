@@ -151,6 +151,11 @@ impl ApiVersionsResponse {
                 max_version: 5,
             }, // CreateTopics
             ApiVersion {
+                api_key: 20,
+                min_version: 0,
+                max_version: 5,
+            }, // DeleteTopics
+            ApiVersion {
                 api_key: 22,
                 min_version: 0,
                 max_version: 4,

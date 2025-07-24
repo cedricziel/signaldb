@@ -263,6 +263,10 @@ impl ConnectionHandler {
                 debug!("Handling describe groups request");
                 self.handle_describe_groups_request(request).await
             }
+            RequestType::DeleteTopics => {
+                debug!("Handling delete topics request");
+                self.handle_delete_topics_request(request).await
+            }
             RequestType::SaslHandshake => {
                 debug!("Handling SASL handshake request");
                 self.handle_sasl_handshake_request(request).await
@@ -2284,6 +2288,91 @@ impl ConnectionHandler {
         let mut full_response = BytesMut::new();
         full_response.put_i32((response_body.len() + 4) as i32); // Size including correlation id
         full_response.put_i32(request.correlation_id);
+        full_response.extend_from_slice(&response_body);
+
+        Ok(full_response.to_vec())
+    }
+
+    /// Handle delete topics request
+    async fn handle_delete_topics_request(
+        &mut self,
+        request: crate::protocol::request::KafkaRequest,
+    ) -> Result<Vec<u8>> {
+        use crate::protocol::delete_topics::{
+            DeleteTopicsRequest, DeleteTopicsResponse, TopicDeletionError,
+        };
+        use crate::protocol::kafka_protocol::*;
+
+        // Parse delete topics request
+        let mut cursor = Cursor::new(&request.body[..]);
+        let delete_req = DeleteTopicsRequest::parse(&mut cursor, request.api_version)?;
+
+        debug!(
+            "DeleteTopics request: {} topics, timeout={}ms",
+            delete_req.topic_names.len(),
+            delete_req.timeout_ms
+        );
+
+        // Process each topic deletion request
+        let mut topic_errors = Vec::new();
+
+        for topic_name in delete_req.topic_names {
+            // Check if topic exists
+            match self.state_manager.metadata().get_topic(&topic_name).await {
+                Ok(Some(_)) => {
+                    // Topic exists, delete it
+                    match self
+                        .state_manager
+                        .metadata()
+                        .delete_topic(&topic_name)
+                        .await
+                    {
+                        Ok(_) => {
+                            info!("Successfully deleted topic: {}", topic_name);
+                            topic_errors.push(TopicDeletionError {
+                                topic_name,
+                                error_code: ERROR_NONE,
+                                error_message: None,
+                            });
+                        }
+                        Err(e) => {
+                            warn!("Failed to delete topic {}: {}", topic_name, e);
+                            topic_errors.push(TopicDeletionError {
+                                topic_name,
+                                error_code: ERROR_UNKNOWN_SERVER_ERROR,
+                                error_message: Some(format!("Failed to delete topic: {e}")),
+                            });
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Topic doesn't exist
+                    topic_errors.push(TopicDeletionError {
+                        topic_name,
+                        error_code: ERROR_UNKNOWN_TOPIC_OR_PARTITION,
+                        error_message: Some(
+                            "This server does not host this topic-partition.".to_string(),
+                        ),
+                    });
+                }
+                Err(e) => {
+                    warn!("Failed to check topic {}: {}", topic_name, e);
+                    topic_errors.push(TopicDeletionError {
+                        topic_name,
+                        error_code: ERROR_UNKNOWN_SERVER_ERROR,
+                        error_message: Some(format!("Failed to check topic: {e}")),
+                    });
+                }
+            }
+        }
+
+        // Create response
+        let response = DeleteTopicsResponse::new(topic_errors);
+        let response_body = response.encode(request.api_version)?;
+
+        // Build complete response with header
+        let mut full_response = BytesMut::new();
+        write_response_header(&mut full_response, request.correlation_id);
         full_response.extend_from_slice(&response_body);
 
         Ok(full_response.to_vec())

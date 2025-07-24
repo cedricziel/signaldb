@@ -17,6 +17,7 @@ pub enum RequestType {
     SaslAuthenticate,
     CreateTopics,
     InitProducerId,
+    DeleteTopics,
 }
 
 impl std::fmt::Display for RequestType {
@@ -39,6 +40,7 @@ impl std::fmt::Display for RequestType {
             RequestType::SaslAuthenticate => write!(f, "sasl_authenticate"),
             RequestType::CreateTopics => write!(f, "create_topics"),
             RequestType::InitProducerId => write!(f, "init_producer_id"),
+            RequestType::DeleteTopics => write!(f, "delete_topics"),
         }
     }
 }
@@ -77,6 +79,7 @@ impl KafkaRequest {
             17 => RequestType::SaslHandshake,
             18 => RequestType::ApiVersions,
             19 => RequestType::CreateTopics,
+            20 => RequestType::DeleteTopics,
             22 => RequestType::InitProducerId,
             36 => RequestType::SaslAuthenticate,
             _ => {

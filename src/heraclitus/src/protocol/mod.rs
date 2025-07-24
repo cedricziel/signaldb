@@ -6,6 +6,7 @@ use tokio::net::TcpStream;
 
 mod api_versions;
 mod create_topics;
+mod delete_topics;
 mod describe_groups;
 mod fetch;
 mod find_coordinator;
