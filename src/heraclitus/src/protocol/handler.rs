@@ -254,7 +254,8 @@ impl ConnectionHandler {
         debug!("Metadata request for topics: {:?}", metadata_req.topics);
 
         // Build broker metadata
-        let broker_host = "localhost".to_string();
+        // Use 127.0.0.1 instead of localhost to avoid IPv6 issues
+        let broker_host = "127.0.0.1".to_string();
         let broker_port = self.port;
 
         // Get topics from state manager
@@ -281,12 +282,49 @@ impl ConnectionHandler {
                             });
                         }
                         Ok(None) => {
-                            // Topic not found
-                            topics.push(ProtoTopicMetadata {
-                                error_code: ERROR_TOPIC_NOT_FOUND,
+                            // Topic not found - auto-create if enabled
+                            // TODO: Make this configurable via auto.create.topics.enable
+                            info!("Auto-creating topic {} from metadata request", topic_name);
+
+                            // Create topic with 1 partition for simplicity
+                            use crate::state::TopicMetadata;
+                            use std::collections::HashMap;
+                            let new_metadata = TopicMetadata {
                                 name: topic_name.clone(),
-                                partitions: vec![],
-                            });
+                                partitions: 1,
+                                replication_factor: 1,
+                                config: HashMap::new(),
+                                created_at: chrono::Utc::now(),
+                            };
+
+                            match self
+                                .state_manager
+                                .metadata()
+                                .create_topic(new_metadata.clone())
+                                .await
+                            {
+                                Ok(_) => {
+                                    topics.push(ProtoTopicMetadata {
+                                        error_code: ERROR_NONE,
+                                        name: topic_name.clone(),
+                                        partitions: vec![PartitionMetadata {
+                                            error_code: ERROR_NONE,
+                                            partition_id: 0,
+                                            leader: 0,
+                                            replicas: vec![0],
+                                            isr: vec![0],
+                                        }],
+                                    });
+                                }
+                                Err(e) => {
+                                    error!("Failed to auto-create topic {}: {}", topic_name, e);
+                                    topics.push(ProtoTopicMetadata {
+                                        error_code: ERROR_TOPIC_NOT_FOUND,
+                                        name: topic_name.clone(),
+                                        partitions: vec![],
+                                    });
+                                }
+                            }
                         }
                         Err(e) => {
                             error!("Failed to get topic metadata for {}: {}", topic_name, e);
