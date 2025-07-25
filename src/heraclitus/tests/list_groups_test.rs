@@ -354,54 +354,95 @@ dsn = "file://{}"
     let mut response_buf = vec![0u8; size as usize];
     stream.read_exact(&mut response_buf).await.unwrap();
 
-    // Parse response
-    let mut offset = 4; // Skip correlation ID
+    // Parse response - v4 uses compact encoding
+    let mut cursor = std::io::Cursor::new(&response_buf[..]);
+
+    // Skip correlation ID
+    cursor.set_position(4);
+
+    // v4 uses response header v1 with tagged fields
+    let tagged_fields_len = read_unsigned_varint(&mut cursor).unwrap();
+    // Skip tagged fields
+    for _ in 0..tagged_fields_len {
+        let _tag = read_unsigned_varint(&mut cursor).unwrap();
+        let _size = read_unsigned_varint(&mut cursor).unwrap();
+        cursor.set_position(cursor.position() + _size as u64);
+    }
 
     // Throttle time (v1+)
-    let _throttle_time = i32::from_be_bytes([
-        response_buf[offset],
-        response_buf[offset + 1],
-        response_buf[offset + 2],
-        response_buf[offset + 3],
-    ]);
-    offset += 4;
+    let mut throttle_bytes = [0u8; 4];
+    std::io::Read::read_exact(&mut cursor, &mut throttle_bytes).unwrap();
+    let _throttle_time = i32::from_be_bytes(throttle_bytes);
 
     // Error code
-    let error_code = i16::from_be_bytes([response_buf[offset], response_buf[offset + 1]]);
-    offset += 2;
+    let mut error_bytes = [0u8; 2];
+    std::io::Read::read_exact(&mut cursor, &mut error_bytes).unwrap();
+    let error_code = i16::from_be_bytes(error_bytes);
     assert_eq!(error_code, 0); // SUCCESS
 
-    // Groups array
-    let group_count = i32::from_be_bytes([
-        response_buf[offset],
-        response_buf[offset + 1],
-        response_buf[offset + 2],
-        response_buf[offset + 3],
-    ]);
-    offset += 4;
-    assert_eq!(group_count, 1); // Should have 1 group in Stable state
+    // Groups array (compact array in v4)
+    let group_count = read_unsigned_varint(&mut cursor).unwrap();
+    assert_eq!(group_count, 2); // Compact arrays use length + 1, so 2 means 1 group
 
-    // Group ID
-    let group_id_len =
-        i16::from_be_bytes([response_buf[offset], response_buf[offset + 1]]) as usize;
-    offset += 2;
-    let returned_group_id =
-        String::from_utf8(response_buf[offset..offset + group_id_len].to_vec()).unwrap();
-    offset += group_id_len;
+    // Group ID (compact string)
+    let returned_group_id = read_compact_string(&mut cursor).unwrap();
     assert_eq!(returned_group_id, group_id);
 
-    // Protocol type
-    let protocol_type_len =
-        i16::from_be_bytes([response_buf[offset], response_buf[offset + 1]]) as usize;
-    offset += 2;
-    let returned_protocol_type =
-        String::from_utf8(response_buf[offset..offset + protocol_type_len].to_vec()).unwrap();
-    offset += protocol_type_len;
+    // Protocol type (compact string)
+    let returned_protocol_type = read_compact_string(&mut cursor).unwrap();
     assert_eq!(returned_protocol_type, protocol_type);
 
-    // Group state (v4+)
-    let state_len = i16::from_be_bytes([response_buf[offset], response_buf[offset + 1]]) as usize;
-    offset += 2;
-    let state = String::from_utf8(response_buf[offset..offset + state_len].to_vec()).unwrap();
+    // Group state (v4+, compact string)
+    let state = read_compact_string(&mut cursor).unwrap();
     assert_eq!(state, "Stable");
+
+    // Top-level tagged fields
+    let _top_tagged = read_unsigned_varint(&mut cursor).unwrap();
+}
+
+// Helper functions for reading compact encoding
+fn read_unsigned_varint(cursor: &mut std::io::Cursor<&[u8]>) -> Result<u32, std::io::Error> {
+    let mut value = 0u32;
+    let mut i = 0;
+    loop {
+        if i > 4 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Varint too long",
+            ));
+        }
+        let mut byte = [0u8; 1];
+        std::io::Read::read_exact(cursor, &mut byte)?;
+        value |= ((byte[0] & 0x7F) as u32) << (i * 7);
+        if byte[0] & 0x80 == 0 {
+            break;
+        }
+        i += 1;
+    }
+    Ok(value)
+}
+
+fn read_compact_string(cursor: &mut std::io::Cursor<&[u8]>) -> Result<String, std::io::Error> {
+    let len = read_unsigned_varint(cursor)?;
+    if len == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Null string not expected",
+        ));
+    }
+
+    let actual_len = (len - 1) as usize;
+    if actual_len == 0 {
+        return Ok(String::new());
+    }
+
+    let mut bytes = vec![0u8; actual_len];
+    std::io::Read::read_exact(cursor, &mut bytes)?;
+
+    String::from_utf8(bytes).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Invalid UTF-8: {e}"),
+        )
+    })
 }
