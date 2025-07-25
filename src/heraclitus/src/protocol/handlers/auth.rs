@@ -23,11 +23,15 @@ impl ApiHandler for ApiVersionsHandler {
         info!("Handling API versions request v{}", request.api_version);
 
         // Track API versions requests
+        let api_key_str = request.api_key.to_string();
+        let api_version_str = request.api_version.to_string();
+        let api_name =
+            crate::metrics::protocol::ProtocolMetrics::api_name(request.api_key).to_string();
         context
             .metrics
             .protocol
             .request_count
-            .with_label_values(&["api_versions"])
+            .with_label_values(&[&api_key_str, &api_name, &api_version_str])
             .inc();
 
         // Parse request (minimal parsing needed)
