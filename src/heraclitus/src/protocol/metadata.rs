@@ -105,9 +105,9 @@ impl MetadataResponse {
                 buf.put_i32(self.throttle_time_ms);
             }
 
-            // Write brokers array
+            // Write brokers array (non-nullable)
             if is_compact {
-                write_unsigned_varint(&mut buf, (self.brokers.len() + 1) as u32);
+                write_unsigned_varint(&mut buf, self.brokers.len() as u32);
             } else {
                 buf.put_i32(self.brokers.len() as i32);
             }
@@ -149,9 +149,9 @@ impl MetadataResponse {
                 buf.put_i32(self.controller_id);
             }
 
-            // Write topics array
+            // Write topics array (non-nullable)
             if is_compact {
-                write_unsigned_varint(&mut buf, (self.topics.len() + 1) as u32);
+                write_unsigned_varint(&mut buf, self.topics.len() as u32);
             } else {
                 buf.put_i32(self.topics.len() as i32);
             }
@@ -179,9 +179,9 @@ impl MetadataResponse {
                     buf.put_u8(if topic.is_internal { 1 } else { 0 });
                 }
 
-                // Write partitions array
+                // Write partitions array (non-nullable)
                 if is_compact {
-                    write_unsigned_varint(&mut buf, (topic.partitions.len() + 1) as u32);
+                    write_unsigned_varint(&mut buf, topic.partitions.len() as u32);
                 } else {
                     buf.put_i32(topic.partitions.len() as i32);
                 }
@@ -191,9 +191,9 @@ impl MetadataResponse {
                     buf.put_i32(partition.partition_id);
                     buf.put_i32(partition.leader);
 
-                    // Write replicas array
+                    // Write replicas array (non-nullable)
                     if is_compact {
-                        write_unsigned_varint(&mut buf, (partition.replicas.len() + 1) as u32);
+                        write_unsigned_varint(&mut buf, partition.replicas.len() as u32);
                     } else {
                         buf.put_i32(partition.replicas.len() as i32);
                     }
@@ -201,9 +201,9 @@ impl MetadataResponse {
                         buf.put_i32(*replica);
                     }
 
-                    // Write ISR array
+                    // Write ISR array (non-nullable)
                     if is_compact {
-                        write_unsigned_varint(&mut buf, (partition.isr.len() + 1) as u32);
+                        write_unsigned_varint(&mut buf, partition.isr.len() as u32);
                     } else {
                         buf.put_i32(partition.isr.len() as i32);
                     }
@@ -473,6 +473,80 @@ mod tests {
 
         // Check topics
         assert_eq!(cursor.get_i32(), 0); // 0 topics
+    }
+
+    #[test]
+    fn test_metadata_v10_encoding() {
+        let response = MetadataResponse {
+            throttle_time_ms: 0,
+            brokers: vec![BrokerMetadata {
+                node_id: 0,
+                host: "localhost".to_string(),
+                port: 9092,
+            }],
+            cluster_id: Some("test-cluster".to_string()),
+            controller_id: 0,
+            topics: vec![],
+        };
+
+        let encoded = response.encode(10).unwrap();
+        println!("Encoded v10 response length: {}", encoded.len());
+
+        // Print hex dump
+        for (i, byte) in encoded.iter().enumerate() {
+            print!("{byte:02x} ");
+            if (i + 1) % 16 == 0 {
+                println!();
+            }
+        }
+        println!();
+
+        // Verify the encoding manually
+        let mut cursor = Cursor::new(&encoded[..]);
+
+        // Throttle time (4 bytes)
+        assert_eq!(cursor.get_i32(), 0);
+
+        // Brokers array length (varint, should be 1)
+        let brokers_len = read_unsigned_varint(&mut cursor).unwrap();
+        assert_eq!(brokers_len, 1);
+
+        // Broker fields
+        assert_eq!(cursor.get_i32(), 0); // node_id
+
+        // Host (compact string)
+        let host_len = read_unsigned_varint(&mut cursor).unwrap();
+        assert!(host_len > 0); // Should be "localhost" length + 1
+        let mut host_bytes = vec![0u8; (host_len - 1) as usize];
+        cursor.copy_to_slice(&mut host_bytes);
+        assert_eq!(String::from_utf8(host_bytes).unwrap(), "localhost");
+
+        assert_eq!(cursor.get_i32(), 9092); // port
+
+        // Broker tagged fields
+        let tagged_fields = read_unsigned_varint(&mut cursor).unwrap();
+        assert_eq!(tagged_fields, 0);
+
+        // Cluster ID (compact nullable string)
+        let cluster_id_len = read_unsigned_varint(&mut cursor).unwrap();
+        assert!(cluster_id_len > 0); // Should be "test-cluster" length + 1
+        let mut cluster_bytes = vec![0u8; (cluster_id_len - 1) as usize];
+        cursor.copy_to_slice(&mut cluster_bytes);
+        assert_eq!(String::from_utf8(cluster_bytes).unwrap(), "test-cluster");
+
+        // Controller ID
+        assert_eq!(cursor.get_i32(), 0);
+
+        // Topics array length (varint, should be 0)
+        let topics_len = read_unsigned_varint(&mut cursor).unwrap();
+        assert_eq!(topics_len, 0);
+
+        // Top-level tagged fields
+        let tagged_fields = read_unsigned_varint(&mut cursor).unwrap();
+        assert_eq!(tagged_fields, 0);
+
+        // Should have consumed all bytes
+        assert_eq!(cursor.remaining(), 0);
     }
 
     #[test]

@@ -76,6 +76,14 @@ pub struct ForgottenTopic {
 impl FetchRequest {
     /// Parse a FetchRequest from wire format
     pub fn parse(cursor: &mut Cursor<&[u8]>, api_version: i16) -> Result<Self> {
+        use tracing::debug;
+
+        debug!(
+            "Parsing Fetch request v{}, buffer has {} bytes",
+            api_version,
+            cursor.remaining()
+        );
+
         // Check minimum version
         if api_version < 0 {
             return Err(HeraclitusError::Protocol(format!(
@@ -249,8 +257,8 @@ pub struct FetchPartitionResponse {
     /// Preferred read replica (v11+)
     pub preferred_read_replica: i32,
 
-    /// Record data in RecordBatch format
-    pub records: Vec<u8>,
+    /// Record data in RecordBatch format (None for empty/null)
+    pub records: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -314,7 +322,10 @@ impl FetchResponse {
                 }
 
                 // Record data
-                crate::protocol::kafka_protocol::write_bytes(&mut buf, &partition_response.records);
+                crate::protocol::kafka_protocol::write_nullable_bytes(
+                    &mut buf,
+                    partition_response.records.as_deref(),
+                );
             }
         }
 
@@ -373,7 +384,7 @@ mod tests {
                     log_start_offset: 0,
                     aborted_transactions: vec![],
                     preferred_read_replica: -1,
-                    records: vec![1, 2, 3, 4], // Dummy data
+                    records: Some(vec![1, 2, 3, 4]), // Dummy data
                 }],
             }],
         };

@@ -32,32 +32,41 @@ async fn test_rdkafka_zstd_compression() -> Result<()> {
 async fn test_compression(compression_type: &str) -> Result<()> {
     init_test_tracing();
 
+    println!("Starting compression test for {compression_type}");
+
     // Start MinIO
     let minio =
         MinioTestContext::new(&format!("heraclitus-compression-{compression_type}")).await?;
 
     // Find available port and start Heraclitus
     let kafka_port = find_available_port().await?;
+    println!("Using Kafka port: {kafka_port}");
     let _heraclitus = HeraclitusTestContext::new(&minio, kafka_port).await?;
+    println!("Heraclitus started successfully");
 
     let bootstrap_servers = format!("127.0.0.1:{kafka_port}");
     let topic = format!("compression-test-{compression_type}");
 
     // Create producer with compression
+    println!("Creating producer with {compression_type} compression");
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &bootstrap_servers)
         .set("compression.type", compression_type)
         .set("message.timeout.ms", "5000")
+        //.set("debug", "all") // Enable debug logging
         .create()?;
 
     // Create consumer
+    println!("Creating consumer");
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", &bootstrap_servers)
         .set("group.id", format!("test-consumer-{compression_type}"))
         .set("enable.auto.commit", "false")
         .set("auto.offset.reset", "earliest")
+        //.set("debug", "consumer,fetch") // Enable debug logging
         .create()?;
 
+    println!("Subscribing to topic: {topic}");
     consumer.subscribe(&[&topic])?;
 
     // Produce a message with some compressible content

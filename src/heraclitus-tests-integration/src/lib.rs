@@ -79,6 +79,7 @@ async fn create_test_bucket(endpoint: &str, bucket: &str) -> Result<()> {
 pub struct HeraclitusTestContext {
     pub process: Child,
     pub kafka_port: u16,
+    pub http_port: u16,
     pub config_dir: TempDir,
     pub data_dir: TempDir,
 }
@@ -88,6 +89,9 @@ impl HeraclitusTestContext {
         // Create temporary directories
         let config_dir = TempDir::new()?;
         let data_dir = TempDir::new()?;
+
+        // Get a unique HTTP port
+        let http_port = find_available_port().await?;
 
         // Create configuration file
         let config_path = config_dir.path().join("heraclitus.toml");
@@ -105,7 +109,9 @@ state_prefix = "heraclitus-test/"
 batch_size = 100
 batch_timeout_ms = 100
 segment_size_mb = 1
-kafka_port = 9092
+kafka_port = {kafka_port}
+http_port = {http_port}
+metrics_enabled = false
 
 [discovery]
 type = "static"
@@ -160,6 +166,7 @@ connection_string = ":memory:"
         Ok(Self {
             process,
             kafka_port,
+            http_port,
             config_dir,
             data_dir,
         })

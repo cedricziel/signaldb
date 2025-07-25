@@ -27,6 +27,69 @@ impl RecordBatchBuilder {
         }
     }
 
+    /// Build an empty RecordBatch v2 format with proper headers
+    /// This is needed for Fetch responses when there are no messages
+    pub fn build_empty_batch(base_offset: i64, partition_leader_epoch: i32) -> Vec<u8> {
+        let mut batch = BytesMut::new();
+
+        // Base offset
+        batch.put_i64(base_offset);
+
+        // Batch length (61 bytes for minimal batch with no records)
+        // 4 (partition_leader_epoch) + 1 (magic) + 4 (crc) + 2 (attributes) +
+        // 4 (last_offset_delta) + 8 (base_timestamp) + 8 (max_timestamp) +
+        // 8 (producer_id) + 2 (producer_epoch) + 4 (base_sequence) +
+        // 4 (record_count) = 49 bytes
+        batch.put_i32(49);
+
+        // Partition leader epoch
+        batch.put_i32(partition_leader_epoch);
+
+        // Magic byte (always 2 for v2)
+        batch.put_i8(2);
+
+        // CRC placeholder (will calculate below)
+        let crc_pos = batch.len();
+        batch.put_u32(0);
+
+        // Attributes (0 = no compression, CreateTime)
+        batch.put_i16(0);
+
+        // Last offset delta (0 for empty batch)
+        batch.put_i32(0);
+
+        // Base timestamp (current time)
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        batch.put_i64(timestamp);
+
+        // Max timestamp (same as base for empty batch)
+        batch.put_i64(timestamp);
+
+        // Producer ID (-1 for non-transactional)
+        batch.put_i64(-1);
+
+        // Producer epoch (-1 for non-transactional)
+        batch.put_i16(-1);
+
+        // Base sequence (-1 for non-transactional)
+        batch.put_i32(-1);
+
+        // Record count (0 for empty batch)
+        batch.put_i32(0);
+
+        // No records data
+
+        // Calculate and update CRC32C (from attributes to end)
+        let crc_data = &batch[crc_pos + 4..]; // Skip the CRC field itself
+        let crc = crc32c::crc32c(crc_data);
+        batch[crc_pos..crc_pos + 4].copy_from_slice(&crc.to_be_bytes());
+
+        batch.to_vec()
+    }
+
     /// Add a message to the batch
     pub fn add_message(&mut self, message: KafkaMessage) {
         self.messages.push(message);
@@ -116,8 +179,9 @@ impl RecordBatchBuilder {
         let batch_length = (batch.len() - 12) as i32; // 8 bytes offset + 4 bytes length
         batch[batch_length_pos..batch_length_pos + 4].copy_from_slice(&batch_length.to_be_bytes());
 
-        // Calculate and update CRC32C (from magic byte to end)
-        let crc_data = &batch[batch_length_pos + 8..]; // Skip offset, length, partition_leader_epoch, magic
+        // Calculate and update CRC32C (from attributes to end)
+        // CRC is calculated from the byte after the CRC field to the end of the batch
+        let crc_data = &batch[crc_pos + 4..]; // Skip everything up to and including CRC field
         let crc = crc32c::crc32c(crc_data);
         batch[crc_pos..crc_pos + 4].copy_from_slice(&crc.to_be_bytes());
 

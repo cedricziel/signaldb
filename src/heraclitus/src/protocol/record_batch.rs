@@ -121,13 +121,40 @@ impl RecordBatch {
         let compression_type = Self::extract_compression_type(attributes);
 
         // Read records
+        let current_position = cursor.position() as usize;
+
+        // Check if we have any data left for records
+        if current_position >= data.len() {
+            // No record data, return empty batch
+            return Ok(RecordBatch {
+                base_offset,
+                batch_length,
+                partition_leader_epoch,
+                magic,
+                crc,
+                attributes,
+                last_offset_delta,
+                base_timestamp,
+                max_timestamp,
+                producer_id,
+                producer_epoch,
+                base_sequence,
+                records: Vec::new(),
+            });
+        }
+
         let records_data = if compression_type != CompressionType::None {
             // If compressed, decompress the remaining data
-            let compressed_data = &data[cursor.position() as usize..];
-            Self::decompress(compressed_data, compression_type)?
+            let compressed_data = &data[current_position..];
+            if compressed_data.is_empty() {
+                // No compressed data, return empty records
+                Vec::new()
+            } else {
+                Self::decompress(compressed_data, compression_type)?
+            }
         } else {
             // Uncompressed - just use remaining data
-            data[cursor.position() as usize..].to_vec()
+            data[current_position..].to_vec()
         };
 
         let records = Self::parse_records(&records_data, record_count)?;
@@ -225,6 +252,13 @@ impl RecordBatch {
         let key = if key_length < 0 {
             None
         } else {
+            if cursor.remaining() < key_length as usize {
+                return Err(HeraclitusError::Protocol(format!(
+                    "Insufficient data for key: need {} bytes, have {} remaining",
+                    key_length,
+                    cursor.remaining()
+                )));
+            }
             let mut key_data = vec![0u8; key_length as usize];
             cursor.copy_to_slice(&mut key_data);
             Some(key_data)
@@ -236,6 +270,13 @@ impl RecordBatch {
             return Err(HeraclitusError::Protocol(
                 "Null value not supported in records".to_string(),
             ));
+        }
+        if cursor.remaining() < value_length as usize {
+            return Err(HeraclitusError::Protocol(format!(
+                "Insufficient data for value: need {} bytes, have {} remaining",
+                value_length,
+                cursor.remaining()
+            )));
         }
         let mut value = vec![0u8; value_length as usize];
         cursor.copy_to_slice(&mut value);
@@ -269,6 +310,13 @@ impl RecordBatch {
             ));
         }
 
+        if cursor.remaining() < key_length as usize {
+            return Err(HeraclitusError::Protocol(format!(
+                "Insufficient data for header key: need {} bytes, have {} remaining",
+                key_length,
+                cursor.remaining()
+            )));
+        }
         let mut key_data = vec![0u8; key_length as usize];
         cursor.copy_to_slice(&mut key_data);
         let key = String::from_utf8(key_data)
@@ -278,6 +326,13 @@ impl RecordBatch {
         let value = if value_length < 0 {
             Vec::new()
         } else {
+            if cursor.remaining() < value_length as usize {
+                return Err(HeraclitusError::Protocol(format!(
+                    "Insufficient data for header value: need {} bytes, have {} remaining",
+                    value_length,
+                    cursor.remaining()
+                )));
+            }
             let mut value_data = vec![0u8; value_length as usize];
             cursor.copy_to_slice(&mut value_data);
             value_data

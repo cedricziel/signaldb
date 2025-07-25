@@ -364,7 +364,10 @@ impl ConnectionHandler {
         let mut cursor = Cursor::new(&request.body[..]);
         let metadata_req = MetadataRequest::parse(&mut cursor, request.api_version)?;
 
-        debug!("Metadata request for topics: {:?}", metadata_req.topics);
+        info!(
+            "Metadata request v{} for topics: {:?}",
+            request.api_version, metadata_req.topics
+        );
 
         // Build broker metadata
         // Use 127.0.0.1 instead of localhost to avoid IPv6 issues
@@ -517,8 +520,19 @@ impl ConnectionHandler {
             topics,
         };
 
+        info!(
+            "Metadata response: {} brokers, {} topics",
+            response.brokers.len(),
+            response.topics.len()
+        );
+
         // Encode response
         let response_body = response.encode(request.api_version)?;
+        info!(
+            "Metadata response v{} encoded: {} bytes",
+            request.api_version,
+            response_body.len()
+        );
 
         // Build complete response with header
         let mut full_response = BytesMut::new();
@@ -899,16 +913,21 @@ impl ConnectionHandler {
         use crate::protocol::{CompressionType, RecordBatchBuilder};
         use crate::storage::MessageReader;
 
+        info!("Handling Fetch request v{}", request.api_version);
+
         // Parse fetch request
         let mut cursor = Cursor::new(&request.body[..]);
         let fetch_req = FetchRequest::parse(&mut cursor, request.api_version)?;
 
-        debug!(
-            "Fetch request: replica_id={}, max_wait_ms={}, min_bytes={}, topics={}",
+        info!(
+            "Fetch request parsed: replica_id={}, max_wait_ms={}, min_bytes={}, max_bytes={}, topics={}, session_id={}, session_epoch={}",
             fetch_req.replica_id,
             fetch_req.max_wait_ms,
             fetch_req.min_bytes,
-            fetch_req.topics.len()
+            fetch_req.max_bytes,
+            fetch_req.topics.len(),
+            fetch_req.session_id,
+            fetch_req.session_epoch
         );
 
         // Create message reader
@@ -939,7 +958,7 @@ impl ConnectionHandler {
                             log_start_offset: -1,
                             aborted_transactions: vec![],
                             preferred_read_replica: -1,
-                            records: vec![],
+                            records: None,
                         }],
                     });
                     continue;
@@ -956,7 +975,7 @@ impl ConnectionHandler {
                             log_start_offset: -1,
                             aborted_transactions: vec![],
                             preferred_read_replica: -1,
-                            records: vec![],
+                            records: None,
                         }],
                     });
                     continue;
@@ -979,7 +998,7 @@ impl ConnectionHandler {
                         log_start_offset: -1,
                         aborted_transactions: vec![],
                         preferred_read_replica: -1,
-                        records: vec![],
+                        records: None,
                     });
                     continue;
                 }
@@ -1010,7 +1029,7 @@ impl ConnectionHandler {
                         log_start_offset,
                         aborted_transactions: vec![],
                         preferred_read_replica: -1,
-                        records: vec![],
+                        records: None,
                     });
                     continue;
                 }
@@ -1027,7 +1046,7 @@ impl ConnectionHandler {
                         log_start_offset,
                         aborted_transactions: vec![],
                         preferred_read_replica: -1,
-                        records: vec![],
+                        records: None,
                     });
                     continue;
                 }
@@ -1061,7 +1080,7 @@ impl ConnectionHandler {
                             log_start_offset,
                             aborted_transactions: vec![],
                             preferred_read_replica: -1,
-                            records: vec![],
+                            records: None,
                         });
                         continue;
                     }
@@ -1069,20 +1088,20 @@ impl ConnectionHandler {
 
                 // Build RecordBatch from messages
                 let records = if messages.is_empty() {
-                    vec![]
+                    None
                 } else {
                     let mut builder = RecordBatchBuilder::new(CompressionType::None);
                     builder.add_messages(messages);
                     match builder.build() {
-                        Ok(batch) => batch,
+                        Ok(batch) => Some(batch),
                         Err(e) => {
                             error!("Failed to build record batch: {}", e);
-                            vec![]
+                            None
                         }
                     }
                 };
 
-                total_bytes += records.len();
+                total_bytes += records.as_ref().map(|r| r.len()).unwrap_or(0);
 
                 partition_responses.push(FetchPartitionResponse {
                     partition: partition_index,
@@ -1105,18 +1124,46 @@ impl ConnectionHandler {
         let response = FetchResponse {
             throttle_time_ms: 0,
             error_code: ERROR_NONE,
-            session_id: 0, // No session support yet
+            session_id: fetch_req.session_id, // Echo back the session ID
             responses: topic_responses,
         };
 
+        info!(
+            "Encoding Fetch response v{} with {} topics",
+            request.api_version,
+            response.responses.len()
+        );
+        for topic in &response.responses {
+            info!(
+                "  Topic '{}' with {} partitions",
+                topic.topic,
+                topic.partitions.len()
+            );
+            for part in &topic.partitions {
+                info!(
+                    "    Partition {}: error={}, hw={}, records_size={}",
+                    part.partition,
+                    part.error_code,
+                    part.high_watermark,
+                    part.records.as_ref().map(|r| r.len()).unwrap_or(0)
+                );
+            }
+        }
+
         // Encode response
         let response_body = response.encode(request.api_version)?;
+
+        info!("Fetch response body size: {} bytes", response_body.len());
 
         // Build complete response with header
         let mut full_response = BytesMut::new();
         write_response_header(&mut full_response, request.correlation_id);
         full_response.extend_from_slice(&response_body);
 
+        info!(
+            "Sending Fetch response, total size: {} bytes",
+            full_response.len()
+        );
         Ok(full_response.to_vec())
     }
 

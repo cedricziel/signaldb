@@ -169,7 +169,7 @@ fn test_fetch_response_with_record_batch() {
                 log_start_offset: 0,
                 aborted_transactions: vec![],
                 preferred_read_replica: -1,
-                records: record_batch_data.clone(),
+                records: Some(record_batch_data.clone()),
             }],
         }],
     };
