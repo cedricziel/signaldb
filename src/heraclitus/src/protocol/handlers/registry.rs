@@ -30,8 +30,8 @@ impl HandlerRegistry {
         handlers.insert(19, Arc::new(super::admin::CreateTopicsHandler));
         handlers.insert(20, Arc::new(super::admin::DeleteTopicsHandler));
         handlers.insert(22, Arc::new(super::produce::InitProducerIdHandler));
-        handlers.insert(36, Arc::new(super::auth::SaslHandshakeHandler));
-        handlers.insert(37, Arc::new(super::auth::SaslAuthenticateHandler));
+        handlers.insert(17, Arc::new(super::auth::SaslHandshakeHandler));
+        handlers.insert(36, Arc::new(super::auth::SaslAuthenticateHandler));
 
         Self { handlers }
     }
