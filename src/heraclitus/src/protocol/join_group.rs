@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::protocol::kafka_protocol::*;
 use bytes::{Buf, BufMut, BytesMut};
 use std::io::Cursor;
 
@@ -43,8 +44,16 @@ pub struct JoinGroupMember {
 impl JoinGroupRequest {
     /// Parse a JoinGroup request from bytes
     pub fn parse(cursor: &mut Cursor<&[u8]>, api_version: i16) -> Result<Self> {
+        let is_compact = api_version >= 6; // JoinGroup uses flexible versions from v6+
+
         // group_id: string
-        let group_id = crate::protocol::kafka_protocol::read_string(cursor)?;
+        let group_id = if is_compact {
+            read_compact_string(cursor).map_err(|e| {
+                crate::error::HeraclitusError::Protocol(format!("Failed to read group_id: {e}"))
+            })?
+        } else {
+            read_string(cursor)?
+        };
 
         // session_timeout_ms: int32
         let session_timeout_ms = cursor.get_i32();
@@ -57,26 +66,91 @@ impl JoinGroupRequest {
         };
 
         // member_id: string
-        let member_id = crate::protocol::kafka_protocol::read_string(cursor)?;
+        let member_id = if is_compact {
+            read_compact_string(cursor).map_err(|e| {
+                crate::error::HeraclitusError::Protocol(format!("Failed to read member_id: {e}"))
+            })?
+        } else {
+            read_string(cursor)?
+        };
 
         // group_instance_id: nullable_string (v5+)
         let group_instance_id = if api_version >= 5 {
-            crate::protocol::kafka_protocol::read_nullable_string(cursor)?
+            if is_compact {
+                read_compact_nullable_string(cursor).map_err(|e| {
+                    crate::error::HeraclitusError::Protocol(format!(
+                        "Failed to read group_instance_id: {e}"
+                    ))
+                })?
+            } else {
+                read_nullable_string(cursor)?
+            }
         } else {
             None
         };
 
         // protocol_type: string
-        let protocol_type = crate::protocol::kafka_protocol::read_string(cursor)?;
+        let protocol_type = if is_compact {
+            read_compact_string(cursor).map_err(|e| {
+                crate::error::HeraclitusError::Protocol(format!(
+                    "Failed to read protocol_type: {e}"
+                ))
+            })?
+        } else {
+            read_string(cursor)?
+        };
 
         // protocols: [string, bytes]
-        let protocol_count = cursor.get_i32() as usize;
+        let protocol_count = if is_compact {
+            let len = read_unsigned_varint(cursor).map_err(|e| {
+                crate::error::HeraclitusError::Protocol(format!(
+                    "Failed to read protocol count: {e}"
+                ))
+            })?;
+            if len == 0 {
+                return Err(crate::error::HeraclitusError::Protocol(
+                    "Null protocol array not expected".to_string(),
+                ));
+            }
+            (len - 1) as usize
+        } else {
+            cursor.get_i32() as usize
+        };
+
         let mut protocols = Vec::with_capacity(protocol_count);
 
         for _ in 0..protocol_count {
-            let name = crate::protocol::kafka_protocol::read_string(cursor)?;
-            let metadata = crate::protocol::kafka_protocol::read_bytes(cursor)?;
+            let name = if is_compact {
+                read_compact_string(cursor).map_err(|e| {
+                    crate::error::HeraclitusError::Protocol(format!(
+                        "Failed to read protocol name: {e}"
+                    ))
+                })?
+            } else {
+                read_string(cursor)?
+            };
+
+            let metadata = if is_compact {
+                read_compact_bytes(cursor).map_err(|e| {
+                    crate::error::HeraclitusError::Protocol(format!(
+                        "Failed to read protocol metadata: {e}"
+                    ))
+                })?
+            } else {
+                read_bytes(cursor)?
+            };
+
             protocols.push(GroupProtocol { name, metadata });
+        }
+
+        // Handle tagged fields for newer versions
+        if is_compact {
+            // Read tagged fields (empty for now)
+            let _num_tagged_fields = read_unsigned_varint(cursor).map_err(|e| {
+                crate::error::HeraclitusError::Protocol(format!(
+                    "Failed to read tagged fields: {e}"
+                ))
+            })?;
         }
 
         Ok(JoinGroupRequest {
@@ -149,6 +223,7 @@ impl JoinGroupResponse {
     /// Encode the response to bytes
     pub fn encode(&self, api_version: i16) -> Result<Vec<u8>> {
         let mut buf = BytesMut::new();
+        let is_compact = api_version >= 6; // JoinGroup uses flexible versions from v6+
 
         // throttle_time_ms: int32 (v2+)
         if api_version >= 2 {
@@ -163,41 +238,71 @@ impl JoinGroupResponse {
 
         // protocol_type: string (v7+)
         if api_version >= 7 {
-            crate::protocol::kafka_protocol::write_nullable_string(
-                &mut buf,
-                self.protocol_type.as_deref(),
-            );
+            if is_compact {
+                write_compact_nullable_string(&mut buf, self.protocol_type.as_deref());
+            } else {
+                write_nullable_string(&mut buf, self.protocol_type.as_deref());
+            }
         }
 
         // protocol_name: string
-        crate::protocol::kafka_protocol::write_nullable_string(
-            &mut buf,
-            self.protocol_name.as_deref(),
-        );
+        if is_compact {
+            write_compact_nullable_string(&mut buf, self.protocol_name.as_deref());
+        } else {
+            write_nullable_string(&mut buf, self.protocol_name.as_deref());
+        }
 
         // leader: string
-        crate::protocol::kafka_protocol::write_string(&mut buf, &self.leader);
+        if is_compact {
+            write_compact_string(&mut buf, &self.leader);
+        } else {
+            write_string(&mut buf, &self.leader);
+        }
 
         // member_id: string
-        crate::protocol::kafka_protocol::write_string(&mut buf, &self.member_id);
+        if is_compact {
+            write_compact_string(&mut buf, &self.member_id);
+        } else {
+            write_string(&mut buf, &self.member_id);
+        }
 
         // members: [member_id, group_instance_id, metadata]
-        buf.put_i32(self.members.len() as i32);
+        if is_compact {
+            // Compact arrays use length + 1
+            write_unsigned_varint(&mut buf, (self.members.len() + 1) as u32);
+        } else {
+            buf.put_i32(self.members.len() as i32);
+        }
 
         for member in &self.members {
             // member_id: string
-            crate::protocol::kafka_protocol::write_string(&mut buf, &member.member_id);
+            if is_compact {
+                write_compact_string(&mut buf, &member.member_id);
+            } else {
+                write_string(&mut buf, &member.member_id);
+            }
 
             // group_instance_id: nullable_string (v5+)
             if api_version >= 5 {
-                crate::protocol::kafka_protocol::write_nullable_string(
-                    &mut buf,
-                    member.group_instance_id.as_deref(),
-                );
+                if is_compact {
+                    write_compact_nullable_string(&mut buf, member.group_instance_id.as_deref());
+                } else {
+                    write_nullable_string(&mut buf, member.group_instance_id.as_deref());
+                }
             }
 
             // metadata: bytes
-            crate::protocol::kafka_protocol::write_bytes(&mut buf, &member.metadata);
+            if is_compact {
+                write_compact_bytes(&mut buf, &member.metadata);
+            } else {
+                write_bytes(&mut buf, &member.metadata);
+            }
+        }
+
+        // Handle tagged fields for newer versions
+        if is_compact {
+            // Write empty tagged fields
+            write_unsigned_varint(&mut buf, 0);
         }
 
         Ok(buf.to_vec())
@@ -324,5 +429,125 @@ mod tests {
 
         // members array should be empty for followers
         assert_eq!(cursor.get_i32(), 0);
+    }
+
+    #[test]
+    fn test_join_group_request_parse_v6_compact() {
+        let mut buf = BytesMut::new();
+
+        // group_id: "test-group" (compact string)
+        write_compact_string(&mut buf, "test-group");
+
+        // session_timeout_ms: 30000
+        buf.put_i32(30000);
+
+        // rebalance_timeout_ms: 45000
+        buf.put_i32(45000);
+
+        // member_id: "member-1" (compact string)
+        write_compact_string(&mut buf, "member-1");
+
+        // group_instance_id: Some("instance-1") (compact nullable string)
+        write_compact_nullable_string(&mut buf, Some("instance-1"));
+
+        // protocol_type: "consumer" (compact string)
+        write_compact_string(&mut buf, "consumer");
+
+        // protocols: 1 protocol (compact array)
+        write_unsigned_varint(&mut buf, 2); // 1 + 1 for compact array
+
+        // protocol name: "range" (compact string)
+        write_compact_string(&mut buf, "range");
+
+        // protocol metadata: [1, 2, 3] (compact bytes)
+        write_compact_bytes(&mut buf, &[1, 2, 3]);
+
+        // Tagged fields (empty)
+        write_unsigned_varint(&mut buf, 0);
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let request = JoinGroupRequest::parse(&mut cursor, 6).unwrap();
+
+        assert_eq!(request.group_id, "test-group");
+        assert_eq!(request.session_timeout_ms, 30000);
+        assert_eq!(request.rebalance_timeout_ms, 45000);
+        assert_eq!(request.member_id, "member-1");
+        assert_eq!(request.group_instance_id, Some("instance-1".to_string()));
+        assert_eq!(request.protocol_type, "consumer");
+        assert_eq!(request.protocols.len(), 1);
+        assert_eq!(request.protocols[0].name, "range");
+        assert_eq!(request.protocols[0].metadata, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_join_group_response_encode_v6_compact() {
+        let members = vec![
+            JoinGroupMember {
+                member_id: "member-1".to_string(),
+                group_instance_id: Some("instance-1".to_string()),
+                metadata: vec![1, 2, 3],
+            },
+            JoinGroupMember {
+                member_id: "member-2".to_string(),
+                group_instance_id: None,
+                metadata: vec![4, 5, 6],
+            },
+        ];
+
+        let response = JoinGroupResponse::new_leader(
+            1,
+            "range".to_string(),
+            "member-1".to_string(),
+            "member-1".to_string(),
+            members,
+        );
+
+        let encoded = response.encode(6).unwrap();
+        let mut cursor = Cursor::new(&encoded[..]);
+
+        // throttle_time_ms
+        assert_eq!(cursor.get_i32(), 0);
+
+        // error_code
+        assert_eq!(cursor.get_i16(), 0);
+
+        // generation_id
+        assert_eq!(cursor.get_i32(), 1);
+
+        // protocol_name (compact nullable string)
+        let protocol_name = read_compact_nullable_string(&mut cursor).unwrap();
+        assert_eq!(protocol_name, Some("range".to_string()));
+
+        // leader (compact string)
+        let leader = read_compact_string(&mut cursor).unwrap();
+        assert_eq!(leader, "member-1");
+
+        // member_id (compact string)
+        let member_id = read_compact_string(&mut cursor).unwrap();
+        assert_eq!(member_id, "member-1");
+
+        // members array (compact array)
+        let member_count = read_unsigned_varint(&mut cursor).unwrap();
+        assert_eq!(member_count, 3); // 2 + 1
+
+        // Member 1
+        let member1_id = read_compact_string(&mut cursor).unwrap();
+        assert_eq!(member1_id, "member-1");
+        let instance1_id = read_compact_nullable_string(&mut cursor).unwrap();
+        assert_eq!(instance1_id, Some("instance-1".to_string()));
+        let metadata1 = read_compact_bytes(&mut cursor).unwrap();
+        assert_eq!(metadata1, vec![1, 2, 3]);
+
+        // Member 2
+        let member2_id = read_compact_string(&mut cursor).unwrap();
+        assert_eq!(member2_id, "member-2");
+        let instance2_id = read_compact_nullable_string(&mut cursor).unwrap();
+        assert_eq!(instance2_id, None);
+        let metadata2 = read_compact_bytes(&mut cursor).unwrap();
+        assert_eq!(metadata2, vec![4, 5, 6]);
+
+        // Tagged fields
+        let tagged_fields_len = read_unsigned_varint(&mut cursor).unwrap();
+        assert_eq!(tagged_fields_len, 0);
     }
 }
