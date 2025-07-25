@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::protocol::kafka_protocol::*;
 use bytes::{Buf, BufMut, BytesMut};
 use std::io::Cursor;
 
@@ -22,26 +23,52 @@ pub struct HeartbeatResponse {
 impl HeartbeatRequest {
     /// Parse a Heartbeat request from bytes
     pub fn parse(cursor: &mut Cursor<&[u8]>, api_version: i16) -> Result<Self> {
+        let is_compact = api_version >= 4; // Heartbeat uses flexible versions from v4+
+
         // group_id: string
-        let group_id = crate::protocol::kafka_protocol::read_string(cursor)?;
+        let group_id = if is_compact {
+            read_compact_string(cursor).map_err(|e| {
+                crate::error::HeraclitusError::Protocol(format!("Failed to read group_id: {e}"))
+            })?
+        } else {
+            read_string(cursor)?
+        };
 
         // generation_id: int32
         let generation_id = cursor.get_i32();
 
         // member_id: string
-        let member_id = crate::protocol::kafka_protocol::read_string(cursor)?;
+        let member_id = if is_compact {
+            read_compact_string(cursor).map_err(|e| {
+                crate::error::HeraclitusError::Protocol(format!("Failed to read member_id: {e}"))
+            })?
+        } else {
+            read_string(cursor)?
+        };
 
         // group_instance_id: nullable string (v3+)
         let group_instance_id = if api_version >= 3 {
-            crate::protocol::kafka_protocol::read_nullable_string(cursor)?
+            if is_compact {
+                read_compact_nullable_string(cursor).map_err(|e| {
+                    crate::error::HeraclitusError::Protocol(format!(
+                        "Failed to read group_instance_id: {e}"
+                    ))
+                })?
+            } else {
+                read_nullable_string(cursor)?
+            }
         } else {
             None
         };
 
         // Handle tagged fields for newer versions
-        if api_version >= 4 {
+        if is_compact {
             // Read tagged fields (empty for now)
-            let _num_tagged_fields = read_unsigned_varint(cursor)?;
+            let _num_tagged_fields = read_unsigned_varint(cursor).map_err(|e| {
+                crate::error::HeraclitusError::Protocol(format!(
+                    "Failed to read tagged fields: {e}"
+                ))
+            })?;
         }
 
         Ok(HeartbeatRequest {
@@ -90,38 +117,6 @@ impl HeartbeatResponse {
 
         Ok(buf.to_vec())
     }
-}
-
-fn read_unsigned_varint(cursor: &mut Cursor<&[u8]>) -> Result<u32> {
-    let mut value = 0u32;
-    let mut i = 0;
-
-    loop {
-        if i > 4 {
-            return Err(crate::error::HeraclitusError::Protocol(
-                "Varint is too long".to_string(),
-            ));
-        }
-
-        let b = cursor.get_u8();
-        value |= ((b & 0x7F) as u32) << (i * 7);
-
-        if (b & 0x80) == 0 {
-            break;
-        }
-
-        i += 1;
-    }
-
-    Ok(value)
-}
-
-fn write_unsigned_varint(buffer: &mut BytesMut, mut value: u32) {
-    while (value & 0xFFFFFF80) != 0 {
-        buffer.put_u8(((value & 0x7F) | 0x80) as u8);
-        value >>= 7;
-    }
-    buffer.put_u8((value & 0x7F) as u8);
 }
 
 #[cfg(test)]
@@ -198,5 +193,47 @@ mod tests {
         let mut cursor = Cursor::new(&encoded[..]);
         assert_eq!(cursor.get_i32(), 0); // throttle_time_ms
         assert_eq!(cursor.get_i16(), 27); // error_code
+    }
+
+    #[test]
+    fn test_heartbeat_request_parse_v4_compact() {
+        let mut buf = BytesMut::new();
+
+        // group_id: "test-group" (compact string)
+        write_compact_string(&mut buf, "test-group");
+
+        // generation_id: 3
+        buf.put_i32(3);
+
+        // member_id: "member-3" (compact string)
+        write_compact_string(&mut buf, "member-3");
+
+        // group_instance_id: None (compact nullable string)
+        write_compact_nullable_string(&mut buf, None);
+
+        // Tagged fields (empty)
+        write_unsigned_varint(&mut buf, 0);
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let request = HeartbeatRequest::parse(&mut cursor, 4).unwrap();
+
+        assert_eq!(request.group_id, "test-group");
+        assert_eq!(request.generation_id, 3);
+        assert_eq!(request.member_id, "member-3");
+        assert_eq!(request.group_instance_id, None);
+    }
+
+    #[test]
+    fn test_heartbeat_response_encode_v4_compact() {
+        let response = HeartbeatResponse::success();
+        let encoded = response.encode(4).unwrap();
+
+        let mut cursor = Cursor::new(&encoded[..]);
+        assert_eq!(cursor.get_i32(), 0); // throttle_time_ms
+        assert_eq!(cursor.get_i16(), 0); // error_code
+
+        // Tagged fields
+        let tagged_fields_len = read_unsigned_varint(&mut cursor).unwrap();
+        assert_eq!(tagged_fields_len, 0);
     }
 }

@@ -236,6 +236,193 @@ pub const ERROR_TOPIC_ALREADY_EXISTS: i16 = 36;
 pub const ERROR_INVALID_TOPIC_EXCEPTION: i16 = 17;
 pub const ERROR_UNKNOWN_SERVER_ERROR: i16 = -1;
 
+// Compact encoding helper functions
+
+/// Read an unsigned varint from buffer
+pub fn read_unsigned_varint(buf: &mut Cursor<&[u8]>) -> Result<u32, std::io::Error> {
+    let mut value = 0u32;
+    let mut i = 0;
+    loop {
+        if i > 4 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Varint too long",
+            ));
+        }
+        if buf.remaining() < 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Not enough bytes for varint",
+            ));
+        }
+        let byte = buf.get_u8();
+        value |= ((byte & 0x7F) as u32) << (i * 7);
+        if byte & 0x80 == 0 {
+            break;
+        }
+        i += 1;
+    }
+    Ok(value)
+}
+
+/// Read a signed varint from buffer (zigzag encoded)
+#[allow(dead_code)]
+pub fn read_signed_varint(buf: &mut Cursor<&[u8]>) -> Result<i32, std::io::Error> {
+    let unsigned = read_unsigned_varint(buf)?;
+    Ok(((unsigned >> 1) as i32) ^ -((unsigned & 1) as i32))
+}
+
+/// Read a compact string from buffer
+pub fn read_compact_string(buf: &mut Cursor<&[u8]>) -> Result<String, std::io::Error> {
+    let len = read_unsigned_varint(buf)?;
+    if len == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Null string not expected here",
+        ));
+    }
+
+    let actual_len = (len - 1) as usize;
+    if actual_len == 0 {
+        return Ok(String::new());
+    }
+
+    if buf.remaining() < actual_len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "Not enough bytes for compact string data",
+        ));
+    }
+
+    let mut bytes = vec![0u8; actual_len];
+    buf.copy_to_slice(&mut bytes);
+
+    String::from_utf8(bytes).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Invalid UTF-8: {e}"),
+        )
+    })
+}
+
+/// Read a nullable compact string from buffer
+pub fn read_compact_nullable_string(
+    buf: &mut Cursor<&[u8]>,
+) -> Result<Option<String>, std::io::Error> {
+    let len = read_unsigned_varint(buf)?;
+    if len == 0 {
+        return Ok(None);
+    }
+
+    let actual_len = (len - 1) as usize;
+    if actual_len == 0 {
+        return Ok(Some(String::new()));
+    }
+
+    if buf.remaining() < actual_len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "Not enough bytes for compact string data",
+        ));
+    }
+
+    let mut bytes = vec![0u8; actual_len];
+    buf.copy_to_slice(&mut bytes);
+
+    String::from_utf8(bytes).map(Some).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Invalid UTF-8: {e}"),
+        )
+    })
+}
+
+/// Read compact bytes from buffer
+pub fn read_compact_bytes(buf: &mut Cursor<&[u8]>) -> Result<Vec<u8>, std::io::Error> {
+    let len = read_unsigned_varint(buf)?;
+    if len == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Null bytes not expected here",
+        ));
+    }
+
+    let actual_len = (len - 1) as usize;
+    if actual_len == 0 {
+        return Ok(Vec::new());
+    }
+
+    if buf.remaining() < actual_len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "Not enough bytes for compact bytes data",
+        ));
+    }
+
+    let mut bytes = vec![0u8; actual_len];
+    buf.copy_to_slice(&mut bytes);
+    Ok(bytes)
+}
+
+/// Read nullable compact bytes from buffer
+#[allow(dead_code)]
+pub fn read_compact_nullable_bytes(
+    buf: &mut Cursor<&[u8]>,
+) -> Result<Option<Vec<u8>>, std::io::Error> {
+    let len = read_unsigned_varint(buf)?;
+    if len == 0 {
+        return Ok(None);
+    }
+
+    let actual_len = (len - 1) as usize;
+    if actual_len == 0 {
+        return Ok(Some(Vec::new()));
+    }
+
+    if buf.remaining() < actual_len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "Not enough bytes for compact bytes data",
+        ));
+    }
+
+    let mut bytes = vec![0u8; actual_len];
+    buf.copy_to_slice(&mut bytes);
+    Ok(Some(bytes))
+}
+
+/// Write a compact string to buffer
+pub fn write_compact_string(buf: &mut BytesMut, s: &str) {
+    let bytes = s.as_bytes();
+    // Compact strings use length + 1 (0 means null, 1 means empty string)
+    write_unsigned_varint(buf, (bytes.len() + 1) as u32);
+    buf.put_slice(bytes);
+}
+
+/// Write a nullable compact string to buffer
+pub fn write_compact_nullable_string(buf: &mut BytesMut, s: Option<&str>) {
+    match s {
+        Some(s) => write_compact_string(buf, s),
+        None => write_unsigned_varint(buf, 0),
+    }
+}
+
+/// Write compact bytes to buffer
+pub fn write_compact_bytes(buf: &mut BytesMut, bytes: &[u8]) {
+    // Compact bytes use length + 1 (0 means null)
+    write_unsigned_varint(buf, (bytes.len() + 1) as u32);
+    buf.put_slice(bytes);
+}
+
+/// Write nullable compact bytes to buffer
+#[allow(dead_code)]
+pub fn write_compact_nullable_bytes(buf: &mut BytesMut, bytes: Option<&[u8]>) {
+    match bytes {
+        Some(bytes) => write_compact_bytes(buf, bytes),
+        None => write_unsigned_varint(buf, 0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,5 +590,112 @@ mod tests {
         let mut cursor = Cursor::new(&buf[..]);
         let len = cursor.get_i32();
         assert_eq!(len, -1);
+    }
+
+    #[test]
+    fn test_signed_varint_encoding() {
+        // Test zigzag encoding/decoding
+        let test_cases = vec![
+            (0i32, 0u32),
+            (-1i32, 1u32),
+            (1i32, 2u32),
+            (-2i32, 3u32),
+            (2i32, 4u32),
+            (i32::MAX, 4294967294u32),
+            (i32::MIN, 4294967295u32),
+        ];
+
+        for (signed, unsigned) in test_cases {
+            let mut buf = BytesMut::new();
+            write_unsigned_varint(&mut buf, unsigned);
+
+            let mut cursor = Cursor::new(&buf[..]);
+            let decoded = read_signed_varint(&mut cursor).unwrap();
+            assert_eq!(decoded, signed, "Failed for signed value {signed}");
+        }
+    }
+
+    #[test]
+    fn test_compact_string_encoding() {
+        // Test normal string
+        let mut buf = BytesMut::new();
+        write_compact_string(&mut buf, "hello");
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let result = read_compact_string(&mut cursor).unwrap();
+        assert_eq!(result, "hello");
+
+        // Test empty string
+        let mut buf = BytesMut::new();
+        write_compact_string(&mut buf, "");
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let result = read_compact_string(&mut cursor).unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_compact_nullable_string_encoding() {
+        // Test Some value
+        let mut buf = BytesMut::new();
+        write_compact_nullable_string(&mut buf, Some("test"));
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let result = read_compact_nullable_string(&mut cursor).unwrap();
+        assert_eq!(result, Some("test".to_string()));
+
+        // Test None
+        let mut buf = BytesMut::new();
+        write_compact_nullable_string(&mut buf, None);
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let result = read_compact_nullable_string(&mut cursor).unwrap();
+        assert_eq!(result, None);
+
+        // Test empty string
+        let mut buf = BytesMut::new();
+        write_compact_nullable_string(&mut buf, Some(""));
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let result = read_compact_nullable_string(&mut cursor).unwrap();
+        assert_eq!(result, Some(String::new()));
+    }
+
+    #[test]
+    fn test_compact_bytes_encoding() {
+        // Test normal bytes
+        let mut buf = BytesMut::new();
+        write_compact_bytes(&mut buf, b"binary");
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let result = read_compact_bytes(&mut cursor).unwrap();
+        assert_eq!(result, b"binary");
+
+        // Test empty bytes
+        let mut buf = BytesMut::new();
+        write_compact_bytes(&mut buf, b"");
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let result = read_compact_bytes(&mut cursor).unwrap();
+        assert_eq!(result, Vec::<u8>::new());
+    }
+
+    #[test]
+    fn test_compact_nullable_bytes_encoding() {
+        // Test Some value
+        let mut buf = BytesMut::new();
+        write_compact_nullable_bytes(&mut buf, Some(b"data"));
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let result = read_compact_nullable_bytes(&mut cursor).unwrap();
+        assert_eq!(result, Some(b"data".to_vec()));
+
+        // Test None
+        let mut buf = BytesMut::new();
+        write_compact_nullable_bytes(&mut buf, None);
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let result = read_compact_nullable_bytes(&mut cursor).unwrap();
+        assert_eq!(result, None);
     }
 }

@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::protocol::kafka_protocol::*;
 use bytes::{Buf, BufMut, BytesMut};
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -23,29 +24,79 @@ pub struct SyncGroupResponse {
 impl SyncGroupRequest {
     /// Parse a SyncGroup request from bytes
     pub fn parse(cursor: &mut Cursor<&[u8]>, api_version: i16) -> Result<Self> {
+        let is_compact = api_version >= 4; // SyncGroup uses flexible versions from v4+
+
         // group_id: string
-        let group_id = crate::protocol::kafka_protocol::read_string(cursor)?;
+        let group_id = if is_compact {
+            read_compact_string(cursor).map_err(|e| {
+                crate::error::HeraclitusError::Protocol(format!("Failed to read group_id: {e}"))
+            })?
+        } else {
+            read_string(cursor)?
+        };
 
         // generation_id: int32
         let generation_id = cursor.get_i32();
 
         // member_id: string
-        let member_id = crate::protocol::kafka_protocol::read_string(cursor)?;
+        let member_id = if is_compact {
+            read_compact_string(cursor).map_err(|e| {
+                crate::error::HeraclitusError::Protocol(format!("Failed to read member_id: {e}"))
+            })?
+        } else {
+            read_string(cursor)?
+        };
 
         // group_assignments: [member_id, member_assignment]
-        let assignment_count = cursor.get_i32();
-        let mut group_assignments = HashMap::new();
+        let assignment_count = if is_compact {
+            let len = read_unsigned_varint(cursor).map_err(|e| {
+                crate::error::HeraclitusError::Protocol(format!(
+                    "Failed to read assignment count: {e}"
+                ))
+            })?;
+            if len == 0 {
+                return Err(crate::error::HeraclitusError::Protocol(
+                    "Null assignment array not expected".to_string(),
+                ));
+            }
+            (len - 1) as i32
+        } else {
+            cursor.get_i32()
+        };
 
+        let mut group_assignments = HashMap::new();
         for _ in 0..assignment_count {
-            let member_id = crate::protocol::kafka_protocol::read_string(cursor)?;
-            let assignment = crate::protocol::kafka_protocol::read_bytes(cursor)?;
+            let member_id = if is_compact {
+                read_compact_string(cursor).map_err(|e| {
+                    crate::error::HeraclitusError::Protocol(format!(
+                        "Failed to read assignment member_id: {e}"
+                    ))
+                })?
+            } else {
+                read_string(cursor)?
+            };
+
+            let assignment = if is_compact {
+                read_compact_bytes(cursor).map_err(|e| {
+                    crate::error::HeraclitusError::Protocol(format!(
+                        "Failed to read assignment bytes: {e}"
+                    ))
+                })?
+            } else {
+                read_bytes(cursor)?
+            };
+
             group_assignments.insert(member_id, assignment);
         }
 
         // Handle tagged fields for newer versions
-        if api_version >= 4 {
+        if is_compact {
             // Read tagged fields (empty for now)
-            let _num_tagged_fields = read_unsigned_varint(cursor)?;
+            let _num_tagged_fields = read_unsigned_varint(cursor).map_err(|e| {
+                crate::error::HeraclitusError::Protocol(format!(
+                    "Failed to read tagged fields: {e}"
+                ))
+            })?;
         }
 
         Ok(SyncGroupRequest {
@@ -79,6 +130,7 @@ impl SyncGroupResponse {
     /// Encode the response to bytes
     pub fn encode(&self, api_version: i16) -> Result<Vec<u8>> {
         let mut buf = BytesMut::new();
+        let is_compact = api_version >= 4; // SyncGroup uses flexible versions from v4+
 
         // throttle_time_ms: int32 (v1+)
         if api_version >= 1 {
@@ -89,10 +141,14 @@ impl SyncGroupResponse {
         buf.put_i16(self.error_code);
 
         // member_assignment: bytes
-        crate::protocol::kafka_protocol::write_bytes(&mut buf, &self.member_assignment);
+        if is_compact {
+            write_compact_bytes(&mut buf, &self.member_assignment);
+        } else {
+            write_bytes(&mut buf, &self.member_assignment);
+        }
 
         // Handle tagged fields for newer versions
-        if api_version >= 4 {
+        if is_compact {
             // Write empty tagged fields
             write_unsigned_varint(&mut buf, 0);
         }
@@ -130,7 +186,7 @@ impl ConsumerProtocolAssignment {
 
         for (topic, partitions) in &self.topic_partitions {
             // topic: string
-            crate::protocol::kafka_protocol::write_string(&mut buf, topic);
+            write_string(&mut buf, topic);
 
             // partitions: [int32]
             buf.put_i32(partitions.len() as i32);
@@ -140,7 +196,7 @@ impl ConsumerProtocolAssignment {
         }
 
         // user_data: bytes
-        crate::protocol::kafka_protocol::write_bytes(&mut buf, &self.user_data);
+        write_bytes(&mut buf, &self.user_data);
 
         buf.to_vec()
     }
@@ -158,7 +214,7 @@ impl ConsumerProtocolAssignment {
         let mut topic_partitions = HashMap::new();
 
         for _ in 0..topic_count {
-            let topic = crate::protocol::kafka_protocol::read_string(&mut cursor)?;
+            let topic = read_string(&mut cursor)?;
 
             let partition_count = cursor.get_i32();
             let mut partitions = Vec::with_capacity(partition_count as usize);
@@ -171,7 +227,7 @@ impl ConsumerProtocolAssignment {
         }
 
         // user_data: bytes
-        let user_data = crate::protocol::kafka_protocol::read_bytes(&mut cursor)?;
+        let user_data = read_bytes(&mut cursor)?;
 
         Ok(ConsumerProtocolAssignment {
             version,
@@ -179,38 +235,6 @@ impl ConsumerProtocolAssignment {
             user_data,
         })
     }
-}
-
-fn read_unsigned_varint(cursor: &mut Cursor<&[u8]>) -> Result<u32> {
-    let mut value = 0u32;
-    let mut i = 0;
-
-    loop {
-        if i > 4 {
-            return Err(crate::error::HeraclitusError::Protocol(
-                "Varint is too long".to_string(),
-            ));
-        }
-
-        let b = cursor.get_u8();
-        value |= ((b & 0x7F) as u32) << (i * 7);
-
-        if (b & 0x80) == 0 {
-            break;
-        }
-
-        i += 1;
-    }
-
-    Ok(value)
-}
-
-fn write_unsigned_varint(buffer: &mut BytesMut, mut value: u32) {
-    while (value & 0xFFFFFF80) != 0 {
-        buffer.put_u8(((value & 0x7F) | 0x80) as u8);
-        value >>= 7;
-    }
-    buffer.put_u8((value & 0x7F) as u8);
 }
 
 #[cfg(test)]
@@ -287,5 +311,66 @@ mod tests {
             &vec![0, 1, 2]
         );
         assert_eq!(decoded.topic_partitions.get("topic2").unwrap(), &vec![3, 4]);
+    }
+
+    #[test]
+    fn test_sync_group_request_parse_v4_compact() {
+        let mut buf = BytesMut::new();
+
+        // group_id: "test-group" (compact string)
+        write_compact_string(&mut buf, "test-group");
+
+        // generation_id: 2
+        buf.put_i32(2);
+
+        // member_id: "member-2" (compact string)
+        write_compact_string(&mut buf, "member-2");
+
+        // group_assignments: 1 assignment (compact array)
+        write_unsigned_varint(&mut buf, 2); // 1 + 1 for compact array
+
+        // member_id: "member-2" (compact string)
+        write_compact_string(&mut buf, "member-2");
+
+        // assignment: 4 bytes (compact bytes)
+        write_compact_bytes(&mut buf, &[1, 2, 3, 4]);
+
+        // Tagged fields (empty)
+        write_unsigned_varint(&mut buf, 0);
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let request = SyncGroupRequest::parse(&mut cursor, 4).unwrap();
+
+        assert_eq!(request.group_id, "test-group");
+        assert_eq!(request.generation_id, 2);
+        assert_eq!(request.member_id, "member-2");
+        assert_eq!(request.group_assignments.len(), 1);
+        assert_eq!(
+            request.group_assignments.get("member-2").unwrap(),
+            &vec![1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn test_sync_group_response_encode_v4_compact() {
+        let assignment = vec![5, 6, 7, 8];
+        let response = SyncGroupResponse::new(assignment.clone());
+
+        let encoded = response.encode(4).unwrap();
+        let mut cursor = Cursor::new(&encoded[..]);
+
+        // throttle_time_ms
+        assert_eq!(cursor.get_i32(), 0);
+
+        // error_code
+        assert_eq!(cursor.get_i16(), 0);
+
+        // assignment (compact bytes)
+        let assignment_bytes = read_compact_bytes(&mut cursor).unwrap();
+        assert_eq!(assignment_bytes, assignment);
+
+        // Tagged fields
+        let tagged_fields_len = read_unsigned_varint(&mut cursor).unwrap();
+        assert_eq!(tagged_fields_len, 0);
     }
 }

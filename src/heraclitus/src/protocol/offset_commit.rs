@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::protocol::kafka_protocol::*;
 use bytes::{Buf, BufMut, BytesMut};
 use std::io::Cursor;
 
@@ -50,8 +51,16 @@ pub struct OffsetCommitResponsePartition {
 impl OffsetCommitRequest {
     /// Parse an OffsetCommit request from bytes
     pub fn parse(cursor: &mut Cursor<&[u8]>, api_version: i16) -> Result<Self> {
+        let is_compact = api_version >= 8; // OffsetCommit uses flexible versions from v8+
+
         // group_id: string
-        let group_id = crate::protocol::kafka_protocol::read_string(cursor)?;
+        let group_id = if is_compact {
+            read_compact_string(cursor).map_err(|e| {
+                crate::error::HeraclitusError::Protocol(format!("Failed to read group_id: {e}"))
+            })?
+        } else {
+            read_string(cursor)?
+        };
 
         // generation_id: int32 (v1+)
         let generation_id = if api_version >= 1 {
@@ -62,7 +71,15 @@ impl OffsetCommitRequest {
 
         // member_id: string (v1+)
         let member_id = if api_version >= 1 {
-            crate::protocol::kafka_protocol::read_string(cursor)?
+            if is_compact {
+                read_compact_string(cursor).map_err(|e| {
+                    crate::error::HeraclitusError::Protocol(format!(
+                        "Failed to read member_id: {e}"
+                    ))
+                })?
+            } else {
+                read_string(cursor)?
+            }
         } else {
             String::new() // No member_id in v0
         };
@@ -75,15 +92,51 @@ impl OffsetCommitRequest {
         };
 
         // topics: [topic]
-        let topic_count = cursor.get_i32();
+        let topic_count = if is_compact {
+            let len = read_unsigned_varint(cursor).map_err(|e| {
+                crate::error::HeraclitusError::Protocol(format!("Failed to read topic count: {e}"))
+            })?;
+            if len == 0 {
+                return Err(crate::error::HeraclitusError::Protocol(
+                    "Null topic array not expected".to_string(),
+                ));
+            }
+            (len - 1) as i32
+        } else {
+            cursor.get_i32()
+        };
+
         let mut topics = Vec::with_capacity(topic_count as usize);
 
         for _ in 0..topic_count {
             // name: string
-            let name = crate::protocol::kafka_protocol::read_string(cursor)?;
+            let name = if is_compact {
+                read_compact_string(cursor).map_err(|e| {
+                    crate::error::HeraclitusError::Protocol(format!(
+                        "Failed to read topic name: {e}"
+                    ))
+                })?
+            } else {
+                read_string(cursor)?
+            };
 
             // partitions: [partition]
-            let partition_count = cursor.get_i32();
+            let partition_count = if is_compact {
+                let len = read_unsigned_varint(cursor).map_err(|e| {
+                    crate::error::HeraclitusError::Protocol(format!(
+                        "Failed to read partition count: {e}"
+                    ))
+                })?;
+                if len == 0 {
+                    return Err(crate::error::HeraclitusError::Protocol(
+                        "Null partition array not expected".to_string(),
+                    ));
+                }
+                (len - 1) as i32
+            } else {
+                cursor.get_i32()
+            };
+
             let mut partitions = Vec::with_capacity(partition_count as usize);
 
             for _ in 0..partition_count {
@@ -101,7 +154,15 @@ impl OffsetCommitRequest {
                 };
 
                 // metadata: nullable string
-                let metadata = crate::protocol::kafka_protocol::read_nullable_string(cursor)?;
+                let metadata = if is_compact {
+                    read_compact_nullable_string(cursor).map_err(|e| {
+                        crate::error::HeraclitusError::Protocol(format!(
+                            "Failed to read metadata: {e}"
+                        ))
+                    })?
+                } else {
+                    read_nullable_string(cursor)?
+                };
 
                 partitions.push(OffsetCommitPartition {
                     partition_index,
@@ -115,9 +176,13 @@ impl OffsetCommitRequest {
         }
 
         // Handle tagged fields for newer versions
-        if api_version >= 8 {
+        if is_compact {
             // Read tagged fields (empty for now)
-            let _num_tagged_fields = read_unsigned_varint(cursor)?;
+            let _num_tagged_fields = read_unsigned_varint(cursor).map_err(|e| {
+                crate::error::HeraclitusError::Protocol(format!(
+                    "Failed to read tagged fields: {e}"
+                ))
+            })?;
         }
 
         Ok(OffsetCommitRequest {
@@ -162,6 +227,7 @@ impl OffsetCommitResponse {
     /// Encode the response to bytes
     pub fn encode(&self, api_version: i16) -> Result<Vec<u8>> {
         let mut buf = BytesMut::new();
+        let is_compact = api_version >= 8; // OffsetCommit uses flexible versions from v8+
 
         // throttle_time_ms: int32 (v3+)
         if api_version >= 3 {
@@ -169,14 +235,28 @@ impl OffsetCommitResponse {
         }
 
         // topics: [topic]
-        buf.put_i32(self.topics.len() as i32);
+        if is_compact {
+            // Compact arrays use length + 1
+            write_unsigned_varint(&mut buf, (self.topics.len() + 1) as u32);
+        } else {
+            buf.put_i32(self.topics.len() as i32);
+        }
 
         for topic in &self.topics {
             // name: string
-            crate::protocol::kafka_protocol::write_string(&mut buf, &topic.name);
+            if is_compact {
+                write_compact_string(&mut buf, &topic.name);
+            } else {
+                write_string(&mut buf, &topic.name);
+            }
 
             // partitions: [partition]
-            buf.put_i32(topic.partitions.len() as i32);
+            if is_compact {
+                // Compact arrays use length + 1
+                write_unsigned_varint(&mut buf, (topic.partitions.len() + 1) as u32);
+            } else {
+                buf.put_i32(topic.partitions.len() as i32);
+            }
 
             for partition in &topic.partitions {
                 // partition_index: int32
@@ -188,45 +268,13 @@ impl OffsetCommitResponse {
         }
 
         // Handle tagged fields for newer versions
-        if api_version >= 8 {
+        if is_compact {
             // Write empty tagged fields
             write_unsigned_varint(&mut buf, 0);
         }
 
         Ok(buf.to_vec())
     }
-}
-
-fn read_unsigned_varint(cursor: &mut Cursor<&[u8]>) -> Result<u32> {
-    let mut value = 0u32;
-    let mut i = 0;
-
-    loop {
-        if i > 4 {
-            return Err(crate::error::HeraclitusError::Protocol(
-                "Varint is too long".to_string(),
-            ));
-        }
-
-        let b = cursor.get_u8();
-        value |= ((b & 0x7F) as u32) << (i * 7);
-
-        if (b & 0x80) == 0 {
-            break;
-        }
-
-        i += 1;
-    }
-
-    Ok(value)
-}
-
-fn write_unsigned_varint(buffer: &mut BytesMut, mut value: u32) {
-    while (value & 0xFFFFFF80) != 0 {
-        buffer.put_u8(((value & 0x7F) | 0x80) as u8);
-        value >>= 7;
-    }
-    buffer.put_u8((value & 0x7F) as u8);
 }
 
 #[cfg(test)]
@@ -315,5 +363,91 @@ mod tests {
         // partition 1
         assert_eq!(cursor.get_i32(), 1); // partition_index
         assert_eq!(cursor.get_i16(), 0); // error_code
+    }
+
+    #[test]
+    fn test_offset_commit_request_parse_v8_compact() {
+        let mut buf = BytesMut::new();
+
+        // group_id: "test-group" (compact string)
+        write_compact_string(&mut buf, "test-group");
+
+        // generation_id: 5
+        buf.put_i32(5);
+
+        // member_id: "member-5" (compact string)
+        write_compact_string(&mut buf, "member-5");
+
+        // topics: 1 topic (compact array)
+        write_unsigned_varint(&mut buf, 2); // 1 + 1 for compact array
+
+        // topic name: "test-topic" (compact string)
+        write_compact_string(&mut buf, "test-topic");
+
+        // partitions: 1 partition (compact array)
+        write_unsigned_varint(&mut buf, 2); // 1 + 1 for compact array
+
+        // partition_index: 0
+        buf.put_i32(0);
+        // committed_offset: 200
+        buf.put_i64(200);
+        // committed_leader_epoch: 10
+        buf.put_i32(10);
+        // metadata: None (compact nullable string)
+        write_compact_nullable_string(&mut buf, None);
+
+        // Tagged fields (empty)
+        write_unsigned_varint(&mut buf, 0);
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let request = OffsetCommitRequest::parse(&mut cursor, 8).unwrap();
+
+        assert_eq!(request.group_id, "test-group");
+        assert_eq!(request.generation_id, 5);
+        assert_eq!(request.member_id, "member-5");
+        assert_eq!(request.topics.len(), 1);
+        assert_eq!(request.topics[0].name, "test-topic");
+        assert_eq!(request.topics[0].partitions.len(), 1);
+        assert_eq!(request.topics[0].partitions[0].partition_index, 0);
+        assert_eq!(request.topics[0].partitions[0].committed_offset, 200);
+        assert_eq!(request.topics[0].partitions[0].committed_leader_epoch, 10);
+        assert_eq!(request.topics[0].partitions[0].metadata, None);
+    }
+
+    #[test]
+    fn test_offset_commit_response_encode_v8_compact() {
+        let response = OffsetCommitResponse::new(vec![OffsetCommitResponseTopic {
+            name: "test-topic".to_string(),
+            partitions: vec![OffsetCommitResponsePartition {
+                partition_index: 0,
+                error_code: 0,
+            }],
+        }]);
+
+        let encoded = response.encode(8).unwrap();
+        let mut cursor = Cursor::new(&encoded[..]);
+
+        // throttle_time_ms
+        assert_eq!(cursor.get_i32(), 0);
+
+        // topics count (compact array)
+        let topic_count = read_unsigned_varint(&mut cursor).unwrap();
+        assert_eq!(topic_count, 2); // 1 + 1
+
+        // topic name (compact string)
+        let topic_name = read_compact_string(&mut cursor).unwrap();
+        assert_eq!(topic_name, "test-topic");
+
+        // partitions count (compact array)
+        let partition_count = read_unsigned_varint(&mut cursor).unwrap();
+        assert_eq!(partition_count, 2); // 1 + 1
+
+        // partition 0
+        assert_eq!(cursor.get_i32(), 0); // partition_index
+        assert_eq!(cursor.get_i16(), 0); // error_code
+
+        // Tagged fields
+        let tagged_fields_len = read_unsigned_varint(&mut cursor).unwrap();
+        assert_eq!(tagged_fields_len, 0);
     }
 }
