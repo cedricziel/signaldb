@@ -25,7 +25,7 @@ pub struct ConnectionHandler {
 }
 
 /// Determine if an API uses flexible versions and requires response header v1
-fn uses_flexible_version(api_key: i16, api_version: i16) -> bool {
+pub fn uses_flexible_version(api_key: i16, api_version: i16) -> bool {
     match api_key {
         // ApiVersions uses flexible versions from v3+
         18 => api_version >= 3,

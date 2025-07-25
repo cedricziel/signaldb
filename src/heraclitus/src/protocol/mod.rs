@@ -11,6 +11,7 @@ mod describe_groups;
 mod fetch;
 mod find_coordinator;
 mod handler;
+pub mod handlers;
 mod heartbeat;
 mod init_producer_id;
 mod join_group;

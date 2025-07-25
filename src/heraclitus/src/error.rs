@@ -11,6 +11,8 @@ pub enum HeraclitusError {
     InvalidState(String),
     Timeout(String),
     InvalidRequest(String),
+    UnsupportedVersion(i16, i16), // api_key, api_version
+    UnsupportedApiKey(i16),
 }
 
 impl fmt::Display for HeraclitusError {
@@ -25,6 +27,10 @@ impl fmt::Display for HeraclitusError {
             Self::InvalidState(e) => write!(f, "Invalid state: {e}"),
             Self::Timeout(e) => write!(f, "Timeout: {e}"),
             Self::InvalidRequest(e) => write!(f, "Invalid request: {e}"),
+            Self::UnsupportedVersion(api_key, version) => {
+                write!(f, "Unsupported version {version} for API key {api_key}")
+            }
+            Self::UnsupportedApiKey(api_key) => write!(f, "Unsupported API key: {api_key}"),
         }
     }
 }
