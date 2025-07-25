@@ -23,6 +23,18 @@ impl ApiHandler for CreateTopicsHandler {
     ) -> Result<Vec<u8>> {
         info!("Handling create topics request v{}", request.api_version);
 
+        // Track create topics requests
+        let api_key_str = request.api_key.to_string();
+        let api_version_str = request.api_version.to_string();
+        let api_name =
+            crate::metrics::protocol::ProtocolMetrics::api_name(request.api_key).to_string();
+        context
+            .metrics
+            .protocol
+            .request_count
+            .with_label_values(&[&api_key_str, &api_name, &api_version_str])
+            .inc();
+
         // Parse request
         let mut cursor = std::io::Cursor::new(&request.body[..]);
         let create_request = CreateTopicsRequest::parse(&mut cursor, request.api_version)?;
@@ -151,6 +163,18 @@ impl ApiHandler for DeleteTopicsHandler {
         context: &mut HandlerContext,
     ) -> Result<Vec<u8>> {
         info!("Handling delete topics request v{}", request.api_version);
+
+        // Track delete topics requests
+        let api_key_str = request.api_key.to_string();
+        let api_version_str = request.api_version.to_string();
+        let api_name =
+            crate::metrics::protocol::ProtocolMetrics::api_name(request.api_key).to_string();
+        context
+            .metrics
+            .protocol
+            .request_count
+            .with_label_values(&[&api_key_str, &api_name, &api_version_str])
+            .inc();
 
         // Parse request
         let mut cursor = std::io::Cursor::new(&request.body[..]);

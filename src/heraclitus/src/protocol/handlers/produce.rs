@@ -24,11 +24,15 @@ impl ApiHandler for ProduceHandler {
         info!("Handling produce request v{}", request.api_version);
 
         // Track produce requests
+        let api_key_str = request.api_key.to_string();
+        let api_version_str = request.api_version.to_string();
+        let api_name =
+            crate::metrics::protocol::ProtocolMetrics::api_name(request.api_key).to_string();
         context
             .metrics
             .protocol
             .request_count
-            .with_label_values(&["produce"])
+            .with_label_values(&[&api_key_str, &api_name, &api_version_str])
             .inc();
 
         // Parse request
@@ -425,11 +429,15 @@ impl ApiHandler for InitProducerIdHandler {
         info!("Handling InitProducerId request v{}", request.api_version);
 
         // Track InitProducerId requests
+        let api_key_str = request.api_key.to_string();
+        let api_version_str = request.api_version.to_string();
+        let api_name =
+            crate::metrics::protocol::ProtocolMetrics::api_name(request.api_key).to_string();
         context
             .metrics
             .protocol
             .request_count
-            .with_label_values(&["init_producer_id"])
+            .with_label_values(&[&api_key_str, &api_name, &api_version_str])
             .inc();
 
         // Parse request

@@ -17,35 +17,57 @@ impl ApiVersionsRequest {
         api_version: i16,
     ) -> Result<Self, crate::error::HeraclitusError> {
         let (client_software_name, client_software_version) = if api_version >= 3 {
-            // Read compact string for client software name
-            let name_len = read_unsigned_varint(cursor)?;
-            let name = if name_len > 0 {
-                let mut name_bytes = vec![0u8; (name_len - 1) as usize];
-                cursor.copy_to_slice(&mut name_bytes);
-                Some(String::from_utf8(name_bytes).map_err(|e| {
-                    crate::error::HeraclitusError::Protocol(format!(
-                        "Invalid UTF-8 in client name: {e}"
-                    ))
-                })?)
+            // Check if we have any bytes left to read
+            if cursor.remaining() == 0 {
+                // No request body - this is valid for ApiVersions requests
+                (None, None)
             } else {
-                None
-            };
+                // Read compact string for client software name
+                let name_len = read_unsigned_varint(cursor)?;
+                let name = if name_len > 0 {
+                    let actual_len = (name_len - 1) as usize;
+                    if cursor.remaining() < actual_len {
+                        return Err(crate::error::HeraclitusError::Protocol(
+                            "Not enough bytes for client software name".to_string(),
+                        ));
+                    }
+                    let mut name_bytes = vec![0u8; actual_len];
+                    cursor.copy_to_slice(&mut name_bytes);
+                    Some(String::from_utf8(name_bytes).map_err(|e| {
+                        crate::error::HeraclitusError::Protocol(format!(
+                            "Invalid UTF-8 in client name: {e}"
+                        ))
+                    })?)
+                } else {
+                    None
+                };
 
-            // Read compact string for client software version
-            let version_len = read_unsigned_varint(cursor)?;
-            let version = if version_len > 0 {
-                let mut version_bytes = vec![0u8; (version_len - 1) as usize];
-                cursor.copy_to_slice(&mut version_bytes);
-                Some(String::from_utf8(version_bytes).map_err(|e| {
-                    crate::error::HeraclitusError::Protocol(format!(
-                        "Invalid UTF-8 in client version: {e}"
-                    ))
-                })?)
-            } else {
-                None
-            };
+                // Read compact string for client software version
+                let version_len = read_unsigned_varint(cursor)?;
+                let version = if version_len > 0 {
+                    let actual_len = (version_len - 1) as usize;
+                    if cursor.remaining() < actual_len {
+                        return Err(crate::error::HeraclitusError::Protocol(
+                            "Not enough bytes for client software version".to_string(),
+                        ));
+                    }
+                    let mut version_bytes = vec![0u8; actual_len];
+                    cursor.copy_to_slice(&mut version_bytes);
+                    Some(String::from_utf8(version_bytes).map_err(|e| {
+                        crate::error::HeraclitusError::Protocol(format!(
+                            "Invalid UTF-8 in client version: {e}"
+                        ))
+                    })?)
+                } else {
+                    None
+                };
 
-            (name, version)
+                // Read tagged fields (for flexible format)
+                let _tagged_fields_count = read_unsigned_varint(cursor)?;
+                // For now, we ignore tagged fields
+
+                (name, version)
+            }
         } else {
             (None, None)
         };
@@ -232,6 +254,12 @@ fn read_unsigned_varint(cursor: &mut Cursor<&[u8]>) -> Result<u32, crate::error:
         if i > 4 {
             return Err(crate::error::HeraclitusError::Protocol(
                 "Varint is too long".to_string(),
+            ));
+        }
+
+        if cursor.remaining() < 1 {
+            return Err(crate::error::HeraclitusError::Protocol(
+                "Not enough bytes for varint".to_string(),
             ));
         }
 

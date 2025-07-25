@@ -232,14 +232,18 @@ impl ConnectionHandler {
         let mut cursor = Cursor::new(&frame[..]);
         let header = crate::protocol::kafka_protocol::read_request_header(&mut cursor)?;
 
-        info!(
-            "Processing request: api_key={}, api_version={}, correlation_id={}, client_id={:?}",
-            header.api_key, header.api_version, header.correlation_id, header.client_id
-        );
-
         // Get remaining bytes as request body
         let body_start = cursor.position() as usize;
         let body = frame[body_start..].to_vec();
+
+        info!(
+            "Processing request: api_key={}, api_version={}, correlation_id={}, client_id={:?}, body_len={}",
+            header.api_key,
+            header.api_version,
+            header.correlation_id,
+            header.client_id,
+            body.len()
+        );
 
         // Create request object
         let request = crate::protocol::request::KafkaRequest::new(

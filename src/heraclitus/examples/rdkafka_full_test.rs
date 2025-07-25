@@ -15,9 +15,15 @@ async fn main() {
     // Test 1: Admin operations
     println!("=== Testing Admin Operations ===");
     let admin: AdminClient<_> = ClientConfig::new()
-        .set("bootstrap.servers", "localhost:9092")
+        .set("bootstrap.servers", "127.0.0.1:9092") // Use IPv4 explicitly
+        .set("api.version.request", "true")
+        .set("api.version.request.timeout.ms", "10000")
+        .set("socket.timeout.ms", "10000")
+        .set("metadata.request.timeout.ms", "10000")
         .create()
         .expect("Admin client creation failed");
+
+    println!("Admin client created successfully!");
 
     // Create multiple topics
     let topics = vec![
@@ -26,8 +32,10 @@ async fn main() {
         NewTopic::new("events", 1, TopicReplication::Fixed(1)),
     ];
 
+    println!("Creating topics...");
+    let options = AdminOptions::new().request_timeout(Some(Duration::from_secs(5))); // Much shorter timeout
     let results = admin
-        .create_topics(&topics, &AdminOptions::new())
+        .create_topics(&topics, &options)
         .await
         .expect("Create topics failed");
 
