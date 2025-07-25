@@ -42,6 +42,23 @@ pub fn write_response_header(buf: &mut BytesMut, correlation_id: i32) {
     buf.put_i32(correlation_id);
 }
 
+/// Write response header for flexible versions (v1)
+/// This includes the correlation ID and tagged fields
+pub fn write_response_header_v1(buf: &mut BytesMut, correlation_id: i32) {
+    buf.put_i32(correlation_id);
+    // Write empty tagged fields (0 = no tagged fields)
+    write_unsigned_varint(buf, 0);
+}
+
+/// Write an unsigned variable-length integer (varint)
+pub fn write_unsigned_varint(buf: &mut BytesMut, mut value: u32) {
+    while value >= 0x80 {
+        buf.put_u8((value as u8) | 0x80);
+        value >>= 7;
+    }
+    buf.put_u8(value as u8);
+}
+
 #[allow(dead_code)] // Will be used when protocol is fully implemented
 pub fn read_string(buf: &mut Cursor<&[u8]>) -> Result<String, std::io::Error> {
     if buf.remaining() < 2 {
@@ -224,6 +241,49 @@ mod tests {
     use super::*;
     use bytes::{BufMut, BytesMut};
     use std::io::Cursor;
+
+    #[test]
+    fn test_response_header_v1_format() {
+        // Test writing response header v1
+        let mut buf = BytesMut::new();
+        let correlation_id = 12345;
+
+        write_response_header_v1(&mut buf, correlation_id);
+
+        // Verify the written data
+        let mut cursor = Cursor::new(&buf[..]);
+
+        // First 4 bytes should be the correlation ID
+        let read_correlation_id = cursor.get_i32();
+        assert_eq!(read_correlation_id, correlation_id);
+
+        // Next should be the tagged fields (0 = no tagged fields)
+        let tagged_field_byte = cursor.get_u8();
+        assert_eq!(tagged_field_byte, 0);
+
+        // Total size should be 5 bytes (4 for correlation ID + 1 for empty tagged fields)
+        assert_eq!(buf.len(), 5);
+    }
+
+    #[test]
+    fn test_unsigned_varint_encoding() {
+        // Test various varint encodings
+        let test_cases = vec![
+            (0u32, vec![0x00]),
+            (1u32, vec![0x01]),
+            (127u32, vec![0x7F]),
+            (128u32, vec![0x80, 0x01]),
+            (300u32, vec![0xAC, 0x02]),
+            (16383u32, vec![0xFF, 0x7F]),
+            (16384u32, vec![0x80, 0x80, 0x01]),
+        ];
+
+        for (value, expected_bytes) in test_cases {
+            let mut buf = BytesMut::new();
+            write_unsigned_varint(&mut buf, value);
+            assert_eq!(buf.to_vec(), expected_bytes, "Failed for value {value}");
+        }
+    }
 
     #[test]
     fn test_read_request_header() {

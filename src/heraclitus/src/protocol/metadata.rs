@@ -107,7 +107,8 @@ impl MetadataResponse {
 
             // Write brokers array (non-nullable)
             if is_compact {
-                write_unsigned_varint(&mut buf, self.brokers.len() as u32);
+                // Compact arrays use length + 1 encoding
+                write_unsigned_varint(&mut buf, (self.brokers.len() + 1) as u32);
             } else {
                 buf.put_i32(self.brokers.len() as i32);
             }
@@ -151,7 +152,8 @@ impl MetadataResponse {
 
             // Write topics array (non-nullable)
             if is_compact {
-                write_unsigned_varint(&mut buf, self.topics.len() as u32);
+                // Compact arrays use length + 1 encoding
+                write_unsigned_varint(&mut buf, (self.topics.len() + 1) as u32);
             } else {
                 buf.put_i32(self.topics.len() as i32);
             }
@@ -181,7 +183,8 @@ impl MetadataResponse {
 
                 // Write partitions array (non-nullable)
                 if is_compact {
-                    write_unsigned_varint(&mut buf, topic.partitions.len() as u32);
+                    // Compact arrays use length + 1 encoding
+                    write_unsigned_varint(&mut buf, (topic.partitions.len() + 1) as u32);
                 } else {
                     buf.put_i32(topic.partitions.len() as i32);
                 }
@@ -193,7 +196,8 @@ impl MetadataResponse {
 
                     // Write replicas array (non-nullable)
                     if is_compact {
-                        write_unsigned_varint(&mut buf, partition.replicas.len() as u32);
+                        // Compact arrays use length + 1 encoding
+                        write_unsigned_varint(&mut buf, (partition.replicas.len() + 1) as u32);
                     } else {
                         buf.put_i32(partition.replicas.len() as i32);
                     }
@@ -203,7 +207,8 @@ impl MetadataResponse {
 
                     // Write ISR array (non-nullable)
                     if is_compact {
-                        write_unsigned_varint(&mut buf, partition.isr.len() as u32);
+                        // Compact arrays use length + 1 encoding
+                        write_unsigned_varint(&mut buf, (partition.isr.len() + 1) as u32);
                     } else {
                         buf.put_i32(partition.isr.len() as i32);
                     }
@@ -507,9 +512,9 @@ mod tests {
         // Throttle time (4 bytes)
         assert_eq!(cursor.get_i32(), 0);
 
-        // Brokers array length (varint, should be 1)
+        // Brokers array length (varint, should be 2 for length 1 + 1)
         let brokers_len = read_unsigned_varint(&mut cursor).unwrap();
-        assert_eq!(brokers_len, 1);
+        assert_eq!(brokers_len, 2); // 1 broker + 1 for compact encoding
 
         // Broker fields
         assert_eq!(cursor.get_i32(), 0); // node_id
@@ -537,9 +542,9 @@ mod tests {
         // Controller ID
         assert_eq!(cursor.get_i32(), 0);
 
-        // Topics array length (varint, should be 0)
+        // Topics array length (varint, should be 1 for length 0 + 1)
         let topics_len = read_unsigned_varint(&mut cursor).unwrap();
-        assert_eq!(topics_len, 0);
+        assert_eq!(topics_len, 1); // 0 topics + 1 for compact encoding
 
         // Top-level tagged fields
         let tagged_fields = read_unsigned_varint(&mut cursor).unwrap();

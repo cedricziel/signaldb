@@ -24,6 +24,42 @@ pub struct ConnectionHandler {
     consumer_groups: Vec<(String, String)>, // (group_id, member_id)
 }
 
+/// Determine if an API uses flexible versions and requires response header v1
+fn uses_flexible_version(api_key: i16, api_version: i16) -> bool {
+    match api_key {
+        // ApiVersions uses flexible versions from v3+
+        18 => api_version >= 3,
+        // Metadata uses flexible versions from v9+
+        3 => api_version >= 9,
+        // CreateTopics uses flexible versions from v5+
+        19 => api_version >= 5,
+        // InitProducerId uses flexible versions from v2+
+        22 => api_version >= 2,
+        // OffsetCommit uses flexible versions from v8+
+        8 => api_version >= 8,
+        // OffsetFetch uses flexible versions from v6+
+        9 => api_version >= 6,
+        // Heartbeat uses flexible versions from v4+
+        12 => api_version >= 4,
+        // JoinGroup uses flexible versions from v6+
+        11 => api_version >= 6,
+        // SyncGroup uses flexible versions from v4+
+        14 => api_version >= 4,
+        // LeaveGroup uses flexible versions from v4+
+        13 => api_version >= 4,
+        // ListGroups uses flexible versions from v3+
+        16 => api_version >= 3,
+        // DescribeGroups uses flexible versions from v5+
+        15 => api_version >= 5,
+        // SaslHandshake uses flexible versions from v1+
+        17 => api_version >= 1,
+        // SaslAuthenticate uses flexible versions from v2+
+        36 => api_version >= 2,
+        // Other APIs don't use flexible versions yet
+        _ => false,
+    }
+}
+
 impl ConnectionHandler {
     pub fn new(
         socket: TcpStream,
@@ -307,6 +343,36 @@ impl ConnectionHandler {
         vec![]
     }
 
+    /// Build a complete response with the appropriate header version
+    fn build_response(
+        &self,
+        request: &crate::protocol::request::KafkaRequest,
+        response_body: Vec<u8>,
+    ) -> Vec<u8> {
+        use crate::protocol::kafka_protocol::*;
+
+        let mut full_response = BytesMut::new();
+
+        // Use response header v1 for APIs that use flexible versions
+        if uses_flexible_version(request.api_key, request.api_version) {
+            write_response_header_v1(&mut full_response, request.correlation_id);
+        } else {
+            write_response_header(&mut full_response, request.correlation_id);
+        }
+
+        full_response.extend_from_slice(&response_body);
+        full_response.to_vec()
+    }
+
+    /// Build an error response with the appropriate header version
+    fn build_error_response(
+        &self,
+        request: &crate::protocol::request::KafkaRequest,
+        response_body: Vec<u8>,
+    ) -> Vec<u8> {
+        self.build_response(request, response_body)
+    }
+
     /// Create an unsupported operation response
     #[allow(dead_code)]
     fn create_unsupported_response(&self, correlation_id: i32) -> Result<Vec<u8>> {
@@ -329,7 +395,6 @@ impl ConnectionHandler {
         request: crate::protocol::request::KafkaRequest,
     ) -> Result<Vec<u8>> {
         use crate::protocol::api_versions::{ApiVersionsRequest, ApiVersionsResponse};
-        use crate::protocol::kafka_protocol::*;
 
         // Parse API versions request
         let mut cursor = Cursor::new(&request.body[..]);
@@ -342,11 +407,7 @@ impl ConnectionHandler {
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header
-        let mut full_response = BytesMut::new();
-        write_response_header(&mut full_response, request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        Ok(self.build_response(&request, response_body))
     }
 
     /// Handle metadata request
@@ -535,11 +596,7 @@ impl ConnectionHandler {
         );
 
         // Build complete response with header
-        let mut full_response = BytesMut::new();
-        write_response_header(&mut full_response, request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        Ok(self.build_response(&request, response_body))
     }
 
     /// Handle produce request
@@ -869,11 +926,7 @@ impl ConnectionHandler {
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header
-        let mut full_response = BytesMut::new();
-        write_response_header(&mut full_response, request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        Ok(self.build_response(&request, response_body))
     }
 
     /// Create an error produce response
@@ -1320,11 +1373,7 @@ impl ConnectionHandler {
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header
-        let mut full_response = BytesMut::new();
-        write_response_header(&mut full_response, request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        Ok(self.build_response(&request, response_body))
     }
 
     /// Handle find coordinator request
@@ -1351,10 +1400,7 @@ impl ConnectionHandler {
                 "Only group coordinators are supported".to_string(),
             );
             let response_body = response.encode(request.api_version)?;
-            let mut full_response = BytesMut::new();
-            write_response_header(&mut full_response, request.correlation_id);
-            full_response.extend_from_slice(&response_body);
-            return Ok(full_response.to_vec());
+            return Ok(self.build_error_response(&request, response_body));
         }
 
         // Return ourselves as the coordinator
@@ -1368,11 +1414,7 @@ impl ConnectionHandler {
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header
-        let mut full_response = BytesMut::new();
-        write_response_header(&mut full_response, request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        Ok(self.build_response(&request, response_body))
     }
 
     /// Handle join group request
@@ -1381,7 +1423,7 @@ impl ConnectionHandler {
         request: crate::protocol::request::KafkaRequest,
     ) -> Result<Vec<u8>> {
         use crate::protocol::join_group::{JoinGroupMember, JoinGroupRequest, JoinGroupResponse};
-        use crate::protocol::kafka_protocol::*;
+
         use crate::state::{ConsumerGroupMember, ConsumerGroupState};
         use std::collections::HashMap;
 
@@ -1509,11 +1551,7 @@ impl ConnectionHandler {
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header
-        let mut full_response = BytesMut::new();
-        write_response_header(&mut full_response, request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        Ok(self.build_response(&request, response_body))
     }
 
     /// Handle sync group request
@@ -1551,10 +1589,7 @@ impl ConnectionHandler {
                 // Group doesn't exist
                 let response = SyncGroupResponse::error(ERROR_UNKNOWN_MEMBER_ID);
                 let response_body = response.encode(request.api_version)?;
-                let mut full_response = BytesMut::new();
-                write_response_header(&mut full_response, request.correlation_id);
-                full_response.extend_from_slice(&response_body);
-                return Ok(full_response.to_vec());
+                return Ok(self.build_error_response(&request, response_body));
             }
         };
 
@@ -1562,20 +1597,14 @@ impl ConnectionHandler {
         if sync_req.generation_id != group_state.generation_id {
             let response = SyncGroupResponse::error(ERROR_ILLEGAL_GENERATION);
             let response_body = response.encode(request.api_version)?;
-            let mut full_response = BytesMut::new();
-            write_response_header(&mut full_response, request.correlation_id);
-            full_response.extend_from_slice(&response_body);
-            return Ok(full_response.to_vec());
+            return Ok(self.build_error_response(&request, response_body));
         }
 
         // Check if member exists
         if !group_state.members.contains_key(&sync_req.member_id) {
             let response = SyncGroupResponse::error(ERROR_UNKNOWN_MEMBER_ID);
             let response_body = response.encode(request.api_version)?;
-            let mut full_response = BytesMut::new();
-            write_response_header(&mut full_response, request.correlation_id);
-            full_response.extend_from_slice(&response_body);
-            return Ok(full_response.to_vec());
+            return Ok(self.build_error_response(&request, response_body));
         }
 
         // For the leader, store the assignments
@@ -1617,11 +1646,7 @@ impl ConnectionHandler {
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header
-        let mut full_response = BytesMut::new();
-        write_response_header(&mut full_response, request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        Ok(self.build_response(&request, response_body))
     }
 
     async fn handle_heartbeat_request(
@@ -1631,7 +1656,6 @@ impl ConnectionHandler {
         use crate::protocol::heartbeat::{HeartbeatRequest, HeartbeatResponse};
         use crate::protocol::kafka_protocol::{
             ERROR_COORDINATOR_NOT_AVAILABLE, ERROR_ILLEGAL_GENERATION, ERROR_UNKNOWN_MEMBER_ID,
-            write_response_header,
         };
 
         let mut cursor = Cursor::new(&request.body[..]);
@@ -1649,10 +1673,7 @@ impl ConnectionHandler {
                 // Group doesn't exist
                 let response = HeartbeatResponse::error(ERROR_COORDINATOR_NOT_AVAILABLE);
                 let response_body = response.encode(request.api_version)?;
-                let mut full_response = BytesMut::new();
-                write_response_header(&mut full_response, request.correlation_id);
-                full_response.extend_from_slice(&response_body);
-                return Ok(full_response.to_vec());
+                return Ok(self.build_error_response(&request, response_body));
             }
         };
 
@@ -1660,10 +1681,7 @@ impl ConnectionHandler {
         if heartbeat_req.generation_id != group_state.generation_id {
             let response = HeartbeatResponse::error(ERROR_ILLEGAL_GENERATION);
             let response_body = response.encode(request.api_version)?;
-            let mut full_response = BytesMut::new();
-            write_response_header(&mut full_response, request.correlation_id);
-            full_response.extend_from_slice(&response_body);
-            return Ok(full_response.to_vec());
+            return Ok(self.build_error_response(&request, response_body));
         }
 
         // Check if member exists
@@ -1686,18 +1704,12 @@ impl ConnectionHandler {
 
             let response = HeartbeatResponse::success();
             let response_body = response.encode(request.api_version)?;
-            let mut full_response = BytesMut::new();
-            write_response_header(&mut full_response, request.correlation_id);
-            full_response.extend_from_slice(&response_body);
-            Ok(full_response.to_vec())
+            Ok(self.build_response(&request, response_body))
         } else {
             // Member doesn't exist
             let response = HeartbeatResponse::error(ERROR_UNKNOWN_MEMBER_ID);
             let response_body = response.encode(request.api_version)?;
-            let mut full_response = BytesMut::new();
-            write_response_header(&mut full_response, request.correlation_id);
-            full_response.extend_from_slice(&response_body);
-            Ok(full_response.to_vec())
+            Ok(self.build_error_response(&request, response_body))
         }
     }
 
@@ -1705,7 +1717,6 @@ impl ConnectionHandler {
         &mut self,
         request: crate::protocol::request::KafkaRequest,
     ) -> Result<Vec<u8>> {
-        use crate::protocol::kafka_protocol::write_response_header;
         use crate::protocol::offset_commit::{
             OffsetCommitRequest, OffsetCommitResponse, OffsetCommitResponsePartition,
             OffsetCommitResponseTopic,
@@ -1732,10 +1743,7 @@ impl ConnectionHandler {
                         crate::protocol::kafka_protocol::ERROR_NOT_COORDINATOR,
                     );
                     let response_body = response.encode(request.api_version)?;
-                    let mut full_response = BytesMut::new();
-                    write_response_header(&mut full_response, request.correlation_id);
-                    full_response.extend_from_slice(&response_body);
-                    return Ok(full_response.to_vec());
+                    return Ok(self.build_error_response(&request, response_body));
                 }
             };
 
@@ -1746,10 +1754,7 @@ impl ConnectionHandler {
                     crate::protocol::kafka_protocol::ERROR_ILLEGAL_GENERATION,
                 );
                 let response_body = response.encode(request.api_version)?;
-                let mut full_response = BytesMut::new();
-                write_response_header(&mut full_response, request.correlation_id);
-                full_response.extend_from_slice(&response_body);
-                return Ok(full_response.to_vec());
+                return Ok(self.build_error_response(&request, response_body));
             }
 
             // Check if member exists
@@ -1759,10 +1764,7 @@ impl ConnectionHandler {
                     crate::protocol::kafka_protocol::ERROR_UNKNOWN_MEMBER_ID,
                 );
                 let response_body = response.encode(request.api_version)?;
-                let mut full_response = BytesMut::new();
-                write_response_header(&mut full_response, request.correlation_id);
-                full_response.extend_from_slice(&response_body);
-                return Ok(full_response.to_vec());
+                return Ok(self.build_error_response(&request, response_body));
             }
         }
 
@@ -1806,18 +1808,13 @@ impl ConnectionHandler {
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header
-        let mut full_response = BytesMut::new();
-        write_response_header(&mut full_response, request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        Ok(self.build_response(&request, response_body))
     }
 
     async fn handle_offset_fetch_request(
         &mut self,
         request: crate::protocol::request::KafkaRequest,
     ) -> Result<Vec<u8>> {
-        use crate::protocol::kafka_protocol::write_response_header;
         use crate::protocol::offset_fetch::{
             OffsetFetchRequest, OffsetFetchResponse, OffsetFetchResponsePartition,
             OffsetFetchResponseTopic,
@@ -1917,20 +1914,14 @@ impl ConnectionHandler {
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header
-        let mut full_response = BytesMut::new();
-        write_response_header(&mut full_response, request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        Ok(self.build_response(&request, response_body))
     }
 
     async fn handle_leave_group_request(
         &mut self,
         request: crate::protocol::request::KafkaRequest,
     ) -> Result<Vec<u8>> {
-        use crate::protocol::kafka_protocol::{
-            ERROR_COORDINATOR_NOT_AVAILABLE, write_response_header,
-        };
+        use crate::protocol::kafka_protocol::ERROR_COORDINATOR_NOT_AVAILABLE;
         use crate::protocol::leave_group::{LeaveGroupRequest, LeaveGroupResponse};
 
         let mut cursor = Cursor::new(&request.body[..]);
@@ -1955,10 +1946,7 @@ impl ConnectionHandler {
                 // Group doesn't exist
                 let response = LeaveGroupResponse::error(ERROR_COORDINATOR_NOT_AVAILABLE);
                 let response_body = response.encode(request.api_version)?;
-                let mut full_response = BytesMut::new();
-                write_response_header(&mut full_response, request.correlation_id);
-                full_response.extend_from_slice(&response_body);
-                return Ok(full_response.to_vec());
+                return Ok(self.build_error_response(&request, response_body));
             }
         };
 
@@ -2076,11 +2064,7 @@ impl ConnectionHandler {
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header
-        let mut full_response = BytesMut::new();
-        write_response_header(&mut full_response, request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        Ok(self.build_response(&request, response_body))
     }
 
     /// Handle describe groups request
@@ -2173,11 +2157,7 @@ impl ConnectionHandler {
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header
-        let mut full_response = BytesMut::new();
-        write_response_header(&mut full_response, request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        Ok(self.build_response(&request, response_body))
     }
 
     /// Create an authentication error response
@@ -2225,11 +2205,7 @@ impl ConnectionHandler {
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header
-        let mut full_response = BytesMut::new();
-        write_response_header(&mut full_response, request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        Ok(self.build_response(&request, response_body))
     }
 
     /// Handle SASL authenticate request
@@ -2299,11 +2275,7 @@ impl ConnectionHandler {
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header
-        let mut full_response = BytesMut::new();
-        write_response_header(&mut full_response, request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        Ok(self.build_response(&request, response_body))
     }
 
     /// Handle init producer id request
@@ -2362,13 +2334,8 @@ impl ConnectionHandler {
         // Encode response
         let response_body = response.encode(request.api_version)?;
 
-        // Build full response
-        let mut full_response = BytesMut::new();
-        full_response.put_i32((response_body.len() + 4) as i32); // Size including correlation id
-        full_response.put_i32(request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        // Build complete response with header
+        Ok(self.build_response(&request, response_body))
     }
 
     /// Handle delete topics request
@@ -2449,11 +2416,7 @@ impl ConnectionHandler {
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header
-        let mut full_response = BytesMut::new();
-        write_response_header(&mut full_response, request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        Ok(self.build_response(&request, response_body))
     }
 
     /// Handle list groups request
@@ -2462,7 +2425,7 @@ impl ConnectionHandler {
         request: crate::protocol::request::KafkaRequest,
     ) -> Result<Vec<u8>> {
         use crate::protocol::describe_groups::determine_group_state;
-        use crate::protocol::kafka_protocol::*;
+
         use crate::protocol::list_groups::{ListGroupsRequest, ListGroupsResponse, ListedGroup};
 
         // Parse list groups request
@@ -2520,11 +2483,7 @@ impl ConnectionHandler {
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header
-        let mut full_response = BytesMut::new();
-        write_response_header(&mut full_response, request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        Ok(self.build_response(&request, response_body))
     }
 
     /// Handle create topics request
@@ -2692,11 +2651,7 @@ impl ConnectionHandler {
         let response_body = response.encode(request.api_version)?;
 
         // Build complete response with header
-        let mut full_response = BytesMut::new();
-        write_response_header(&mut full_response, request.correlation_id);
-        full_response.extend_from_slice(&response_body);
-
-        Ok(full_response.to_vec())
+        Ok(self.build_response(&request, response_body))
     }
 
     /// Get member metadata from storage

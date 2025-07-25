@@ -33,6 +33,7 @@ mod sync_group;
 
 pub use fetch::{FetchPartitionResponse, FetchRequest, FetchResponse, FetchTopicResponse};
 pub use handler::ConnectionHandler;
+pub use metadata::{BrokerMetadata, MetadataResponse, PartitionMetadata, TopicMetadata};
 pub use produce::{ProduceRequest, ProduceResponse};
 pub use record_batch::{Record, RecordBatch, RecordHeader};
 pub use record_batch_builder::{CompressionType, RecordBatchBuilder};

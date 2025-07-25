@@ -74,8 +74,12 @@ dsn = "file://{}"
     stream.read_exact(&mut size_buf).await.unwrap();
     let size = i32::from_be_bytes(size_buf);
 
+    println!("Response size: {size}");
+
     let mut response_buf = vec![0u8; size as usize];
     stream.read_exact(&mut response_buf).await.unwrap();
+
+    println!("Response bytes: {response_buf:02X?}");
 
     // Parse response header
     let correlation_id = i32::from_be_bytes([
@@ -182,8 +186,12 @@ dsn = "file://{}"
     stream.read_exact(&mut size_buf).await.unwrap();
     let size = i32::from_be_bytes(size_buf);
 
+    println!("Response size: {size}");
+
     let mut response_buf = vec![0u8; size as usize];
     stream.read_exact(&mut response_buf).await.unwrap();
+
+    println!("Response bytes: {response_buf:02X?}");
 
     // Parse response header
     let correlation_id = i32::from_be_bytes([
