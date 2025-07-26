@@ -2,12 +2,12 @@ use crate::{
     error::{HeraclitusError, Result},
     storage::{KafkaMessage, ObjectStorageLayout},
 };
-use datafusion::arrow::array::{
+use arrow::array::{
     Array, BinaryArray, Int16Array, Int32Array, Int64Array, StringArray, TimestampMicrosecondArray,
 };
-use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use arrow::record_batch::RecordBatch;
 use object_store::{ObjectMeta, ObjectStore, path::Path as ObjectPath};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info};

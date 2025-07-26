@@ -15,7 +15,8 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
-datafusion = { workspace = true }
+arrow = { workspace = true }
+parquet = { workspace = true }
 futures = { workspace = true }
 object_store = { workspace = true }
 serde = { workspace = true }

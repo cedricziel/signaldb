@@ -116,29 +116,77 @@ impl ApiVersionsResponse {
     fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
         let mut buf = encoder.create_buffer();
 
+        // Debug logging
+        tracing::info!(
+            "Encoding ApiVersionsResponse: api_version={}, is_flexible={}, error_code={}, num_apis={}",
+            encoder.api_version(),
+            encoder.is_flexible(),
+            self.error_code,
+            self.api_versions.len()
+        );
+
         // Error code
         encoder.write_i16(&mut buf, self.error_code);
+        tracing::info!(
+            "  Wrote error_code: {} (bytes: {:02x?})",
+            self.error_code,
+            &buf[..]
+        );
 
         // API versions array
+        let array_start = buf.len();
         encoder.write_array_len(&mut buf, self.api_versions.len());
+        tracing::info!(
+            "  Wrote array length {} (flexible={}) as bytes: {:02x?}",
+            self.api_versions.len(),
+            encoder.is_flexible(),
+            &buf[array_start..]
+        );
 
-        for api in &self.api_versions {
+        for (i, api) in self.api_versions.iter().enumerate() {
+            let api_start = buf.len();
             encoder.write_i16(&mut buf, api.api_key);
             encoder.write_i16(&mut buf, api.min_version);
             encoder.write_i16(&mut buf, api.max_version);
 
             // Tagged fields for each API (only in flexible versions)
             encoder.write_tagged_fields(&mut buf);
+
+            if i < 3 || i == self.api_versions.len() - 1 {
+                tracing::info!(
+                    "  API[{}]: key={}, min={}, max={}, bytes: {:02x?}",
+                    i,
+                    api.api_key,
+                    api.min_version,
+                    api.max_version,
+                    &buf[api_start..]
+                );
+            }
         }
 
         // Throttle time (v1+)
         if encoder.api_version() >= 1 {
+            let throttle_start = buf.len();
             encoder.write_i32(&mut buf, self.throttle_time_ms);
+            tracing::info!(
+                "  Wrote throttle_time_ms: {} as bytes: {:02x?}",
+                self.throttle_time_ms,
+                &buf[throttle_start..]
+            );
         }
 
         // Tagged fields (only in flexible versions)
+        let tagged_start = buf.len();
         encoder.write_tagged_fields(&mut buf);
+        if buf.len() > tagged_start {
+            tracing::info!("  Wrote tagged fields: {:02x?}", &buf[tagged_start..]);
+        }
 
+        tracing::info!(
+            "Encoded ApiVersionsResponse total {} bytes: {:02x?}",
+            buf.len(),
+            &buf[..]
+        );
         Ok(buf.to_vec())
     }
 }
@@ -202,9 +250,37 @@ mod tests {
     }
 
     #[test]
+    fn test_api_versions_v3_actual_encoding() {
+        // Test that v3 actually uses compact encoding
+        let response = ApiVersionsResponse {
+            error_code: 0,
+            api_versions: vec![ApiVersion {
+                api_key: 18,
+                min_version: 0,
+                max_version: 3,
+            }],
+            throttle_time_ms: 0,
+        };
+
+        let encoder = ProtocolEncoder::new(18, 3);
+        assert!(encoder.is_flexible(), "v3 should use flexible encoding");
+
+        let encoded = response.encode_with_encoder(&encoder).unwrap();
+        println!("Encoded v3 bytes: {encoded:02x?}");
+
+        // Verify compact encoding is used
+        // Error code: 2 bytes
+        assert_eq!(encoded[0..2], [0x00, 0x00]);
+        // Array length should be varint (0x02 = 1 + 1)
+        assert_eq!(encoded[2], 0x02, "Should use varint for array length");
+        // Rest of the encoding...
+        assert!(encoded.len() < 20, "Compact encoding should be smaller");
+    }
+
+    #[test]
     fn test_api_versions_from_logs() {
         // Test the actual response we're sending based on logs
-        let response_hex = "0000009200000001000000140000000000090000010000000c000002000000070000030000000c000008000000080000090000000800000a0000000400000b0000000700000c0000000400000d0000000400000e0000000500000f0000000500001000000004000011000000010000120000000300001300000007000014000000060000160000000400002400000002000000000000";
+        let response_hex = "0000009200000001000000000014000000090000010000000c000002000000070000030000000c000008000000080000090000000800000a0000000400000b0000000700000c0000000400000d0000000400000e0000000500000f0000000500001000000004000011000000010000120000000300001300000007000014000000060000160000000400002400000002000000000000";
         // Convert hex string to bytes manually
         let response_bytes: Vec<u8> = (0..response_hex.len())
             .step_by(2)

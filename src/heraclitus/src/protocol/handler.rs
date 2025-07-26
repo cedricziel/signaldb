@@ -223,35 +223,51 @@ impl ConnectionHandler {
     async fn write_frame(&mut self, data: Vec<u8>) -> Result<()> {
         info!("Writing response frame: size={} bytes", data.len());
         info!(
-            "Frame data first 16 bytes: {:02x?}",
-            &data[..16.min(data.len())]
+            "Frame data first 32 bytes: {:02x?}",
+            &data[..32.min(data.len())]
         );
 
         // Clear write buffer
         self.write_buffer.clear();
 
         // Write frame length
+        let frame_length = data.len() as i32;
         self.write_buffer
-            .extend_from_slice(&(data.len() as i32).to_be_bytes());
+            .extend_from_slice(&frame_length.to_be_bytes());
+
+        info!(
+            "Frame length: {} (0x{:08x}), bytes: {:02x?}",
+            frame_length,
+            frame_length,
+            &frame_length.to_be_bytes()
+        );
 
         // Write frame data
         self.write_buffer.extend_from_slice(&data);
 
-        // Send to socket
-        self.socket.write_all(&self.write_buffer).await?;
-        self.socket.flush().await?;
-
-        // Log the actual bytes being sent for debugging
-        if data.len() < 200 {
-            // Only log small responses
+        // Log complete frame for debugging
+        if self.write_buffer.len() < 300 {
+            // Log small frames completely
             let hex_bytes: String = self
                 .write_buffer
                 .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<Vec<_>>()
-                .join("");
-            info!("Response hex bytes: {}", hex_bytes);
+                .enumerate()
+                .map(|(i, b)| {
+                    if i % 16 == 0 && i > 0 {
+                        format!("\n  {i:04x}: {b:02x}")
+                    } else if i % 16 == 0 {
+                        format!("  {i:04x}: {b:02x}")
+                    } else {
+                        format!(" {b:02x}")
+                    }
+                })
+                .collect::<String>();
+            info!("Complete frame hex dump:\n{}", hex_bytes);
         }
+
+        // Send to socket
+        self.socket.write_all(&self.write_buffer).await?;
+        self.socket.flush().await?;
 
         info!(
             "Successfully sent response: total_size={} bytes (4 byte header + {} byte payload)",
@@ -398,7 +414,32 @@ impl ConnectionHandler {
             }
             Err(e) => {
                 error!("Error handling request: {}", e);
-                // Return error response
+
+                // Special case for ApiVersions: always respond with v0 format on error
+                if request.api_key == 18 {
+                    // ApiVersions errors must use v0 format for compatibility
+                    let v0_request = crate::protocol::request::KafkaRequest::new(
+                        18,
+                        0, // Force v0
+                        request.correlation_id,
+                        request.client_id.clone(),
+                        request.body.clone(),
+                    )?;
+
+                    // Return UNSUPPORTED_VERSION error for version mismatch
+                    let error_code = match &e {
+                        crate::error::HeraclitusError::UnsupportedVersion(_, _) => {
+                            crate::protocol::kafka_protocol::ERROR_UNSUPPORTED_VERSION
+                        }
+                        _ => crate::protocol::kafka_protocol::ERROR_UNKNOWN_SERVER_ERROR,
+                    };
+
+                    return Ok(self
+                        .response_builder
+                        .build_error_response(&v0_request, error_code));
+                }
+
+                // For other APIs, use the requested version format
                 Ok(self.response_builder.build_error_response(
                     &request,
                     crate::protocol::kafka_protocol::ERROR_UNKNOWN_SERVER_ERROR,

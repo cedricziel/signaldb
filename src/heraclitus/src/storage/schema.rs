@@ -1,9 +1,9 @@
-use datafusion::arrow::array::{
+use arrow::array::{
     BinaryBuilder, Int16Builder, Int32Builder, Int64Builder, StringBuilder,
     TimestampMicrosecondBuilder,
 };
-use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-use datafusion::arrow::record_batch::RecordBatch;
+use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+use arrow::record_batch::RecordBatch;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -55,7 +55,7 @@ impl KafkaMessageBatch {
         ]))
     }
 
-    pub fn to_record_batch(&self) -> Result<RecordBatch, datafusion::arrow::error::ArrowError> {
+    pub fn to_record_batch(&self) -> Result<RecordBatch, arrow::error::ArrowError> {
         let schema = Self::arrow_schema();
         let num_rows = self.messages.len();
 

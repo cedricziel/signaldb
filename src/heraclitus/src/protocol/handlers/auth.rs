@@ -20,12 +20,28 @@ impl ApiHandler for ApiVersionsHandler {
         request: &KafkaRequest,
         context: &mut HandlerContext,
     ) -> Result<Vec<u8>> {
-        info!("Handling API versions request v{}", request.api_version);
-
-        // DEBUG: Log what version we're encoding for
         info!(
-            "ApiVersionsHandler: Will encode response for version {}",
+            "Handling API versions request v{}, correlation_id={}, body_len={}",
+            request.api_version,
+            request.correlation_id,
+            request.body.len()
+        );
+
+        // CRITICAL: ApiVersions has special handling in Kafka protocol
+        // If client sends unsupported version, we MUST respond with v0 format
+        let response_version = if request.api_version > 3 {
+            warn!(
+                "Client requested ApiVersions v{} which we don't support, will respond with v0",
+                request.api_version
+            );
+            0
+        } else {
             request.api_version
+        };
+
+        info!(
+            "ApiVersionsHandler: Will encode response for version {} (requested: {})",
+            response_version, request.api_version
         );
 
         // Track API versions requests
@@ -156,11 +172,30 @@ impl ApiHandler for ApiVersionsHandler {
 
         // Encode response
         info!(
-            "About to encode ApiVersionsResponse with api_version={}",
-            request.api_version
+            "About to encode ApiVersionsResponse with api_version={}, should_use_flexible={}",
+            response_version,
+            crate::protocol::kafka_protocol::uses_flexible_version_for_api(18, response_version)
         );
-        let encoded = response.encode(request.api_version)?;
-        info!("Encoded {} bytes", encoded.len());
+        let encoded = response.encode(response_version)?;
+        info!(
+            "Encoded {} bytes, first 32 bytes: {:02x?}",
+            encoded.len(),
+            &encoded[..32.min(encoded.len())]
+        );
+
+        // If we downgraded the version, we should return an error in the response
+        if response_version != request.api_version {
+            // For unsupported versions, return v0 format with UNSUPPORTED_VERSION error
+            let error_response = ApiVersionsResponse {
+                error_code: crate::protocol::kafka_protocol::ERROR_UNSUPPORTED_VERSION,
+                api_versions: vec![], // Empty on error
+                throttle_time_ms: 0,
+            };
+            let encoded = error_response.encode(0)?; // Always v0 for errors
+            info!("Returning UNSUPPORTED_VERSION error in v0 format");
+            return Ok(encoded);
+        }
+
         Ok(encoded)
     }
 

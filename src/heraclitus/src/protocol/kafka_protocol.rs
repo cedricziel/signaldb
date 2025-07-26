@@ -64,6 +64,13 @@ pub fn read_request_header(buf: &mut Cursor<&[u8]>) -> Result<RequestHeader, std
     let api_version = buf.get_i16();
     let correlation_id = buf.get_i32();
 
+    tracing::info!(
+        "Read request header: api_key={}, api_version={}, correlation_id={}",
+        api_key,
+        api_version,
+        correlation_id
+    );
+
     // Read client_id - use compact format for flexible API versions
     let client_id = if uses_flexible_version_for_api(api_key, api_version) {
         read_compact_nullable_string(buf)?

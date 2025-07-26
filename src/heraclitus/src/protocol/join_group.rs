@@ -478,6 +478,9 @@ mod tests {
         assert_eq!(instance1_id, Some("instance-1".to_string()));
         let metadata1 = read_compact_bytes(&mut cursor).unwrap();
         assert_eq!(metadata1, vec![1, 2, 3]);
+        // Tagged fields for member 1
+        let tagged_fields_len = read_unsigned_varint(&mut cursor).unwrap();
+        assert_eq!(tagged_fields_len, 0);
 
         // Member 2
         let member2_id = read_compact_string(&mut cursor).unwrap();
@@ -486,8 +489,11 @@ mod tests {
         assert_eq!(instance2_id, None);
         let metadata2 = read_compact_bytes(&mut cursor).unwrap();
         assert_eq!(metadata2, vec![4, 5, 6]);
+        // Tagged fields for member 2
+        let tagged_fields_len = read_unsigned_varint(&mut cursor).unwrap();
+        assert_eq!(tagged_fields_len, 0);
 
-        // Tagged fields
+        // Top-level tagged fields
         let tagged_fields_len = read_unsigned_varint(&mut cursor).unwrap();
         assert_eq!(tagged_fields_len, 0);
     }

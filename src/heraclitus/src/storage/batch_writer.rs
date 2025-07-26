@@ -5,8 +5,8 @@ use crate::{
     storage::{KafkaMessage, KafkaMessageBatch, ObjectStorageLayout},
 };
 use chrono::{DateTime, Utc};
-use datafusion::parquet::arrow::ArrowWriter;
 use object_store::ObjectStore;
+use parquet::arrow::ArrowWriter;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;

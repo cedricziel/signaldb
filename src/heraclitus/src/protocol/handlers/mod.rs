@@ -54,25 +54,54 @@ impl ResponseBuilder for DefaultResponseBuilder {
 
         // Write response header based on whether the API uses flexible versions
         let uses_flexible = uses_flexible_version(request.api_key, request.api_version);
+        let header_start = response.len();
+
         if uses_flexible {
             write_response_header_v1(&mut response, request.correlation_id);
         } else {
             write_response_header(&mut response, request.correlation_id);
         }
 
+        let header_bytes = &response[header_start..].to_vec();
+
         // Write response body
         response.extend_from_slice(&response_body);
 
-        tracing::debug!(
-            "Built response for api_key={}, api_version={}, correlation_id={}, flexible_header={}, total_size={}, header_size={}, body_size={}",
+        tracing::info!(
+            "Built response for api_key={} ({}), api_version={}, correlation_id={}, flexible_header={}, total_size={}, header_size={}, body_size={}",
             request.api_key,
+            match request.api_key {
+                18 => "ApiVersions",
+                3 => "Metadata",
+                _ => "Other",
+            },
             request.api_version,
             request.correlation_id,
             uses_flexible,
             response.len(),
-            response.len() - response_body.len(), // header size
+            header_bytes.len(),
             response_body.len()
         );
+
+        tracing::info!(
+            "  Response header ({} bytes): {:02x?}",
+            header_bytes.len(),
+            header_bytes
+        );
+
+        if response_body.len() < 100 {
+            tracing::info!(
+                "  Response body ({} bytes): {:02x?}",
+                response_body.len(),
+                response_body
+            );
+        } else {
+            tracing::info!(
+                "  Response body ({} bytes), first 100: {:02x?}...",
+                response_body.len(),
+                &response_body[..100]
+            );
+        }
 
         response.to_vec()
     }
