@@ -218,40 +218,40 @@ mod tests {
             throttle_time_ms: 0,
         };
 
-        // Encode as v3 (should use compact format)
+        // Encode as v3 (should use NON-compact format)
         let encoded = response.encode(3).unwrap();
 
         println!("Encoded v3 response: {encoded:02x?}");
 
-        // Expected format for v3:
+        // Expected format for v3 (non-compact):
         // - Error code: 2 bytes (0x0000)
-        // - Compact array length: 1 byte (0x02 for 1 element)
+        // - Array length: 4 bytes (0x00000001 for 1 element)
         // - API key: 2 bytes (0x0012)
         // - Min version: 2 bytes (0x0000)
         // - Max version: 2 bytes (0x0003)
-        // - Tagged fields: 1 byte (0x00)
         // - Throttle time: 4 bytes (0x00000000)
-        // - Tagged fields: 1 byte (0x00)
 
         assert_eq!(encoded[0..2], [0x00, 0x00], "Error code should be 0");
-        assert_eq!(encoded[2], 0x02, "Compact array length should be 2 (1+1)");
-        assert_eq!(encoded[3..5], [0x00, 0x12], "API key should be 18");
-        assert_eq!(encoded[5..7], [0x00, 0x00], "Min version should be 0");
-        assert_eq!(encoded[7..9], [0x00, 0x03], "Max version should be 3");
-        assert_eq!(encoded[9], 0x00, "Tagged fields should be empty");
         assert_eq!(
-            encoded[10..14],
+            encoded[2..6],
+            [0x00, 0x00, 0x00, 0x01],
+            "Array length should be 1"
+        );
+        assert_eq!(encoded[6..8], [0x00, 0x12], "API key should be 18");
+        assert_eq!(encoded[8..10], [0x00, 0x00], "Min version should be 0");
+        assert_eq!(encoded[10..12], [0x00, 0x03], "Max version should be 3");
+        assert_eq!(
+            encoded[12..16],
             [0x00, 0x00, 0x00, 0x00],
             "Throttle time should be 0"
         );
-        assert_eq!(encoded[14], 0x00, "Final tagged fields should be empty");
 
-        println!("✓ v3 encoding is correct");
+        println!("✓ v3 encoding is correct (non-compact)");
     }
 
     #[test]
     fn test_api_versions_v3_actual_encoding() {
-        // Test that v3 actually uses compact encoding
+        // Test that v3 uses NON-compact encoding (based on rdkafka behavior)
         let response = ApiVersionsResponse {
             error_code: 0,
             api_versions: vec![ApiVersion {
@@ -263,18 +263,25 @@ mod tests {
         };
 
         let encoder = ProtocolEncoder::new(18, 3);
-        assert!(encoder.is_flexible(), "v3 should use flexible encoding");
+        assert!(
+            !encoder.is_flexible(),
+            "v3 should NOT use flexible encoding"
+        );
 
         let encoded = response.encode_with_encoder(&encoder).unwrap();
         println!("Encoded v3 bytes: {encoded:02x?}");
 
-        // Verify compact encoding is used
+        // Verify non-compact encoding is used
         // Error code: 2 bytes
         assert_eq!(encoded[0..2], [0x00, 0x00]);
-        // Array length should be varint (0x02 = 1 + 1)
-        assert_eq!(encoded[2], 0x02, "Should use varint for array length");
-        // Rest of the encoding...
-        assert!(encoded.len() < 20, "Compact encoding should be smaller");
+        // Array length should be 4-byte int
+        assert_eq!(
+            encoded[2..6],
+            [0x00, 0x00, 0x00, 0x01],
+            "Should use 4-byte int for array length"
+        );
+        // API key
+        assert_eq!(encoded[6..8], [0x00, 0x12]);
     }
 
     #[test]

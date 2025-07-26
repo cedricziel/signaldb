@@ -199,12 +199,15 @@ mod tests {
 
     #[test]
     fn test_encoder_flexible_detection() {
-        // ApiVersions v3+ uses flexible encoding
+        // ApiVersions v4+ uses flexible encoding
         let encoder_v2 = ProtocolEncoder::new(18, 2);
         assert!(!encoder_v2.is_flexible());
 
         let encoder_v3 = ProtocolEncoder::new(18, 3);
-        assert!(encoder_v3.is_flexible());
+        assert!(!encoder_v3.is_flexible());
+
+        let encoder_v4 = ProtocolEncoder::new(18, 4);
+        assert!(encoder_v4.is_flexible());
 
         // Metadata v9+ uses flexible encoding
         let encoder_v8 = ProtocolEncoder::new(3, 8);
@@ -223,7 +226,7 @@ mod tests {
         assert_eq!(buf.to_vec(), vec![0x00, 0x00, 0x00, 0x05]); // 4-byte big-endian
 
         // Flexible encoding
-        let encoder = ProtocolEncoder::new(18, 3);
+        let encoder = ProtocolEncoder::new(18, 4);
         let mut buf = BytesMut::new();
         encoder.write_array_len(&mut buf, 5);
         assert_eq!(buf.to_vec(), vec![0x06]); // varint 6 = 5 + 1
@@ -240,7 +243,7 @@ mod tests {
         assert_eq!(buf.to_vec(), vec![0x00, 0x05, b'h', b'e', b'l', b'l', b'o']);
 
         // Flexible encoding
-        let encoder = ProtocolEncoder::new(18, 3);
+        let encoder = ProtocolEncoder::new(18, 4);
         let mut buf = BytesMut::new();
         encoder.write_string(&mut buf, test_str);
         assert_eq!(buf.to_vec(), vec![0x06, b'h', b'e', b'l', b'l', b'o']); // varint 6 = 5 + 1
@@ -255,7 +258,7 @@ mod tests {
         assert_eq!(buf.to_vec(), vec![0xff, 0xff]); // -1 as 2-byte signed
 
         // Flexible null string
-        let encoder = ProtocolEncoder::new(18, 3);
+        let encoder = ProtocolEncoder::new(18, 4);
         let mut buf = BytesMut::new();
         encoder.write_nullable_string(&mut buf, None);
         assert_eq!(buf.to_vec(), vec![0x00]); // varint 0 = null
@@ -270,7 +273,7 @@ mod tests {
         assert_eq!(buf.to_vec(), Vec::<u8>::new()); // Empty
 
         // Flexible: empty tagged fields
-        let encoder = ProtocolEncoder::new(18, 3);
+        let encoder = ProtocolEncoder::new(18, 4);
         let mut buf = BytesMut::new();
         encoder.write_tagged_fields(&mut buf);
         assert_eq!(buf.to_vec(), vec![0x00]); // varint 0 = no tagged fields

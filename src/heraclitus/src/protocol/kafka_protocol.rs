@@ -4,8 +4,8 @@ use std::io::Cursor;
 /// Determine if an API uses flexible versions and requires compact encoding
 pub fn uses_flexible_version_for_api(api_key: i16, api_version: i16) -> bool {
     match api_key {
-        // ApiVersions uses flexible versions from v3+
-        18 => api_version >= 3,
+        // ApiVersions uses flexible versions from v4+ (not v3!)
+        18 => api_version >= 4,
         // Metadata uses flexible versions from v9+
         3 => api_version >= 9,
         // CreateTopics uses flexible versions from v5+

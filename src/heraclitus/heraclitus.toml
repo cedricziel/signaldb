@@ -1,0 +1,20 @@
+# Heraclitus Configuration
+
+kafka_port = 9092
+http_port = 9093
+
+[storage]
+path = "/tmp/heraclitus-data"
+
+[auth]
+enabled = false
+
+[broker]
+id = 0
+advertised_host = "localhost"
+advertised_port = 9092
+
+[limits]
+max_request_size = 104857600  # 100MB
+max_response_size = 104857600  # 100MB
+max_connections = 1000

@@ -26,39 +26,39 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 # For atomic operations on object storage
-parking_lot = "0.12"
+parking_lot = { workspace = true }
 
 # For compression support
-flate2 = "1.0"          # Gzip compression
-snap = "1.1"            # Snappy compression
-lz4 = "1.24"            # LZ4 compression
-zstd = "0.13"           # Zstandard compression
+flate2 = { workspace = true }          # Gzip compression
+snap = { workspace = true }            # Snappy compression
+lz4 = { workspace = true }             # LZ4 compression
+zstd = { workspace = true }            # Zstandard compression
 
 # For CRC32C checksums in Kafka protocol
-crc32c = "0.6"
+crc32c = { workspace = true }
 
 # For HTTP server and metrics
 axum = { workspace = true }
-prometheus = { version = "0.14", features = ["process"] }
+prometheus = { workspace = true }
 
 # For async trait definitions
-async-trait = "0.1"
+async-trait = { workspace = true }
 
 # For configuration
-toml = { version = "0.8", features = ["preserve_order"] }
+toml = { workspace = true }
 
 # For logging
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-
+tracing-subscriber = { workspace = true }
 
 # For socket optimization
-socket2 = "0.5"
+socket2 = { workspace = true }
 
 # For partitioning
-rand = "0.8"
+rand = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3.0"
-rdkafka = { version = "0.36", features = ["tokio"] }
+tempfile = { workspace = true }
+rdkafka = { workspace = true }
+testcontainers = { workspace = true }
+testcontainers-modules = { workspace = true }
 

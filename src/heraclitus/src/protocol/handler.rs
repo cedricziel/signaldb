@@ -35,8 +35,8 @@ pub struct ConnectionHandler {
 /// Determine if an API uses flexible versions and requires response header v1
 pub fn uses_flexible_version(api_key: i16, api_version: i16) -> bool {
     match api_key {
-        // ApiVersions uses flexible versions from v3+
-        18 => api_version >= 3,
+        // ApiVersions uses flexible versions from v4+ (not v3!)
+        18 => api_version >= 4,
         // Metadata uses flexible versions from v9+
         3 => api_version >= 9,
         // CreateTopics uses flexible versions from v5+
@@ -279,6 +279,13 @@ impl ConnectionHandler {
 
     /// Process a Kafka request and return the response
     async fn process_request(&mut self, frame: bytes::Bytes) -> Result<Vec<u8>> {
+        // Log the raw request frame for debugging
+        info!(
+            "Raw request frame ({} bytes): {:02x?}",
+            frame.len(),
+            &frame[..32.min(frame.len())]
+        );
+
         // Parse request header
         let mut cursor = Cursor::new(&frame[..]);
         let header = crate::protocol::kafka_protocol::read_request_header(&mut cursor)?;
@@ -288,8 +295,15 @@ impl ConnectionHandler {
         let body = frame.slice(body_start..);
 
         info!(
-            "Processing request: api_key={}, api_version={}, correlation_id={}, client_id={:?}, body_len={}",
+            "Processing request: api_key={} ({}), api_version={}, correlation_id={}, client_id={:?}, body_len={}",
             header.api_key,
+            match header.api_key {
+                0 => "Produce",
+                1 => "Fetch",
+                3 => "Metadata",
+                18 => "ApiVersions",
+                _ => "Other",
+            },
             header.api_version,
             header.correlation_id,
             header.client_id,

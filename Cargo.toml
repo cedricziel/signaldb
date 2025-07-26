@@ -82,7 +82,7 @@ tokio-stream = { version = "0.1.17", features = ["sync", "net"] }
 tokio-test = "0.4.2"
 
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 log = "0.4"
 anyhow = "1.0.98"
@@ -116,9 +116,25 @@ env_logger = "0.11.5"
 tower = "0.5.2"
 
 testcontainers = "0.24.0"
-testcontainers-modules = { version = "0.12.1", features = ["postgres"] }
+testcontainers-modules = { version = "0.12.1", features = ["postgres", "kafka"] }
 tempfile = "3.20.0"
 rand = "0.9"
+
+# Compression libraries (used by heraclitus)
+flate2 = "1.1"
+snap = "1.1"
+lz4 = "1.28"
+zstd = "0.13"
+
+# Other heraclitus dependencies
+parking_lot = "0.12"
+crc32c = "0.6"
+prometheus = { version = "0.14", features = ["process"] }
+socket2 = "0.5"
+
+# Dev dependencies
+pretty_assertions = "1.4"
+rdkafka = { version = "0.36", features = ["tokio"] }
 
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
