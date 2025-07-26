@@ -1,71 +1,76 @@
-use anyhow::Result;
-use clap::{Parser, Subcommand};
-use common::cli::{CommonArgs, CommonCommands, utils};
+// Standalone main entry point without SignalDB dependencies
+
+use clap::Parser;
 use heraclitus::{HeraclitusAgent, HeraclitusConfig};
 use tracing::{error, info};
 
-#[derive(Parser)]
-#[command(name = "heraclitus")]
-#[command(about = "Heraclitus - Stateless Kafka-compatible agent for SignalDB")]
-#[command(version)]
-struct Cli {
-    #[command(flatten)]
-    common: CommonArgs,
-
-    #[command(subcommand)]
-    command: Option<HeraclitusCommands>,
-
-    #[arg(long, help = "Kafka protocol port", default_value = "9092")]
+#[derive(Parser, Debug)]
+#[command(author, version, about = "Heraclitus - Kafka-compatible server")]
+struct Args {
+    /// Kafka protocol port
+    #[arg(long, default_value = "9092")]
     kafka_port: u16,
-}
 
-#[derive(Subcommand)]
-enum HeraclitusCommands {
-    #[command(flatten)]
-    Common(CommonCommands),
-}
+    /// HTTP metrics port
+    #[arg(long, default_value = "9093")]
+    http_port: u16,
 
-impl Default for HeraclitusCommands {
-    fn default() -> Self {
-        Self::Common(CommonCommands::Start)
-    }
+    /// Storage path (use "memory://" for in-memory storage)
+    #[arg(long, default_value = "/var/lib/heraclitus")]
+    storage_path: String,
+
+    /// Configuration file path
+    #[arg(short, long)]
+    config: Option<String>,
+
+    /// Enable debug logging
+    #[arg(short, long)]
+    debug: bool,
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
 
-    // Initialize logging based on CLI arguments
-    utils::init_logging(&cli.common);
+    // Initialize logging
+    let filter = if args.debug {
+        "heraclitus=debug,info"
+    } else {
+        "heraclitus=info,warn"
+    };
 
-    // Load application configuration
-    let config = utils::load_config(cli.common.config.as_ref())?;
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    // Handle common commands that don't require starting the service
-    let command = cli.command.unwrap_or_default();
-    let HeraclitusCommands::Common(ref common_cmd) = command;
-    if utils::handle_common_command(common_cmd, &config).await? {
-        return Ok(()); // Command handled, exit early
+    info!("Starting Heraclitus Kafka-compatible server");
+
+    // Load configuration
+    let config = if let Some(config_path) = args.config {
+        let config_str = std::fs::read_to_string(&config_path)?;
+        toml::from_str(&config_str)?
+    } else {
+        // Create default config with CLI overrides
+        HeraclitusConfig {
+            kafka_port: args.kafka_port,
+            http_port: args.http_port,
+            storage: heraclitus::config::StorageConfig {
+                path: args.storage_path,
+            },
+            ..Default::default()
+        }
+    };
+
+    // Create storage directory if needed
+    if !config.storage.path.starts_with("memory://") {
+        std::fs::create_dir_all(&config.storage.path)?;
     }
 
-    info!("Starting Heraclitus Kafka-compatible agent");
+    // Create and run server
+    let server = HeraclitusAgent::new(config).await?;
 
-    // Create Heraclitus config from common configuration
-    let mut heraclitus_config = HeraclitusConfig::from_common_config(config);
-    // Override with CLI args if provided
-    heraclitus_config.kafka_port = cli.kafka_port;
-
-    // Create and run the agent
-    let mut agent = HeraclitusAgent::new(heraclitus_config).await?;
-
-    match agent.run().await {
-        Ok(_) => {
-            info!("Heraclitus agent stopped");
-            Ok(())
-        }
-        Err(e) => {
-            error!("Heraclitus agent failed: {}", e);
-            Err(e.into())
-        }
+    if let Err(e) = server.run().await {
+        error!("Server error: {}", e);
+        return Err(e.into());
     }
+
+    Ok(())
 }

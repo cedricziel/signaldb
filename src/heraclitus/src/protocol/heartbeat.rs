@@ -1,6 +1,9 @@
 use crate::error::Result;
-use crate::protocol::kafka_protocol::*;
-use bytes::{Buf, BufMut, BytesMut};
+use crate::protocol::{
+    encoder::{KafkaResponse, ProtocolEncoder},
+    kafka_protocol::*,
+};
+use bytes::Buf;
 use std::io::Cursor;
 
 /// Kafka Heartbeat Request (API Key 12)
@@ -81,47 +84,44 @@ impl HeartbeatRequest {
 }
 
 impl HeartbeatResponse {
-    /// Create a successful Heartbeat response
-    pub fn success() -> Self {
-        Self {
-            throttle_time_ms: 0,
-            error_code: 0, // NONE
-        }
-    }
-
-    /// Create an error response
-    pub fn error(error_code: i16) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            error_code,
-        }
-    }
-
-    /// Encode the response to bytes
+    /// Legacy encode method - delegates to centralized encoder
     pub fn encode(&self, api_version: i16) -> Result<Vec<u8>> {
-        let mut buf = BytesMut::new();
+        let encoder = ProtocolEncoder::new(12, api_version); // Heartbeat API key = 12
+        self.encode_with_encoder(&encoder)
+    }
+
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        let mut buf = encoder.create_buffer();
 
         // throttle_time_ms: int32 (v1+)
-        if api_version >= 1 {
-            buf.put_i32(self.throttle_time_ms);
+        if encoder.api_version() >= 1 {
+            encoder.write_i32(&mut buf, self.throttle_time_ms);
         }
 
         // error_code: int16
-        buf.put_i16(self.error_code);
+        encoder.write_i16(&mut buf, self.error_code);
 
-        // Handle tagged fields for newer versions
-        if api_version >= 4 {
-            // Write empty tagged fields
-            write_unsigned_varint(&mut buf, 0);
-        }
+        // Tagged fields for flexible versions
+        encoder.write_tagged_fields(&mut buf);
 
         Ok(buf.to_vec())
+    }
+}
+
+impl KafkaResponse for HeartbeatResponse {
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        self.encode_with_encoder(encoder)
+    }
+
+    fn api_key(&self) -> i16 {
+        12 // Heartbeat API key
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::{BufMut, BytesMut};
 
     #[test]
     fn test_heartbeat_request_parse_v0() {
@@ -177,7 +177,10 @@ mod tests {
 
     #[test]
     fn test_heartbeat_response_encode_v0() {
-        let response = HeartbeatResponse::success();
+        let response = HeartbeatResponse {
+            throttle_time_ms: 0,
+            error_code: 0,
+        };
         let encoded = response.encode(0).unwrap();
 
         let mut cursor = Cursor::new(&encoded[..]);
@@ -187,7 +190,10 @@ mod tests {
 
     #[test]
     fn test_heartbeat_response_encode_v1() {
-        let response = HeartbeatResponse::error(27); // REBALANCE_IN_PROGRESS
+        let response = HeartbeatResponse {
+            throttle_time_ms: 0,
+            error_code: 27, // REBALANCE_IN_PROGRESS
+        };
         let encoded = response.encode(1).unwrap();
 
         let mut cursor = Cursor::new(&encoded[..]);
@@ -225,7 +231,10 @@ mod tests {
 
     #[test]
     fn test_heartbeat_response_encode_v4_compact() {
-        let response = HeartbeatResponse::success();
+        let response = HeartbeatResponse {
+            throttle_time_ms: 0,
+            error_code: 0,
+        };
         let encoded = response.encode(4).unwrap();
 
         let mut cursor = Cursor::new(&encoded[..]);

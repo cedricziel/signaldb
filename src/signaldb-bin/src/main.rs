@@ -139,26 +139,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Start Heraclitus (Kafka-compatible) service
-    let heraclitus_config = heraclitus::HeraclitusConfig::from_common_config(config.clone());
-    let heraclitus_handle = tokio::spawn(async move {
-        log::info!(
-            "Starting Heraclitus Kafka-compatible service on port {}",
-            heraclitus_config.kafka_port
-        );
-
-        match heraclitus::HeraclitusAgent::new(heraclitus_config).await {
-            Ok(mut agent) => {
-                if let Err(e) = agent.run().await {
-                    log::error!("Heraclitus service error: {e}");
-                }
-            }
-            Err(e) => {
-                log::error!("Failed to initialize Heraclitus: {e}");
-            }
-        }
-    });
-
     // Wait for OTLP servers to initialize
     otlp_grpc_init_rx
         .await
@@ -184,7 +164,6 @@ async fn main() -> Result<()> {
     let _ = http_handle.await;
     let _ = http_router_handle.await;
     let _ = flight_handle.await;
-    let _ = heraclitus_handle.await;
 
     Ok(())
 }

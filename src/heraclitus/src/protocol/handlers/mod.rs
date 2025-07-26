@@ -52,11 +52,9 @@ impl ResponseBuilder for DefaultResponseBuilder {
     fn build_response(&self, request: &KafkaRequest, response_body: Vec<u8>) -> Vec<u8> {
         let mut response = BytesMut::new();
 
-        // Write size placeholder
-        response.put_i32(0);
-
         // Write response header based on whether the API uses flexible versions
-        if uses_flexible_version(request.api_key, request.api_version) {
+        let uses_flexible = uses_flexible_version(request.api_key, request.api_version);
+        if uses_flexible {
             write_response_header_v1(&mut response, request.correlation_id);
         } else {
             write_response_header(&mut response, request.correlation_id);
@@ -65,9 +63,16 @@ impl ResponseBuilder for DefaultResponseBuilder {
         // Write response body
         response.extend_from_slice(&response_body);
 
-        // Update size
-        let size = (response.len() - 4) as i32;
-        response[0..4].copy_from_slice(&size.to_be_bytes());
+        tracing::debug!(
+            "Built response for api_key={}, api_version={}, correlation_id={}, flexible_header={}, total_size={}, header_size={}, body_size={}",
+            request.api_key,
+            request.api_version,
+            request.correlation_id,
+            uses_flexible,
+            response.len(),
+            response.len() - response_body.len(), // header size
+            response_body.len()
+        );
 
         response.to_vec()
     }
@@ -92,6 +97,7 @@ pub mod auth;
 pub mod consumer_group;
 pub mod fetch;
 pub mod metadata;
+pub mod performance;
 pub mod produce;
 pub mod registry;
 
@@ -106,6 +112,7 @@ pub use consumer_group::{
 pub use fetch::FetchHandler;
 pub use fetch::ListOffsetsHandler;
 pub use metadata::MetadataHandler;
+pub use performance::{BufferPool, CompressionPool};
 pub use produce::InitProducerIdHandler;
 pub use produce::ProduceHandler;
 pub use registry::HandlerRegistry;

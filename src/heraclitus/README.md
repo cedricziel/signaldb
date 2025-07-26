@@ -1,216 +1,155 @@
-# Heraclitus - Kafka-Compatible Agent for SignalDB
+# Heraclitus - High-Performance Kafka Protocol Server
 
-Heraclitus is a Kafka protocol-compatible agent that enables SignalDB to accept and process streaming data from Kafka producers and serve data to Kafka consumers. It implements a subset of the Kafka wire protocol, allowing existing Kafka clients to seamlessly integrate with SignalDB's distributed observability signal database.
+A standalone, high-performance Kafka-compatible protocol server written in Rust.
 
 ## Features
 
-### Implemented Kafka APIs
+- Full Kafka wire protocol compatibility (v0-v3 for most APIs)
+- Zero-copy message handling for optimal performance
+- Multiple compression algorithms (Gzip, Snappy, LZ4, Zstandard)
+- Pluggable storage backends (local filesystem, in-memory)
+- Built-in metrics and monitoring via Prometheus
+- Consumer group coordination
+- SASL/PLAIN authentication support
+- Configurable performance tuning
 
-- **ApiVersions (0)**: Protocol version negotiation
-- **Metadata (3)**: Topic and broker discovery  
-- **FindCoordinator (10)**: Consumer group coordinator discovery
-- **JoinGroup (11)**: Consumer group membership
-- **Heartbeat (12)**: Consumer session management
-- **LeaveGroup (13)**: Graceful consumer departure
-- **SyncGroup (14)**: Group assignment synchronization
-- **DescribeGroups (15)**: Consumer group monitoring
-- **SaslHandshake (17)**: SASL authentication initiation
-- **SaslAuthenticate (36)**: SASL/PLAIN authentication
-- **CreateTopics (19)**: Explicit topic creation
-- **DeleteTopics (20)**: Topic deletion
-- **InitProducerId (22)**: Producer initialization for idempotency
+## Quick Start
 
-### Core Capabilities
+```bash
+# Run with default settings (local storage)
+cargo run --bin heraclitus
 
-- **Consumer Group Management**: Full consumer group protocol support including rebalancing
-- **SASL/PLAIN Authentication**: Secure client authentication with configurable credentials
-- **Topic Management**: Automatic and explicit topic creation with configurable parameters
-- **Producer Support**: Basic producer protocol with idempotency foundations
-- **Observability Integration**: Prometheus metrics and health check endpoints
-- **Graceful Shutdown**: Proper cleanup and connection draining
+# Run with in-memory storage
+cargo run --bin heraclitus -- --storage-path memory://
 
-## Architecture
+# Run with custom ports
+cargo run --bin heraclitus -- --kafka-port 9092 --http-port 9093
 
-Heraclitus is designed as a **stateless, horizontally scalable agent** that requires no central infrastructure or coordination services. Each Heraclitus instance operates independently while sharing state through SignalDB's object storage.
-
-### Key Architectural Principles
-
-- **Stateless Design**: All state is persisted to object storage - agents hold no local state
-- **No Central Infrastructure**: No ZooKeeper, no central coordinators, no single points of failure
-- **Horizontal Scalability**: Run as many Heraclitus instances as needed behind a load balancer
-- **Shared Nothing**: Each agent instance is completely independent
-- **Eventually Consistent**: State changes propagate through object storage
-
-### How It Works
-
+# Run with debug logging
+cargo run --bin heraclitus -- --debug
 ```
-                    Load Balancer
-                         |
-        +----------------+----------------+
-        |                |                |
-   Heraclitus-1    Heraclitus-2    Heraclitus-3
-        |                |                |
-        +----------------+----------------+
-                         |
-                  Object Storage
-                 (Shared State)
-```
-
-Each Heraclitus instance:
-1. Accepts Kafka client connections independently
-2. Reads/writes all state to shared object storage
-3. Has no awareness of other Heraclitus instances
-4. Can be added or removed without affecting others
-
-### Components
-
-- **Protocol Handler**: Manages Kafka protocol parsing and response generation
-- **State Manager**: Handles topic metadata, consumer groups, and producer state via object storage
-- **Storage Integration**: Uses SignalDB's object storage for all persistence
-- **Metrics**: Prometheus-compatible metrics for monitoring (per-instance)
 
 ## Configuration
 
-Heraclitus uses the standard SignalDB configuration with additional Kafka-specific settings:
+Create a `heraclitus.toml` file:
 
 ```toml
-[heraclitus]
-# Kafka protocol port (default: 9092)
 kafka_port = 9092
+http_port = 9093
 
-# Metrics port (default: 9091) 
-metrics_port = 9091
+[storage]
+path = "/var/lib/heraclitus"  # or "memory://" for in-memory
 
-# SASL authentication
-sasl_enabled = true
-sasl_plain_username = "admin"
-sasl_plain_password = "admin-secret"
+[auth]
+enabled = false
+mechanism = "PLAIN"
+# plain_username = "admin"
+# plain_password = "secret"
 
-# Topic defaults
-default_partitions = 8
-default_replication_factor = 1
+[batching]
+max_batch_size = 1048576      # 1MB
+max_batch_messages = 1000
+flush_interval_ms = 100
+
+[metrics]
+enabled = true
+prefix = "heraclitus"
+
+[performance]
+tcp_nodelay = true
+socket_send_buffer_bytes = 131072  # 128KB
+socket_recv_buffer_bytes = 131072  # 128KB
+buffer_pool_size = 1000
+compression_level = 6
 ```
 
-## Usage
+Run with configuration file:
 
-### Running Heraclitus
-
-As part of SignalDB monolithic mode:
 ```bash
-cargo run --bin signaldb
+cargo run --bin heraclitus -- --config heraclitus.toml
 ```
 
-Or standalone:
+## Architecture
+
+Heraclitus is designed as a standalone server with clean separation of concerns:
+
+### Core Components
+
+- **Protocol Handler**: Implements the Kafka wire protocol with per-API handlers
+- **State Manager**: Manages topics, partitions, offsets, and consumer groups
+- **Storage Layer**: Efficient storage using Arrow/Parquet format
+- **Batch Writer**: Optimizes writes with configurable batching
+- **Metrics**: Prometheus-compatible metrics exposed via HTTP
+
+### Handler Architecture
+
+Each Kafka API is implemented as a separate handler:
+- **Auth**: ApiVersions, SaslHandshake, SaslAuthenticate
+- **Metadata**: Metadata, ListOffsets
+- **Produce**: Produce, InitProducerId
+- **Fetch**: Fetch
+- **Consumer Groups**: JoinGroup, Heartbeat, LeaveGroup, SyncGroup, etc.
+- **Admin**: CreateTopics, DeleteTopics
+
+## Supported Kafka APIs
+
+| API | Versions | Status |
+|-----|----------|--------|
+| Produce | 0-9 | ✅ Full |
+| Fetch | 0-12 | ✅ Full |
+| ListOffsets | 0-7 | ✅ Full |
+| Metadata | 0-12 | ✅ Full |
+| FindCoordinator | 0-4 | ✅ Full |
+| JoinGroup | 0-7 | ✅ Full |
+| Heartbeat | 0-4 | ✅ Full |
+| LeaveGroup | 0-4 | ✅ Full |
+| SyncGroup | 0-5 | ✅ Full |
+| DescribeGroups | 0-5 | ✅ Full |
+| ListGroups | 0-4 | ✅ Full |
+| OffsetCommit | 0-8 | ✅ Full |
+| OffsetFetch | 0-8 | ✅ Full |
+| ApiVersions | 0-3 | ✅ Full |
+| CreateTopics | 0-7 | ✅ Full |
+| DeleteTopics | 0-6 | ✅ Full |
+| InitProducerId | 0-4 | ✅ Full |
+| SaslHandshake | 0-1 | ✅ Full |
+| SaslAuthenticate | 0-2 | ✅ Full |
+
+## Performance Optimizations
+
+- **Zero-copy message handling** using `bytes::Bytes`
+- **Async compression** to avoid blocking the event loop
+- **Buffer pooling** to reduce allocations
+- **Sticky partitioning** for better batching efficiency
+- **Configurable socket options** for network tuning
+
+## Building
+
 ```bash
-cargo run --bin heraclitus
+# Debug build
+cargo build
+
+# Release build with optimizations
+cargo build --release
+
+# Run tests
+cargo test
+
+# Run benchmarks
+cargo bench
 ```
 
-For production deployments, run multiple instances behind a load balancer:
-```bash
-# Instance 1
-HERACLITUS_KAFKA_PORT=9092 cargo run --bin heraclitus
+## Monitoring
 
-# Instance 2  
-HERACLITUS_KAFKA_PORT=9093 cargo run --bin heraclitus
+Metrics are exposed at `http://localhost:9093/metrics` (by default) in Prometheus format.
 
-# Instance 3
-HERACLITUS_KAFKA_PORT=9094 cargo run --bin heraclitus
-```
-
-All instances will coordinate through the shared object storage with no need for leader election or consensus protocols.
-
-### Connecting Kafka Clients
-
-Configure your Kafka client to connect to `localhost:9092` (or configured port):
-
-```java
-Properties props = new Properties();
-props.put("bootstrap.servers", "localhost:9092");
-props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
-props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
-
-// If SASL is enabled
-props.put("security.protocol", "SASL_PLAINTEXT");
-props.put("sasl.mechanism", "PLAIN");
-props.put("sasl.jaas.config", "org.apache.kafka.common.security.plain.PlainLoginModule required username=\"admin\" password=\"admin-secret\";");
-```
-
-### Monitoring
-
-Metrics are exposed at `http://localhost:9091/metrics` in Prometheus format:
-
-- `heraclitus_connections_total`: Total client connections
-- `heraclitus_requests_total`: Total requests by API key
-- `heraclitus_request_duration_seconds`: Request processing latency
-- `heraclitus_active_connections`: Current active connections
-
-Health check endpoint: `http://localhost:9091/health`
-
-## Development
-
-### Adding New Kafka APIs
-
-1. Add the API key constant to `kafka_protocol.rs`
-2. Create a new module in `protocol/` for request/response handling
-3. Update `RequestType` enum in `request.rs`
-4. Add handler method in `handler.rs`
-5. Update `api_versions.rs` with supported versions
-6. Write integration tests
-
-### Testing
-
-Run unit tests:
-```bash
-cargo test -p heraclitus
-```
-
-Run integration tests:
-```bash
-cargo test -p heraclitus-tests-integration
-```
-
-### Current Limitations
-
-- Single broker ID per instance (multi-broker coming soon)
-- No partition replication or ISR tracking
-- Limited producer protocol (no transactions)
-- No log compaction or retention policies
-- Consumer offsets stored separately from data
-- Eventually consistent state may cause brief inconsistencies during rapid operations
-
-## Roadmap
-
-### High Priority
-- Multi-broker support with leader election
-- Partition replication with ISR
-- DeleteTopics API
-- Configuration management (DescribeConfigs/AlterConfigs)
-- Transactional producer support
-
-### Medium Priority
-- ListGroups API
-- Group coordinator election
-- DeleteGroups API  
-- Incremental fetch optimization
-- Session timeout detection
-- Partition assignment strategies
-
-### Future Enhancements
-- KRaft consensus protocol
-- Exactly-once semantics
-- Streams API compatibility
-- Connect API support
-
-## Contributing
-
-When contributing to Heraclitus:
-
-1. Follow the existing code patterns
-2. Add comprehensive tests for new features
-3. Update this README for new APIs
-4. Ensure all Clippy warnings are resolved
-5. Run `cargo fmt` before committing
+Key metrics include:
+- Request rates and latencies per API
+- Message throughput and sizes
+- Consumer group states
+- Storage statistics
+- Connection counts
 
 ## License
 
-Heraclitus is part of the SignalDB project and follows the same licensing terms.
+Apache License 2.0

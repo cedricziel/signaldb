@@ -54,7 +54,7 @@ pub struct KafkaRequest {
     pub correlation_id: i32,
     pub client_id: Option<String>,
     pub request_type: RequestType,
-    pub body: Vec<u8>,
+    pub body: bytes::Bytes,
 }
 
 impl KafkaRequest {
@@ -63,7 +63,7 @@ impl KafkaRequest {
         api_version: i16,
         correlation_id: i32,
         client_id: Option<String>,
-        body: Vec<u8>,
+        body: bytes::Bytes,
     ) -> Result<Self, crate::error::HeraclitusError> {
         let request_type = match api_key {
             0 => RequestType::Produce,

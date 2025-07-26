@@ -1,6 +1,9 @@
 use crate::error::Result;
-use crate::protocol::kafka_protocol::*;
-use bytes::{Buf, BufMut, BytesMut};
+use crate::protocol::{
+    encoder::{KafkaResponse, ProtocolEncoder},
+    kafka_protocol::*,
+};
+use bytes::Buf;
 use std::io::Cursor;
 
 /// Kafka OffsetCommit Request (API Key 8)
@@ -196,90 +199,66 @@ impl OffsetCommitRequest {
 }
 
 impl OffsetCommitResponse {
-    /// Create a new OffsetCommit response
-    pub fn new(topics: Vec<OffsetCommitResponseTopic>) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            topics,
-        }
-    }
-
-    /// Create an error response for all partitions
-    pub fn error_all(topics: &[OffsetCommitTopic], error_code: i16) -> Self {
-        let response_topics = topics
-            .iter()
-            .map(|topic| OffsetCommitResponseTopic {
-                name: topic.name.clone(),
-                partitions: topic
-                    .partitions
-                    .iter()
-                    .map(|p| OffsetCommitResponsePartition {
-                        partition_index: p.partition_index,
-                        error_code,
-                    })
-                    .collect(),
-            })
-            .collect();
-
-        Self::new(response_topics)
-    }
-
-    /// Encode the response to bytes
+    /// Legacy encode method - delegates to centralized encoder
     pub fn encode(&self, api_version: i16) -> Result<Vec<u8>> {
-        let mut buf = BytesMut::new();
-        let is_compact = api_version >= 8; // OffsetCommit uses flexible versions from v8+
+        let encoder = ProtocolEncoder::new(8, api_version); // OffsetCommit API key = 8
+        self.encode_with_encoder(&encoder)
+    }
+
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        let mut buf = encoder.create_buffer();
 
         // throttle_time_ms: int32 (v3+)
-        if api_version >= 3 {
-            buf.put_i32(self.throttle_time_ms);
+        if encoder.api_version() >= 3 {
+            encoder.write_i32(&mut buf, self.throttle_time_ms);
         }
 
         // topics: [topic]
-        if is_compact {
-            // Compact arrays use length + 1
-            write_unsigned_varint(&mut buf, (self.topics.len() + 1) as u32);
-        } else {
-            buf.put_i32(self.topics.len() as i32);
-        }
+        encoder.write_array_len(&mut buf, self.topics.len());
 
         for topic in &self.topics {
             // name: string
-            if is_compact {
-                write_compact_string(&mut buf, &topic.name);
-            } else {
-                write_string(&mut buf, &topic.name);
-            }
+            encoder.write_string(&mut buf, &topic.name);
 
             // partitions: [partition]
-            if is_compact {
-                // Compact arrays use length + 1
-                write_unsigned_varint(&mut buf, (topic.partitions.len() + 1) as u32);
-            } else {
-                buf.put_i32(topic.partitions.len() as i32);
-            }
+            encoder.write_array_len(&mut buf, topic.partitions.len());
 
             for partition in &topic.partitions {
                 // partition_index: int32
-                buf.put_i32(partition.partition_index);
+                encoder.write_i32(&mut buf, partition.partition_index);
 
                 // error_code: int16
-                buf.put_i16(partition.error_code);
+                encoder.write_i16(&mut buf, partition.error_code);
+
+                // Tagged fields for partitions in flexible versions
+                encoder.write_tagged_fields(&mut buf);
             }
+
+            // Tagged fields for topics in flexible versions
+            encoder.write_tagged_fields(&mut buf);
         }
 
-        // Handle tagged fields for newer versions
-        if is_compact {
-            // Write empty tagged fields
-            write_unsigned_varint(&mut buf, 0);
-        }
+        // Top-level tagged fields for flexible versions
+        encoder.write_tagged_fields(&mut buf);
 
         Ok(buf.to_vec())
+    }
+}
+
+impl KafkaResponse for OffsetCommitResponse {
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        self.encode_with_encoder(encoder)
+    }
+
+    fn api_key(&self) -> i16 {
+        8 // OffsetCommit API key
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::{BufMut, BytesMut};
 
     #[test]
     fn test_offset_commit_request_parse_v0() {
@@ -326,19 +305,22 @@ mod tests {
 
     #[test]
     fn test_offset_commit_response_encode() {
-        let response = OffsetCommitResponse::new(vec![OffsetCommitResponseTopic {
-            name: "test-topic".to_string(),
-            partitions: vec![
-                OffsetCommitResponsePartition {
-                    partition_index: 0,
-                    error_code: 0,
-                },
-                OffsetCommitResponsePartition {
-                    partition_index: 1,
-                    error_code: 0,
-                },
-            ],
-        }]);
+        let response = OffsetCommitResponse {
+            throttle_time_ms: 0,
+            topics: vec![OffsetCommitResponseTopic {
+                name: "test-topic".to_string(),
+                partitions: vec![
+                    OffsetCommitResponsePartition {
+                        partition_index: 0,
+                        error_code: 0,
+                    },
+                    OffsetCommitResponsePartition {
+                        partition_index: 1,
+                        error_code: 0,
+                    },
+                ],
+            }],
+        };
 
         let encoded = response.encode(0).unwrap();
         let mut cursor = Cursor::new(&encoded[..]);
@@ -416,13 +398,16 @@ mod tests {
 
     #[test]
     fn test_offset_commit_response_encode_v8_compact() {
-        let response = OffsetCommitResponse::new(vec![OffsetCommitResponseTopic {
-            name: "test-topic".to_string(),
-            partitions: vec![OffsetCommitResponsePartition {
-                partition_index: 0,
-                error_code: 0,
+        let response = OffsetCommitResponse {
+            throttle_time_ms: 0,
+            topics: vec![OffsetCommitResponseTopic {
+                name: "test-topic".to_string(),
+                partitions: vec![OffsetCommitResponsePartition {
+                    partition_index: 0,
+                    error_code: 0,
+                }],
             }],
-        }]);
+        };
 
         let encoded = response.encode(8).unwrap();
         let mut cursor = Cursor::new(&encoded[..]);

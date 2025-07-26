@@ -1,6 +1,43 @@
 use bytes::{Buf, BufMut, BytesMut};
 use std::io::Cursor;
 
+/// Determine if an API uses flexible versions and requires compact encoding
+pub fn uses_flexible_version_for_api(api_key: i16, api_version: i16) -> bool {
+    match api_key {
+        // ApiVersions uses flexible versions from v3+
+        18 => api_version >= 3,
+        // Metadata uses flexible versions from v9+
+        3 => api_version >= 9,
+        // CreateTopics uses flexible versions from v5+
+        19 => api_version >= 5,
+        // InitProducerId uses flexible versions from v2+
+        22 => api_version >= 2,
+        // OffsetCommit uses flexible versions from v8+
+        8 => api_version >= 8,
+        // OffsetFetch uses flexible versions from v6+
+        9 => api_version >= 6,
+        // Heartbeat uses flexible versions from v4+
+        12 => api_version >= 4,
+        // JoinGroup uses flexible versions from v6+
+        11 => api_version >= 6,
+        // SyncGroup uses flexible versions from v4+
+        14 => api_version >= 4,
+        // LeaveGroup uses flexible versions from v4+
+        13 => api_version >= 4,
+        // ListGroups uses flexible versions from v3+
+        16 => api_version >= 3,
+        // DescribeGroups uses flexible versions from v5+
+        15 => api_version >= 5,
+        // ListOffsets uses flexible versions from v4+
+        2 => api_version >= 4,
+        // Produce uses flexible versions from v9+
+        0 => api_version >= 9,
+        // Fetch uses flexible versions from v12+
+        1 => api_version >= 12,
+        _ => false,
+    }
+}
+
 #[derive(Debug)]
 pub struct RequestHeader {
     pub api_key: i16,
@@ -27,8 +64,12 @@ pub fn read_request_header(buf: &mut Cursor<&[u8]>) -> Result<RequestHeader, std
     let api_version = buf.get_i16();
     let correlation_id = buf.get_i32();
 
-    // Read client_id (nullable string)
-    let client_id = read_nullable_string(buf)?;
+    // Read client_id - use compact format for flexible API versions
+    let client_id = if uses_flexible_version_for_api(api_key, api_version) {
+        read_compact_nullable_string(buf)?
+    } else {
+        read_nullable_string(buf)?
+    };
 
     Ok(RequestHeader {
         api_key,
@@ -57,6 +98,24 @@ pub fn write_unsigned_varint(buf: &mut BytesMut, mut value: u32) {
         value >>= 7;
     }
     buf.put_u8(value as u8);
+}
+
+/// Write an unsigned variable-length integer (varint) to Vec<u8>
+pub fn write_unsigned_varint_to_vec(buffer: &mut Vec<u8>, mut value: u32) {
+    let original_value = value;
+    let start_len = buffer.len();
+    while (value & 0xFFFFFF80) != 0 {
+        buffer.push(((value & 0x7F) | 0x80) as u8);
+        value >>= 7;
+    }
+    buffer.push((value & 0x7F) as u8);
+
+    tracing::info!(
+        "write_unsigned_varint: value={}, wrote {} bytes: {:02x?}",
+        original_value,
+        buffer.len() - start_len,
+        &buffer[start_len..]
+    );
 }
 
 #[allow(dead_code)] // Will be used when protocol is fully implemented
@@ -217,6 +276,7 @@ pub const ERROR_INVALID_REQUEST: i16 = 42;
 pub const ERROR_UNSUPPORTED_VERSION: i16 = 35;
 pub const ERROR_TOPIC_NOT_FOUND: i16 = 3;
 pub const ERROR_UNKNOWN_TOPIC_OR_PARTITION: i16 = 3; // Same as TOPIC_NOT_FOUND
+#[allow(dead_code)]
 pub const ERROR_INVALID_REQUIRED_ACKS: i16 = 21;
 #[allow(dead_code)] // Will be used when protocol is fully implemented
 pub const ERROR_TOPIC_AUTHORIZATION_FAILED: i16 = 29;
@@ -229,6 +289,7 @@ pub const ERROR_REBALANCE_IN_PROGRESS: i16 = 27;
 pub const ERROR_SESSION_TIMEOUT: i16 = 10;
 pub const ERROR_COORDINATOR_NOT_AVAILABLE: i16 = 15;
 pub const ERROR_NOT_COORDINATOR: i16 = 16;
+#[allow(dead_code)]
 pub const ERROR_GROUP_ID_NOT_FOUND: i16 = 69;
 pub const ERROR_UNSUPPORTED_SASL_MECHANISM: i16 = 33;
 pub const ERROR_SASL_AUTHENTICATION_FAILED: i16 = 58;

@@ -1,6 +1,9 @@
 use crate::error::Result;
-use crate::protocol::kafka_protocol::*;
-use bytes::{Buf, BufMut, BytesMut};
+use crate::protocol::{
+    encoder::{KafkaResponse, ProtocolEncoder},
+    kafka_protocol::*,
+};
+use bytes::Buf;
 use std::io::Cursor;
 
 /// Kafka JoinGroup Request (API Key 11)
@@ -10,7 +13,7 @@ pub struct JoinGroupRequest {
     pub session_timeout_ms: i32,
     pub rebalance_timeout_ms: i32, // v1+
     pub member_id: String,
-    pub group_instance_id: Option<String>, // v5+
+    pub _group_instance_id: Option<String>, // v5+
     pub protocol_type: String,
     pub protocols: Vec<GroupProtocol>,
 }
@@ -158,7 +161,7 @@ impl JoinGroupRequest {
             session_timeout_ms,
             rebalance_timeout_ms,
             member_id,
-            group_instance_id,
+            _group_instance_id: group_instance_id,
             protocol_type,
             protocols,
         })
@@ -166,152 +169,80 @@ impl JoinGroupRequest {
 }
 
 impl JoinGroupResponse {
-    /// Create a new JoinGroup response for a leader
-    pub fn new_leader(
-        generation_id: i32,
-        protocol_name: String,
-        leader_id: String,
-        member_id: String,
-        members: Vec<JoinGroupMember>,
-    ) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            error_code: 0, // NONE
-            generation_id,
-            protocol_type: None,
-            protocol_name: Some(protocol_name),
-            leader: leader_id,
-            member_id,
-            members,
-        }
-    }
-
-    /// Create a new JoinGroup response for a follower
-    pub fn new_follower(
-        generation_id: i32,
-        protocol_name: String,
-        leader_id: String,
-        member_id: String,
-    ) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            error_code: 0, // NONE
-            generation_id,
-            protocol_type: None,
-            protocol_name: Some(protocol_name),
-            leader: leader_id,
-            member_id,
-            members: Vec::new(), // Followers don't get member list
-        }
-    }
-
-    /// Create an error response
-    #[allow(dead_code)]
-    pub fn error(error_code: i16) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            error_code,
-            generation_id: -1,
-            protocol_type: None,
-            protocol_name: None,
-            leader: String::new(),
-            member_id: String::new(),
-            members: Vec::new(),
-        }
-    }
-
-    /// Encode the response to bytes
+    /// Legacy encode method - delegates to centralized encoder
     pub fn encode(&self, api_version: i16) -> Result<Vec<u8>> {
-        let mut buf = BytesMut::new();
-        let is_compact = api_version >= 6; // JoinGroup uses flexible versions from v6+
+        let encoder = ProtocolEncoder::new(11, api_version); // JoinGroup API key = 11
+        self.encode_with_encoder(&encoder)
+    }
+
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        let mut buf = encoder.create_buffer();
 
         // throttle_time_ms: int32 (v2+)
-        if api_version >= 2 {
-            buf.put_i32(self.throttle_time_ms);
+        if encoder.api_version() >= 2 {
+            encoder.write_i32(&mut buf, self.throttle_time_ms);
         }
 
         // error_code: int16
-        buf.put_i16(self.error_code);
+        encoder.write_i16(&mut buf, self.error_code);
 
         // generation_id: int32
-        buf.put_i32(self.generation_id);
+        encoder.write_i32(&mut buf, self.generation_id);
 
         // protocol_type: string (v7+)
-        if api_version >= 7 {
-            if is_compact {
-                write_compact_nullable_string(&mut buf, self.protocol_type.as_deref());
-            } else {
-                write_nullable_string(&mut buf, self.protocol_type.as_deref());
-            }
+        if encoder.api_version() >= 7 {
+            encoder.write_nullable_string(&mut buf, self.protocol_type.as_deref());
         }
 
         // protocol_name: string
-        if is_compact {
-            write_compact_nullable_string(&mut buf, self.protocol_name.as_deref());
-        } else {
-            write_nullable_string(&mut buf, self.protocol_name.as_deref());
-        }
+        encoder.write_nullable_string(&mut buf, self.protocol_name.as_deref());
 
         // leader: string
-        if is_compact {
-            write_compact_string(&mut buf, &self.leader);
-        } else {
-            write_string(&mut buf, &self.leader);
-        }
+        encoder.write_string(&mut buf, &self.leader);
 
         // member_id: string
-        if is_compact {
-            write_compact_string(&mut buf, &self.member_id);
-        } else {
-            write_string(&mut buf, &self.member_id);
-        }
+        encoder.write_string(&mut buf, &self.member_id);
 
         // members: [member_id, group_instance_id, metadata]
-        if is_compact {
-            // Compact arrays use length + 1
-            write_unsigned_varint(&mut buf, (self.members.len() + 1) as u32);
-        } else {
-            buf.put_i32(self.members.len() as i32);
-        }
+        encoder.write_array_len(&mut buf, self.members.len());
 
         for member in &self.members {
             // member_id: string
-            if is_compact {
-                write_compact_string(&mut buf, &member.member_id);
-            } else {
-                write_string(&mut buf, &member.member_id);
-            }
+            encoder.write_string(&mut buf, &member.member_id);
 
             // group_instance_id: nullable_string (v5+)
-            if api_version >= 5 {
-                if is_compact {
-                    write_compact_nullable_string(&mut buf, member.group_instance_id.as_deref());
-                } else {
-                    write_nullable_string(&mut buf, member.group_instance_id.as_deref());
-                }
+            if encoder.api_version() >= 5 {
+                encoder.write_nullable_string(&mut buf, member.group_instance_id.as_deref());
             }
 
             // metadata: bytes
-            if is_compact {
-                write_compact_bytes(&mut buf, &member.metadata);
-            } else {
-                write_bytes(&mut buf, &member.metadata);
-            }
+            encoder.write_bytes(&mut buf, &member.metadata);
+
+            // Tagged fields for members in flexible versions
+            encoder.write_tagged_fields(&mut buf);
         }
 
-        // Handle tagged fields for newer versions
-        if is_compact {
-            // Write empty tagged fields
-            write_unsigned_varint(&mut buf, 0);
-        }
+        // Top-level tagged fields for flexible versions
+        encoder.write_tagged_fields(&mut buf);
 
         Ok(buf.to_vec())
+    }
+}
+
+impl KafkaResponse for JoinGroupResponse {
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        self.encode_with_encoder(encoder)
+    }
+
+    fn api_key(&self) -> i16 {
+        11 // JoinGroup API key
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::{BufMut, BytesMut};
 
     #[test]
     fn test_join_group_request_parse_v0() {
@@ -368,13 +299,16 @@ mod tests {
             },
         ];
 
-        let response = JoinGroupResponse::new_leader(
-            1,
-            "range".to_string(),
-            "member-1".to_string(),
-            "member-1".to_string(),
+        let response = JoinGroupResponse {
+            throttle_time_ms: 0,
+            error_code: 0,
+            generation_id: 1,
+            protocol_type: None,
+            protocol_name: Some("range".to_string()),
+            leader: "member-1".to_string(),
+            member_id: "member-1".to_string(),
             members,
-        );
+        };
 
         let encoded = response.encode(0).unwrap();
         let mut cursor = Cursor::new(&encoded[..]);
@@ -407,12 +341,16 @@ mod tests {
 
     #[test]
     fn test_join_group_response_encode_follower() {
-        let response = JoinGroupResponse::new_follower(
-            1,
-            "range".to_string(),
-            "member-1".to_string(),
-            "member-2".to_string(),
-        );
+        let response = JoinGroupResponse {
+            throttle_time_ms: 0,
+            error_code: 0,
+            generation_id: 1,
+            protocol_type: None,
+            protocol_name: Some("range".to_string()),
+            leader: "member-1".to_string(),
+            member_id: "member-2".to_string(),
+            members: Vec::new(),
+        };
 
         let encoded = response.encode(0).unwrap();
         let mut cursor = Cursor::new(&encoded[..]);
@@ -472,7 +410,7 @@ mod tests {
         assert_eq!(request.session_timeout_ms, 30000);
         assert_eq!(request.rebalance_timeout_ms, 45000);
         assert_eq!(request.member_id, "member-1");
-        assert_eq!(request.group_instance_id, Some("instance-1".to_string()));
+        assert_eq!(request._group_instance_id, Some("instance-1".to_string()));
         assert_eq!(request.protocol_type, "consumer");
         assert_eq!(request.protocols.len(), 1);
         assert_eq!(request.protocols[0].name, "range");
@@ -494,13 +432,16 @@ mod tests {
             },
         ];
 
-        let response = JoinGroupResponse::new_leader(
-            1,
-            "range".to_string(),
-            "member-1".to_string(),
-            "member-1".to_string(),
+        let response = JoinGroupResponse {
+            throttle_time_ms: 0,
+            error_code: 0,
+            generation_id: 1,
+            protocol_type: None,
+            protocol_name: Some("range".to_string()),
+            leader: "member-1".to_string(),
+            member_id: "member-1".to_string(),
             members,
-        );
+        };
 
         let encoded = response.encode(6).unwrap();
         let mut cursor = Cursor::new(&encoded[..]);

@@ -14,7 +14,7 @@ async fn main() {
     // Test 1: Producer
     println!("1. Testing Producer");
     let producer: FutureProducer = ClientConfig::new()
-        .set("bootstrap.servers", "127.0.0.1:9092")
+        .set("bootstrap.servers", "127.0.0.1:9094")
         .set("message.timeout.ms", "5000")
         .create()
         .expect("Producer creation failed");
@@ -37,7 +37,7 @@ async fn main() {
 
     println!("\n2. Testing Consumer");
     let consumer: StreamConsumer = ClientConfig::new()
-        .set("bootstrap.servers", "127.0.0.1:9092")
+        .set("bootstrap.servers", "127.0.0.1:9094")
         .set("group.id", "rdkafka-test-group")
         .set("auto.offset.reset", "earliest")
         .set("enable.auto.commit", "true")

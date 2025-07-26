@@ -1,5 +1,6 @@
 use crate::error::{HeraclitusError, Result};
-use bytes::{Buf, BufMut, BytesMut};
+use crate::protocol::encoder::{KafkaResponse, ProtocolEncoder};
+use bytes::Buf;
 use std::io::Cursor;
 
 /// Kafka Produce Request (API Key 0)
@@ -20,7 +21,7 @@ pub struct ProduceTopicData {
 #[derive(Debug)]
 pub struct ProducePartitionData {
     pub partition_index: i32,
-    pub records: Vec<u8>, // Raw record batch bytes
+    pub records: bytes::Bytes, // Raw record batch bytes - zero-copy
 }
 
 /// Kafka Produce Response
@@ -142,7 +143,7 @@ impl ProduceRequest {
                 // Null record batch
                 partitions.push(ProducePartitionData {
                     partition_index,
-                    records: vec![],
+                    records: bytes::Bytes::new(),
                 });
                 continue;
             }
@@ -153,9 +154,12 @@ impl ProduceRequest {
                 ));
             }
 
-            // Read the raw record batch bytes
-            let mut records = vec![0u8; record_batch_size as usize];
-            cursor.copy_to_slice(&mut records);
+            // Read the raw record batch bytes - zero-copy
+            let start = cursor.position() as usize;
+            cursor.advance(record_batch_size as usize);
+            let records = bytes::Bytes::copy_from_slice(
+                &cursor.get_ref()[start..start + record_batch_size as usize],
+            );
 
             partitions.push(ProducePartitionData {
                 partition_index,
@@ -169,48 +173,72 @@ impl ProduceRequest {
 
 impl ProduceResponse {
     /// Encode a Produce response to bytes
+    /// Legacy encode method - delegates to centralized encoder
     pub fn encode(&self, api_version: i16) -> Result<Vec<u8>> {
-        let mut buf = BytesMut::new();
+        let encoder = ProtocolEncoder::new(0, api_version); // Produce API key = 0
+        self.encode_with_encoder(&encoder)
+    }
+
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        let mut buf = encoder.create_buffer();
 
         // Write topics array
-        buf.put_i32(self.responses.len() as i32);
-
+        encoder.write_array_len(&mut buf, self.responses.len());
         for topic_response in &self.responses {
             // Write topic name
-            crate::protocol::kafka_protocol::write_string(&mut buf, &topic_response.name);
+            encoder.write_string(&mut buf, &topic_response.name);
 
             // Write partitions array
-            buf.put_i32(topic_response.partitions.len() as i32);
-
+            encoder.write_array_len(&mut buf, topic_response.partitions.len());
             for partition in &topic_response.partitions {
-                buf.put_i32(partition.partition_index);
-                buf.put_i16(partition.error_code);
-                buf.put_i64(partition.base_offset);
+                encoder.write_i32(&mut buf, partition.partition_index);
+                encoder.write_i16(&mut buf, partition.error_code);
+                encoder.write_i64(&mut buf, partition.base_offset);
 
                 // API version 2+ includes log_append_time
-                if api_version >= 2 {
-                    buf.put_i64(partition.log_append_time_ms);
+                if encoder.api_version() >= 2 {
+                    encoder.write_i64(&mut buf, partition.log_append_time_ms);
                 }
 
                 // API version 5+ includes log_start_offset
-                if api_version >= 5 {
-                    buf.put_i64(partition.log_start_offset);
+                if encoder.api_version() >= 5 {
+                    encoder.write_i64(&mut buf, partition.log_start_offset);
                 }
+
+                // Tagged fields for partitions in flexible versions
+                encoder.write_tagged_fields(&mut buf);
             }
+
+            // Tagged fields for topics in flexible versions
+            encoder.write_tagged_fields(&mut buf);
         }
 
         // API version 1+ includes throttle_time_ms
-        if api_version >= 1 {
-            buf.put_i32(self.throttle_time_ms);
+        if encoder.api_version() >= 1 {
+            encoder.write_i32(&mut buf, self.throttle_time_ms);
         }
 
+        // Top-level tagged fields for flexible versions
+        encoder.write_tagged_fields(&mut buf);
+
         Ok(buf.to_vec())
+    }
+}
+
+impl KafkaResponse for ProduceResponse {
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        self.encode_with_encoder(encoder)
+    }
+
+    fn api_key(&self) -> i16 {
+        0 // Produce API key
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::{BufMut, BytesMut};
 
     #[test]
     fn test_produce_request_parse_v3() {

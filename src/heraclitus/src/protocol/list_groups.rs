@@ -1,10 +1,14 @@
 use crate::error::Result;
-use crate::protocol::kafka_protocol::*;
-use bytes::{Buf, BufMut, BytesMut};
+use crate::protocol::{
+    encoder::{KafkaResponse, ProtocolEncoder},
+    kafka_protocol::*,
+};
+use bytes::Buf;
 use std::io::Cursor;
 
 #[derive(Debug, Clone)]
 pub struct ListGroupsRequest {
+    #[allow(dead_code)] // Part of Kafka protocol spec, parsed but not used yet
     pub states_filter: Option<Vec<String>>, // v4+
 }
 
@@ -85,65 +89,55 @@ pub struct ListedGroup {
 }
 
 impl ListGroupsResponse {
-    pub fn new(groups: Vec<ListedGroup>) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            error_code: ERROR_NONE,
-            groups,
-        }
+    /// Legacy encode method - delegates to centralized encoder
+    pub fn encode(&self, version: i16) -> Result<Vec<u8>> {
+        let encoder = ProtocolEncoder::new(16, version); // ListGroups API key = 16
+        self.encode_with_encoder(&encoder)
     }
 
-    pub fn encode(&self, version: i16) -> Result<Vec<u8>> {
-        let mut buf = BytesMut::new();
-        let is_compact = version >= 3; // ListGroups uses flexible versions from v3+
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        let mut buf = encoder.create_buffer();
 
         // Throttle time (v1+)
-        if version >= 1 {
-            buf.put_i32(self.throttle_time_ms);
+        if encoder.api_version() >= 1 {
+            encoder.write_i32(&mut buf, self.throttle_time_ms);
         }
 
         // Error code
-        buf.put_i16(self.error_code);
+        encoder.write_i16(&mut buf, self.error_code);
 
         // Groups array
-        if is_compact {
-            // Compact arrays use length + 1
-            write_unsigned_varint(&mut buf, (self.groups.len() + 1) as u32);
-        } else {
-            buf.put_i32(self.groups.len() as i32);
-        }
+        encoder.write_array_len(&mut buf, self.groups.len());
 
         for group in &self.groups {
             // Group ID
-            if is_compact {
-                write_compact_string(&mut buf, &group.group_id);
-            } else {
-                write_string(&mut buf, &group.group_id);
-            }
+            encoder.write_string(&mut buf, &group.group_id);
 
             // Protocol type
-            if is_compact {
-                write_compact_string(&mut buf, &group.protocol_type);
-            } else {
-                write_string(&mut buf, &group.protocol_type);
-            }
+            encoder.write_string(&mut buf, &group.protocol_type);
 
             // Group state (v4+)
-            if version >= 4 {
-                if is_compact {
-                    write_compact_string(&mut buf, &group.group_state);
-                } else {
-                    write_string(&mut buf, &group.group_state);
-                }
+            if encoder.api_version() >= 4 {
+                encoder.write_string(&mut buf, &group.group_state);
             }
+
+            // Tagged fields for groups in flexible versions
+            encoder.write_tagged_fields(&mut buf);
         }
 
-        // Tagged fields (v3+)
-        if is_compact {
-            // No tagged fields for now
-            write_unsigned_varint(&mut buf, 0);
-        }
+        // Top-level tagged fields for flexible versions
+        encoder.write_tagged_fields(&mut buf);
 
         Ok(buf.to_vec())
+    }
+}
+
+impl KafkaResponse for ListGroupsResponse {
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        self.encode_with_encoder(encoder)
+    }
+
+    fn api_key(&self) -> i16 {
+        16 // ListGroups API key
     }
 }

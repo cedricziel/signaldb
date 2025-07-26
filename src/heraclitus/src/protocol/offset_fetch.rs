@@ -187,25 +187,6 @@ impl OffsetFetchRequest {
 }
 
 impl OffsetFetchResponse {
-    /// Create a new OffsetFetch response
-    pub fn new(topics: Vec<OffsetFetchResponseTopic>) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            topics,
-            error_code: 0, // Success
-        }
-    }
-
-    /// Create an error response
-    #[allow(dead_code)]
-    pub fn error(error_code: i16) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            topics: Vec::new(),
-            error_code,
-        }
-    }
-
     /// Encode the response to bytes
     pub fn encode(&self, api_version: i16) -> Result<Vec<u8>> {
         let mut buf = BytesMut::new();
@@ -292,41 +273,7 @@ impl OffsetFetchResponse {
     }
 }
 
-impl OffsetFetchResponsePartition {
-    /// Create a successful partition response
-    pub fn success(partition_index: i32, committed_offset: i64, metadata: Option<String>) -> Self {
-        Self {
-            partition_index,
-            committed_offset,
-            committed_leader_epoch: -1, // Unknown
-            metadata,
-            error_code: 0, // Success
-        }
-    }
-
-    /// Create a partition response with no committed offset
-    pub fn no_offset(partition_index: i32) -> Self {
-        Self {
-            partition_index,
-            committed_offset: -1, // No committed offset
-            committed_leader_epoch: -1,
-            metadata: None,
-            error_code: 0, // Success (but no offset available)
-        }
-    }
-
-    /// Create an error partition response
-    #[allow(dead_code)]
-    pub fn error(partition_index: i32, error_code: i16) -> Self {
-        Self {
-            partition_index,
-            committed_offset: -1,
-            committed_leader_epoch: -1,
-            metadata: None,
-            error_code,
-        }
-    }
-}
+impl OffsetFetchResponsePartition {}
 
 fn read_unsigned_varint(cursor: &mut Cursor<&[u8]>) -> Result<u32> {
     let mut value = 0u32;
@@ -472,13 +419,29 @@ mod tests {
 
     #[test]
     fn test_offset_fetch_response_encode() {
-        let response = OffsetFetchResponse::new(vec![OffsetFetchResponseTopic {
-            name: "test-topic".to_string(),
-            partitions: vec![
-                OffsetFetchResponsePartition::success(0, 100, Some("meta1".to_string())),
-                OffsetFetchResponsePartition::no_offset(1),
-            ],
-        }]);
+        let response = OffsetFetchResponse {
+            throttle_time_ms: 0,
+            topics: vec![OffsetFetchResponseTopic {
+                name: "test-topic".to_string(),
+                partitions: vec![
+                    OffsetFetchResponsePartition {
+                        partition_index: 0,
+                        committed_offset: 100,
+                        committed_leader_epoch: -1,
+                        metadata: Some("meta1".to_string()),
+                        error_code: 0,
+                    },
+                    OffsetFetchResponsePartition {
+                        partition_index: 1,
+                        committed_offset: -1,
+                        committed_leader_epoch: -1,
+                        metadata: None,
+                        error_code: 0,
+                    },
+                ],
+            }],
+            error_code: 0,
+        };
 
         let encoded = response.encode(0).unwrap();
         let mut cursor = Cursor::new(&encoded[..]);
@@ -519,7 +482,11 @@ mod tests {
 
     #[test]
     fn test_offset_fetch_response_encode_v2() {
-        let response = OffsetFetchResponse::error(16); // NOT_COORDINATOR
+        let response = OffsetFetchResponse {
+            throttle_time_ms: 0,
+            topics: Vec::new(),
+            error_code: 16, // NOT_COORDINATOR
+        };
 
         let encoded = response.encode(2).unwrap();
         let mut cursor = Cursor::new(&encoded[..]);

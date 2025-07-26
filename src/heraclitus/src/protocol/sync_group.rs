@@ -1,6 +1,11 @@
 use crate::error::Result;
-use crate::protocol::kafka_protocol::*;
-use bytes::{Buf, BufMut, BytesMut};
+use crate::protocol::{
+    encoder::{KafkaResponse, ProtocolEncoder},
+    kafka_protocol::*,
+};
+use bytes::Buf;
+#[cfg(test)]
+use bytes::{BufMut, BytesMut};
 use std::collections::HashMap;
 use std::io::Cursor;
 
@@ -109,56 +114,46 @@ impl SyncGroupRequest {
 }
 
 impl SyncGroupResponse {
-    /// Create a successful SyncGroup response
-    pub fn new(member_assignment: Vec<u8>) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            error_code: 0, // NONE
-            member_assignment,
-        }
-    }
-
-    /// Create an error response
-    pub fn error(error_code: i16) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            error_code,
-            member_assignment: Vec::new(),
-        }
-    }
-
-    /// Encode the response to bytes
+    /// Legacy encode method - delegates to centralized encoder
     pub fn encode(&self, api_version: i16) -> Result<Vec<u8>> {
-        let mut buf = BytesMut::new();
-        let is_compact = api_version >= 4; // SyncGroup uses flexible versions from v4+
+        let encoder = ProtocolEncoder::new(14, api_version); // SyncGroup API key = 14
+        self.encode_with_encoder(&encoder)
+    }
+
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        let mut buf = encoder.create_buffer();
 
         // throttle_time_ms: int32 (v1+)
-        if api_version >= 1 {
-            buf.put_i32(self.throttle_time_ms);
+        if encoder.api_version() >= 1 {
+            encoder.write_i32(&mut buf, self.throttle_time_ms);
         }
 
         // error_code: int16
-        buf.put_i16(self.error_code);
+        encoder.write_i16(&mut buf, self.error_code);
 
         // member_assignment: bytes
-        if is_compact {
-            write_compact_bytes(&mut buf, &self.member_assignment);
-        } else {
-            write_bytes(&mut buf, &self.member_assignment);
-        }
+        encoder.write_bytes(&mut buf, &self.member_assignment);
 
-        // Handle tagged fields for newer versions
-        if is_compact {
-            // Write empty tagged fields
-            write_unsigned_varint(&mut buf, 0);
-        }
+        // Tagged fields for flexible versions
+        encoder.write_tagged_fields(&mut buf);
 
         Ok(buf.to_vec())
     }
 }
 
+impl KafkaResponse for SyncGroupResponse {
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        self.encode_with_encoder(encoder)
+    }
+
+    fn api_key(&self) -> i16 {
+        14 // SyncGroup API key
+    }
+}
+
 /// Consumer protocol assignment - the standard format for partition assignments
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct ConsumerProtocolAssignment {
     pub version: i16,
     pub topic_partitions: HashMap<String, Vec<i32>>, // topic -> partitions
@@ -166,15 +161,8 @@ pub struct ConsumerProtocolAssignment {
 }
 
 impl ConsumerProtocolAssignment {
-    pub fn new(topic_partitions: HashMap<String, Vec<i32>>) -> Self {
-        Self {
-            version: 0,
-            topic_partitions,
-            user_data: Vec::new(),
-        }
-    }
-
     /// Encode to the standard consumer protocol format
+    #[cfg(test)]
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = BytesMut::new();
 
@@ -279,7 +267,11 @@ mod tests {
     #[test]
     fn test_sync_group_response_encode() {
         let assignment = vec![1, 2, 3, 4];
-        let response = SyncGroupResponse::new(assignment.clone());
+        let response = SyncGroupResponse {
+            throttle_time_ms: 0,
+            error_code: 0,
+            member_assignment: assignment.clone(),
+        };
 
         let encoded = response.encode(0).unwrap();
         let mut cursor = Cursor::new(&encoded[..]);
@@ -300,7 +292,11 @@ mod tests {
         topic_partitions.insert("topic1".to_string(), vec![0, 1, 2]);
         topic_partitions.insert("topic2".to_string(), vec![3, 4]);
 
-        let assignment = ConsumerProtocolAssignment::new(topic_partitions);
+        let assignment = ConsumerProtocolAssignment {
+            version: 0,
+            topic_partitions,
+            user_data: Vec::new(),
+        };
         let encoded = assignment.encode();
         let decoded = ConsumerProtocolAssignment::decode(&encoded).unwrap();
 
@@ -354,7 +350,11 @@ mod tests {
     #[test]
     fn test_sync_group_response_encode_v4_compact() {
         let assignment = vec![5, 6, 7, 8];
-        let response = SyncGroupResponse::new(assignment.clone());
+        let response = SyncGroupResponse {
+            throttle_time_ms: 0,
+            error_code: 0,
+            member_assignment: assignment.clone(),
+        };
 
         let encoded = response.encode(4).unwrap();
         let mut cursor = Cursor::new(&encoded[..]);

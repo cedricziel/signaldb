@@ -1,5 +1,6 @@
 use crate::error::Result;
-use bytes::{Buf, BufMut, BytesMut};
+use crate::protocol::encoder::{KafkaResponse, ProtocolEncoder};
+use bytes::Buf;
 use std::io::Cursor;
 
 /// Kafka FindCoordinator Request (API Key 10)
@@ -40,62 +41,54 @@ impl FindCoordinatorRequest {
 }
 
 impl FindCoordinatorResponse {
-    /// Create a new FindCoordinator response
-    pub fn new(node_id: i32, host: String, port: i32) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            error_code: 0, // NONE
-            error_message: None,
-            node_id,
-            host,
-            port,
-        }
-    }
-
-    /// Create an error response
-    pub fn error(error_code: i16, error_message: String) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            error_code,
-            error_message: Some(error_message),
-            node_id: -1,
-            host: String::new(),
-            port: -1,
-        }
-    }
-
-    /// Encode the response to bytes
+    /// Legacy encode method - delegates to centralized encoder
     pub fn encode(&self, api_version: i16) -> Result<Vec<u8>> {
-        let mut buf = BytesMut::new();
+        let encoder = ProtocolEncoder::new(10, api_version); // FindCoordinator API key = 10
+        self.encode_with_encoder(&encoder)
+    }
+
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        let mut buf = encoder.create_buffer();
 
         // API version 1+ includes throttle_time_ms
-        if api_version >= 1 {
-            buf.put_i32(self.throttle_time_ms);
+        if encoder.api_version() >= 1 {
+            encoder.write_i32(&mut buf, self.throttle_time_ms);
         }
 
         // Error code
-        buf.put_i16(self.error_code);
+        encoder.write_i16(&mut buf, self.error_code);
 
         // API version 1+ includes error_message
-        if api_version >= 1 {
-            crate::protocol::kafka_protocol::write_nullable_string(
-                &mut buf,
-                self.error_message.as_deref(),
-            );
+        if encoder.api_version() >= 1 {
+            encoder.write_nullable_string(&mut buf, self.error_message.as_deref());
         }
 
         // Coordinator info
-        buf.put_i32(self.node_id);
-        crate::protocol::kafka_protocol::write_string(&mut buf, &self.host);
-        buf.put_i32(self.port);
+        encoder.write_i32(&mut buf, self.node_id);
+        encoder.write_string(&mut buf, &self.host);
+        encoder.write_i32(&mut buf, self.port);
+
+        // Tagged fields for flexible versions
+        encoder.write_tagged_fields(&mut buf);
 
         Ok(buf.to_vec())
+    }
+}
+
+impl KafkaResponse for FindCoordinatorResponse {
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        self.encode_with_encoder(encoder)
+    }
+
+    fn api_key(&self) -> i16 {
+        10 // FindCoordinator API key
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::{BufMut, BytesMut};
 
     #[test]
     fn test_find_coordinator_request_parse_v0() {
@@ -131,7 +124,14 @@ mod tests {
 
     #[test]
     fn test_find_coordinator_response_encode_v0() {
-        let response = FindCoordinatorResponse::new(0, "localhost".to_string(), 9092);
+        let response = FindCoordinatorResponse {
+            throttle_time_ms: 0,
+            error_code: 0,
+            error_message: None,
+            node_id: 0,
+            host: "localhost".to_string(),
+            port: 9092,
+        };
         let encoded = response.encode(0).unwrap();
 
         let mut cursor = Cursor::new(&encoded[..]);
@@ -152,7 +152,14 @@ mod tests {
 
     #[test]
     fn test_find_coordinator_response_encode_v1() {
-        let response = FindCoordinatorResponse::new(0, "localhost".to_string(), 9092);
+        let response = FindCoordinatorResponse {
+            throttle_time_ms: 0,
+            error_code: 0,
+            error_message: None,
+            node_id: 0,
+            host: "localhost".to_string(),
+            port: 9092,
+        };
         let encoded = response.encode(1).unwrap();
 
         let mut cursor = Cursor::new(&encoded[..]);
@@ -173,8 +180,14 @@ mod tests {
 
     #[test]
     fn test_find_coordinator_error_response() {
-        let response =
-            FindCoordinatorResponse::error(15, "Group coordinator not available".to_string());
+        let response = FindCoordinatorResponse {
+            throttle_time_ms: 0,
+            error_code: 15,
+            error_message: Some("Group coordinator not available".to_string()),
+            node_id: -1,
+            host: String::new(),
+            port: -1,
+        };
         let encoded = response.encode(1).unwrap();
 
         let mut cursor = Cursor::new(&encoded[..]);

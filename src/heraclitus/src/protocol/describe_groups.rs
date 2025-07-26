@@ -80,13 +80,6 @@ pub struct MemberDescription {
 }
 
 impl DescribeGroupsResponse {
-    pub fn new(groups: Vec<GroupDescription>) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            groups,
-        }
-    }
-
     pub fn encode(&self, version: i16) -> Result<Vec<u8>> {
         let mut buf = BytesMut::new();
 
@@ -146,16 +139,5 @@ impl DescribeGroupsResponse {
         }
 
         Ok(buf.to_vec())
-    }
-}
-
-// Helper to determine group state from members
-pub fn determine_group_state(group: &crate::state::ConsumerGroupState) -> &'static str {
-    if group.members.is_empty() {
-        "Empty"
-    } else if group.leader.is_some() {
-        "Stable"
-    } else {
-        "PreparingRebalance"
     }
 }

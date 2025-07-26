@@ -14,20 +14,20 @@ pub struct CreateTopic {
     pub name: String,
     pub num_partitions: i32,
     pub replication_factor: i16,
-    pub assignments: Vec<CreateTopicAssignment>,
-    pub configs: Vec<CreateTopicConfig>,
+    pub _assignments: Vec<CreateTopicAssignment>,
+    pub _configs: Vec<CreateTopicConfig>,
 }
 
 #[derive(Debug)]
 pub struct CreateTopicAssignment {
-    pub partition_index: i32,
-    pub broker_ids: Vec<i32>,
+    pub _partition_index: i32,
+    pub _broker_ids: Vec<i32>,
 }
 
 #[derive(Debug)]
 pub struct CreateTopicConfig {
-    pub name: String,
-    pub value: Option<String>,
+    pub _name: String,
+    pub _value: Option<String>,
 }
 
 #[derive(Debug)]
@@ -135,8 +135,8 @@ impl CreateTopic {
             }
 
             assignments.push(CreateTopicAssignment {
-                partition_index,
-                broker_ids,
+                _partition_index: partition_index,
+                _broker_ids: broker_ids,
             });
         }
 
@@ -162,7 +162,10 @@ impl CreateTopic {
                 parse_nullable_string(buf)?
             };
 
-            configs.push(CreateTopicConfig { name, value });
+            configs.push(CreateTopicConfig {
+                _name: name,
+                _value: value,
+            });
         }
 
         // Tagged fields (v5+)
@@ -175,20 +178,13 @@ impl CreateTopic {
             name,
             num_partitions,
             replication_factor,
-            assignments,
-            configs,
+            _assignments: assignments,
+            _configs: configs,
         })
     }
 }
 
 impl CreateTopicsResponse {
-    pub fn new(topics: Vec<CreateTopicResponse>) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            topics,
-        }
-    }
-
     pub fn encode(&self, version: i16) -> Result<Vec<u8>> {
         let mut buf = BytesMut::new();
 
@@ -219,28 +215,6 @@ impl CreateTopicsResponse {
 }
 
 impl CreateTopicResponse {
-    pub fn success(name: String, num_partitions: i32, replication_factor: i16) -> Self {
-        Self {
-            name,
-            error_code: 0,
-            error_message: None,
-            num_partitions,
-            replication_factor,
-            configs: Vec::new(),
-        }
-    }
-
-    pub fn error(name: String, error_code: i16, error_message: String) -> Self {
-        Self {
-            name,
-            error_code,
-            error_message: Some(error_message),
-            num_partitions: -1,
-            replication_factor: -1,
-            configs: Vec::new(),
-        }
-    }
-
     fn encode(&self, buf: &mut BytesMut, version: i16) -> Result<()> {
         // Topic name
         if version >= 5 {

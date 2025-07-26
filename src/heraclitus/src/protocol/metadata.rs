@@ -1,9 +1,12 @@
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BufMut};
 use std::io::Cursor;
 use tracing::debug;
 
 use crate::error::Result;
-use crate::protocol::kafka_protocol::*;
+use crate::protocol::{
+    encoder::{KafkaResponse, ProtocolEncoder},
+    kafka_protocol::*,
+};
 
 #[derive(Debug)]
 pub struct MetadataRequest {
@@ -95,155 +98,108 @@ impl MetadataRequest {
 }
 
 impl MetadataResponse {
+    /// Legacy encode method - delegates to centralized encoder
     pub fn encode(&self, api_version: i16) -> Result<Vec<u8>> {
-        let mut buf = BytesMut::new();
-        let is_compact = api_version >= 9;
+        let encoder = ProtocolEncoder::new(3, api_version); // Metadata API key = 3
+        self.encode_with_encoder(&encoder)
+    }
 
-        if api_version >= 0 {
-            // Write throttle_time_ms (v1+)
-            if api_version >= 1 {
-                buf.put_i32(self.throttle_time_ms);
-            }
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        let mut buf = encoder.create_buffer();
 
-            // Write brokers array (non-nullable)
-            if is_compact {
-                // Compact arrays use length + 1 encoding
-                write_unsigned_varint(&mut buf, (self.brokers.len() + 1) as u32);
-            } else {
-                buf.put_i32(self.brokers.len() as i32);
-            }
-
-            for broker in &self.brokers {
-                buf.put_i32(broker.node_id);
-                if is_compact {
-                    write_compact_string(&mut buf, &broker.host);
-                } else {
-                    write_string(&mut buf, &broker.host);
-                }
-                buf.put_i32(broker.port);
-
-                // Tagged fields for brokers in compact versions
-                if is_compact {
-                    write_unsigned_varint(&mut buf, 0);
-                }
-            }
-
-            // Write cluster_id (v2+)
-            if api_version >= 2 {
-                if is_compact {
-                    if let Some(ref cluster_id) = self.cluster_id {
-                        write_compact_string(&mut buf, cluster_id);
-                    } else {
-                        // Compact nullable string: 0 = null
-                        write_unsigned_varint(&mut buf, 0);
-                    }
-                } else {
-                    crate::protocol::kafka_protocol::write_nullable_string(
-                        &mut buf,
-                        self.cluster_id.as_deref(),
-                    );
-                }
-            }
-
-            // Write controller_id (v1+)
-            if api_version >= 1 {
-                buf.put_i32(self.controller_id);
-            }
-
-            // Write topics array (non-nullable)
-            if is_compact {
-                // Compact arrays use length + 1 encoding
-                write_unsigned_varint(&mut buf, (self.topics.len() + 1) as u32);
-            } else {
-                buf.put_i32(self.topics.len() as i32);
-            }
-
-            for topic in &self.topics {
-                buf.put_i16(topic.error_code);
-                if is_compact {
-                    write_compact_string(&mut buf, &topic.name);
-                } else {
-                    write_string(&mut buf, &topic.name);
-                }
-
-                // Write topic_id (UUID) for v10+
-                if api_version >= 10 {
-                    if let Some(topic_id) = topic.topic_id {
-                        buf.put_slice(&topic_id);
-                    } else {
-                        // Write null UUID (16 zero bytes)
-                        buf.put_slice(&[0u8; 16]);
-                    }
-                }
-
-                // Write is_internal for v10+
-                if api_version >= 10 {
-                    buf.put_u8(if topic.is_internal { 1 } else { 0 });
-                }
-
-                // Write partitions array (non-nullable)
-                if is_compact {
-                    // Compact arrays use length + 1 encoding
-                    write_unsigned_varint(&mut buf, (topic.partitions.len() + 1) as u32);
-                } else {
-                    buf.put_i32(topic.partitions.len() as i32);
-                }
-
-                for partition in &topic.partitions {
-                    buf.put_i16(partition.error_code);
-                    buf.put_i32(partition.partition_id);
-                    buf.put_i32(partition.leader);
-
-                    // Write replicas array (non-nullable)
-                    if is_compact {
-                        // Compact arrays use length + 1 encoding
-                        write_unsigned_varint(&mut buf, (partition.replicas.len() + 1) as u32);
-                    } else {
-                        buf.put_i32(partition.replicas.len() as i32);
-                    }
-                    for replica in &partition.replicas {
-                        buf.put_i32(*replica);
-                    }
-
-                    // Write ISR array (non-nullable)
-                    if is_compact {
-                        // Compact arrays use length + 1 encoding
-                        write_unsigned_varint(&mut buf, (partition.isr.len() + 1) as u32);
-                    } else {
-                        buf.put_i32(partition.isr.len() as i32);
-                    }
-                    for isr in &partition.isr {
-                        buf.put_i32(*isr);
-                    }
-
-                    // Tagged fields for partitions in compact versions
-                    if is_compact {
-                        write_unsigned_varint(&mut buf, 0);
-                    }
-                }
-
-                // Write topic_authorized_operations for v10+
-                if api_version >= 10 {
-                    buf.put_i32(topic.topic_authorized_operations);
-                }
-
-                // Tagged fields for topics in compact versions
-                if is_compact {
-                    write_unsigned_varint(&mut buf, 0);
-                }
-            }
-
-            // Top-level tagged fields for compact versions
-            if is_compact {
-                write_unsigned_varint(&mut buf, 0);
-            }
-
-            Ok(buf.to_vec())
-        } else {
-            Err(crate::error::HeraclitusError::Protocol(format!(
-                "Unsupported metadata response version: {api_version}"
-            )))
+        // Write throttle_time_ms (v1+)
+        if encoder.api_version() >= 1 {
+            encoder.write_i32(&mut buf, self.throttle_time_ms);
         }
+
+        // Write brokers array (non-nullable)
+        encoder.write_array_len(&mut buf, self.brokers.len());
+        for broker in &self.brokers {
+            encoder.write_i32(&mut buf, broker.node_id);
+            encoder.write_string(&mut buf, &broker.host);
+            encoder.write_i32(&mut buf, broker.port);
+
+            // Tagged fields for brokers in flexible versions
+            encoder.write_tagged_fields(&mut buf);
+        }
+
+        // Write cluster_id (v2+)
+        if encoder.api_version() >= 2 {
+            encoder.write_nullable_string(&mut buf, self.cluster_id.as_deref());
+        }
+
+        // Write controller_id (v1+)
+        if encoder.api_version() >= 1 {
+            encoder.write_i32(&mut buf, self.controller_id);
+        }
+
+        // Write topics array (non-nullable)
+        encoder.write_array_len(&mut buf, self.topics.len());
+        for topic in &self.topics {
+            encoder.write_i16(&mut buf, topic.error_code);
+            encoder.write_string(&mut buf, &topic.name);
+
+            // Write topic_id (UUID) for v10+
+            if encoder.api_version() >= 10 {
+                if let Some(topic_id) = topic.topic_id {
+                    buf.put_slice(&topic_id);
+                } else {
+                    // Write null UUID (16 zero bytes)
+                    buf.put_slice(&[0u8; 16]);
+                }
+            }
+
+            // Write is_internal for v10+
+            if encoder.api_version() >= 10 {
+                encoder.write_bool(&mut buf, topic.is_internal);
+            }
+
+            // Write partitions array (non-nullable)
+            encoder.write_array_len(&mut buf, topic.partitions.len());
+            for partition in &topic.partitions {
+                encoder.write_i16(&mut buf, partition.error_code);
+                encoder.write_i32(&mut buf, partition.partition_id);
+                encoder.write_i32(&mut buf, partition.leader);
+
+                // Write replicas array (non-nullable)
+                encoder.write_array_len(&mut buf, partition.replicas.len());
+                for replica in &partition.replicas {
+                    encoder.write_i32(&mut buf, *replica);
+                }
+
+                // Write ISR array (non-nullable)
+                encoder.write_array_len(&mut buf, partition.isr.len());
+                for isr in &partition.isr {
+                    encoder.write_i32(&mut buf, *isr);
+                }
+
+                // Tagged fields for partitions in flexible versions
+                encoder.write_tagged_fields(&mut buf);
+            }
+
+            // Write topic_authorized_operations for v10+
+            if encoder.api_version() >= 10 {
+                encoder.write_i32(&mut buf, topic.topic_authorized_operations);
+            }
+
+            // Tagged fields for topics in flexible versions
+            encoder.write_tagged_fields(&mut buf);
+        }
+
+        // Top-level tagged fields for flexible versions
+        encoder.write_tagged_fields(&mut buf);
+
+        Ok(buf.to_vec())
+    }
+}
+
+impl KafkaResponse for MetadataResponse {
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        self.encode_with_encoder(encoder)
+    }
+
+    fn api_key(&self) -> i16 {
+        3 // Metadata API key
     }
 }
 
@@ -379,20 +335,6 @@ fn read_compact_string(buf: &mut Cursor<&[u8]>) -> Result<String> {
     String::from_utf8(bytes).map_err(|e| {
         crate::error::HeraclitusError::Protocol(format!("Invalid UTF-8 in compact string: {e}"))
     })
-}
-
-fn write_unsigned_varint(buffer: &mut BytesMut, mut value: u32) {
-    while (value & 0xFFFFFF80) != 0 {
-        buffer.put_u8(((value & 0x7F) | 0x80) as u8);
-        value >>= 7;
-    }
-    buffer.put_u8((value & 0x7F) as u8);
-}
-
-fn write_compact_string(buffer: &mut BytesMut, s: &str) {
-    let bytes = s.as_bytes();
-    write_unsigned_varint(buffer, (bytes.len() + 1) as u32);
-    buffer.put_slice(bytes);
 }
 
 #[cfg(test)]

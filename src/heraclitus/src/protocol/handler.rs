@@ -101,11 +101,20 @@ impl ConnectionHandler {
 
     pub async fn run(mut self) -> Result<()> {
         info!("Starting Kafka protocol handler for new connection");
+        let connection_start = std::time::Instant::now();
+        let mut request_count = 0;
 
         loop {
             // Try to read a complete frame
             match self.read_frame().await {
                 Ok(Some(frame)) => {
+                    request_count += 1;
+                    debug!(
+                        "Received request #{} after {}ms",
+                        request_count,
+                        connection_start.elapsed().as_millis()
+                    );
+
                     // Process the request and get response
                     match self.process_request(frame).await {
                         Ok(response) => {
@@ -127,7 +136,11 @@ impl ConnectionHandler {
                     }
                 }
                 Ok(None) => {
-                    info!("Client disconnected");
+                    info!(
+                        "Client disconnected after {} requests over {}ms",
+                        request_count,
+                        connection_start.elapsed().as_millis()
+                    );
                     break;
                 }
                 Err(e) => {
@@ -176,7 +189,7 @@ impl ConnectionHandler {
     }
 
     /// Read a complete frame from the socket
-    async fn read_frame(&mut self) -> Result<Option<Vec<u8>>> {
+    async fn read_frame(&mut self) -> Result<Option<bytes::Bytes>> {
         loop {
             // Check if we have a complete frame
             if self.read_buffer.len() >= 4 {
@@ -188,7 +201,7 @@ impl ConnectionHandler {
                 if self.read_buffer.len() >= 4 + frame_length {
                     // Extract the frame
                     self.read_buffer.advance(4); // Skip length prefix
-                    let frame = self.read_buffer.split_to(frame_length).to_vec();
+                    let frame = self.read_buffer.split_to(frame_length).freeze();
                     return Ok(Some(frame));
                 }
             }
@@ -208,6 +221,12 @@ impl ConnectionHandler {
 
     /// Write a frame to the socket
     async fn write_frame(&mut self, data: Vec<u8>) -> Result<()> {
+        info!("Writing response frame: size={} bytes", data.len());
+        info!(
+            "Frame data first 16 bytes: {:02x?}",
+            &data[..16.min(data.len())]
+        );
+
         // Clear write buffer
         self.write_buffer.clear();
 
@@ -222,19 +241,35 @@ impl ConnectionHandler {
         self.socket.write_all(&self.write_buffer).await?;
         self.socket.flush().await?;
 
-        debug!("Wrote frame of {} bytes", data.len());
+        // Log the actual bytes being sent for debugging
+        if data.len() < 200 {
+            // Only log small responses
+            let hex_bytes: String = self
+                .write_buffer
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<Vec<_>>()
+                .join("");
+            info!("Response hex bytes: {}", hex_bytes);
+        }
+
+        info!(
+            "Successfully sent response: total_size={} bytes (4 byte header + {} byte payload)",
+            self.write_buffer.len(),
+            data.len()
+        );
         Ok(())
     }
 
     /// Process a Kafka request and return the response
-    async fn process_request(&mut self, frame: Vec<u8>) -> Result<Vec<u8>> {
+    async fn process_request(&mut self, frame: bytes::Bytes) -> Result<Vec<u8>> {
         // Parse request header
         let mut cursor = Cursor::new(&frame[..]);
         let header = crate::protocol::kafka_protocol::read_request_header(&mut cursor)?;
 
         // Get remaining bytes as request body
         let body_start = cursor.position() as usize;
-        let body = frame[body_start..].to_vec();
+        let body = frame.slice(body_start..);
 
         info!(
             "Processing request: api_key={}, api_version={}, correlation_id={}, client_id={:?}, body_len={}",
@@ -313,6 +348,24 @@ impl ConnectionHandler {
         self.username = context.username.clone();
         self.consumer_groups = context.consumer_groups.clone();
 
+        // Log handler result
+        match &result {
+            Ok(response_body) => {
+                info!(
+                    "Handler returned response for api_key={}, correlation_id={}, response_body_len={}",
+                    request.api_key,
+                    request.correlation_id,
+                    response_body.len()
+                );
+            }
+            Err(e) => {
+                error!(
+                    "Handler error for api_key={}, correlation_id={}: {:?}",
+                    request.api_key, request.correlation_id, e
+                );
+            }
+        }
+
         // Track request latency
         let elapsed = start_time.elapsed();
         self.metrics
@@ -323,10 +376,25 @@ impl ConnectionHandler {
 
         match result {
             Ok(response_body) => {
+                info!(
+                    "Handler returned raw response body of {} bytes for api_key={}, first 8 bytes: {:02x?}",
+                    response_body.len(),
+                    request.api_key,
+                    &response_body[..8.min(response_body.len())]
+                );
+
                 // Build complete response with header
-                Ok(self
+                let complete_response = self
                     .response_builder
-                    .build_response(&request, response_body))
+                    .build_response(&request, response_body);
+
+                info!(
+                    "ResponseBuilder created response of {} bytes, first 8 bytes: {:02x?}",
+                    complete_response.len(),
+                    &complete_response[..8.min(complete_response.len())]
+                );
+
+                Ok(complete_response)
             }
             Err(e) => {
                 error!("Error handling request: {}", e);
@@ -355,7 +423,7 @@ impl ConnectionHandler {
             0, // API version doesn't matter
             correlation_id,
             None,
-            vec![],
+            bytes::Bytes::new(),
         )?;
 
         Ok(self

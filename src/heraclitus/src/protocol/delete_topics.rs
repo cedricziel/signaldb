@@ -62,13 +62,6 @@ pub struct TopicDeletionError {
 }
 
 impl DeleteTopicsResponse {
-    pub fn new(topic_errors: Vec<TopicDeletionError>) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            topic_errors,
-        }
-    }
-
     pub fn encode(&self, version: i16) -> Result<Vec<u8>> {
         let mut buf = BytesMut::new();
 

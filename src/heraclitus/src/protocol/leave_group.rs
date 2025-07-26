@@ -136,34 +136,6 @@ impl LeaveGroupRequest {
 }
 
 impl LeaveGroupResponse {
-    /// Create a successful response
-    pub fn success() -> Self {
-        Self {
-            throttle_time_ms: 0,
-            error_code: 0, // SUCCESS
-            members: None,
-        }
-    }
-
-    /// Create an error response
-    pub fn error(error_code: i16) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            error_code,
-            members: None,
-        }
-    }
-
-    /// Create a response for v3+ with member results
-    #[allow(dead_code)]
-    pub fn with_members(members: Vec<LeaveGroupMemberResponse>) -> Self {
-        Self {
-            throttle_time_ms: 0,
-            error_code: 0,
-            members: Some(members),
-        }
-    }
-
     /// Encode the response to bytes
     pub fn encode(&self, api_version: i16) -> Result<Vec<u8>> {
         let mut buf = BytesMut::new();
@@ -282,7 +254,11 @@ mod tests {
 
     #[test]
     fn test_leave_group_response_encode_v0() {
-        let response = LeaveGroupResponse::success();
+        let response = LeaveGroupResponse {
+            throttle_time_ms: 0,
+            error_code: 0,
+            members: None,
+        };
         let encoded = response.encode(0).unwrap();
 
         let mut cursor = Cursor::new(&encoded[..]);
@@ -296,7 +272,11 @@ mod tests {
 
     #[test]
     fn test_leave_group_response_encode_v1() {
-        let response = LeaveGroupResponse::error(16); // NOT_COORDINATOR
+        let response = LeaveGroupResponse {
+            throttle_time_ms: 0,
+            error_code: 16, // NOT_COORDINATOR
+            members: None,
+        };
         let encoded = response.encode(1).unwrap();
 
         let mut cursor = Cursor::new(&encoded[..]);
@@ -316,7 +296,11 @@ mod tests {
             error_code: 0,
         }];
 
-        let response = LeaveGroupResponse::with_members(members);
+        let response = LeaveGroupResponse {
+            throttle_time_ms: 0,
+            error_code: 0,
+            members: Some(members),
+        };
         let encoded = response.encode(3).unwrap();
 
         let mut cursor = Cursor::new(&encoded[..]);
@@ -390,7 +374,11 @@ mod tests {
             },
         ];
 
-        let response = LeaveGroupResponse::with_members(members);
+        let response = LeaveGroupResponse {
+            throttle_time_ms: 0,
+            error_code: 0,
+            members: Some(members),
+        };
         let encoded = response.encode(4).unwrap();
 
         let mut cursor = Cursor::new(&encoded[..]);

@@ -51,7 +51,7 @@ impl BatchWriter {
         let metrics = self.metrics.clone();
 
         tokio::spawn(async move {
-            let mut interval = interval(Duration::from_millis(config.max_batch_delay_ms));
+            let mut interval = interval(Duration::from_millis(config.flush_interval_ms));
 
             loop {
                 interval.tick().await;
@@ -62,7 +62,7 @@ impl BatchWriter {
                 let mut to_flush = Vec::new();
                 for ((topic, partition), batch) in batches_guard.iter() {
                     let age = now.signed_duration_since(batch.created_at);
-                    if age.num_milliseconds() >= config.max_batch_delay_ms as i64 {
+                    if age.num_milliseconds() >= config.flush_interval_ms as i64 {
                         to_flush.push((topic.clone(), *partition));
                     }
                 }
@@ -170,8 +170,8 @@ impl BatchWriter {
         batch.size_bytes += message_size;
 
         // Check if we should flush
-        let should_flush = batch.batch.messages.len() >= self.config.max_batch_size
-            || batch.size_bytes >= self.config.max_batch_bytes;
+        let should_flush = batch.batch.messages.len() >= self.config.max_batch_messages
+            || batch.size_bytes >= self.config.max_batch_size;
 
         // Update pending messages metric
         let pending_count = batches

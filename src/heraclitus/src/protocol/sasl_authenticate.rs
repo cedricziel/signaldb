@@ -35,24 +35,6 @@ pub struct SaslAuthenticateResponse {
 }
 
 impl SaslAuthenticateResponse {
-    pub fn success() -> Self {
-        Self {
-            error_code: 0, // ERROR_NONE
-            error_message: None,
-            auth_bytes: vec![],
-            session_lifetime_ms: 0,
-        }
-    }
-
-    pub fn error(error_code: i16, error_message: String) -> Self {
-        Self {
-            error_code,
-            error_message: Some(error_message),
-            auth_bytes: vec![],
-            session_lifetime_ms: 0,
-        }
-    }
-
     pub fn encode(&self, api_version: i16) -> Result<Vec<u8>> {
         let mut buf = BytesMut::new();
 
@@ -72,34 +54,6 @@ impl SaslAuthenticateResponse {
 
         Ok(buf.to_vec())
     }
-}
-
-/// Parse SASL/PLAIN mechanism auth bytes
-/// Format: [authzid] UTF8NUL authcid UTF8NUL passwd
-/// We ignore authzid (authorization identity) and use authcid (authentication identity)
-pub fn parse_plain_auth_bytes(auth_bytes: &[u8]) -> Result<(String, String)> {
-    // Split by null bytes
-    let parts: Vec<&[u8]> = auth_bytes.split(|&b| b == 0).collect();
-
-    if parts.len() != 3 {
-        return Err(crate::error::HeraclitusError::InvalidRequest(
-            "Invalid SASL/PLAIN auth format".to_string(),
-        ));
-    }
-
-    // parts[0] is authzid (ignored)
-    // parts[1] is username (authcid)
-    // parts[2] is password
-
-    let username = String::from_utf8(parts[1].to_vec()).map_err(|_| {
-        crate::error::HeraclitusError::InvalidRequest("Invalid UTF-8 in username".to_string())
-    })?;
-
-    let password = String::from_utf8(parts[2].to_vec()).map_err(|_| {
-        crate::error::HeraclitusError::InvalidRequest("Invalid UTF-8 in password".to_string())
-    })?;
-
-    Ok((username, password))
 }
 
 #[cfg(test)]
@@ -123,7 +77,12 @@ mod tests {
 
     #[test]
     fn test_encode_success_response() {
-        let response = SaslAuthenticateResponse::success();
+        let response = SaslAuthenticateResponse {
+            error_code: 0,
+            error_message: None,
+            auth_bytes: vec![],
+            session_lifetime_ms: 0,
+        };
         let encoded = response.encode(0).unwrap();
 
         let mut cursor = Cursor::new(&encoded[..]);
@@ -140,7 +99,12 @@ mod tests {
 
     #[test]
     fn test_encode_error_response() {
-        let response = SaslAuthenticateResponse::error(58, "Authentication failed".to_string());
+        let response = SaslAuthenticateResponse {
+            error_code: 58,
+            error_message: Some("Authentication failed".to_string()),
+            auth_bytes: vec![],
+            session_lifetime_ms: 0,
+        };
         let encoded = response.encode(0).unwrap();
 
         let mut cursor = Cursor::new(&encoded[..]);
@@ -181,49 +145,5 @@ mod tests {
 
         // session_lifetime_ms: int64
         assert_eq!(cursor.get_i64(), 3600000);
-    }
-
-    #[test]
-    fn test_parse_plain_auth_bytes() {
-        // Format: [authzid] UTF8NUL authcid UTF8NUL passwd
-        let mut auth_bytes = Vec::new();
-        auth_bytes.extend_from_slice(b""); // empty authzid
-        auth_bytes.push(0); // null separator
-        auth_bytes.extend_from_slice(b"alice");
-        auth_bytes.push(0); // null separator
-        auth_bytes.extend_from_slice(b"secret123");
-
-        let (username, password) = parse_plain_auth_bytes(&auth_bytes).unwrap();
-        assert_eq!(username, "alice");
-        assert_eq!(password, "secret123");
-    }
-
-    #[test]
-    fn test_parse_plain_auth_bytes_with_authzid() {
-        // With authzid (which we ignore)
-        let mut auth_bytes = Vec::new();
-        auth_bytes.extend_from_slice(b"admin"); // authzid (ignored)
-        auth_bytes.push(0);
-        auth_bytes.extend_from_slice(b"alice");
-        auth_bytes.push(0);
-        auth_bytes.extend_from_slice(b"secret123");
-
-        let (username, password) = parse_plain_auth_bytes(&auth_bytes).unwrap();
-        assert_eq!(username, "alice");
-        assert_eq!(password, "secret123");
-    }
-
-    #[test]
-    fn test_parse_plain_auth_bytes_invalid() {
-        // Missing null separators
-        let auth_bytes = b"alicesecret123";
-        assert!(parse_plain_auth_bytes(auth_bytes).is_err());
-
-        // Only one null separator
-        let mut auth_bytes = Vec::new();
-        auth_bytes.extend_from_slice(b"alice");
-        auth_bytes.push(0);
-        auth_bytes.extend_from_slice(b"secret123");
-        assert!(parse_plain_auth_bytes(&auth_bytes).is_err());
     }
 }

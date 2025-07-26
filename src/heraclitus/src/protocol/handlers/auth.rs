@@ -22,6 +22,12 @@ impl ApiHandler for ApiVersionsHandler {
     ) -> Result<Vec<u8>> {
         info!("Handling API versions request v{}", request.api_version);
 
+        // DEBUG: Log what version we're encoding for
+        info!(
+            "ApiVersionsHandler: Will encode response for version {}",
+            request.api_version
+        );
+
         // Track API versions requests
         let api_key_str = request.api_key.to_string();
         let api_version_str = request.api_version.to_string();
@@ -36,7 +42,12 @@ impl ApiHandler for ApiVersionsHandler {
 
         // Parse request (minimal parsing needed)
         let mut cursor = std::io::Cursor::new(&request.body[..]);
-        let _api_versions_request = ApiVersionsRequest::parse(&mut cursor, request.api_version)?;
+        let api_versions_request = ApiVersionsRequest::parse(&mut cursor, request.api_version)?;
+
+        info!(
+            "ApiVersions request parsed: client_software_name={:?}, client_software_version={:?}",
+            api_versions_request.client_software_name, api_versions_request.client_software_version
+        );
 
         // List all supported APIs
         let api_versions = vec![
@@ -144,7 +155,13 @@ impl ApiHandler for ApiVersionsHandler {
         };
 
         // Encode response
-        response.encode(request.api_version)
+        info!(
+            "About to encode ApiVersionsResponse with api_version={}",
+            request.api_version
+        );
+        let encoded = response.encode(request.api_version)?;
+        info!("Encoded {} bytes", encoded.len());
+        Ok(encoded)
     }
 
     fn api_key(&self) -> i16 {

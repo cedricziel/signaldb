@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HeraclitusConfig {
@@ -8,6 +7,9 @@ pub struct HeraclitusConfig {
 
     #[serde(default = "default_http_port")]
     pub http_port: u16,
+
+    #[serde(default)]
+    pub storage: StorageConfig,
 
     #[serde(default)]
     pub state: StateConfig,
@@ -24,11 +26,17 @@ pub struct HeraclitusConfig {
     #[serde(default)]
     pub metrics: MetricsConfig,
 
+    #[serde(default)]
+    pub performance: PerformanceConfig,
+
     #[serde(default = "default_shutdown_timeout_sec")]
     pub shutdown_timeout_sec: u64,
+}
 
-    #[serde(skip)]
-    pub common_config: common::config::Configuration,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StorageConfig {
+    #[serde(default = "default_storage_path")]
+    pub path: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -45,20 +53,20 @@ pub struct BatchingConfig {
     #[serde(default = "default_max_batch_size")]
     pub max_batch_size: usize,
 
-    #[serde(default = "default_max_batch_bytes")]
-    pub max_batch_bytes: usize,
+    #[serde(default = "default_max_batch_messages")]
+    pub max_batch_messages: usize,
 
-    #[serde(default = "default_max_batch_delay_ms")]
-    pub max_batch_delay_ms: u64,
+    #[serde(default = "default_flush_interval_ms")]
+    pub flush_interval_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CacheConfig {
-    #[serde(default = "default_segment_cache_size_mb")]
-    pub segment_cache_size_mb: usize,
+    #[serde(default = "default_cache_size")]
+    pub metadata_cache_size: usize,
 
-    #[serde(default = "default_prefetch_segments")]
-    pub prefetch_segments: usize,
+    #[serde(default = "default_cache_ttl")]
+    pub cache_ttl_sec: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -69,10 +77,7 @@ pub struct AuthConfig {
     #[serde(default = "default_auth_mechanism")]
     pub mechanism: String,
 
-    #[serde(default)]
     pub plain_username: Option<String>,
-
-    #[serde(default)]
     pub plain_password: Option<String>,
 }
 
@@ -85,18 +90,49 @@ pub struct MetricsConfig {
     pub prefix: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PerformanceConfig {
+    #[serde(default = "default_socket_send_buffer")]
+    pub socket_send_buffer_bytes: Option<usize>,
+
+    #[serde(default = "default_socket_recv_buffer")]
+    pub socket_recv_buffer_bytes: Option<usize>,
+
+    #[serde(default = "default_tcp_nodelay")]
+    pub tcp_nodelay: bool,
+
+    #[serde(default = "default_tcp_keepalive")]
+    pub tcp_keepalive: Option<u64>,
+
+    #[serde(default = "default_buffer_pool_size")]
+    pub buffer_pool_size: usize,
+
+    #[serde(default = "default_compression_level")]
+    pub compression_level: i32,
+}
+
+// Default implementations
 impl Default for HeraclitusConfig {
     fn default() -> Self {
         Self {
             kafka_port: default_kafka_port(),
             http_port: default_http_port(),
+            storage: StorageConfig::default(),
             state: StateConfig::default(),
             batching: BatchingConfig::default(),
             cache: CacheConfig::default(),
             auth: AuthConfig::default(),
             metrics: MetricsConfig::default(),
+            performance: PerformanceConfig::default(),
             shutdown_timeout_sec: default_shutdown_timeout_sec(),
-            common_config: common::config::Configuration::default(),
+        }
+    }
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            path: default_storage_path(),
         }
     }
 }
@@ -114,8 +150,8 @@ impl Default for BatchingConfig {
     fn default() -> Self {
         Self {
             max_batch_size: default_max_batch_size(),
-            max_batch_bytes: default_max_batch_bytes(),
-            max_batch_delay_ms: default_max_batch_delay_ms(),
+            max_batch_messages: default_max_batch_messages(),
+            flush_interval_ms: default_flush_interval_ms(),
         }
     }
 }
@@ -123,8 +159,8 @@ impl Default for BatchingConfig {
 impl Default for CacheConfig {
     fn default() -> Self {
         Self {
-            segment_cache_size_mb: default_segment_cache_size_mb(),
-            prefetch_segments: default_prefetch_segments(),
+            metadata_cache_size: default_cache_size(),
+            cache_ttl_sec: default_cache_ttl(),
         }
     }
 }
@@ -149,90 +185,77 @@ impl Default for MetricsConfig {
     }
 }
 
-impl HeraclitusConfig {
-    pub fn batch_delay_duration(&self) -> Duration {
-        Duration::from_millis(self.batching.max_batch_delay_ms)
-    }
-
-    pub fn metadata_cache_ttl(&self) -> Duration {
-        Duration::from_secs(self.state.metadata_cache_ttl_sec)
-    }
-
-    /// Create HeraclitusConfig from common Configuration
-    pub fn from_common_config(config: common::config::Configuration) -> Self {
-        let heraclitus_config = &config.heraclitus;
+impl Default for PerformanceConfig {
+    fn default() -> Self {
         Self {
-            kafka_port: heraclitus_config.kafka_port,
-            http_port: default_http_port(), // Use default for now
-            state: StateConfig {
-                prefix: heraclitus_config.state_prefix.clone(),
-                metadata_cache_ttl_sec: 60, // Default 60 seconds
-            },
-            batching: BatchingConfig {
-                max_batch_size: heraclitus_config.batch_size,
-                max_batch_bytes: 10 * 1024 * 1024, // 10MB default
-                max_batch_delay_ms: heraclitus_config.batch_timeout_ms,
-            },
-            cache: CacheConfig {
-                segment_cache_size_mb: (heraclitus_config.segment_size_mb as usize) * 16, // Cache 16 segments
-                prefetch_segments: 3,
-            },
-            auth: AuthConfig::default(),       // Use defaults for now
-            metrics: MetricsConfig::default(), // Use defaults for now
-            shutdown_timeout_sec: default_shutdown_timeout_sec(),
-            common_config: config,
+            socket_send_buffer_bytes: default_socket_send_buffer(),
+            socket_recv_buffer_bytes: default_socket_recv_buffer(),
+            tcp_nodelay: default_tcp_nodelay(),
+            tcp_keepalive: default_tcp_keepalive(),
+            buffer_pool_size: default_buffer_pool_size(),
+            compression_level: default_compression_level(),
         }
     }
 }
 
+// Default value functions
 fn default_kafka_port() -> u16 {
     9092
 }
-
-fn default_state_prefix() -> String {
-    "heraclitus/".to_string()
-}
-
-fn default_metadata_cache_ttl() -> u64 {
-    60
-}
-
-fn default_max_batch_size() -> usize {
-    10000
-}
-
-fn default_max_batch_bytes() -> usize {
-    10 * 1024 * 1024 // 10MB
-}
-
-fn default_max_batch_delay_ms() -> u64 {
-    100
-}
-
-fn default_segment_cache_size_mb() -> usize {
-    1024 // 1GB
-}
-
-fn default_prefetch_segments() -> usize {
-    3
-}
-
-fn default_auth_mechanism() -> String {
-    "PLAIN".to_string()
-}
-
 fn default_http_port() -> u16 {
     9093
 }
-
+fn default_storage_path() -> String {
+    "/var/lib/heraclitus".to_string()
+}
+fn default_state_prefix() -> String {
+    "heraclitus".to_string()
+}
+fn default_metadata_cache_ttl() -> u64 {
+    300
+} // 5 minutes
+fn default_max_batch_size() -> usize {
+    1_048_576
+} // 1MB
+fn default_max_batch_messages() -> usize {
+    1000
+}
+fn default_flush_interval_ms() -> u64 {
+    100
+}
+fn default_cache_size() -> usize {
+    1000
+}
+fn default_cache_ttl() -> u64 {
+    60
+}
+fn default_auth_mechanism() -> String {
+    "PLAIN".to_string()
+}
 fn default_metrics_enabled() -> bool {
     true
 }
-
 fn default_metrics_prefix() -> String {
-    "heraclitus_".to_string()
+    "heraclitus".to_string()
 }
-
+fn default_socket_send_buffer() -> Option<usize> {
+    Some(131_072)
+} // 128KB
+fn default_socket_recv_buffer() -> Option<usize> {
+    Some(131_072)
+} // 128KB
+fn default_tcp_nodelay() -> bool {
+    true
+}
+fn default_tcp_keepalive() -> Option<u64> {
+    Some(60)
+} // 60 seconds
+fn default_buffer_pool_size() -> usize {
+    1000
+}
+fn default_compression_level() -> i32 {
+    6
+} // Default compression level
 fn default_shutdown_timeout_sec() -> u64 {
     30
 }

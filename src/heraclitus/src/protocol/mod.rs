@@ -8,6 +8,7 @@ mod api_versions;
 mod create_topics;
 mod delete_topics;
 mod describe_groups;
+pub mod encoder;
 mod fetch;
 mod find_coordinator;
 mod handler;
@@ -19,7 +20,6 @@ mod kafka_protocol;
 mod leave_group;
 mod list_groups;
 pub mod list_offsets;
-mod message_set;
 mod metadata;
 mod offset_commit;
 mod offset_fetch;
@@ -27,11 +27,11 @@ mod produce;
 mod record_batch;
 mod record_batch_builder;
 mod request;
-mod response;
 mod sasl_authenticate;
 mod sasl_handshake;
 mod sync_group;
 
+pub use encoder::{KafkaResponse, ProtocolEncoder};
 pub use fetch::{FetchPartitionResponse, FetchRequest, FetchResponse, FetchTopicResponse};
 pub use handler::ConnectionHandler;
 pub use metadata::{BrokerMetadata, MetadataResponse, PartitionMetadata, TopicMetadata};
@@ -39,7 +39,6 @@ pub use produce::{ProduceRequest, ProduceResponse};
 pub use record_batch::{Record, RecordBatch, RecordHeader};
 pub use record_batch_builder::{CompressionType, RecordBatchBuilder};
 pub use request::{KafkaRequest, RequestType};
-pub use response::KafkaResponse;
 
 #[derive(Clone)]
 pub struct ProtocolHandler {

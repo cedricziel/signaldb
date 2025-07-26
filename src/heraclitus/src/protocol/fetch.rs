@@ -1,5 +1,6 @@
 use crate::error::{HeraclitusError, Result};
-use bytes::{Buf, BufMut, BytesMut};
+use crate::protocol::encoder::{KafkaResponse, ProtocolEncoder};
+use bytes::Buf;
 use std::io::Cursor;
 
 /// Fetch API Request (API Key = 1)
@@ -268,74 +269,97 @@ pub struct AbortedTransaction {
 }
 
 impl FetchResponse {
-    /// Encode the response to wire format
+    /// Legacy encode method - delegates to centralized encoder
     pub fn encode(&self, api_version: i16) -> Result<Vec<u8>> {
-        let mut buf = BytesMut::new();
+        let encoder = ProtocolEncoder::new(1, api_version); // Fetch API key = 1
+        self.encode_with_encoder(&encoder)
+    }
+
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        let mut buf = encoder.create_buffer();
 
         // Throttle time (v1+)
-        if api_version >= 1 {
-            buf.put_i32(self.throttle_time_ms);
+        if encoder.api_version() >= 1 {
+            encoder.write_i32(&mut buf, self.throttle_time_ms);
         }
 
         // Error code (v7+)
-        if api_version >= 7 {
-            buf.put_i16(self.error_code);
-            buf.put_i32(self.session_id);
+        if encoder.api_version() >= 7 {
+            encoder.write_i16(&mut buf, self.error_code);
+            encoder.write_i32(&mut buf, self.session_id);
         }
 
         // Topics array
-        buf.put_i32(self.responses.len() as i32);
+        encoder.write_array_len(&mut buf, self.responses.len());
 
         for topic_response in &self.responses {
-            crate::protocol::kafka_protocol::write_string(&mut buf, &topic_response.topic);
+            encoder.write_string(&mut buf, &topic_response.topic);
 
             // Partitions array
-            buf.put_i32(topic_response.partitions.len() as i32);
+            encoder.write_array_len(&mut buf, topic_response.partitions.len());
 
             for partition_response in &topic_response.partitions {
-                buf.put_i32(partition_response.partition);
-                buf.put_i16(partition_response.error_code);
-                buf.put_i64(partition_response.high_watermark);
+                encoder.write_i32(&mut buf, partition_response.partition);
+                encoder.write_i16(&mut buf, partition_response.error_code);
+                encoder.write_i64(&mut buf, partition_response.high_watermark);
 
                 // Last stable offset (v4+)
-                if api_version >= 4 {
-                    buf.put_i64(partition_response.last_stable_offset);
+                if encoder.api_version() >= 4 {
+                    encoder.write_i64(&mut buf, partition_response.last_stable_offset);
                 }
 
                 // Log start offset (v5+)
-                if api_version >= 5 {
-                    buf.put_i64(partition_response.log_start_offset);
+                if encoder.api_version() >= 5 {
+                    encoder.write_i64(&mut buf, partition_response.log_start_offset);
                 }
 
                 // Aborted transactions (v4+)
-                if api_version >= 4 {
-                    buf.put_i32(partition_response.aborted_transactions.len() as i32);
+                if encoder.api_version() >= 4 {
+                    encoder
+                        .write_array_len(&mut buf, partition_response.aborted_transactions.len());
                     for aborted in &partition_response.aborted_transactions {
-                        buf.put_i64(aborted.producer_id);
-                        buf.put_i64(aborted.first_offset);
+                        encoder.write_i64(&mut buf, aborted.producer_id);
+                        encoder.write_i64(&mut buf, aborted.first_offset);
                     }
                 }
 
                 // Preferred read replica (v11+)
-                if api_version >= 11 {
-                    buf.put_i32(partition_response.preferred_read_replica);
+                if encoder.api_version() >= 11 {
+                    encoder.write_i32(&mut buf, partition_response.preferred_read_replica);
                 }
 
-                // Record data
-                crate::protocol::kafka_protocol::write_nullable_bytes(
-                    &mut buf,
-                    partition_response.records.as_deref(),
-                );
+                // Record data (nullable bytes)
+                encoder.write_nullable_bytes(&mut buf, partition_response.records.as_deref());
+
+                // Tagged fields for partitions in flexible versions
+                encoder.write_tagged_fields(&mut buf);
             }
+
+            // Tagged fields for topics in flexible versions
+            encoder.write_tagged_fields(&mut buf);
         }
 
+        // Top-level tagged fields for flexible versions
+        encoder.write_tagged_fields(&mut buf);
+
         Ok(buf.to_vec())
+    }
+}
+
+impl KafkaResponse for FetchResponse {
+    fn encode_with_encoder(&self, encoder: &ProtocolEncoder) -> Result<Vec<u8>> {
+        self.encode_with_encoder(encoder)
+    }
+
+    fn api_key(&self) -> i16 {
+        1 // Fetch API key
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::{BufMut, BytesMut};
 
     #[test]
     fn test_fetch_request_parse_v0() {

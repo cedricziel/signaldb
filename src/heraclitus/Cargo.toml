@@ -11,7 +11,6 @@ path = "src/main.rs"
 
 [dependencies]
 # Workspace dependencies
-common = { workspace = true }
 anyhow = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
@@ -44,8 +43,21 @@ prometheus = { version = "0.14", features = ["process"] }
 # For async trait definitions
 async-trait = "0.1"
 
+# For configuration
+toml = { version = "0.8", features = ["preserve_order"] }
+
+# For logging
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+
+
+# For socket optimization
+socket2 = "0.5"
+
+# For partitioning
+rand = "0.8"
+
 [dev-dependencies]
 tempfile = "3.0"
-walkdir = "2.5"
-reqwest = { version = "0.12", features = ["json"] }
 rdkafka = { version = "0.36", features = ["tokio"] }
+

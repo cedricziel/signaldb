@@ -33,20 +33,6 @@ pub struct SaslHandshakeResponse {
 }
 
 impl SaslHandshakeResponse {
-    pub fn new(enabled_mechanisms: Vec<String>) -> Self {
-        Self {
-            error_code: 0, // ERROR_NONE
-            enabled_mechanisms,
-        }
-    }
-
-    pub fn error(error_code: i16) -> Self {
-        Self {
-            error_code,
-            enabled_mechanisms: vec![],
-        }
-    }
-
     pub fn encode(&self, api_version: i16) -> Result<Vec<u8>> {
         let mut buf = BytesMut::new();
 
@@ -85,8 +71,10 @@ mod tests {
 
     #[test]
     fn test_encode_sasl_handshake_response() {
-        let response =
-            SaslHandshakeResponse::new(vec!["PLAIN".to_string(), "SCRAM-SHA-256".to_string()]);
+        let response = SaslHandshakeResponse {
+            error_code: 0,
+            enabled_mechanisms: vec!["PLAIN".to_string(), "SCRAM-SHA-256".to_string()],
+        };
         let encoded = response.encode(0).unwrap();
 
         let mut cursor = Cursor::new(&encoded[..]);
@@ -112,7 +100,10 @@ mod tests {
 
     #[test]
     fn test_encode_error_response() {
-        let response = SaslHandshakeResponse::error(33); // ERROR_UNSUPPORTED_SASL_MECHANISM
+        let response = SaslHandshakeResponse {
+            error_code: 33, // ERROR_UNSUPPORTED_SASL_MECHANISM
+            enabled_mechanisms: vec![],
+        };
         let encoded = response.encode(0).unwrap();
 
         let mut cursor = Cursor::new(&encoded[..]);
