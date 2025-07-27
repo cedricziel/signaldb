@@ -57,7 +57,6 @@ socket2 = { workspace = true }
 rand = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
 rdkafka = { workspace = true }
 testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true }

@@ -5,105 +5,46 @@ use anyhow::Result;
 use std::time::Duration;
 use tokio::time::timeout;
 
+// Include the testcontainers module for containerized testing
+include!("../testcontainers_heraclitus.rs");
+
 #[cfg(test)]
 pub mod rdkafka_tests;
 
-/// Test context for running Heraclitus with real clients
+/// Test context for running Heraclitus with real clients using testcontainers
 pub struct HeraclitusTestContext {
     pub kafka_port: u16,
     pub http_port: u16,
-    pub data_dir: tempfile::TempDir,
-    process: tokio::process::Child,
+    container: testcontainers::ContainerAsync<Heraclitus>,
 }
 
 impl HeraclitusTestContext {
-    /// Start a test instance of Heraclitus
+    /// Start a test instance of Heraclitus using testcontainers
     pub async fn new() -> Result<Self> {
-        // Create temp directory for data
-        let data_dir = tempfile::tempdir()?;
-        
-        // Find available ports
-        let kafka_port = find_available_port(9092)?;
-        let http_port = find_available_port(9093)?;
-        
-        // Create config file
-        let config_content = format!(
-            r#"
-[database]
-dsn = "sqlite://memory"
+        // Start Heraclitus container (automatically builds image if needed)
+        let container = Heraclitus::default()
+            .build_and_start()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to start Heraclitus container: {}", e))?;
 
-[storage]
-dsn = "file://{}"
+        // Get mapped ports
+        let kafka_port = container
+            .get_host_port_ipv4(Heraclitus::kafka_port())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get Kafka port: {}", e))?;
 
-[wal]
-enabled = false
+        let http_port = container
+            .get_host_port_ipv4(Heraclitus::http_port())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get HTTP port: {}", e))?;
 
-[kafka]
-port = {}
+        // Wait a bit for the container to be fully ready
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
-[http]
-port = {}
-
-[auth]
-enabled = false
-"#,
-            data_dir.path().display(),
-            kafka_port,
-            http_port
-        );
-        
-        let config_path = data_dir.path().join("heraclitus.toml");
-        std::fs::write(&config_path, config_content)?;
-        
-        // Build the heraclitus binary path
-        let exe_path = std::env::current_exe()?;
-        let target_dir = exe_path
-            .parent()
-            .and_then(|p| p.parent())
-            .ok_or_else(|| anyhow::anyhow!("Failed to find target directory"))?;
-        
-        let heraclitus_path = target_dir.join("heraclitus");
-        
-        // Start Heraclitus
-        let mut cmd = tokio::process::Command::new(&heraclitus_path);
-        cmd.arg("--kafka-port")
-            .arg(kafka_port.to_string())
-            .arg("--http-port")
-            .arg(http_port.to_string())
-            .arg("--data-dir")
-            .arg(data_dir.path())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-            
-        let mut process = cmd.spawn()?;
-        
-        // Wait for startup - check if port is listening
-        let mut retries = 0;
-        let max_retries = 20;
-        loop {
-            match tokio::net::TcpStream::connect(("127.0.0.1", kafka_port)).await {
-                Ok(_) => break,
-                Err(_) => {
-                    retries += 1;
-                    if retries >= max_retries {
-                        return Err(anyhow::anyhow!("Heraclitus failed to start listening on port {}", kafka_port));
-                    }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
-            
-            // Also check if process is still running
-            if let Some(status) = process.try_wait()? {
-                return Err(anyhow::anyhow!("Heraclitus exited with status: {:?}", status));
-            }
-        }
-        
         Ok(Self {
             kafka_port,
             http_port,
-            data_dir,
-            process,
+            container,
         })
     }
     
@@ -117,13 +58,6 @@ enabled = false
         // TODO: Implement HTTP API call to retrieve messages
         // For now, return empty vec
         Ok(vec![])
-    }
-}
-
-impl Drop for HeraclitusTestContext {
-    fn drop(&mut self) {
-        // Kill the process when test context is dropped
-        let _ = self.process.start_kill();
     }
 }
 

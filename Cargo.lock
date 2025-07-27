@@ -3259,7 +3259,6 @@ dependencies = [
  "serde_json",
  "snap",
  "socket2",
- "tempfile",
  "testcontainers",
  "testcontainers-modules",
  "tokio",

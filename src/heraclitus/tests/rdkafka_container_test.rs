@@ -6,7 +6,7 @@ use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::error::KafkaResult;
 use rdkafka::metadata::Metadata;
 use std::time::Duration;
-use testcontainers::{ContainerAsync, runners::AsyncRunner};
+// testcontainers functionality is available through the included module
 use tokio::time::sleep;
 
 /// Test rdkafka connection with api.version.request=true (should work)
@@ -39,13 +39,12 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore] // Ignore by default since it requires Docker image to be built
     async fn test_rdkafka_connects_to_containerized_heraclitus() {
-        // Start Heraclitus container
-        let heraclitus_container: ContainerAsync<Heraclitus> = Heraclitus::default()
-            .start()
+        // Start Heraclitus container (automatically builds image if needed)
+        let heraclitus_container = Heraclitus::default()
+            .build_and_start()
             .await
-            .expect("Failed to start Heraclitus container");
+            .expect("Failed to build and start Heraclitus container");
 
         let heraclitus_port = heraclitus_container
             .get_host_port_ipv4(Heraclitus::kafka_port())
@@ -88,15 +87,14 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Ignore by default since it requires Docker image to be built
     async fn test_rdkafka_basic_operations() {
         use rdkafka::producer::{BaseProducer, BaseRecord, Producer};
 
-        // Start Heraclitus container
-        let heraclitus_container: ContainerAsync<Heraclitus> = Heraclitus::default()
-            .start()
+        // Start Heraclitus container (automatically builds image if needed)
+        let heraclitus_container = Heraclitus::default()
+            .build_and_start()
             .await
-            .expect("Failed to start Heraclitus container");
+            .expect("Failed to build and start Heraclitus container");
 
         let heraclitus_port = heraclitus_container
             .get_host_port_ipv4(Heraclitus::kafka_port())

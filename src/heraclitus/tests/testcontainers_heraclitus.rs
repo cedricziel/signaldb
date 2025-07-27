@@ -53,6 +53,75 @@ impl Heraclitus {
     pub fn http_port() -> u16 {
         DEFAULT_HTTP_PORT
     }
+
+    /// Check if the Heraclitus Docker image exists, and build it if needed
+    pub async fn ensure_image_built() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use std::process::Command;
+
+        // First check if the image already exists
+        let check_output = Command::new("docker")
+            .args(["images", "-q", "heraclitus:latest"])
+            .output()?;
+
+        if check_output.status.success() && !check_output.stdout.is_empty() {
+            println!("heraclitus:latest image already exists, skipping build");
+            return Ok(());
+        }
+
+        // Get the workspace root (go up from heraclitus directory)
+        let current_dir = std::env::current_dir()?;
+        let workspace_root = if current_dir.ends_with("heraclitus") {
+            // We're in the heraclitus directory
+            current_dir
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .to_path_buf()
+        } else {
+            // We're probably in the workspace root already
+            current_dir
+        };
+
+        println!(
+            "Building Heraclitus image from workspace root: {}",
+            workspace_root.display()
+        );
+
+        // Use docker build command directly (allow cache for faster builds)
+        let output = Command::new("docker")
+            .args([
+                "build",
+                "-f",
+                "src/heraclitus/Dockerfile",
+                "-t",
+                "heraclitus:latest",
+                ".",
+            ])
+            .current_dir(&workspace_root)
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Docker build failed: {stderr}").into());
+        }
+
+        println!("Successfully built heraclitus:latest image");
+        Ok(())
+    }
+
+    /// Create a builder that automatically ensures the image is built
+    pub async fn build_and_start(
+        self,
+    ) -> Result<testcontainers::ContainerAsync<Self>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        // Ensure the image is built first
+        Self::ensure_image_built().await?;
+
+        // Now start the container using the regular Image trait
+        use testcontainers::runners::AsyncRunner;
+        Ok(self.start().await?)
+    }
 }
 
 impl Image for Heraclitus {
@@ -89,17 +158,15 @@ impl Image for Heraclitus {
 #[cfg(test)]
 mod heraclitus_container_tests {
     use super::*;
-    use testcontainers::{ContainerAsync, runners::AsyncRunner};
 
     #[tokio::test]
-    #[ignore] // Ignore by default since it requires Docker image to be built
     async fn test_heraclitus_container_starts() {
         let heraclitus = Heraclitus::default();
 
-        let container: ContainerAsync<_> = heraclitus
-            .start()
+        let container = heraclitus
+            .build_and_start()
             .await
-            .expect("Failed to start Heraclitus container");
+            .expect("Failed to build and start Heraclitus container");
 
         // Get mapped ports
         let kafka_port = container
@@ -117,5 +184,37 @@ mod heraclitus_container_tests {
         // Container should be running
         assert!(kafka_port > 0);
         assert!(http_port > 0);
+    }
+
+    #[tokio::test]
+    async fn test_heraclitus_image_building() {
+        // Test that we can build the image successfully
+        Heraclitus::ensure_image_built()
+            .await
+            .expect("Failed to build Heraclitus image");
+
+        println!("✓ Heraclitus image built successfully");
+    }
+
+    #[tokio::test]
+    async fn test_heraclitus_container_starts_quickly() {
+        // Quick test that just verifies the container can start
+        let heraclitus = Heraclitus::default();
+
+        let container = heraclitus
+            .build_and_start()
+            .await
+            .expect("Failed to build and start Heraclitus container");
+
+        // Get mapped ports to verify container is running
+        let kafka_port = container
+            .get_host_port_ipv4(DEFAULT_KAFKA_PORT)
+            .await
+            .expect("Failed to get Kafka port");
+
+        println!("✓ Heraclitus container started on port {kafka_port}");
+        assert!(kafka_port > 0);
+
+        // Container will be automatically cleaned up when dropped
     }
 }
