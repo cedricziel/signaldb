@@ -6,6 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+minio-integration = []
+
 [dependencies]
 # Our crates
 heraclitus = { path = "../heraclitus" }
