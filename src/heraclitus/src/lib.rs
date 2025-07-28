@@ -68,14 +68,19 @@ impl HeraclitusAgent {
         ));
 
         // Create protocol handler using kafka-protocol implementation
+        let protocol_config = protocol_v2::ProtocolConfig {
+            auth_config: Arc::new(config.auth.clone()),
+            topic_config: Arc::new(config.topics.clone()),
+            compression_config: Arc::new(config.compression.clone()),
+        };
+
         let protocol_handler = protocol_v2::ProtocolHandler::new(
             state_manager.clone(),
             batch_writer.clone(),
             message_reader,
             config.kafka_port,
-            Arc::new(config.auth.clone()),
             metrics.clone(),
-            Arc::new(config.topics.clone()),
+            protocol_config,
         );
 
         // Create shutdown channel

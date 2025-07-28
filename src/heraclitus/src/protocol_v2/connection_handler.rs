@@ -26,6 +26,7 @@ pub struct ConnectionHandler {
     _username: Option<String>,
     metrics: Arc<Metrics>,
     topic_config: Arc<TopicConfig>,
+    compression_config: Arc<crate::config::CompressionConfig>,
 }
 
 impl ConnectionHandler {
@@ -39,6 +40,7 @@ impl ConnectionHandler {
         auth_config: Arc<AuthConfig>,
         metrics: Arc<Metrics>,
         topic_config: Arc<TopicConfig>,
+        compression_config: Arc<crate::config::CompressionConfig>,
     ) -> Self {
         // Track new connection
         metrics.connection.active_connections.inc();
@@ -57,6 +59,7 @@ impl ConnectionHandler {
             _username: None,
             metrics,
             topic_config,
+            compression_config,
         }
     }
 
@@ -484,49 +487,13 @@ impl ConnectionHandler {
                                 let offset = base_offset;
                                 base_offset += 1;
 
-                                let message = KafkaMessage {
-                                    topic: topic_name.to_string(),
-                                    partition: partition_index,
+                                // Use the improved type-safe conversion method
+                                let message = KafkaMessage::from_record(
+                                    record,
+                                    topic_name.to_string(),
+                                    partition_index,
                                     offset,
-                                    timestamp: record.timestamp,
-                                    key: record.key.clone().map(|k| k.to_vec()),
-                                    value: record
-                                        .value
-                                        .clone()
-                                        .map(|v| v.to_vec())
-                                        .unwrap_or_default(),
-                                    headers: record
-                                        .headers
-                                        .iter()
-                                        .map(|(k, v)| {
-                                            (
-                                                k.as_str().to_string(),
-                                                v.clone().map(|v| v.to_vec()).unwrap_or_default(),
-                                            )
-                                        })
-                                        .collect(),
-                                    producer_id: if record.producer_id
-                                        == kafka_protocol::records::NO_PRODUCER_ID
-                                    {
-                                        None
-                                    } else {
-                                        Some(record.producer_id)
-                                    },
-                                    producer_epoch: if record.producer_epoch
-                                        == kafka_protocol::records::NO_PRODUCER_EPOCH
-                                    {
-                                        None
-                                    } else {
-                                        Some(record.producer_epoch)
-                                    },
-                                    sequence: if record.sequence
-                                        == kafka_protocol::records::NO_SEQUENCE
-                                    {
-                                        None
-                                    } else {
-                                        Some(record.sequence)
-                                    },
-                                };
+                                );
 
                                 message_batch.add(message);
                             }
@@ -620,106 +587,39 @@ impl ConnectionHandler {
                 let record_batch = if messages.is_empty() {
                     None
                 } else {
-                    // For now, create a simple record batch manually
-                    // This is a temporary implementation until we figure out the correct kafka-protocol API
                     info!(
                         "Found {} messages to return in fetch response",
                         messages.len()
                     );
 
-                    // Create a minimal record batch with the messages
-                    // Format: [baseOffset][batchLength][partitionLeaderEpoch][magic][crc][attributes][lastOffsetDelta][firstTimestamp][maxTimestamp][producerId][producerEpoch][baseSequence][records]
-                    let mut batch_bytes = Vec::new();
+                    // Convert messages to kafka-protocol Record structs using type-safe conversion
+                    use bytes::BytesMut;
+                    use kafka_protocol::records::{
+                        Compression, RecordBatchEncoder, RecordEncodeOptions,
+                    };
 
-                    // Base offset (8 bytes)
-                    batch_bytes.extend_from_slice(&messages[0].offset.to_be_bytes());
+                    let records: Vec<_> = messages.iter().map(|msg| msg.to_record()).collect();
 
-                    // Placeholder for batch length (4 bytes) - will update later
-                    let batch_length_pos = batch_bytes.len();
-                    batch_bytes.extend_from_slice(&0i32.to_be_bytes());
+                    // Create encoding options with configurable compression
+                    let compression = if self.compression_config.enable_fetch_compression {
+                        get_compression_from_config(&self.compression_config.algorithm)
+                    } else {
+                        Compression::None
+                    };
+                    let encode_options = RecordEncodeOptions {
+                        version: 2, // Use the latest record batch format
+                        compression,
+                    };
 
-                    // Partition leader epoch (4 bytes)
-                    batch_bytes.extend_from_slice(&(-1i32).to_be_bytes());
-
-                    // Magic byte (1 byte) - version 2
-                    batch_bytes.push(2);
-
-                    // CRC placeholder (4 bytes)
-                    batch_bytes.extend_from_slice(&0u32.to_be_bytes());
-
-                    // Attributes (2 bytes) - no compression
-                    batch_bytes.extend_from_slice(&0u16.to_be_bytes());
-
-                    // Last offset delta (4 bytes)
-                    let last_offset_delta =
-                        (messages.last().unwrap().offset - messages[0].offset) as i32;
-                    batch_bytes.extend_from_slice(&last_offset_delta.to_be_bytes());
-
-                    // First timestamp (8 bytes)
-                    batch_bytes.extend_from_slice(&messages[0].timestamp.to_be_bytes());
-
-                    // Max timestamp (8 bytes)
-                    let max_timestamp = messages.iter().map(|m| m.timestamp).max().unwrap();
-                    batch_bytes.extend_from_slice(&max_timestamp.to_be_bytes());
-
-                    // Producer ID (8 bytes)
-                    batch_bytes
-                        .extend_from_slice(&messages[0].producer_id.unwrap_or(-1).to_be_bytes());
-
-                    // Producer epoch (2 bytes)
-                    batch_bytes
-                        .extend_from_slice(&messages[0].producer_epoch.unwrap_or(-1).to_be_bytes());
-
-                    // Base sequence (4 bytes)
-                    batch_bytes
-                        .extend_from_slice(&messages[0].sequence.unwrap_or(-1).to_be_bytes());
-
-                    // Record count (4 bytes)
-                    batch_bytes.extend_from_slice(&(messages.len() as i32).to_be_bytes());
-
-                    // Records - simplified encoding
-                    for msg in &messages {
-                        // Record attributes (1 byte)
-                        batch_bytes.push(0);
-
-                        // Timestamp delta (varlong)
-                        let timestamp_delta = msg.timestamp - messages[0].timestamp;
-                        Self::write_varint(&mut batch_bytes, timestamp_delta);
-
-                        // Offset delta (varint)
-                        let offset_delta = (msg.offset - messages[0].offset) as i64;
-                        Self::write_varint(&mut batch_bytes, offset_delta);
-
-                        // Key length and key
-                        if let Some(key) = &msg.key {
-                            Self::write_varint(&mut batch_bytes, key.len() as i64);
-                            batch_bytes.extend_from_slice(key);
-                        } else {
-                            Self::write_varint(&mut batch_bytes, -1);
-                        }
-
-                        // Value length and value
-                        Self::write_varint(&mut batch_bytes, msg.value.len() as i64);
-                        batch_bytes.extend_from_slice(&msg.value);
-
-                        // Headers array length
-                        Self::write_varint(&mut batch_bytes, msg.headers.len() as i64);
-
-                        // Headers
-                        for (k, v) in &msg.headers {
-                            Self::write_varint(&mut batch_bytes, k.len() as i64);
-                            batch_bytes.extend_from_slice(k.as_bytes());
-                            Self::write_varint(&mut batch_bytes, v.len() as i64);
-                            batch_bytes.extend_from_slice(v);
+                    // Encode the records using kafka-protocol's encoder
+                    let mut buf = BytesMut::new();
+                    match RecordBatchEncoder::encode(&mut buf, records.iter(), &encode_options) {
+                        Ok(()) => Some(buf.freeze()),
+                        Err(e) => {
+                            warn!("Failed to encode record batch: {e}");
+                            None
                         }
                     }
-
-                    // Update batch length
-                    let batch_length = (batch_bytes.len() - batch_length_pos - 4) as i32;
-                    batch_bytes[batch_length_pos..batch_length_pos + 4]
-                        .copy_from_slice(&batch_length.to_be_bytes());
-
-                    Some(bytes::Bytes::from(batch_bytes))
                 };
 
                 let partition_resp = PartitionData::default()
@@ -1207,22 +1107,6 @@ impl ConnectionHandler {
 
         Ok(ResponseKind::ListOffsets(response))
     }
-
-    fn write_varint(buffer: &mut Vec<u8>, value: i64) {
-        // Zigzag encode signed to unsigned
-        let mut encoded = if value < 0 {
-            (((-value) << 1) - 1) as u64
-        } else {
-            (value << 1) as u64
-        };
-
-        // Write varint
-        while encoded >= 0x80 {
-            buffer.push((encoded as u8) | 0x80);
-            encoded >>= 7;
-        }
-        buffer.push(encoded as u8);
-    }
 }
 
 impl Drop for ConnectionHandler {
@@ -1231,16 +1115,61 @@ impl Drop for ConnectionHandler {
     }
 }
 
+// Helper function to convert compression algorithm string to kafka-protocol Compression enum
+fn get_compression_from_config(algorithm: &str) -> kafka_protocol::records::Compression {
+    use kafka_protocol::records::Compression;
+
+    match algorithm.to_lowercase().as_str() {
+        "gzip" => Compression::Gzip,
+        "snappy" => Compression::Snappy,
+        "lz4" => Compression::Lz4,
+        "zstd" => Compression::Zstd,
+        _ => Compression::None,
+    }
+}
+
 // Helper function for decompressing record batch data
 fn decompress_record_batch_data(
     compressed_buffer: &mut bytes::Bytes,
     compression: kafka_protocol::records::Compression,
 ) -> anyhow::Result<bytes::Bytes> {
+    use bytes::Buf;
+
     match compression {
         kafka_protocol::records::Compression::None => Ok(compressed_buffer.to_vec().into()),
-        _ => {
-            // TODO: Implement compression support
-            anyhow::bail!("Compression {:?} not yet implemented", compression)
+        kafka_protocol::records::Compression::Gzip => {
+            use flate2::read::GzDecoder;
+            use std::io::Read;
+
+            let mut decoder = GzDecoder::new(compressed_buffer.reader());
+            let mut decompressed = Vec::new();
+            decoder.read_to_end(&mut decompressed)?;
+            Ok(decompressed.into())
+        }
+        kafka_protocol::records::Compression::Snappy => {
+            use snap::raw::Decoder;
+
+            let mut decoder = Decoder::new();
+            let decompressed = decoder.decompress_vec(compressed_buffer)?;
+            Ok(decompressed.into())
+        }
+        kafka_protocol::records::Compression::Lz4 => {
+            use lz4::Decoder;
+            use std::io::Read;
+
+            let mut decoder = Decoder::new(compressed_buffer.reader())?;
+            let mut decompressed = Vec::new();
+            decoder.read_to_end(&mut decompressed)?;
+            Ok(decompressed.into())
+        }
+        kafka_protocol::records::Compression::Zstd => {
+            use std::io::Read;
+            use zstd::stream::read::Decoder;
+
+            let mut decoder = Decoder::new(compressed_buffer.reader())?;
+            let mut decompressed = Vec::new();
+            decoder.read_to_end(&mut decompressed)?;
+            Ok(decompressed.into())
         }
     }
 }

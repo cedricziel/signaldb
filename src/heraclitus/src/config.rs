@@ -32,6 +32,9 @@ pub struct HeraclitusConfig {
     #[serde(default)]
     pub topics: TopicConfig,
 
+    #[serde(default)]
+    pub compression: CompressionConfig,
+
     #[serde(default = "default_shutdown_timeout_sec")]
     pub shutdown_timeout_sec: u64,
 }
@@ -126,6 +129,21 @@ pub struct TopicConfig {
     pub default_replication_factor: i16,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompressionConfig {
+    #[serde(default = "default_compression_algorithm")]
+    pub algorithm: String,
+
+    #[serde(default = "default_compression_level")]
+    pub level: i32,
+
+    #[serde(default = "default_enable_producer_compression")]
+    pub enable_producer_compression: bool,
+
+    #[serde(default = "default_enable_fetch_compression")]
+    pub enable_fetch_compression: bool,
+}
+
 // Default implementations
 impl Default for HeraclitusConfig {
     fn default() -> Self {
@@ -140,6 +158,7 @@ impl Default for HeraclitusConfig {
             metrics: MetricsConfig::default(),
             performance: PerformanceConfig::default(),
             topics: TopicConfig::default(),
+            compression: CompressionConfig::default(),
             shutdown_timeout_sec: default_shutdown_timeout_sec(),
         }
     }
@@ -224,6 +243,17 @@ impl Default for TopicConfig {
     }
 }
 
+impl Default for CompressionConfig {
+    fn default() -> Self {
+        Self {
+            algorithm: default_compression_algorithm(),
+            level: default_compression_level(),
+            enable_producer_compression: default_enable_producer_compression(),
+            enable_fetch_compression: default_enable_fetch_compression(),
+        }
+    }
+}
+
 // Default value functions
 fn default_kafka_port() -> u16 {
     9092
@@ -282,6 +312,19 @@ fn default_buffer_pool_size() -> usize {
 fn default_compression_level() -> i32 {
     6
 } // Default compression level
+
+fn default_compression_algorithm() -> String {
+    "none".to_string() // Default to no compression
+}
+
+fn default_enable_producer_compression() -> bool {
+    false // Disable compression by default for compatibility
+}
+
+fn default_enable_fetch_compression() -> bool {
+    false // Disable compression by default for compatibility
+}
+
 fn default_shutdown_timeout_sec() -> u64 {
     30
 }

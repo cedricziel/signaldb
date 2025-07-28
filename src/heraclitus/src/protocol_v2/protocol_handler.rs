@@ -1,5 +1,5 @@
 use crate::{
-    config::{AuthConfig, TopicConfig},
+    config::{AuthConfig, CompressionConfig, TopicConfig},
     error::Result,
     metrics::Metrics,
     protocol_v2::ConnectionHandler,
@@ -10,14 +10,20 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 
 #[derive(Clone)]
+pub struct ProtocolConfig {
+    pub auth_config: Arc<AuthConfig>,
+    pub topic_config: Arc<TopicConfig>,
+    pub compression_config: Arc<CompressionConfig>,
+}
+
+#[derive(Clone)]
 pub struct ProtocolHandler {
     state_manager: Arc<StateManager>,
     batch_writer: Arc<BatchWriter>,
     message_reader: Arc<MessageReader>,
     port: u16,
-    auth_config: Arc<AuthConfig>,
     metrics: Arc<Metrics>,
-    topic_config: Arc<TopicConfig>,
+    config: ProtocolConfig,
 }
 
 impl ProtocolHandler {
@@ -26,18 +32,16 @@ impl ProtocolHandler {
         batch_writer: Arc<BatchWriter>,
         message_reader: Arc<MessageReader>,
         port: u16,
-        auth_config: Arc<AuthConfig>,
         metrics: Arc<Metrics>,
-        topic_config: Arc<TopicConfig>,
+        config: ProtocolConfig,
     ) -> Self {
         Self {
             state_manager,
             batch_writer,
             message_reader,
             port,
-            auth_config,
             metrics,
-            topic_config,
+            config,
         }
     }
 
@@ -48,9 +52,10 @@ impl ProtocolHandler {
             self.batch_writer.clone(),
             self.message_reader.clone(),
             self.port,
-            self.auth_config.clone(),
+            self.config.auth_config.clone(),
             self.metrics.clone(),
-            self.topic_config.clone(),
+            self.config.topic_config.clone(),
+            self.config.compression_config.clone(),
         );
         handler.run().await
     }

@@ -22,6 +22,89 @@ pub struct KafkaMessage {
     pub sequence: Option<i32>,
 }
 
+impl KafkaMessage {
+    /// Create a KafkaMessage from a kafka-protocol Record with topic and partition info
+    pub fn from_record(
+        record: &kafka_protocol::records::Record,
+        topic: String,
+        partition: i32,
+        offset: i64,
+    ) -> Self {
+        use kafka_protocol::records::{NO_PRODUCER_EPOCH, NO_PRODUCER_ID, NO_SEQUENCE};
+
+        Self {
+            topic,
+            partition,
+            offset,
+            timestamp: record.timestamp,
+            key: record.key.as_ref().map(|k| k.to_vec()),
+            value: record
+                .value
+                .as_ref()
+                .map(|v| v.to_vec())
+                .unwrap_or_default(),
+            headers: record
+                .headers
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.as_str().to_string(),
+                        v.as_ref().map(|v| v.to_vec()).unwrap_or_default(),
+                    )
+                })
+                .collect(),
+            producer_id: if record.producer_id == NO_PRODUCER_ID {
+                None
+            } else {
+                Some(record.producer_id)
+            },
+            producer_epoch: if record.producer_epoch == NO_PRODUCER_EPOCH {
+                None
+            } else {
+                Some(record.producer_epoch)
+            },
+            sequence: if record.sequence == NO_SEQUENCE {
+                None
+            } else {
+                Some(record.sequence)
+            },
+        }
+    }
+
+    /// Convert KafkaMessage to kafka-protocol Record for network transmission
+    pub fn to_record(&self) -> kafka_protocol::records::Record {
+        use kafka_protocol::indexmap::IndexMap;
+        use kafka_protocol::records::{
+            NO_PARTITION_LEADER_EPOCH, NO_PRODUCER_EPOCH, NO_PRODUCER_ID, NO_SEQUENCE,
+            TimestampType,
+        };
+
+        kafka_protocol::records::Record {
+            // Batch properties - using defaults for non-transactional records
+            transactional: false,
+            control: false,
+            partition_leader_epoch: NO_PARTITION_LEADER_EPOCH,
+            producer_id: self.producer_id.unwrap_or(NO_PRODUCER_ID),
+            producer_epoch: self.producer_epoch.unwrap_or(NO_PRODUCER_EPOCH),
+
+            // Record properties
+            timestamp_type: TimestampType::Creation,
+            offset: self.offset,
+            sequence: self.sequence.unwrap_or(NO_SEQUENCE),
+            timestamp: self.timestamp,
+            key: self.key.as_ref().map(|k| bytes::Bytes::copy_from_slice(k)),
+            value: Some(bytes::Bytes::copy_from_slice(&self.value)),
+            headers: {
+                let mut header_map = IndexMap::new();
+                for (k, v) in &self.headers {
+                    header_map.insert(k.clone().into(), Some(bytes::Bytes::copy_from_slice(v)));
+                }
+                header_map
+            },
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct KafkaMessageBatch {
     pub messages: Vec<KafkaMessage>,

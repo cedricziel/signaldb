@@ -3,7 +3,7 @@ mod connection_handler;
 mod protocol_handler;
 
 pub use connection_handler::ConnectionHandler;
-pub use protocol_handler::ProtocolHandler;
+pub use protocol_handler::{ProtocolConfig, ProtocolHandler};
 
 use crate::error::{HeraclitusError, Result};
 use bytes::{Bytes, BytesMut};
