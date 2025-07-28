@@ -34,15 +34,11 @@ snap = { workspace = true }   # Snappy compression
 lz4 = { workspace = true }    # LZ4 compression
 zstd = { workspace = true }   # Zstandard compression
 
-# For CRC32C checksums in Kafka protocol
-crc32c = { workspace = true }
 
 # For HTTP server and metrics
 axum = { workspace = true }
 prometheus = { workspace = true }
 
-# For async trait definitions
-async-trait = { workspace = true }
 
 # For configuration
 toml = { workspace = true }
@@ -50,8 +46,6 @@ toml = { workspace = true }
 # For logging
 tracing-subscriber = { workspace = true }
 
-# For socket optimization
-socket2 = { workspace = true }
 
 # For partitioning
 rand = { workspace = true }
