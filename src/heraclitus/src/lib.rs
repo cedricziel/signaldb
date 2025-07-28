@@ -16,7 +16,7 @@ pub use storage::KafkaMessage;
 
 use object_store::{ObjectStore, local::LocalFileSystem, memory::InMemory};
 use std::sync::Arc;
-use storage::BatchWriter;
+use storage::{BatchWriter, MessageReader};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tracing::{error, info};
@@ -57,16 +57,23 @@ impl HeraclitusAgent {
 
         // Create batch writer
         let batch_writer = Arc::new(BatchWriter::new(
-            object_store,
+            object_store.clone(),
             state_manager.layout().clone(),
             config.batching.clone(),
             metrics.clone(),
+        ));
+
+        // Create message reader
+        let message_reader = Arc::new(MessageReader::new(
+            object_store,
+            state_manager.layout().clone(),
         ));
 
         // Create protocol handler using kafka-protocol implementation
         let protocol_handler = protocol_v2::ProtocolHandler::new(
             state_manager.clone(),
             batch_writer.clone(),
+            message_reader,
             config.kafka_port,
             Arc::new(config.auth.clone()),
             metrics.clone(),

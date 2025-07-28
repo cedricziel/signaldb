@@ -5,6 +5,7 @@ mod api_versions_v3_test;
 mod compatibility;
 mod compression;
 mod connection_test;
+mod consumer_debug;
 mod debug;
 mod debug_connection;
 mod debug_metadata;

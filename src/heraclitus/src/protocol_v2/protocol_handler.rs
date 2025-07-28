@@ -4,7 +4,7 @@ use crate::{
     metrics::Metrics,
     protocol_v2::ConnectionHandler,
     state::StateManager,
-    storage::BatchWriter,
+    storage::{BatchWriter, MessageReader},
 };
 use std::sync::Arc;
 use tokio::net::TcpStream;
@@ -13,6 +13,7 @@ use tokio::net::TcpStream;
 pub struct ProtocolHandler {
     state_manager: Arc<StateManager>,
     batch_writer: Arc<BatchWriter>,
+    message_reader: Arc<MessageReader>,
     port: u16,
     auth_config: Arc<AuthConfig>,
     metrics: Arc<Metrics>,
@@ -23,6 +24,7 @@ impl ProtocolHandler {
     pub fn new(
         state_manager: Arc<StateManager>,
         batch_writer: Arc<BatchWriter>,
+        message_reader: Arc<MessageReader>,
         port: u16,
         auth_config: Arc<AuthConfig>,
         metrics: Arc<Metrics>,
@@ -31,6 +33,7 @@ impl ProtocolHandler {
         Self {
             state_manager,
             batch_writer,
+            message_reader,
             port,
             auth_config,
             metrics,
@@ -43,6 +46,7 @@ impl ProtocolHandler {
             socket,
             self.state_manager.clone(),
             self.batch_writer.clone(),
+            self.message_reader.clone(),
             self.port,
             self.auth_config.clone(),
             self.metrics.clone(),

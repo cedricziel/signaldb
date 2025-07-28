@@ -4,7 +4,7 @@ use crate::{
     metrics::Metrics,
     protocol_v2::KafkaProtocolHandler,
     state::{StateManager, TopicMetadata},
-    storage::BatchWriter,
+    storage::{BatchWriter, MessageReader},
 };
 use bytes::{Buf, BytesMut};
 use kafka_protocol::messages::{ApiKey, RequestKind, ResponseKind};
@@ -17,6 +17,7 @@ pub struct ConnectionHandler {
     socket: TcpStream,
     state_manager: Arc<StateManager>,
     batch_writer: Arc<BatchWriter>,
+    message_reader: Arc<MessageReader>,
     port: u16,
     read_buffer: BytesMut,
     write_buffer: BytesMut,
@@ -28,10 +29,12 @@ pub struct ConnectionHandler {
 }
 
 impl ConnectionHandler {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         socket: TcpStream,
         state_manager: Arc<StateManager>,
         batch_writer: Arc<BatchWriter>,
+        message_reader: Arc<MessageReader>,
         port: u16,
         auth_config: Arc<AuthConfig>,
         metrics: Arc<Metrics>,
@@ -45,6 +48,7 @@ impl ConnectionHandler {
             socket,
             state_manager,
             batch_writer,
+            message_reader,
             port,
             read_buffer: BytesMut::with_capacity(8192),
             write_buffer: BytesMut::with_capacity(8192),
@@ -448,7 +452,8 @@ impl ConnectionHandler {
             // Process each partition's data
             for partition_data in &topic_data.partition_data {
                 let partition_index = partition_data.index;
-                let mut base_offset = 0i64; // TODO: Get from state manager
+                let mut base_offset = 0i64;
+                let mut assigned_base_offset = None;
                 let mut partition_error_code = 0i16;
 
                 // Extract messages from the records
@@ -460,6 +465,20 @@ impl ConnectionHandler {
                         Some(decompress_record_batch_data),
                     ) {
                         Ok(record_set) => {
+                            // Assign offsets for this batch if not already done
+                            if assigned_base_offset.is_none() {
+                                let record_count = record_set.records.len();
+                                if record_count > 0 {
+                                    base_offset = self
+                                        .state_manager
+                                        .messages()
+                                        .assign_offsets(topic_name, partition_index, record_count)
+                                        .await
+                                        .unwrap_or(0);
+                                    assigned_base_offset = Some(base_offset);
+                                }
+                            }
+
                             // Process each record in the batch
                             for record in &record_set.records {
                                 let offset = base_offset;
@@ -520,10 +539,12 @@ impl ConnectionHandler {
                 }
 
                 // Create partition response
+                let response_base_offset: i64 = assigned_base_offset.unwrap_or_default();
+
                 let partition_resp = PartitionProduceResponse::default()
                     .with_index(partition_index)
                     .with_error_code(partition_error_code)
-                    .with_base_offset(base_offset - 1) // Last assigned offset
+                    .with_base_offset(response_base_offset)
                     .with_log_append_time_ms(-1)
                     .with_log_start_offset(0);
 
@@ -565,8 +586,6 @@ impl ConnectionHandler {
                 let partition_id = partition_req.partition;
                 let fetch_offset = partition_req.fetch_offset;
 
-                // TODO: Get messages from storage
-                // For now, return empty response
                 info!(
                     "Fetch request for topic '{}' partition {} starting at offset {}",
                     topic_name, partition_id, fetch_offset
@@ -580,8 +599,128 @@ impl ConnectionHandler {
                     .await
                     .unwrap_or(0);
 
-                // For now, no records
-                let record_batch = None;
+                // Retrieve messages from storage
+                let messages = match self
+                    .message_reader
+                    .read_messages(
+                        topic_name,
+                        partition_id,
+                        fetch_offset,
+                        100, // Max messages per fetch
+                    )
+                    .await
+                {
+                    Ok(msgs) => msgs,
+                    Err(e) => {
+                        warn!("Failed to read messages: {e}");
+                        vec![]
+                    }
+                };
+
+                let record_batch = if messages.is_empty() {
+                    None
+                } else {
+                    // For now, create a simple record batch manually
+                    // This is a temporary implementation until we figure out the correct kafka-protocol API
+                    info!(
+                        "Found {} messages to return in fetch response",
+                        messages.len()
+                    );
+
+                    // Create a minimal record batch with the messages
+                    // Format: [baseOffset][batchLength][partitionLeaderEpoch][magic][crc][attributes][lastOffsetDelta][firstTimestamp][maxTimestamp][producerId][producerEpoch][baseSequence][records]
+                    let mut batch_bytes = Vec::new();
+
+                    // Base offset (8 bytes)
+                    batch_bytes.extend_from_slice(&messages[0].offset.to_be_bytes());
+
+                    // Placeholder for batch length (4 bytes) - will update later
+                    let batch_length_pos = batch_bytes.len();
+                    batch_bytes.extend_from_slice(&0i32.to_be_bytes());
+
+                    // Partition leader epoch (4 bytes)
+                    batch_bytes.extend_from_slice(&(-1i32).to_be_bytes());
+
+                    // Magic byte (1 byte) - version 2
+                    batch_bytes.push(2);
+
+                    // CRC placeholder (4 bytes)
+                    batch_bytes.extend_from_slice(&0u32.to_be_bytes());
+
+                    // Attributes (2 bytes) - no compression
+                    batch_bytes.extend_from_slice(&0u16.to_be_bytes());
+
+                    // Last offset delta (4 bytes)
+                    let last_offset_delta =
+                        (messages.last().unwrap().offset - messages[0].offset) as i32;
+                    batch_bytes.extend_from_slice(&last_offset_delta.to_be_bytes());
+
+                    // First timestamp (8 bytes)
+                    batch_bytes.extend_from_slice(&messages[0].timestamp.to_be_bytes());
+
+                    // Max timestamp (8 bytes)
+                    let max_timestamp = messages.iter().map(|m| m.timestamp).max().unwrap();
+                    batch_bytes.extend_from_slice(&max_timestamp.to_be_bytes());
+
+                    // Producer ID (8 bytes)
+                    batch_bytes
+                        .extend_from_slice(&messages[0].producer_id.unwrap_or(-1).to_be_bytes());
+
+                    // Producer epoch (2 bytes)
+                    batch_bytes
+                        .extend_from_slice(&messages[0].producer_epoch.unwrap_or(-1).to_be_bytes());
+
+                    // Base sequence (4 bytes)
+                    batch_bytes
+                        .extend_from_slice(&messages[0].sequence.unwrap_or(-1).to_be_bytes());
+
+                    // Record count (4 bytes)
+                    batch_bytes.extend_from_slice(&(messages.len() as i32).to_be_bytes());
+
+                    // Records - simplified encoding
+                    for msg in &messages {
+                        // Record attributes (1 byte)
+                        batch_bytes.push(0);
+
+                        // Timestamp delta (varlong)
+                        let timestamp_delta = msg.timestamp - messages[0].timestamp;
+                        Self::write_varint(&mut batch_bytes, timestamp_delta);
+
+                        // Offset delta (varint)
+                        let offset_delta = (msg.offset - messages[0].offset) as i64;
+                        Self::write_varint(&mut batch_bytes, offset_delta);
+
+                        // Key length and key
+                        if let Some(key) = &msg.key {
+                            Self::write_varint(&mut batch_bytes, key.len() as i64);
+                            batch_bytes.extend_from_slice(key);
+                        } else {
+                            Self::write_varint(&mut batch_bytes, -1);
+                        }
+
+                        // Value length and value
+                        Self::write_varint(&mut batch_bytes, msg.value.len() as i64);
+                        batch_bytes.extend_from_slice(&msg.value);
+
+                        // Headers array length
+                        Self::write_varint(&mut batch_bytes, msg.headers.len() as i64);
+
+                        // Headers
+                        for (k, v) in &msg.headers {
+                            Self::write_varint(&mut batch_bytes, k.len() as i64);
+                            batch_bytes.extend_from_slice(k.as_bytes());
+                            Self::write_varint(&mut batch_bytes, v.len() as i64);
+                            batch_bytes.extend_from_slice(v);
+                        }
+                    }
+
+                    // Update batch length
+                    let batch_length = (batch_bytes.len() - batch_length_pos - 4) as i32;
+                    batch_bytes[batch_length_pos..batch_length_pos + 4]
+                        .copy_from_slice(&batch_length.to_be_bytes());
+
+                    Some(bytes::Bytes::from(batch_bytes))
+                };
 
                 let partition_resp = PartitionData::default()
                     .with_partition_index(partition_id)
@@ -663,9 +802,22 @@ impl ConnectionHandler {
 
     async fn handle_sync_group(
         &self,
-        _req: kafka_protocol::messages::SyncGroupRequest,
+        req: kafka_protocol::messages::SyncGroupRequest,
     ) -> Result<ResponseKind> {
-        // Return empty assignment for now
+        // For now, implement a simple partition assignment
+        // In a real implementation, this would be based on the group protocol
+        // and the assignments provided by the group leader
+
+        info!(
+            "SyncGroup request for group {} member {}",
+            req.group_id.as_str(),
+            req.member_id.as_str()
+        );
+
+        // For now, return an empty assignment to debug the consumer flow
+        // A proper implementation would parse the leader's assignment
+        let assignment_bytes = Vec::new();
+
         let response = kafka_protocol::messages::SyncGroupResponse::default()
             .with_throttle_time_ms(0)
             .with_error_code(0)
@@ -675,7 +827,7 @@ impl ConnectionHandler {
             .with_protocol_name(Some(kafka_protocol::protocol::StrBytes::from_static_str(
                 "range",
             )))
-            .with_assignment(bytes::Bytes::from_static(&[]));
+            .with_assignment(bytes::Bytes::from(assignment_bytes));
 
         Ok(ResponseKind::SyncGroup(response))
     }
@@ -770,6 +922,22 @@ impl ConnectionHandler {
             .with_topics(topic_responses);
 
         Ok(ResponseKind::ListOffsets(response))
+    }
+
+    fn write_varint(buffer: &mut Vec<u8>, value: i64) {
+        // Zigzag encode signed to unsigned
+        let mut encoded = if value < 0 {
+            (((-value) << 1) - 1) as u64
+        } else {
+            (value << 1) as u64
+        };
+
+        // Write varint
+        while encoded >= 0x80 {
+            buffer.push((encoded as u8) | 0x80);
+            encoded >>= 7;
+        }
+        buffer.push(encoded as u8);
     }
 }
 
