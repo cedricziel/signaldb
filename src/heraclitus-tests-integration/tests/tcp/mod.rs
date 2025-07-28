@@ -3,7 +3,6 @@
 
 mod api_versions;
 mod client;
-mod compression;
 mod consumer_group;
 mod list_offsets;
 mod metadata;

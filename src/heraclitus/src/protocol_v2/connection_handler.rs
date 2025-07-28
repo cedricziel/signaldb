@@ -771,52 +771,195 @@ impl ConnectionHandler {
         &mut self,
         req: kafka_protocol::messages::JoinGroupRequest,
     ) -> Result<ResponseKind> {
-        // For now, simple implementation - just accept the join
+        let group_id = req.group_id.as_str();
+
+        info!(
+            "JoinGroup request for group {} member {} session_timeout_ms {}",
+            group_id,
+            req.member_id.as_str(),
+            req.session_timeout_ms
+        );
+
+        // Generate or use existing member ID
         let member_id = if req.member_id.is_empty() {
-            // Generate new member ID
             kafka_protocol::protocol::StrBytes::from_string(format!(
                 "consumer-{}-{}",
-                req.group_id.as_str(),
+                group_id,
                 uuid::Uuid::new_v4()
             ))
         } else {
             req.member_id.clone()
         };
 
+        // Get or create the consumer group
+        let mut group_state = match self
+            .state_manager
+            .consumer_groups()
+            .get_group(group_id)
+            .await?
+        {
+            Some(mut state) => {
+                // Increment generation for new join
+                state.generation_id += 1;
+                state
+            }
+            None => {
+                // Create new group state
+                crate::state::ConsumerGroupState {
+                    group_id: group_id.to_string(),
+                    generation_id: 1,
+                    protocol_type: "consumer".to_string(),
+                    protocol: Some("range".to_string()),
+                    leader: Some(member_id.as_str().to_string()),
+                    members: std::collections::HashMap::new(),
+                }
+            }
+        };
+
+        // Add or update member
+        let member = crate::state::ConsumerGroupMember {
+            member_id: member_id.as_str().to_string(),
+            client_id: "rdkafka-client".to_string(), // TODO: extract from request
+            client_host: "127.0.0.1".to_string(),    // TODO: extract from connection
+            session_timeout_ms: req.session_timeout_ms,
+            rebalance_timeout_ms: if req.rebalance_timeout_ms <= 0 {
+                req.session_timeout_ms
+            } else {
+                req.rebalance_timeout_ms
+            },
+            last_heartbeat_ms: chrono::Utc::now().timestamp_millis(),
+        };
+
+        group_state
+            .members
+            .insert(member_id.as_str().to_string(), member);
+
+        // Set leader if not already set or if this is the first member
+        if group_state.leader.is_none() || group_state.members.len() == 1 {
+            group_state.leader = Some(member_id.as_str().to_string());
+        }
+
+        // Save updated group state
+        self.state_manager
+            .consumer_groups()
+            .save_group(&group_state)
+            .await?;
+
+        info!(
+            "JoinGroup successful for group {} member {} generation {} (leader: {})",
+            group_id,
+            member_id.as_str(),
+            group_state.generation_id,
+            group_state.leader.as_ref().unwrap_or(&"none".to_string())
+        );
+
         let response = kafka_protocol::messages::JoinGroupResponse::default()
             .with_throttle_time_ms(0)
             .with_error_code(0)
-            .with_generation_id(1)
+            .with_generation_id(group_state.generation_id)
             .with_protocol_type(Some(kafka_protocol::protocol::StrBytes::from_static_str(
                 "consumer",
             )))
             .with_protocol_name(Some(kafka_protocol::protocol::StrBytes::from_static_str(
                 "range",
             )))
-            .with_leader(member_id.clone())
+            .with_leader(kafka_protocol::protocol::StrBytes::from_string(
+                group_state
+                    .leader
+                    .unwrap_or_else(|| member_id.as_str().to_string()),
+            ))
             .with_member_id(member_id)
-            .with_members(vec![]);
+            .with_members(vec![]); // Simplified - should include all members for leader
 
         Ok(ResponseKind::JoinGroup(response))
     }
 
     async fn handle_sync_group(
-        &self,
+        &mut self,
         req: kafka_protocol::messages::SyncGroupRequest,
     ) -> Result<ResponseKind> {
-        // For now, implement a simple partition assignment
-        // In a real implementation, this would be based on the group protocol
-        // and the assignments provided by the group leader
+        use kafka_protocol::messages::consumer_protocol_assignment::{
+            ConsumerProtocolAssignment, TopicPartition,
+        };
+        use kafka_protocol::protocol::Encodable;
 
         info!(
-            "SyncGroup request for group {} member {}",
+            "SyncGroup request for group {} member {} generation {}",
             req.group_id.as_str(),
-            req.member_id.as_str()
+            req.member_id.as_str(),
+            req.generation_id
         );
 
-        // For now, return an empty assignment to debug the consumer flow
-        // A proper implementation would parse the leader's assignment
-        let assignment_bytes = Vec::new();
+        // Get or create the consumer group
+        let group_id = req.group_id.as_str();
+        let mut group_state = match self
+            .state_manager
+            .consumer_groups()
+            .get_group(group_id)
+            .await?
+        {
+            Some(state) => state,
+            None => {
+                // Create new group state
+                crate::state::ConsumerGroupState {
+                    group_id: group_id.to_string(),
+                    generation_id: req.generation_id,
+                    protocol_type: "consumer".to_string(),
+                    protocol: Some("range".to_string()),
+                    leader: Some(req.member_id.as_str().to_string()),
+                    members: std::collections::HashMap::new(),
+                }
+            }
+        };
+
+        // For simple implementation, assign all partitions of subscribed topics to this member
+        // In a real implementation, this would use a proper partition assignment strategy
+        let topics = self.state_manager.metadata().list_topics().await?;
+        let mut assigned_partitions = Vec::new();
+
+        for topic_name in &topics {
+            // Get topic metadata to know partition count
+            if let Some(topic_metadata) =
+                self.state_manager.metadata().get_topic(topic_name).await?
+            {
+                // Create all partition IDs for this topic
+                let partitions: Vec<i32> = (0..topic_metadata.partitions).collect();
+
+                assigned_partitions.push(
+                    TopicPartition::default()
+                        .with_topic(kafka_protocol::messages::TopicName(
+                            kafka_protocol::protocol::StrBytes::from_string(topic_name.clone()),
+                        ))
+                        .with_partitions(partitions),
+                );
+            }
+        }
+
+        // Create the assignment using kafka-protocol's ConsumerProtocolAssignment
+        let assignment = ConsumerProtocolAssignment::default()
+            .with_assigned_partitions(assigned_partitions)
+            .with_user_data(None);
+
+        // Encode the assignment to bytes
+        let mut assignment_buf = Vec::new();
+        assignment
+            .encode(&mut assignment_buf, 0)
+            .map_err(|e| HeraclitusError::Protocol(format!("Failed to encode assignment: {e}")))?;
+
+        info!(
+            "Generated assignment for group {} member {}: {} bytes, {} topics",
+            group_id,
+            req.member_id.as_str(),
+            assignment_buf.len(),
+            topics.len()
+        );
+
+        // Update group state
+        group_state.generation_id = req.generation_id;
+        self.state_manager
+            .consumer_groups()
+            .save_group(&group_state)
+            .await?;
 
         let response = kafka_protocol::messages::SyncGroupResponse::default()
             .with_throttle_time_ms(0)
@@ -827,7 +970,7 @@ impl ConnectionHandler {
             .with_protocol_name(Some(kafka_protocol::protocol::StrBytes::from_static_str(
                 "range",
             )))
-            .with_assignment(bytes::Bytes::from(assignment_bytes));
+            .with_assignment(bytes::Bytes::from(assignment_buf));
 
         Ok(ResponseKind::SyncGroup(response))
     }
@@ -856,25 +999,166 @@ impl ConnectionHandler {
 
     async fn handle_offset_commit(
         &mut self,
-        _req: kafka_protocol::messages::OffsetCommitRequest,
+        req: kafka_protocol::messages::OffsetCommitRequest,
     ) -> Result<ResponseKind> {
-        // For now, just acknowledge the commit
+        use kafka_protocol::messages::offset_commit_response::{
+            OffsetCommitResponsePartition, OffsetCommitResponseTopic,
+        };
+
+        info!(
+            "OffsetCommit request for group {} generation {}",
+            req.group_id.as_str(),
+            req.generation_id_or_member_epoch
+        );
+
+        let group_id = req.group_id.as_str();
+        let mut topic_responses = Vec::new();
+
+        // Process each topic's offset commits
+        for topic in &req.topics {
+            let topic_name = topic.name.as_str();
+            let mut partition_responses = Vec::new();
+            let mut offsets_to_save = Vec::new();
+
+            for partition in &topic.partitions {
+                let partition_id = partition.partition_index;
+                let offset = partition.committed_offset;
+                let metadata = partition
+                    .committed_metadata
+                    .as_ref()
+                    .map(|m| m.as_str().to_string());
+
+                // Store offset for saving
+                offsets_to_save.push((topic_name.to_string(), partition_id, offset, metadata));
+
+                // Create partition response
+                let partition_resp = OffsetCommitResponsePartition::default()
+                    .with_partition_index(partition_id)
+                    .with_error_code(0); // Success
+
+                partition_responses.push(partition_resp);
+            }
+
+            // Save offsets to storage
+            if !offsets_to_save.is_empty() {
+                match self
+                    .state_manager
+                    .consumer_groups()
+                    .save_offsets(group_id, &offsets_to_save)
+                    .await
+                {
+                    Ok(_) => {
+                        info!(
+                            "Saved {} offset commits for group {} topic {}",
+                            offsets_to_save.len(),
+                            group_id,
+                            topic_name
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to save offsets for group {} topic {}: {}",
+                            group_id, topic_name, e
+                        );
+                        // Update partition responses with error
+                        for partition_resp in &mut partition_responses {
+                            partition_resp.error_code = 1; // Generic error
+                        }
+                    }
+                }
+            }
+
+            let topic_resp = OffsetCommitResponseTopic::default()
+                .with_name(topic.name.clone())
+                .with_partitions(partition_responses);
+
+            topic_responses.push(topic_resp);
+        }
+
         let response = kafka_protocol::messages::OffsetCommitResponse::default()
             .with_throttle_time_ms(0)
-            .with_topics(vec![]);
+            .with_topics(topic_responses);
 
         Ok(ResponseKind::OffsetCommit(response))
     }
 
     async fn handle_offset_fetch(
         &self,
-        _req: kafka_protocol::messages::OffsetFetchRequest,
+        req: kafka_protocol::messages::OffsetFetchRequest,
     ) -> Result<ResponseKind> {
-        // Return no committed offsets for now
+        use kafka_protocol::messages::offset_fetch_response::{
+            OffsetFetchResponsePartition, OffsetFetchResponseTopic,
+        };
+
+        info!(
+            "OffsetFetch request for group {} with {} topics",
+            req.group_id.as_str(),
+            req.topics.as_ref().map(|t| t.len()).unwrap_or(0)
+        );
+
+        let group_id = req.group_id.as_str();
+        let mut topic_responses = Vec::new();
+
+        // Get committed offsets from storage
+        let committed_offsets = match self
+            .state_manager
+            .consumer_groups()
+            .get_offsets(group_id)
+            .await
+        {
+            Ok(offsets) => offsets,
+            Err(e) => {
+                warn!("Failed to fetch offsets for group {}: {}", group_id, e);
+                std::collections::HashMap::new()
+            }
+        };
+
+        // Process requested topics
+        if let Some(topics) = &req.topics {
+            for topic in topics {
+                let topic_name = topic.name.as_str();
+                let mut partition_responses = Vec::new();
+
+                for partition in &topic.partition_indexes {
+                    let partition_id = *partition;
+
+                    // Look up committed offset
+                    let (offset, metadata) =
+                        match committed_offsets.get(&(topic_name.to_string(), partition_id)) {
+                            Some(offset_info) => (offset_info.offset, offset_info.metadata.clone()),
+                            None => (-1, None), // No committed offset
+                        };
+
+                    let partition_resp = OffsetFetchResponsePartition::default()
+                        .with_partition_index(partition_id)
+                        .with_committed_offset(offset)
+                        .with_committed_leader_epoch(-1) // Not tracked
+                        .with_metadata(
+                            metadata.map(kafka_protocol::protocol::StrBytes::from_string),
+                        )
+                        .with_error_code(0);
+
+                    partition_responses.push(partition_resp);
+                }
+
+                let topic_resp = OffsetFetchResponseTopic::default()
+                    .with_name(topic.name.clone())
+                    .with_partitions(partition_responses);
+
+                topic_responses.push(topic_resp);
+            }
+        }
+
+        info!(
+            "Returning offset fetch response for group {} with {} topic responses",
+            group_id,
+            topic_responses.len()
+        );
+
         let response = kafka_protocol::messages::OffsetFetchResponse::default()
             .with_throttle_time_ms(0)
             .with_error_code(0)
-            .with_topics(vec![]);
+            .with_topics(topic_responses);
 
         Ok(ResponseKind::OffsetFetch(response))
     }

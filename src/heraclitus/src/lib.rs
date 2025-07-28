@@ -4,14 +4,12 @@ pub mod config;
 pub mod error;
 pub mod http;
 pub mod metrics;
-pub mod protocol;
 pub mod protocol_v2;
 pub mod state;
 pub mod storage;
 
 pub use config::HeraclitusConfig;
 pub use error::{HeraclitusError, Result};
-pub use protocol::{CompressionType, RecordBatch, RecordBatchBuilder};
 pub use storage::KafkaMessage;
 
 use object_store::{ObjectStore, local::LocalFileSystem, memory::InMemory};
