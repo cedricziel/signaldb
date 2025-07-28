@@ -29,10 +29,10 @@ uuid = { workspace = true }
 parking_lot = { workspace = true }
 
 # For compression support
-flate2 = { workspace = true }          # Gzip compression
-snap = { workspace = true }            # Snappy compression
-lz4 = { workspace = true }             # LZ4 compression
-zstd = { workspace = true }            # Zstandard compression
+flate2 = { workspace = true } # Gzip compression
+snap = { workspace = true }   # Snappy compression
+lz4 = { workspace = true }    # LZ4 compression
+zstd = { workspace = true }   # Zstandard compression
 
 # For CRC32C checksums in Kafka protocol
 crc32c = { workspace = true }
@@ -56,8 +56,10 @@ socket2 = { workspace = true }
 # For partitioning
 rand = { workspace = true }
 
+# For Kafka protocol implementation
+kafka-protocol = { version = "0.15.1", features = ["messages_enums"] }
+
 [dev-dependencies]
 rdkafka = { workspace = true }
 testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true }
-

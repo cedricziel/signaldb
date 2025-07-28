@@ -5,6 +5,7 @@ pub mod error;
 pub mod http;
 pub mod metrics;
 pub mod protocol;
+pub mod protocol_v2;
 pub mod state;
 pub mod storage;
 
@@ -24,7 +25,7 @@ pub struct HeraclitusAgent {
     config: HeraclitusConfig,
     _state_manager: Arc<state::StateManager>,
     batch_writer: Arc<BatchWriter>,
-    protocol_handler: protocol::ProtocolHandler,
+    protocol_handler: protocol_v2::ProtocolHandler,
     metrics_registry: Arc<prometheus::Registry>,
     _metrics: Arc<metrics::Metrics>,
     shutdown_tx: broadcast::Sender<()>,
@@ -62,13 +63,14 @@ impl HeraclitusAgent {
             metrics.clone(),
         ));
 
-        // Create protocol handler
-        let protocol_handler = protocol::ProtocolHandler::new(
+        // Create protocol handler using kafka-protocol implementation
+        let protocol_handler = protocol_v2::ProtocolHandler::new(
             state_manager.clone(),
             batch_writer.clone(),
             config.kafka_port,
             Arc::new(config.auth.clone()),
             metrics.clone(),
+            Arc::new(config.topics.clone()),
         );
 
         // Create shutdown channel
@@ -104,15 +106,26 @@ impl HeraclitusAgent {
 
         let protocol_handler = self.protocol_handler;
         let kafka_task = tokio::spawn(async move {
+            let mut connection_count = 0;
             loop {
                 match kafka_listener.accept().await {
                     Ok((socket, addr)) => {
-                        info!("New Kafka client connection from {}", addr);
+                        connection_count += 1;
+                        info!(
+                            "New Kafka client connection #{} from {}",
+                            connection_count, addr
+                        );
                         let handler = protocol_handler.clone();
+                        let conn_id = connection_count;
                         tokio::spawn(async move {
+                            info!("Spawning handler #{} for connection from {}", conn_id, addr);
                             if let Err(e) = handler.handle_connection(socket).await {
-                                error!("Connection handler error: {}", e);
+                                error!(
+                                    "Connection handler #{} error from {}: {}",
+                                    conn_id, addr, e
+                                );
                             }
+                            info!("Connection handler #{} finished for {}", conn_id, addr);
                         });
                     }
                     Err(e) => {

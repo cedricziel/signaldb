@@ -29,6 +29,9 @@ pub struct HeraclitusConfig {
     #[serde(default)]
     pub performance: PerformanceConfig,
 
+    #[serde(default)]
+    pub topics: TopicConfig,
+
     #[serde(default = "default_shutdown_timeout_sec")]
     pub shutdown_timeout_sec: u64,
 }
@@ -111,6 +114,18 @@ pub struct PerformanceConfig {
     pub compression_level: i32,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TopicConfig {
+    #[serde(default = "default_auto_create_topics_enable")]
+    pub auto_create_topics_enable: bool,
+
+    #[serde(default = "default_num_partitions")]
+    pub default_num_partitions: i32,
+
+    #[serde(default = "default_replication_factor")]
+    pub default_replication_factor: i16,
+}
+
 // Default implementations
 impl Default for HeraclitusConfig {
     fn default() -> Self {
@@ -124,6 +139,7 @@ impl Default for HeraclitusConfig {
             auth: AuthConfig::default(),
             metrics: MetricsConfig::default(),
             performance: PerformanceConfig::default(),
+            topics: TopicConfig::default(),
             shutdown_timeout_sec: default_shutdown_timeout_sec(),
         }
     }
@@ -198,6 +214,16 @@ impl Default for PerformanceConfig {
     }
 }
 
+impl Default for TopicConfig {
+    fn default() -> Self {
+        Self {
+            auto_create_topics_enable: default_auto_create_topics_enable(),
+            default_num_partitions: default_num_partitions(),
+            default_replication_factor: default_replication_factor(),
+        }
+    }
+}
+
 // Default value functions
 fn default_kafka_port() -> u16 {
     9092
@@ -258,4 +284,13 @@ fn default_compression_level() -> i32 {
 } // Default compression level
 fn default_shutdown_timeout_sec() -> u64 {
     30
+}
+fn default_auto_create_topics_enable() -> bool {
+    true
+}
+fn default_num_partitions() -> i32 {
+    1
+}
+fn default_replication_factor() -> i16 {
+    1
 }
