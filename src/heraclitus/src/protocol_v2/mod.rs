@@ -9,10 +9,10 @@ use crate::error::{HeraclitusError, Result};
 use bytes::{Bytes, BytesMut};
 use kafka_protocol::messages::api_versions_response::ApiVersion;
 use kafka_protocol::messages::{
-    ApiKey, ApiVersionsRequest, ApiVersionsResponse, FetchRequest, FindCoordinatorRequest,
-    HeartbeatRequest, JoinGroupRequest, LeaveGroupRequest, ListOffsetsRequest, MetadataRequest,
-    OffsetCommitRequest, OffsetFetchRequest, ProduceRequest, RequestHeader, RequestKind,
-    ResponseHeader, ResponseKind, SyncGroupRequest,
+    ApiKey, ApiVersionsRequest, ApiVersionsResponse, CreateTopicsRequest, FetchRequest,
+    FindCoordinatorRequest, HeartbeatRequest, JoinGroupRequest, LeaveGroupRequest,
+    ListOffsetsRequest, MetadataRequest, OffsetCommitRequest, OffsetFetchRequest, ProduceRequest,
+    RequestHeader, RequestKind, ResponseHeader, ResponseKind, SyncGroupRequest,
 };
 use kafka_protocol::protocol::{Decodable, Encodable};
 use tracing::{error, info};
@@ -143,6 +143,12 @@ impl KafkaProtocolHandler {
                 })?;
                 RequestKind::ListOffsets(req)
             }
+            Ok(ApiKey::CreateTopics) => {
+                let req = CreateTopicsRequest::decode(&mut buf, api_version).map_err(|e| {
+                    HeraclitusError::Protocol(format!("Failed to decode CreateTopics: {e}"))
+                })?;
+                RequestKind::CreateTopics(req)
+            }
             _ => {
                 return Err(HeraclitusError::Protocol(format!(
                     "Unsupported API key: {api_key} version: {api_version}"
@@ -245,6 +251,12 @@ impl KafkaProtocolHandler {
                 resp.encode(&mut buf, header.request_api_version)
                     .map_err(|e| {
                         HeraclitusError::Protocol(format!("Failed to encode ListOffsets: {e}"))
+                    })?;
+            }
+            ResponseKind::CreateTopics(resp) => {
+                resp.encode(&mut buf, header.request_api_version)
+                    .map_err(|e| {
+                        HeraclitusError::Protocol(format!("Failed to encode CreateTopics: {e}"))
                     })?;
             }
             _ => {

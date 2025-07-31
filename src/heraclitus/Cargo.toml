@@ -55,5 +55,8 @@ kafka-protocol = { version = "0.15.1", features = ["messages_enums", "broker", "
 
 [dev-dependencies]
 rdkafka = { workspace = true }
-testcontainers = { workspace = true }
-testcontainers-modules = { workspace = true }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "kafka_protocol_bench"
+harness = false

@@ -203,3 +203,159 @@ impl KafkaMessageBatch {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kafka_protocol::records::{NO_PRODUCER_EPOCH, NO_PRODUCER_ID, NO_SEQUENCE};
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_kafka_message_conversion_roundtrip() {
+        // Create a test KafkaMessage with all fields
+        let mut headers = HashMap::new();
+        headers.insert("test-header".to_string(), b"test-value".to_vec());
+        headers.insert("another-header".to_string(), b"another-value".to_vec());
+
+        let kafka_msg = KafkaMessage {
+            topic: "test-topic".to_string(),
+            partition: 0,
+            offset: 42,
+            timestamp: 1234567890,
+            key: Some(b"test-key".to_vec()),
+            value: b"test-value".to_vec(),
+            headers,
+            producer_id: Some(123),
+            producer_epoch: Some(5),
+            sequence: Some(10),
+        };
+
+        // Convert to Record and back to verify consistency
+        let record = kafka_msg.to_record();
+        let converted_back = KafkaMessage::from_record(&record, "test-topic".to_string(), 0, 42);
+
+        assert_eq!(converted_back.topic, "test-topic");
+        assert_eq!(converted_back.partition, 0);
+        assert_eq!(converted_back.offset, 42);
+        assert_eq!(converted_back.timestamp, 1234567890);
+        assert_eq!(converted_back.key, Some(b"test-key".to_vec()));
+        assert_eq!(converted_back.value, b"test-value");
+        assert_eq!(converted_back.producer_id, Some(123));
+        assert_eq!(converted_back.producer_epoch, Some(5));
+        assert_eq!(converted_back.sequence, Some(10));
+
+        // Check headers were preserved
+        assert_eq!(converted_back.headers.len(), 2);
+        assert_eq!(
+            converted_back.headers.get("test-header"),
+            Some(&b"test-value".to_vec())
+        );
+        assert_eq!(
+            converted_back.headers.get("another-header"),
+            Some(&b"another-value".to_vec())
+        );
+    }
+
+    #[test]
+    fn test_kafka_message_minimal_fields() {
+        // Create a minimal KafkaMessage with only required fields
+        let kafka_msg = KafkaMessage {
+            topic: "minimal-topic".to_string(),
+            partition: 1,
+            offset: 0,
+            timestamp: 0,
+            key: None,
+            value: b"minimal-value".to_vec(),
+            headers: HashMap::new(),
+            producer_id: None,
+            producer_epoch: None,
+            sequence: None,
+        };
+
+        // Convert to Record
+        let record = kafka_msg.to_record();
+
+        assert_eq!(record.offset, 0);
+        assert_eq!(record.timestamp, 0);
+        assert!(record.key.is_none());
+        assert_eq!(record.value.as_ref().unwrap().as_ref(), b"minimal-value");
+        assert_eq!(record.producer_id, NO_PRODUCER_ID);
+        assert_eq!(record.producer_epoch, NO_PRODUCER_EPOCH);
+        assert_eq!(record.sequence, NO_SEQUENCE);
+        assert!(record.headers.is_empty());
+
+        // Convert back to KafkaMessage
+        let converted_back = KafkaMessage::from_record(&record, "minimal-topic".to_string(), 1, 0);
+
+        assert_eq!(converted_back.topic, "minimal-topic");
+        assert_eq!(converted_back.partition, 1);
+        assert_eq!(converted_back.offset, 0);
+        assert!(converted_back.key.is_none());
+        assert_eq!(converted_back.value, b"minimal-value");
+        assert!(converted_back.producer_id.is_none());
+        assert!(converted_back.producer_epoch.is_none());
+        assert!(converted_back.sequence.is_none());
+        assert!(converted_back.headers.is_empty());
+    }
+
+    #[test]
+    fn test_kafka_message_empty_value() {
+        let kafka_msg = KafkaMessage {
+            topic: "empty-value-topic".to_string(),
+            partition: 0,
+            offset: 100,
+            timestamp: 1234567890,
+            key: Some(b"has-key".to_vec()),
+            value: b"".to_vec(), // Empty value
+            headers: HashMap::new(),
+            producer_id: None,
+            producer_epoch: None,
+            sequence: None,
+        };
+
+        let record = kafka_msg.to_record();
+        assert!(record.value.is_some());
+        assert_eq!(record.value.as_ref().unwrap().as_ref(), b"");
+
+        let converted_back =
+            KafkaMessage::from_record(&record, "empty-value-topic".to_string(), 0, 100);
+        assert_eq!(converted_back.value, b"");
+        assert_eq!(converted_back.key, Some(b"has-key".to_vec()));
+    }
+
+    #[test]
+    fn test_kafka_message_large_headers() {
+        let mut headers = HashMap::new();
+        for i in 0..10 {
+            headers.insert(
+                format!("header-{i}"),
+                format!("value-{i}-with-some-longer-content").into_bytes(),
+            );
+        }
+
+        let kafka_msg = KafkaMessage {
+            topic: "headers-topic".to_string(),
+            partition: 2,
+            offset: 200,
+            timestamp: 9876543210,
+            key: Some(b"key-with-headers".to_vec()),
+            value: b"value-with-many-headers".to_vec(),
+            headers: headers.clone(),
+            producer_id: Some(999),
+            producer_epoch: Some(3),
+            sequence: Some(555),
+        };
+
+        let record = kafka_msg.to_record();
+        let converted_back =
+            KafkaMessage::from_record(&record, "headers-topic".to_string(), 2, 200);
+
+        // Verify all headers were preserved
+        assert_eq!(converted_back.headers.len(), 10);
+        for i in 0..10 {
+            let key = format!("header-{i}");
+            let expected_value = format!("value-{i}-with-some-longer-content").into_bytes();
+            assert_eq!(converted_back.headers.get(&key), Some(&expected_value));
+        }
+    }
+}

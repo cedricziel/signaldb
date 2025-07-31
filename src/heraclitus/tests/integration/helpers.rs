@@ -1,5 +1,6 @@
 // Helper module for running HeraclitusAgent directly for integration tests
 
+use anyhow::Result;
 use heraclitus::{HeraclitusAgent, HeraclitusConfig};
 use std::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -13,7 +14,7 @@ pub struct HeraclitusTestContext {
 }
 
 impl HeraclitusTestContext {
-    pub async fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn new() -> Result<Self> {
         // Find available ports
         let kafka_port = find_available_port().await?;
         let http_port = find_available_port().await?;
@@ -65,7 +66,9 @@ impl HeraclitusTestContext {
 
         loop {
             if start.elapsed() > timeout {
-                return Err("Timeout waiting for HeraclitusAgent to start".into());
+                return Err(anyhow::anyhow!(
+                    "Timeout waiting for HeraclitusAgent to start"
+                ));
             }
 
             match tokio::net::TcpStream::connect(format!("127.0.0.1:{kafka_port}")).await {
@@ -109,7 +112,7 @@ impl Drop for HeraclitusTestContext {
     }
 }
 
-pub async fn find_available_port() -> Result<u16, Box<dyn std::error::Error + Send + Sync>> {
+pub async fn find_available_port() -> Result<u16> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     drop(listener);

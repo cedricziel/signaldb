@@ -253,6 +253,10 @@ impl ConnectionHandler {
                 info!("Handling ListOffsets request");
                 self.handle_list_offsets(req).await?
             }
+            RequestKind::CreateTopics(req) => {
+                info!("Handling CreateTopics request");
+                self.handle_create_topics(req).await?
+            }
             _ => {
                 warn!("Unsupported request type: {:?}", header.request_api_key);
                 return Err(HeraclitusError::Protocol(format!(
@@ -1107,6 +1111,100 @@ impl ConnectionHandler {
 
         Ok(ResponseKind::ListOffsets(response))
     }
+
+    async fn handle_create_topics(
+        &self,
+        req: kafka_protocol::messages::CreateTopicsRequest,
+    ) -> Result<ResponseKind> {
+        use crate::state::TopicMetadata;
+        use kafka_protocol::messages::create_topics_response::CreatableTopicResult;
+        use std::collections::HashMap;
+        use uuid::Uuid;
+
+        let mut topic_results = vec![];
+
+        for topic in &req.topics {
+            // Check if it's validate_only mode
+            if req.validate_only {
+                // Just validate without creating
+                let result = CreatableTopicResult::default()
+                    .with_name(topic.name.clone())
+                    .with_topic_id(Uuid::nil())
+                    .with_error_code(0) // Success
+                    .with_num_partitions(topic.num_partitions)
+                    .with_replication_factor(topic.replication_factor);
+
+                topic_results.push(result);
+                continue;
+            }
+
+            // Check if topic already exists
+            let existing_topics = self.state_manager.metadata().list_topics().await?;
+            if existing_topics.iter().any(|t| t == topic.name.as_str()) {
+                // Topic already exists error
+                let result = CreatableTopicResult::default()
+                    .with_name(topic.name.clone())
+                    .with_topic_id(Uuid::nil())
+                    .with_error_code(36) // TOPIC_ALREADY_EXISTS
+                    .with_error_message(Some(
+                        format!("Topic '{}' already exists", topic.name.as_str()).into(),
+                    ));
+
+                topic_results.push(result);
+                continue;
+            }
+
+            // Create the topic
+            let topic_metadata = TopicMetadata {
+                name: topic.name.to_string(),
+                partitions: topic.num_partitions,
+                replication_factor: topic.replication_factor,
+                config: HashMap::new(), // TODO: Handle topic configs from request
+                created_at: chrono::Utc::now(),
+            };
+
+            match self
+                .state_manager
+                .metadata()
+                .create_topic(topic_metadata)
+                .await
+            {
+                Ok(_) => {
+                    info!(
+                        "Created topic '{}' with {} partitions",
+                        topic.name.as_str(),
+                        topic.num_partitions
+                    );
+
+                    let result = CreatableTopicResult::default()
+                        .with_name(topic.name.clone())
+                        .with_topic_id(Uuid::new_v4()) // Generate a new UUID for the topic
+                        .with_error_code(0) // Success
+                        .with_num_partitions(topic.num_partitions)
+                        .with_replication_factor(topic.replication_factor);
+
+                    topic_results.push(result);
+                }
+                Err(e) => {
+                    error!("Failed to create topic '{}': {}", topic.name.as_str(), e);
+
+                    let result = CreatableTopicResult::default()
+                        .with_name(topic.name.clone())
+                        .with_topic_id(Uuid::nil())
+                        .with_error_code(1) // UNKNOWN_SERVER_ERROR
+                        .with_error_message(Some(format!("Failed to create topic: {e}").into()));
+
+                    topic_results.push(result);
+                }
+            }
+        }
+
+        let response = kafka_protocol::messages::CreateTopicsResponse::default()
+            .with_throttle_time_ms(0)
+            .with_topics(topic_results);
+
+        Ok(ResponseKind::CreateTopics(response))
+    }
 }
 
 impl Drop for ConnectionHandler {
@@ -1116,7 +1214,7 @@ impl Drop for ConnectionHandler {
 }
 
 // Helper function to convert compression algorithm string to kafka-protocol Compression enum
-fn get_compression_from_config(algorithm: &str) -> kafka_protocol::records::Compression {
+pub fn get_compression_from_config(algorithm: &str) -> kafka_protocol::records::Compression {
     use kafka_protocol::records::Compression;
 
     match algorithm.to_lowercase().as_str() {

@@ -337,3 +337,84 @@ fn default_num_partitions() -> i32 {
 fn default_replication_factor() -> i16 {
     1
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compression_config_defaults() {
+        let config = CompressionConfig::default();
+
+        assert_eq!(config.algorithm, "none");
+        assert_eq!(config.level, 6);
+        assert!(!config.enable_producer_compression);
+        assert!(!config.enable_fetch_compression);
+    }
+
+    #[test]
+    fn test_heraclitus_config_defaults() {
+        let config = HeraclitusConfig::default();
+
+        assert_eq!(config.kafka_port, 9092);
+        assert_eq!(config.http_port, 9093);
+        assert_eq!(config.compression.algorithm, "none");
+        assert!(config.topics.auto_create_topics_enable);
+        assert!(!config.auth.enabled);
+        assert_eq!(config.batching.max_batch_size, 1048576); // 1MB
+        assert_eq!(config.batching.max_batch_messages, 1000);
+    }
+
+    #[test]
+    fn test_compression_algorithm_configuration() {
+        let mut config = CompressionConfig::default();
+
+        // Test default algorithm
+        assert_eq!(config.algorithm, "none");
+
+        // Test that we can set different algorithms
+        config.algorithm = "gzip".to_string();
+        assert_eq!(config.algorithm, "gzip");
+
+        config.algorithm = "snappy".to_string();
+        assert_eq!(config.algorithm, "snappy");
+
+        config.algorithm = "lz4".to_string();
+        assert_eq!(config.algorithm, "lz4");
+
+        config.algorithm = "zstd".to_string();
+        assert_eq!(config.algorithm, "zstd");
+
+        // Test that compression levels are configurable
+        config.level = 9;
+        assert_eq!(config.level, 9);
+    }
+
+    #[test]
+    fn test_topic_configuration() {
+        let config = HeraclitusConfig::default();
+
+        assert!(config.topics.auto_create_topics_enable);
+        assert_eq!(config.topics.default_num_partitions, 1);
+        assert_eq!(config.topics.default_replication_factor, 1);
+    }
+
+    #[test]
+    fn test_auth_configuration() {
+        let config = HeraclitusConfig::default();
+
+        assert!(!config.auth.enabled);
+        assert_eq!(config.auth.mechanism, "PLAIN");
+    }
+
+    #[test]
+    fn test_performance_configuration() {
+        let config = HeraclitusConfig::default();
+
+        assert_eq!(config.performance.socket_send_buffer_bytes, Some(131072)); // 128KB
+        assert_eq!(config.performance.socket_recv_buffer_bytes, Some(131072)); // 128KB
+        assert!(config.performance.tcp_nodelay);
+        assert_eq!(config.performance.tcp_keepalive, Some(60));
+        assert_eq!(config.performance.buffer_pool_size, 1000);
+    }
+}

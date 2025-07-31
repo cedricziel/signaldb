@@ -181,3 +181,20 @@ impl HeraclitusAgent {
         let _ = self.shutdown_tx.send(());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_heraclitus_config_creation() {
+        let config = HeraclitusConfig::default();
+        assert_eq!(config.kafka_port, 9092);
+        assert_eq!(config.http_port, 9093);
+    }
+}
+
+// TODO: Fix test module imports - tests are currently run as separate binaries
+// #[cfg(test)]
+// #[path = "../tests/mod.rs"]
+// mod test_suite;
