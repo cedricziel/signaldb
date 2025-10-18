@@ -410,6 +410,47 @@ impl ConnectionHandler {
                     );
                 }
             }
+        } else {
+            // None means all topics (used by older Kafka versions)
+            info!("Client requested metadata for all topics (topics=None)");
+
+            // Get all existing topics
+            let all_topic_names = self.state_manager.metadata().list_topics().await?;
+            info!("Found {} existing topics", all_topic_names.len());
+
+            for topic_name in all_topic_names {
+                // Get topic metadata
+                if let Some(topic_metadata) =
+                    self.state_manager.metadata().get_topic(&topic_name).await?
+                {
+                    // Build partition responses
+                    let mut partitions = vec![];
+                    for partition_id in 0..topic_metadata.partitions {
+                        partitions.push(
+                            MetadataResponsePartition::default()
+                                .with_error_code(0)
+                                .with_partition_index(partition_id)
+                                .with_leader_id(kafka_protocol::messages::BrokerId(1))
+                                .with_leader_epoch(0)
+                                .with_replica_nodes(vec![kafka_protocol::messages::BrokerId(1)])
+                                .with_isr_nodes(vec![kafka_protocol::messages::BrokerId(1)])
+                                .with_offline_replicas(vec![]),
+                        );
+                    }
+
+                    topic_responses.push(
+                        MetadataResponseTopic::default()
+                            .with_error_code(0)
+                            .with_name(Some(kafka_protocol::messages::TopicName(
+                                kafka_protocol::protocol::StrBytes::from_string(
+                                    topic_metadata.name,
+                                ),
+                            )))
+                            .with_is_internal(false)
+                            .with_partitions(partitions),
+                    );
+                }
+            }
         }
 
         let response = kafka_protocol::messages::MetadataResponse::default()

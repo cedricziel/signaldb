@@ -4,14 +4,11 @@ The Heraclitus test suite is organized into three main categories for clarity, m
 
 ## Test Structure
 
+Tests are organized in two locations:
+
+**Core tests** (`src/heraclitus/tests/`):
 ```
-tests/
-├── unit/                    # Fast unit tests without external dependencies
-│   ├── config_test.rs      # Configuration validation tests
-│   ├── compression_test.rs # Compression algorithm tests  
-│   ├── storage_test.rs     # Message format conversion tests
-│   └── protocol_test.rs    # Basic protocol structure tests
-│
+src/heraclitus/tests/
 ├── integration/            # Integration tests with Heraclitus subprocess
 │   ├── helpers.rs         # Test utilities and context
 │   ├── basic_kafka_test.rs       # Basic Kafka protocol tests
@@ -21,55 +18,63 @@ tests/
 │
 └── e2e/                   # End-to-end tests with real rdkafka clients
     └── rdkafka_compat_test.rs  # Comprehensive rdkafka compatibility
+```
 
-benches/                   # Performance benchmarks
+**Extended integration tests** (`src/heraclitus-tests-integration/tests/`):
+```
+src/heraclitus-tests-integration/tests/
+├── rdkafka/               # rdkafka client compatibility tests
+│   ├── compatibility.rs  # Full protocol compatibility
+│   ├── compression.rs    # Compression support
+│   └── ...               # Various rdkafka integration tests
+│
+└── tcp/                   # Low-level TCP protocol tests
+    ├── api_versions.rs   # API version negotiation
+    ├── metadata.rs       # Metadata API tests
+    ├── produce_fetch.rs  # Producer/consumer tests
+    └── consumer_group/   # Consumer group coordination
+```
+
+**Benchmarks** (`src/heraclitus/benches/`):
+```
+src/heraclitus/benches/
 └── kafka_protocol_bench.rs # Protocol encoding/decoding benchmarks
 ```
 
 ## Running Tests
 
-### Unit Tests
-Fast tests that don't require external dependencies:
-```bash
-cargo test --package heraclitus --lib tests::unit
-```
-
 ### Integration Tests
 Tests that spawn a Heraclitus subprocess:
 ```bash
-cargo test --package heraclitus --lib tests::integration
+cargo test -p heraclitus --lib integration
 ```
 
 ### End-to-End Tests
 Full compatibility tests with rdkafka clients:
 ```bash
-cargo test --package heraclitus --lib tests::e2e
+cargo test -p heraclitus --lib e2e
 ```
 
-### All Tests
+### Extended Integration Tests
+TCP and rdkafka compatibility tests:
 ```bash
-cargo test --package heraclitus
+cargo test -p heraclitus-tests-integration
+```
+
+### All Heraclitus Tests
+```bash
+cargo test -p heraclitus -p heraclitus-tests-integration
 ```
 
 ### Benchmarks
 Performance benchmarks (run with release mode):
 ```bash
-cargo bench --package heraclitus
+cargo bench -p heraclitus
 ```
 
 ## Test Categories
 
-### Unit Tests (`unit/`)
-- **Purpose**: Test individual components in isolation
-- **Speed**: Fast (< 1ms per test)
-- **Dependencies**: None
-- **Examples**: 
-  - Configuration defaults and validation
-  - Compression/decompression algorithms
-  - Message format conversions
-  - Protocol encoding/decoding
-
-### Integration Tests (`integration/`)
+### Integration Tests (`src/heraclitus/tests/integration/`)
 - **Purpose**: Test Heraclitus server functionality
 - **Speed**: Medium (100ms - 1s per test)
 - **Dependencies**: Heraclitus subprocess
@@ -79,7 +84,7 @@ cargo bench --package heraclitus
   - Multi-connection handling
   - Error scenarios
 
-### End-to-End Tests (`e2e/`)
+### End-to-End Tests (`src/heraclitus/tests/e2e/`)
 - **Purpose**: Verify compatibility with real Kafka clients
 - **Speed**: Slower (1-10s per test)
 - **Dependencies**: Heraclitus subprocess + rdkafka client
@@ -90,17 +95,6 @@ cargo bench --package heraclitus
   - Message headers and metadata
 
 ## Writing New Tests
-
-### Unit Test Example
-```rust
-#[test]
-fn test_compression_roundtrip() {
-    let data = b"test data";
-    let compressed = compress_gzip(data).unwrap();
-    let decompressed = decompress_gzip(&compressed).unwrap();
-    assert_eq!(data, &decompressed[..]);
-}
-```
 
 ### Integration Test Example
 ```rust
@@ -142,17 +136,16 @@ Manages Heraclitus subprocess lifecycle for tests:
 
 ## Best Practices
 
-1. **Keep unit tests fast**: No I/O, no external dependencies
-2. **Use appropriate timeouts**: Integration tests should have reasonable timeouts
-3. **Clean up resources**: Use RAII patterns for test resources
-4. **Test error cases**: Don't just test the happy path
-5. **Document complex tests**: Add comments explaining what's being tested
-6. **Avoid test interdependence**: Each test should be independent
+1. **Use appropriate timeouts**: Integration tests should have reasonable timeouts
+2. **Clean up resources**: Use RAII patterns for test resources
+3. **Test error cases**: Don't just test the happy path
+4. **Document complex tests**: Add comments explaining what's being tested
+5. **Avoid test interdependence**: Each test should be independent
 
 ## Continuous Integration
 
 Tests are run in CI with:
-- Unit tests on every commit
-- Integration tests on PR
-- E2E tests on merge to main
+- Integration tests on every commit
+- E2E tests on PR
+- Extended integration tests on merge to main
 - Benchmarks tracked for performance regression

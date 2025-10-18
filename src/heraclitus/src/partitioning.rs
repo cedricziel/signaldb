@@ -1,7 +1,6 @@
 use crate::error::Result;
 use bytes::Bytes;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use parking_lot::RwLock;
 

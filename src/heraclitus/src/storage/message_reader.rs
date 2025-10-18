@@ -6,7 +6,7 @@ use arrow::array::{
     Array, BinaryArray, Int16Array, Int32Array, Int64Array, StringArray, TimestampMicrosecondArray,
 };
 use arrow::record_batch::RecordBatch;
-use object_store::{ObjectMeta, ObjectStore, path::Path as ObjectPath};
+use object_store::{ObjectMeta, ObjectStore};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -77,10 +77,7 @@ impl MessageReader {
         let mut segments = Vec::new();
 
         // Build the base path without the hour component to list all hour directories
-        let base_path = ObjectPath::from(format!(
-            "{}/messages/topic={}/partition={}/",
-            self.layout.prefix, topic, partition
-        ));
+        let base_path = self.layout.partition_messages_prefix(topic, partition);
 
         info!("Listing segments from path: {}", base_path);
 

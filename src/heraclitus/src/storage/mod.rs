@@ -49,6 +49,13 @@ impl ObjectStorageLayout {
         format!("{}/metadata/consumer-groups/", self.prefix)
     }
 
+    pub fn partition_messages_prefix(&self, topic: &str, partition: i32) -> ObjectPath {
+        ObjectPath::from(format!(
+            "{}/messages/topic={}/partition={}/",
+            self.prefix, topic, partition
+        ))
+    }
+
     pub fn coordination_path(&self, path: &str) -> ObjectPath {
         ObjectPath::from(format!("{}/coordination/{}", self.prefix, path))
     }
