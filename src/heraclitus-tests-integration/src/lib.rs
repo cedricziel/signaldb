@@ -121,6 +121,38 @@ pub struct HeraclitusTestContext {
 
 impl HeraclitusTestContext {
     pub async fn new(minio: &MinioTestContext, kafka_port: u16) -> Result<Self> {
+        const MAX_RETRIES: u32 = 3;
+        const RETRY_DELAY_MS: u64 = 500;
+
+        let mut last_error = None;
+
+        for attempt in 1..=MAX_RETRIES {
+            match Self::try_new(minio, kafka_port, attempt).await {
+                Ok(context) => return Ok(context),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to start Heraclitus (attempt {}/{}): {}",
+                        attempt,
+                        MAX_RETRIES,
+                        e
+                    );
+                    last_error = Some(e);
+
+                    if attempt < MAX_RETRIES {
+                        tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            anyhow::anyhow!("Failed to start Heraclitus after {} attempts", MAX_RETRIES)
+        }))
+    }
+
+    async fn try_new(minio: &MinioTestContext, kafka_port: u16, attempt: u32) -> Result<Self> {
+        tracing::info!("Attempting to start Heraclitus (attempt {})", attempt);
+
         // Create temporary directories
         let config_dir = TempDir::new()?;
         let data_dir = TempDir::new()?;
@@ -207,6 +239,8 @@ enabled = false
         if let Some(exit_status) = process.try_wait()? {
             // Read the log file to see what went wrong
             let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
+            // Kill the process to ensure cleanup
+            let _ = process.kill();
             return Err(anyhow::anyhow!(
                 "Heraclitus process exited immediately with status: {exit_status}\nLogs:\n{log_content}"
             ));
