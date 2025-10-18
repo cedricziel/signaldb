@@ -50,7 +50,6 @@ async fn test_debug_metadata() -> Result<()> {
         .set("debug", "broker,metadata,topic,protocol")
         .set("socket.timeout.ms", "10000")
         .set("request.timeout.ms", "10000")
-        .set("api.version.request", "true")
         .set("topic.metadata.refresh.interval.ms", "1000") // Refresh metadata every second
         .create()
         .expect("Failed to create producer");

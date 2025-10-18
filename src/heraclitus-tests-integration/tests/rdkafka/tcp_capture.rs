@@ -79,7 +79,6 @@ async fn test_tcp_capture() -> Result<()> {
     let _producer: BaseProducer = ClientConfig::new()
         .set("bootstrap.servers", "127.0.0.1:39092")
         .set("message.timeout.ms", "5000")
-        .set("api.version.request", "true")
         .set("debug", "broker,protocol")
         .set("socket.timeout.ms", "2000")
         .set("request.timeout.ms", "2000")

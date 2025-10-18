@@ -47,8 +47,6 @@ async fn test_trace_requests() -> Result<()> {
     let producer: BaseProducer = ClientConfig::new()
         .set("bootstrap.servers", &bootstrap_servers)
         .set("debug", "broker,metadata,protocol")
-        .set("api.version.request", "false") // Disable API version request to simplify
-        .set("broker.version.fallback", "2.0.0") // Set a known version
         .create()
         .expect("Failed to create producer");
 
