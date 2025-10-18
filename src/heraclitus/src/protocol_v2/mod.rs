@@ -279,172 +279,172 @@ impl KafkaProtocolHandler {
         let api_versions = vec![
             // Produce
             ApiVersion::default()
-                .with_api_key(0)
+                .with_api_key(ApiKey::Produce as i16)
                 .with_min_version(0)
                 .with_max_version(11),
             // Fetch
             ApiVersion::default()
-                .with_api_key(1)
+                .with_api_key(ApiKey::Fetch as i16)
                 .with_min_version(0)
                 .with_max_version(16),
             // ListOffsets
             ApiVersion::default()
-                .with_api_key(2)
+                .with_api_key(ApiKey::ListOffsets as i16)
                 .with_min_version(0)
                 .with_max_version(8),
             // Metadata
             ApiVersion::default()
-                .with_api_key(3)
+                .with_api_key(ApiKey::Metadata as i16)
                 .with_min_version(0)
                 .with_max_version(12),
             // OffsetCommit
             ApiVersion::default()
-                .with_api_key(8)
+                .with_api_key(ApiKey::OffsetCommit as i16)
                 .with_min_version(0)
                 .with_max_version(9),
             // OffsetFetch
             ApiVersion::default()
-                .with_api_key(9)
+                .with_api_key(ApiKey::OffsetFetch as i16)
                 .with_min_version(0)
                 .with_max_version(5),
             // FindCoordinator
             ApiVersion::default()
-                .with_api_key(10)
+                .with_api_key(ApiKey::FindCoordinator as i16)
                 .with_min_version(0)
                 .with_max_version(5),
             // JoinGroup
             ApiVersion::default()
-                .with_api_key(11)
+                .with_api_key(ApiKey::JoinGroup as i16)
                 .with_min_version(0)
                 .with_max_version(9),
             // Heartbeat
             ApiVersion::default()
-                .with_api_key(12)
+                .with_api_key(ApiKey::Heartbeat as i16)
                 .with_min_version(0)
                 .with_max_version(4),
             // LeaveGroup
             ApiVersion::default()
-                .with_api_key(13)
+                .with_api_key(ApiKey::LeaveGroup as i16)
                 .with_min_version(0)
                 .with_max_version(5),
             // SyncGroup
             ApiVersion::default()
-                .with_api_key(14)
+                .with_api_key(ApiKey::SyncGroup as i16)
                 .with_min_version(0)
                 .with_max_version(5),
             // DescribeGroups
             ApiVersion::default()
-                .with_api_key(15)
+                .with_api_key(ApiKey::DescribeGroups as i16)
                 .with_min_version(0)
                 .with_max_version(5),
             // ListGroups
             ApiVersion::default()
-                .with_api_key(16)
+                .with_api_key(ApiKey::ListGroups as i16)
                 .with_min_version(0)
                 .with_max_version(5),
             // SaslHandshake
             ApiVersion::default()
-                .with_api_key(17)
+                .with_api_key(ApiKey::SaslHandshake as i16)
                 .with_min_version(0)
                 .with_max_version(1),
             // ApiVersions
             ApiVersion::default()
-                .with_api_key(18)
+                .with_api_key(ApiKey::ApiVersions as i16)
                 .with_min_version(0)
                 .with_max_version(3),
             // CreateTopics
             ApiVersion::default()
-                .with_api_key(19)
+                .with_api_key(ApiKey::CreateTopics as i16)
                 .with_min_version(0)
                 .with_max_version(7),
             // DeleteTopics
             ApiVersion::default()
-                .with_api_key(20)
+                .with_api_key(ApiKey::DeleteTopics as i16)
                 .with_min_version(0)
                 .with_max_version(6),
             // DeleteRecords
             ApiVersion::default()
-                .with_api_key(21)
+                .with_api_key(ApiKey::DeleteRecords as i16)
                 .with_min_version(0)
                 .with_max_version(2),
             // InitProducerId
             ApiVersion::default()
-                .with_api_key(22)
+                .with_api_key(ApiKey::InitProducerId as i16)
                 .with_min_version(0)
                 .with_max_version(5),
             // OffsetForLeaderEpoch
             ApiVersion::default()
-                .with_api_key(23)
+                .with_api_key(ApiKey::OffsetForLeaderEpoch as i16)
                 .with_min_version(0)
                 .with_max_version(4),
             // AddPartitionsToTxn
             ApiVersion::default()
-                .with_api_key(24)
+                .with_api_key(ApiKey::AddPartitionsToTxn as i16)
                 .with_min_version(0)
                 .with_max_version(5),
             // AddOffsetsToTxn
             ApiVersion::default()
-                .with_api_key(25)
+                .with_api_key(ApiKey::AddOffsetsToTxn as i16)
                 .with_min_version(0)
                 .with_max_version(4),
             // EndTxn
             ApiVersion::default()
-                .with_api_key(26)
+                .with_api_key(ApiKey::EndTxn as i16)
                 .with_min_version(0)
                 .with_max_version(4),
             // WriteTxnMarkers
             ApiVersion::default()
-                .with_api_key(27)
+                .with_api_key(ApiKey::WriteTxnMarkers as i16)
                 .with_min_version(0)
                 .with_max_version(1),
             // TxnOffsetCommit
             ApiVersion::default()
-                .with_api_key(28)
+                .with_api_key(ApiKey::TxnOffsetCommit as i16)
                 .with_min_version(0)
                 .with_max_version(4),
             // DescribeAcls
             ApiVersion::default()
-                .with_api_key(29)
+                .with_api_key(ApiKey::DescribeAcls as i16)
                 .with_min_version(0)
                 .with_max_version(3),
             // CreateAcls
             ApiVersion::default()
-                .with_api_key(30)
+                .with_api_key(ApiKey::CreateAcls as i16)
                 .with_min_version(0)
                 .with_max_version(3),
             // DeleteAcls
             ApiVersion::default()
-                .with_api_key(31)
+                .with_api_key(ApiKey::DeleteAcls as i16)
                 .with_min_version(0)
                 .with_max_version(3),
             // DescribeConfigs
             ApiVersion::default()
-                .with_api_key(32)
+                .with_api_key(ApiKey::DescribeConfigs as i16)
                 .with_min_version(0)
                 .with_max_version(4),
             // AlterConfigs
             ApiVersion::default()
-                .with_api_key(33)
+                .with_api_key(ApiKey::AlterConfigs as i16)
                 .with_min_version(0)
                 .with_max_version(2),
             // AlterReplicaLogDirs
             ApiVersion::default()
-                .with_api_key(34)
+                .with_api_key(ApiKey::AlterReplicaLogDirs as i16)
                 .with_min_version(0)
                 .with_max_version(2),
             // DescribeLogDirs
             ApiVersion::default()
-                .with_api_key(35)
+                .with_api_key(ApiKey::DescribeLogDirs as i16)
                 .with_min_version(0)
                 .with_max_version(4),
             // SaslAuthenticate
             ApiVersion::default()
-                .with_api_key(36)
+                .with_api_key(ApiKey::SaslAuthenticate as i16)
                 .with_min_version(0)
                 .with_max_version(2),
             // CreatePartitions
             ApiVersion::default()
-                .with_api_key(37)
+                .with_api_key(ApiKey::CreatePartitions as i16)
                 .with_min_version(0)
                 .with_max_version(3),
         ];
