@@ -720,6 +720,53 @@ impl ConnectionHandler {
             }
         };
 
+        // Parse subscription from protocol metadata
+        use kafka_protocol::messages::consumer_protocol_subscription::ConsumerProtocolSubscription;
+        use kafka_protocol::protocol::Decodable;
+
+        let mut subscribed_topics = Vec::new();
+
+        // Extract subscribed topics from the first protocol metadata
+        if let Some(protocol) = req.protocols.first() {
+            info!(
+                "Parsing subscription metadata, size: {} bytes",
+                protocol.metadata.len()
+            );
+            // ConsumerProtocolSubscription has its own version embedded in the metadata
+            // Read the version from the first 2 bytes
+            let mut metadata_bytes = protocol.metadata.clone();
+            if metadata_bytes.len() >= 2 {
+                use bytes::Buf;
+                let version = metadata_bytes.get_i16();
+                info!("Consumer protocol subscription version: {version}");
+
+                match ConsumerProtocolSubscription::decode(&mut metadata_bytes, version) {
+                    Ok(subscription) => {
+                        info!(
+                            "Successfully decoded subscription with {} topics",
+                            subscription.topics.len()
+                        );
+                        for topic in subscription.topics {
+                            subscribed_topics.push(topic.as_str().to_string());
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to decode subscription metadata: {e}");
+                    }
+                }
+            } else {
+                warn!("Metadata too small to contain version");
+            }
+        } else {
+            warn!("No protocols provided in JoinGroup request");
+        }
+
+        info!(
+            "Member {} subscribing to topics: {:?}",
+            member_id.as_str(),
+            subscribed_topics
+        );
+
         // Add or update member
         let member = crate::state::ConsumerGroupMember {
             member_id: member_id.as_str().to_string(),
@@ -732,6 +779,7 @@ impl ConnectionHandler {
                 req.rebalance_timeout_ms
             },
             last_heartbeat_ms: chrono::Utc::now().timestamp_millis(),
+            subscribed_topics,
         };
 
         group_state
@@ -816,12 +864,24 @@ impl ConnectionHandler {
             }
         };
 
+        // Get the member's subscribed topics from group state
+        let subscribed_topics = group_state
+            .members
+            .get(req.member_id.as_str())
+            .map(|m| m.subscribed_topics.clone())
+            .unwrap_or_default();
+
+        info!(
+            "Member {} subscribed to topics: {:?}",
+            req.member_id.as_str(),
+            subscribed_topics
+        );
+
         // For simple implementation, assign all partitions of subscribed topics to this member
         // In a real implementation, this would use a proper partition assignment strategy
-        let topics = self.state_manager.metadata().list_topics().await?;
         let mut assigned_partitions = Vec::new();
 
-        for topic_name in &topics {
+        for topic_name in &subscribed_topics {
             // Get topic metadata to know partition count
             if let Some(topic_metadata) =
                 self.state_manager.metadata().get_topic(topic_name).await?
@@ -855,7 +915,7 @@ impl ConnectionHandler {
             group_id,
             req.member_id.as_str(),
             assignment_buf.len(),
-            topics.len()
+            subscribed_topics.len()
         );
 
         // Update group state
