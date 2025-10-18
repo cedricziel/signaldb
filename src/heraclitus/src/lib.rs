@@ -180,6 +180,26 @@ impl HeraclitusAgent {
     pub fn shutdown(&self) {
         let _ = self.shutdown_tx.send(());
     }
+
+    /// Get a shutdown handle that can be used to trigger shutdown
+    /// even after the agent has been consumed by run()
+    pub fn shutdown_handle(&self) -> ShutdownHandle {
+        ShutdownHandle {
+            shutdown_tx: self.shutdown_tx.clone(),
+        }
+    }
+}
+
+/// Handle that can be used to trigger agent shutdown
+#[derive(Clone)]
+pub struct ShutdownHandle {
+    shutdown_tx: broadcast::Sender<()>,
+}
+
+impl ShutdownHandle {
+    pub fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(());
+    }
 }
 
 #[cfg(test)]

@@ -1,10 +1,8 @@
 // Helper module for running HeraclitusAgent directly for integration tests
 
 use anyhow::Result;
-use heraclitus::{HeraclitusAgent, HeraclitusConfig};
+use heraclitus::{HeraclitusAgent, HeraclitusConfig, ShutdownHandle};
 use std::net::TcpListener;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
 /// Test context for Heraclitus server running as HeraclitusAgent in dedicated thread
@@ -13,7 +11,7 @@ pub struct HeraclitusTestContext {
     #[allow(dead_code)]
     pub http_port: u16,
     server_thread: Option<JoinHandle<()>>,
-    shutdown_flag: Arc<AtomicBool>,
+    shutdown_handle: Option<ShutdownHandle>,
 }
 
 impl HeraclitusTestContext {
@@ -44,9 +42,8 @@ impl HeraclitusTestContext {
 
         println!("Starting HeraclitusAgent on kafka_port: {kafka_port}");
 
-        // Create shutdown flag for graceful termination
-        let shutdown_flag = Arc::new(AtomicBool::new(false));
-        let shutdown_flag_clone = shutdown_flag.clone();
+        // Create a channel to receive the shutdown handle from the thread
+        let (handle_tx, handle_rx) = std::sync::mpsc::channel();
 
         // Spawn the agent in a dedicated OS thread with its own Tokio runtime
         // This ensures complete isolation from the test runtime, which is critical
@@ -67,13 +64,20 @@ impl HeraclitusTestContext {
                     Ok(agent) => {
                         println!("HeraclitusAgent created successfully, starting...");
 
-                        // Run the agent - it will handle its own lifecycle
-                        // We could use shutdown_flag_clone here to gracefully shutdown if needed
-                        let _ = shutdown_flag_clone; // Acknowledge we have it for future use
+                        // Get shutdown handle before agent is consumed
+                        let shutdown_handle = agent.shutdown_handle();
+
+                        // Send the shutdown handle back to the main thread
+                        if handle_tx.send(shutdown_handle).is_err() {
+                            eprintln!("Failed to send shutdown handle to main thread");
+                            return;
+                        }
+
+                        // Run the agent (this consumes self and blocks until shutdown)
                         if let Err(e) = agent.run().await {
                             eprintln!("HeraclitusAgent error: {e}");
                         }
-                        println!("HeraclitusAgent task completed");
+                        println!("HeraclitusAgent run completed");
                     }
                     Err(e) => {
                         eprintln!("Failed to create HeraclitusAgent: {e}");
@@ -110,11 +114,18 @@ impl HeraclitusTestContext {
         // Give it a bit more time to fully initialize
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
+        // Receive the shutdown handle from the thread
+        let shutdown_handle = handle_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| anyhow::anyhow!("Failed to receive shutdown handle: {e}"))?;
+
+        println!("Received shutdown handle from HeraclitusAgent");
+
         Ok(Self {
             kafka_port,
             http_port,
             server_thread: Some(server_thread),
-            shutdown_flag,
+            shutdown_handle: Some(shutdown_handle),
         })
     }
 
@@ -130,16 +141,21 @@ impl HeraclitusTestContext {
 
 impl Drop for HeraclitusTestContext {
     fn drop(&mut self) {
-        // Signal shutdown
-        self.shutdown_flag.store(true, Ordering::SeqCst);
+        // Send shutdown signal to the agent using the shutdown handle
+        if let Some(handle) = self.shutdown_handle.take() {
+            handle.shutdown();
+            println!("Sent shutdown signal to HeraclitusAgent");
+        }
 
-        // The server thread will terminate when the agent finishes
-        // We don't wait for it to prevent blocking test cleanup
-        // The thread will be cleaned up when the process exits
+        // Wait for the server thread to finish cleanup
         if let Some(thread) = self.server_thread.take() {
-            // Note: We could add graceful shutdown with agent.shutdown() via a channel
-            // For now, the thread will be terminated when the process exits
-            drop(thread);
+            println!("Waiting for HeraclitusAgent thread to finish...");
+            // Give it a reasonable amount of time to shut down gracefully
+            if thread.join().is_err() {
+                eprintln!("HeraclitusAgent thread panicked during shutdown");
+            } else {
+                println!("HeraclitusAgent thread finished cleanly");
+            }
         }
     }
 }
