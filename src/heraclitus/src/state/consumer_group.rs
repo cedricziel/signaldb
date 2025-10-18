@@ -24,6 +24,7 @@ pub struct ConsumerGroupMember {
     pub rebalance_timeout_ms: i32,
     pub last_heartbeat_ms: i64,
     pub subscribed_topics: Vec<String>,
+    pub protocol_version: i16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

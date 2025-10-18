@@ -306,7 +306,7 @@ impl KafkaProtocolHandler {
             ApiVersion::default()
                 .with_api_key(9)
                 .with_min_version(0)
-                .with_max_version(9),
+                .with_max_version(5),
             // FindCoordinator
             ApiVersion::default()
                 .with_api_key(10)

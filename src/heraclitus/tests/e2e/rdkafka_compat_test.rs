@@ -353,8 +353,6 @@ async fn test_high_volume_throughput() -> Result<()> {
         .set("bootstrap.servers", context.kafka_addr())
         .set("group.id", "test-throughput-group")
         .set("auto.offset.reset", "earliest")
-        .set("fetch.min.bytes", "1024")
-        .set("fetch.max.wait.ms", "100")
         .create()?;
 
     consumer.subscribe(&[topic])?;

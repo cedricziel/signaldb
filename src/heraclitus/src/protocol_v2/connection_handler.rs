@@ -725,6 +725,7 @@ impl ConnectionHandler {
         use kafka_protocol::protocol::Decodable;
 
         let mut subscribed_topics = Vec::new();
+        let mut protocol_version = 0i16; // Default to version 0
 
         // Extract subscribed topics from the first protocol metadata
         if let Some(protocol) = req.protocols.first() {
@@ -738,6 +739,7 @@ impl ConnectionHandler {
             if metadata_bytes.len() >= 2 {
                 use bytes::Buf;
                 let version = metadata_bytes.get_i16();
+                protocol_version = version; // Save the version
                 info!("Consumer protocol subscription version: {version}");
 
                 match ConsumerProtocolSubscription::decode(&mut metadata_bytes, version) {
@@ -780,6 +782,7 @@ impl ConnectionHandler {
             },
             last_heartbeat_ms: chrono::Utc::now().timestamp_millis(),
             subscribed_topics,
+            protocol_version,
         };
 
         group_state
@@ -864,12 +867,12 @@ impl ConnectionHandler {
             }
         };
 
-        // Get the member's subscribed topics from group state
-        let subscribed_topics = group_state
-            .members
-            .get(req.member_id.as_str())
+        // Get the member's subscribed topics and protocol version from group state
+        let member_info = group_state.members.get(req.member_id.as_str());
+        let subscribed_topics = member_info
             .map(|m| m.subscribed_topics.clone())
             .unwrap_or_default();
+        let protocol_version = member_info.map(|m| m.protocol_version).unwrap_or(0);
 
         info!(
             "Member {} subscribed to topics: {:?}",
@@ -904,10 +907,12 @@ impl ConnectionHandler {
             .with_assigned_partitions(assigned_partitions)
             .with_user_data(None);
 
-        // Encode the assignment to bytes
+        // Encode the assignment to bytes with version prefix (matching subscription format)
         let mut assignment_buf = Vec::new();
+        use bytes::BufMut;
+        assignment_buf.put_i16(protocol_version); // Write version prefix
         assignment
-            .encode(&mut assignment_buf, 0)
+            .encode(&mut assignment_buf, protocol_version)
             .map_err(|e| HeraclitusError::Protocol(format!("Failed to encode assignment: {e}")))?;
 
         info!(
