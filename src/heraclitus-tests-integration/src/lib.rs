@@ -36,9 +36,10 @@ impl MinioTestContext {
         let endpoint = format!("http://127.0.0.1:{host_port}");
         tracing::info!("MinIO accessible at: {endpoint}");
 
-        // Create DSN for object storage
-        let dsn = Url::parse(&format!("s3://127.0.0.1:{host_port}/{bucket_name}"))?;
-        tracing::debug!("Storage DSN: {dsn}");
+        // Create DSN for object storage - use proper S3 URL format with bucket name as host
+        // The actual endpoint URL will be passed via AWS_ENDPOINT_URL environment variable
+        let dsn = Url::parse(&format!("s3://{bucket_name}/"))?;
+        tracing::debug!("Storage DSN: {dsn} (endpoint will be set via AWS_ENDPOINT_URL)");
 
         // Create the test bucket
         tracing::info!("Creating test bucket '{bucket_name}'...");
