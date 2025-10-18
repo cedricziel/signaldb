@@ -14,7 +14,7 @@ use kafka_protocol::messages::{
     ListOffsetsRequest, MetadataRequest, OffsetCommitRequest, OffsetFetchRequest, ProduceRequest,
     RequestHeader, RequestKind, ResponseHeader, ResponseKind, SyncGroupRequest,
 };
-use kafka_protocol::protocol::{Decodable, Encodable};
+use kafka_protocol::protocol::{Decodable, Encodable, decode_request_header_from_buffer};
 use tracing::{error, info};
 
 pub struct KafkaProtocolHandler;
@@ -31,38 +31,19 @@ impl KafkaProtocolHandler {
         // Create a buffer for parsing
         let mut buf = Bytes::from(data.to_vec());
 
-        // Peek at the API key and version to determine the correct header version
+        // Peek at the API key and version for logging
         let api_key = i16::from_be_bytes([data[0], data[1]]);
         let api_version = i16::from_be_bytes([data[2], data[3]]);
 
         info!("Request: api_key={}, api_version={}", api_key, api_version);
 
-        // Determine the correct header version using kafka-protocol's built-in logic
-        let header_version = match ApiKey::try_from(api_key) {
-            Ok(api_key_enum) => api_key_enum.request_header_version(api_version),
-            Err(_) => {
-                return Err(HeraclitusError::Protocol(format!(
-                    "Unknown API key: {api_key}"
-                )));
-            }
-        };
-
-        info!("Using header version: {}", header_version);
-
-        // Decode the request header with the correct version
-        let header = match RequestHeader::decode(&mut buf, header_version) {
-            Ok(h) => h,
-            Err(e) => {
-                error!(
-                    "Failed to decode header with version {}: {}",
-                    header_version, e
-                );
-                error!("Remaining bytes in buffer: {}", buf.len());
-                return Err(HeraclitusError::Protocol(format!(
-                    "Failed to decode header: {e}"
-                )));
-            }
-        };
+        // Decode the request header using kafka-protocol's helper function
+        // This automatically determines the correct header version based on API key and version
+        let header = decode_request_header_from_buffer(&mut buf).map_err(|e| {
+            error!("Failed to decode header: {}", e);
+            error!("Remaining bytes in buffer: {}", buf.len());
+            HeraclitusError::Protocol(format!("Failed to decode header: {e}"))
+        })?;
 
         info!(
             "Parsed header: correlation_id={}, client_id={:?}",
