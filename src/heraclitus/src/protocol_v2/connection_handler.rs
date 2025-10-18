@@ -466,11 +466,20 @@ impl ConnectionHandler {
                 // Extract messages from the records
                 if let Some(records_bytes) = &partition_data.records {
                     // Decode the record batch
+                    info!(
+                        "Attempting to decode record batch of {} bytes for topic '{}' partition {}",
+                        records_bytes.len(),
+                        topic_name,
+                        partition_index
+                    );
                     let mut records_buf = records_bytes.clone();
-                    // Try standard decode first, fall back to custom decompression if needed
                     let decode_result = RecordBatchDecoder::decode(&mut records_buf);
                     match decode_result {
                         Ok(record_set) => {
+                            info!(
+                                "Successfully decoded {} records from batch",
+                                record_set.records.len()
+                            );
                             // Assign offsets for this batch if not already done
                             if assigned_base_offset.is_none() {
                                 let record_count = record_set.records.len();

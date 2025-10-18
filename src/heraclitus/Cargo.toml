@@ -44,7 +44,7 @@ tracing-subscriber = { workspace = true }
 rand = { workspace = true }
 
 # For Kafka protocol implementation
-kafka-protocol = { version = "0.15.1", features = ["messages_enums", "broker", "gzip", "zstd", "snappy", "lz4"] }
+kafka-protocol = { version = "0.16", features = ["messages_enums", "broker", "gzip", "zstd", "snappy", "lz4"] }
 
 [dev-dependencies]
 rdkafka = { workspace = true }
