@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile for Heraclitus
-FROM rust:1.85 AS builder
+FROM rust:1.86 AS builder
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
