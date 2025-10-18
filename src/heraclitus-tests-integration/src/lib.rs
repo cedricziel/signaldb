@@ -132,29 +132,21 @@ impl HeraclitusTestContext {
         let config_path = config_dir.path().join("heraclitus.toml");
         let config_content = format!(
             r#"
-[server]
-kafka_port = {kafka_port}
-bind_address = "127.0.0.1"
-
-[storage]
-dsn = "{}"
-
-[heraclitus]
-state_prefix = "heraclitus-test/"
-batch_size = 100
-batch_timeout_ms = 100
-segment_size_mb = 1
 kafka_port = {kafka_port}
 http_port = {http_port}
-metrics_enabled = false
 
-[discovery]
-type = "static"
-static_peers = []
+[storage]
+path = "{}"
 
-[database]
-type = "sqlite"
-connection_string = ":memory:"
+[state]
+prefix = "heraclitus-test/"
+
+[batching]
+batch_size = 100
+flush_interval_ms = 100
+
+[metrics]
+enabled = false
 "#,
             minio.storage_dsn()
         );
@@ -181,39 +173,55 @@ connection_string = ":memory:"
         heraclitus_path.push("debug");
         heraclitus_path.push("heraclitus");
 
-        // Start Heraclitus process with stdout/stderr captured for debugging
+        // Create log file for heraclitus output
+        let log_path = config_dir.path().join("heraclitus.log");
+        let log_file = std::fs::File::create(&log_path)?;
+
+        // Start Heraclitus process with stdout/stderr captured to log file
         let mut cmd = Command::new(&heraclitus_path);
         cmd.arg("--config")
             .arg(&config_path)
-            .arg("--kafka-port")
-            .arg(kafka_port.to_string())
-            .env("RUST_LOG", "heraclitus=debug,info")
+            .env("RUST_LOG", "heraclitus=info")
             .env("AWS_ACCESS_KEY_ID", "minioadmin")
             .env("AWS_SECRET_ACCESS_KEY", "minioadmin")
             .env("AWS_ENDPOINT_URL", &minio.endpoint)
             .env("AWS_DEFAULT_REGION", "us-east-1")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stdout(log_file.try_clone()?)
+            .stderr(log_file);
 
-        tracing::info!(
+        tracing::info!("Starting heraclitus on kafka_port={kafka_port}, http_port={http_port}");
+        tracing::debug!(
             "Spawning heraclitus binary at: {}",
             heraclitus_path.display()
         );
-        let mut process = cmd.spawn()?;
+        tracing::debug!("Heraclitus logs will be written to: {}", log_path.display());
 
-        // Spawn a task to read and log stderr/stdout from the heraclitus process
-        if let Some(stderr) = process.stderr.take() {
-            use std::io::{BufRead, BufReader};
-            std::thread::spawn(move || {
-                let reader = BufReader::new(stderr);
-                for line in reader.lines().map_while(Result::ok) {
-                    eprintln!("[heraclitus] {}", line);
-                }
-            });
+        let mut process = cmd
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("Failed to spawn heraclitus process: {e}"))?;
+
+        // Give the process a moment to start or fail
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Check if the process is still running
+        if let Some(exit_status) = process.try_wait()? {
+            // Read the log file to see what went wrong
+            let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Heraclitus process exited immediately with status: {exit_status}\nLogs:\n{log_content}"
+            ));
         }
 
         // Wait for server to be ready
-        wait_for_heraclitus(kafka_port).await?;
+        if let Err(e) = wait_for_heraclitus(kafka_port).await {
+            // If the server didn't start, try to read the log file
+            let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
+            // Kill the process if it's still running
+            let _ = process.kill();
+            return Err(anyhow::anyhow!(
+                "Failed to start Heraclitus: {e}\nLogs:\n{log_content}"
+            ));
+        }
 
         Ok(Self {
             process,
