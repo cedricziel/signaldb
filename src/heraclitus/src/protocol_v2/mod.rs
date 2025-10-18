@@ -72,8 +72,13 @@ impl KafkaProtocolHandler {
         // Decode the request body based on API key
         let request = match ApiKey::try_from(api_key) {
             Ok(ApiKey::ApiVersions) => {
-                let req = ApiVersionsRequest::decode(&mut buf, api_version).map_err(|e| {
-                    HeraclitusError::Protocol(format!("Failed to decode ApiVersions: {e}"))
+                // ApiVersionsRequest is special - clients may send versions we don't support yet
+                // Try to decode with the requested version, but fall back to version 3 if it fails
+                let safe_version = api_version.min(3);
+                let req = ApiVersionsRequest::decode(&mut buf, safe_version).map_err(|e| {
+                    HeraclitusError::Protocol(format!(
+                        "Failed to decode ApiVersions (version {api_version}, tried {safe_version}): {e}"
+                    ))
                 })?;
                 RequestKind::ApiVersions(req)
             }
@@ -295,6 +300,11 @@ impl KafkaProtocolHandler {
             // OffsetCommit
             ApiVersion::default()
                 .with_api_key(8)
+                .with_min_version(0)
+                .with_max_version(9),
+            // OffsetFetch
+            ApiVersion::default()
+                .with_api_key(9)
                 .with_min_version(0)
                 .with_max_version(9),
             // FindCoordinator

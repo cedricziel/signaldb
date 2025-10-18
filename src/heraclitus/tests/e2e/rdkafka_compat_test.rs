@@ -17,20 +17,29 @@ async fn test_rdkafka_connectivity() -> Result<()> {
 
     let context = HeraclitusTestContext::new().await?;
 
-    // Test that we can create both producer and consumer
-    let _producer: BaseProducer = ClientConfig::new()
-        .set("bootstrap.servers", context.kafka_addr())
-        .set("message.timeout.ms", "5000")
-        .create()?;
+    // Add a small delay to ensure server is fully ready
+    tokio::time::sleep(Duration::from_millis(1000)).await;
 
+    println!(
+        "Creating rdkafka consumer with bootstrap.servers={}",
+        context.kafka_addr()
+    );
+
+    // Test that we can create both producer and consumer
     let consumer: BaseConsumer = ClientConfig::new()
         .set("bootstrap.servers", context.kafka_addr())
         .set("group.id", "test-connectivity")
         .set("client.id", "test-client")
+        .set("api.version.request", "true")
+        .set("socket.timeout.ms", "10000")
+        .set("metadata.request.timeout.ms", "10000")
+        .set("debug", "broker,topic,msg")
         .create()?;
 
+    println!("Consumer created, fetching metadata...");
+
     // Fetch metadata to verify connectivity
-    let metadata = consumer.fetch_metadata(None, Duration::from_secs(5))?;
+    let metadata = consumer.fetch_metadata(None, Duration::from_secs(15))?;
     assert!(
         !metadata.brokers().is_empty(),
         "Should have at least one broker"

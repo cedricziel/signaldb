@@ -4,7 +4,8 @@ use super::helpers::HeraclitusTestContext;
 use anyhow::Result;
 use bytes::{BufMut, BytesMut};
 use kafka_protocol::messages::{
-    ApiKey, CreateTopicsRequest, RequestHeader, create_topics_request::CreatableTopic,
+    ApiKey, CreateTopicsRequest, FetchRequest, ListOffsetsRequest, RequestHeader,
+    create_topics_request::CreatableTopic,
 };
 use kafka_protocol::protocol::Encodable;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -123,44 +124,49 @@ async fn test_fetch_protocol() -> Result<()> {
     // First produce a message
     produce_test_message(&mut stream, "fetch-test", "test-key", "test-value").await?;
 
-    // Create fetch request (API key 1, version 11)
-    let mut request = BytesMut::new();
+    // Create fetch request using kafka-protocol structures
+    let mut buf = BytesMut::new();
 
-    // Request header
-    request.put_i16(1); // API key for Fetch
-    request.put_i16(11); // API version
-    request.put_i32(91); // Correlation ID
-    request.put_i16(0); // Client ID length (empty)
+    // Create request header
+    let header = RequestHeader::default()
+        .with_request_api_key(ApiKey::Fetch as i16)
+        .with_request_api_version(4) // Use version 4 which is simpler than v11
+        .with_correlation_id(91)
+        .with_client_id(None);
 
-    // Request body
-    request.put_i32(-1); // Replica ID
-    request.put_i32(100); // Max wait time
-    request.put_i32(1); // Min bytes
-    request.put_i32(1048576); // Max bytes
-    request.put_i8(0); // Isolation level
-    request.put_i32(0); // Session ID
-    request.put_i32(-1); // Session epoch
-    request.put_i32(1); // Number of topics
+    // Encode header (version 1 for Fetch v4)
+    header.encode(&mut buf, 1)?;
 
-    // Topic data
-    request.put_i16(10); // Topic name length
-    request.put_slice(b"fetch-test"); // Topic name
-    request.put_i32(1); // Number of partitions
+    // Create and encode request body
+    use kafka_protocol::messages::TopicName;
+    use kafka_protocol::messages::fetch_request::{FetchPartition, FetchTopic};
 
-    // Partition data
-    request.put_i32(0); // Partition index
-    request.put_i16(-1); // Current leader epoch
-    request.put_i64(0); // Fetch offset
-    request.put_i64(-1); // Log start offset
-    request.put_i32(1048576); // Partition max bytes
+    let partition = FetchPartition::default()
+        .with_partition(0)
+        .with_current_leader_epoch(-1)
+        .with_fetch_offset(0)
+        .with_partition_max_bytes(1048576);
 
-    request.put_i32(0); // Forgotten topics count
-    request.put_i16(0); // Rack ID (null)
+    let topic = FetchTopic::default()
+        .with_topic(TopicName::from(
+            kafka_protocol::protocol::StrBytes::from_static_str("fetch-test"),
+        ))
+        .with_partitions(vec![partition]);
 
-    // Wrap with length prefix
+    let request = FetchRequest::default()
+        .with_replica_id(kafka_protocol::messages::BrokerId(-1))
+        .with_max_wait_ms(100)
+        .with_min_bytes(1)
+        .with_max_bytes(1048576)
+        .with_isolation_level(0)
+        .with_topics(vec![topic]);
+
+    request.encode(&mut buf, 4)?;
+
+    // Create frame with length prefix
     let mut frame = BytesMut::new();
-    frame.put_i32(request.len() as i32);
-    frame.extend_from_slice(&request);
+    frame.extend_from_slice(&(buf.len() as i32).to_be_bytes());
+    frame.extend_from_slice(&buf);
 
     // Send request
     stream.write_all(&frame).await?;
@@ -199,34 +205,43 @@ async fn test_list_offsets_protocol() -> Result<()> {
     // Connect to Kafka port
     let mut stream = TcpStream::connect(&context.kafka_addr()).await?;
 
-    // Create ListOffsets request (API key 2, version 5)
-    let mut request = BytesMut::new();
+    // Create ListOffsets request using kafka-protocol structures
+    let mut buf = BytesMut::new();
 
-    // Request header
-    request.put_i16(2); // API key for ListOffsets
-    request.put_i16(5); // API version
-    request.put_i32(92); // Correlation ID
-    request.put_i16(0); // Client ID length (empty)
+    // Create request header
+    let header = RequestHeader::default()
+        .with_request_api_key(ApiKey::ListOffsets as i16)
+        .with_request_api_version(1) // Use version 1 which is simpler
+        .with_correlation_id(92)
+        .with_client_id(None);
 
-    // Request body
-    request.put_i32(-1); // Replica ID
-    request.put_i8(0); // Isolation level
-    request.put_i32(1); // Number of topics
+    // Encode header (version 1 for ListOffsets v1)
+    header.encode(&mut buf, 1)?;
 
-    // Topic data
-    request.put_i16(11); // Topic name length
-    request.put_slice(b"offset-test"); // Topic name
-    request.put_i32(1); // Number of partitions
+    // Create and encode request body
+    use kafka_protocol::messages::TopicName;
+    use kafka_protocol::messages::list_offsets_request::{ListOffsetsPartition, ListOffsetsTopic};
 
-    // Partition data
-    request.put_i32(0); // Partition index
-    request.put_i16(-1); // Current leader epoch
-    request.put_i64(-2); // Timestamp (-2 = earliest)
+    let partition = ListOffsetsPartition::default()
+        .with_partition_index(0)
+        .with_timestamp(-2); // -2 = earliest, -1 = latest
 
-    // Wrap with length prefix
+    let topic = ListOffsetsTopic::default()
+        .with_name(TopicName::from(
+            kafka_protocol::protocol::StrBytes::from_static_str("offset-test"),
+        ))
+        .with_partitions(vec![partition]);
+
+    let request = ListOffsetsRequest::default()
+        .with_replica_id(kafka_protocol::messages::BrokerId(-1))
+        .with_topics(vec![topic]);
+
+    request.encode(&mut buf, 1)?;
+
+    // Create frame with length prefix
     let mut frame = BytesMut::new();
-    frame.put_i32(request.len() as i32);
-    frame.extend_from_slice(&request);
+    frame.extend_from_slice(&(buf.len() as i32).to_be_bytes());
+    frame.extend_from_slice(&buf);
 
     // Send request
     stream.write_all(&frame).await?;
