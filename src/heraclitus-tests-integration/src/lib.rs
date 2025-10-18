@@ -61,10 +61,31 @@ async fn create_test_bucket(endpoint: &str, bucket: &str) -> Result<()> {
 
     let client = Client::new(&config);
 
-    // Create bucket
-    client.create_bucket().bucket(bucket).send().await?;
+    // Wait for MinIO to be ready with retry logic
+    let mut attempts = 0;
+    const MAX_ATTEMPTS: u32 = 30;
 
-    Ok(())
+    loop {
+        match client.create_bucket().bucket(bucket).send().await {
+            Ok(_) => {
+                tracing::debug!("Successfully created bucket '{bucket}' after {attempts} attempts");
+                return Ok(());
+            }
+            Err(e) => {
+                attempts += 1;
+                if attempts >= MAX_ATTEMPTS {
+                    return Err(anyhow::anyhow!(
+                        "Failed to create bucket '{bucket}' after {MAX_ATTEMPTS} attempts: {e}"
+                    ));
+                }
+                tracing::debug!(
+                    "Waiting for MinIO to be ready (attempt {}/{MAX_ATTEMPTS}): {e}",
+                    attempts
+                );
+                sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
 }
 
 /// Test context for Heraclitus server
