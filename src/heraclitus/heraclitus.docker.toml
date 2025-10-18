@@ -6,8 +6,11 @@ http_port = 9093
 
 [storage]
 # Use in-memory storage by default for testing
-# Can be overridden with HERACLITUS_STORAGE_PATH env var
 path = "memory://"
+# For production, use S3/MinIO (configure via AWS_* env vars):
+# path = "s3://my-bucket/heraclitus"
+# Or local filesystem in a volume:
+# path = "/var/lib/heraclitus"
 
 [auth]
 enabled = false

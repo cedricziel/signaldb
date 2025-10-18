@@ -7,7 +7,7 @@ A standalone, high-performance Kafka-compatible protocol server written in Rust.
 - Full Kafka wire protocol compatibility (v0-v3 for most APIs)
 - Zero-copy message handling for optimal performance
 - Multiple compression algorithms (Gzip, Snappy, LZ4, Zstandard)
-- Pluggable storage backends (local filesystem, in-memory)
+- Pluggable storage backends (S3/MinIO, local filesystem, in-memory)
 - Built-in metrics and monitoring via Prometheus
 - Consumer group coordination
 - SASL/PLAIN authentication support
@@ -21,6 +21,12 @@ cargo run --bin heraclitus
 
 # Run with in-memory storage
 cargo run --bin heraclitus -- --storage-path memory://
+
+# Run with S3/MinIO storage
+export AWS_ACCESS_KEY_ID=minioadmin
+export AWS_SECRET_ACCESS_KEY=minioadmin
+export AWS_ENDPOINT_URL=http://localhost:9000
+cargo run --bin heraclitus -- --storage-path s3://my-bucket/heraclitus
 
 # Run with custom ports
 cargo run --bin heraclitus -- --kafka-port 9092 --http-port 9093
@@ -38,7 +44,13 @@ kafka_port = 9092
 http_port = 9093
 
 [storage]
-path = "/var/lib/heraclitus"  # or "memory://" for in-memory
+# Local filesystem path
+path = "/var/lib/heraclitus"
+# Or use in-memory storage (data lost on restart)
+# path = "memory://"
+# Or use S3/MinIO (configure via environment variables)
+# path = "s3://my-bucket/heraclitus"
+# dsn = "s3://my-bucket/heraclitus"  # 'dsn' is an alias for 'path'
 
 [auth]
 enabled = false
@@ -69,6 +81,19 @@ Run with configuration file:
 cargo run --bin heraclitus -- --config heraclitus.toml
 ```
 
+### S3/MinIO Storage Configuration
+
+When using S3 storage (`s3://bucket/path`), configure via environment variables:
+
+```bash
+export AWS_ACCESS_KEY_ID=your-access-key
+export AWS_SECRET_ACCESS_KEY=your-secret-key
+export AWS_DEFAULT_REGION=us-east-1
+export AWS_ENDPOINT_URL=http://localhost:9000  # For MinIO or custom S3 endpoint
+```
+
+The S3 URL format is: `s3://bucket-name/optional/path/prefix`
+
 ## Architecture
 
 Heraclitus is designed as a standalone server with clean separation of concerns:
@@ -84,6 +109,7 @@ Heraclitus is designed as a standalone server with clean separation of concerns:
 ### Handler Architecture
 
 Each Kafka API is implemented as a separate handler:
+
 - **Auth**: ApiVersions, SaslHandshake, SaslAuthenticate
 - **Metadata**: Metadata, ListOffsets
 - **Produce**: Produce, InitProducerId
@@ -144,6 +170,7 @@ cargo bench
 Metrics are exposed at `http://localhost:9093/metrics` (by default) in Prometheus format.
 
 Key metrics include:
+
 - Request rates and latencies per API
 - Message throughput and sizes
 - Consumer group states

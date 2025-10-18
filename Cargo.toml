@@ -115,8 +115,8 @@ hex = "0.4"
 env_logger = "0.11.5"
 tower = "0.5.2"
 
-testcontainers = "0.24.0"
-testcontainers-modules = { version = "0.12.1", features = ["postgres", "kafka"] }
+testcontainers = "0.25.0"
+testcontainers-modules = { version = "0.13", features = ["postgres", "kafka"] }
 tempfile = "3.20.0"
 rand = "0.9"
 
@@ -147,7 +147,11 @@ sqlx = { version = "0.8", default-features = false, features = [
     "uuid",
 ] }
 url = "2.5"
-cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"] }
+cargo-husky = { version = "1", default-features = false, features = [
+    "precommit-hook",
+    "run-cargo-fmt",
+    "run-cargo-clippy",
+] }
 toml = "0.8"
 
 # AWS SDK dependencies

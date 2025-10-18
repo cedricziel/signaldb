@@ -41,7 +41,7 @@ pub struct HeraclitusConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StorageConfig {
-    #[serde(default = "default_storage_path")]
+    #[serde(default = "default_storage_path", alias = "dsn")]
     pub path: String,
 }
 

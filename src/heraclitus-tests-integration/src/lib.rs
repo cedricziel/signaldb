@@ -22,19 +22,29 @@ pub struct MinioTestContext {
 
 impl MinioTestContext {
     pub async fn new(bucket_name: &str) -> Result<Self> {
+        tracing::info!("Starting MinIO container for bucket '{bucket_name}'");
+
         // Start MinIO container
         let minio = MinIO::default();
+        tracing::debug!("MinIO image configured, starting container...");
+
         let container = minio.start().await?;
+        tracing::info!("✓ MinIO container started successfully");
 
         // Get connection details
         let host_port = container.get_host_port_ipv4(9000).await?;
         let endpoint = format!("http://127.0.0.1:{host_port}");
+        tracing::info!("MinIO accessible at: {endpoint}");
 
         // Create DSN for object storage
         let dsn = Url::parse(&format!("s3://127.0.0.1:{host_port}/{bucket_name}"))?;
+        tracing::debug!("Storage DSN: {dsn}");
 
         // Create the test bucket
+        tracing::info!("Creating test bucket '{bucket_name}'...");
         create_test_bucket(&endpoint, bucket_name).await?;
+
+        tracing::info!("✓ MinIO test context ready with bucket '{bucket_name}'");
 
         Ok(Self {
             container,
@@ -50,6 +60,8 @@ impl MinioTestContext {
 }
 
 async fn create_test_bucket(endpoint: &str, bucket: &str) -> Result<()> {
+    tracing::info!("Creating S3 client for endpoint: {endpoint}, bucket: {bucket}");
+
     // Create S3 client
     let credentials = Credentials::new("minioadmin", "minioadmin", None, None, "test");
     let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
@@ -60,28 +72,38 @@ async fn create_test_bucket(endpoint: &str, bucket: &str) -> Result<()> {
         .await;
 
     let client = Client::new(&config);
+    tracing::info!("S3 client created, attempting to create bucket '{bucket}'");
 
     // Wait for MinIO to be ready with retry logic
     let mut attempts = 0;
     const MAX_ATTEMPTS: u32 = 30;
 
     loop {
+        tracing::debug!(
+            "Attempt {}/{MAX_ATTEMPTS} to create bucket '{bucket}'",
+            attempts + 1
+        );
+
         match client.create_bucket().bucket(bucket).send().await {
             Ok(_) => {
-                tracing::debug!("Successfully created bucket '{bucket}' after {attempts} attempts");
+                tracing::info!(
+                    "✓ Successfully created bucket '{bucket}' after {attempts} attempts"
+                );
                 return Ok(());
             }
             Err(e) => {
                 attempts += 1;
+                tracing::warn!("Attempt {}/{MAX_ATTEMPTS} failed: {e:?}", attempts);
+
                 if attempts >= MAX_ATTEMPTS {
+                    tracing::error!(
+                        "✗ Failed to create bucket '{bucket}' after {MAX_ATTEMPTS} attempts"
+                    );
                     return Err(anyhow::anyhow!(
-                        "Failed to create bucket '{bucket}' after {MAX_ATTEMPTS} attempts: {e}"
+                        "Failed to create bucket '{bucket}' after {MAX_ATTEMPTS} attempts: {e:?}"
                     ));
                 }
-                tracing::debug!(
-                    "Waiting for MinIO to be ready (attempt {}/{MAX_ATTEMPTS}): {e}",
-                    attempts
-                );
+
                 sleep(Duration::from_millis(500)).await;
             }
         }
@@ -159,7 +181,7 @@ connection_string = ":memory:"
         heraclitus_path.push("debug");
         heraclitus_path.push("heraclitus");
 
-        // Start Heraclitus process
+        // Start Heraclitus process with stdout/stderr captured for debugging
         let mut cmd = Command::new(&heraclitus_path);
         cmd.arg("--config")
             .arg(&config_path)
@@ -169,9 +191,26 @@ connection_string = ":memory:"
             .env("AWS_ACCESS_KEY_ID", "minioadmin")
             .env("AWS_SECRET_ACCESS_KEY", "minioadmin")
             .env("AWS_ENDPOINT_URL", &minio.endpoint)
-            .env("AWS_DEFAULT_REGION", "us-east-1");
+            .env("AWS_DEFAULT_REGION", "us-east-1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
 
-        let process = cmd.spawn()?;
+        tracing::info!(
+            "Spawning heraclitus binary at: {}",
+            heraclitus_path.display()
+        );
+        let mut process = cmd.spawn()?;
+
+        // Spawn a task to read and log stderr/stdout from the heraclitus process
+        if let Some(stderr) = process.stderr.take() {
+            use std::io::{BufRead, BufReader};
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines().map_while(Result::ok) {
+                    eprintln!("[heraclitus] {}", line);
+                }
+            });
+        }
 
         // Wait for server to be ready
         wait_for_heraclitus(kafka_port).await?;
@@ -240,7 +279,9 @@ pub async fn find_available_port() -> Result<u16> {
 /// Initialize tracing for tests
 pub fn init_test_tracing() {
     let _ = tracing_subscriber::fmt()
-        .with_env_filter("heraclitus=debug,info")
+        .with_env_filter("heraclitus=debug,heraclitus_tests_integration=debug,info")
         .with_test_writer()
         .try_init();
+
+    tracing::info!("✓ Test tracing initialized");
 }

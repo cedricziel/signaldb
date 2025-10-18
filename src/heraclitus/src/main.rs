@@ -59,8 +59,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // Create storage directory if needed
-    if !config.storage.path.starts_with("memory://") {
+    // Create storage directory if needed (only for local filesystem paths)
+    if !config.storage.path.starts_with("memory://")
+        && !config.storage.path.starts_with("s3://")
+        && !config.storage.path.starts_with("file://")
+    {
         std::fs::create_dir_all(&config.storage.path)?;
     }
 

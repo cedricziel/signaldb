@@ -12,12 +12,13 @@ pub use config::HeraclitusConfig;
 pub use error::{HeraclitusError, Result};
 pub use storage::KafkaMessage;
 
-use object_store::{ObjectStore, local::LocalFileSystem, memory::InMemory};
+use object_store::{ObjectStore, aws::AmazonS3Builder, local::LocalFileSystem, memory::InMemory};
 use std::sync::Arc;
 use storage::{BatchWriter, MessageReader};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tracing::{error, info};
+use url::Url;
 
 pub struct HeraclitusAgent {
     config: HeraclitusConfig,
@@ -42,10 +43,72 @@ impl HeraclitusAgent {
             (registry, metrics)
         };
 
-        // Create object store directly based on storage path
+        // Create object store based on storage path/URL
         let object_store: Arc<dyn ObjectStore> = if config.storage.path.starts_with("memory://") {
+            info!("Using in-memory object storage");
             Arc::new(InMemory::new())
+        } else if config.storage.path.starts_with("s3://") {
+            info!(
+                "Configuring S3 object storage from: {}",
+                config.storage.path
+            );
+
+            // Parse S3 URL to extract bucket and path
+            let url = Url::parse(&config.storage.path)
+                .map_err(|e| HeraclitusError::Configuration(format!("Invalid S3 URL: {e}")))?;
+
+            let bucket = url.host_str().ok_or_else(|| {
+                HeraclitusError::Configuration("S3 URL must have a host (bucket name)".to_string())
+            })?;
+
+            // Extract path from URL if present (e.g., s3://bucket/path/to/data)
+            let path = url.path().trim_start_matches('/');
+
+            // Build S3 client using environment variables for configuration
+            let mut s3_builder = AmazonS3Builder::new().with_bucket_name(bucket);
+
+            // Set endpoint from environment if provided (for MinIO compatibility)
+            if let Ok(endpoint) = std::env::var("AWS_ENDPOINT_URL") {
+                info!("Using custom S3 endpoint: {endpoint}");
+                s3_builder = s3_builder.with_endpoint(endpoint);
+                // For MinIO/custom endpoints, we need to allow HTTP
+                s3_builder = s3_builder.with_allow_http(true);
+            }
+
+            // Region from environment or default
+            let region =
+                std::env::var("AWS_DEFAULT_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+            s3_builder = s3_builder.with_region(region);
+
+            // Credentials from environment variables
+            if let (Ok(access_key), Ok(secret_key)) = (
+                std::env::var("AWS_ACCESS_KEY_ID"),
+                std::env::var("AWS_SECRET_ACCESS_KEY"),
+            ) {
+                info!("Using AWS credentials from environment");
+                s3_builder = s3_builder
+                    .with_access_key_id(access_key)
+                    .with_secret_access_key(secret_key);
+            }
+
+            let s3_store = s3_builder.build().map_err(|e| {
+                HeraclitusError::Configuration(format!("Failed to build S3 store: {e}"))
+            })?;
+
+            // If there's a path prefix in the URL, wrap the store to use that prefix
+            if !path.is_empty() {
+                info!("Using S3 path prefix: {path}");
+                Arc::new(object_store::prefix::PrefixStore::new(s3_store, path))
+            } else {
+                Arc::new(s3_store)
+            }
+        } else if config.storage.path.starts_with("file://") {
+            let path = config.storage.path.strip_prefix("file://").unwrap();
+            info!("Using local filesystem storage at: {path}");
+            Arc::new(LocalFileSystem::new_with_prefix(path)?)
         } else {
+            // Assume it's a local file path
+            info!("Using local filesystem storage at: {}", config.storage.path);
             Arc::new(LocalFileSystem::new_with_prefix(&config.storage.path)?)
         };
 
