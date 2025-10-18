@@ -18,6 +18,8 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      heraclitus_release_created: ${{ steps.release.outputs['src--heraclitus--release_created'] }}
+      heraclitus_tag_name: ${{ steps.release.outputs['src--heraclitus--tag_name'] }}
     steps:
       - name: Run release-please
         id: release
@@ -86,13 +88,14 @@ jobs:
 
       - name: Package binaries
         shell: bash
+        env:
+          HERACLITUS_RELEASE: ${{ needs.release-please.outputs.heraclitus_release_created }}
         run: |
           cd target/${{ matrix.target }}/release
 
           # Create directories for different deployment models
           mkdir -p signaldb-monolithic-${{ matrix.target }}
           mkdir -p signaldb-microservices-${{ matrix.target }}
-          mkdir -p heraclitus-${{ matrix.target }}
 
           # Package monolithic deployment
           cp signaldb${{ matrix.binary_suffix }} signaldb-monolithic-${{ matrix.target }}/
@@ -112,12 +115,18 @@ jobs:
             tar czf signaldb-microservices-${{ matrix.target }}.tar.gz signaldb-microservices-${{ matrix.target }}/
           fi
 
-          # Package Heraclitus (standalone Kafka-compatible server)
-          cp heraclitus${{ matrix.binary_suffix }} heraclitus-${{ matrix.target }}/
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            7z a heraclitus-${{ matrix.target }}.zip heraclitus-${{ matrix.target }}/
+          # Package Heraclitus (standalone Kafka-compatible server) - only if Heraclitus was released
+          if [ "$HERACLITUS_RELEASE" = "true" ]; then
+            echo "Packaging Heraclitus release..."
+            mkdir -p heraclitus-${{ matrix.target }}
+            cp heraclitus${{ matrix.binary_suffix }} heraclitus-${{ matrix.target }}/
+            if [ "${{ matrix.os }}" = "windows-latest" ]; then
+              7z a heraclitus-${{ matrix.target }}.zip heraclitus-${{ matrix.target }}/
+            else
+              tar czf heraclitus-${{ matrix.target }}.tar.gz heraclitus-${{ matrix.target }}/
+            fi
           else
-            tar czf heraclitus-${{ matrix.target }}.tar.gz heraclitus-${{ matrix.target }}/
+            echo "Skipping Heraclitus packaging (no Heraclitus release)"
           fi
 
       - name: Upload artifacts
