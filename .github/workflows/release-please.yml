@@ -92,6 +92,7 @@ jobs:
           # Create directories for different deployment models
           mkdir -p signaldb-monolithic-${{ matrix.target }}
           mkdir -p signaldb-microservices-${{ matrix.target }}
+          mkdir -p heraclitus-${{ matrix.target }}
 
           # Package monolithic deployment
           cp signaldb${{ matrix.binary_suffix }} signaldb-monolithic-${{ matrix.target }}/
@@ -111,6 +112,14 @@ jobs:
             tar czf signaldb-microservices-${{ matrix.target }}.tar.gz signaldb-microservices-${{ matrix.target }}/
           fi
 
+          # Package Heraclitus (standalone Kafka-compatible server)
+          cp heraclitus${{ matrix.binary_suffix }} heraclitus-${{ matrix.target }}/
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            7z a heraclitus-${{ matrix.target }}.zip heraclitus-${{ matrix.target }}/
+          else
+            tar czf heraclitus-${{ matrix.target }}.tar.gz heraclitus-${{ matrix.target }}/
+          fi
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -118,6 +127,7 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/signaldb-monolithic-${{ matrix.target }}.*
             target/${{ matrix.target }}/release/signaldb-microservices-${{ matrix.target }}.*
+            target/${{ matrix.target }}/release/heraclitus-${{ matrix.target }}.*
 
   docker-build:
     name: Build Docker Images
