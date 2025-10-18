@@ -1,0 +1,25 @@
+# Heraclitus Configuration
+
+kafka_port = 9092
+http_port = 9093
+
+[storage]
+# Local filesystem (creates directory if it doesn't exist)
+path = "/tmp/heraclitus-data"
+# Or use in-memory storage (data lost on restart):
+# path = "memory://"
+# Or use S3/MinIO (configure credentials via AWS_* env vars):
+# path = "s3://my-bucket/heraclitus"
+
+[auth]
+enabled = false
+
+[broker]
+id = 0
+advertised_host = "localhost"
+advertised_port = 9092
+
+[limits]
+max_request_size = 104857600  # 100MB
+max_response_size = 104857600  # 100MB
+max_connections = 1000

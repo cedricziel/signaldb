@@ -18,31 +18,35 @@ Building a database for observability signals (metrics/logs/traces) with focus o
 SignalDB is built on the FDAP stack with Apache Arrow Flight as the primary inter-service communication protocol, providing high-performance data transfer and native observability signal processing.
 
 ### Core Design Principles
+
 - **Flight-First Communication**: Apache Arrow Flight for zero-copy, high-throughput data transfer
-- **WAL-Based Durability**: Write-Ahead Log ensures data persistence and crash recovery
-- **Catalog-Based Discovery**: Database-backed service registry with automatic health monitoring
-- **Iceberg Table Format**: ACID transactions with Apache Iceberg for reliable data management
-- **Columnar Storage**: Efficient Parquet storage with DataFusion query processing
-- **Performance Optimization**: Intelligent batch processing and connection pooling
+* **WAL-Based Durability**: Write-Ahead Log ensures data persistence and crash recovery
+* **Catalog-Based Discovery**: Database-backed service registry with automatic health monitoring
+* **Iceberg Table Format**: ACID transactions with Apache Iceberg for reliable data management
+* **Columnar Storage**: Efficient Parquet storage with DataFusion query processing
+* **Performance Optimization**: Intelligent batch processing and connection pooling
 
 ### Deployment Models
 
 #### Monolithic Deployment
+
 Single binary (`signaldb`) that includes all services - ideal for development and small deployments.
-- All services communicate via localhost Flight endpoints
-- Shared SQLite catalog for service discovery
-- Zero-configuration startup with sensible defaults
+* All services communicate via localhost Flight endpoints
+* Shared SQLite catalog for service discovery
+* Zero-configuration startup with sensible defaults
 
 #### Microservices Deployment
+
 Independent services for scalable production deployments:
-- **signaldb-acceptor**: OTLP data ingestion (gRPC port 4317, HTTP port 4318)
-- **signaldb-router**: Query routing and Tempo API compatibility (HTTP port 3000, Flight port 50053)
-- **signaldb-writer**: Data persistence with WAL durability (Flight port 50051)
-- **signaldb-querier**: DataFusion-powered query execution (Flight port 9000)
+* **signaldb-acceptor**: OTLP data ingestion (gRPC port 4317, HTTP port 4318)
+* **signaldb-router**: Query routing and Tempo API compatibility (HTTP port 3000, Flight port 50053)
+* **signaldb-writer**: Data persistence with WAL durability (Flight port 50051)
+* **signaldb-querier**: DataFusion-powered query execution (Flight port 9000)
 
 ### Data Flow Architecture
 
-**Write Path**: 
+**Write Path**:
+
 ```
 OTLP Client → Acceptor → WAL → Writer → Iceberg Tables (Parquet)
      ↓           ↓        ↓       ↓              ↓
@@ -50,6 +54,7 @@ OTLP Client → Acceptor → WAL → Writer → Iceberg Tables (Parquet)
 ```
 
 **Query Path**:
+
 ```
 Client → Router → Querier → DataFusion → Iceberg Tables
    ↓       ↓        ↓          ↓              ↓
@@ -57,50 +62,55 @@ Client → Router → Querier → DataFusion → Iceberg Tables
 ```
 
 ### Service Discovery & Communication
+
 All services register in a shared catalog for automatic discovery:
-- **PostgreSQL/SQLite catalog** with heartbeat-based health checking
-- **Apache Arrow Flight** for high-performance inter-service communication
-- **Automatic service registration** with capability-based routing
-- **Connection pooling** and load balancing across available services
-- **Graceful shutdown** with proper service deregistration
+* **PostgreSQL/SQLite catalog** with heartbeat-based health checking
+* **Apache Arrow Flight** for high-performance inter-service communication
+* **Automatic service registration** with capability-based routing
+* **Connection pooling** and load balancing across available services
+* **Graceful shutdown** with proper service deregistration
 
 ## Storage Architecture
 
 ### Iceberg Table Format
+
 SignalDB uses Apache Iceberg as the table format for reliable data management:
 
-- **ACID Transactions**: Full transaction support with commit/rollback operations
-- **Schema Evolution**: Safe schema changes without data migration
-- **Time Travel**: Query historical data states and track changes over time
-- **Metadata Management**: Efficient table metadata and partition management
-- **Performance Optimization**: Intelligent batch processing and connection pooling
+* **ACID Transactions**: Full transaction support with commit/rollback operations
+* **Schema Evolution**: Safe schema changes without data migration
+* **Time Travel**: Query historical data states and track changes over time
+* **Metadata Management**: Efficient table metadata and partition management
+* **Performance Optimization**: Intelligent batch processing and connection pooling
 
 ### Storage Features
+
 - **Intelligent Batch Processing**: Automatic splitting of large batches (50K rows, 128MB default)
-- **Connection Pooling**: Optimized catalog operations with configurable pool settings
-- **Retry Logic**: Exponential backoff for transient failures with configurable policies
-- **Memory Management**: Memory-aware batch processing to prevent OOM issues
-- **Concurrent Processing**: Configurable concurrent batch processing for optimal throughput
+* **Connection Pooling**: Optimized catalog operations with configurable pool settings
+* **Retry Logic**: Exponential backoff for transient failures with configurable policies
+* **Memory Management**: Memory-aware batch processing to prevent OOM issues
+* **Concurrent Processing**: Configurable concurrent batch processing for optimal throughput
 
 ## Database Support
 
-- **PostgreSQL**: Production deployments with full SQL capabilities
-- **SQLite**: Development, testing, and single-node deployments (configless operation)
+* **PostgreSQL**: Production deployments with full SQL capabilities
+* **SQLite**: Development, testing, and single-node deployments (configless operation)
 
 ## Quick Start
 
 ### Configless Operation (SQLite)
+
 ```bash
 # Monolithic deployment - zero configuration required
 cargo run --bin signaldb
 
-# Microservices deployment  
+# Microservices deployment
 cargo run --bin signaldb-acceptor &
 cargo run --bin signaldb-router &
 cargo run --bin signaldb-writer &
 ```
 
 ### PostgreSQL Configuration
+
 ```toml
 # signaldb.toml
 [database]
@@ -116,10 +126,12 @@ ttl = "300s"
 ## Development
 
 ### Prerequisites
-- Rust 1.85.0+ (required for edition 2024)
-- Protocol Buffers compiler
+
+- Rust 1.86.0+ (required for edition 2024 and AWS SDK compatibility)
+* Protocol Buffers compiler
 
 ### Building
+
 ```bash
 # All binaries
 cargo build --release
@@ -127,11 +139,12 @@ cargo build --release
 # Specific deployment model
 cargo build --release --bin signaldb           # Monolithic
 cargo build --release --bin signaldb-acceptor  # Microservices
-cargo build --release --bin signaldb-router    # Microservices  
+cargo build --release --bin signaldb-router    # Microservices
 cargo build --release --bin signaldb-writer    # Microservices
 ```
 
 ### Testing
+
 ```bash
 # Unit and integration tests
 cargo test
@@ -162,11 +175,12 @@ Configure the shared catalog used for service discovery and coordination:
 [discovery]
 dsn = "sqlite://signaldb.db"           # Database connection string
 heartbeat_interval = "30s"             # Service heartbeat frequency
-poll_interval = "60s"                  # Discovery polling frequency  
+poll_interval = "60s"                  # Discovery polling frequency
 ttl = "300s"                           # Service timeout threshold
 ```
 
 Environment variables:
+
 * `SIGNALDB_DISCOVERY_DSN`: Database connection string
 * `SIGNALDB_DISCOVERY_HEARTBEAT_INTERVAL`: Heartbeat interval
 * `SIGNALDB_DISCOVERY_POLL_INTERVAL`: Polling interval
@@ -201,6 +215,7 @@ metrics_enabled = true
 ```
 
 Environment variables:
+
 * `SIGNALDB_SCHEMA_CATALOG_TYPE`: Catalog backend type (sql or memory)
 * `SIGNALDB_SCHEMA_CATALOG_URI`: Catalog database connection string
 
@@ -214,7 +229,7 @@ Configure batch processing and connection pooling for optimal performance:
 
 # Connection pooling (managed automatically)
 # - Min connections: 2
-# - Max connections: 10  
+# - Max connections: 10
 # - Connection timeout: 5 seconds
 # - Pool lifetime: 30 minutes
 
@@ -246,6 +261,7 @@ Environment variables:
 * `SIGNALDB_QUEUE_MAX_BATCH_WAIT`: Maximum batch wait time (supports human-readable durations like "10s", "1m")
 
 Currently supported queue backends:
+
 * `memory://`: In-memory queue for single-node deployments
 
 ### Storage Configuration
@@ -274,10 +290,10 @@ Environment variables:
 SignalDB implements Write-Ahead Logging for data durability and crash recovery. The WAL ensures that incoming OTLP data is persisted to disk before acknowledgment, providing strong durability guarantees.
 
 **WAL Features:**
-- **Durability**: All data written to WAL before acknowledgment
-- **Recovery**: Automatic replay of unprocessed entries on restart
-- **Batching**: Efficient batch processing with configurable flush policies
-- **Monitoring**: WAL entry tracking and processing status
+* **Durability**: All data written to WAL before acknowledgment
+* **Recovery**: Automatic replay of unprocessed entries on restart
+* **Batching**: Efficient batch processing with configurable flush policies
+* **Monitoring**: WAL entry tracking and processing status
 
 **Environment Variables:**
 
@@ -290,6 +306,7 @@ SignalDB implements Write-Ahead Logging for data durability and crash recovery. 
 ⚠️ **Production Warning**: Default WAL directories use local paths that **do not persist** across container restarts. Configure persistent volumes for production deployments.
 
 **Data Flow with WAL:**
+
 1. Acceptor receives OTLP data
 2. Data written to Acceptor WAL (durability checkpoint)
 3. Data forwarded to Writer via Flight

@@ -18,12 +18,14 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      heraclitus_release_created: ${{ steps.release.outputs['src--heraclitus--release_created'] }}
+      heraclitus_tag_name: ${{ steps.release.outputs['src--heraclitus--tag_name'] }}
     steps:
       - name: Run release-please
         id: release
         uses: googleapis/release-please-action@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.MY_RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
@@ -86,6 +88,8 @@ jobs:
 
       - name: Package binaries
         shell: bash
+        env:
+          HERACLITUS_RELEASE: ${{ needs.release-please.outputs.heraclitus_release_created }}
         run: |
           cd target/${{ matrix.target }}/release
 
@@ -111,6 +115,20 @@ jobs:
             tar czf signaldb-microservices-${{ matrix.target }}.tar.gz signaldb-microservices-${{ matrix.target }}/
           fi
 
+          # Package Heraclitus (standalone Kafka-compatible server) - only if Heraclitus was released
+          if [ "$HERACLITUS_RELEASE" = "true" ]; then
+            echo "Packaging Heraclitus release..."
+            mkdir -p heraclitus-${{ matrix.target }}
+            cp heraclitus${{ matrix.binary_suffix }} heraclitus-${{ matrix.target }}/
+            if [ "${{ matrix.os }}" = "windows-latest" ]; then
+              7z a heraclitus-${{ matrix.target }}.zip heraclitus-${{ matrix.target }}/
+            else
+              tar czf heraclitus-${{ matrix.target }}.tar.gz heraclitus-${{ matrix.target }}/
+            fi
+          else
+            echo "Skipping Heraclitus packaging (no Heraclitus release)"
+          fi
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -118,6 +136,7 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/signaldb-monolithic-${{ matrix.target }}.*
             target/${{ matrix.target }}/release/signaldb-microservices-${{ matrix.target }}.*
+            target/${{ matrix.target }}/release/heraclitus-${{ matrix.target }}.*
 
   docker-build:
     name: Build Docker Images

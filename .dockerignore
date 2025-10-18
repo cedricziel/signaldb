@@ -1,0 +1,39 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+target/
+**/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+*.md
+docs/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Test data and logs
+*.log
+test-data/
+**/test-data/
+
+# Local configuration
+signaldb.toml
+**/signaldb.toml
+
+# Temporary files
+tmp/
+temp/
+*.tmp

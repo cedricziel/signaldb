@@ -77,9 +77,7 @@ pub mod utils {
         match config_path {
             Some(path) => {
                 log::info!("Loading configuration from: {}", path.display());
-                // TODO: Add support for loading from specific file path
-                // For now, fall back to default loading
-                Configuration::load().context("Failed to load configuration")
+                Configuration::load_from_path(path).context("Failed to load configuration")
             }
             None => Configuration::load().context("Failed to load configuration"),
         }

@@ -1,0 +1,31 @@
+# Heraclitus Docker Configuration
+
+# Listen on all interfaces for container networking
+kafka_port = 9092
+http_port = 9093
+
+[storage]
+# Use in-memory storage by default for testing
+path = "memory://"
+# For production, use S3/MinIO (configure via AWS_* env vars):
+# path = "s3://my-bucket/heraclitus"
+# Or local filesystem in a volume:
+# path = "/var/lib/heraclitus"
+
+[auth]
+enabled = false
+
+[broker]
+id = 0
+# Use 0.0.0.0 to listen on all interfaces in container
+advertised_host = "0.0.0.0"
+advertised_port = 9092
+
+[limits]
+max_request_size = 104857600  # 100MB
+max_response_size = 104857600  # 100MB
+max_connections = 1000
+
+[logging]
+# Enable debug logging for troubleshooting
+level = "debug"
