@@ -33,3 +33,23 @@ signaldb.toml
 .clinefile
 
 .claude/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+*~
+*.swp
