@@ -397,14 +397,16 @@ async fn test_concurrent_clients() -> Result<()> {
     let num_producers = 3;
     let messages_per_producer = 20;
 
-    // Spawn multiple producer tasks
+    // Spawn multiple producer threads
+    // Using std::thread::spawn for complete isolation, as rdkafka is a C library
+    // that cannot safely share async runtime (see CLAUDE.md testing guidelines)
     let mut producer_handles = Vec::new();
 
     for producer_id in 0..num_producers {
         let bootstrap_servers = context.kafka_addr();
         let topic = topic.to_string();
 
-        let handle = tokio::spawn(async move {
+        let handle = std::thread::spawn(move || {
             let producer: BaseProducer = ClientConfig::new()
                 .set("bootstrap.servers", &bootstrap_servers)
                 .set("message.timeout.ms", "5000")
@@ -430,7 +432,7 @@ async fn test_concurrent_clients() -> Result<()> {
 
     // Wait for all producers
     for handle in producer_handles {
-        handle.await??;
+        handle.join().expect("Producer thread panicked")?;
     }
 
     // Create consumer to verify all messages
