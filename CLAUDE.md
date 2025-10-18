@@ -17,19 +17,31 @@ cp signaldb.dist.toml signaldb.toml  # Copy distribution config
 ### Build and Test
 ```bash
 cargo build                # Build all workspace members
+cargo build --release      # Release build with optimizations
 cargo test                 # Run all tests across workspace
+cargo test -p <package>    # Run tests for specific package
+cargo test <test_name>     # Run specific test by name
+cargo test -- --nocapture  # Run tests with output visible
 cargo run                  # Run in monolithic mode (all services)
 cargo clippy --workspace --all-targets --all-features  # Check for code quality issues
 cargo deny check           # License and security auditing
 cargo machete --with-metadata  # Check for unused dependencies (enhanced analysis)
+cargo fmt                  # Format code (run before committing)
 ```
 
 ### Running Individual Services
 ```bash
+# Main SignalDB services
+cargo run --bin signaldb   # Monolithic mode (all services in one)
 cargo run --bin acceptor   # OTLP ingestion service (ports 4317/4318)
 cargo run --bin router     # HTTP router (port 3000) + Flight (port 50053)
 cargo run --bin writer     # Data ingestion and storage service
 cargo run --bin querier    # Query execution engine (port 9000)
+
+# Heraclitus Kafka server
+cargo run --bin heraclitus # Standalone Kafka-compatible server (port 9092)
+cargo run --bin heraclitus -- --kafka-port 9092 --http-port 9093
+cargo run --bin heraclitus -- --storage-path memory://  # In-memory mode
 ```
 
 ### Infrastructure
@@ -41,12 +53,21 @@ docker compose up          # Start PostgreSQL, Grafana, and supporting services
 
 ### Core Components (Workspace Members)
 
+**SignalDB Services**:
 - **Acceptor** (`src/acceptor/`): OTLP HTTP/gRPC ingestion endpoint
 - **Router** (`src/router/`): Stateless routing layer with Tempo-compatible API
 - **Writer** (`src/writer/`): Stateful ingestion service (the "Ingester")
 - **Querier** (`src/querier/`): Query execution engine for stored data
 - **Common** (`src/common/`): Shared configuration, discovery, and data models
 - **Tempo API** (`src/tempo-api/`): Grafana Tempo compatibility layer
+- **SignalDB Binary** (`src/signaldb-bin/`): Monolithic mode runner
+
+**Heraclitus** (`src/heraclitus/`):
+- Standalone Kafka-compatible protocol server (separate from SignalDB)
+- Full Kafka wire protocol implementation (v0-v3 for most APIs)
+- Kafka client library compatibility (rdkafka, kafka-go, etc.)
+- Uses Apache Arrow/Parquet for storage
+- Built-in consumer group coordination and SASL authentication
 
 ### Data Flow
 
@@ -76,9 +97,25 @@ Key sections: `[database]`, `[storage]`, `[discovery]`, `[wal]`, `[schema]`
 
 ## Key Development Patterns
 
+### FDAP Stack Components
+
+SignalDB is built on the FDAP stack:
+- **F**light - Apache Arrow Flight for inter-service communication
+- **D**ataFusion - Apache DataFusion for SQL query processing
+- **A**rrow - Apache Arrow for in-memory columnar data
+- **P**arquet - Apache Parquet for persistent columnar storage
+
+**Key Principle**: Prefer using Arrow & Parquet types re-exported by DataFusion to ensure version compatibility.
+
 ### Arrow Flight Integration
 
 The system uses Apache Arrow Flight extensively for inter-service communication. Flight schemas are defined in `src/common/flight/schema.rs` with conversions in the `conversion/` subdirectory.
+
+**Flight Communication Pattern**:
+- Zero-copy data transfer using Arrow RecordBatches
+- Service discovery via capability-based routing
+- Connection pooling for performance
+- Streaming support for large datasets
 
 ### Service Registration
 
@@ -129,17 +166,98 @@ catalog_uri = "sqlite::memory:"         # In-memory SQLite catalog
 **Schema Module**: Located in `src/common/src/schema/`
 - Direct integration with Iceberg's native Catalog trait
 - SQL catalog backend with SQLite (in-memory or persistent)
-- Memory catalog backend for testing and development  
+- Memory catalog backend for testing and development
 - Foundation for future PostgreSQL catalog backends
 - Object store integration for table data storage
 
+### Heraclitus Kafka Protocol Development
+
+**Protocol Implementation**: `src/heraclitus/src/protocol_v2/`
+- Uses `kafka-protocol` crate for wire protocol encoding/decoding
+- Each Kafka API has its own handler module
+- Protocol version negotiation via ApiVersions handshake
+
+**Supported APIs** (v0-v3 for most):
+- Producer: Produce, InitProducerId
+- Consumer: Fetch, ListOffsets, OffsetCommit, OffsetFetch
+- Consumer Groups: JoinGroup, SyncGroup, Heartbeat, LeaveGroup
+- Admin: CreateTopics, DeleteTopics, Metadata
+- Auth: SaslHandshake, SaslAuthenticate
+
+**Storage Backend**:
+- Uses Arrow/Parquet format via BatchWriter
+- Configurable: filesystem (`file://`) or in-memory (`memory://`)
+- State management for topics, partitions, offsets, consumer groups
+
+**Testing with librdkafka**:
+- E2E tests use rdkafka Rust client
+- Requires dedicated thread runtime (see helpers.rs)
+- Cannot share Tokio runtime due to C library blocking I/O
+
 ## Testing
 
-Integration tests are in workspace root `tests/` and individual component `tests/` directories. Some tests use testcontainers for PostgreSQL.
+### Test Organization
+- Unit tests: Alongside source code in each module
+- Integration tests: `tests/` directory in workspace root and component-specific `tests/` dirs
+- E2E tests: Component-specific, often using testcontainers
+
+### Running Tests
+```bash
+# All tests
+cargo test
+
+# Specific package
+cargo test -p common
+cargo test -p heraclitus
+cargo test -p writer
+
+# Specific test
+cargo test test_name
+cargo test test_name -- --nocapture  # With output
+
+# Tests with logging
+RUST_LOG=debug cargo test test_name -- --nocapture
+```
+
+### Test Infrastructure Patterns
+
+**Heraclitus Test Threading Model**:
+- Tests use dedicated OS threads with isolated Tokio runtimes for server instances
+- Critical for librdkafka (C library) compatibility - cannot share async runtime
+- Pattern: `std::thread::spawn` + `Runtime::new()` for complete isolation
+- See `src/heraclitus/tests/integration/helpers.rs` for reference implementation
+
+**Service Testing**:
+- Integration tests often use testcontainers for PostgreSQL
+- Flight-based tests require service discovery setup
+- WAL tests need temporary directories
 
 ## Deployment Modes
 
-Signaldb has a microservices and a monolothic mode
+SignalDB supports two deployment modes:
+
+### Monolithic Mode
+Single binary with all services running in one process:
+```bash
+cargo run --bin signaldb
+```
+- Ideal for development and small deployments
+- All services communicate via localhost
+- Shared SQLite catalog for service discovery
+- Zero-configuration startup
+
+### Microservices Mode
+Independent services for scalable production:
+```bash
+# Start each service independently
+cargo run --bin signaldb-acceptor &
+cargo run --bin signaldb-router &
+cargo run --bin signaldb-writer &
+cargo run --bin signaldb-querier &
+```
+- Horizontal scaling of individual components
+- PostgreSQL recommended for service discovery
+- Requires proper configuration for inter-service communication
 
 ## Development Memories
 - For arrow & parquet try using the ones re-exported by datafusion
