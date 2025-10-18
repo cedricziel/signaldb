@@ -22,12 +22,18 @@ impl HeraclitusTestContext {
         let kafka_port = find_available_port_sync()?;
         let http_port = find_available_port_sync()?;
 
-        // Create test configuration with memory storage
+        // Create test configuration with memory storage and faster batch flushing
         let config = HeraclitusConfig {
             kafka_port,
             http_port,
             storage: heraclitus::config::StorageConfig {
                 path: "memory://".to_string(),
+            },
+            batching: heraclitus::config::BatchingConfig {
+                // Use faster flush interval for tests (10ms instead of default 100ms)
+                // This ensures messages are available quickly for consumption
+                flush_interval_ms: 10,
+                ..Default::default()
             },
             metrics: heraclitus::config::MetricsConfig {
                 enabled: false,

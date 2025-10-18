@@ -263,6 +263,10 @@ async fn test_message_headers() -> Result<()> {
     producer.send(record).map_err(|(e, _)| e)?;
     producer.flush(Duration::from_secs(5))?;
 
+    // Wait a bit for the server to flush the batch to storage
+    // The batch writer has a background timer that flushes every 10ms
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
     // Create consumer
     let consumer: BaseConsumer = ClientConfig::new()
         .set("bootstrap.servers", context.kafka_addr())

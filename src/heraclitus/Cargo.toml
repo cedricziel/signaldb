@@ -28,13 +28,6 @@ uuid = { workspace = true }
 # For atomic operations on object storage
 parking_lot = { workspace = true }
 
-# For compression support
-flate2 = { workspace = true } # Gzip compression
-snap = { workspace = true }   # Snappy compression
-lz4 = { workspace = true }    # LZ4 compression
-zstd = { workspace = true }   # Zstandard compression
-
-
 # For HTTP server and metrics
 axum = { workspace = true }
 prometheus = { workspace = true }

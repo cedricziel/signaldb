@@ -179,6 +179,10 @@ async fn test_produce_fetch_protocol_roundtrip() -> Result<()> {
     let test_value = "protocol-value";
     produce_message(&mut stream, topic, test_key, test_value).await?;
 
+    // Wait a bit for the server to flush the batch to storage
+    // The batch writer has a background timer that flushes every 10ms
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
     // Fetch the message back
     let fetched = fetch_messages(&mut stream, topic).await?;
 
@@ -342,10 +346,47 @@ async fn fetch_messages(
     let mut response_buf = vec![0u8; response_length];
     stream.read_exact(&mut response_buf).await?;
 
-    // Simple parsing - just check if we got data
-    let messages = vec![(
-        Some("protocol-key".to_string()),
-        "protocol-value".to_string(),
-    )];
+    // Parse the Fetch response using kafka-protocol
+    use kafka_protocol::messages::FetchResponse;
+    use kafka_protocol::protocol::Decodable;
+
+    let mut buf = bytes::Bytes::from(response_buf);
+
+    // Decode response header (correlation_id)
+    let _correlation_id = buf.get_i32();
+
+    // Decode the FetchResponse with version 11
+    let response = FetchResponse::decode(&mut buf, 11)
+        .map_err(|e| anyhow::anyhow!("Failed to decode FetchResponse: {e}"))?;
+
+    // Extract messages from the response
+    let mut messages = Vec::new();
+
+    for topic_resp in response.responses {
+        for partition in topic_resp.partitions {
+            if let Some(records_bytes) = partition.records {
+                // Decode the record batch
+                use kafka_protocol::records::RecordBatchDecoder;
+                let mut records_buf = records_bytes.clone();
+
+                match RecordBatchDecoder::decode(&mut records_buf) {
+                    Ok(record_set) => {
+                        for record in record_set.records {
+                            let key = record.key.map(|k| String::from_utf8_lossy(&k).to_string());
+                            let value = record
+                                .value
+                                .map(|v| String::from_utf8_lossy(&v).to_string())
+                                .unwrap_or_default();
+                            messages.push((key, value));
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Failed to decode record batch: {e}");
+                    }
+                }
+            }
+        }
+    }
+
     Ok(messages)
 }

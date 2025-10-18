@@ -467,10 +467,9 @@ impl ConnectionHandler {
                 if let Some(records_bytes) = &partition_data.records {
                     // Decode the record batch
                     let mut records_buf = records_bytes.clone();
-                    match RecordBatchDecoder::decode_with_custom_compression(
-                        &mut records_buf,
-                        Some(decompress_record_batch_data),
-                    ) {
+                    // Try standard decode first, fall back to custom decompression if needed
+                    let decode_result = RecordBatchDecoder::decode(&mut records_buf);
+                    match decode_result {
                         Ok(record_set) => {
                             // Assign offsets for this batch if not already done
                             if assigned_base_offset.is_none() {
@@ -589,7 +588,10 @@ impl ConnectionHandler {
                 };
 
                 let record_batch = if messages.is_empty() {
-                    None
+                    // For Kafka Fetch responses, especially with flex versions (v12+),
+                    // we should return empty Bytes instead of None to ensure proper encoding.
+                    // Flex versions expect 0 for empty (compact bytes), not -1 (null).
+                    Some(bytes::Bytes::new())
                 } else {
                     info!(
                         "Found {} messages to return in fetch response",
@@ -621,7 +623,8 @@ impl ConnectionHandler {
                         Ok(()) => Some(buf.freeze()),
                         Err(e) => {
                             warn!("Failed to encode record batch: {e}");
-                            None
+                            // Return empty bytes instead of None to avoid encoding issues
+                            Some(bytes::Bytes::new())
                         }
                     }
                 };
@@ -1288,51 +1291,5 @@ pub fn get_compression_from_config(algorithm: &str) -> kafka_protocol::records::
         "lz4" => Compression::Lz4,
         "zstd" => Compression::Zstd,
         _ => Compression::None,
-    }
-}
-
-// Helper function for decompressing record batch data
-fn decompress_record_batch_data(
-    compressed_buffer: &mut bytes::Bytes,
-    compression: kafka_protocol::records::Compression,
-) -> anyhow::Result<bytes::Bytes> {
-    use bytes::Buf;
-
-    match compression {
-        kafka_protocol::records::Compression::None => Ok(compressed_buffer.to_vec().into()),
-        kafka_protocol::records::Compression::Gzip => {
-            use flate2::read::GzDecoder;
-            use std::io::Read;
-
-            let mut decoder = GzDecoder::new(compressed_buffer.reader());
-            let mut decompressed = Vec::new();
-            decoder.read_to_end(&mut decompressed)?;
-            Ok(decompressed.into())
-        }
-        kafka_protocol::records::Compression::Snappy => {
-            use snap::raw::Decoder;
-
-            let mut decoder = Decoder::new();
-            let decompressed = decoder.decompress_vec(compressed_buffer)?;
-            Ok(decompressed.into())
-        }
-        kafka_protocol::records::Compression::Lz4 => {
-            use lz4::Decoder;
-            use std::io::Read;
-
-            let mut decoder = Decoder::new(compressed_buffer.reader())?;
-            let mut decompressed = Vec::new();
-            decoder.read_to_end(&mut decompressed)?;
-            Ok(decompressed.into())
-        }
-        kafka_protocol::records::Compression::Zstd => {
-            use std::io::Read;
-            use zstd::stream::read::Decoder;
-
-            let mut decoder = Decoder::new(compressed_buffer.reader())?;
-            let mut decompressed = Vec::new();
-            decoder.read_to_end(&mut decompressed)?;
-            Ok(decompressed.into())
-        }
     }
 }
