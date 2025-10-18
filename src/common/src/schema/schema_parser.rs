@@ -10,8 +10,11 @@ pub struct SchemaDefinitions {
     pub metadata: SchemaMetadata,
     pub traces: HashMap<String, TableSchemaDefinition>,
     pub logs: HashMap<String, TableSchemaDefinition>,
+    #[serde(default)]
     pub metrics_gauge: HashMap<String, TableSchemaDefinition>,
+    #[serde(default)]
     pub metrics_sum: HashMap<String, TableSchemaDefinition>,
+    #[serde(default)]
     pub metrics_histogram: HashMap<String, TableSchemaDefinition>,
 }
 
