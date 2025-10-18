@@ -3245,10 +3245,8 @@ dependencies = [
  "chrono",
  "clap",
  "criterion",
- "flate2",
  "futures",
  "kafka-protocol",
- "lz4",
  "object_store",
  "parking_lot",
  "parquet",
@@ -3257,13 +3255,11 @@ dependencies = [
  "rdkafka",
  "serde",
  "serde_json",
- "snap",
  "tokio",
  "toml",
  "tracing",
  "tracing-subscriber",
  "uuid",
- "zstd",
 ]
 
 [[package]]
