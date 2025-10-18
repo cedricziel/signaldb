@@ -33,14 +33,6 @@ impl MinioTestContext {
         // Create DSN for object storage
         let dsn = Url::parse(&format!("s3://127.0.0.1:{host_port}/{bucket_name}"))?;
 
-        // Set MinIO credentials as environment variables
-        unsafe {
-            std::env::set_var("AWS_ACCESS_KEY_ID", "minioadmin");
-            std::env::set_var("AWS_SECRET_ACCESS_KEY", "minioadmin");
-            std::env::set_var("AWS_ENDPOINT_URL", &endpoint);
-            std::env::set_var("AWS_DEFAULT_REGION", "us-east-1");
-        }
-
         // Create the test bucket
         create_test_bucket(&endpoint, bucket_name).await?;
 
