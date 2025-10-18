@@ -1,4 +1,5 @@
 // New protocol implementation using kafka-protocol crate
+mod compression_proof;
 mod connection_handler;
 mod protocol_handler;
 
