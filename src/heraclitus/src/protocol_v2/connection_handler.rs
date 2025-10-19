@@ -398,10 +398,10 @@ impl ConnectionHandler {
                             MetadataResponsePartition::default()
                                 .with_error_code(0)
                                 .with_partition_index(partition_id)
-                                .with_leader_id(kafka_protocol::messages::BrokerId(1))
+                                .with_leader_id(kafka_protocol::messages::BrokerId(0))
                                 .with_leader_epoch(0)
-                                .with_replica_nodes(vec![kafka_protocol::messages::BrokerId(1)])
-                                .with_isr_nodes(vec![kafka_protocol::messages::BrokerId(1)])
+                                .with_replica_nodes(vec![kafka_protocol::messages::BrokerId(0)])
+                                .with_isr_nodes(vec![kafka_protocol::messages::BrokerId(0)])
                                 .with_offline_replicas(vec![]),
                         );
                     }
@@ -439,10 +439,10 @@ impl ConnectionHandler {
                             MetadataResponsePartition::default()
                                 .with_error_code(0)
                                 .with_partition_index(partition_id)
-                                .with_leader_id(kafka_protocol::messages::BrokerId(1))
+                                .with_leader_id(kafka_protocol::messages::BrokerId(0))
                                 .with_leader_epoch(0)
-                                .with_replica_nodes(vec![kafka_protocol::messages::BrokerId(1)])
-                                .with_isr_nodes(vec![kafka_protocol::messages::BrokerId(1)])
+                                .with_replica_nodes(vec![kafka_protocol::messages::BrokerId(0)])
+                                .with_isr_nodes(vec![kafka_protocol::messages::BrokerId(0)])
                                 .with_offline_replicas(vec![]),
                         );
                     }
@@ -466,9 +466,9 @@ impl ConnectionHandler {
             .with_throttle_time_ms(0)
             .with_brokers(vec![
                 MetadataResponseBroker::default()
-                    .with_node_id(kafka_protocol::messages::BrokerId(1))
+                    .with_node_id(kafka_protocol::messages::BrokerId(0))
                     .with_host(kafka_protocol::protocol::StrBytes::from_static_str(
-                        "127.0.0.1",
+                        "localhost",
                     ))
                     .with_port(self.port as i32)
                     .with_rack(None),
@@ -476,7 +476,7 @@ impl ConnectionHandler {
             .with_cluster_id(Some(kafka_protocol::protocol::StrBytes::from_static_str(
                 "heraclitus",
             )))
-            .with_controller_id(kafka_protocol::messages::BrokerId(1))
+            .with_controller_id(kafka_protocol::messages::BrokerId(0))
             .with_topics(topic_responses.clone());
 
         info!(
@@ -724,7 +724,7 @@ impl ConnectionHandler {
             .with_throttle_time_ms(0)
             .with_error_code(0)
             .with_error_message(None)
-            .with_node_id(kafka_protocol::messages::BrokerId(1))
+            .with_node_id(kafka_protocol::messages::BrokerId(0))
             .with_host(kafka_protocol::protocol::StrBytes::from_static_str(
                 "127.0.0.1",
             ))
