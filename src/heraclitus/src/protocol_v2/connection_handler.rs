@@ -11,7 +11,7 @@ use kafka_protocol::messages::{ApiKey, RequestKind, ResponseKind};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct ConnectionHandler {
     socket: TcpStream,
@@ -1329,22 +1329,60 @@ impl ConnectionHandler {
             ListOffsetsPartitionResponse, ListOffsetsTopicResponse,
         };
 
+        info!(
+            "ListOffsets request: replica_id={}, isolation_level={}, {} topics",
+            req.replica_id.0,
+            req.isolation_level,
+            req.topics.len()
+        );
+
         // Build response for each topic/partition
         let mut topic_responses = vec![];
 
         for topic_req in &req.topics {
+            let topic_name = topic_req.name.as_str();
             let mut partition_responses = vec![];
 
             for partition_req in &topic_req.partitions {
-                // For now, return offset 0 for earliest, 1000 for latest
-                let offset = if partition_req.timestamp == -2 {
-                    0 // Earliest
-                } else {
-                    1000 // Latest
+                let partition_index = partition_req.partition_index;
+                let timestamp = partition_req.timestamp;
+
+                // Query actual offsets from state manager
+                let offset = match timestamp {
+                    -2 => {
+                        // EARLIEST - return log start offset
+                        self.state_manager
+                            .messages()
+                            .get_log_start_offset(topic_name, partition_index)
+                            .await
+                            .unwrap_or(0)
+                    }
+                    -1 => {
+                        // LATEST - return high water mark (next offset to be written)
+                        self.state_manager
+                            .messages()
+                            .get_high_water_mark(topic_name, partition_index)
+                            .await
+                            .unwrap_or(0)
+                    }
+                    _ => {
+                        // For specific timestamps, return high water mark for now
+                        // TODO: Implement timestamp-based offset lookup
+                        self.state_manager
+                            .messages()
+                            .get_high_water_mark(topic_name, partition_index)
+                            .await
+                            .unwrap_or(0)
+                    }
                 };
 
+                debug!(
+                    "ListOffsets: topic={}, partition={}, timestamp={} -> offset={}",
+                    topic_name, partition_index, timestamp, offset
+                );
+
                 let partition_resp = ListOffsetsPartitionResponse::default()
-                    .with_partition_index(partition_req.partition_index)
+                    .with_partition_index(partition_index)
                     .with_error_code(0)
                     .with_timestamp(0)
                     .with_offset(offset);
