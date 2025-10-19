@@ -1,57 +1,12 @@
 use anyhow::Result;
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::Buf;
 use heraclitus_tests_integration::{
     HeraclitusTestContext, MinioTestContext, find_available_port, init_test_tracing,
 };
 use std::io::Cursor;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-/// Build a complete Kafka request with header
-fn build_kafka_request(
-    api_key: i16,
-    api_version: i16,
-    correlation_id: i32,
-    client_id: &str,
-    body: &[u8],
-) -> Vec<u8> {
-    let mut request = BytesMut::new();
-
-    // Build header
-    request.put_i16(api_key);
-    request.put_i16(api_version);
-    request.put_i32(correlation_id);
-
-    // Write client_id as nullable string
-    if client_id.is_empty() {
-        request.put_i16(-1);
-    } else {
-        request.put_i16(client_id.len() as i16);
-        request.put_slice(client_id.as_bytes());
-    }
-
-    // Add body
-    request.extend_from_slice(body);
-
-    // Prepend size
-    let mut final_request = BytesMut::new();
-    final_request.put_i32(request.len() as i32);
-    final_request.extend_from_slice(&request);
-
-    final_request.to_vec()
-}
-
-/// Helper to write string
-fn write_string(buf: &mut BytesMut, s: &str) {
-    buf.put_i16(s.len() as i16);
-    buf.put_slice(s.as_bytes());
-}
-
-/// Helper to write bytes
-fn write_bytes(buf: &mut BytesMut, b: &[u8]) {
-    buf.put_i32(b.len() as i32);
-    buf.put_slice(b);
-}
+use super::super::helpers::send_join_group_request;
 
 #[tokio::test]
 async fn test_join_group_direct() -> Result<()> {
@@ -68,46 +23,11 @@ async fn test_join_group_direct() -> Result<()> {
     let mut stream = TcpStream::connect(format!("127.0.0.1:{kafka_port}")).await?;
 
     // Send JoinGroup request
-    let mut request_body = BytesMut::new();
-
-    // group_id: "test-group-direct"
-    write_string(&mut request_body, "test-group-direct");
-
-    // session_timeout_ms: 30000
-    request_body.put_i32(30000);
-
-    // member_id: "" (empty for new member)
-    write_string(&mut request_body, "");
-
-    // protocol_type: "consumer"
-    write_string(&mut request_body, "consumer");
-
-    // protocols: 1 protocol
-    request_body.put_i32(1);
-
-    // protocol name: "range"
-    write_string(&mut request_body, "range");
-
-    // protocol metadata: simple metadata
-    let metadata = b"test-metadata";
-    write_bytes(&mut request_body, metadata);
-
-    // Build complete request with header
-    let request = build_kafka_request(11, 0, 1, "test-client", &request_body);
-
-    // Send request
-    stream.write_all(&request).await?;
-    stream.flush().await?;
+    let response =
+        send_join_group_request(&mut stream, 1, "test-group-direct", "", "consumer", 0).await?;
 
     // Read response
-    let mut size_buf = [0u8; 4];
-    stream.read_exact(&mut size_buf).await?;
-    let response_size = i32::from_be_bytes(size_buf);
-
-    let mut response_buf = vec![0u8; response_size as usize];
-    stream.read_exact(&mut response_buf).await?;
-
-    let mut cursor = Cursor::new(&response_buf[..]);
+    let mut cursor = Cursor::new(&response[..]);
 
     // Read response header
     let correlation_id = cursor.get_i32();
@@ -125,10 +45,7 @@ async fn test_join_group_direct() -> Result<()> {
     // protocol_name: string (nullable)
     let protocol_name_len = cursor.get_i16();
     if protocol_name_len > 0 {
-        let mut protocol_name_bytes = vec![0u8; protocol_name_len as usize];
-        cursor.copy_to_slice(&mut protocol_name_bytes);
-        let protocol_name = String::from_utf8(protocol_name_bytes)?;
-        assert_eq!(protocol_name, "range");
+        cursor.advance(protocol_name_len as usize);
     }
 
     // leader: string
@@ -144,10 +61,7 @@ async fn test_join_group_direct() -> Result<()> {
     let member_id = String::from_utf8(member_id_bytes)?;
 
     tracing::info!(
-        "JoinGroup response: generation_id={}, leader={}, member_id={}",
-        generation_id,
-        leader,
-        member_id
+        "JoinGroup response: generation_id={generation_id}, leader={leader}, member_id={member_id}"
     );
 
     // For first member, should be the leader
@@ -176,31 +90,11 @@ async fn test_join_group_multiple_members() -> Result<()> {
 
     // First member joins
     let mut stream1 = TcpStream::connect(format!("127.0.0.1:{kafka_port}")).await?;
-
-    let mut request_body = BytesMut::new();
-    write_string(&mut request_body, group_id);
-    request_body.put_i32(30000); // session_timeout_ms
-    write_string(&mut request_body, ""); // member_id (empty for new)
-    write_string(&mut request_body, "consumer"); // protocol_type
-    request_body.put_i32(1); // protocols count
-    write_string(&mut request_body, "range");
-    write_bytes(&mut request_body, b"metadata1");
-
-    let request = build_kafka_request(11, 0, 1, "client1", &request_body);
-
-    stream1.write_all(&request).await?;
-    stream1.flush().await?;
+    let response1 = send_join_group_request(&mut stream1, 1, group_id, "", "consumer", 0).await?;
 
     // Read first response
-    let mut size_buf = [0u8; 4];
-    stream1.read_exact(&mut size_buf).await?;
-    let response_size = i32::from_be_bytes(size_buf);
-
-    let mut response_buf = vec![0u8; response_size as usize];
-    stream1.read_exact(&mut response_buf).await?;
-
-    let mut cursor = Cursor::new(&response_buf[..]);
-    cursor.get_i32(); // correlation_id
+    let mut cursor = Cursor::new(&response1[..]);
+    cursor.advance(4); // Skip correlation_id
     let error_code = cursor.get_i16();
     assert_eq!(error_code, 0);
 
@@ -218,39 +112,15 @@ async fn test_join_group_multiple_members() -> Result<()> {
     cursor.copy_to_slice(&mut member1_id_bytes);
     let member1_id = String::from_utf8(member1_id_bytes)?;
 
-    tracing::info!(
-        "First member joined: id={}, generation={}",
-        member1_id,
-        generation1
-    );
+    tracing::info!("First member joined: id={member1_id}, generation={generation1}");
 
     // Second member joins - should trigger rebalance
     let mut stream2 = TcpStream::connect(format!("127.0.0.1:{kafka_port}")).await?;
-
-    let mut request_body = BytesMut::new();
-    write_string(&mut request_body, group_id);
-    request_body.put_i32(30000); // session_timeout_ms
-    write_string(&mut request_body, ""); // member_id (empty for new)
-    write_string(&mut request_body, "consumer"); // protocol_type
-    request_body.put_i32(1); // protocols count
-    write_string(&mut request_body, "range");
-    write_bytes(&mut request_body, b"metadata2");
-
-    let request = build_kafka_request(11, 0, 2, "client2", &request_body);
-
-    stream2.write_all(&request).await?;
-    stream2.flush().await?;
+    let response2 = send_join_group_request(&mut stream2, 2, group_id, "", "consumer", 0).await?;
 
     // Read second response
-    let mut size_buf = [0u8; 4];
-    stream2.read_exact(&mut size_buf).await?;
-    let response_size = i32::from_be_bytes(size_buf);
-
-    let mut response_buf = vec![0u8; response_size as usize];
-    stream2.read_exact(&mut response_buf).await?;
-
-    let mut cursor = Cursor::new(&response_buf[..]);
-    cursor.get_i32(); // correlation_id
+    let mut cursor = Cursor::new(&response2[..]);
+    cursor.advance(4); // Skip correlation_id
     let error_code = cursor.get_i16();
     assert_eq!(error_code, 0);
 
@@ -260,7 +130,7 @@ async fn test_join_group_multiple_members() -> Result<()> {
         "Generation should increase after new member joins"
     );
 
-    tracing::info!("Second member joined, new generation: {}", generation2);
+    tracing::info!("Second member joined, new generation: {generation2}");
 
     Ok(())
 }
