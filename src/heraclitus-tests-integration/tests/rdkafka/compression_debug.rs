@@ -72,8 +72,10 @@ async fn test_two_compression_types() -> Result<()> {
     }
 
     println!("\n=== All messages sent, waiting for persistence ===");
-    // Give time for messages to be persisted
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Give ample time for timer to flush all batches (timer runs every 100ms)
+    // With staggered sends 500ms apart, last message at 2000ms needs 2100ms to flush
+    // Adding extra buffer to ensure all timer ticks complete
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     println!("=== Starting to consume ===");
     // Consume all messages
