@@ -267,6 +267,29 @@ impl Default for WalConfig {
     }
 }
 
+impl WalConfig {
+    /// Get the WAL directory path for a specific tenant/dataset/signal combination
+    ///
+    /// Path structure: `{base_wal_dir}/{tenant}/{dataset}/{signal_type}/`
+    /// Example: `.wal/acme/production/traces/`
+    pub fn get_wal_path(&self, tenant: &str, dataset: &str, signal_type: &str) -> PathBuf {
+        self.wal_dir.join(tenant).join(dataset).join(signal_type)
+    }
+
+    /// Create a tenant/dataset-specific WAL configuration
+    ///
+    /// This creates a new WalConfig with the wal_dir set to the tenant/dataset/signal path
+    /// while preserving all other configuration settings
+    pub fn for_tenant_dataset(&self, tenant: &str, dataset: &str, signal_type: &str) -> WalConfig {
+        WalConfig {
+            wal_dir: self.get_wal_path(tenant, dataset, signal_type),
+            max_segment_size: self.max_segment_size,
+            max_buffer_entries: self.max_buffer_entries,
+            flush_interval_secs: self.flush_interval_secs,
+        }
+    }
+}
+
 /// Type alias for WAL buffer entries
 type WalBuffer = Arc<RwLock<VecDeque<(Uuid, WalOperation, Vec<u8>)>>>;
 

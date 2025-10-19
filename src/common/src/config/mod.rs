@@ -195,6 +195,56 @@ impl Default for TenantsConfig {
     }
 }
 
+/// API Key configuration for a tenant
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApiKeyConfig {
+    /// The actual API key (e.g., "sk_acme_prod_1234567890abcdef")
+    pub key: String,
+    /// Optional name for this API key (e.g., "production-key")
+    pub name: Option<String>,
+}
+
+/// Dataset configuration
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DatasetConfig {
+    /// Dataset ID/name (e.g., "production", "staging")
+    pub id: String,
+    /// Whether this dataset is the default for the tenant
+    #[serde(default)]
+    pub is_default: bool,
+}
+
+/// Tenant configuration for multi-tenancy authentication
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TenantConfig {
+    /// Unique tenant identifier
+    pub id: String,
+    /// Human-readable tenant name
+    pub name: String,
+    /// Default dataset ID when X-Dataset-ID header is missing
+    pub default_dataset: Option<String>,
+    /// List of datasets for this tenant
+    #[serde(default)]
+    pub datasets: Vec<DatasetConfig>,
+    /// API keys for this tenant
+    #[serde(default)]
+    pub api_keys: Vec<ApiKeyConfig>,
+    /// Optional schema configuration override
+    #[serde(default)]
+    pub schema_config: Option<TenantSchemaConfig>,
+}
+
+/// Authentication configuration
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct AuthConfig {
+    /// Whether multi-tenancy authentication is enabled
+    #[serde(default)]
+    pub enabled: bool,
+    /// List of configured tenants
+    #[serde(default)]
+    pub tenants: Vec<TenantConfig>,
+}
+
 // Keep IcebergConfig for backward compatibility
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IcebergConfig {
@@ -242,6 +292,9 @@ pub struct Configuration {
     pub tenants: TenantsConfig,
     /// Iceberg configuration (deprecated, use schema instead)
     pub iceberg: Option<IcebergConfig>,
+    /// Authentication and multi-tenancy configuration
+    #[serde(default)]
+    pub auth: AuthConfig,
 }
 
 impl Default for Configuration {
@@ -258,6 +311,8 @@ impl Default for Configuration {
             tenants: TenantsConfig::default(),
             // Iceberg is optional and not enabled by default
             iceberg: None,
+            // Auth disabled by default
+            auth: AuthConfig::default(),
         }
     }
 }
