@@ -82,6 +82,55 @@ impl Catalog {
                     PRIMARY KEY (shard_id, ingester_id)
                 )"#;
                 query(create_shard_owners).execute(pool).await?;
+
+                // Multi-tenancy tables
+                let create_tenants = r#"
+                CREATE TABLE IF NOT EXISTS tenants (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    default_dataset TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    source TEXT NOT NULL CHECK(source IN ('config', 'database'))
+                )"#;
+                query(create_tenants).execute(pool).await?;
+
+                let create_api_keys = r#"
+                CREATE TABLE IF NOT EXISTS api_keys (
+                    id TEXT PRIMARY KEY,
+                    key_hash TEXT NOT NULL UNIQUE,
+                    tenant_id TEXT NOT NULL,
+                    name TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    revoked_at TEXT,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+                    UNIQUE(tenant_id, name)
+                )"#;
+                query(create_api_keys).execute(pool).await?;
+
+                let create_datasets = r#"
+                CREATE TABLE IF NOT EXISTS datasets (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+                    UNIQUE(tenant_id, name)
+                )"#;
+                query(create_datasets).execute(pool).await?;
+
+                // Indexes for multi-tenancy tables
+                query("CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(tenant_id)")
+                    .execute(pool)
+                    .await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash) WHERE revoked_at IS NULL",
+                )
+                .execute(pool)
+                .await?;
+                query("CREATE INDEX IF NOT EXISTS idx_datasets_tenant ON datasets(tenant_id)")
+                    .execute(pool)
+                    .await?;
             }
             Catalog::Postgres(pool) => {
                 // PostgreSQL schema
@@ -110,6 +159,53 @@ impl Catalog {
                     PRIMARY KEY (shard_id, ingester_id)
                 )"#;
                 query(create_shard_owners).execute(pool).await?;
+
+                // Multi-tenancy tables
+                let create_tenants = r#"
+                CREATE TABLE IF NOT EXISTS tenants (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    default_dataset TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    source TEXT NOT NULL CHECK(source IN ('config', 'database'))
+                )"#;
+                query(create_tenants).execute(pool).await?;
+
+                let create_api_keys = r#"
+                CREATE TABLE IF NOT EXISTS api_keys (
+                    id TEXT PRIMARY KEY,
+                    key_hash TEXT NOT NULL UNIQUE,
+                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    name TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    revoked_at TIMESTAMPTZ,
+                    UNIQUE(tenant_id, name)
+                )"#;
+                query(create_api_keys).execute(pool).await?;
+
+                let create_datasets = r#"
+                CREATE TABLE IF NOT EXISTS datasets (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE(tenant_id, name)
+                )"#;
+                query(create_datasets).execute(pool).await?;
+
+                // Indexes for multi-tenancy tables
+                query("CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(tenant_id)")
+                    .execute(pool)
+                    .await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash) WHERE revoked_at IS NULL",
+                )
+                .execute(pool)
+                .await?;
+                query("CREATE INDEX IF NOT EXISTS idx_datasets_tenant ON datasets(tenant_id)")
+                    .execute(pool)
+                    .await?;
             }
         }
 
@@ -563,4 +659,387 @@ fn parse_capabilities(s: &str) -> Vec<ServiceCapability> {
             _ => None,
         })
         .collect()
+}
+
+/// Tenant record from database
+#[derive(Debug, Clone)]
+pub struct TenantRecord {
+    pub id: String,
+    pub name: String,
+    pub default_dataset: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub source: String,
+}
+
+/// API Key record from database (without actual key)
+#[derive(Debug, Clone)]
+pub struct ApiKeyRecord {
+    pub id: String,
+    pub tenant_id: String,
+    pub name: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+/// Dataset record from database
+#[derive(Debug, Clone)]
+pub struct DatasetRecord {
+    pub id: String,
+    pub tenant_id: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Multi-tenancy catalog methods
+impl Catalog {
+    /// Upsert a tenant (insert or update if exists)
+    pub async fn upsert_tenant(
+        &self,
+        tenant_id: &str,
+        name: &str,
+        default_dataset: Option<&str>,
+        source: &str,
+    ) -> Result<(), sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let now = Utc::now().to_rfc3339();
+
+                // Try insert first
+                let insert_stmt = r#"
+                INSERT INTO tenants (id, name, default_dataset, created_at, updated_at, source)
+                VALUES (?, ?, ?, ?, ?, ?)
+                "#;
+
+                let result = query(insert_stmt)
+                    .bind(tenant_id)
+                    .bind(name)
+                    .bind(default_dataset)
+                    .bind(&now)
+                    .bind(&now)
+                    .bind(source)
+                    .execute(pool)
+                    .await;
+
+                if result.is_err() {
+                    // Update if already exists
+                    let update_stmt = r#"
+                    UPDATE tenants
+                    SET name = ?, default_dataset = ?, updated_at = ?, source = ?
+                    WHERE id = ?
+                    "#;
+                    query(update_stmt)
+                        .bind(name)
+                        .bind(default_dataset)
+                        .bind(&now)
+                        .bind(source)
+                        .bind(tenant_id)
+                        .execute(pool)
+                        .await?;
+                }
+            }
+            Catalog::Postgres(pool) => {
+                let stmt = r#"
+                INSERT INTO tenants (id, name, default_dataset, source)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (id) DO UPDATE
+                SET name = $2, default_dataset = $3, updated_at = NOW(), source = $4
+                "#;
+                query(stmt)
+                    .bind(tenant_id)
+                    .bind(name)
+                    .bind(default_dataset)
+                    .bind(source)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Get tenant by ID
+    pub async fn get_tenant(&self, tenant_id: &str) -> Result<Option<TenantRecord>, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let row = query("SELECT id, name, default_dataset, created_at, updated_at, source FROM tenants WHERE id = ?")
+                    .bind(tenant_id)
+                    .fetch_optional(pool)
+                    .await?;
+
+                Ok(row.map(|r| TenantRecord {
+                    id: r.get("id"),
+                    name: r.get("name"),
+                    default_dataset: r.get("default_dataset"),
+                    created_at: DateTime::parse_from_rfc3339(r.get("created_at"))
+                        .unwrap()
+                        .with_timezone(&Utc),
+                    updated_at: DateTime::parse_from_rfc3339(r.get("updated_at"))
+                        .unwrap()
+                        .with_timezone(&Utc),
+                    source: r.get("source"),
+                }))
+            }
+            Catalog::Postgres(pool) => {
+                let row = query("SELECT id, name, default_dataset, created_at, updated_at, source FROM tenants WHERE id = $1")
+                    .bind(tenant_id)
+                    .fetch_optional(pool)
+                    .await?;
+
+                Ok(row.map(|r| TenantRecord {
+                    id: r.get("id"),
+                    name: r.get("name"),
+                    default_dataset: r.get("default_dataset"),
+                    created_at: r.get("created_at"),
+                    updated_at: r.get("updated_at"),
+                    source: r.get("source"),
+                }))
+            }
+        }
+    }
+
+    /// List all tenants
+    pub async fn list_tenants(&self) -> Result<Vec<TenantRecord>, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let rows = query(
+                    "SELECT id, name, default_dataset, created_at, updated_at, source FROM tenants",
+                )
+                .fetch_all(pool)
+                .await?;
+
+                Ok(rows
+                    .iter()
+                    .map(|r| TenantRecord {
+                        id: r.get("id"),
+                        name: r.get("name"),
+                        default_dataset: r.get("default_dataset"),
+                        created_at: DateTime::parse_from_rfc3339(r.get("created_at"))
+                            .unwrap()
+                            .with_timezone(&Utc),
+                        updated_at: DateTime::parse_from_rfc3339(r.get("updated_at"))
+                            .unwrap()
+                            .with_timezone(&Utc),
+                        source: r.get("source"),
+                    })
+                    .collect())
+            }
+            Catalog::Postgres(pool) => {
+                let rows = query(
+                    "SELECT id, name, default_dataset, created_at, updated_at, source FROM tenants",
+                )
+                .fetch_all(pool)
+                .await?;
+
+                Ok(rows
+                    .iter()
+                    .map(|r| TenantRecord {
+                        id: r.get("id"),
+                        name: r.get("name"),
+                        default_dataset: r.get("default_dataset"),
+                        created_at: r.get("created_at"),
+                        updated_at: r.get("updated_at"),
+                        source: r.get("source"),
+                    })
+                    .collect())
+            }
+        }
+    }
+
+    /// Create or update an API key
+    pub async fn upsert_api_key(
+        &self,
+        tenant_id: &str,
+        key_hash: &str,
+        name: Option<&str>,
+    ) -> Result<String, sqlx::Error> {
+        let key_id = Uuid::new_v4().to_string();
+
+        match self {
+            Catalog::Sqlite(pool) => {
+                let now = Utc::now().to_rfc3339();
+
+                // Check if key_hash already exists
+                let existing =
+                    query("SELECT id FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL")
+                        .bind(key_hash)
+                        .fetch_optional(pool)
+                        .await?;
+
+                if let Some(row) = existing {
+                    // Return existing ID
+                    return Ok(row.get("id"));
+                }
+
+                // Insert new key
+                let stmt = r#"
+                INSERT INTO api_keys (id, key_hash, tenant_id, name, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                "#;
+                query(stmt)
+                    .bind(&key_id)
+                    .bind(key_hash)
+                    .bind(tenant_id)
+                    .bind(name)
+                    .bind(&now)
+                    .execute(pool)
+                    .await?;
+            }
+            Catalog::Postgres(pool) => {
+                // Check if key_hash already exists
+                let existing =
+                    query("SELECT id FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL")
+                        .bind(key_hash)
+                        .fetch_optional(pool)
+                        .await?;
+
+                if let Some(row) = existing {
+                    return Ok(row.get("id"));
+                }
+
+                let stmt = r#"
+                INSERT INTO api_keys (id, key_hash, tenant_id, name)
+                VALUES ($1, $2, $3, $4)
+                "#;
+                query(stmt)
+                    .bind(&key_id)
+                    .bind(key_hash)
+                    .bind(tenant_id)
+                    .bind(name)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+
+        Ok(key_id)
+    }
+
+    /// Validate an API key and return tenant_id if valid
+    pub async fn validate_api_key(
+        &self,
+        key_hash: &str,
+    ) -> Result<Option<(String, Option<String>)>, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let row = query("SELECT tenant_id, name FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL")
+                    .bind(key_hash)
+                    .fetch_optional(pool)
+                    .await?;
+
+                Ok(row.map(|r| (r.get("tenant_id"), r.get("name"))))
+            }
+            Catalog::Postgres(pool) => {
+                let row = query("SELECT tenant_id, name FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL")
+                    .bind(key_hash)
+                    .fetch_optional(pool)
+                    .await?;
+
+                Ok(row.map(|r| (r.get("tenant_id"), r.get("name"))))
+            }
+        }
+    }
+
+    /// Revoke an API key
+    pub async fn revoke_api_key(&self, key_id: &str) -> Result<(), sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let now = Utc::now().to_rfc3339();
+                query("UPDATE api_keys SET revoked_at = ? WHERE id = ?")
+                    .bind(&now)
+                    .bind(key_id)
+                    .execute(pool)
+                    .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query("UPDATE api_keys SET revoked_at = NOW() WHERE id = $1")
+                    .bind(key_id)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Create a dataset for a tenant
+    pub async fn create_dataset(
+        &self,
+        tenant_id: &str,
+        dataset_name: &str,
+    ) -> Result<String, sqlx::Error> {
+        let dataset_id = Uuid::new_v4().to_string();
+
+        match self {
+            Catalog::Sqlite(pool) => {
+                let now = Utc::now().to_rfc3339();
+                let stmt = r#"
+                INSERT INTO datasets (id, tenant_id, name, created_at)
+                VALUES (?, ?, ?, ?)
+                "#;
+                query(stmt)
+                    .bind(&dataset_id)
+                    .bind(tenant_id)
+                    .bind(dataset_name)
+                    .bind(&now)
+                    .execute(pool)
+                    .await?;
+            }
+            Catalog::Postgres(pool) => {
+                let stmt = r#"
+                INSERT INTO datasets (id, tenant_id, name)
+                VALUES ($1, $2, $3)
+                "#;
+                query(stmt)
+                    .bind(&dataset_id)
+                    .bind(tenant_id)
+                    .bind(dataset_name)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+
+        Ok(dataset_id)
+    }
+
+    /// Get datasets for a tenant
+    pub async fn get_datasets(&self, tenant_id: &str) -> Result<Vec<DatasetRecord>, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let rows = query(
+                    "SELECT id, tenant_id, name, created_at FROM datasets WHERE tenant_id = ?",
+                )
+                .bind(tenant_id)
+                .fetch_all(pool)
+                .await?;
+
+                Ok(rows
+                    .iter()
+                    .map(|r| DatasetRecord {
+                        id: r.get("id"),
+                        tenant_id: r.get("tenant_id"),
+                        name: r.get("name"),
+                        created_at: DateTime::parse_from_rfc3339(r.get("created_at"))
+                            .unwrap()
+                            .with_timezone(&Utc),
+                    })
+                    .collect())
+            }
+            Catalog::Postgres(pool) => {
+                let rows = query(
+                    "SELECT id, tenant_id, name, created_at FROM datasets WHERE tenant_id = $1",
+                )
+                .bind(tenant_id)
+                .fetch_all(pool)
+                .await?;
+
+                Ok(rows
+                    .iter()
+                    .map(|r| DatasetRecord {
+                        id: r.get("id"),
+                        tenant_id: r.get("tenant_id"),
+                        name: r.get("name"),
+                        created_at: r.get("created_at"),
+                    })
+                    .collect())
+            }
+        }
+    }
 }
