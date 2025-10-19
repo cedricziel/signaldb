@@ -89,7 +89,10 @@ async fn test_leave_group_nonexistent_group() -> Result<()> {
     let mut cursor = Cursor::new(&response[..]);
     let _correlation_id = cursor.get_i32();
     let error_code = cursor.get_i16();
-    assert_eq!(error_code, 16, "Should return COORDINATOR_NOT_AVAILABLE"); // ERROR_COORDINATOR_NOT_AVAILABLE
+    assert_eq!(
+        error_code, 15,
+        "Should return COORDINATOR_NOT_AVAILABLE (15)"
+    ); // ERROR_COORDINATOR_NOT_AVAILABLE
 
     Ok(())
 }

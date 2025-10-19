@@ -7,6 +7,7 @@ use crate::{
     storage::{BatchWriter, MessageReader},
 };
 use bytes::{Buf, BytesMut};
+use kafka_protocol::error::ResponseError;
 use kafka_protocol::messages::{ApiKey, RequestKind, ResponseKind};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -382,7 +383,9 @@ impl ConnectionHandler {
                                     // Topic doesn't exist and can't be auto-created
                                     topic_responses.push(
                                         MetadataResponseTopic::default()
-                                            .with_error_code(3) // UNKNOWN_TOPIC
+                                            .with_error_code(
+                                                ResponseError::UnknownTopicOrPartition.code(),
+                                            )
                                             .with_name(topic_req.name.clone())
                                             .with_is_internal(false)
                                             .with_partitions(vec![]),
@@ -1051,11 +1054,11 @@ impl ConnectionHandler {
         {
             Some(state) => state,
             None => {
-                // Group doesn't exist
+                // Group doesn't exist - return UNKNOWN_MEMBER_ID
                 info!("Group {group_id} not found for heartbeat");
                 let response = kafka_protocol::messages::HeartbeatResponse::default()
                     .with_throttle_time_ms(0)
-                    .with_error_code(15); // UNKNOWN_MEMBER_ID (group doesn't exist)
+                    .with_error_code(ResponseError::UnknownMemberId.code());
                 return Ok(ResponseKind::Heartbeat(response));
             }
         };
@@ -1068,7 +1071,7 @@ impl ConnectionHandler {
             );
             let response = kafka_protocol::messages::HeartbeatResponse::default()
                 .with_throttle_time_ms(0)
-                .with_error_code(22); // ILLEGAL_GENERATION
+                .with_error_code(ResponseError::IllegalGeneration.code());
             return Ok(ResponseKind::Heartbeat(response));
         }
 
@@ -1077,7 +1080,7 @@ impl ConnectionHandler {
             info!("Member {member_id} not found in group {group_id}");
             let response = kafka_protocol::messages::HeartbeatResponse::default()
                 .with_throttle_time_ms(0)
-                .with_error_code(25); // UNKNOWN_MEMBER_ID
+                .with_error_code(ResponseError::UnknownMemberId.code());
             return Ok(ResponseKind::Heartbeat(response));
         }
 
@@ -1113,11 +1116,11 @@ impl ConnectionHandler {
         {
             Some(state) => state,
             None => {
-                // Group doesn't exist
+                // Group doesn't exist - return COORDINATOR_NOT_AVAILABLE
                 info!("Group {group_id} not found for leave");
                 let response = kafka_protocol::messages::LeaveGroupResponse::default()
                     .with_throttle_time_ms(0)
-                    .with_error_code(16); // COORDINATOR_NOT_AVAILABLE (closest to "group not found")
+                    .with_error_code(ResponseError::CoordinatorNotAvailable.code());
                 return Ok(ResponseKind::LeaveGroup(response));
             }
         };
@@ -1438,7 +1441,7 @@ impl ConnectionHandler {
                 let result = CreatableTopicResult::default()
                     .with_name(topic.name.clone())
                     .with_topic_id(Uuid::nil())
-                    .with_error_code(36) // TOPIC_ALREADY_EXISTS
+                    .with_error_code(ResponseError::TopicAlreadyExists.code())
                     .with_error_message(Some(
                         format!("Topic '{}' already exists", topic.name.as_str()).into(),
                     ));
@@ -1484,7 +1487,7 @@ impl ConnectionHandler {
                     let result = CreatableTopicResult::default()
                         .with_name(topic.name.clone())
                         .with_topic_id(Uuid::nil())
-                        .with_error_code(1) // UNKNOWN_SERVER_ERROR
+                        .with_error_code(ResponseError::UnknownServerError.code())
                         .with_error_message(Some(format!("Failed to create topic: {e}").into()));
 
                     topic_results.push(result);
