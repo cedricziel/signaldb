@@ -32,6 +32,8 @@ use common::flight::transport::InMemoryFlightTransport;
 use common::wal::{Wal, WalConfig};
 
 use crate::handler::otlp_grpc::TraceHandler;
+use crate::handler::otlp_log_handler::LogHandler;
+use crate::handler::otlp_metrics_handler::MetricsHandler;
 use crate::services::{
     otlp_log_service::LogAcceptorService, otlp_metric_service::MetricsAcceptorService,
     otlp_trace_service::TraceAcceptorService,
@@ -112,30 +114,64 @@ pub async fn serve_otlp_grpc(
     // Start background connection cleanup
     flight_transport.start_connection_cleanup(std::time::Duration::from_secs(60));
 
-    // Initialize WAL for durability
-    let wal_config = WalConfig {
-        wal_dir: std::env::var("ACCEPTOR_WAL_DIR")
-            .unwrap_or_else(|_| ".wal/acceptor".to_string())
+    // Initialize separate WALs for each signal type for better isolation and custom configurations
+
+    // WAL for traces - baseline configuration
+    let traces_wal_config = WalConfig {
+        wal_dir: std::env::var("ACCEPTOR_TRACES_WAL_DIR")
+            .unwrap_or_else(|_| ".wal/acceptor-traces".to_string())
             .into(),
-        ..Default::default()
+        max_segment_size: 64 * 1024 * 1024, // 64MB
+        max_buffer_entries: 1000,
+        flush_interval_secs: 30,
     };
-
-    let mut wal = Wal::new(wal_config)
+    let mut traces_wal = Wal::new(traces_wal_config)
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to initialize WAL: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to initialize traces WAL: {}", e))?;
+    traces_wal.start_background_flush();
+    let traces_wal = Arc::new(traces_wal);
 
-    // Start background WAL flush task
-    wal.start_background_flush();
-    let wal = Arc::new(wal);
+    // WAL for logs - higher volume, more frequent flushes
+    let logs_wal_config = WalConfig {
+        wal_dir: std::env::var("ACCEPTOR_LOGS_WAL_DIR")
+            .unwrap_or_else(|_| ".wal/acceptor-logs".to_string())
+            .into(),
+        max_segment_size: 64 * 1024 * 1024, // 64MB
+        max_buffer_entries: 2000,           // Higher buffer for log volume
+        flush_interval_secs: 15,            // Flush more frequently
+    };
+    let mut logs_wal = Wal::new(logs_wal_config)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to initialize logs WAL: {}", e))?;
+    logs_wal.start_background_flush();
+    let logs_wal = Arc::new(logs_wal);
 
-    // Set up OTLP/gRPC services with Flight forwarding and WAL
-    let log_server = LogsServiceServer::new(LogAcceptorService::new(flight_transport.clone()));
-    let trace_server = TraceServiceServer::new(TraceAcceptorService::new(TraceHandler::new(
-        flight_transport.clone(),
-        wal.clone(),
-    )));
-    let metric_server =
-        MetricsServiceServer::new(MetricsAcceptorService::new(flight_transport.clone()));
+    // WAL for metrics - highest volume, most aggressive flushing
+    let metrics_wal_config = WalConfig {
+        wal_dir: std::env::var("ACCEPTOR_METRICS_WAL_DIR")
+            .unwrap_or_else(|_| ".wal/acceptor-metrics".to_string())
+            .into(),
+        max_segment_size: 128 * 1024 * 1024, // 128MB - larger segments for high volume
+        max_buffer_entries: 5000,            // Much higher buffer for metrics
+        flush_interval_secs: 10,             // Flush frequently for metrics
+    };
+    let mut metrics_wal = Wal::new(metrics_wal_config)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to initialize metrics WAL: {}", e))?;
+    metrics_wal.start_background_flush();
+    let metrics_wal = Arc::new(metrics_wal);
+
+    log::info!("✅ Initialized three separate WALs for traces, logs, and metrics");
+
+    // Set up OTLP/gRPC services with handler pattern and WAL integration
+    let log_handler = LogHandler::new(flight_transport.clone(), logs_wal.clone());
+    let log_server = LogsServiceServer::new(LogAcceptorService::new(log_handler));
+
+    let trace_handler = TraceHandler::new(flight_transport.clone(), traces_wal.clone());
+    let trace_server = TraceServiceServer::new(TraceAcceptorService::new(trace_handler));
+
+    let metrics_handler = MetricsHandler::new(flight_transport.clone(), metrics_wal.clone());
+    let metric_server = MetricsServiceServer::new(MetricsAcceptorService::new(metrics_handler));
 
     init_tx
         .send(())

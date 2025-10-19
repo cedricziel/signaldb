@@ -1,83 +1,108 @@
-use std::sync::Arc;
-// Flight protocol imports
-use arrow_flight::utils::batches_to_flight_data;
-use futures::{StreamExt, stream};
-
-use common::flight::conversion::otlp_logs_to_arrow;
-use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use opentelemetry_proto::tonic::collector::logs::v1::{
     ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
 };
-use tonic::{Request, Response, Status, async_trait};
+use tonic::{Request, Response, Status};
 
-pub struct LogAcceptorService {
-    flight_transport: Arc<InMemoryFlightTransport>,
+use crate::handler::otlp_log_handler::LogHandler;
+
+#[async_trait::async_trait]
+pub trait LogHandlerTrait {
+    async fn handle_grpc_otlp_logs(&self, request: ExportLogsServiceRequest);
 }
 
-impl LogAcceptorService {
-    pub fn new(flight_transport: Arc<InMemoryFlightTransport>) -> Self {
-        Self { flight_transport }
+#[async_trait::async_trait]
+impl LogHandlerTrait for LogHandler {
+    async fn handle_grpc_otlp_logs(&self, request: ExportLogsServiceRequest) {
+        self.handle_grpc_otlp_logs(request).await;
     }
 }
 
-#[async_trait]
-impl LogsService for LogAcceptorService {
+pub struct LogAcceptorService<H: LogHandlerTrait> {
+    handler: H,
+}
+
+impl<H: LogHandlerTrait> LogAcceptorService<H> {
+    pub fn new(handler: H) -> Self {
+        Self { handler }
+    }
+}
+
+#[tonic::async_trait]
+impl<H: LogHandlerTrait + Send + Sync + 'static> LogsService for LogAcceptorService<H> {
     async fn export(
         &self,
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
-        log::info!("Got a logs request: {:?}", request);
+        let request = request.into_inner();
 
-        let req = request.into_inner();
+        self.handler.handle_grpc_otlp_logs(request).await;
 
-        // Convert OTLP to Arrow RecordBatch
-        let record_batch = otlp_logs_to_arrow(&req);
+        Ok(Response::new(ExportLogsServiceResponse::default()))
+    }
+}
 
-        // Get a Flight client for a writer service with trace ingestion capability
-        let mut client = match self
-            .flight_transport
-            .get_client_for_capability(ServiceCapability::TraceIngestion)
-            .await
-        {
-            Ok(client) => client,
-            Err(e) => {
-                log::error!("Failed to get Flight client for log ingestion: {e}");
-                return Err(Status::internal("No available writer service"));
-            }
+#[cfg(any(test, feature = "testing"))]
+#[async_trait::async_trait]
+impl LogHandlerTrait for crate::handler::otlp_log_handler::MockLogHandler {
+    async fn handle_grpc_otlp_logs(&self, request: ExportLogsServiceRequest) {
+        self.handle_grpc_otlp_logs(request).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handler::otlp_log_handler::MockLogHandler;
+    use opentelemetry_proto::tonic::{
+        common::v1::{AnyValue, KeyValue, any_value::Value},
+        logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
+        resource::v1::Resource,
+    };
+
+    #[tokio::test]
+    async fn test_log_acceptor_service() {
+        let mut mock_handler = MockLogHandler::new();
+        mock_handler.expect_handle_grpc_otlp_logs();
+
+        let service = LogAcceptorService::new(mock_handler);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("test-service".to_string())),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1234567890,
+                        observed_time_unix_nano: 1234567890,
+                        severity_number: 9,
+                        severity_text: "INFO".to_string(),
+                        body: Some(AnyValue {
+                            value: Some(Value::StringValue("test log message".to_string())),
+                        }),
+                        attributes: vec![],
+                        dropped_attributes_count: 0,
+                        flags: 0,
+                        trace_id: vec![],
+                        span_id: vec![],
+                        event_name: "".to_string(),
+                    }],
+                    schema_url: "".to_string(),
+                }],
+                schema_url: "".to_string(),
+            }],
         };
 
-        let schema = record_batch.schema();
-        let flight_data = batches_to_flight_data(&schema, vec![record_batch]).map_err(|e| {
-            log::error!("Failed to convert batch to flight data: {e}");
-            Status::internal("Failed to convert to flight data")
-        })?;
+        let tonic_request = Request::new(request);
+        let response = service.export(tonic_request).await;
 
-        let flight_stream = stream::iter(flight_data);
-
-        match client.do_put(flight_stream).await {
-            Ok(response) => {
-                let mut response_stream = response.into_inner();
-                while let Some(result) = response_stream.next().await {
-                    match result {
-                        Ok(put_result) => {
-                            log::debug!("Flight put response: {put_result:?}");
-                        }
-                        Err(e) => {
-                            log::error!("Flight put error: {e}");
-                            return Err(Status::internal("Flight forwarding failed"));
-                        }
-                    }
-                }
-                log::debug!("Successfully forwarded logs via Flight protocol");
-            }
-            Err(e) => {
-                log::error!("Failed to forward logs via Flight protocol: {e}");
-                return Err(Status::internal("Flight forwarding failed"));
-            }
-        }
-
-        Ok(Response::new(ExportLogsServiceResponse {
-            partial_success: None,
-        }))
+        assert!(response.is_ok());
     }
 }

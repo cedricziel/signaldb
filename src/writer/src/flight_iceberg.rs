@@ -1,5 +1,7 @@
 use crate::processor::WalProcessor;
-use crate::schema_transform::{extract_schema_version, transform_trace_v1_to_v2};
+use crate::schema_transform::{
+    FlightMetadata, determine_wal_operation, extract_flight_metadata, transform_trace_v1_to_v2,
+};
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::utils::flight_data_to_batches;
 use arrow_flight::{
@@ -108,22 +110,31 @@ impl FlightService for IcebergWriterFlightService {
     ) -> Result<Response<Self::DoPutStream>, Status> {
         let mut inbound = request.into_inner();
         let mut data_vec = Vec::new();
-        let mut schema_version = None;
+        let mut flight_metadata: Option<FlightMetadata> = None;
         let mut schema_ref: Option<SchemaRef> = None;
 
         while let Some(msg) = inbound.next().await {
             let d = msg.map_err(|e| Status::internal(e.to_string()))?;
 
-            // Extract schema version from the first FlightData message (which contains metadata)
-            if schema_version.is_none() && !d.app_metadata.is_empty() {
-                match extract_schema_version(&d.app_metadata) {
-                    Ok(version) => {
-                        log::info!("Received data with schema version: {version}");
-                        schema_version = Some(version);
+            // Extract full metadata from the first FlightData message (which contains metadata)
+            if flight_metadata.is_none() && !d.app_metadata.is_empty() {
+                match extract_flight_metadata(&d.app_metadata) {
+                    Ok(metadata) => {
+                        log::info!(
+                            "Received data - schema: {}, signal: {:?}, target: {:?}",
+                            metadata.schema_version,
+                            metadata.signal_type,
+                            metadata.target_table
+                        );
+                        flight_metadata = Some(metadata);
                     }
                     Err(e) => {
-                        log::warn!("Failed to extract schema version: {e}, assuming v1");
-                        schema_version = Some("v1".to_string());
+                        log::warn!("Failed to extract metadata: {e}, using defaults");
+                        flight_metadata = Some(FlightMetadata {
+                            schema_version: "v1".to_string(),
+                            signal_type: Some("traces".to_string()),
+                            target_table: None,
+                        });
                     }
                 }
             }
@@ -139,10 +150,20 @@ impl FlightService for IcebergWriterFlightService {
         let batches =
             flight_data_to_batches(&data_vec).map_err(|e| Status::internal(e.to_string()))?;
 
+        // Determine WAL operation from metadata
+        let wal_operation = if let Some(ref metadata) = flight_metadata {
+            determine_wal_operation(metadata.signal_type.as_deref())
+        } else {
+            WalOperation::WriteTraces // Default fallback
+        };
+
+        log::debug!("Using WAL operation: {wal_operation:?}");
+
         // Transform batches if needed based on schema version
-        let transformed_batches = if let Some(ref version) = schema_version {
-            if version == "v1" {
-                // Transform v1 to v2 for Iceberg storage
+        let transformed_batches = if let Some(ref metadata) = flight_metadata {
+            if metadata.schema_version == "v1" && metadata.signal_type.as_deref() == Some("traces")
+            {
+                // Transform v1 to v2 for traces only
                 let mut transformed = Vec::new();
                 for batch in batches {
                     match transform_trace_v1_to_v2(batch) {
@@ -174,10 +195,10 @@ impl FlightService for IcebergWriterFlightService {
             let batch_bytes = record_batch_to_bytes(batch)
                 .map_err(|e| Status::internal(format!("Failed to serialize batch: {e}")))?;
 
-            // Write to WAL - this ensures durability
+            // Write to WAL with correct operation type determined from metadata
             let entry_id = self
                 .wal
-                .append(WalOperation::WriteTraces, batch_bytes) // TODO: Determine operation type from metadata
+                .append(wal_operation.clone(), batch_bytes)
                 .await
                 .map_err(|e| Status::internal(format!("Failed to write to WAL: {e}")))?;
 

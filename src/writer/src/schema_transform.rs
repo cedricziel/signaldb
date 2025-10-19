@@ -12,6 +12,14 @@ use datafusion::arrow::{
 };
 use std::sync::Arc;
 
+/// Struct to hold all extracted metadata from Flight messages
+#[derive(Debug, Clone)]
+pub struct FlightMetadata {
+    pub schema_version: String,
+    pub signal_type: Option<String>,
+    pub target_table: Option<String>,
+}
+
 /// Extract schema version from Flight metadata
 pub fn extract_schema_version(metadata: &[u8]) -> Result<String> {
     let metadata_str =
@@ -25,6 +33,51 @@ pub fn extract_schema_version(metadata: &[u8]) -> Result<String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| anyhow!("Missing schema_version in metadata"))
+}
+
+/// Extract all metadata from Flight metadata bytes
+/// Returns FlightMetadata with schema_version, signal_type, and target_table (if present)
+pub fn extract_flight_metadata(metadata: &[u8]) -> Result<FlightMetadata> {
+    let metadata_str =
+        std::str::from_utf8(metadata).map_err(|e| anyhow!("Invalid UTF-8 in metadata: {}", e))?;
+
+    let metadata_json: serde_json::Value = serde_json::from_str(metadata_str)
+        .map_err(|e| anyhow!("Invalid JSON in metadata: {}", e))?;
+
+    let schema_version = metadata_json
+        .get("schema_version")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow!("Missing schema_version in metadata"))?;
+
+    let signal_type = metadata_json
+        .get("signal_type")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let target_table = metadata_json
+        .get("target_table")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    Ok(FlightMetadata {
+        schema_version,
+        signal_type,
+        target_table,
+    })
+}
+
+/// Determine WalOperation from signal_type metadata
+pub fn determine_wal_operation(signal_type: Option<&str>) -> common::wal::WalOperation {
+    match signal_type {
+        Some("traces") => common::wal::WalOperation::WriteTraces,
+        Some("logs") => common::wal::WalOperation::WriteLogs,
+        Some("metrics") => common::wal::WalOperation::WriteMetrics,
+        _ => {
+            log::warn!("Unknown signal_type: {signal_type:?}, defaulting to WriteTraces");
+            common::wal::WalOperation::WriteTraces // Default fallback
+        }
+    }
 }
 
 /// Transform a trace RecordBatch from v1 to v2 schema

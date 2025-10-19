@@ -1,84 +1,113 @@
-use std::sync::Arc;
-// Flight protocol imports
-use arrow_flight::utils::batches_to_flight_data;
-use futures::{StreamExt, stream};
-
-use common::flight::conversion::otlp_metrics_to_arrow;
-use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use opentelemetry_proto::tonic::collector::metrics::v1::{
     ExportMetricsServiceRequest, ExportMetricsServiceResponse,
     metrics_service_server::MetricsService,
 };
-use tonic::{Request, Response, Status, async_trait};
+use tonic::{Request, Response, Status};
 
-pub struct MetricsAcceptorService {
-    flight_transport: Arc<InMemoryFlightTransport>,
+use crate::handler::otlp_metrics_handler::MetricsHandler;
+
+#[async_trait::async_trait]
+pub trait MetricsHandlerTrait {
+    async fn handle_grpc_otlp_metrics(&self, request: ExportMetricsServiceRequest);
 }
 
-impl MetricsAcceptorService {
-    pub fn new(flight_transport: Arc<InMemoryFlightTransport>) -> Self {
-        Self { flight_transport }
+#[async_trait::async_trait]
+impl MetricsHandlerTrait for MetricsHandler {
+    async fn handle_grpc_otlp_metrics(&self, request: ExportMetricsServiceRequest) {
+        self.handle_grpc_otlp_metrics(request).await;
     }
 }
 
-#[async_trait]
-impl MetricsService for MetricsAcceptorService {
+pub struct MetricsAcceptorService<H: MetricsHandlerTrait> {
+    handler: H,
+}
+
+impl<H: MetricsHandlerTrait> MetricsAcceptorService<H> {
+    pub fn new(handler: H) -> Self {
+        Self { handler }
+    }
+}
+
+#[tonic::async_trait]
+impl<H: MetricsHandlerTrait + Send + Sync + 'static> MetricsService for MetricsAcceptorService<H> {
     async fn export(
         &self,
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
-        log::info!("Got a metrics request: {:?}", request);
+        let request = request.into_inner();
 
-        let req = request.into_inner();
+        self.handler.handle_grpc_otlp_metrics(request).await;
 
-        // Convert OTLP to Arrow RecordBatch
-        let record_batch = otlp_metrics_to_arrow(&req);
+        Ok(Response::new(ExportMetricsServiceResponse::default()))
+    }
+}
 
-        // Get a Flight client for a writer service with trace ingestion capability
-        let mut client = match self
-            .flight_transport
-            .get_client_for_capability(ServiceCapability::TraceIngestion)
-            .await
-        {
-            Ok(client) => client,
-            Err(e) => {
-                log::error!("Failed to get Flight client for metrics ingestion: {e}");
-                return Err(Status::internal("No available writer service"));
-            }
+#[cfg(any(test, feature = "testing"))]
+#[async_trait::async_trait]
+impl MetricsHandlerTrait for crate::handler::otlp_metrics_handler::MockMetricsHandler {
+    async fn handle_grpc_otlp_metrics(&self, request: ExportMetricsServiceRequest) {
+        self.handle_grpc_otlp_metrics(request).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handler::otlp_metrics_handler::MockMetricsHandler;
+    use opentelemetry_proto::tonic::{
+        common::v1::{AnyValue, KeyValue, any_value::Value},
+        metrics::v1::{
+            Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric::Data,
+            number_data_point,
+        },
+        resource::v1::Resource,
+    };
+
+    #[tokio::test]
+    async fn test_metrics_acceptor_service() {
+        let mut mock_handler = MockMetricsHandler::new();
+        mock_handler.expect_handle_grpc_otlp_metrics();
+
+        let service = MetricsAcceptorService::new(mock_handler);
+
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("test-service".to_string())),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                }),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: None,
+                    metrics: vec![Metric {
+                        name: "test_metric".to_string(),
+                        description: "A test metric".to_string(),
+                        unit: "1".to_string(),
+                        data: Some(Data::Gauge(Gauge {
+                            data_points: vec![NumberDataPoint {
+                                attributes: vec![],
+                                start_time_unix_nano: 1234567890,
+                                time_unix_nano: 1234567891,
+                                value: Some(number_data_point::Value::AsDouble(42.0)),
+                                exemplars: vec![],
+                                flags: 0,
+                            }],
+                        })),
+                        metadata: vec![],
+                    }],
+                    schema_url: "".to_string(),
+                }],
+                schema_url: "".to_string(),
+            }],
         };
 
-        let schema = record_batch.schema();
-        let flight_data = batches_to_flight_data(&schema, vec![record_batch]).map_err(|e| {
-            log::error!("Failed to convert batch to flight data: {e}");
-            Status::internal("Failed to convert to flight data")
-        })?;
+        let tonic_request = Request::new(request);
+        let response = service.export(tonic_request).await;
 
-        let flight_stream = stream::iter(flight_data);
-
-        match client.do_put(flight_stream).await {
-            Ok(response) => {
-                let mut response_stream = response.into_inner();
-                while let Some(result) = response_stream.next().await {
-                    match result {
-                        Ok(put_result) => {
-                            log::debug!("Flight put response: {put_result:?}");
-                        }
-                        Err(e) => {
-                            log::error!("Flight put error: {e}");
-                            return Err(Status::internal("Flight forwarding failed"));
-                        }
-                    }
-                }
-                log::debug!("Successfully forwarded metrics via Flight protocol");
-            }
-            Err(e) => {
-                log::error!("Failed to forward metrics via Flight protocol: {e}");
-                return Err(Status::internal("Flight forwarding failed"));
-            }
-        }
-
-        Ok(Response::new(ExportMetricsServiceResponse {
-            partial_success: None,
-        }))
+        assert!(response.is_ok());
     }
 }
