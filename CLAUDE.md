@@ -37,11 +37,6 @@ cargo run --bin acceptor   # OTLP ingestion service (ports 4317/4318)
 cargo run --bin router     # HTTP router (port 3000) + Flight (port 50053)
 cargo run --bin writer     # Data ingestion and storage service
 cargo run --bin querier    # Query execution engine (port 9000)
-
-# Heraclitus Kafka server
-cargo run --bin heraclitus # Standalone Kafka-compatible server (port 9092)
-cargo run --bin heraclitus -- --kafka-port 9092 --http-port 9093
-cargo run --bin heraclitus -- --storage-path memory://  # In-memory mode
 ```
 
 ### Infrastructure
@@ -61,13 +56,6 @@ docker compose up          # Start PostgreSQL, Grafana, and supporting services
 - **Common** (`src/common/`): Shared configuration, discovery, and data models
 - **Tempo API** (`src/tempo-api/`): Grafana Tempo compatibility layer
 - **SignalDB Binary** (`src/signaldb-bin/`): Monolithic mode runner
-
-**Heraclitus** (`src/heraclitus/`):
-- Standalone Kafka-compatible protocol server (separate from SignalDB)
-- Full Kafka wire protocol implementation (v0-v3 for most APIs)
-- Kafka client library compatibility (rdkafka, kafka-go, etc.)
-- Uses Apache Arrow/Parquet for storage
-- Built-in consumer group coordination and SASL authentication
 
 ### Data Flow
 
@@ -170,30 +158,6 @@ catalog_uri = "sqlite::memory:"         # In-memory SQLite catalog
 - Foundation for future PostgreSQL catalog backends
 - Object store integration for table data storage
 
-### Heraclitus Kafka Protocol Development
-
-**Protocol Implementation**: `src/heraclitus/src/protocol_v2/`
-- Uses `kafka-protocol` crate for wire protocol encoding/decoding
-- Each Kafka API has its own handler module
-- Protocol version negotiation via ApiVersions handshake
-
-**Supported APIs** (v0-v3 for most):
-- Producer: Produce, InitProducerId
-- Consumer: Fetch, ListOffsets, OffsetCommit, OffsetFetch
-- Consumer Groups: JoinGroup, SyncGroup, Heartbeat, LeaveGroup
-- Admin: CreateTopics, DeleteTopics, Metadata
-- Auth: SaslHandshake, SaslAuthenticate
-
-**Storage Backend**:
-- Uses Arrow/Parquet format via BatchWriter
-- Configurable: filesystem (`file://`) or in-memory (`memory://`)
-- State management for topics, partitions, offsets, consumer groups
-
-**Testing with librdkafka**:
-- E2E tests use rdkafka Rust client
-- Requires dedicated thread runtime (see helpers.rs)
-- Cannot share Tokio runtime due to C library blocking I/O
-
 ## Testing
 
 ### Test Organization
@@ -208,8 +172,8 @@ cargo test
 
 # Specific package
 cargo test -p common
-cargo test -p heraclitus
 cargo test -p writer
+cargo test -p acceptor
 
 # Specific test
 cargo test test_name
@@ -220,12 +184,6 @@ RUST_LOG=debug cargo test test_name -- --nocapture
 ```
 
 ### Test Infrastructure Patterns
-
-**Heraclitus Test Threading Model**:
-- Tests use dedicated OS threads with isolated Tokio runtimes for server instances
-- Critical for librdkafka (C library) compatibility - cannot share async runtime
-- Pattern: `std::thread::spawn` + `Runtime::new()` for complete isolation
-- See `src/heraclitus/tests/integration/helpers.rs` for reference implementation
 
 **Service Testing**:
 - Integration tests often use testcontainers for PostgreSQL

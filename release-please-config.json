@@ -1,5 +1,7 @@
 {
-  "plugins": ["cargo-workspace"],
+  "plugins": [
+    "cargo-workspace"
+  ],
   "packages": {
     "src/acceptor": {
       "release-type": "rust",
@@ -9,16 +11,46 @@
       "draft": false,
       "prerelease": false,
       "changelog-sections": [
-        {"type": "feat", "section": "Features"},
-        {"type": "fix", "section": "Bug Fixes"},
-        {"type": "perf", "section": "Performance Improvements"},
-        {"type": "revert", "section": "Reverts"},
-        {"type": "docs", "section": "Documentation"},
-        {"type": "style", "section": "Styles"},
-        {"type": "refactor", "section": "Code Refactoring"},
-        {"type": "test", "section": "Tests"},
-        {"type": "build", "section": "Build System"},
-        {"type": "ci", "section": "Continuous Integration"}
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance Improvements"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation"
+        },
+        {
+          "type": "style",
+          "section": "Styles"
+        },
+        {
+          "type": "refactor",
+          "section": "Code Refactoring"
+        },
+        {
+          "type": "test",
+          "section": "Tests"
+        },
+        {
+          "type": "build",
+          "section": "Build System"
+        },
+        {
+          "type": "ci",
+          "section": "Continuous Integration"
+        }
       ]
     },
     "src/common": {
@@ -29,16 +61,46 @@
       "draft": false,
       "prerelease": false,
       "changelog-sections": [
-        {"type": "feat", "section": "Features"},
-        {"type": "fix", "section": "Bug Fixes"},
-        {"type": "perf", "section": "Performance Improvements"},
-        {"type": "revert", "section": "Reverts"},
-        {"type": "docs", "section": "Documentation"},
-        {"type": "style", "section": "Styles"},
-        {"type": "refactor", "section": "Code Refactoring"},
-        {"type": "test", "section": "Tests"},
-        {"type": "build", "section": "Build System"},
-        {"type": "ci", "section": "Continuous Integration"}
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance Improvements"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation"
+        },
+        {
+          "type": "style",
+          "section": "Styles"
+        },
+        {
+          "type": "refactor",
+          "section": "Code Refactoring"
+        },
+        {
+          "type": "test",
+          "section": "Tests"
+        },
+        {
+          "type": "build",
+          "section": "Build System"
+        },
+        {
+          "type": "ci",
+          "section": "Continuous Integration"
+        }
       ]
     },
     "src/querier": {
@@ -49,16 +111,46 @@
       "draft": false,
       "prerelease": false,
       "changelog-sections": [
-        {"type": "feat", "section": "Features"},
-        {"type": "fix", "section": "Bug Fixes"},
-        {"type": "perf", "section": "Performance Improvements"},
-        {"type": "revert", "section": "Reverts"},
-        {"type": "docs", "section": "Documentation"},
-        {"type": "style", "section": "Styles"},
-        {"type": "refactor", "section": "Code Refactoring"},
-        {"type": "test", "section": "Tests"},
-        {"type": "build", "section": "Build System"},
-        {"type": "ci", "section": "Continuous Integration"}
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance Improvements"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation"
+        },
+        {
+          "type": "style",
+          "section": "Styles"
+        },
+        {
+          "type": "refactor",
+          "section": "Code Refactoring"
+        },
+        {
+          "type": "test",
+          "section": "Tests"
+        },
+        {
+          "type": "build",
+          "section": "Build System"
+        },
+        {
+          "type": "ci",
+          "section": "Continuous Integration"
+        }
       ]
     },
     "src/router": {
@@ -69,16 +161,46 @@
       "draft": false,
       "prerelease": false,
       "changelog-sections": [
-        {"type": "feat", "section": "Features"},
-        {"type": "fix", "section": "Bug Fixes"},
-        {"type": "perf", "section": "Performance Improvements"},
-        {"type": "revert", "section": "Reverts"},
-        {"type": "docs", "section": "Documentation"},
-        {"type": "style", "section": "Styles"},
-        {"type": "refactor", "section": "Code Refactoring"},
-        {"type": "test", "section": "Tests"},
-        {"type": "build", "section": "Build System"},
-        {"type": "ci", "section": "Continuous Integration"}
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance Improvements"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation"
+        },
+        {
+          "type": "style",
+          "section": "Styles"
+        },
+        {
+          "type": "refactor",
+          "section": "Code Refactoring"
+        },
+        {
+          "type": "test",
+          "section": "Tests"
+        },
+        {
+          "type": "build",
+          "section": "Build System"
+        },
+        {
+          "type": "ci",
+          "section": "Continuous Integration"
+        }
       ]
     },
     "src/signal-producer": {
@@ -89,16 +211,46 @@
       "draft": false,
       "prerelease": false,
       "changelog-sections": [
-        {"type": "feat", "section": "Features"},
-        {"type": "fix", "section": "Bug Fixes"},
-        {"type": "perf", "section": "Performance Improvements"},
-        {"type": "revert", "section": "Reverts"},
-        {"type": "docs", "section": "Documentation"},
-        {"type": "style", "section": "Styles"},
-        {"type": "refactor", "section": "Code Refactoring"},
-        {"type": "test", "section": "Tests"},
-        {"type": "build", "section": "Build System"},
-        {"type": "ci", "section": "Continuous Integration"}
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance Improvements"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation"
+        },
+        {
+          "type": "style",
+          "section": "Styles"
+        },
+        {
+          "type": "refactor",
+          "section": "Code Refactoring"
+        },
+        {
+          "type": "test",
+          "section": "Tests"
+        },
+        {
+          "type": "build",
+          "section": "Build System"
+        },
+        {
+          "type": "ci",
+          "section": "Continuous Integration"
+        }
       ]
     },
     "src/signaldb-bin": {
@@ -109,36 +261,46 @@
       "draft": false,
       "prerelease": false,
       "changelog-sections": [
-        {"type": "feat", "section": "Features"},
-        {"type": "fix", "section": "Bug Fixes"},
-        {"type": "perf", "section": "Performance Improvements"},
-        {"type": "revert", "section": "Reverts"},
-        {"type": "docs", "section": "Documentation"},
-        {"type": "style", "section": "Styles"},
-        {"type": "refactor", "section": "Code Refactoring"},
-        {"type": "test", "section": "Tests"},
-        {"type": "build", "section": "Build System"},
-        {"type": "ci", "section": "Continuous Integration"}
-      ]
-    },
-    "src/heraclitus": {
-      "release-type": "rust",
-      "include-component-in-tag": true,
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
-      "draft": false,
-      "prerelease": false,
-      "changelog-sections": [
-        {"type": "feat", "section": "Features"},
-        {"type": "fix", "section": "Bug Fixes"},
-        {"type": "perf", "section": "Performance Improvements"},
-        {"type": "revert", "section": "Reverts"},
-        {"type": "docs", "section": "Documentation"},
-        {"type": "style", "section": "Styles"},
-        {"type": "refactor", "section": "Code Refactoring"},
-        {"type": "test", "section": "Tests"},
-        {"type": "build", "section": "Build System"},
-        {"type": "ci", "section": "Continuous Integration"}
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance Improvements"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation"
+        },
+        {
+          "type": "style",
+          "section": "Styles"
+        },
+        {
+          "type": "refactor",
+          "section": "Code Refactoring"
+        },
+        {
+          "type": "test",
+          "section": "Tests"
+        },
+        {
+          "type": "build",
+          "section": "Build System"
+        },
+        {
+          "type": "ci",
+          "section": "Continuous Integration"
+        }
       ]
     },
     "src/tempo-api": {
@@ -149,16 +311,46 @@
       "draft": false,
       "prerelease": false,
       "changelog-sections": [
-        {"type": "feat", "section": "Features"},
-        {"type": "fix", "section": "Bug Fixes"},
-        {"type": "perf", "section": "Performance Improvements"},
-        {"type": "revert", "section": "Reverts"},
-        {"type": "docs", "section": "Documentation"},
-        {"type": "style", "section": "Styles"},
-        {"type": "refactor", "section": "Code Refactoring"},
-        {"type": "test", "section": "Tests"},
-        {"type": "build", "section": "Build System"},
-        {"type": "ci", "section": "Continuous Integration"}
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance Improvements"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation"
+        },
+        {
+          "type": "style",
+          "section": "Styles"
+        },
+        {
+          "type": "refactor",
+          "section": "Code Refactoring"
+        },
+        {
+          "type": "test",
+          "section": "Tests"
+        },
+        {
+          "type": "build",
+          "section": "Build System"
+        },
+        {
+          "type": "ci",
+          "section": "Continuous Integration"
+        }
       ]
     },
     "src/writer": {
@@ -169,16 +361,46 @@
       "draft": false,
       "prerelease": false,
       "changelog-sections": [
-        {"type": "feat", "section": "Features"},
-        {"type": "fix", "section": "Bug Fixes"},
-        {"type": "perf", "section": "Performance Improvements"},
-        {"type": "revert", "section": "Reverts"},
-        {"type": "docs", "section": "Documentation"},
-        {"type": "style", "section": "Styles"},
-        {"type": "refactor", "section": "Code Refactoring"},
-        {"type": "test", "section": "Tests"},
-        {"type": "build", "section": "Build System"},
-        {"type": "ci", "section": "Continuous Integration"}
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance Improvements"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation"
+        },
+        {
+          "type": "style",
+          "section": "Styles"
+        },
+        {
+          "type": "refactor",
+          "section": "Code Refactoring"
+        },
+        {
+          "type": "test",
+          "section": "Tests"
+        },
+        {
+          "type": "build",
+          "section": "Build System"
+        },
+        {
+          "type": "ci",
+          "section": "Continuous Integration"
+        }
       ]
     }
   },
