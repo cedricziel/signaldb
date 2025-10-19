@@ -4,8 +4,6 @@ resolver = "2"
 members = [
     "src/acceptor",
     "src/common",
-    "src/heraclitus",
-    "src/heraclitus-tests-integration",
     "src/querier",
     "src/router",
     "src/signal-producer",
@@ -120,17 +118,6 @@ testcontainers-modules = { version = "0.13", features = ["postgres", "kafka"] }
 tempfile = "3.20.0"
 rand = "0.9"
 
-# Compression libraries (used by heraclitus)
-flate2 = "1.1"
-snap = "1.1"
-lz4 = "1.28"
-zstd = "0.13"
-
-# Other heraclitus dependencies
-parking_lot = "0.12"
-crc32c = "0.6"
-prometheus = { version = "0.14", features = ["process"] }
-socket2 = "0.5"
 
 # Dev dependencies
 pretty_assertions = "1.4"
