@@ -302,9 +302,21 @@ pub async fn send_offset_commit_request(
         })
         .collect();
 
-    let request = OffsetCommitRequest::default()
+    let mut request = OffsetCommitRequest::default()
         .with_group_id(GroupId(StrBytes::from_string(group_id.to_string())))
         .with_topics(request_topics);
+
+    // For v1+, set generation_id_or_member_epoch and member_id for simple (non-consumer-group) commits
+    if version >= 1 {
+        request = request
+            .with_generation_id_or_member_epoch(-1) // -1 indicates simple consumer (not part of a group)
+            .with_member_id(StrBytes::from_static_str(""));
+    }
+
+    // For v2-v4, set retention_time (deprecated in v5+)
+    if (2..=4).contains(&version) {
+        request = request.with_retention_time_ms(-1); // -1 means use broker default
+    }
 
     send_request(stream, &header, &request, version).await
 }
