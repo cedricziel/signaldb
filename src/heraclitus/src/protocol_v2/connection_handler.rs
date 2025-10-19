@@ -792,6 +792,7 @@ impl ConnectionHandler {
 
         let mut subscribed_topics = Vec::new();
         let mut protocol_version = 0i16; // Default to version 0
+        let mut protocol_metadata = Vec::new(); // Store raw metadata for response
 
         // Extract subscribed topics from the first protocol metadata
         if let Some(protocol) = req.protocols.first() {
@@ -799,6 +800,11 @@ impl ConnectionHandler {
                 "Parsing subscription metadata, size: {} bytes",
                 protocol.metadata.len()
             );
+
+            // Store the raw protocol metadata to return in JoinGroup response
+            // This is required for librdkafka compatibility
+            protocol_metadata = protocol.metadata.to_vec();
+
             // ConsumerProtocolSubscription has its own version embedded in the metadata
             // Read the version from the first 2 bytes
             let mut metadata_bytes = protocol.metadata.clone();
@@ -849,6 +855,7 @@ impl ConnectionHandler {
             last_heartbeat_ms: chrono::Utc::now().timestamp_millis(),
             subscribed_topics,
             protocol_version,
+            protocol_metadata,
         };
 
         group_state
@@ -892,7 +899,7 @@ impl ConnectionHandler {
                     .with_member_id(kafka_protocol::protocol::StrBytes::from_string(
                         m.member_id.clone(),
                     ))
-                    .with_metadata(bytes::Bytes::new()) // TODO: include actual member metadata
+                    .with_metadata(bytes::Bytes::from(m.protocol_metadata.clone()))
                 })
                 .collect()
         } else {
