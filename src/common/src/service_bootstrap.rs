@@ -15,7 +15,6 @@ pub enum ServiceType {
     Writer,
     Router,
     Querier,
-    Heraclitus,
 }
 
 impl std::fmt::Display for ServiceType {
@@ -25,7 +24,6 @@ impl std::fmt::Display for ServiceType {
             ServiceType::Writer => "writer",
             ServiceType::Router => "router",
             ServiceType::Querier => "querier",
-            ServiceType::Heraclitus => "heraclitus",
         };
         write!(f, "{s}")
     }
@@ -253,7 +251,6 @@ impl ServiceBootstrap {
             ],
             ServiceType::Router => vec![ServiceCapability::Routing],
             ServiceType::Querier => vec![ServiceCapability::QueryExecution],
-            ServiceType::Heraclitus => vec![ServiceCapability::KafkaIngestion],
         }
     }
 
