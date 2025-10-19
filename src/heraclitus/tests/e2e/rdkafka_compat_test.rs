@@ -30,9 +30,7 @@ async fn test_rdkafka_connectivity() -> Result<()> {
         .set("bootstrap.servers", context.kafka_addr())
         .set("group.id", "test-connectivity")
         .set("client.id", "test-client")
-        .set("api.version.request", "true")
         .set("socket.timeout.ms", "10000")
-        .set("metadata.request.timeout.ms", "10000")
         .set("debug", "broker,topic,msg")
         .create()?;
 

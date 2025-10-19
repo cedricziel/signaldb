@@ -56,36 +56,63 @@ impl BatchWriter {
             loop {
                 interval.tick().await;
 
-                let mut batches_guard = batches.lock().await;
-                let now = Utc::now();
+                // Build list of batches to flush while holding lock
+                let batches_to_flush = {
+                    let mut batches_guard = batches.lock().await;
+                    let now = Utc::now();
 
-                let mut to_flush = Vec::new();
-                for ((topic, partition), batch) in batches_guard.iter() {
-                    let age = now.signed_duration_since(batch.created_at);
-                    if age.num_milliseconds() >= config.flush_interval_ms as i64 {
-                        to_flush.push((topic.clone(), *partition));
-                    }
-                }
+                    let mut to_flush = Vec::new();
 
-                for (topic, partition) in to_flush {
-                    if let Some(batch) = batches_guard.remove(&(topic.clone(), partition)) {
-                        drop(batches_guard); // Release lock before I/O
+                    // Collect all batches that need flushing
+                    let keys_to_remove: Vec<_> = batches_guard
+                        .iter()
+                        .filter_map(|((topic, partition), batch)| {
+                            let age = now.signed_duration_since(batch.created_at);
+                            if age.num_milliseconds() >= config.flush_interval_ms as i64 {
+                                Some((topic.clone(), *partition))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
 
-                        if let Err(e) = Self::flush_batch(
-                            &object_store,
-                            &layout,
-                            &topic,
-                            partition,
-                            batch.batch,
-                            &metrics,
-                        )
-                        .await
+                    // Remove and collect batches
+                    for (topic, partition) in keys_to_remove {
+                        if let Some(pending_batch) =
+                            batches_guard.remove(&(topic.clone(), partition))
                         {
-                            error!("Failed to flush batch: {e}");
-                            metrics.storage.flush_errors.inc();
+                            info!(
+                                "Timer flushing batch for topic '{}' partition {} with {} messages (age: {}ms)",
+                                topic,
+                                partition,
+                                pending_batch.batch.messages.len(),
+                                now.signed_duration_since(pending_batch.created_at)
+                                    .num_milliseconds()
+                            );
+                            to_flush.push((topic, partition, pending_batch.batch));
                         }
+                    }
 
-                        batches_guard = batches.lock().await;
+                    to_flush
+                }; // Lock released here
+
+                // Flush all batches without holding the lock
+                for (topic, partition, batch) in batches_to_flush {
+                    if let Err(e) = Self::flush_batch(
+                        &object_store,
+                        &layout,
+                        &topic,
+                        partition,
+                        batch,
+                        &metrics,
+                    )
+                    .await
+                    {
+                        error!(
+                            "Failed to flush batch for topic '{}' partition {}: {}",
+                            topic, partition, e
+                        );
+                        metrics.storage.flush_errors.inc();
                     }
                 }
             }
@@ -147,6 +174,7 @@ impl BatchWriter {
     pub async fn write(&self, message: KafkaMessage) -> Result<()> {
         let topic = message.topic.clone();
         let partition = message.partition;
+        let offset = message.offset;
         let message_size = Self::estimate_message_size(&message);
 
         // Update metrics
@@ -160,14 +188,29 @@ impl BatchWriter {
 
         let batch = batches
             .entry((topic.clone(), partition))
-            .or_insert_with(|| PendingBatch {
-                batch: KafkaMessageBatch::new(),
-                size_bytes: 0,
-                created_at: Utc::now(),
+            .or_insert_with(|| {
+                info!(
+                    "Creating new pending batch for topic '{}' partition {}",
+                    topic, partition
+                );
+                PendingBatch {
+                    batch: KafkaMessageBatch::new(),
+                    size_bytes: 0,
+                    created_at: Utc::now(),
+                }
             });
 
         batch.batch.add(message);
         batch.size_bytes += message_size;
+
+        info!(
+            "Added message offset {} to batch for topic '{}' partition {} (batch now has {} messages, {} bytes)",
+            offset,
+            topic,
+            partition,
+            batch.batch.messages.len(),
+            batch.size_bytes
+        );
 
         // Check if we should flush
         let should_flush = batch.batch.messages.len() >= self.config.max_batch_messages
@@ -182,7 +225,13 @@ impl BatchWriter {
 
         if should_flush {
             let pending_batch = batches.remove(&(topic.clone(), partition)).unwrap();
+            let batch_size = pending_batch.batch.messages.len();
             drop(batches); // Release lock before I/O
+
+            info!(
+                "Batch size threshold reached for topic '{}' partition {}, flushing {} messages immediately",
+                topic, partition, batch_size
+            );
 
             Self::flush_batch(
                 &self.object_store,
