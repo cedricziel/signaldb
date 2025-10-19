@@ -3,6 +3,7 @@ use object_store::ObjectStore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::warn;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +42,9 @@ pub struct TopicPartitionOffset {
 pub struct ConsumerGroupManager {
     object_store: Arc<dyn ObjectStore>,
     layout: ObjectStorageLayout,
+    /// In-memory cache of consumer group states
+    /// This prevents race conditions when SyncGroup reads immediately after JoinGroup writes
+    group_cache: Arc<Mutex<HashMap<String, ConsumerGroupState>>>,
 }
 
 impl ConsumerGroupManager {
@@ -48,30 +52,90 @@ impl ConsumerGroupManager {
         Self {
             object_store,
             layout,
+            group_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub async fn get_group(&self, group_id: &str) -> Result<Option<ConsumerGroupState>> {
+        // Check cache first
+        {
+            let cache = self.group_cache.lock().await;
+            if let Some(state) = cache.get(group_id) {
+                tracing::debug!(
+                    "ConsumerGroupManager: Cache HIT for group {} with {} members",
+                    group_id,
+                    state.members.len()
+                );
+                return Ok(Some(state.clone()));
+            }
+        }
+
+        tracing::debug!(
+            "ConsumerGroupManager: Cache MISS for group {}, loading from storage",
+            group_id
+        );
+
+        // Cache miss - load from object storage
         let path = self.layout.consumer_group_path(group_id, "state.json");
 
         match self.object_store.get(&path).await {
             Ok(get_result) => {
                 let bytes = get_result.bytes().await?;
                 let state: ConsumerGroupState = serde_json::from_slice(&bytes)?;
+
+                tracing::info!(
+                    "ConsumerGroupManager: Loaded group {} from storage with {} members",
+                    group_id,
+                    state.members.len()
+                );
+
+                // Update cache
+                let mut cache = self.group_cache.lock().await;
+                cache.insert(group_id.to_string(), state.clone());
+
                 Ok(Some(state))
             }
-            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(object_store::Error::NotFound { .. }) => {
+                tracing::warn!(
+                    "ConsumerGroupManager: Group {} not found in storage",
+                    group_id
+                );
+                Ok(None)
+            }
             Err(e) => Err(e.into()),
         }
     }
 
     pub async fn save_group(&self, state: &ConsumerGroupState) -> Result<()> {
+        tracing::info!(
+            "ConsumerGroupManager: Saving group {} with {} members (updating cache immediately)",
+            state.group_id,
+            state.members.len()
+        );
+
+        // Update cache immediately - this is critical to prevent race conditions
+        // where SyncGroup reads immediately after JoinGroup writes
+        {
+            let mut cache = self.group_cache.lock().await;
+            cache.insert(state.group_id.clone(), state.clone());
+            tracing::debug!(
+                "ConsumerGroupManager: Cache updated for group {}",
+                state.group_id
+            );
+        }
+
+        // Persist to object storage (may have S3 latency, but cache is already updated)
         let path = self
             .layout
             .consumer_group_path(&state.group_id, "state.json");
         let bytes = serde_json::to_vec(state)?;
 
         self.object_store.put(&path, bytes.into()).await?;
+
+        tracing::debug!(
+            "ConsumerGroupManager: Persisted group {} to storage",
+            state.group_id
+        );
 
         Ok(())
     }
