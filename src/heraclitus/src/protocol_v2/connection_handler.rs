@@ -330,6 +330,7 @@ impl ConnectionHandler {
             if requested_topics.is_empty() {
                 // Empty list means client wants NO topics (only broker metadata)
                 // According to Kafka protocol: empty array [] = no topics, null = all topics
+                // See: https://kafka.apache.org/protocol.html#The_Metadata_API ("If the topics array is null, fetch metadata for all topics. If the topics array is empty, do not fetch metadata for any topic.")
                 info!("Client requested broker metadata only (empty topics list)");
                 // Don't add any topics to topic_responses
             } else {
