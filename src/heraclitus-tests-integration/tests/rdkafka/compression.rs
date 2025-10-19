@@ -144,6 +144,7 @@ async fn test_mixed_compression() -> Result<()> {
 
     // Produce messages with different compression types
     for compression_type in ["none", "gzip", "snappy", "lz4", "zstd"] {
+        println!("Creating producer for {compression_type} compression");
         let producer: FutureProducer = ClientConfig::new()
             .set("bootstrap.servers", &bootstrap_servers)
             .set("compression.type", compression_type)
@@ -151,7 +152,8 @@ async fn test_mixed_compression() -> Result<()> {
             .create()?;
 
         let message = format!("Message with {compression_type} compression");
-        producer
+        println!("Sending message with {compression_type} compression...");
+        let result = producer
             .send(
                 FutureRecord::to(topic)
                     .key(compression_type)
@@ -161,12 +163,23 @@ async fn test_mixed_compression() -> Result<()> {
             .await
             .map_err(|(e, _)| anyhow::anyhow!("Failed to produce: {:?}", e))?;
 
+        println!(
+            "✓ Message sent with {compression_type} compression to partition {} at offset {}",
+            result.0, result.1
+        );
+
         // Flush producer to ensure message is persisted before it's dropped
+        println!("Flushing producer for {compression_type}...");
         producer.flush(Duration::from_secs(5))?;
+        println!("✓ Producer flushed for {compression_type}");
+
+        // Allow time for producer connection to stabilize before dropping
+        // This prevents race conditions when creating/dropping producers rapidly
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    // Give some time for messages to be persisted
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Give additional time for messages to be persisted to storage
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Consume all messages
     let mut consumed_count = 0;
