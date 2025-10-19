@@ -379,9 +379,20 @@ pub async fn send_leave_group_request(
         .with_correlation_id(correlation_id)
         .with_client_id(None);
 
-    let request = LeaveGroupRequest::default()
-        .with_group_id(GroupId(StrBytes::from_string(group_id.to_string())))
-        .with_member_id(StrBytes::from_string(member_id.to_string()));
+    let request = if version <= 2 {
+        // v0-v2: use member_id field
+        LeaveGroupRequest::default()
+            .with_group_id(GroupId(StrBytes::from_string(group_id.to_string())))
+            .with_member_id(StrBytes::from_string(member_id.to_string()))
+    } else {
+        // v3+: use members array with MemberIdentity
+        use kafka_protocol::messages::leave_group_request::MemberIdentity;
+        let member =
+            MemberIdentity::default().with_member_id(StrBytes::from_string(member_id.to_string()));
+        LeaveGroupRequest::default()
+            .with_group_id(GroupId(StrBytes::from_string(group_id.to_string())))
+            .with_members(vec![member])
+    };
 
     send_request(stream, &header, &request, version).await
 }
