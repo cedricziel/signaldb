@@ -469,7 +469,7 @@ impl ConnectionHandler {
                 MetadataResponseBroker::default()
                     .with_node_id(kafka_protocol::messages::BrokerId(0))
                     .with_host(kafka_protocol::protocol::StrBytes::from_static_str(
-                        "localhost",
+                        "127.0.0.1",
                     ))
                     .with_port(self.port as i32)
                     .with_rack(None),
