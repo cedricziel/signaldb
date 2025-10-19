@@ -948,8 +948,19 @@ impl ConnectionHandler {
             .get_group(group_id)
             .await?
         {
-            Some(state) => state,
+            Some(state) => {
+                info!(
+                    "SyncGroup: Found existing group {} with {} members",
+                    group_id,
+                    state.members.len()
+                );
+                state
+            }
             None => {
+                warn!(
+                    "SyncGroup: Group {} not found! Creating new empty group. This indicates a race condition!",
+                    group_id
+                );
                 // Create new group state
                 crate::state::ConsumerGroupState {
                     group_id: group_id.to_string(),
@@ -968,6 +979,15 @@ impl ConnectionHandler {
             .map(|m| m.subscribed_topics.clone())
             .unwrap_or_default();
         let protocol_version = member_info.map(|m| m.protocol_version).unwrap_or(0);
+
+        if member_info.is_none() {
+            warn!(
+                "SyncGroup: Member {} not found in group {}! Available members: {:?}",
+                req.member_id.as_str(),
+                group_id,
+                group_state.members.keys().collect::<Vec<_>>()
+            );
+        }
 
         info!(
             "Member {} subscribed to topics: {:?}",

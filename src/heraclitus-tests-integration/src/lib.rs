@@ -290,9 +290,11 @@ enabled = false
 
         // Start Heraclitus process with stdout/stderr captured to pipes
         let mut cmd = Command::new(&heraclitus_path);
+        let rust_log = std::env::var("HERACLITUS_SERVER_LOG_LEVEL")
+            .unwrap_or_else(|_| "heraclitus=info".to_string());
         cmd.arg("--config")
             .arg(&config_path)
-            .env("RUST_LOG", "heraclitus=info")
+            .env("RUST_LOG", rust_log)
             .env("AWS_ACCESS_KEY_ID", "minioadmin")
             .env("AWS_SECRET_ACCESS_KEY", "minioadmin")
             .env("AWS_ENDPOINT_URL", &minio.endpoint)
