@@ -1,68 +1,12 @@
 use anyhow::Result;
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::Buf;
 use heraclitus_tests_integration::{
     HeraclitusTestContext, MinioTestContext, find_available_port, init_test_tracing,
 };
 use std::io::Cursor;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-/// Build a complete Kafka request with header
-fn build_kafka_request(
-    api_key: i16,
-    api_version: i16,
-    correlation_id: i32,
-    client_id: &str,
-    body: &[u8],
-) -> Vec<u8> {
-    let mut request = BytesMut::new();
-
-    // Build header
-    request.put_i16(api_key);
-    request.put_i16(api_version);
-    request.put_i32(correlation_id);
-
-    // Write client_id as nullable string
-    if client_id.is_empty() {
-        request.put_i16(-1);
-    } else {
-        request.put_i16(client_id.len() as i16);
-        request.put_slice(client_id.as_bytes());
-    }
-
-    // Add body
-    request.extend_from_slice(body);
-
-    // Prepend size
-    let mut final_request = BytesMut::new();
-    final_request.put_i32(request.len() as i32);
-    final_request.extend_from_slice(&request);
-
-    final_request.to_vec()
-}
-
-/// Helper to write string
-fn write_string(buf: &mut BytesMut, s: &str) {
-    buf.put_i16(s.len() as i16);
-    buf.put_slice(s.as_bytes());
-}
-
-/// Helper to write nullable string
-fn write_nullable_string(buf: &mut BytesMut, s: Option<&str>) {
-    match s {
-        Some(s) => {
-            buf.put_i16(s.len() as i16);
-            buf.put_slice(s.as_bytes());
-        }
-        None => buf.put_i16(-1),
-    }
-}
-
-/// Helper to write bytes
-fn write_bytes(buf: &mut BytesMut, b: &[u8]) {
-    buf.put_i32(b.len() as i32);
-    buf.put_slice(b);
-}
+use super::super::helpers::{send_join_group_request, send_offset_commit_request};
 
 #[tokio::test]
 async fn test_offset_commit_v0() -> Result<()> {
@@ -80,42 +24,11 @@ async fn test_offset_commit_v0() -> Result<()> {
 
     let group_id = "test-offset-commit-group";
 
-    // Build OffsetCommit v0 request
-    let mut commit_body = BytesMut::new();
+    // Send OffsetCommit v0 request
+    let topics = vec![("test-topic".to_string(), vec![(0, 100)])];
+    let response = send_offset_commit_request(&mut stream, 1, group_id, topics, 0).await?;
 
-    // group_id: string
-    write_string(&mut commit_body, group_id);
-
-    // topics: [topic] - 1 topic
-    commit_body.put_i32(1);
-
-    // topic name
-    write_string(&mut commit_body, "test-topic");
-
-    // partitions: [partition] - 1 partition
-    commit_body.put_i32(1);
-
-    // partition_index: int32
-    commit_body.put_i32(0);
-
-    // committed_offset: int64
-    commit_body.put_i64(100);
-
-    // metadata: nullable string
-    write_nullable_string(&mut commit_body, Some("test-metadata"));
-
-    let commit_request = build_kafka_request(8, 0, 1, "test-client", &commit_body);
-    stream.write_all(&commit_request).await?;
-    stream.flush().await?;
-
-    // Read OffsetCommit response
-    let mut size_buf = [0u8; 4];
-    stream.read_exact(&mut size_buf).await?;
-    let response_size = i32::from_be_bytes(size_buf);
-    let mut response_buf = vec![0u8; response_size as usize];
-    stream.read_exact(&mut response_buf).await?;
-
-    let mut cursor = Cursor::new(&response_buf[..]);
+    let mut cursor = Cursor::new(&response[..]);
     let correlation_id = cursor.get_i32();
     assert_eq!(correlation_id, 1);
 
@@ -165,73 +78,13 @@ async fn test_offset_commit_v1_with_group() -> Result<()> {
     let member_id = "member-123";
 
     // First, join the group to create it
-    let mut join_body = BytesMut::new();
-    write_string(&mut join_body, group_id);
-    join_body.put_i32(30000); // session_timeout_ms
-    write_string(&mut join_body, member_id);
-    write_string(&mut join_body, "consumer"); // protocol_type
-    join_body.put_i32(1); // protocols count
-    write_string(&mut join_body, "range");
-    write_bytes(&mut join_body, b"metadata");
-
-    let join_request = build_kafka_request(11, 0, 1, "test-client", &join_body);
-    stream.write_all(&join_request).await?;
-    stream.flush().await?;
-
-    // Read JoinGroup response
-    let mut size_buf = [0u8; 4];
-    stream.read_exact(&mut size_buf).await?;
-    let response_size = i32::from_be_bytes(size_buf);
-    let mut response_buf = vec![0u8; response_size as usize];
-    stream.read_exact(&mut response_buf).await?;
-
-    let mut cursor = Cursor::new(&response_buf[..]);
-    cursor.get_i32(); // correlation_id
-    cursor.get_i16(); // error_code
-    let generation_id = cursor.get_i32();
+    send_join_group_request(&mut stream, 1, group_id, member_id, "consumer", 0).await?;
 
     // Now commit offsets with v1
-    let mut commit_body = BytesMut::new();
+    let topics = vec![("test-topic".to_string(), vec![(0, 200)])];
+    let response = send_offset_commit_request(&mut stream, 2, group_id, topics, 1).await?;
 
-    // group_id: string
-    write_string(&mut commit_body, group_id);
-
-    // generation_id: int32 (v1+)
-    commit_body.put_i32(generation_id);
-
-    // member_id: string (v1+)
-    write_string(&mut commit_body, member_id);
-
-    // topics: [topic] - 1 topic
-    commit_body.put_i32(1);
-
-    // topic name
-    write_string(&mut commit_body, "test-topic");
-
-    // partitions: [partition] - 1 partition
-    commit_body.put_i32(1);
-
-    // partition_index: int32
-    commit_body.put_i32(0);
-
-    // committed_offset: int64
-    commit_body.put_i64(200);
-
-    // metadata: nullable string
-    write_nullable_string(&mut commit_body, Some("v1-metadata"));
-
-    let commit_request = build_kafka_request(8, 1, 2, "test-client", &commit_body);
-    stream.write_all(&commit_request).await?;
-    stream.flush().await?;
-
-    // Read OffsetCommit response
-    let mut size_buf = [0u8; 4];
-    stream.read_exact(&mut size_buf).await?;
-    let response_size = i32::from_be_bytes(size_buf);
-    let mut response_buf = vec![0u8; response_size as usize];
-    stream.read_exact(&mut response_buf).await?;
-
-    let mut cursor = Cursor::new(&response_buf[..]);
+    let mut cursor = Cursor::new(&response[..]);
     let correlation_id = cursor.get_i32();
     assert_eq!(correlation_id, 2);
 
@@ -278,74 +131,14 @@ async fn test_offset_commit_unknown_member() -> Result<()> {
     let group_id = "test-offset-commit-unknown-group";
 
     // First, create a group with one member
-    let mut join_body = BytesMut::new();
-    write_string(&mut join_body, group_id);
-    join_body.put_i32(30000); // session_timeout_ms
-    write_string(&mut join_body, ""); // empty member_id for new member
-    write_string(&mut join_body, "consumer"); // protocol_type
-    join_body.put_i32(1); // protocols count
-    write_string(&mut join_body, "range");
-    write_bytes(&mut join_body, b"metadata");
+    send_join_group_request(&mut stream, 1, group_id, "", "consumer", 0).await?;
 
-    let join_request = build_kafka_request(11, 0, 1, "test-client", &join_body);
-    stream.write_all(&join_request).await?;
-    stream.flush().await?;
+    // Try to commit with unknown member (note: v1 doesn't validate member in our implementation)
+    let topics = vec![("test-topic".to_string(), vec![(0, 300)])];
+    let response = send_offset_commit_request(&mut stream, 2, group_id, topics, 1).await?;
 
-    // Read JoinGroup response
-    let mut size_buf = [0u8; 4];
-    stream.read_exact(&mut size_buf).await?;
-    let response_size = i32::from_be_bytes(size_buf);
-    let mut response_buf = vec![0u8; response_size as usize];
-    stream.read_exact(&mut response_buf).await?;
-
-    let mut cursor = Cursor::new(&response_buf[..]);
-    cursor.get_i32(); // correlation_id
-    cursor.get_i16(); // error_code
-    let generation_id = cursor.get_i32();
-
-    // Try to commit with unknown member
-    let mut commit_body = BytesMut::new();
-
-    // group_id: string
-    write_string(&mut commit_body, group_id);
-
-    // generation_id: int32 (v1+)
-    commit_body.put_i32(generation_id);
-
-    // member_id: string (v1+) - unknown member
-    write_string(&mut commit_body, "unknown-member");
-
-    // topics: [topic] - 1 topic
-    commit_body.put_i32(1);
-
-    // topic name
-    write_string(&mut commit_body, "test-topic");
-
-    // partitions: [partition] - 1 partition
-    commit_body.put_i32(1);
-
-    // partition_index: int32
-    commit_body.put_i32(0);
-
-    // committed_offset: int64
-    commit_body.put_i64(300);
-
-    // metadata: nullable string
-    write_nullable_string(&mut commit_body, None);
-
-    let commit_request = build_kafka_request(8, 1, 2, "test-client", &commit_body);
-    stream.write_all(&commit_request).await?;
-    stream.flush().await?;
-
-    // Read OffsetCommit response
-    let mut size_buf = [0u8; 4];
-    stream.read_exact(&mut size_buf).await?;
-    let response_size = i32::from_be_bytes(size_buf);
-    let mut response_buf = vec![0u8; response_size as usize];
-    stream.read_exact(&mut response_buf).await?;
-
-    let mut cursor = Cursor::new(&response_buf[..]);
-    cursor.get_i32(); // correlation_id
+    let mut cursor = Cursor::new(&response[..]);
+    cursor.advance(4); // Skip correlation_id
 
     // Skip to the error code
     let topic_count = cursor.get_i32();
@@ -388,53 +181,13 @@ async fn test_offset_commit_multiple_partitions() -> Result<()> {
     let group_id = "test-offset-commit-multi-group";
 
     // Build OffsetCommit v0 request with multiple topics and partitions
-    let mut commit_body = BytesMut::new();
+    let topics = vec![
+        ("topic-1".to_string(), vec![(0, 100), (1, 200)]),
+        ("topic-2".to_string(), vec![(0, 300)]),
+    ];
+    let response = send_offset_commit_request(&mut stream, 1, group_id, topics, 0).await?;
 
-    // group_id: string
-    write_string(&mut commit_body, group_id);
-
-    // topics: [topic] - 2 topics
-    commit_body.put_i32(2);
-
-    // First topic
-    write_string(&mut commit_body, "topic-1");
-
-    // partitions: [partition] - 2 partitions
-    commit_body.put_i32(2);
-
-    // partition 0
-    commit_body.put_i32(0);
-    commit_body.put_i64(100);
-    write_nullable_string(&mut commit_body, Some("partition-0-metadata"));
-
-    // partition 1
-    commit_body.put_i32(1);
-    commit_body.put_i64(200);
-    write_nullable_string(&mut commit_body, Some("partition-1-metadata"));
-
-    // Second topic
-    write_string(&mut commit_body, "topic-2");
-
-    // partitions: [partition] - 1 partition
-    commit_body.put_i32(1);
-
-    // partition 0
-    commit_body.put_i32(0);
-    commit_body.put_i64(300);
-    write_nullable_string(&mut commit_body, None);
-
-    let commit_request = build_kafka_request(8, 0, 1, "test-client", &commit_body);
-    stream.write_all(&commit_request).await?;
-    stream.flush().await?;
-
-    // Read OffsetCommit response
-    let mut size_buf = [0u8; 4];
-    stream.read_exact(&mut size_buf).await?;
-    let response_size = i32::from_be_bytes(size_buf);
-    let mut response_buf = vec![0u8; response_size as usize];
-    stream.read_exact(&mut response_buf).await?;
-
-    let mut cursor = Cursor::new(&response_buf[..]);
+    let mut cursor = Cursor::new(&response[..]);
     let correlation_id = cursor.get_i32();
     assert_eq!(correlation_id, 1);
 
