@@ -10,7 +10,6 @@ fn main() {
         .set("bootstrap.servers", "127.0.0.1:9092")
         .set("client.id", "minimal-test")
         .set("group.id", "test-group")
-        .set("api.version.request", "false")
         .set("broker.version.fallback", "2.0.0")
         .set("debug", "all") // Enable all debug logging
         .create()

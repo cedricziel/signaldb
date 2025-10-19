@@ -16,10 +16,7 @@ async fn main() {
     println!("=== Testing Admin Operations ===");
     let admin: AdminClient<_> = ClientConfig::new()
         .set("bootstrap.servers", "127.0.0.1:9092") // Use IPv4 explicitly
-        .set("api.version.request", "true")
-        .set("api.version.request.timeout.ms", "10000")
         .set("socket.timeout.ms", "10000")
-        .set("metadata.request.timeout.ms", "10000")
         .create()
         .expect("Admin client creation failed");
 
