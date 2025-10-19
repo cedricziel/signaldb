@@ -2,15 +2,95 @@ use anyhow::Result;
 use aws_config::Region;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
+use std::io::{BufRead, BufReader, Read};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tempfile::TempDir;
 use testcontainers_modules::minio::MinIO;
 use testcontainers_modules::testcontainers::{ContainerAsync, runners::AsyncRunner};
 use tokio::time::sleep;
 use url::Url;
+
+/// Captures log output from a process in a background thread
+pub struct LogCapture {
+    lines: Arc<Mutex<Vec<String>>>,
+    _reader_thread: Option<JoinHandle<()>>,
+}
+
+impl LogCapture {
+    /// Create a new log capture from a reader
+    pub fn new<R: Read + Send + 'static>(reader: R, name: &str) -> Self {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let lines_clone = Arc::clone(&lines);
+        let name = name.to_string();
+
+        let reader_thread = thread::spawn(move || {
+            let buf_reader = BufReader::new(reader);
+            for line in buf_reader.lines() {
+                match line {
+                    Ok(line) => {
+                        // Optionally print to stdout if debug env var is set
+                        if std::env::var("HERACLITUS_TEST_DEBUG_LOGS").is_ok() {
+                            println!("[{}] {}", name, line);
+                        }
+
+                        if let Ok(mut lines) = lines_clone.lock() {
+                            lines.push(line);
+                        }
+                    }
+                    Err(_) => break, // EOF or error
+                }
+            }
+        });
+
+        Self {
+            lines,
+            _reader_thread: Some(reader_thread),
+        }
+    }
+
+    /// Get all captured log lines
+    pub fn get_logs(&self) -> Vec<String> {
+        self.lines.lock().unwrap().clone()
+    }
+
+    /// Get the last n log lines
+    pub fn tail(&self, n: usize) -> Vec<String> {
+        let logs = self.lines.lock().unwrap();
+        let start = logs.len().saturating_sub(n);
+        logs[start..].to_vec()
+    }
+
+    /// Search logs for lines matching a pattern
+    pub fn grep(&self, pattern: &str) -> Vec<String> {
+        self.lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|line| line.contains(pattern))
+            .cloned()
+            .collect()
+    }
+
+    /// Get the number of captured lines
+    pub fn len(&self) -> usize {
+        self.lines.lock().unwrap().len()
+    }
+
+    /// Check if no logs have been captured
+    pub fn is_empty(&self) -> bool {
+        self.lines.lock().unwrap().is_empty()
+    }
+
+    /// Clear all captured logs
+    pub fn clear(&self) {
+        self.lines.lock().unwrap().clear();
+    }
+}
 
 /// Test context for MinIO container
 pub struct MinioTestContext {
@@ -118,6 +198,8 @@ pub struct HeraclitusTestContext {
     pub http_port: u16,
     pub config_dir: TempDir,
     pub data_dir: TempDir,
+    pub stdout_capture: Arc<LogCapture>,
+    pub stderr_capture: Arc<LogCapture>,
 }
 
 impl HeraclitusTestContext {
@@ -206,11 +288,7 @@ enabled = false
         heraclitus_path.push("debug");
         heraclitus_path.push("heraclitus");
 
-        // Create log file for heraclitus output
-        let log_path = config_dir.path().join("heraclitus.log");
-        let log_file = std::fs::File::create(&log_path)?;
-
-        // Start Heraclitus process with stdout/stderr captured to log file
+        // Start Heraclitus process with stdout/stderr captured to pipes
         let mut cmd = Command::new(&heraclitus_path);
         cmd.arg("--config")
             .arg(&config_path)
@@ -219,42 +297,65 @@ enabled = false
             .env("AWS_SECRET_ACCESS_KEY", "minioadmin")
             .env("AWS_ENDPOINT_URL", &minio.endpoint)
             .env("AWS_DEFAULT_REGION", "us-east-1")
-            .stdout(log_file.try_clone()?)
-            .stderr(log_file);
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         tracing::info!("Starting heraclitus on kafka_port={kafka_port}, http_port={http_port}");
         tracing::debug!(
             "Spawning heraclitus binary at: {}",
             heraclitus_path.display()
         );
-        tracing::debug!("Heraclitus logs will be written to: {}", log_path.display());
+        tracing::debug!("Heraclitus logs will be captured in real-time");
 
         let mut process = cmd
             .spawn()
             .map_err(|e| anyhow::anyhow!("Failed to spawn heraclitus process: {e}"))?;
+
+        // Capture stdout and stderr in background threads
+        let stdout = process
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to capture stdout"))?;
+        let stderr = process
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to capture stderr"))?;
+
+        let stdout_capture = Arc::new(LogCapture::new(stdout, "stdout"));
+        let stderr_capture = Arc::new(LogCapture::new(stderr, "stderr"));
 
         // Give the process a moment to start or fail
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         // Check if the process is still running
         if let Some(exit_status) = process.try_wait()? {
-            // Read the log file to see what went wrong
-            let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
+            // Give log capture threads a moment to finish
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            // Get captured logs
+            let stdout_logs = stdout_capture.get_logs().join("\n");
+            let stderr_logs = stderr_capture.get_logs().join("\n");
+
             // Kill the process to ensure cleanup
             let _ = process.kill();
             return Err(anyhow::anyhow!(
-                "Heraclitus process exited immediately with status: {exit_status}\nLogs:\n{log_content}"
+                "Heraclitus process exited immediately with status: {exit_status}\n\nStdout:\n{stdout_logs}\n\nStderr:\n{stderr_logs}"
             ));
         }
 
         // Wait for server to be ready
         if let Err(e) = wait_for_heraclitus(kafka_port).await {
-            // If the server didn't start, try to read the log file
-            let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
+            // Give log capture threads a moment to finish
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            // Get captured logs
+            let stdout_logs = stdout_capture.get_logs().join("\n");
+            let stderr_logs = stderr_capture.get_logs().join("\n");
+
             // Kill the process if it's still running
             let _ = process.kill();
             return Err(anyhow::anyhow!(
-                "Failed to start Heraclitus: {e}\nLogs:\n{log_content}"
+                "Failed to start Heraclitus: {e}\n\nStdout:\n{stdout_logs}\n\nStderr:\n{stderr_logs}"
             ));
         }
 
@@ -264,11 +365,82 @@ enabled = false
             http_port,
             config_dir,
             data_dir,
+            stdout_capture,
+            stderr_capture,
         })
     }
 
     pub fn kafka_addr(&self) -> String {
         format!("127.0.0.1:{}", self.kafka_port)
+    }
+
+    /// Get all stdout logs
+    pub fn stdout_logs(&self) -> Vec<String> {
+        self.stdout_capture.get_logs()
+    }
+
+    /// Get all stderr logs
+    pub fn stderr_logs(&self) -> Vec<String> {
+        self.stderr_capture.get_logs()
+    }
+
+    /// Get all logs (combined stdout and stderr)
+    pub fn all_logs(&self) -> Vec<String> {
+        let mut logs = Vec::new();
+        logs.extend(self.stdout_logs());
+        logs.extend(self.stderr_logs());
+        logs
+    }
+
+    /// Get the last n lines from stdout
+    pub fn tail_stdout(&self, n: usize) -> Vec<String> {
+        self.stdout_capture.tail(n)
+    }
+
+    /// Get the last n lines from stderr
+    pub fn tail_stderr(&self, n: usize) -> Vec<String> {
+        self.stderr_capture.tail(n)
+    }
+
+    /// Search stdout logs for a pattern
+    pub fn grep_stdout(&self, pattern: &str) -> Vec<String> {
+        self.stdout_capture.grep(pattern)
+    }
+
+    /// Search stderr logs for a pattern
+    pub fn grep_stderr(&self, pattern: &str) -> Vec<String> {
+        self.stderr_capture.grep(pattern)
+    }
+
+    /// Search all logs for a pattern
+    pub fn grep_all(&self, pattern: &str) -> Vec<String> {
+        let mut results = self.grep_stdout(pattern);
+        results.extend(self.grep_stderr(pattern));
+        results
+    }
+
+    /// Print all logs to stdout (useful for debugging)
+    pub fn print_logs(&self) {
+        println!("\n=== Heraclitus Stdout ===");
+        for line in self.stdout_logs() {
+            println!("{}", line);
+        }
+        println!("\n=== Heraclitus Stderr ===");
+        for line in self.stderr_logs() {
+            println!("{}", line);
+        }
+    }
+
+    /// Print the last n lines to stdout
+    pub fn print_tail(&self, n: usize) {
+        println!("\n=== Last {} lines (Stdout) ===", n);
+        for line in self.tail_stdout(n) {
+            println!("{}", line);
+        }
+        println!("\n=== Last {} lines (Stderr) ===", n);
+        for line in self.tail_stderr(n) {
+            println!("{}", line);
+        }
     }
 }
 

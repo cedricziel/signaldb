@@ -1,11 +1,12 @@
 use anyhow::Result;
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::Buf;
 use heraclitus_tests_integration::{
     HeraclitusTestContext, MinioTestContext, find_available_port, init_test_tracing,
 };
 use std::io::Cursor;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+
+use super::helpers::send_metadata_request;
 
 #[tokio::test]
 async fn test_metadata_non_existent_topic() -> Result<()> {
@@ -22,8 +23,13 @@ async fn test_metadata_non_existent_topic() -> Result<()> {
     let mut stream = TcpStream::connect(format!("127.0.0.1:{kafka_port}")).await?;
 
     // Send metadata request for a non-existent topic
-    let response =
-        send_metadata_request(&mut stream, Some(vec!["non-existent-topic".to_string()])).await?;
+    let response = send_metadata_request(
+        &mut stream,
+        1,
+        Some(vec!["non-existent-topic".to_string()]),
+        0,
+    )
+    .await?;
 
     // Parse the response
     let mut cursor = Cursor::new(&response[..]);
@@ -72,55 +78,4 @@ async fn test_metadata_non_existent_topic() -> Result<()> {
     );
 
     Ok(())
-}
-
-async fn send_metadata_request(
-    stream: &mut TcpStream,
-    topics: Option<Vec<String>>,
-) -> Result<Vec<u8>> {
-    let mut request = BytesMut::new();
-
-    // Request header
-    request.put_i16(3); // Metadata API
-    request.put_i16(0); // Version 0
-    request.put_i32(1); // Correlation ID
-    request.put_i16(-1); // No client ID
-
-    // Request body
-    match topics {
-        Some(topic_list) => {
-            request.put_i32(topic_list.len() as i32);
-            for topic in topic_list {
-                request.put_i16(topic.len() as i16);
-                request.extend_from_slice(topic.as_bytes());
-            }
-        }
-        None => {
-            request.put_i32(-1); // All topics
-        }
-    }
-
-    // Send request with length prefix
-    let mut frame = BytesMut::new();
-    frame.put_i32(request.len() as i32);
-    frame.extend_from_slice(&request);
-
-    stream.write_all(&frame).await?;
-    stream.flush().await?;
-
-    // Read response
-    read_response(stream).await
-}
-
-async fn read_response(stream: &mut TcpStream) -> Result<Vec<u8>> {
-    // Read length prefix
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).await?;
-    let len = i32::from_be_bytes(len_buf) as usize;
-
-    // Read response body
-    let mut response = vec![0u8; len];
-    stream.read_exact(&mut response).await?;
-
-    Ok(response)
 }

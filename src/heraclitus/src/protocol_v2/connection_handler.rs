@@ -73,6 +73,10 @@ impl ConnectionHandler {
         let mut request_count = 0;
 
         loop {
+            info!(
+                "Waiting for next request (processed {} so far)...",
+                request_count
+            );
             // Try to read a complete frame
             match self.read_frame().await {
                 Ok(Some(frame)) => {
@@ -92,9 +96,13 @@ impl ConnectionHandler {
                                 error!("Failed to write response: {}", e);
                                 break;
                             }
+                            info!("Response #{} sent, looping for next request", request_count);
                         }
                         Err(e) => {
-                            error!("Failed to process request: {}", e);
+                            error!(
+                                "Failed to process request #{}: {} (error type: {:?})",
+                                request_count, e, e
+                            );
                             break;
                         }
                     }
@@ -121,6 +129,10 @@ impl ConnectionHandler {
     }
 
     async fn read_frame(&mut self) -> Result<Option<Vec<u8>>> {
+        info!(
+            "read_frame: Starting, buffer has {} bytes",
+            self.read_buffer.len()
+        );
         loop {
             // Check if we have a complete frame
             if self.read_buffer.len() >= 4 {
@@ -135,7 +147,11 @@ impl ConnectionHandler {
                     // We have a complete frame
                     self.read_buffer.advance(4); // Skip frame size
                     let frame = self.read_buffer.split_to(frame_size).to_vec();
-                    info!("Extracted complete frame of {} bytes", frame.len());
+                    info!(
+                        "Extracted complete frame of {} bytes, buffer now has {} bytes remaining",
+                        frame.len(),
+                        self.read_buffer.len()
+                    );
                     // Log first few bytes of the frame for debugging
                     if frame.len() >= 4 {
                         info!(
@@ -149,6 +165,10 @@ impl ConnectionHandler {
             }
 
             // Read more data
+            info!(
+                "read_frame: About to call read_buf, buffer currently has {} bytes",
+                self.read_buffer.len()
+            );
             let n = self.socket.read_buf(&mut self.read_buffer).await?;
             info!(
                 "Read {} bytes from socket, buffer now has {} bytes",
@@ -156,8 +176,13 @@ impl ConnectionHandler {
                 self.read_buffer.len()
             );
             if n == 0 {
-                // EOF
-                info!("Socket EOF detected");
+                // EOF - connection closed by client
+                // read_buf() will wait asynchronously for data if the connection is alive,
+                // so returning 0 means the connection is truly closed
+                info!(
+                    "Socket EOF - connection closed by client (buffer has {} bytes)",
+                    self.read_buffer.len()
+                );
                 return Ok(None);
             }
         }
@@ -186,8 +211,17 @@ impl ConnectionHandler {
     }
 
     async fn process_request(&mut self, frame: Vec<u8>) -> Result<Vec<u8>> {
+        info!(
+            "process_request: Starting, frame size {} bytes",
+            frame.len()
+        );
         // Parse the request using kafka-protocol
+        info!("process_request: About to parse request");
         let (header, request) = KafkaProtocolHandler::parse_request(&frame).await?;
+        info!(
+            "process_request: Request parsed successfully, api_key={}, api_version={}",
+            header.request_api_key, header.request_api_version
+        );
 
         // Track metrics
         let api_key_str = header.request_api_key.to_string();
@@ -205,9 +239,14 @@ impl ConnectionHandler {
 
         // Handle the request
         let response = match request {
-            RequestKind::ApiVersions(_) => {
-                info!("Handling ApiVersions request");
-                ResponseKind::ApiVersions(KafkaProtocolHandler::create_api_versions_response())
+            RequestKind::ApiVersions(_req) => {
+                info!(
+                    "Handling ApiVersions request, version: {:?}",
+                    header.request_api_version
+                );
+                let resp = KafkaProtocolHandler::create_api_versions_response();
+                info!("ApiVersions response created");
+                ResponseKind::ApiVersions(resp)
             }
             RequestKind::Metadata(req) => {
                 info!("Handling Metadata request for topics: {:?}", req.topics);
@@ -267,7 +306,13 @@ impl ConnectionHandler {
         };
 
         // Encode the response
-        KafkaProtocolHandler::encode_response(&header, response).await
+        info!("process_request: About to encode response");
+        let encoded = KafkaProtocolHandler::encode_response(&header, response).await?;
+        info!(
+            "process_request: Response encoded successfully, {} bytes",
+            encoded.len()
+        );
+        Ok(encoded)
     }
 
     async fn handle_metadata(

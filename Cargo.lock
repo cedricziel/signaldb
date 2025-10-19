@@ -3332,6 +3332,7 @@ dependencies = [
  "chrono",
  "futures",
  "heraclitus",
+ "kafka-protocol",
  "rdkafka",
  "tempfile",
  "testcontainers-modules",
