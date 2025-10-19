@@ -5,7 +5,7 @@ use heraclitus_tests_integration::{
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::Message;
-use rdkafka::producer::{FutureProducer, FutureRecord};
+use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use rdkafka::util::Timeout;
 use tokio::time::Duration;
 
@@ -160,6 +160,9 @@ async fn test_mixed_compression() -> Result<()> {
             )
             .await
             .map_err(|(e, _)| anyhow::anyhow!("Failed to produce: {:?}", e))?;
+
+        // Flush producer to ensure message is persisted before it's dropped
+        producer.flush(Duration::from_secs(5))?;
     }
 
     // Give some time for messages to be persisted
