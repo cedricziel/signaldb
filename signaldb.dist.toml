@@ -71,14 +71,6 @@ max_buffer_entries = 1000
 flush_interval = "30s"
 max_buffer_size_bytes = 134217728     # 128MB
 
-[heraclitus]
-# Kafka-compatible interface configuration
-kafka_port = 9092                     # Kafka wire protocol port
-state_prefix = "heraclitus/"          # Object storage prefix for Kafka state
-batch_size = 1000                     # Messages per batch before writing
-batch_timeout_ms = 1000               # Maximum time to wait before writing a batch
-segment_size_mb = 64                  # Target size for storage segments
-
 [tenants]
 # Multi-tenant configuration (always active)
 default_tenant = "default"

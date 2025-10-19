@@ -227,57 +227,6 @@ impl From<IcebergConfig> for SchemaConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct HeraclitusConfig {
-    /// Kafka wire protocol port
-    #[serde(default = "default_kafka_port")]
-    pub kafka_port: u16,
-    /// Object storage prefix for Kafka state
-    #[serde(default = "default_state_prefix")]
-    pub state_prefix: String,
-    /// Messages per batch before writing
-    #[serde(default = "default_batch_size")]
-    pub batch_size: usize,
-    /// Maximum time to wait before writing a batch (ms)
-    #[serde(default = "default_batch_timeout_ms")]
-    pub batch_timeout_ms: u64,
-    /// Target size for storage segments (MB)
-    #[serde(default = "default_segment_size_mb")]
-    pub segment_size_mb: u32,
-}
-
-impl Default for HeraclitusConfig {
-    fn default() -> Self {
-        Self {
-            kafka_port: default_kafka_port(),
-            state_prefix: default_state_prefix(),
-            batch_size: default_batch_size(),
-            batch_timeout_ms: default_batch_timeout_ms(),
-            segment_size_mb: default_segment_size_mb(),
-        }
-    }
-}
-
-fn default_kafka_port() -> u16 {
-    9092
-}
-
-fn default_state_prefix() -> String {
-    "heraclitus/".to_string()
-}
-
-fn default_batch_size() -> usize {
-    1000
-}
-
-fn default_batch_timeout_ms() -> u64 {
-    1000
-}
-
-fn default_segment_size_mb() -> u32 {
-    64
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Configuration {
     /// Database configuration (used for internal storage)
     pub database: DatabaseConfig,
@@ -293,8 +242,6 @@ pub struct Configuration {
     pub tenants: TenantsConfig,
     /// Iceberg configuration (deprecated, use schema instead)
     pub iceberg: Option<IcebergConfig>,
-    /// Heraclitus (Kafka-compatible) configuration
-    pub heraclitus: HeraclitusConfig,
 }
 
 impl Default for Configuration {
@@ -311,8 +258,6 @@ impl Default for Configuration {
             tenants: TenantsConfig::default(),
             // Iceberg is optional and not enabled by default
             iceberg: None,
-            // Heraclitus (Kafka) enabled by default
-            heraclitus: HeraclitusConfig::default(),
         }
     }
 }
