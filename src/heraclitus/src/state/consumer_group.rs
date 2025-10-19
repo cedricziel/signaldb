@@ -25,6 +25,9 @@ pub struct ConsumerGroupMember {
     pub last_heartbeat_ms: i64,
     pub subscribed_topics: Vec<String>,
     pub protocol_version: i16,
+    /// The protocol metadata (subscription data) from the JoinGroup request
+    /// This must be returned in the JoinGroup response for librdkafka compatibility
+    pub protocol_metadata: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
