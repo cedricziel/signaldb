@@ -41,8 +41,6 @@ async fn test_minimal_produce() -> Result<()> {
             format!("127.0.0.1:{}", config.kafka_port),
         )
         .set("message.timeout.ms", "5000")
-        // Enable API version request like in the main test
-        .set("api.version.request", "true")
         .create()?;
 
     println!("Producer created");
@@ -69,7 +67,6 @@ async fn test_minimal_produce() -> Result<()> {
         .set("group.id", "test-group")
         .set("auto.offset.reset", "earliest")
         .set("enable.auto.commit", "false")
-        .set("api.version.request", "true")
         .create()?;
 
     consumer.subscribe(&["test-topic"])?;

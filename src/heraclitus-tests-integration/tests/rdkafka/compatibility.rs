@@ -30,7 +30,6 @@ async fn test_rdkafka_basic_connectivity() -> Result<()> {
         .set("bootstrap.servers", format!("127.0.0.1:{kafka_port}"))
         .set("group.id", "test-group")
         .set("client.id", "test-client")
-        .set("api.version.request", "true")
         .set("debug", "all")
         .create()?;
 

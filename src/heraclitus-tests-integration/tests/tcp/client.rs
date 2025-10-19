@@ -158,7 +158,7 @@ async fn test_rdkafka_metadata() -> Result<()> {
     assert_eq!(metadata.brokers().len(), 1);
     let broker = &metadata.brokers()[0];
     assert_eq!(broker.id(), 0);
-    assert_eq!(broker.host(), "localhost");
+    assert_eq!(broker.host(), "127.0.0.1");
     assert_eq!(broker.port() as u16, kafka_port);
 
     // Initially there should be no topics

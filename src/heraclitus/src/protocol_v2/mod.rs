@@ -38,6 +38,8 @@ impl KafkaProtocolHandler {
 
         info!("Request: api_key={}, api_version={}", api_key, api_version);
 
+        info!("Before decoding header: buffer has {} bytes", buf.len());
+
         // Decode the request header using kafka-protocol's helper function
         // This automatically determines the correct header version based on API key and version
         let header = decode_request_header_from_buffer(&mut buf).map_err(|e| {
@@ -47,8 +49,10 @@ impl KafkaProtocolHandler {
         })?;
 
         info!(
-            "Parsed header: correlation_id={}, client_id={:?}",
-            header.correlation_id, header.client_id
+            "Parsed header: correlation_id={}, client_id={:?}, remaining buffer: {} bytes",
+            header.correlation_id,
+            header.client_id,
+            buf.len()
         );
 
         // Decode the request body based on API key
@@ -57,11 +61,33 @@ impl KafkaProtocolHandler {
                 // ApiVersionsRequest is special - clients may send versions we don't support yet
                 // Try to decode with the requested version, but fall back to version 3 if it fails
                 let safe_version = api_version.min(3);
+                info!(
+                    "Decoding ApiVersionsRequest with version {}, buffer has {} bytes",
+                    safe_version,
+                    buf.len()
+                );
                 let req = ApiVersionsRequest::decode(&mut buf, safe_version).map_err(|e| {
+                    error!("Failed to decode ApiVersionsRequest body: {}", e);
+                    error!("Buffer has {} bytes remaining", buf.len());
                     HeraclitusError::Protocol(format!(
                         "Failed to decode ApiVersions (version {api_version}, tried {safe_version}): {e}"
                     ))
                 })?;
+                info!(
+                    "ApiVersionsRequest decoded successfully, buffer has {} bytes remaining",
+                    buf.len()
+                );
+
+                // For flex versions (v3+), check if we correctly consumed all bytes
+                if safe_version >= 3 && !buf.is_empty() {
+                    error!(
+                        "WARNING: Buffer has {} leftover bytes after decoding ApiVersionsRequest v{}",
+                        buf.len(),
+                        safe_version
+                    );
+                    error!("This indicates a parsing issue with flex encoding");
+                }
+
                 RequestKind::ApiVersions(req)
             }
             Ok(ApiKey::Metadata) => {
@@ -151,6 +177,10 @@ impl KafkaProtocolHandler {
         header: &RequestHeader,
         response: ResponseKind,
     ) -> Result<Vec<u8>> {
+        info!(
+            "encode_response: Starting for api_key={}, api_version={}",
+            header.request_api_key, header.request_api_version
+        );
         let mut buf = BytesMut::new();
 
         // Write response header with correlation ID
@@ -162,17 +192,38 @@ impl KafkaProtocolHandler {
             Err(_) => 0, // Default to version 0 for unknown API keys
         };
 
-        resp_header
-            .encode(&mut buf, header_version)
-            .map_err(|e| HeraclitusError::Protocol(format!("Failed to encode header: {e}")))?;
+        info!(
+            "encode_response: Response header version determined as {}",
+            header_version
+        );
+
+        resp_header.encode(&mut buf, header_version).map_err(|e| {
+            error!("Failed to encode response header: {}", e);
+            HeraclitusError::Protocol(format!("Failed to encode header: {e}"))
+        })?;
+
+        info!(
+            "encode_response: Response header encoded, buffer now has {} bytes",
+            buf.len()
+        );
 
         // Encode the response body
         match response {
             ResponseKind::ApiVersions(resp) => {
+                info!(
+                    "encode_response: Encoding ApiVersions response body with version {}",
+                    header.request_api_version
+                );
                 resp.encode(&mut buf, header.request_api_version)
                     .map_err(|e| {
+                        error!("Failed to encode ApiVersions response body: {}", e);
+                        error!("Buffer size before error: {} bytes", buf.len());
                         HeraclitusError::Protocol(format!("Failed to encode ApiVersions: {e}"))
                     })?;
+                info!(
+                    "encode_response: ApiVersions response body encoded, total buffer size: {} bytes",
+                    buf.len()
+                );
             }
             ResponseKind::Metadata(resp) => {
                 resp.encode(&mut buf, header.request_api_version)
@@ -253,10 +304,17 @@ impl KafkaProtocolHandler {
             }
         }
 
-        Ok(buf.to_vec())
+        let result = buf.to_vec();
+        info!(
+            "encode_response: Completed successfully, returning {} bytes",
+            result.len()
+        );
+        Ok(result)
     }
 
     /// Create ApiVersions response with all supported APIs
+    /// This response works for all versions (0-3), as the kafka-protocol crate
+    /// handles version-specific encoding automatically
     pub fn create_api_versions_response() -> ApiVersionsResponse {
         let api_versions = vec![
             // Produce

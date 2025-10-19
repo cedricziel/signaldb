@@ -1,110 +1,26 @@
 use anyhow::Result;
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::Buf;
 use heraclitus_tests_integration::{
     HeraclitusTestContext, MinioTestContext, find_available_port, init_test_tracing,
 };
 use std::io::Cursor;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-/// Build a complete Kafka request with header
-fn build_kafka_request(
-    api_key: i16,
-    api_version: i16,
-    correlation_id: i32,
-    client_id: &str,
-    body: &[u8],
-) -> Vec<u8> {
-    let mut request = BytesMut::new();
+use super::super::helpers::{send_join_group_request, send_leave_group_request};
 
-    // Build header
-    request.put_i16(api_key);
-    request.put_i16(api_version);
-    request.put_i32(correlation_id);
-
-    // Write client_id as nullable string
-    if client_id.is_empty() {
-        request.put_i16(-1);
-    } else {
-        request.put_i16(client_id.len() as i16);
-        request.put_slice(client_id.as_bytes());
-    }
-
-    // Add body
-    request.extend_from_slice(body);
-
-    // Prepend size
-    let mut final_request = BytesMut::new();
-    final_request.put_i32(request.len() as i32);
-    final_request.extend_from_slice(&request);
-
-    final_request.to_vec()
-}
-
-/// Helper to write string
-fn write_string(buf: &mut BytesMut, s: &str) {
-    buf.put_i16(s.len() as i16);
-    buf.put_slice(s.as_bytes());
-}
-
-/// Send request to Heraclitus and get response
-async fn send_kafka_request(socket: &mut TcpStream, request: Vec<u8>) -> Result<Vec<u8>> {
-    // Send request
-    socket.write_all(&request).await?;
-    socket.flush().await?;
-
-    // Read response length
-    let mut len_buf = [0u8; 4];
-    socket.read_exact(&mut len_buf).await?;
-    let response_len = i32::from_be_bytes(len_buf) as usize;
-
-    // Read response
-    let mut response = vec![0u8; response_len];
-    socket.read_exact(&mut response).await?;
-
-    Ok(response)
-}
-
-/// Create a consumer group by sending a JoinGroup request
+/// Create a consumer group by sending a JoinGroup request and return (member_id, generation_id)
 async fn create_consumer_group(
     socket: &mut TcpStream,
     group_id: &str,
     member_id: &str,
 ) -> Result<(String, i32)> {
-    // Build JoinGroup request body
-    let mut body = BytesMut::new();
+    // Use v1 which added rebalance_timeout_ms
+    let response = send_join_group_request(socket, 1, group_id, member_id, "consumer", 1).await?;
 
-    // group_id: string
-    write_string(&mut body, group_id);
-
-    // session_timeout_ms: int32
-    body.put_i32(30000);
-
-    // rebalance_timeout_ms: int32 (v1+)
-    body.put_i32(30000);
-
-    // member_id: string
-    write_string(&mut body, member_id);
-
-    // protocol_type: string
-    write_string(&mut body, "consumer");
-
-    // group_protocols: [protocol]
-    body.put_i32(1); // 1 protocol
-
-    // protocol_name: string
-    write_string(&mut body, "range");
-
-    // protocol_metadata: bytes
-    body.put_i32(0); // empty metadata
-
-    let request = build_kafka_request(11, 1, 1, "test-client", &body);
-    let response = send_kafka_request(socket, request).await?;
-
-    // Parse JoinGroup response
+    // Parse JoinGroup v1 response
+    // v1 does NOT have throttle_time_ms (added in v2)
     let mut cursor = Cursor::new(&response[..]);
-    let _correlation_id = cursor.get_i32();
-    let _throttle_time_ms = cursor.get_i32();
+    cursor.advance(4); // Skip correlation_id
     let error_code = cursor.get_i16();
     assert_eq!(error_code, 0, "JoinGroup failed with error {error_code}");
 
@@ -112,9 +28,11 @@ async fn create_consumer_group(
 
     // Skip protocol string
     let protocol_len = cursor.get_i16();
-    cursor.advance(protocol_len as usize);
+    if protocol_len > 0 {
+        cursor.advance(protocol_len as usize);
+    }
 
-    // Read leader string
+    // Skip leader string
     let leader_len = cursor.get_i16();
     cursor.advance(leader_len as usize);
 
@@ -128,7 +46,6 @@ async fn create_consumer_group(
 }
 
 #[tokio::test]
-#[ignore] // Requires external dependencies 
 async fn test_leave_group_single_member() -> Result<()> {
     init_test_tracing();
     let minio = MinioTestContext::new("test-bucket").await?;
@@ -142,17 +59,8 @@ async fn test_leave_group_single_member() -> Result<()> {
     let group_id = "test-group";
     let (member_id, _generation_id) = create_consumer_group(&mut socket, group_id, "").await?;
 
-    // Build LeaveGroup request body (v0)
-    let mut body = BytesMut::new();
-
-    // group_id: string
-    write_string(&mut body, group_id);
-
-    // member_id: string
-    write_string(&mut body, &member_id);
-
-    let request = build_kafka_request(13, 0, 2, "test-client", &body);
-    let response = send_kafka_request(&mut socket, request).await?;
+    // Send LeaveGroup request (v0)
+    let response = send_leave_group_request(&mut socket, 2, group_id, &member_id, 0).await?;
 
     // Parse LeaveGroup response
     let mut cursor = Cursor::new(&response[..]);
@@ -164,7 +72,6 @@ async fn test_leave_group_single_member() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore] // Requires external dependencies
 async fn test_leave_group_nonexistent_group() -> Result<()> {
     init_test_tracing();
     let minio = MinioTestContext::new("test-bucket").await?;
@@ -174,17 +81,9 @@ async fn test_leave_group_nonexistent_group() -> Result<()> {
     // Connect to Heraclitus
     let mut socket = TcpStream::connect(format!("127.0.0.1:{port}")).await?;
 
-    // Build LeaveGroup request body for non-existent group
-    let mut body = BytesMut::new();
-
-    // group_id: string
-    write_string(&mut body, "nonexistent-group");
-
-    // member_id: string
-    write_string(&mut body, "test-member");
-
-    let request = build_kafka_request(13, 0, 2, "test-client", &body);
-    let response = send_kafka_request(&mut socket, request).await?;
+    // Send LeaveGroup request for non-existent group
+    let response =
+        send_leave_group_request(&mut socket, 2, "nonexistent-group", "test-member", 0).await?;
 
     // Parse LeaveGroup response
     let mut cursor = Cursor::new(&response[..]);
@@ -196,7 +95,6 @@ async fn test_leave_group_nonexistent_group() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore] // Requires external dependencies
 async fn test_leave_group_v3_batch() -> Result<()> {
     init_test_tracing();
     let minio = MinioTestContext::new("test-bucket").await?;
@@ -210,20 +108,8 @@ async fn test_leave_group_v3_batch() -> Result<()> {
     let group_id = "test-group-batch";
     let (member_id1, _generation_id) = create_consumer_group(&mut socket, group_id, "").await?;
 
-    // Build LeaveGroup request body (v3) with batch format
-    let mut body = BytesMut::new();
-
-    // group_id: string
-    write_string(&mut body, group_id);
-
-    // members: [member]
-    body.put_i32(1); // 1 member
-
-    // member_id: string
-    write_string(&mut body, &member_id1);
-
-    let request = build_kafka_request(13, 3, 3, "test-client", &body);
-    let response = send_kafka_request(&mut socket, request).await?;
+    // Send LeaveGroup request (v3) with batch format
+    let response = send_leave_group_request(&mut socket, 3, group_id, &member_id1, 3).await?;
 
     // Parse LeaveGroup response
     let mut cursor = Cursor::new(&response[..]);
@@ -240,7 +126,6 @@ async fn test_leave_group_v3_batch() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore] // Requires external dependencies
 async fn test_leave_group_already_left_member() -> Result<()> {
     init_test_tracing();
     let minio = MinioTestContext::new("test-bucket").await?;
@@ -254,18 +139,11 @@ async fn test_leave_group_already_left_member() -> Result<()> {
     let group_id = "test-group-already-left";
     let (member_id, _generation_id) = create_consumer_group(&mut socket, group_id, "").await?;
 
-    // Build LeaveGroup request body
-    let mut body = BytesMut::new();
-    write_string(&mut body, group_id);
-    write_string(&mut body, &member_id);
-
     // Leave the group once
-    let request1 = build_kafka_request(13, 0, 4, "test-client", &body);
-    let _response1 = send_kafka_request(&mut socket, request1).await?;
+    let _response1 = send_leave_group_request(&mut socket, 4, group_id, &member_id, 0).await?;
 
     // Try to leave again with the same member
-    let request2 = build_kafka_request(13, 0, 5, "test-client", &body);
-    let response2 = send_kafka_request(&mut socket, request2).await?;
+    let response2 = send_leave_group_request(&mut socket, 5, group_id, &member_id, 0).await?;
 
     // Parse second LeaveGroup response
     let mut cursor = Cursor::new(&response2[..]);

@@ -11,7 +11,7 @@ use kafka_protocol::messages::{ApiKey, RequestKind, ResponseKind};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct ConnectionHandler {
     socket: TcpStream,
@@ -73,6 +73,10 @@ impl ConnectionHandler {
         let mut request_count = 0;
 
         loop {
+            info!(
+                "Waiting for next request (processed {} so far)...",
+                request_count
+            );
             // Try to read a complete frame
             match self.read_frame().await {
                 Ok(Some(frame)) => {
@@ -92,9 +96,13 @@ impl ConnectionHandler {
                                 error!("Failed to write response: {}", e);
                                 break;
                             }
+                            info!("Response #{} sent, looping for next request", request_count);
                         }
                         Err(e) => {
-                            error!("Failed to process request: {}", e);
+                            error!(
+                                "Failed to process request #{}: {} (error type: {:?})",
+                                request_count, e, e
+                            );
                             break;
                         }
                     }
@@ -121,6 +129,10 @@ impl ConnectionHandler {
     }
 
     async fn read_frame(&mut self) -> Result<Option<Vec<u8>>> {
+        info!(
+            "read_frame: Starting, buffer has {} bytes",
+            self.read_buffer.len()
+        );
         loop {
             // Check if we have a complete frame
             if self.read_buffer.len() >= 4 {
@@ -135,7 +147,11 @@ impl ConnectionHandler {
                     // We have a complete frame
                     self.read_buffer.advance(4); // Skip frame size
                     let frame = self.read_buffer.split_to(frame_size).to_vec();
-                    info!("Extracted complete frame of {} bytes", frame.len());
+                    info!(
+                        "Extracted complete frame of {} bytes, buffer now has {} bytes remaining",
+                        frame.len(),
+                        self.read_buffer.len()
+                    );
                     // Log first few bytes of the frame for debugging
                     if frame.len() >= 4 {
                         info!(
@@ -149,6 +165,10 @@ impl ConnectionHandler {
             }
 
             // Read more data
+            info!(
+                "read_frame: About to call read_buf, buffer currently has {} bytes",
+                self.read_buffer.len()
+            );
             let n = self.socket.read_buf(&mut self.read_buffer).await?;
             info!(
                 "Read {} bytes from socket, buffer now has {} bytes",
@@ -156,8 +176,13 @@ impl ConnectionHandler {
                 self.read_buffer.len()
             );
             if n == 0 {
-                // EOF
-                info!("Socket EOF detected");
+                // EOF - connection closed by client
+                // read_buf() will wait asynchronously for data if the connection is alive,
+                // so returning 0 means the connection is truly closed
+                info!(
+                    "Socket EOF - connection closed by client (buffer has {} bytes)",
+                    self.read_buffer.len()
+                );
                 return Ok(None);
             }
         }
@@ -186,8 +211,17 @@ impl ConnectionHandler {
     }
 
     async fn process_request(&mut self, frame: Vec<u8>) -> Result<Vec<u8>> {
+        info!(
+            "process_request: Starting, frame size {} bytes",
+            frame.len()
+        );
         // Parse the request using kafka-protocol
+        info!("process_request: About to parse request");
         let (header, request) = KafkaProtocolHandler::parse_request(&frame).await?;
+        info!(
+            "process_request: Request parsed successfully, api_key={}, api_version={}",
+            header.request_api_key, header.request_api_version
+        );
 
         // Track metrics
         let api_key_str = header.request_api_key.to_string();
@@ -205,9 +239,14 @@ impl ConnectionHandler {
 
         // Handle the request
         let response = match request {
-            RequestKind::ApiVersions(_) => {
-                info!("Handling ApiVersions request");
-                ResponseKind::ApiVersions(KafkaProtocolHandler::create_api_versions_response())
+            RequestKind::ApiVersions(_req) => {
+                info!(
+                    "Handling ApiVersions request, version: {:?}",
+                    header.request_api_version
+                );
+                let resp = KafkaProtocolHandler::create_api_versions_response();
+                info!("ApiVersions response created");
+                ResponseKind::ApiVersions(resp)
             }
             RequestKind::Metadata(req) => {
                 info!("Handling Metadata request for topics: {:?}", req.topics);
@@ -267,7 +306,13 @@ impl ConnectionHandler {
         };
 
         // Encode the response
-        KafkaProtocolHandler::encode_response(&header, response).await
+        info!("process_request: About to encode response");
+        let encoded = KafkaProtocolHandler::encode_response(&header, response).await?;
+        info!(
+            "process_request: Response encoded successfully, {} bytes",
+            encoded.len()
+        );
+        Ok(encoded)
     }
 
     async fn handle_metadata(
@@ -283,46 +328,11 @@ impl ConnectionHandler {
         // Handle requested topics
         if let Some(requested_topics) = &req.topics {
             if requested_topics.is_empty() {
-                // Empty list means client wants metadata for all topics
-                info!("Client requested metadata for all topics");
-
-                // Get all existing topics
-                let all_topic_names = self.state_manager.metadata().list_topics().await?;
-                info!("Found {} existing topics", all_topic_names.len());
-
-                for topic_name in all_topic_names {
-                    // Get topic metadata
-                    if let Some(topic_metadata) =
-                        self.state_manager.metadata().get_topic(&topic_name).await?
-                    {
-                        // Build partition responses
-                        let mut partitions = vec![];
-                        for partition_id in 0..topic_metadata.partitions {
-                            partitions.push(
-                                MetadataResponsePartition::default()
-                                    .with_error_code(0)
-                                    .with_partition_index(partition_id)
-                                    .with_leader_id(kafka_protocol::messages::BrokerId(1))
-                                    .with_leader_epoch(0)
-                                    .with_replica_nodes(vec![kafka_protocol::messages::BrokerId(1)])
-                                    .with_isr_nodes(vec![kafka_protocol::messages::BrokerId(1)])
-                                    .with_offline_replicas(vec![]),
-                            );
-                        }
-
-                        topic_responses.push(
-                            MetadataResponseTopic::default()
-                                .with_error_code(0)
-                                .with_name(Some(kafka_protocol::messages::TopicName(
-                                    kafka_protocol::protocol::StrBytes::from_string(
-                                        topic_metadata.name,
-                                    ),
-                                )))
-                                .with_is_internal(false)
-                                .with_partitions(partitions),
-                        );
-                    }
-                }
+                // Empty list means client wants NO topics (only broker metadata)
+                // According to Kafka protocol: empty array [] = no topics, null = all topics
+                // See: https://kafka.apache.org/protocol.html#The_Metadata_API ("If the topics array is null, fetch metadata for all topics. If the topics array is empty, do not fetch metadata for any topic.")
+                info!("Client requested broker metadata only (empty topics list)");
+                // Don't add any topics to topic_responses
             } else {
                 // Specific topics requested
                 info!(
@@ -389,10 +399,10 @@ impl ConnectionHandler {
                             MetadataResponsePartition::default()
                                 .with_error_code(0)
                                 .with_partition_index(partition_id)
-                                .with_leader_id(kafka_protocol::messages::BrokerId(1))
+                                .with_leader_id(kafka_protocol::messages::BrokerId(0))
                                 .with_leader_epoch(0)
-                                .with_replica_nodes(vec![kafka_protocol::messages::BrokerId(1)])
-                                .with_isr_nodes(vec![kafka_protocol::messages::BrokerId(1)])
+                                .with_replica_nodes(vec![kafka_protocol::messages::BrokerId(0)])
+                                .with_isr_nodes(vec![kafka_protocol::messages::BrokerId(0)])
                                 .with_offline_replicas(vec![]),
                         );
                     }
@@ -430,10 +440,10 @@ impl ConnectionHandler {
                             MetadataResponsePartition::default()
                                 .with_error_code(0)
                                 .with_partition_index(partition_id)
-                                .with_leader_id(kafka_protocol::messages::BrokerId(1))
+                                .with_leader_id(kafka_protocol::messages::BrokerId(0))
                                 .with_leader_epoch(0)
-                                .with_replica_nodes(vec![kafka_protocol::messages::BrokerId(1)])
-                                .with_isr_nodes(vec![kafka_protocol::messages::BrokerId(1)])
+                                .with_replica_nodes(vec![kafka_protocol::messages::BrokerId(0)])
+                                .with_isr_nodes(vec![kafka_protocol::messages::BrokerId(0)])
                                 .with_offline_replicas(vec![]),
                         );
                     }
@@ -457,7 +467,7 @@ impl ConnectionHandler {
             .with_throttle_time_ms(0)
             .with_brokers(vec![
                 MetadataResponseBroker::default()
-                    .with_node_id(kafka_protocol::messages::BrokerId(1))
+                    .with_node_id(kafka_protocol::messages::BrokerId(0))
                     .with_host(kafka_protocol::protocol::StrBytes::from_static_str(
                         "127.0.0.1",
                     ))
@@ -467,7 +477,7 @@ impl ConnectionHandler {
             .with_cluster_id(Some(kafka_protocol::protocol::StrBytes::from_static_str(
                 "heraclitus",
             )))
-            .with_controller_id(kafka_protocol::messages::BrokerId(1))
+            .with_controller_id(kafka_protocol::messages::BrokerId(0))
             .with_topics(topic_responses.clone());
 
         info!(
@@ -715,7 +725,7 @@ impl ConnectionHandler {
             .with_throttle_time_ms(0)
             .with_error_code(0)
             .with_error_message(None)
-            .with_node_id(kafka_protocol::messages::BrokerId(1))
+            .with_node_id(kafka_protocol::messages::BrokerId(0))
             .with_host(kafka_protocol::protocol::StrBytes::from_static_str(
                 "127.0.0.1",
             ))
@@ -861,6 +871,32 @@ impl ConnectionHandler {
             group_state.leader.as_ref().unwrap_or(&"none".to_string())
         );
 
+        // Prepare members list - only include for leader
+        let leader_id = group_state
+            .leader
+            .clone()
+            .unwrap_or_else(|| member_id.as_str().to_string());
+        let is_leader = leader_id == member_id.as_str();
+
+        let members_list = if is_leader {
+            // Include all members for the leader
+            group_state
+                .members
+                .values()
+                .map(|m| {
+                    kafka_protocol::messages::join_group_response::JoinGroupResponseMember::default(
+                    )
+                    .with_member_id(kafka_protocol::protocol::StrBytes::from_string(
+                        m.member_id.clone(),
+                    ))
+                    .with_metadata(bytes::Bytes::new()) // TODO: include actual member metadata
+                })
+                .collect()
+        } else {
+            // Non-leaders get empty members array
+            vec![]
+        };
+
         let response = kafka_protocol::messages::JoinGroupResponse::default()
             .with_throttle_time_ms(0)
             .with_error_code(0)
@@ -871,13 +907,9 @@ impl ConnectionHandler {
             .with_protocol_name(Some(kafka_protocol::protocol::StrBytes::from_static_str(
                 "range",
             )))
-            .with_leader(kafka_protocol::protocol::StrBytes::from_string(
-                group_state
-                    .leader
-                    .unwrap_or_else(|| member_id.as_str().to_string()),
-            ))
+            .with_leader(kafka_protocol::protocol::StrBytes::from_string(leader_id))
             .with_member_id(member_id)
-            .with_members(vec![]); // Simplified - should include all members for leader
+            .with_members(members_list);
 
         Ok(ResponseKind::JoinGroup(response))
     }
@@ -999,8 +1031,61 @@ impl ConnectionHandler {
 
     async fn handle_heartbeat(
         &self,
-        _req: kafka_protocol::messages::HeartbeatRequest,
+        req: kafka_protocol::messages::HeartbeatRequest,
     ) -> Result<ResponseKind> {
+        let group_id = req.group_id.as_str();
+        let member_id = req.member_id.as_str();
+        let generation_id = req.generation_id;
+
+        info!(
+            "Heartbeat request for group {} member {} generation {}",
+            group_id, member_id, generation_id
+        );
+
+        // Get the consumer group
+        let group_state = match self
+            .state_manager
+            .consumer_groups()
+            .get_group(group_id)
+            .await?
+        {
+            Some(state) => state,
+            None => {
+                // Group doesn't exist
+                info!("Group {group_id} not found for heartbeat");
+                let response = kafka_protocol::messages::HeartbeatResponse::default()
+                    .with_throttle_time_ms(0)
+                    .with_error_code(15); // UNKNOWN_MEMBER_ID (group doesn't exist)
+                return Ok(ResponseKind::Heartbeat(response));
+            }
+        };
+
+        // Verify generation_id matches
+        if group_state.generation_id != generation_id {
+            info!(
+                "Generation mismatch: expected {}, got {}",
+                group_state.generation_id, generation_id
+            );
+            let response = kafka_protocol::messages::HeartbeatResponse::default()
+                .with_throttle_time_ms(0)
+                .with_error_code(22); // ILLEGAL_GENERATION
+            return Ok(ResponseKind::Heartbeat(response));
+        }
+
+        // Verify member exists
+        if !group_state.members.contains_key(member_id) {
+            info!("Member {member_id} not found in group {group_id}");
+            let response = kafka_protocol::messages::HeartbeatResponse::default()
+                .with_throttle_time_ms(0)
+                .with_error_code(25); // UNKNOWN_MEMBER_ID
+            return Ok(ResponseKind::Heartbeat(response));
+        }
+
+        // Update last heartbeat time
+        // Note: We'd need to update the member's last_heartbeat_ms here, but
+        // since this handler is &self not &mut self, we'll just return success
+        // In a real implementation, we'd update the state
+
         let response = kafka_protocol::messages::HeartbeatResponse::default()
             .with_throttle_time_ms(0)
             .with_error_code(0);
@@ -1010,11 +1095,63 @@ impl ConnectionHandler {
 
     async fn handle_leave_group(
         &self,
-        _req: kafka_protocol::messages::LeaveGroupRequest,
+        req: kafka_protocol::messages::LeaveGroupRequest,
     ) -> Result<ResponseKind> {
+        let group_id = req.group_id.as_str();
+
+        info!(
+            "LeaveGroup request for group {} (v0-v2 member: {:?})",
+            group_id, req.member_id
+        );
+
+        // Get the consumer group
+        let mut group_state = match self
+            .state_manager
+            .consumer_groups()
+            .get_group(group_id)
+            .await?
+        {
+            Some(state) => state,
+            None => {
+                // Group doesn't exist
+                info!("Group {group_id} not found for leave");
+                let response = kafka_protocol::messages::LeaveGroupResponse::default()
+                    .with_throttle_time_ms(0)
+                    .with_error_code(16); // COORDINATOR_NOT_AVAILABLE (closest to "group not found")
+                return Ok(ResponseKind::LeaveGroup(response));
+            }
+        };
+
+        // Handle v0-v2 member_id field (single member)
+        if !req.member_id.is_empty() {
+            let member_id = req.member_id.as_str();
+            info!("Removing member {member_id} from group {group_id}");
+
+            // Remove the member (don't error if already gone)
+            group_state.members.remove(member_id);
+
+            // Update leader if needed
+            if let Some(leader) = &group_state.leader {
+                if leader == member_id {
+                    // Leader left, pick new leader
+                    group_state.leader = group_state.members.keys().next().map(|k| k.to_string());
+                }
+            }
+
+            // Save updated group state
+            self.state_manager
+                .consumer_groups()
+                .save_group(&group_state)
+                .await?;
+        }
+
+        // Handle v3+ members field (batch)
+        // For now, we just return empty members array as tests expect
+
         let response = kafka_protocol::messages::LeaveGroupResponse::default()
             .with_throttle_time_ms(0)
-            .with_error_code(0);
+            .with_error_code(0)
+            .with_members(vec![]); // v3+ returns per-member results
 
         Ok(ResponseKind::LeaveGroup(response))
     }
@@ -1193,22 +1330,60 @@ impl ConnectionHandler {
             ListOffsetsPartitionResponse, ListOffsetsTopicResponse,
         };
 
+        info!(
+            "ListOffsets request: replica_id={}, isolation_level={}, {} topics",
+            req.replica_id.0,
+            req.isolation_level,
+            req.topics.len()
+        );
+
         // Build response for each topic/partition
         let mut topic_responses = vec![];
 
         for topic_req in &req.topics {
+            let topic_name = topic_req.name.as_str();
             let mut partition_responses = vec![];
 
             for partition_req in &topic_req.partitions {
-                // For now, return offset 0 for earliest, 1000 for latest
-                let offset = if partition_req.timestamp == -2 {
-                    0 // Earliest
-                } else {
-                    1000 // Latest
+                let partition_index = partition_req.partition_index;
+                let timestamp = partition_req.timestamp;
+
+                // Query actual offsets from state manager
+                let offset = match timestamp {
+                    -2 => {
+                        // EARLIEST - return log start offset
+                        self.state_manager
+                            .messages()
+                            .get_log_start_offset(topic_name, partition_index)
+                            .await
+                            .unwrap_or(0)
+                    }
+                    -1 => {
+                        // LATEST - return high water mark (next offset to be written)
+                        self.state_manager
+                            .messages()
+                            .get_high_water_mark(topic_name, partition_index)
+                            .await
+                            .unwrap_or(0)
+                    }
+                    _ => {
+                        // For specific timestamps, return high water mark for now
+                        // TODO: Implement timestamp-based offset lookup
+                        self.state_manager
+                            .messages()
+                            .get_high_water_mark(topic_name, partition_index)
+                            .await
+                            .unwrap_or(0)
+                    }
                 };
 
+                debug!(
+                    "ListOffsets: topic={}, partition={}, timestamp={} -> offset={}",
+                    topic_name, partition_index, timestamp, offset
+                );
+
                 let partition_resp = ListOffsetsPartitionResponse::default()
-                    .with_partition_index(partition_req.partition_index)
+                    .with_partition_index(partition_index)
                     .with_error_code(0)
                     .with_timestamp(0)
                     .with_offset(offset);

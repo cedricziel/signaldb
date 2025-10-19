@@ -74,8 +74,6 @@ async fn test_consumer_connection_debug() -> Result<()> {
         .set("auto.offset.reset", "earliest")
         .set("enable.auto.commit", "false")
         .set("debug", "broker,metadata,protocol,cgrp")
-        .set("api.version.request", "false") // Disable API version request
-        .set("broker.version.fallback", "2.0.0") // Set known version
         .create()
         .expect("Failed to create consumer");
 

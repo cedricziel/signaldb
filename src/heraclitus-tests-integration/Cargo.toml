@@ -21,7 +21,8 @@ aws-sdk-s3 = { workspace = true }
 aws-credential-types = { workspace = true }
 
 # Kafka client for testing
-rdkafka = { version = "0.36", features = ["cmake-build"] }
+rdkafka = { version = "0.36", features = ["cmake-build", "zstd"] }
+kafka-protocol = { version = "0.16", features = ["client"] }
 
 # For async stream operations
 futures = "0.3"

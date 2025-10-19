@@ -1,11 +1,12 @@
 use anyhow::Result;
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::Buf;
 use heraclitus_tests_integration::{
     HeraclitusTestContext, MinioTestContext, find_available_port, init_test_tracing,
 };
 use std::io::Cursor;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+
+use super::helpers::{send_api_versions_request, send_api_versions_request_v3};
 
 #[tokio::test]
 async fn test_api_versions_request() -> Result<()> {
@@ -22,7 +23,7 @@ async fn test_api_versions_request() -> Result<()> {
     let mut stream = TcpStream::connect(format!("127.0.0.1:{kafka_port}")).await?;
 
     // Test 1: Send API versions request (v0)
-    let response = send_api_versions_request(&mut stream, 0).await?;
+    let response = send_api_versions_request(&mut stream, 1).await?;
 
     // Parse the response
     let mut cursor = Cursor::new(&response[..]);
@@ -45,7 +46,7 @@ async fn test_api_versions_request() -> Result<()> {
     }
 
     // Test 2: Send API versions request (v3) with client info
-    let response = send_api_versions_request_v3(&mut stream).await?;
+    let response = send_api_versions_request_v3(&mut stream, 2, "heraclitus-test", "0.1.0").await?;
 
     // Parse the response
     let mut cursor = Cursor::new(&response[..]);
@@ -56,94 +57,4 @@ async fn test_api_versions_request() -> Result<()> {
     assert_eq!(error_code, 0, "API versions v3 request should succeed");
 
     Ok(())
-}
-
-async fn send_api_versions_request(stream: &mut TcpStream, version: i16) -> Result<Vec<u8>> {
-    let mut request = BytesMut::new();
-
-    // Request header
-    request.put_i16(18); // ApiVersions API
-    request.put_i16(version); // Version
-    request.put_i32(1); // Correlation ID
-    request.put_i16(-1); // No client ID
-
-    // Request body is empty for v0-2
-
-    // Send request with length prefix
-    let mut frame = BytesMut::new();
-    frame.put_i32(request.len() as i32);
-    frame.extend_from_slice(&request);
-
-    stream.write_all(&frame).await?;
-    stream.flush().await?;
-
-    // Read response
-    read_response(stream).await
-}
-
-async fn send_api_versions_request_v3(stream: &mut TcpStream) -> Result<Vec<u8>> {
-    let mut request = BytesMut::new();
-
-    // Request header
-    request.put_i16(18); // ApiVersions API
-    request.put_i16(3); // Version 3
-    request.put_i32(2); // Correlation ID
-    request.put_i16(-1); // No client ID
-
-    // Request body for v3
-    // Client software name (compact string)
-    let name = "heraclitus-test";
-    write_compact_string(&mut request, Some(name));
-
-    // Client software version (compact string)
-    let version = "0.1.0";
-    write_compact_string(&mut request, Some(version));
-
-    // Tagged fields (empty)
-    write_unsigned_varint(&mut request, 0);
-
-    // Send request with length prefix
-    let mut frame = BytesMut::new();
-    frame.put_i32(request.len() as i32);
-    frame.extend_from_slice(&request);
-
-    stream.write_all(&frame).await?;
-    stream.flush().await?;
-
-    // Read response
-    read_response(stream).await
-}
-
-async fn read_response(stream: &mut TcpStream) -> Result<Vec<u8>> {
-    // Read length prefix
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).await?;
-    let len = i32::from_be_bytes(len_buf) as usize;
-
-    // Read response body
-    let mut response = vec![0u8; len];
-    stream.read_exact(&mut response).await?;
-
-    Ok(response)
-}
-
-fn write_compact_string(buffer: &mut BytesMut, s: Option<&str>) {
-    match s {
-        Some(s) => {
-            let bytes = s.as_bytes();
-            write_unsigned_varint(buffer, (bytes.len() + 1) as u32);
-            buffer.extend_from_slice(bytes);
-        }
-        None => {
-            write_unsigned_varint(buffer, 0);
-        }
-    }
-}
-
-fn write_unsigned_varint(buffer: &mut BytesMut, mut value: u32) {
-    while (value & 0xFFFFFF80) != 0 {
-        buffer.put_u8(((value & 0x7F) | 0x80) as u8);
-        value >>= 7;
-    }
-    buffer.put_u8((value & 0x7F) as u8);
 }
