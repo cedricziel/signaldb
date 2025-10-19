@@ -201,18 +201,26 @@ pub async fn send_join_group_request(
     protocol_type: &str,
     version: i16,
 ) -> Result<Vec<u8>> {
+    use kafka_protocol::messages::join_group_request::JoinGroupRequestProtocol;
+
     let header = RequestHeader::default()
         .with_request_api_key(11) // JoinGroup
         .with_request_api_version(version)
         .with_correlation_id(correlation_id)
         .with_client_id(None);
 
+    // Create a simple protocol entry (required for JoinGroup)
+    let protocol = JoinGroupRequestProtocol::default()
+        .with_name(StrBytes::from_static_str("range"))
+        .with_metadata(bytes::Bytes::new()); // Empty metadata for simple test
+
     let request = JoinGroupRequest::default()
         .with_group_id(GroupId(StrBytes::from_string(group_id.to_string())))
         .with_member_id(StrBytes::from_string(member_id.to_string()))
         .with_protocol_type(StrBytes::from_string(protocol_type.to_string()))
         .with_session_timeout_ms(10000)
-        .with_rebalance_timeout_ms(10000);
+        .with_rebalance_timeout_ms(10000)
+        .with_protocols(vec![protocol]);
 
     send_request(stream, &header, &request, version).await
 }

@@ -14,12 +14,13 @@ async fn create_consumer_group(
     group_id: &str,
     member_id: &str,
 ) -> Result<(String, i32)> {
+    // Use v1 which added rebalance_timeout_ms
     let response = send_join_group_request(socket, 1, group_id, member_id, "consumer", 1).await?;
 
-    // Parse JoinGroup response
+    // Parse JoinGroup v1 response
+    // v1 does NOT have throttle_time_ms (added in v2)
     let mut cursor = Cursor::new(&response[..]);
     cursor.advance(4); // Skip correlation_id
-    cursor.advance(4); // Skip throttle_time_ms (v1+)
     let error_code = cursor.get_i16();
     assert_eq!(error_code, 0, "JoinGroup failed with error {error_code}");
 
@@ -27,7 +28,9 @@ async fn create_consumer_group(
 
     // Skip protocol string
     let protocol_len = cursor.get_i16();
-    cursor.advance(protocol_len as usize);
+    if protocol_len > 0 {
+        cursor.advance(protocol_len as usize);
+    }
 
     // Skip leader string
     let leader_len = cursor.get_i16();
