@@ -1092,9 +1092,16 @@ impl ConnectionHandler {
         }
 
         // Update last heartbeat time
-        // Note: We'd need to update the member's last_heartbeat_ms here, but
-        // since this handler is &self not &mut self, we'll just return success
-        // In a real implementation, we'd update the state
+        let mut updated_group_state = group_state.clone();
+        if let Some(member) = updated_group_state.members.get_mut(member_id) {
+            member.last_heartbeat_ms = chrono::Utc::now().timestamp_millis();
+        }
+
+        // Persist the updated state
+        self.state_manager
+            .consumer_groups()
+            .save_group(&updated_group_state)
+            .await?;
 
         let response = kafka_protocol::messages::HeartbeatResponse::default()
             .with_throttle_time_ms(0)
