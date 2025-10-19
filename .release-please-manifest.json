@@ -1,3 +1,12 @@
 {
-  ".": "0.1.0"
+  ".": "0.1.0",
+  "src/acceptor": "0.1.0",
+  "src/common": "0.1.0",
+  "src/querier": "0.1.0",
+  "src/router": "0.1.0",
+  "src/signal-producer": "0.1.0",
+  "src/signaldb-bin": "0.1.0",
+  "src/tempo-api": "0.1.0",
+  "src/writer": "0.1.0",
+  "tests-integration": "0.1.1"
 }
