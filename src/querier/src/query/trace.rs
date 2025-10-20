@@ -356,10 +356,40 @@ impl TraceService {
                     resource: HashMap::new(),
                 };
 
-                if span.is_root {
-                    root_spans.push(span.clone());
-                }
                 span_map.insert(span_id, span);
+            }
+        }
+
+        // Collect parent-child relationships first
+        let mut parent_child_pairs = Vec::new();
+        for span in span_map.values() {
+            if span.parent_span_id != "00000000" {
+                parent_child_pairs.push((span.parent_span_id.clone(), span.span_id.clone()));
+            }
+        }
+
+        // Collect child spans first
+        let mut child_spans: HashMap<String, Vec<Span>> = HashMap::new();
+        for (parent_span_id, span_id) in parent_child_pairs {
+            if let Some(child_span) = span_map.get(&span_id) {
+                child_spans
+                    .entry(parent_span_id)
+                    .or_default()
+                    .push(child_span.clone());
+            }
+        }
+
+        // Build the hierarchy by linking child spans to their parents
+        for (parent_span_id, children) in child_spans {
+            if let Some(parent_span) = span_map.get_mut(&parent_span_id) {
+                parent_span.children.extend(children);
+            }
+        }
+
+        // Collect root spans (those marked as root or with no parent)
+        for span in span_map.values() {
+            if span.is_root || span.parent_span_id == "00000000" {
+                root_spans.push(span.clone());
             }
         }
 
