@@ -44,6 +44,7 @@ iceberg-sql-catalog.workspace = true
 object_store.workspace = true
 url.workspace = true
 toml.workspace = true
+sha2 = "0.10"
 
 [dev-dependencies]
 testcontainers-modules.workspace = true

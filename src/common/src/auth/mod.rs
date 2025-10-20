@@ -3,6 +3,10 @@
 //! This module provides types and utilities for tenant-based authentication
 //! using API keys and header-based tenant/dataset identification.
 
+mod authenticator;
+
+pub use authenticator::Authenticator;
+
 /// Tenant context extracted from authenticated request
 #[derive(Debug, Clone)]
 pub struct TenantContext {

@@ -1,4 +1,5 @@
 pub mod handler;
+pub mod middleware;
 pub mod services;
 
 use std::{net::SocketAddr, sync::Arc, time::SystemTime};
