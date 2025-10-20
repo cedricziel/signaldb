@@ -1,4 +1,5 @@
 pub mod handler;
+pub mod middleware;
 pub mod services;
 
 use std::{net::SocketAddr, sync::Arc, time::SystemTime};
@@ -29,13 +30,18 @@ use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 // Flight protocol and transport
 use common::flight::transport::InMemoryFlightTransport;
 // WAL for durability
-use common::wal::{Wal, WalConfig};
+use common::wal::WalConfig;
 
+use crate::handler::WalManager;
 use crate::handler::otlp_grpc::TraceHandler;
+use crate::handler::otlp_log_handler::LogHandler;
+use crate::handler::otlp_metrics_handler::MetricsHandler;
+use crate::middleware::grpc_auth::grpc_auth_interceptor;
 use crate::services::{
     otlp_log_service::LogAcceptorService, otlp_metric_service::MetricsAcceptorService,
     otlp_trace_service::TraceAcceptorService,
 };
+use common::auth::Authenticator;
 
 pub async fn get_parquet_writer(
     data_set: DataSet,
@@ -106,36 +112,87 @@ pub async fn serve_otlp_grpc(
 
     log::info!("Starting OTLP/gRPC acceptor on {addr}");
 
+    // Extract catalog and auth config BEFORE moving service_bootstrap into InMemoryFlightTransport
+    let catalog = Arc::new(service_bootstrap.catalog().clone());
+    let auth_config = service_bootstrap.config().auth.clone();
+
     // Initialize Flight transport with catalog-aware discovery
     let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
 
     // Start background connection cleanup
     flight_transport.start_connection_cleanup(std::time::Duration::from_secs(60));
 
-    // Initialize WAL for durability
-    let wal_config = WalConfig {
-        wal_dir: std::env::var("ACCEPTOR_WAL_DIR")
-            .unwrap_or_else(|_| ".wal/acceptor".to_string())
+    // Initialize WalManager with separate base configurations for each signal type
+    // The WalManager will create tenant/dataset-specific WALs on demand
+
+    // Base WAL config for traces - baseline configuration
+    let mut traces_wal_config = WalConfig::with_defaults(
+        std::env::var("ACCEPTOR_WAL_DIR")
+            .unwrap_or_else(|_| ".wal".to_string())
             .into(),
-        ..Default::default()
-    };
+    );
+    traces_wal_config.max_segment_size = 64 * 1024 * 1024; // 64MB
+    traces_wal_config.max_buffer_entries = 1000;
+    traces_wal_config.flush_interval_secs = 30;
 
-    let mut wal = Wal::new(wal_config)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to initialize WAL: {}", e))?;
+    // Base WAL config for logs - higher volume, more frequent flushes
+    let mut logs_wal_config = WalConfig::with_defaults(
+        std::env::var("ACCEPTOR_WAL_DIR")
+            .unwrap_or_else(|_| ".wal".to_string())
+            .into(),
+    );
+    logs_wal_config.max_segment_size = 64 * 1024 * 1024; // 64MB
+    logs_wal_config.max_buffer_entries = 2000; // Higher buffer for log volume
+    logs_wal_config.flush_interval_secs = 15; // Flush more frequently
 
-    // Start background WAL flush task
-    wal.start_background_flush();
-    let wal = Arc::new(wal);
+    // Base WAL config for metrics - highest volume, most aggressive flushing
+    let mut metrics_wal_config = WalConfig::with_defaults(
+        std::env::var("ACCEPTOR_WAL_DIR")
+            .unwrap_or_else(|_| ".wal".to_string())
+            .into(),
+    );
+    metrics_wal_config.max_segment_size = 128 * 1024 * 1024; // 128MB - larger segments for high volume
+    metrics_wal_config.max_buffer_entries = 5000; // Much higher buffer for metrics
+    metrics_wal_config.flush_interval_secs = 10; // Flush frequently for metrics
 
-    // Set up OTLP/gRPC services with Flight forwarding and WAL
-    let log_server = LogsServiceServer::new(LogAcceptorService::new(flight_transport.clone()));
-    let trace_server = TraceServiceServer::new(TraceAcceptorService::new(TraceHandler::new(
-        flight_transport.clone(),
-        wal.clone(),
-    )));
-    let metric_server =
-        MetricsServiceServer::new(MetricsAcceptorService::new(flight_transport.clone()));
+    // Create WalManager with the three base configurations
+    // WAL paths will be: .wal/{tenant}/{dataset}/{signal}/
+    let wal_manager = Arc::new(WalManager::new(
+        traces_wal_config,
+        logs_wal_config,
+        metrics_wal_config,
+    ));
+
+    log::info!(
+        "✅ Initialized WalManager for multi-tenant WAL isolation (paths: .wal/{{tenant}}/{{dataset}}/{{signal}})"
+    );
+
+    // Create Authenticator for multi-tenant authentication (using catalog/auth_config extracted earlier)
+    let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
+
+    log::info!("✅ Initialized Authenticator for multi-tenant gRPC authentication");
+
+    // Set up OTLP/gRPC services with handler pattern, WAL Manager integration, and auth interceptor
+    let log_handler = LogHandler::new(flight_transport.clone(), wal_manager.clone());
+    let log_service = LogAcceptorService::new(log_handler);
+    let auth_for_logs = authenticator.clone();
+    let log_server = LogsServiceServer::with_interceptor(log_service, move |req| {
+        grpc_auth_interceptor(auth_for_logs.clone(), req)
+    });
+
+    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
+    let trace_service = TraceAcceptorService::new(trace_handler);
+    let auth_for_traces = authenticator.clone();
+    let trace_server = TraceServiceServer::with_interceptor(trace_service, move |req| {
+        grpc_auth_interceptor(auth_for_traces.clone(), req)
+    });
+
+    let metrics_handler = MetricsHandler::new(flight_transport.clone(), wal_manager.clone());
+    let metrics_service = MetricsAcceptorService::new(metrics_handler);
+    let auth_for_metrics = authenticator.clone();
+    let metric_server = MetricsServiceServer::with_interceptor(metrics_service, move |req| {
+        grpc_auth_interceptor(auth_for_metrics.clone(), req)
+    });
 
     init_tx
         .send(())

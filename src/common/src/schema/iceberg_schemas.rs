@@ -407,6 +407,299 @@ pub fn create_metrics_histogram_schema() -> Result<Schema> {
         .map_err(|e| anyhow::anyhow!("Failed to create metrics histogram schema: {}", e))
 }
 
+/// Create Iceberg schema for metrics exponential histogram table
+/// Similar to histogram but with exponential bucketing for better precision
+pub fn create_metrics_exponential_histogram_schema() -> Result<Schema> {
+    let fields = vec![
+        // Timing
+        Arc::new(NestedField::required(
+            1,
+            "timestamp",
+            Type::Primitive(PrimitiveType::TimestampNs),
+        )),
+        Arc::new(NestedField::optional(
+            2,
+            "start_timestamp",
+            Type::Primitive(PrimitiveType::TimestampNs),
+        )),
+        // Metric identification
+        Arc::new(NestedField::required(
+            3,
+            "service_name",
+            Type::Primitive(PrimitiveType::String),
+        )),
+        Arc::new(NestedField::required(
+            4,
+            "metric_name",
+            Type::Primitive(PrimitiveType::String),
+        )),
+        Arc::new(NestedField::optional(
+            5,
+            "metric_description",
+            Type::Primitive(PrimitiveType::String),
+        )),
+        Arc::new(NestedField::optional(
+            6,
+            "metric_unit",
+            Type::Primitive(PrimitiveType::String),
+        )),
+        // Exponential histogram data
+        Arc::new(NestedField::required(
+            7,
+            "count",
+            Type::Primitive(PrimitiveType::Long),
+        )),
+        Arc::new(NestedField::optional(
+            8,
+            "sum",
+            Type::Primitive(PrimitiveType::Double),
+        )),
+        Arc::new(NestedField::optional(
+            9,
+            "min",
+            Type::Primitive(PrimitiveType::Double),
+        )),
+        Arc::new(NestedField::optional(
+            10,
+            "max",
+            Type::Primitive(PrimitiveType::Double),
+        )),
+        Arc::new(NestedField::optional(
+            11,
+            "scale",
+            Type::Primitive(PrimitiveType::Int),
+        )),
+        Arc::new(NestedField::optional(
+            12,
+            "zero_count",
+            Type::Primitive(PrimitiveType::Long),
+        )),
+        Arc::new(NestedField::optional(
+            13,
+            "positive_offset",
+            Type::Primitive(PrimitiveType::Int),
+        )),
+        Arc::new(NestedField::optional(
+            14,
+            "positive_bucket_counts",
+            Type::Primitive(PrimitiveType::String),
+        )), // JSON array string
+        Arc::new(NestedField::optional(
+            15,
+            "negative_offset",
+            Type::Primitive(PrimitiveType::Int),
+        )),
+        Arc::new(NestedField::optional(
+            16,
+            "negative_bucket_counts",
+            Type::Primitive(PrimitiveType::String),
+        )), // JSON array string
+        Arc::new(NestedField::optional(
+            17,
+            "flags",
+            Type::Primitive(PrimitiveType::Int),
+        )),
+        Arc::new(NestedField::required(
+            18,
+            "aggregation_temporality",
+            Type::Primitive(PrimitiveType::Int),
+        )),
+        Arc::new(NestedField::optional(
+            19,
+            "zero_threshold",
+            Type::Primitive(PrimitiveType::Double),
+        )),
+        // Resource and scope information
+        Arc::new(NestedField::optional(
+            20,
+            "resource_schema_url",
+            Type::Primitive(PrimitiveType::String),
+        )),
+        Arc::new(NestedField::optional(
+            21,
+            "resource_attributes",
+            Type::Primitive(PrimitiveType::String),
+        )), // JSON string
+        Arc::new(NestedField::optional(
+            22,
+            "scope_name",
+            Type::Primitive(PrimitiveType::String),
+        )),
+        Arc::new(NestedField::optional(
+            23,
+            "scope_version",
+            Type::Primitive(PrimitiveType::String),
+        )),
+        Arc::new(NestedField::optional(
+            24,
+            "scope_schema_url",
+            Type::Primitive(PrimitiveType::String),
+        )),
+        Arc::new(NestedField::optional(
+            25,
+            "scope_attributes",
+            Type::Primitive(PrimitiveType::String),
+        )), // JSON string
+        Arc::new(NestedField::optional(
+            26,
+            "scope_dropped_attr_count",
+            Type::Primitive(PrimitiveType::Int),
+        )),
+        // Metric attributes
+        Arc::new(NestedField::optional(
+            27,
+            "attributes",
+            Type::Primitive(PrimitiveType::String),
+        )), // JSON string
+        // Exemplars - stored as JSON string for simplicity
+        Arc::new(NestedField::optional(
+            28,
+            "exemplars",
+            Type::Primitive(PrimitiveType::String),
+        )), // JSON string
+        // Additional fields for query optimization
+        Arc::new(NestedField::required(
+            29,
+            "date_day",
+            Type::Primitive(PrimitiveType::Date),
+        )), // Partition key
+        Arc::new(NestedField::required(
+            30,
+            "hour",
+            Type::Primitive(PrimitiveType::Int),
+        )), // Sub-partition key
+    ];
+
+    Schema::builder()
+        .with_fields(fields)
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to create metrics exponential histogram schema: {e}"))
+}
+
+/// Create Iceberg schema for metrics summary table
+/// Stores quantile values for summary metrics
+pub fn create_metrics_summary_schema() -> Result<Schema> {
+    let fields = vec![
+        // Timing
+        Arc::new(NestedField::required(
+            1,
+            "timestamp",
+            Type::Primitive(PrimitiveType::TimestampNs),
+        )),
+        Arc::new(NestedField::optional(
+            2,
+            "start_timestamp",
+            Type::Primitive(PrimitiveType::TimestampNs),
+        )),
+        // Metric identification
+        Arc::new(NestedField::required(
+            3,
+            "service_name",
+            Type::Primitive(PrimitiveType::String),
+        )),
+        Arc::new(NestedField::required(
+            4,
+            "metric_name",
+            Type::Primitive(PrimitiveType::String),
+        )),
+        Arc::new(NestedField::optional(
+            5,
+            "metric_description",
+            Type::Primitive(PrimitiveType::String),
+        )),
+        Arc::new(NestedField::optional(
+            6,
+            "metric_unit",
+            Type::Primitive(PrimitiveType::String),
+        )),
+        // Summary data
+        Arc::new(NestedField::required(
+            7,
+            "count",
+            Type::Primitive(PrimitiveType::Long),
+        )),
+        Arc::new(NestedField::required(
+            8,
+            "sum",
+            Type::Primitive(PrimitiveType::Double),
+        )),
+        Arc::new(NestedField::optional(
+            9,
+            "quantile_values",
+            Type::Primitive(PrimitiveType::String),
+        )), // JSON array of {quantile, value} objects
+        Arc::new(NestedField::optional(
+            10,
+            "flags",
+            Type::Primitive(PrimitiveType::Int),
+        )),
+        // Resource and scope information
+        Arc::new(NestedField::optional(
+            11,
+            "resource_schema_url",
+            Type::Primitive(PrimitiveType::String),
+        )),
+        Arc::new(NestedField::optional(
+            12,
+            "resource_attributes",
+            Type::Primitive(PrimitiveType::String),
+        )), // JSON string
+        Arc::new(NestedField::optional(
+            13,
+            "scope_name",
+            Type::Primitive(PrimitiveType::String),
+        )),
+        Arc::new(NestedField::optional(
+            14,
+            "scope_version",
+            Type::Primitive(PrimitiveType::String),
+        )),
+        Arc::new(NestedField::optional(
+            15,
+            "scope_schema_url",
+            Type::Primitive(PrimitiveType::String),
+        )),
+        Arc::new(NestedField::optional(
+            16,
+            "scope_attributes",
+            Type::Primitive(PrimitiveType::String),
+        )), // JSON string
+        Arc::new(NestedField::optional(
+            17,
+            "scope_dropped_attr_count",
+            Type::Primitive(PrimitiveType::Int),
+        )),
+        // Metric attributes
+        Arc::new(NestedField::optional(
+            18,
+            "attributes",
+            Type::Primitive(PrimitiveType::String),
+        )), // JSON string
+        // Exemplars - stored as JSON string for simplicity
+        Arc::new(NestedField::optional(
+            19,
+            "exemplars",
+            Type::Primitive(PrimitiveType::String),
+        )), // JSON string
+        // Additional fields for query optimization
+        Arc::new(NestedField::required(
+            20,
+            "date_day",
+            Type::Primitive(PrimitiveType::Date),
+        )), // Partition key
+        Arc::new(NestedField::required(
+            21,
+            "hour",
+            Type::Primitive(PrimitiveType::Int),
+        )), // Sub-partition key
+    ];
+
+    Schema::builder()
+        .with_fields(fields)
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to create metrics summary schema: {e}"))
+}
+
 /// Create partition specification for traces table
 /// Partitions by date (daily) and sub-partitions by hour for better query performance
 pub fn create_traces_partition_spec() -> Result<PartitionSpec> {
@@ -460,6 +753,8 @@ pub enum TableSchema {
     MetricsGauge,
     MetricsSum,
     MetricsHistogram,
+    MetricsExponentialHistogram,
+    MetricsSummary,
     Custom(String), // For custom schemas from configuration
 }
 
@@ -472,6 +767,10 @@ impl TableSchema {
             TableSchema::MetricsGauge => create_metrics_gauge_schema(),
             TableSchema::MetricsSum => create_metrics_sum_schema(),
             TableSchema::MetricsHistogram => create_metrics_histogram_schema(),
+            TableSchema::MetricsExponentialHistogram => {
+                create_metrics_exponential_histogram_schema()
+            }
+            TableSchema::MetricsSummary => create_metrics_summary_schema(),
             TableSchema::Custom(_) => Err(anyhow::anyhow!(
                 "Custom schemas must be loaded from configuration"
             )),
@@ -483,9 +782,11 @@ impl TableSchema {
         match self {
             TableSchema::Traces => create_traces_partition_spec(),
             TableSchema::Logs => create_logs_partition_spec(),
-            TableSchema::MetricsGauge | TableSchema::MetricsSum | TableSchema::MetricsHistogram => {
-                create_metrics_partition_spec()
-            }
+            TableSchema::MetricsGauge
+            | TableSchema::MetricsSum
+            | TableSchema::MetricsHistogram
+            | TableSchema::MetricsExponentialHistogram
+            | TableSchema::MetricsSummary => create_metrics_partition_spec(),
             TableSchema::Custom(_) => Err(anyhow::anyhow!(
                 "Custom partition specs must be defined in configuration"
             )),
@@ -500,6 +801,8 @@ impl TableSchema {
             TableSchema::MetricsGauge => "metrics_gauge",
             TableSchema::MetricsSum => "metrics_sum",
             TableSchema::MetricsHistogram => "metrics_histogram",
+            TableSchema::MetricsExponentialHistogram => "metrics_exponential_histogram",
+            TableSchema::MetricsSummary => "metrics_summary",
             TableSchema::Custom(name) => name,
         }
     }
@@ -520,6 +823,8 @@ impl TableSchema {
             schemas.push(TableSchema::MetricsGauge);
             schemas.push(TableSchema::MetricsSum);
             schemas.push(TableSchema::MetricsHistogram);
+            schemas.push(TableSchema::MetricsExponentialHistogram);
+            schemas.push(TableSchema::MetricsSummary);
         }
 
         // Add custom schemas
@@ -538,6 +843,8 @@ impl TableSchema {
             TableSchema::MetricsGauge,
             TableSchema::MetricsSum,
             TableSchema::MetricsHistogram,
+            TableSchema::MetricsExponentialHistogram,
+            TableSchema::MetricsSummary,
         ]
     }
 }

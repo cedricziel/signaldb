@@ -33,6 +33,8 @@ chrono = { workspace = true }
 
 arrow-flight.workspace = true
 tonic.workspace = true
+axum.workspace = true
+tower.workspace = true
 
 iceberg.workspace = true
 iceberg-catalog-memory.workspace = true
@@ -44,12 +46,14 @@ iceberg-sql-catalog.workspace = true
 object_store.workspace = true
 url.workspace = true
 toml.workspace = true
+sha2 = "0.10"
 
 [dev-dependencies]
 testcontainers-modules.workspace = true
 testcontainers = { workspace = true, features = ["blocking"] }
 tempfile.workspace = true
 figment = { workspace = true, features = ["test"] }
+sha2 = "0.10"
 
 [package.metadata.cargo-machete]
 # async-trait is used by discovery backends

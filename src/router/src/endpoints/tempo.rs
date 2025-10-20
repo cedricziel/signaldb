@@ -5,9 +5,10 @@ use axum::{
     extract::{Path, Query, State},
     routing::get,
 };
+use common::auth::TenantContextExtractor;
 use common::flight::transport::ServiceCapability;
 use datafusion::arrow::{
-    array::{BooleanArray, Int64Array, StringArray},
+    array::{BooleanArray, StringArray, UInt64Array},
     ipc::reader::StreamReader,
     record_batch::RecordBatch,
 };
@@ -114,11 +115,11 @@ fn record_batches_to_trace(
                 .to_string();
 
             let name = batch
-                .column_by_name("name")
-                .ok_or("Missing name column")?
+                .column_by_name("span_name")
+                .ok_or("Missing span_name column")?
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or("Invalid name column type")?
+                .ok_or("Invalid span_name column type")?
                 .value(row_index)
                 .to_string();
 
@@ -143,24 +144,24 @@ fn record_batches_to_trace(
                 .column_by_name("start_time_unix_nano")
                 .ok_or("Missing start_time_unix_nano column")?
                 .as_any()
-                .downcast_ref::<Int64Array>()
+                .downcast_ref::<UInt64Array>()
                 .ok_or("Invalid start_time_unix_nano column type")?
-                .value(row_index) as u64;
+                .value(row_index);
 
             let duration_nano = batch
                 .column_by_name("duration_nano")
                 .ok_or("Missing duration_nano column")?
                 .as_any()
-                .downcast_ref::<Int64Array>()
+                .downcast_ref::<UInt64Array>()
                 .ok_or("Invalid duration_nano column type")?
-                .value(row_index) as u64;
+                .value(row_index);
 
             let status_str = batch
-                .column_by_name("status")
-                .ok_or("Missing status column")?
+                .column_by_name("status_code")
+                .ok_or("Missing status_code column")?
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or("Invalid status column type")?
+                .ok_or("Invalid status_code column type")?
                 .value(row_index);
 
             let is_root = batch
@@ -411,11 +412,11 @@ fn flight_data_to_search_results(
                 .to_string();
 
             let name = batch
-                .column_by_name("name")
-                .ok_or("Missing name column")?
+                .column_by_name("span_name")
+                .ok_or("Missing span_name column")?
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or("Invalid name column type")?
+                .ok_or("Invalid span_name column type")?
                 .value(row_index)
                 .to_string();
 
@@ -440,24 +441,24 @@ fn flight_data_to_search_results(
                 .column_by_name("start_time_unix_nano")
                 .ok_or("Missing start_time_unix_nano column")?
                 .as_any()
-                .downcast_ref::<Int64Array>()
+                .downcast_ref::<UInt64Array>()
                 .ok_or("Invalid start_time_unix_nano column type")?
-                .value(row_index) as u64;
+                .value(row_index);
 
             let duration_nano = batch
                 .column_by_name("duration_nano")
                 .ok_or("Missing duration_nano column")?
                 .as_any()
-                .downcast_ref::<Int64Array>()
+                .downcast_ref::<UInt64Array>()
                 .ok_or("Invalid duration_nano column type")?
-                .value(row_index) as u64;
+                .value(row_index);
 
             let status_str = batch
-                .column_by_name("status")
-                .ok_or("Missing status column")?
+                .column_by_name("status_code")
+                .ok_or("Missing status_code column")?
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or("Invalid status column type")?
+                .ok_or("Invalid status_code column type")?
                 .value(row_index);
 
             let is_root = batch
@@ -515,13 +516,18 @@ pub async fn echo() -> &'static str {
 /// GET /api/traces/<traceid>?start=<start>&end=<end>
 ///
 /// See https://grafana.com/docs/tempo/latest/api_docs/#query
-#[tracing::instrument]
+#[tracing::instrument(skip(tenant_ctx))]
 pub async fn query_single_trace<S: RouterState>(
     state: State<S>,
+    tenant_ctx: TenantContextExtractor,
     Path(trace_id): Path<String>,
     Query(params): Query<TraceQueryParams>,
 ) -> Result<axum::Json<tempo_api::Trace>, axum::http::StatusCode> {
-    log::info!("Querying for trace_id: {trace_id}");
+    log::info!(
+        "Querying for trace_id: {trace_id} (tenant={}, dataset={})",
+        tenant_ctx.0.tenant_id,
+        tenant_ctx.0.dataset_id
+    );
 
     // Use service registry to find available services for routing
     let services = state.service_registry().get_services().await;
@@ -543,8 +549,11 @@ pub async fn query_single_trace<S: RouterState>(
         }
     };
 
-    // Create Flight query for trace lookup
-    let ticket = Ticket::new(format!("find_trace:{trace_id}"));
+    // Create Flight query for trace lookup with tenant context
+    let ticket = Ticket::new(format!(
+        "find_trace:{}:{}:{trace_id}",
+        tenant_ctx.0.tenant_id, tenant_ctx.0.dataset_id
+    ));
 
     match client.do_get(ticket).await {
         Ok(response) => {
@@ -597,12 +606,17 @@ pub async fn query_single_trace<S: RouterState>(
 }
 
 /// GET https://grafana.com/docs/tempo/latest/api_docs/#search
-#[tracing::instrument]
+#[tracing::instrument(skip(tenant_ctx))]
 pub async fn search<S: RouterState>(
     state: State<S>,
+    tenant_ctx: TenantContextExtractor,
     Query(query): Query<tempo_api::SearchQueryParams>,
 ) -> Result<axum::Json<tempo_api::SearchResult>, axum::http::StatusCode> {
-    log::info!("Searching for traces with params: {query:?}");
+    log::info!(
+        "Searching for traces with params: {query:?} (tenant={}, dataset={})",
+        tenant_ctx.0.tenant_id,
+        tenant_ctx.0.dataset_id
+    );
 
     // Use service registry to find available services for routing
     let services = state.service_registry().get_services().await;
@@ -624,12 +638,15 @@ pub async fn search<S: RouterState>(
         }
     };
 
-    // Create Flight query for trace search
+    // Create Flight query for trace search with tenant context
     let search_params = serde_json::to_string(&query).map_err(|e| {
         log::error!("Failed to serialize search parameters: {e}");
         axum::http::StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    let ticket = Ticket::new(format!("search_traces:{search_params}"));
+    let ticket = Ticket::new(format!(
+        "search_traces:{}:{}:{search_params}",
+        tenant_ctx.0.tenant_id, tenant_ctx.0.dataset_id
+    ));
 
     match client.do_get(ticket).await {
         Ok(response) => {
@@ -815,7 +832,21 @@ mod tests {
             spss: None,
         };
 
-        let result = search(State(state), Query(query)).await.unwrap();
+        // Create a test tenant context
+        let tenant_ctx = common::auth::TenantContext::new(
+            "test-tenant".to_string(),
+            "test-dataset".to_string(),
+            None,
+            common::auth::TenantSource::Config,
+        );
+
+        let result = search(
+            State(state),
+            common::auth::TenantContextExtractor(tenant_ctx),
+            Query(query),
+        )
+        .await
+        .unwrap();
         assert_eq!(result.0.traces.len(), 0);
         assert_eq!(result.0.metrics.len(), 0);
     }

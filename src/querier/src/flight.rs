@@ -16,14 +16,24 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use crate::query::trace::TraceService;
-use crate::query::{FindTraceByIdParams, SearchQueryParams, TraceQuerier};
+use crate::query::{FindTraceByIdParams, SearchQueryParams};
 
 /// Represents different types of ticket requests
 #[derive(Debug)]
 enum TicketRequest {
-    FindTrace { trace_id: String },
-    SearchTraces { params: SearchQueryParams },
-    SqlQuery { sql: String },
+    FindTrace {
+        tenant_id: String,
+        dataset_id: String,
+        trace_id: String,
+    },
+    SearchTraces {
+        tenant_id: String,
+        dataset_id: String,
+        params: SearchQueryParams,
+    },
+    SqlQuery {
+        sql: String,
+    },
 }
 
 /// Flight service for query execution against stored data
@@ -111,18 +121,51 @@ impl QuerierFlightService {
     /// Parse ticket content to determine query type and parameters
     #[allow(clippy::result_large_err)]
     fn parse_ticket(&self, ticket_content: &str) -> Result<TicketRequest, Status> {
-        if let Some(trace_id) = ticket_content.strip_prefix("find_trace:") {
-            log::info!("Parsing find_trace ticket for trace_id: {trace_id}");
-            return Ok(TicketRequest::FindTrace {
-                trace_id: trace_id.to_string(),
-            });
+        // New format: find_trace:{tenant_id}:{dataset_id}:{trace_id}
+        if let Some(remainder) = ticket_content.strip_prefix("find_trace:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                log::info!(
+                    "Parsing find_trace ticket for tenant={}, dataset={}, trace_id={}",
+                    parts[0],
+                    parts[1],
+                    parts[2]
+                );
+                return Ok(TicketRequest::FindTrace {
+                    tenant_id: parts[0].to_string(),
+                    dataset_id: parts[1].to_string(),
+                    trace_id: parts[2].to_string(),
+                });
+            } else {
+                return Err(Status::invalid_argument(
+                    "Invalid find_trace ticket format. Expected: find_trace:tenant:dataset:trace_id",
+                ));
+            }
         }
 
-        if let Some(search_params) = ticket_content.strip_prefix("search_traces:") {
-            log::info!("Parsing search_traces ticket with params: {search_params}");
-            let params: SearchQueryParams = serde_json::from_str(search_params)
-                .map_err(|e| Status::invalid_argument(format!("Invalid search parameters: {e}")))?;
-            return Ok(TicketRequest::SearchTraces { params });
+        // New format: search_traces:{tenant_id}:{dataset_id}:{search_params_json}
+        if let Some(remainder) = ticket_content.strip_prefix("search_traces:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                log::info!(
+                    "Parsing search_traces ticket for tenant={}, dataset={}, params={}",
+                    parts[0],
+                    parts[1],
+                    parts[2]
+                );
+                let params: SearchQueryParams = serde_json::from_str(parts[2]).map_err(|e| {
+                    Status::invalid_argument(format!("Invalid search parameters: {e}"))
+                })?;
+                return Ok(TicketRequest::SearchTraces {
+                    tenant_id: parts[0].to_string(),
+                    dataset_id: parts[1].to_string(),
+                    params,
+                });
+            } else {
+                return Err(Status::invalid_argument(
+                    "Invalid search_traces ticket format. Expected: search_traces:tenant:dataset:params",
+                ));
+            }
         }
 
         // Fall back to raw SQL query
@@ -339,8 +382,14 @@ impl FlightService for QuerierFlightService {
         // Parse ticket to determine request type
         let ticket_request = self.parse_ticket(&ticket_content)?;
         let batches = match ticket_request {
-            TicketRequest::FindTrace { trace_id } => {
-                log::info!("Executing find_trace for trace_id: {trace_id}");
+            TicketRequest::FindTrace {
+                tenant_id,
+                dataset_id,
+                trace_id,
+            } => {
+                log::info!(
+                    "Executing find_trace for tenant={tenant_id}, dataset={dataset_id}, trace_id={trace_id}"
+                );
 
                 let params = FindTraceByIdParams {
                     trace_id,
@@ -348,7 +397,11 @@ impl FlightService for QuerierFlightService {
                     end: None,
                 };
 
-                match self.trace_service.find_by_id(params).await {
+                match self
+                    .trace_service
+                    .find_by_id_with_tenant(params, &tenant_id, &dataset_id)
+                    .await
+                {
                     Ok(Some(trace)) => {
                         log::info!("Found trace with {} root spans", trace.spans.len());
                         self.trace_to_record_batches(&trace).await.map_err(|e| {
@@ -365,10 +418,20 @@ impl FlightService for QuerierFlightService {
                     }
                 }
             }
-            TicketRequest::SearchTraces { params } => {
-                log::info!("Executing search_traces with params: {params:?}");
+            TicketRequest::SearchTraces {
+                tenant_id,
+                dataset_id,
+                params,
+            } => {
+                log::info!(
+                    "Executing search_traces for tenant={tenant_id}, dataset={dataset_id}, params={params:?}"
+                );
 
-                match self.trace_service.find_traces(params).await {
+                match self
+                    .trace_service
+                    .find_traces_with_tenant(params, &tenant_id, &dataset_id)
+                    .await
+                {
                     Ok(traces) => {
                         log::info!("Found {} traces", traces.len());
 

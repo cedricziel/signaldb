@@ -9,4 +9,6 @@ pub enum QuerierError {
     QueryFailed(#[from] DataFusionError),
     #[error("Failed to register parquet: {0}")]
     FailedToRegisterParquet(DataFusionError),
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
 }

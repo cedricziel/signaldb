@@ -38,5 +38,9 @@ bytes.workspace = true
 name = "signaldb-acceptor"
 path = "src/main.rs"
 
+[dev-dependencies]
+tower.workspace = true
+tempfile.workspace = true
+
 [package.metadata.cargo-machete]
 ignored = ["tracing", "opentelemetry"]

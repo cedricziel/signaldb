@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use common::auth::TenantContext;
-use common::flight::conversion::otlp_traces_to_arrow;
+use common::flight::conversion::otlp_logs_to_arrow;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::wal::{WalOperation, record_batch_to_bytes};
-use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 
 use super::WalManager;
 // Flight protocol imports
@@ -12,7 +12,7 @@ use arrow_flight::utils::batches_to_flight_data;
 use bytes::Bytes;
 use futures::{StreamExt, stream};
 
-pub struct TraceHandler {
+pub struct LogHandler {
     /// Flight transport for forwarding telemetry
     flight_transport: Arc<InMemoryFlightTransport>,
     /// WAL manager for multi-tenant WAL isolation
@@ -20,42 +20,39 @@ pub struct TraceHandler {
 }
 
 #[cfg(any(test, feature = "testing"))]
-pub struct MockTraceHandler {
-    pub handle_grpc_otlp_traces_calls: tokio::sync::Mutex<Vec<ExportTraceServiceRequest>>,
+pub struct MockLogHandler {
+    pub handle_grpc_otlp_logs_calls: tokio::sync::Mutex<Vec<ExportLogsServiceRequest>>,
 }
 
 #[cfg(any(test, feature = "testing"))]
-impl Default for MockTraceHandler {
+impl Default for MockLogHandler {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[cfg(any(test, feature = "testing"))]
-impl MockTraceHandler {
+impl MockLogHandler {
     pub fn new() -> Self {
         Self {
-            handle_grpc_otlp_traces_calls: tokio::sync::Mutex::new(Vec::new()),
+            handle_grpc_otlp_logs_calls: tokio::sync::Mutex::new(Vec::new()),
         }
     }
 
-    pub async fn handle_grpc_otlp_traces(
+    pub async fn handle_grpc_otlp_logs(
         &self,
         _tenant_context: &TenantContext,
-        request: ExportTraceServiceRequest,
+        request: ExportLogsServiceRequest,
     ) {
-        self.handle_grpc_otlp_traces_calls
-            .lock()
-            .await
-            .push(request);
+        self.handle_grpc_otlp_logs_calls.lock().await.push(request);
     }
 
-    pub fn expect_handle_grpc_otlp_traces(&mut self) -> &mut Self {
+    pub fn expect_handle_grpc_otlp_logs(&mut self) -> &mut Self {
         self
     }
 }
 
-impl TraceHandler {
+impl LogHandler {
     /// Create a new handler with Flight transport and WAL manager
     pub fn new(
         flight_transport: Arc<InMemoryFlightTransport>,
@@ -67,13 +64,13 @@ impl TraceHandler {
         }
     }
 
-    pub async fn handle_grpc_otlp_traces(
+    pub async fn handle_grpc_otlp_logs(
         &self,
         tenant_context: &TenantContext,
-        request: ExportTraceServiceRequest,
+        request: ExportLogsServiceRequest,
     ) {
         log::info!(
-            "Handling OTLP trace request for tenant='{}', dataset='{}'",
+            "Handling OTLP log request for tenant='{}', dataset='{}'",
             tenant_context.tenant_id,
             tenant_context.dataset_id
         );
@@ -84,7 +81,7 @@ impl TraceHandler {
             .get_wal(
                 &tenant_context.tenant_id,
                 &tenant_context.dataset_id,
-                "traces",
+                "logs",
             )
             .await
         {
@@ -99,13 +96,13 @@ impl TraceHandler {
             }
         };
 
-        // Convert OTLP traces to Arrow RecordBatch
-        let record_batch = otlp_traces_to_arrow(&request);
+        // Convert OTLP logs to Arrow RecordBatch
+        let record_batch = otlp_logs_to_arrow(&request);
 
         // Add schema version metadata (v1 for OTLP conversion)
         let metadata = serde_json::json!({
             "schema_version": "v1",
-            "signal_type": "traces"
+            "signal_type": "logs"
         });
 
         // Step 1: Write to WAL first for durability
@@ -118,12 +115,12 @@ impl TraceHandler {
         };
 
         let wal_entry_id = match wal
-            .append(WalOperation::WriteTraces, batch_bytes.clone(), None)
+            .append(WalOperation::WriteLogs, batch_bytes.clone(), None)
             .await
         {
             Ok(id) => id,
             Err(e) => {
-                log::error!("Failed to write traces to WAL: {e}");
+                log::error!("Failed to write logs to WAL: {e}");
                 return;
             }
         };
@@ -134,10 +131,10 @@ impl TraceHandler {
             return;
         }
 
-        log::debug!("Traces written to WAL with entry ID: {wal_entry_id}");
+        log::debug!("Logs written to WAL with entry ID: {wal_entry_id}");
 
         // Step 2: Forward from WAL to writer via Flight
-        // Get a Flight client for a writer service with storage capability (excludes acceptor)
+        // Get a Flight client for a writer service with storage capability
         let mut client = match self
             .flight_transport
             .get_client_for_capability(ServiceCapability::Storage)
@@ -187,17 +184,17 @@ impl TraceHandler {
                 }
 
                 if success {
-                    log::debug!("Successfully forwarded traces via Flight protocol");
+                    log::debug!("Successfully forwarded logs via Flight protocol");
                     // Mark WAL entry as processed after successful forwarding
                     if let Err(e) = wal.mark_processed(wal_entry_id).await {
                         log::warn!("Failed to mark WAL entry {wal_entry_id} as processed: {e}");
                     }
                 } else {
-                    log::error!("Failed to forward traces - data remains in WAL for retry");
+                    log::error!("Failed to forward logs - data remains in WAL for retry");
                 }
             }
             Err(e) => {
-                log::error!("Failed to forward traces via Flight protocol: {e}");
+                log::error!("Failed to forward logs via Flight protocol: {e}");
                 // Data remains in WAL for retry by background processor
             }
         }

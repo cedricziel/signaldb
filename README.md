@@ -19,7 +19,8 @@ SignalDB is built on the FDAP stack with Apache Arrow Flight as the primary inte
 
 ### Core Design Principles
 
-- **Flight-First Communication**: Apache Arrow Flight for zero-copy, high-throughput data transfer
+* **Flight-First Communication**: Apache Arrow Flight for zero-copy, high-throughput data transfer
+
 * **WAL-Based Durability**: Write-Ahead Log ensures data persistence and crash recovery
 * **Catalog-Based Discovery**: Database-backed service registry with automatic health monitoring
 * **Iceberg Table Format**: ACID transactions with Apache Iceberg for reliable data management
@@ -31,6 +32,7 @@ SignalDB is built on the FDAP stack with Apache Arrow Flight as the primary inte
 #### Monolithic Deployment
 
 Single binary (`signaldb`) that includes all services - ideal for development and small deployments.
+
 * All services communicate via localhost Flight endpoints
 * Shared SQLite catalog for service discovery
 * Zero-configuration startup with sensible defaults
@@ -38,6 +40,7 @@ Single binary (`signaldb`) that includes all services - ideal for development an
 #### Microservices Deployment
 
 Independent services for scalable production deployments:
+
 * **signaldb-acceptor**: OTLP data ingestion (gRPC port 4317, HTTP port 4318)
 * **signaldb-router**: Query routing and Tempo API compatibility (HTTP port 3000, Flight port 50053)
 * **signaldb-writer**: Data persistence with WAL durability (Flight port 50051)
@@ -64,6 +67,7 @@ Client → Router → Querier → DataFusion → Iceberg Tables
 ### Service Discovery & Communication
 
 All services register in a shared catalog for automatic discovery:
+
 * **PostgreSQL/SQLite catalog** with heartbeat-based health checking
 * **Apache Arrow Flight** for high-performance inter-service communication
 * **Automatic service registration** with capability-based routing
@@ -84,11 +88,95 @@ SignalDB uses Apache Iceberg as the table format for reliable data management:
 
 ### Storage Features
 
-- **Intelligent Batch Processing**: Automatic splitting of large batches (50K rows, 128MB default)
+* **Intelligent Batch Processing**: Automatic splitting of large batches (50K rows, 128MB default)
+
 * **Connection Pooling**: Optimized catalog operations with configurable pool settings
 * **Retry Logic**: Exponential backoff for transient failures with configurable policies
 * **Memory Management**: Memory-aware batch processing to prevent OOM issues
 * **Concurrent Processing**: Configurable concurrent batch processing for optimal throughput
+
+## Multi-Tenancy & Authentication
+
+SignalDB provides robust multi-tenant isolation with API key-based authentication:
+
+### Tenant Isolation Architecture
+
+* **Tenant Identification**: Each request requires `tenant_id` and optional `dataset_id`
+* **WAL Isolation**: Write-Ahead Logs organized by tenant/dataset (.wal/{tenant}/{dataset}/{signal}/)
+* **Catalog Isolation**: Iceberg tables namespaced per tenant and dataset
+* **Authentication**: API key validation with configurable tenant access
+
+### Authentication Flow
+
+```
+OTLP Client Request
+    ↓ Headers: Authorization: Bearer <api-key>
+    ↓          X-Tenant-ID: <tenant>
+    ↓          X-Dataset-ID: <dataset> (optional)
+    ↓
+gRPC/HTTP Auth Middleware
+    ↓ Extract credentials from headers/metadata
+    ↓ Validate API key against tenant configuration
+    ↓ Verify dataset access permissions
+    ↓ Create TenantContext
+    ↓
+Service Handler
+    ↓ Access tenant_id and dataset_id from context
+    ↓ Route data to tenant-specific WAL and storage
+```
+
+### Configuration
+
+Configure multi-tenancy in `signaldb.toml`:
+
+```toml
+[auth]
+enabled = true
+
+[[auth.tenants]]
+id = "acme"
+name = "Acme Corporation"
+default_dataset = "production"
+
+[[auth.tenants.api_keys]]
+key = "sk-acme-prod-key-123"
+name = "Production Key"
+
+[[auth.tenants.datasets]]
+id = "production"
+is_default = true
+```
+
+### Authenticated OTLP Requests
+
+**gRPC Example**:
+
+```bash
+grpcurl \
+  -H "authorization: Bearer sk-acme-prod-key-123" \
+  -H "x-tenant-id: acme" \
+  -H "x-dataset-id: production" \
+  -d @ \
+  localhost:4317 \
+  opentelemetry.proto.collector.trace.v1.TraceService/Export < traces.json
+```
+
+**HTTP Example**:
+
+```bash
+curl -X POST http://localhost:4318/v1/traces \
+  -H "Authorization: Bearer sk-acme-prod-key-123" \
+  -H "X-Tenant-ID: acme" \
+  -H "X-Dataset-ID: production" \
+  -H "Content-Type: application/json" \
+  -d @traces.json
+```
+
+### Authentication Errors
+
+* **400 Bad Request**: Missing or malformed authentication headers
+* **401 Unauthorized**: Invalid API key
+* **403 Forbidden**: API key valid but lacks access to specified tenant/dataset
 
 ## Database Support
 
@@ -127,7 +215,8 @@ ttl = "300s"
 
 ### Prerequisites
 
-- Rust 1.86.0+ (required for edition 2024 and AWS SDK compatibility)
+* Rust 1.86.0+ (required for edition 2024 and AWS SDK compatibility)
+
 * Protocol Buffers compiler
 
 ### Building
@@ -290,6 +379,7 @@ Environment variables:
 SignalDB implements Write-Ahead Logging for data durability and crash recovery. The WAL ensures that incoming OTLP data is persisted to disk before acknowledgment, providing strong durability guarantees.
 
 **WAL Features:**
+
 * **Durability**: All data written to WAL before acknowledgment
 * **Recovery**: Automatic replay of unprocessed entries on restart
 * **Batching**: Efficient batch processing with configurable flush policies
