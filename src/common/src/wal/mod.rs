@@ -768,7 +768,7 @@ impl Wal {
             }
         }
 
-        anyhow::bail!("WAL entry {entry_id} not found in any segment")
+        anyhow::bail!("WAL entry {entry_id} not found in any of {} segments", segments.len())
     }
 
     /// Get all unprocessed entries
