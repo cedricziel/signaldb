@@ -294,15 +294,6 @@ impl MetricsHandler {
             // Convert OTLP metrics to Arrow RecordBatch
             let record_batch = otlp_metrics_to_arrow(&partitioned_request);
 
-            // Add schema version metadata (v1 for OTLP conversion)
-            // Include metric_type and target_table for writer routing
-            let metadata = serde_json::json!({
-                "schema_version": "v1",
-                "signal_type": "metrics",
-                "metric_type": metric_type,
-                "target_table": target_table
-            });
-
             // Step 1: Write to WAL first for durability
             let batch_bytes = match record_batch_to_bytes(&record_batch) {
                 Ok(bytes) => bytes,
@@ -333,6 +324,18 @@ impl MetricsHandler {
                 "{} metrics written to WAL with entry ID: {wal_entry_id}",
                 metric_type
             );
+
+            // Build metadata after WAL append to include wal_entry_id, tenant_id, and dataset_id
+            // This enables writer routing and idempotency checks
+            let metadata = serde_json::json!({
+                "schema_version": "v1",
+                "signal_type": "metrics",
+                "metric_type": metric_type,
+                "target_table": target_table,
+                "tenant_id": tenant_context.tenant_id,
+                "dataset_id": tenant_context.dataset_id,
+                "wal_entry_id": wal_entry_id
+            });
 
             // Step 2: Forward from WAL to writer via Flight
             // Get a Flight client for a writer service with storage capability
