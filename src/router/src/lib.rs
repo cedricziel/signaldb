@@ -80,11 +80,14 @@ pub fn create_router<S: RouterState>(state: S) -> Router<S> {
         middleware::from_fn(move |req, next| auth_middleware(authenticator.clone(), req, next));
 
     Router::new()
+        // Public health check endpoint (no authentication)
         .route("/health", get(health_check))
         // Protected routes with authentication
-        .nest("/tempo", endpoints::tempo::router())
-        .nest("/api/v1", endpoints::tenant::router())
-        .layer(auth_layer)
+        .nest(
+            "/tempo",
+            endpoints::tempo::router().layer(auth_layer.clone()),
+        )
+        .nest("/api/v1", endpoints::tenant::router().layer(auth_layer))
         .with_state(state)
 }
 
