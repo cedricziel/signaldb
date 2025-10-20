@@ -40,7 +40,7 @@ datafusion = { version = "47.0.0", default-features = false, features = [
 arrow = { version = "55.2.0", features = ["prettyprint"] }
 parquet = { version = "55.2.0", features = ["arrow", "async"] }
 arrow-flight = { version = "55.2.0" }
-object_store = { version = "0.12.3", features = ["aws"] }
+object_store = { version = "0.12.4", features = ["aws"] }
 
 # Apache Iceberg support (for schema management)
 iceberg = { version = "0.5.1" }
