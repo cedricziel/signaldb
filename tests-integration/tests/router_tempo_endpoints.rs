@@ -986,12 +986,13 @@ async fn test_read_path_tenant_isolation() {
     // Create router with multi-tenant support
     let router_state = create_router_state(&services).await;
 
-    // Create router with authentication middleware manually for testing
+    // Create router with tempo routes nested under /tempo
     use axum::middleware;
     use common::auth::auth_middleware;
 
     let authenticator = router_state.authenticator().clone();
-    let app: Router = tempo::router()
+    let app: Router = Router::new()
+        .nest("/tempo", tempo::router())
         .with_state(router_state)
         .layer(middleware::from_fn(move |req, next| {
             auth_middleware(authenticator.clone(), req, next)
@@ -1117,12 +1118,13 @@ async fn test_read_path_authentication_failures() {
     let services = setup_multi_tenant_test_services().await;
     let router_state = create_router_state(&services).await;
 
-    // Create router with authentication middleware manually for testing
+    // Create router with tempo routes nested under /tempo
     use axum::middleware;
     use common::auth::auth_middleware;
 
     let authenticator = router_state.authenticator().clone();
-    let app: Router = tempo::router()
+    let app: Router = Router::new()
+        .nest("/tempo", tempo::router())
         .with_state(router_state)
         .layer(middleware::from_fn(move |req, next| {
             auth_middleware(authenticator.clone(), req, next)
