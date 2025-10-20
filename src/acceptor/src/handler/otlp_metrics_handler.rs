@@ -75,9 +75,8 @@ impl MetricsHandler {
     ) -> std::collections::HashMap<String, (String, ExportMetricsServiceRequest)> {
         use std::collections::HashMap;
 
-        // Track metric types: gauge, sum, histogram
-        // We map: Gauge -> gauge, Sum -> sum, Summary -> sum
-        //         Histogram -> histogram, ExponentialHistogram -> histogram
+        // Track metric types: gauge, sum, histogram, exponential_histogram, summary
+        // Each type maps to its corresponding table for proper schema handling
         let mut partitions: HashMap<String, Vec<(usize, usize, usize)>> = HashMap::new(); // type -> Vec<(res_idx, scope_idx, metric_idx)>
 
         // First pass: detect all types and collect indices
@@ -89,8 +88,20 @@ impl MetricsHandler {
                             Data::Gauge(_) => "gauge",
                             Data::Sum(_) => "sum",
                             Data::Histogram(_) => "histogram",
-                            Data::ExponentialHistogram(_) => "histogram",
-                            Data::Summary(_) => "sum", // Map summary to sum
+                            Data::ExponentialHistogram(_) => {
+                                log::info!(
+                                    "Processing ExponentialHistogram metric '{}' with full exponential metadata (scale, zero_count, positive/negative buckets)",
+                                    metric.name
+                                );
+                                "exponential_histogram"
+                            }
+                            Data::Summary(_) => {
+                                log::info!(
+                                    "Processing Summary metric '{}' with quantile values",
+                                    metric.name
+                                );
+                                "summary"
+                            }
                         };
 
                         partitions
@@ -110,7 +121,14 @@ impl MetricsHandler {
                 "gauge" => "metrics_gauge",
                 "sum" => "metrics_sum",
                 "histogram" => "metrics_histogram",
-                _ => "metrics_gauge", // Fallback
+                "exponential_histogram" => "metrics_exponential_histogram",
+                "summary" => "metrics_summary",
+                _ => {
+                    log::warn!(
+                        "Unknown metric type '{metric_type}', falling back to metrics_gauge table"
+                    );
+                    "metrics_gauge"
+                }
             };
 
             // Build new request with only metrics of this type
@@ -613,5 +631,317 @@ mod tests {
             0,
             "Should have 0 partitions for empty request"
         );
+    }
+
+    #[test]
+    fn test_partition_metrics_exponential_histogram() {
+        use opentelemetry_proto::tonic::metrics::v1::{
+            ExponentialHistogram, ExponentialHistogramDataPoint,
+        };
+
+        // Create a request with an exponential histogram metric
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource {
+                    attributes: vec![],
+                    dropped_attributes_count: 0,
+                }),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: None,
+                    metrics: vec![Metric {
+                        name: "exp_histogram_metric".to_string(),
+                        description: "An exponential histogram".to_string(),
+                        unit: "ms".to_string(),
+                        data: Some(Data::ExponentialHistogram(ExponentialHistogram {
+                            data_points: vec![ExponentialHistogramDataPoint {
+                                attributes: vec![],
+                                start_time_unix_nano: 1000,
+                                time_unix_nano: 2000,
+                                count: 10,
+                                sum: Some(100.0),
+                                scale: 2,
+                                zero_count: 1,
+                                positive: None,
+                                negative: None,
+                                flags: 0,
+                                exemplars: vec![],
+                                zero_threshold: 0.0,
+                                min: Some(1.0),
+                                max: Some(50.0),
+                            }],
+                            aggregation_temporality: AggregationTemporality::Cumulative.into(),
+                        })),
+                        metadata: vec![],
+                    }],
+                    schema_url: "".to_string(),
+                }],
+                schema_url: "".to_string(),
+            }],
+        };
+
+        let partitions = MetricsHandler::partition_metrics_by_type(&request);
+
+        // Verify we got the exponential_histogram partition
+        assert_eq!(
+            partitions.len(),
+            1,
+            "Should have 1 partition for exponential histogram"
+        );
+        assert!(
+            partitions.contains_key("exponential_histogram"),
+            "Should have exponential_histogram partition"
+        );
+
+        let (table_name, exp_hist_request) = &partitions["exponential_histogram"];
+        assert_eq!(
+            table_name, "metrics_exponential_histogram",
+            "ExponentialHistogram should map to metrics_exponential_histogram table"
+        );
+        assert_eq!(
+            exp_hist_request.resource_metrics[0].scope_metrics[0]
+                .metrics
+                .len(),
+            1,
+            "ExponentialHistogram partition should have 1 metric"
+        );
+        assert_eq!(
+            exp_hist_request.resource_metrics[0].scope_metrics[0].metrics[0].name,
+            "exp_histogram_metric"
+        );
+    }
+
+    #[test]
+    fn test_partition_metrics_summary() {
+        use opentelemetry_proto::tonic::metrics::v1::{
+            Summary, SummaryDataPoint, summary_data_point::ValueAtQuantile,
+        };
+
+        // Create a request with a summary metric
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource {
+                    attributes: vec![],
+                    dropped_attributes_count: 0,
+                }),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: None,
+                    metrics: vec![Metric {
+                        name: "summary_metric".to_string(),
+                        description: "A summary metric".to_string(),
+                        unit: "ms".to_string(),
+                        data: Some(Data::Summary(Summary {
+                            data_points: vec![SummaryDataPoint {
+                                attributes: vec![],
+                                start_time_unix_nano: 1000,
+                                time_unix_nano: 2000,
+                                count: 100,
+                                sum: 500.0,
+                                quantile_values: vec![
+                                    ValueAtQuantile {
+                                        quantile: 0.5,
+                                        value: 4.5,
+                                    },
+                                    ValueAtQuantile {
+                                        quantile: 0.95,
+                                        value: 9.5,
+                                    },
+                                    ValueAtQuantile {
+                                        quantile: 0.99,
+                                        value: 10.0,
+                                    },
+                                ],
+                                flags: 0,
+                            }],
+                        })),
+                        metadata: vec![],
+                    }],
+                    schema_url: "".to_string(),
+                }],
+                schema_url: "".to_string(),
+            }],
+        };
+
+        let partitions = MetricsHandler::partition_metrics_by_type(&request);
+
+        // Verify we got the summary partition
+        assert_eq!(partitions.len(), 1, "Should have 1 partition for summary");
+        assert!(
+            partitions.contains_key("summary"),
+            "Should have summary partition"
+        );
+
+        let (table_name, summary_request) = &partitions["summary"];
+        assert_eq!(
+            table_name, "metrics_summary",
+            "Summary should map to metrics_summary table"
+        );
+        assert_eq!(
+            summary_request.resource_metrics[0].scope_metrics[0]
+                .metrics
+                .len(),
+            1,
+            "Summary partition should have 1 metric"
+        );
+        assert_eq!(
+            summary_request.resource_metrics[0].scope_metrics[0].metrics[0].name,
+            "summary_metric"
+        );
+    }
+
+    #[test]
+    fn test_partition_metrics_all_types() {
+        use opentelemetry_proto::tonic::metrics::v1::{
+            ExponentialHistogram, ExponentialHistogramDataPoint, Summary, SummaryDataPoint,
+            summary_data_point::ValueAtQuantile,
+        };
+
+        // Create a request with all metric types
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource {
+                    attributes: vec![],
+                    dropped_attributes_count: 0,
+                }),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: None,
+                    metrics: vec![
+                        // Gauge
+                        Metric {
+                            name: "gauge_metric".to_string(),
+                            description: "A gauge".to_string(),
+                            unit: "1".to_string(),
+                            data: Some(Data::Gauge(Gauge {
+                                data_points: vec![NumberDataPoint {
+                                    attributes: vec![],
+                                    start_time_unix_nano: 1000,
+                                    time_unix_nano: 2000,
+                                    value: Some(number_data_point::Value::AsDouble(42.0)),
+                                    exemplars: vec![],
+                                    flags: 0,
+                                }],
+                            })),
+                            metadata: vec![],
+                        },
+                        // Sum
+                        Metric {
+                            name: "sum_metric".to_string(),
+                            description: "A sum".to_string(),
+                            unit: "1".to_string(),
+                            data: Some(Data::Sum(Sum {
+                                data_points: vec![NumberDataPoint {
+                                    attributes: vec![],
+                                    start_time_unix_nano: 1000,
+                                    time_unix_nano: 2000,
+                                    value: Some(number_data_point::Value::AsInt(100)),
+                                    exemplars: vec![],
+                                    flags: 0,
+                                }],
+                                aggregation_temporality: AggregationTemporality::Cumulative.into(),
+                                is_monotonic: true,
+                            })),
+                            metadata: vec![],
+                        },
+                        // Histogram
+                        Metric {
+                            name: "histogram_metric".to_string(),
+                            description: "A histogram".to_string(),
+                            unit: "ms".to_string(),
+                            data: Some(Data::Histogram(Histogram {
+                                data_points: vec![HistogramDataPoint {
+                                    attributes: vec![],
+                                    start_time_unix_nano: 1000,
+                                    time_unix_nano: 2000,
+                                    count: 5,
+                                    sum: Some(250.0),
+                                    bucket_counts: vec![1, 2, 2],
+                                    explicit_bounds: vec![10.0, 50.0],
+                                    exemplars: vec![],
+                                    flags: 0,
+                                    min: Some(5.0),
+                                    max: Some(100.0),
+                                }],
+                                aggregation_temporality: AggregationTemporality::Cumulative.into(),
+                            })),
+                            metadata: vec![],
+                        },
+                        // ExponentialHistogram
+                        Metric {
+                            name: "exp_histogram_metric".to_string(),
+                            description: "An exponential histogram".to_string(),
+                            unit: "ms".to_string(),
+                            data: Some(Data::ExponentialHistogram(ExponentialHistogram {
+                                data_points: vec![ExponentialHistogramDataPoint {
+                                    attributes: vec![],
+                                    start_time_unix_nano: 1000,
+                                    time_unix_nano: 2000,
+                                    count: 10,
+                                    sum: Some(100.0),
+                                    scale: 2,
+                                    zero_count: 1,
+                                    positive: None,
+                                    negative: None,
+                                    flags: 0,
+                                    exemplars: vec![],
+                                    zero_threshold: 0.0,
+                                    min: Some(1.0),
+                                    max: Some(50.0),
+                                }],
+                                aggregation_temporality: AggregationTemporality::Cumulative.into(),
+                            })),
+                            metadata: vec![],
+                        },
+                        // Summary
+                        Metric {
+                            name: "summary_metric".to_string(),
+                            description: "A summary".to_string(),
+                            unit: "ms".to_string(),
+                            data: Some(Data::Summary(Summary {
+                                data_points: vec![SummaryDataPoint {
+                                    attributes: vec![],
+                                    start_time_unix_nano: 1000,
+                                    time_unix_nano: 2000,
+                                    count: 100,
+                                    sum: 500.0,
+                                    quantile_values: vec![ValueAtQuantile {
+                                        quantile: 0.5,
+                                        value: 4.5,
+                                    }],
+                                    flags: 0,
+                                }],
+                            })),
+                            metadata: vec![],
+                        },
+                    ],
+                    schema_url: "".to_string(),
+                }],
+                schema_url: "".to_string(),
+            }],
+        };
+
+        let partitions = MetricsHandler::partition_metrics_by_type(&request);
+
+        // Verify we got 5 partitions for all types
+        assert_eq!(
+            partitions.len(),
+            5,
+            "Should have 5 partitions for all metric types"
+        );
+
+        // Verify each type
+        assert!(partitions.contains_key("gauge"));
+        assert!(partitions.contains_key("sum"));
+        assert!(partitions.contains_key("histogram"));
+        assert!(partitions.contains_key("exponential_histogram"));
+        assert!(partitions.contains_key("summary"));
+
+        // Verify table names
+        assert_eq!(partitions["gauge"].0, "metrics_gauge");
+        assert_eq!(partitions["sum"].0, "metrics_sum");
+        assert_eq!(partitions["histogram"].0, "metrics_histogram");
+        assert_eq!(
+            partitions["exponential_histogram"].0,
+            "metrics_exponential_histogram"
+        );
+        assert_eq!(partitions["summary"].0, "metrics_summary");
     }
 }
