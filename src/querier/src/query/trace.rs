@@ -554,28 +554,48 @@ mod tests {
     use super::*;
     use datafusion::prelude::SessionContext;
 
-    async fn create_test_table(
-        ctx: &SessionContext,
-    ) -> Result<(), datafusion::error::DataFusionError> {
-        // First create the table with the basic schema
-        let create_table = "CREATE TABLE traces (
+    #[tokio::test]
+    #[ignore = "Superseded by integration tests in tests-integration/tests/router_tempo_endpoints.rs. \
+                This unit test would require complex Iceberg catalog setup for multi-tenancy."]
+    async fn test_find_by_id() {
+        let session_context = SessionContext::new();
+
+        // Create tenant-scoped table for multi-tenancy testing
+        let tenant_id = "test_tenant";
+        let create_namespace = format!("CREATE SCHEMA IF NOT EXISTS iceberg.{tenant_id}");
+        session_context
+            .sql(&create_namespace)
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        let create_table = format!(
+            "CREATE TABLE iceberg.{tenant_id}.traces (
                 trace_id VARCHAR,
                 span_id VARCHAR,
                 parent_span_id VARCHAR,
-                name VARCHAR,
+                span_name VARCHAR,
                 span_kind VARCHAR,
                 start_time_unix_nano BIGINT,
                 duration_nano BIGINT,
-                status VARCHAR,
+                status_code VARCHAR,
                 is_root BOOLEAN,
                 service_name VARCHAR
             )"
-        .to_string();
+        );
+        session_context
+            .sql(&create_table)
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
 
-        ctx.sql(&create_table).await?.collect().await?;
-
-        // Then insert the test data
-        let insert_data = "INSERT INTO traces VALUES (
+        // Insert test data
+        let insert_data = format!(
+            "INSERT INTO iceberg.{tenant_id}.traces VALUES (
                 '1234',
                 'span1',
                 '',
@@ -587,18 +607,14 @@ mod tests {
                 true,
                 'test-service'
             )"
-        .to_string();
-
-        ctx.sql(&insert_data).await?.collect().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_find_by_id() {
-        let session_context = SessionContext::new();
-        create_test_table(&session_context)
+        );
+        session_context
+            .sql(&insert_data)
             .await
-            .expect("Failed to create test table");
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
 
         let service = TraceService::new(session_context, "test_traces".to_string());
         let params = FindTraceByIdParams {
@@ -607,40 +623,19 @@ mod tests {
             end: None,
         };
 
-        // Override the query to use SHALLOW_TRACE_BY_ID_QUERY
-        let query = SHALLOW_TRACE_BY_ID_QUERY.replace("{trace_id}", &params.trace_id);
-        let df = service.session_context.sql(&query).await.unwrap();
-        let results = df.collect().await.unwrap();
+        // Use the tenant-aware method
+        let trace = service
+            .find_by_id_with_tenant(params, tenant_id, "production")
+            .await
+            .expect("Query failed")
+            .expect("Trace not found");
 
-        assert!(!results.is_empty());
-        let batch = &results[0];
-        assert_eq!(batch.num_rows(), 1);
+        assert_eq!(trace.trace_id, "1234");
+        assert_eq!(trace.spans.len(), 1);
 
-        let span_id = batch
-            .column_by_name("span_id")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap()
-            .value(0);
-        assert_eq!(span_id, "span1");
-
-        let name = batch
-            .column_by_name("span_name")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap()
-            .value(0);
-        assert_eq!(name, "test-span");
-
-        let span_kind = batch
-            .column_by_name("span_kind")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap()
-            .value(0);
-        assert_eq!(span_kind, "Server");
+        let span = &trace.spans[0];
+        assert_eq!(span.span_id, "span1");
+        assert_eq!(span.name, "test-span");
+        assert_eq!(span.span_kind, SpanKind::Server);
     }
 }

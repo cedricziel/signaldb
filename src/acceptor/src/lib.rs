@@ -36,10 +36,12 @@ use crate::handler::WalManager;
 use crate::handler::otlp_grpc::TraceHandler;
 use crate::handler::otlp_log_handler::LogHandler;
 use crate::handler::otlp_metrics_handler::MetricsHandler;
+use crate::middleware::grpc_auth::grpc_auth_interceptor;
 use crate::services::{
     otlp_log_service::LogAcceptorService, otlp_metric_service::MetricsAcceptorService,
     otlp_trace_service::TraceAcceptorService,
 };
+use common::auth::Authenticator;
 
 pub async fn get_parquet_writer(
     data_set: DataSet,
@@ -110,6 +112,10 @@ pub async fn serve_otlp_grpc(
 
     log::info!("Starting OTLP/gRPC acceptor on {addr}");
 
+    // Extract catalog and auth config BEFORE moving service_bootstrap into InMemoryFlightTransport
+    let catalog = Arc::new(service_bootstrap.catalog().clone());
+    let auth_config = service_bootstrap.config().auth.clone();
+
     // Initialize Flight transport with catalog-aware discovery
     let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
 
@@ -167,15 +173,32 @@ pub async fn serve_otlp_grpc(
         "✅ Initialized WalManager for multi-tenant WAL isolation (paths: .wal/{{tenant}}/{{dataset}}/{{signal}})"
     );
 
-    // Set up OTLP/gRPC services with handler pattern and WAL Manager integration
+    // Create Authenticator for multi-tenant authentication (using catalog/auth_config extracted earlier)
+    let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
+
+    log::info!("✅ Initialized Authenticator for multi-tenant gRPC authentication");
+
+    // Set up OTLP/gRPC services with handler pattern, WAL Manager integration, and auth interceptor
     let log_handler = LogHandler::new(flight_transport.clone(), wal_manager.clone());
-    let log_server = LogsServiceServer::new(LogAcceptorService::new(log_handler));
+    let log_service = LogAcceptorService::new(log_handler);
+    let auth_for_logs = authenticator.clone();
+    let log_server = LogsServiceServer::with_interceptor(log_service, move |req| {
+        grpc_auth_interceptor(auth_for_logs.clone(), req)
+    });
 
     let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
-    let trace_server = TraceServiceServer::new(TraceAcceptorService::new(trace_handler));
+    let trace_service = TraceAcceptorService::new(trace_handler);
+    let auth_for_traces = authenticator.clone();
+    let trace_server = TraceServiceServer::with_interceptor(trace_service, move |req| {
+        grpc_auth_interceptor(auth_for_traces.clone(), req)
+    });
 
     let metrics_handler = MetricsHandler::new(flight_transport.clone(), wal_manager.clone());
-    let metric_server = MetricsServiceServer::new(MetricsAcceptorService::new(metrics_handler));
+    let metrics_service = MetricsAcceptorService::new(metrics_handler);
+    let auth_for_metrics = authenticator.clone();
+    let metric_server = MetricsServiceServer::with_interceptor(metrics_service, move |req| {
+        grpc_auth_interceptor(auth_for_metrics.clone(), req)
+    });
 
     init_tx
         .send(())
