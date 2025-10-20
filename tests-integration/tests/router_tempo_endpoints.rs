@@ -230,6 +230,7 @@ struct TestRouterState {
     catalog: Catalog,
     service_registry: ServiceRegistry,
     config: Configuration,
+    authenticator: Arc<common::auth::Authenticator>,
 }
 
 impl std::fmt::Debug for TestRouterState {
@@ -238,6 +239,7 @@ impl std::fmt::Debug for TestRouterState {
             .field("catalog", &"Catalog")
             .field("service_registry", &self.service_registry)
             .field("config", &"Configuration")
+            .field("authenticator", &"Authenticator")
             .finish()
     }
 }
@@ -254,6 +256,10 @@ impl router::RouterState for TestRouterState {
     fn config(&self) -> &Configuration {
         &self.config
     }
+
+    fn authenticator(&self) -> &Arc<common::auth::Authenticator> {
+        &self.authenticator
+    }
 }
 
 /// Create router state connected to the test services
@@ -267,10 +273,17 @@ async fn create_router_state(services: &TestServices) -> TestRouterState {
         (*services.flight_transport).clone(),
     );
 
+    // Create authenticator for test
+    let authenticator = Arc::new(common::auth::Authenticator::new(
+        services.config.auth.clone(),
+        Arc::new(catalog.clone()),
+    ));
+
     TestRouterState {
         catalog,
         service_registry,
         config: services.config.clone(),
+        authenticator,
     }
 }
 

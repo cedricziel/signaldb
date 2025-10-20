@@ -4,8 +4,10 @@
 //! using API keys and header-based tenant/dataset identification.
 
 mod authenticator;
+mod middleware;
 
 pub use authenticator::Authenticator;
+pub use middleware::{TenantContextExtractor, auth_middleware};
 
 /// Tenant context extracted from authenticated request
 #[derive(Debug, Clone)]

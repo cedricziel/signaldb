@@ -33,6 +33,8 @@ chrono = { workspace = true }
 
 arrow-flight.workspace = true
 tonic.workspace = true
+axum.workspace = true
+tower.workspace = true
 
 iceberg.workspace = true
 iceberg-catalog-memory.workspace = true
