@@ -34,6 +34,96 @@ The acceptor consists of several key components:
 4. **Flight Forwarding**: Route data to writer services via Apache Flight
 5. **Acknowledgment**: Confirm successful processing to client
 
+## Authentication & Multi-Tenancy
+
+The acceptor enforces multi-tenant isolation through API key authentication on all gRPC and HTTP endpoints.
+
+### Authentication Architecture
+
+**gRPC Authentication**:
+- All gRPC services wrapped with `grpc_auth_interceptor`
+- Extracts credentials from gRPC metadata headers
+- Validates API key and tenant permissions
+- Injects `TenantContext` into request extensions
+
+**HTTP Authentication**:
+- Axum middleware for HTTP endpoints
+- Extracts credentials from HTTP headers
+- Same validation logic as gRPC
+- Returns proper HTTP status codes (400/401/403)
+
+### Required Headers
+
+All OTLP requests must include authentication headers:
+
+**gRPC Metadata**:
+```
+authorization: Bearer <api-key>
+x-tenant-id: <tenant-id>
+x-dataset-id: <dataset-id>  (optional, uses tenant's default_dataset if omitted)
+```
+
+**HTTP Headers**:
+```
+Authorization: Bearer <api-key>
+X-Tenant-ID: <tenant-id>
+X-Dataset-ID: <dataset-id>  (optional)
+```
+
+### Tenant Context Flow
+
+```
+Client Request
+    ↓ gRPC metadata / HTTP headers
+    ↓
+Authentication Interceptor/Middleware
+    ↓ Extract: api_key, tenant_id, dataset_id
+    ↓ Validate against configuration
+    ↓ Create TenantContext
+    ↓
+Service Handler (TraceAcceptorService, etc.)
+    ↓ Extract TenantContext from request extensions
+    ↓ Write to tenant-specific WAL: .wal/{tenant}/{dataset}/{signal}/
+    ↓ Forward to writer with tenant context
+```
+
+### Authentication Errors
+
+- **400 Bad Request**: Missing required headers or invalid header format
+- **401 Unauthorized**: Invalid API key
+- **403 Forbidden**: Valid API key but no access to specified tenant/dataset
+
+### Configuration
+
+Configure tenants and API keys in `signaldb.toml`:
+
+```toml
+[auth]
+enabled = true
+
+[[auth.tenants]]
+id = "acme"
+name = "Acme Corporation"
+default_dataset = "production"
+
+[[auth.tenants.api_keys]]
+key = "sk-acme-prod-key-123"
+name = "Production Key"
+
+[[auth.tenants.datasets]]
+id = "production"
+is_default = true
+```
+
+### WAL Isolation
+
+Each tenant/dataset combination has isolated WAL storage:
+- Traces: `.wal/{tenant}/{dataset}/traces/`
+- Logs: `.wal/{tenant}/{dataset}/logs/`
+- Metrics: `.wal/{tenant}/{dataset}/metrics/`
+
+Environment variable: `ACCEPTOR_WAL_DIR` (default: `.wal`)
+
 ## API Reference
 
 ### gRPC Services
@@ -141,14 +231,21 @@ cargo test -p common -- catalog_integration
 
 ### Manual Testing
 ```bash
-# Send test traces via gRPC
-grpcurl -plaintext -d '{"resource_spans":[]}' \
+# Send test traces via gRPC (with authentication)
+grpcurl -plaintext \
+  -H "authorization: Bearer sk-acme-prod-key-123" \
+  -H "x-tenant-id: acme" \
+  -H "x-dataset-id: production" \
+  -d '{"resource_spans":[]}' \
   localhost:4317 \
   opentelemetry.proto.collector.trace.v1.TraceService/Export
 
-# Send test traces via HTTP
+# Send test traces via HTTP (with authentication)
 curl -X POST http://localhost:4318/v1/traces \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-acme-prod-key-123" \
+  -H "X-Tenant-ID: acme" \
+  -H "X-Dataset-ID: production" \
   -d '{"resourceSpans":[]}'
 ```
 

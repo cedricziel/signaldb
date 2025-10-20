@@ -54,6 +54,19 @@ The common library is organized into several key modules:
 - **Durability**: Crash-safe data persistence
 - **Cleanup**: Automatic WAL entry management and cleanup
 
+### Authentication (`auth/`)
+- **Authenticator**: API key validation and tenant authentication
+- **TenantContext**: Multi-tenant request context (tenant_id, dataset_id, api_key_name, source)
+- **Middleware**: gRPC interceptor and HTTP middleware for authentication
+- **Configuration**: TOML-based tenant and API key configuration
+- **Catalog Integration**: Tenant validation against catalog metadata
+
+The authentication module provides multi-tenant isolation with API key-based authentication:
+- **gRPC Interceptor** (`grpc_auth.rs`): Tonic interceptor for gRPC metadata extraction
+- **HTTP Middleware** (`middleware.rs`): Axum middleware for HTTP header extraction
+- **Authenticator** (`authenticator.rs`): Central authentication logic with tenant/dataset validation
+- **TenantContext**: Carries authenticated context through request processing pipeline
+
 ### Data Models (`model/`)
 - **Span**: Distributed tracing span representation
 - **Trace**: Complete trace data structures
@@ -149,6 +162,69 @@ let entries = wal.read_entries().await?;
 wal.mark_processed(entry_id).await?;
 ```
 
+### Authentication
+```rust
+use common::auth::{Authenticator, TenantContext};
+use common::config::Configuration;
+use std::sync::Arc;
+
+// Load configuration with tenant definitions
+let config = Configuration::load()?;
+let catalog = Arc::new(Catalog::new(&config.database.dsn).await?);
+
+// Create authenticator
+let authenticator = Arc::new(Authenticator::new(
+    config.auth,
+    catalog.clone()
+));
+
+// Authenticate a request (async)
+let tenant_context = authenticator.authenticate(
+    "sk-acme-prod-key-123",  // API key
+    "acme",                   // Tenant ID
+    Some("production")        // Dataset ID (optional)
+).await?;
+
+// Use tenant context
+println!("Tenant: {}", tenant_context.tenant_id);
+println!("Dataset: {}", tenant_context.dataset_id);
+println!("Source: {}", tenant_context.source);
+```
+
+**gRPC Interceptor Usage**:
+```rust
+use common::auth::{grpc_auth::grpc_auth_interceptor, Authenticator};
+use tonic::transport::Server;
+use std::sync::Arc;
+
+let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
+let auth_for_service = authenticator.clone();
+
+let server = Server::builder()
+    .add_service(
+        MyServiceServer::with_interceptor(my_service, move |req| {
+            grpc_auth_interceptor(auth_for_service.clone(), req)
+        })
+    )
+    .serve(addr);
+```
+
+**HTTP Middleware Usage**:
+```rust
+use common::auth::{middleware::auth_middleware, Authenticator};
+use axum::{Router, middleware, routing::post};
+use std::sync::Arc;
+
+let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
+let auth = authenticator.clone();
+
+let app = Router::new()
+    .route("/v1/traces", post(handle_traces))
+    .layer(middleware::from_fn(move |req, next| {
+        auth_middleware(auth.clone(), req, next)
+    }));
+```
+
 ## Usage Examples
 
 ### Basic Configuration Setup
@@ -233,6 +309,22 @@ let entry_id = wal.write(serde_json::to_vec(&data)?).await?;
 [database]
 dsn = "postgresql://user:pass@localhost/signaldb"
 # dsn = "sqlite://.data/signaldb.db"
+
+[auth]
+enabled = true
+
+[[auth.tenants]]
+id = "acme"
+name = "Acme Corporation"
+default_dataset = "production"
+
+[[auth.tenants.api_keys]]
+key = "sk-acme-prod-key-123"
+name = "Production Key"
+
+[[auth.tenants.datasets]]
+id = "production"
+is_default = true
 
 [storage]
 dsn = "file:///.data/storage"

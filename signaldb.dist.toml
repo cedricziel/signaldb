@@ -6,6 +6,72 @@
 dsn = "sqlite://.data/signaldb.db"
 # dsn = "postgres://user:password@localhost/signaldb"
 
+[auth]
+# Multi-Tenancy Authentication Configuration
+# Controls API key validation and tenant isolation
+enabled = true  # Set to false to disable authentication (dev/testing only)
+
+# Tenant definitions with API keys and datasets
+# Each tenant is isolated with separate WAL paths and Iceberg catalogs
+
+# Example tenant: Acme Corporation
+[[auth.tenants]]
+id = "acme"
+name = "Acme Corporation"
+default_dataset = "production"  # Used when X-Dataset-ID header is not provided
+
+# API keys for the Acme tenant
+# Each key can have a descriptive name for auditing
+[[auth.tenants.api_keys]]
+key = "sk-acme-prod-key-123"       # The actual API key used in Authorization: Bearer header
+name = "Production Key"             # Human-readable name for this key
+
+[[auth.tenants.api_keys]]
+key = "sk-acme-staging-key-456"
+name = "Staging Key"
+
+# Datasets for the Acme tenant
+# Tenants can have multiple datasets for environment isolation
+[[auth.tenants.datasets]]
+id = "production"
+is_default = true
+
+[[auth.tenants.datasets]]
+id = "staging"
+is_default = false
+
+# Example tenant: Beta Inc
+[[auth.tenants]]
+id = "beta"
+name = "Beta Inc"
+default_dataset = "default"
+
+[[auth.tenants.api_keys]]
+key = "sk-beta-key-789"
+name = "Beta Production Key"
+
+[[auth.tenants.datasets]]
+id = "default"
+is_default = true
+
+# Optional: Custom schema configuration per tenant
+# [[auth.tenants.schema_config]]
+# catalog_type = "sql"
+# catalog_uri = "sqlite://.data/acme_catalog.db"
+
+# Authentication Headers Required:
+# - Authorization: Bearer <api-key>
+# - X-Tenant-ID: <tenant-id>
+# - X-Dataset-ID: <dataset-id> (optional, uses default_dataset if not provided)
+#
+# Example authenticated OTLP request:
+#   curl -X POST http://localhost:4318/v1/traces \
+#     -H "Authorization: Bearer sk-acme-prod-key-123" \
+#     -H "X-Tenant-ID: acme" \
+#     -H "X-Dataset-ID: production" \
+#     -H "Content-Type: application/json" \
+#     -d @traces.json
+
 [storage]
 # Object storage for data files (Parquet, etc.)
 dsn = "file:///.data/storage"

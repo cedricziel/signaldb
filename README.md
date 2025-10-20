@@ -90,6 +90,87 @@ SignalDB uses Apache Iceberg as the table format for reliable data management:
 * **Memory Management**: Memory-aware batch processing to prevent OOM issues
 * **Concurrent Processing**: Configurable concurrent batch processing for optimal throughput
 
+## Multi-Tenancy & Authentication
+
+SignalDB provides robust multi-tenant isolation with API key-based authentication:
+
+### Tenant Isolation Architecture
+
+* **Tenant Identification**: Each request requires `tenant_id` and optional `dataset_id`
+* **WAL Isolation**: Write-Ahead Logs organized by tenant/dataset (.wal/{tenant}/{dataset}/{signal}/)
+* **Catalog Isolation**: Iceberg tables namespaced per tenant and dataset
+* **Authentication**: API key validation with configurable tenant access
+
+### Authentication Flow
+
+```
+OTLP Client Request
+    ↓ Headers: Authorization: Bearer <api-key>
+    ↓          X-Tenant-ID: <tenant>
+    ↓          X-Dataset-ID: <dataset> (optional)
+    ↓
+gRPC/HTTP Auth Middleware
+    ↓ Extract credentials from headers/metadata
+    ↓ Validate API key against tenant configuration
+    ↓ Verify dataset access permissions
+    ↓ Create TenantContext
+    ↓
+Service Handler
+    ↓ Access tenant_id and dataset_id from context
+    ↓ Route data to tenant-specific WAL and storage
+```
+
+### Configuration
+
+Configure multi-tenancy in `signaldb.toml`:
+
+```toml
+[auth]
+enabled = true
+
+[[auth.tenants]]
+id = "acme"
+name = "Acme Corporation"
+default_dataset = "production"
+
+[[auth.tenants.api_keys]]
+key = "sk-acme-prod-key-123"
+name = "Production Key"
+
+[[auth.tenants.datasets]]
+id = "production"
+is_default = true
+```
+
+### Authenticated OTLP Requests
+
+**gRPC Example**:
+```bash
+grpcurl \
+  -H "authorization: Bearer sk-acme-prod-key-123" \
+  -H "x-tenant-id: acme" \
+  -H "x-dataset-id: production" \
+  -d @ \
+  localhost:4317 \
+  opentelemetry.proto.collector.trace.v1.TraceService/Export < traces.json
+```
+
+**HTTP Example**:
+```bash
+curl -X POST http://localhost:4318/v1/traces \
+  -H "Authorization: Bearer sk-acme-prod-key-123" \
+  -H "X-Tenant-ID: acme" \
+  -H "X-Dataset-ID: production" \
+  -H "Content-Type: application/json" \
+  -d @traces.json
+```
+
+### Authentication Errors
+
+* **400 Bad Request**: Missing or malformed authentication headers
+* **401 Unauthorized**: Invalid API key
+* **403 Forbidden**: API key valid but lacks access to specified tenant/dataset
+
 ## Database Support
 
 * **PostgreSQL**: Production deployments with full SQL capabilities
