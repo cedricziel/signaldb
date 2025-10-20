@@ -167,14 +167,11 @@ mod tests {
     use tempfile::TempDir;
 
     fn create_test_config(base_dir: &Path) -> WalConfig {
-        WalConfig {
-            wal_dir: base_dir.to_path_buf(),
-            max_segment_size: 1024 * 1024, // 1MB for tests
-            max_buffer_entries: 100,
-            flush_interval_secs: 60,
-            tenant_id: None, // Will be set by for_tenant_dataset()
-            dataset_id: None,
-        }
+        let mut config = WalConfig::with_defaults(base_dir.to_path_buf());
+        config.max_segment_size = 1024 * 1024; // 1MB for tests
+        config.max_buffer_entries = 100;
+        config.flush_interval_secs = 60;
+        config
     }
 
     #[tokio::test]

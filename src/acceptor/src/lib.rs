@@ -126,40 +126,34 @@ pub async fn serve_otlp_grpc(
     // The WalManager will create tenant/dataset-specific WALs on demand
 
     // Base WAL config for traces - baseline configuration
-    let traces_wal_config = WalConfig {
-        wal_dir: std::env::var("ACCEPTOR_WAL_DIR")
+    let mut traces_wal_config = WalConfig::with_defaults(
+        std::env::var("ACCEPTOR_WAL_DIR")
             .unwrap_or_else(|_| ".wal".to_string())
             .into(),
-        max_segment_size: 64 * 1024 * 1024, // 64MB
-        max_buffer_entries: 1000,
-        flush_interval_secs: 30,
-        tenant_id: None, // Will be set by WalManager.for_tenant_dataset()
-        dataset_id: None,
-    };
+    );
+    traces_wal_config.max_segment_size = 64 * 1024 * 1024; // 64MB
+    traces_wal_config.max_buffer_entries = 1000;
+    traces_wal_config.flush_interval_secs = 30;
 
     // Base WAL config for logs - higher volume, more frequent flushes
-    let logs_wal_config = WalConfig {
-        wal_dir: std::env::var("ACCEPTOR_WAL_DIR")
+    let mut logs_wal_config = WalConfig::with_defaults(
+        std::env::var("ACCEPTOR_WAL_DIR")
             .unwrap_or_else(|_| ".wal".to_string())
             .into(),
-        max_segment_size: 64 * 1024 * 1024, // 64MB
-        max_buffer_entries: 2000,           // Higher buffer for log volume
-        flush_interval_secs: 15,            // Flush more frequently
-        tenant_id: None,                    // Will be set by WalManager.for_tenant_dataset()
-        dataset_id: None,
-    };
+    );
+    logs_wal_config.max_segment_size = 64 * 1024 * 1024; // 64MB
+    logs_wal_config.max_buffer_entries = 2000; // Higher buffer for log volume
+    logs_wal_config.flush_interval_secs = 15; // Flush more frequently
 
     // Base WAL config for metrics - highest volume, most aggressive flushing
-    let metrics_wal_config = WalConfig {
-        wal_dir: std::env::var("ACCEPTOR_WAL_DIR")
+    let mut metrics_wal_config = WalConfig::with_defaults(
+        std::env::var("ACCEPTOR_WAL_DIR")
             .unwrap_or_else(|_| ".wal".to_string())
             .into(),
-        max_segment_size: 128 * 1024 * 1024, // 128MB - larger segments for high volume
-        max_buffer_entries: 5000,            // Much higher buffer for metrics
-        flush_interval_secs: 10,             // Flush frequently for metrics
-        tenant_id: None,                     // Will be set by WalManager.for_tenant_dataset()
-        dataset_id: None,
-    };
+    );
+    metrics_wal_config.max_segment_size = 128 * 1024 * 1024; // 128MB - larger segments for high volume
+    metrics_wal_config.max_buffer_entries = 5000; // Much higher buffer for metrics
+    metrics_wal_config.flush_interval_secs = 10; // Flush frequently for metrics
 
     // Create WalManager with the three base configurations
     // WAL paths will be: .wal/{tenant}/{dataset}/{signal}/

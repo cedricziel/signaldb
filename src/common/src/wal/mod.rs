@@ -183,8 +183,8 @@ impl WalSegment {
         entry_id: Uuid,
         operation: WalOperation,
         data: &[u8],
-        tenant_id: String,
-        dataset_id: String,
+        tenant_id: &str,
+        dataset_id: &str,
     ) -> Result<Uuid> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -207,8 +207,8 @@ impl WalSegment {
             data_size: data.len() as u64,
             data_offset,
             processed: false,
-            tenant_id,
-            dataset_id,
+            tenant_id: tenant_id.to_string(),
+            dataset_id: dataset_id.to_string(),
         };
 
         // Serialize entry
@@ -262,21 +262,24 @@ pub struct WalConfig {
     pub max_buffer_entries: usize,
     /// Maximum time to wait before forcing flush (in seconds)
     pub flush_interval_secs: u64,
-    /// Tenant ID for multi-tenant isolation (optional for backward compatibility)
-    pub tenant_id: Option<String>,
-    /// Dataset ID for data partitioning (optional for backward compatibility)
-    pub dataset_id: Option<String>,
+    /// Tenant ID for multi-tenant isolation (REQUIRED for proper isolation)
+    pub tenant_id: String,
+    /// Dataset ID for data partitioning (REQUIRED for proper isolation)
+    pub dataset_id: String,
 }
 
-impl Default for WalConfig {
-    fn default() -> Self {
+impl WalConfig {
+    /// Create a base WalConfig with default performance settings
+    /// This should only be used with for_tenant_dataset() to create tenant-specific configs
+    pub fn with_defaults(base_dir: PathBuf) -> Self {
         Self {
-            wal_dir: PathBuf::from(".wal"),
+            wal_dir: base_dir,
             max_segment_size: 64 * 1024 * 1024, // 64MB
             max_buffer_entries: 1000,
             flush_interval_secs: 30,
-            tenant_id: None,
-            dataset_id: None,
+            // These will be set by for_tenant_dataset()
+            tenant_id: String::new(),
+            dataset_id: String::new(),
         }
     }
 }
@@ -300,9 +303,15 @@ impl WalConfig {
             max_segment_size: self.max_segment_size,
             max_buffer_entries: self.max_buffer_entries,
             flush_interval_secs: self.flush_interval_secs,
-            tenant_id: Some(tenant.to_string()),
-            dataset_id: Some(dataset.to_string()),
+            tenant_id: tenant.to_string(),
+            dataset_id: dataset.to_string(),
         }
+    }
+}
+
+impl Default for WalConfig {
+    fn default() -> Self {
+        Self::with_defaults(PathBuf::from(".wal"))
     }
 }
 
@@ -320,7 +329,22 @@ pub struct Wal {
 
 impl Wal {
     /// Create a new WAL instance
+    ///
+    /// IMPORTANT: This WAL instance is strictly scoped to a single tenant/dataset.
+    /// The config must have non-empty tenant_id and dataset_id to ensure proper isolation.
     pub async fn new(config: WalConfig) -> Result<Self> {
+        // Enforce strict tenant/dataset isolation - reject empty values
+        if config.tenant_id.is_empty() {
+            return Err(anyhow::anyhow!(
+                "WAL configuration requires non-empty tenant_id for proper multi-tenant isolation"
+            ));
+        }
+        if config.dataset_id.is_empty() {
+            return Err(anyhow::anyhow!(
+                "WAL configuration requires non-empty dataset_id for proper data partitioning"
+            ));
+        }
+
         create_dir_all(&config.wal_dir).await?;
 
         // Find the latest segment ID
@@ -441,15 +465,19 @@ impl Wal {
 
         let mut segment = current_segment.lock().await;
 
-        // Get tenant_id and dataset_id from config, falling back to "default" for backward compatibility
-        let tenant_id = config
-            .tenant_id
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
-        let dataset_id = config
-            .dataset_id
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
+        // Verify tenant/dataset isolation at runtime
+        debug_assert!(
+            !config.tenant_id.is_empty(),
+            "WAL instance must be tenant-scoped with non-empty tenant_id"
+        );
+        debug_assert!(
+            !config.dataset_id.is_empty(),
+            "WAL instance must be dataset-scoped with non-empty dataset_id"
+        );
+
+        // Use the guaranteed per-instance tenant/dataset values
+        let tenant_id = &config.tenant_id;
+        let dataset_id = &config.dataset_id;
 
         for (entry_id, operation, data) in entries_to_flush {
             // Check if we need to rotate to a new segment
@@ -469,13 +497,7 @@ impl Wal {
             }
 
             segment
-                .append(
-                    entry_id,
-                    operation,
-                    &data,
-                    tenant_id.clone(),
-                    dataset_id.clone(),
-                )
+                .append(entry_id, operation, &data, tenant_id, dataset_id)
                 .await?;
         }
 
@@ -624,8 +646,8 @@ mod tests {
             max_segment_size: 1024,
             max_buffer_entries: 10,
             flush_interval_secs: 1,
-            tenant_id: Some("test-tenant".to_string()),
-            dataset_id: Some("test-dataset".to_string()),
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
         };
 
         let mut wal = Wal::new(config).await.unwrap();

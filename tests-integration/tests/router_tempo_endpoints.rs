@@ -87,8 +87,8 @@ async fn setup_test_services() -> TestServices {
         max_segment_size: 1024 * 1024,
         max_buffer_entries: 1,
         flush_interval_secs: 1,
-        tenant_id: Some("test-tenant".to_string()),
-        dataset_id: Some("test-dataset".to_string()),
+        tenant_id: "test-tenant".to_string(),
+        dataset_id: "test-dataset".to_string(),
     };
 
     // Create flight transport for service communication
@@ -735,8 +735,8 @@ async fn setup_multi_tenant_test_services() -> TestServices {
         max_segment_size: 1024 * 1024,
         max_buffer_entries: 1,
         flush_interval_secs: 1,
-        tenant_id: Some("acme".to_string()),
-        dataset_id: Some("production".to_string()),
+        tenant_id: "acme".to_string(),
+        dataset_id: "production".to_string(),
     };
 
     let globex_wal_dir = temp_dir.path().join("wal-globex");
@@ -746,8 +746,8 @@ async fn setup_multi_tenant_test_services() -> TestServices {
         max_segment_size: 1024 * 1024,
         max_buffer_entries: 1,
         flush_interval_secs: 1,
-        tenant_id: Some("globex".to_string()),
-        dataset_id: Some("production".to_string()),
+        tenant_id: "globex".to_string(),
+        dataset_id: "production".to_string(),
     };
 
     // Create flight transport for service communication

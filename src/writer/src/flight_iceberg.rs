@@ -290,8 +290,8 @@ mod tests {
             max_segment_size: 1024 * 1024, // 1MB
             max_buffer_entries: 1000,
             flush_interval_secs: 5,
-            tenant_id: Some("test-tenant".to_string()),
-            dataset_id: Some("test-dataset".to_string()),
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
 
