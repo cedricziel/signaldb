@@ -682,7 +682,7 @@ impl Wal {
                 drop(segment); // Release lock before acquiring segments lock
                 let mut segs = segments.lock().await;
                 let new_seg_arc = Arc::new(Mutex::new(
-                    WalSegment::load(&config.wal_dir, new_segment_id).await?,
+                    WalSegment::new(&config.wal_dir, new_segment_id).await?,
                 ));
                 segs.push(new_seg_arc);
                 drop(segs);
@@ -768,7 +768,10 @@ impl Wal {
             }
         }
 
-        anyhow::bail!("WAL entry {entry_id} not found in any of {} segments", segments.len())
+        anyhow::bail!(
+            "WAL entry {entry_id} not found in any of {} segments",
+            segments.len()
+        )
     }
 
     /// Get all unprocessed entries
@@ -828,6 +831,9 @@ impl Wal {
         if processed_pct < config.compaction_threshold {
             return Ok(false);
         }
+
+        // Store original entry count before filtering
+        let original_entry_count = segment.entries.len();
 
         log::info!(
             "Compacting segment {} ({:.1}% processed)",
@@ -897,9 +903,7 @@ impl Wal {
         log::info!(
             "Compacted segment {} from {} to {} entries",
             temp_segment_id,
-            unprocessed_entries.len()
-                + (processed_pct * unprocessed_entries.len() as f64 / (1.0 - processed_pct))
-                    as usize,
+            original_entry_count,
             unprocessed_entries.len()
         );
 
