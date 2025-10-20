@@ -8,7 +8,7 @@ use axum::{
 use common::auth::TenantContextExtractor;
 use common::flight::transport::ServiceCapability;
 use datafusion::arrow::{
-    array::{BooleanArray, Int64Array, StringArray},
+    array::{BooleanArray, StringArray, UInt64Array},
     ipc::reader::StreamReader,
     record_batch::RecordBatch,
 };
@@ -115,11 +115,11 @@ fn record_batches_to_trace(
                 .to_string();
 
             let name = batch
-                .column_by_name("name")
-                .ok_or("Missing name column")?
+                .column_by_name("span_name")
+                .ok_or("Missing span_name column")?
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or("Invalid name column type")?
+                .ok_or("Invalid span_name column type")?
                 .value(row_index)
                 .to_string();
 
@@ -144,24 +144,24 @@ fn record_batches_to_trace(
                 .column_by_name("start_time_unix_nano")
                 .ok_or("Missing start_time_unix_nano column")?
                 .as_any()
-                .downcast_ref::<Int64Array>()
+                .downcast_ref::<UInt64Array>()
                 .ok_or("Invalid start_time_unix_nano column type")?
-                .value(row_index) as u64;
+                .value(row_index);
 
             let duration_nano = batch
                 .column_by_name("duration_nano")
                 .ok_or("Missing duration_nano column")?
                 .as_any()
-                .downcast_ref::<Int64Array>()
+                .downcast_ref::<UInt64Array>()
                 .ok_or("Invalid duration_nano column type")?
-                .value(row_index) as u64;
+                .value(row_index);
 
             let status_str = batch
-                .column_by_name("status")
-                .ok_or("Missing status column")?
+                .column_by_name("status_code")
+                .ok_or("Missing status_code column")?
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or("Invalid status column type")?
+                .ok_or("Invalid status_code column type")?
                 .value(row_index);
 
             let is_root = batch
@@ -412,11 +412,11 @@ fn flight_data_to_search_results(
                 .to_string();
 
             let name = batch
-                .column_by_name("name")
-                .ok_or("Missing name column")?
+                .column_by_name("span_name")
+                .ok_or("Missing span_name column")?
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or("Invalid name column type")?
+                .ok_or("Invalid span_name column type")?
                 .value(row_index)
                 .to_string();
 
@@ -441,24 +441,24 @@ fn flight_data_to_search_results(
                 .column_by_name("start_time_unix_nano")
                 .ok_or("Missing start_time_unix_nano column")?
                 .as_any()
-                .downcast_ref::<Int64Array>()
+                .downcast_ref::<UInt64Array>()
                 .ok_or("Invalid start_time_unix_nano column type")?
-                .value(row_index) as u64;
+                .value(row_index);
 
             let duration_nano = batch
                 .column_by_name("duration_nano")
                 .ok_or("Missing duration_nano column")?
                 .as_any()
-                .downcast_ref::<Int64Array>()
+                .downcast_ref::<UInt64Array>()
                 .ok_or("Invalid duration_nano column type")?
-                .value(row_index) as u64;
+                .value(row_index);
 
             let status_str = batch
-                .column_by_name("status")
-                .ok_or("Missing status column")?
+                .column_by_name("status_code")
+                .ok_or("Missing status_code column")?
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or("Invalid status column type")?
+                .ok_or("Invalid status_code column type")?
                 .value(row_index);
 
             let is_root = batch
