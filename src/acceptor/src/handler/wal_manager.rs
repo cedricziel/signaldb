@@ -21,6 +21,8 @@ type WalKey = (String, String, String);
 pub struct WalManager {
     /// Cache of WAL instances keyed by (tenant_id, dataset_id, signal_type)
     wals: Arc<Mutex<HashMap<WalKey, Arc<Wal>>>>,
+    /// Per-key initialization guards to prevent duplicate WAL creation
+    init_guards: Arc<Mutex<HashMap<WalKey, Arc<Mutex<()>>>>>,
     /// Base configuration template for trace WALs
     traces_config: WalConfig,
     /// Base configuration template for log WALs
@@ -47,6 +49,7 @@ impl WalManager {
     ) -> Self {
         Self {
             wals: Arc::new(Mutex::new(HashMap::new())),
+            init_guards: Arc::new(Mutex::new(HashMap::new())),
             traces_config,
             logs_config,
             metrics_config,
@@ -81,26 +84,43 @@ impl WalManager {
             signal_type.to_string(),
         );
 
-        // Check cache first
+        // Fast path: check cache first without per-key guard
         {
             let wals = self.wals.lock().await;
             if let Some(wal) = wals.get(&key) {
                 log::debug!(
-                    "Reusing existing WAL for tenant='{}', dataset='{}', signal='{}'",
-                    tenant_id,
-                    dataset_id,
-                    signal_type
+                    "Reusing existing WAL for tenant='{tenant_id}', dataset='{dataset_id}', signal='{signal_type}'"
                 );
                 return Ok(wal.clone());
             }
         }
 
-        // Create new WAL if not in cache
+        // Get or create per-key initialization guard
+        let init_guard = {
+            let mut guards = self.init_guards.lock().await;
+            guards
+                .entry(key.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+
+        // Acquire per-key lock to serialize initialization for this specific key
+        let _guard = init_guard.lock().await;
+
+        // Double-check cache after acquiring per-key lock (another thread might have created it)
+        {
+            let wals = self.wals.lock().await;
+            if let Some(wal) = wals.get(&key) {
+                log::debug!(
+                    "WAL created by concurrent thread for tenant='{tenant_id}', dataset='{dataset_id}', signal='{signal_type}'"
+                );
+                return Ok(wal.clone());
+            }
+        }
+
+        // Create new WAL - we now have exclusive access for this key
         log::info!(
-            "Creating new WAL for tenant='{}', dataset='{}', signal='{}'",
-            tenant_id,
-            dataset_id,
-            signal_type
+            "Creating new WAL for tenant='{tenant_id}', dataset='{dataset_id}', signal='{signal_type}'"
         );
 
         // Get appropriate base config for this signal type
@@ -109,9 +129,10 @@ impl WalManager {
             "logs" => &self.logs_config,
             "metrics" => &self.metrics_config,
             _ => {
+                // Remove guard on failure
+                self.init_guards.lock().await.remove(&key);
                 return Err(anyhow::anyhow!(
-                    "Unknown signal type: {}. Must be 'traces', 'logs', or 'metrics'",
-                    signal_type
+                    "Unknown signal type: {signal_type}. Must be 'traces', 'logs', or 'metrics'"
                 ));
             }
         };
@@ -120,7 +141,14 @@ impl WalManager {
         let wal_config = base_config.for_tenant_dataset(tenant_id, dataset_id, signal_type);
 
         // Initialize WAL
-        let mut wal = Wal::new(wal_config).await?;
+        let mut wal = match Wal::new(wal_config).await {
+            Ok(wal) => wal,
+            Err(e) => {
+                // Remove guard on failure
+                self.init_guards.lock().await.remove(&key);
+                return Err(e);
+            }
+        };
 
         // Start background flush for this WAL
         wal.start_background_flush();
@@ -128,14 +156,16 @@ impl WalManager {
         let wal = Arc::new(wal);
 
         // Cache the WAL
-        let mut wals = self.wals.lock().await;
-        wals.insert(key, wal.clone());
+        {
+            let mut wals = self.wals.lock().await;
+            wals.insert(key.clone(), wal.clone());
+        }
+
+        // Clean up the per-key guard (optional, but prevents unbounded growth)
+        self.init_guards.lock().await.remove(&key);
 
         log::info!(
-            "Successfully created WAL for tenant='{}', dataset='{}', signal='{}'",
-            tenant_id,
-            dataset_id,
-            signal_type
+            "Successfully created WAL for tenant='{tenant_id}', dataset='{dataset_id}', signal='{signal_type}'"
         );
 
         Ok(wal)
@@ -376,6 +406,56 @@ mod tests {
             .get_wal("acme", "production", "traces")
             .await
             .unwrap();
+        assert_eq!(manager.wal_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_wal_manager_concurrent_initialization_no_duplicates() {
+        use std::sync::Arc;
+        use tokio::task::JoinSet;
+
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+
+        let manager = Arc::new(WalManager::new(
+            create_test_config(&base_path),
+            create_test_config(&base_path),
+            create_test_config(&base_path),
+        ));
+
+        // Spawn 10 concurrent tasks all trying to get the same WAL
+        let mut join_set = JoinSet::new();
+
+        for i in 0..10 {
+            let manager_clone = Arc::clone(&manager);
+            join_set.spawn(async move {
+                let wal = manager_clone
+                    .get_wal("acme", "production", "traces")
+                    .await
+                    .unwrap();
+                (i, wal)
+            });
+        }
+
+        // Collect all results
+        let mut wals = Vec::new();
+        while let Some(result) = join_set.join_next().await {
+            let (_task_id, wal) = result.unwrap();
+            wals.push(wal);
+        }
+
+        // All 10 tasks should have gotten the same WAL instance
+        assert_eq!(wals.len(), 10);
+
+        // Verify all WALs are the same instance (same Arc pointer)
+        for i in 1..wals.len() {
+            assert!(
+                Arc::ptr_eq(&wals[0], &wals[i]),
+                "WAL at index {i} is not the same instance as WAL at index 0"
+            );
+        }
+
+        // Verify only 1 WAL was created
         assert_eq!(manager.wal_count().await, 1);
     }
 }
