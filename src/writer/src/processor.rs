@@ -282,6 +282,9 @@ mod tests {
             flush_interval_secs: 5,
             tenant_id: "test-tenant".to_string(),
             dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let config = Configuration::default();
@@ -304,6 +307,9 @@ mod tests {
             flush_interval_secs: 5,
             tenant_id: "test-tenant".to_string(),
             dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let config = Configuration::default();
@@ -361,6 +367,9 @@ mod tests {
             flush_interval_secs: 5,
             tenant_id: "test-tenant".to_string(),
             dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let config = Configuration::default();

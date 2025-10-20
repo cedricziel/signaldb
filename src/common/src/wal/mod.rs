@@ -56,6 +56,8 @@ pub struct WalSegment {
     pub path: PathBuf,
     /// Path to the data file
     pub data_path: PathBuf,
+    /// Path to the index file (tracks processed entries)
+    pub index_path: PathBuf,
     /// File handle for writing
     file: Option<File>,
     /// Data file handle for writing
@@ -75,6 +77,7 @@ impl WalSegment {
 
         let path = wal_dir.join(format!("wal-{segment_id:010}.log"));
         let data_path = wal_dir.join(format!("wal-{segment_id:010}.data"));
+        let index_path = wal_dir.join(format!("wal-{segment_id:010}.index"));
 
         let file = Some(
             OpenOptions::new()
@@ -98,6 +101,7 @@ impl WalSegment {
             id: segment_id,
             path,
             data_path,
+            index_path,
             file,
             data_file,
             size: 0,
@@ -110,6 +114,7 @@ impl WalSegment {
     pub async fn load(wal_dir: &Path, segment_id: u64) -> Result<Self> {
         let path = wal_dir.join(format!("wal-{segment_id:010}.log"));
         let data_path = wal_dir.join(format!("wal-{segment_id:010}.data"));
+        let index_path = wal_dir.join(format!("wal-{segment_id:010}.index"));
 
         if !path.exists() {
             return Self::new(wal_dir, segment_id).await;
@@ -145,6 +150,21 @@ impl WalSegment {
             offset += entry_len as usize;
         }
 
+        // Load processed state from index file if it exists
+        if index_path.exists() {
+            let processed_ids = Self::load_index(&index_path).await?;
+            // Mark entries as processed based on index
+            for entry in &mut entries {
+                if processed_ids.contains(&entry.id) {
+                    entry.processed = true;
+                }
+            }
+            log::debug!(
+                "Loaded {} processed entries from index for segment {segment_id}",
+                processed_ids.len()
+            );
+        }
+
         let size = buffer.len() as u64;
         let data_size = if data_path.exists() {
             tokio::fs::metadata(&data_path).await?.len()
@@ -172,6 +192,7 @@ impl WalSegment {
             id: segment_id,
             path,
             data_path,
+            index_path,
             file,
             data_file,
             size,
@@ -254,6 +275,102 @@ impl WalSegment {
         }
         Ok(())
     }
+
+    /// Load processed entry IDs from the index file
+    async fn load_index(index_path: &Path) -> Result<std::collections::HashSet<Uuid>> {
+        let mut file = File::open(index_path).await?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer).await?;
+
+        if buffer.len() < 8 {
+            return Ok(std::collections::HashSet::new());
+        }
+
+        // Read count (8 bytes)
+        let count = u64::from_le_bytes(
+            buffer[0..8]
+                .try_into()
+                .context("Failed to read processed entry count")?,
+        );
+
+        let mut processed_ids = std::collections::HashSet::new();
+        let mut offset = 8;
+
+        for _ in 0..count {
+            if offset + 16 > buffer.len() {
+                break;
+            }
+            let uuid_bytes: [u8; 16] = buffer[offset..offset + 16]
+                .try_into()
+                .context("Failed to read UUID")?;
+            processed_ids.insert(Uuid::from_bytes(uuid_bytes));
+            offset += 16;
+        }
+
+        Ok(processed_ids)
+    }
+
+    /// Save processed entry IDs to the index file
+    pub async fn save_index(&self) -> Result<()> {
+        let processed_ids: Vec<Uuid> = self
+            .entries
+            .iter()
+            .filter(|e| e.processed)
+            .map(|e| e.id)
+            .collect();
+
+        let mut buffer = Vec::new();
+
+        // Write count (8 bytes)
+        buffer.extend_from_slice(&(processed_ids.len() as u64).to_le_bytes());
+
+        // Write each UUID (16 bytes each)
+        for uuid in processed_ids {
+            buffer.extend_from_slice(uuid.as_bytes());
+        }
+
+        // Write to file
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.index_path)
+            .await?;
+
+        file.write_all(&buffer).await?;
+        file.flush().await?;
+
+        Ok(())
+    }
+
+    /// Check if all entries in this segment are processed
+    pub fn is_fully_processed(&self) -> bool {
+        !self.entries.is_empty() && self.entries.iter().all(|e| e.processed)
+    }
+
+    /// Get the percentage of processed entries (0.0 - 1.0)
+    pub fn processed_percentage(&self) -> f64 {
+        if self.entries.is_empty() {
+            return 0.0;
+        }
+        let processed_count = self.entries.iter().filter(|e| e.processed).count();
+        processed_count as f64 / self.entries.len() as f64
+    }
+
+    /// Delete segment files from disk
+    pub async fn delete_files(&self) -> Result<()> {
+        if self.path.exists() {
+            tokio::fs::remove_file(&self.path).await?;
+        }
+        if self.data_path.exists() {
+            tokio::fs::remove_file(&self.data_path).await?;
+        }
+        if self.index_path.exists() {
+            tokio::fs::remove_file(&self.index_path).await?;
+        }
+        log::info!("Deleted segment files for segment {}", self.id);
+        Ok(())
+    }
 }
 
 /// Configuration for the WAL
@@ -271,6 +388,12 @@ pub struct WalConfig {
     pub tenant_id: String,
     /// Dataset ID for data partitioning (REQUIRED for proper isolation)
     pub dataset_id: String,
+    /// How long to keep processed entries before cleanup (in seconds)
+    pub retention_secs: u64,
+    /// Interval for running cleanup operations (in seconds)
+    pub cleanup_interval_secs: u64,
+    /// Threshold percentage (0.0-1.0) of processed entries before compacting a segment
+    pub compaction_threshold: f64,
 }
 
 impl WalConfig {
@@ -285,6 +408,9 @@ impl WalConfig {
             // Default tenant/dataset for single-tenant deployments
             tenant_id: "default".to_string(),
             dataset_id: "default".to_string(),
+            retention_secs: 3600,       // 1 hour
+            cleanup_interval_secs: 300, // 5 minutes
+            compaction_threshold: 0.5,  // 50% processed entries triggers compaction
         }
     }
 }
@@ -310,6 +436,9 @@ impl WalConfig {
             flush_interval_secs: self.flush_interval_secs,
             tenant_id: tenant.to_string(),
             dataset_id: dataset.to_string(),
+            retention_secs: self.retention_secs,
+            cleanup_interval_secs: self.cleanup_interval_secs,
+            compaction_threshold: self.compaction_threshold,
         }
     }
 }
@@ -330,6 +459,9 @@ pub struct Wal {
     next_segment_id: Arc<Mutex<u64>>,
     buffer: WalBuffer,
     flush_handle: Option<tokio::task::JoinHandle<()>>,
+    cleanup_handle: Option<tokio::task::JoinHandle<()>>,
+    /// All segments including current (for cleanup operations)
+    segments: Arc<Mutex<Vec<Arc<Mutex<WalSegment>>>>>,
 }
 
 impl Wal {
@@ -352,8 +484,8 @@ impl Wal {
 
         create_dir_all(&config.wal_dir).await?;
 
-        // Find the latest segment ID
-        let mut max_segment_id = 0;
+        // Find all segment IDs
+        let mut segment_ids = Vec::new();
         let mut dir = tokio::fs::read_dir(&config.wal_dir).await?;
         while let Some(entry) = dir.next_entry().await? {
             if let Some(name) = entry.file_name().to_str() {
@@ -363,17 +495,41 @@ impl Wal {
                         .and_then(|s| s.strip_suffix(".log"))
                     {
                         if let Ok(id) = id_str.parse::<u64>() {
-                            max_segment_id = max_segment_id.max(id);
+                            segment_ids.push(id);
                         }
                     }
                 }
             }
         }
 
-        // Load or create current segment
-        let current_segment = Arc::new(Mutex::new(
-            WalSegment::load(&config.wal_dir, max_segment_id).await?,
-        ));
+        // Sort segment IDs
+        segment_ids.sort_unstable();
+
+        // Determine the latest segment ID
+        let max_segment_id = segment_ids.last().copied().unwrap_or(0);
+
+        // Load all segments
+        let mut all_segments = Vec::new();
+        for segment_id in &segment_ids {
+            let segment = Arc::new(Mutex::new(
+                WalSegment::load(&config.wal_dir, *segment_id).await?,
+            ));
+            all_segments.push(segment);
+        }
+
+        // Load or create current segment if no segments exist
+        let current_segment = if segment_ids.is_empty() {
+            let segment = Arc::new(Mutex::new(
+                WalSegment::new(&config.wal_dir, max_segment_id).await?,
+            ));
+            all_segments.push(segment.clone());
+            segment
+        } else {
+            all_segments
+                .last()
+                .expect("segments list should not be empty")
+                .clone()
+        };
 
         let wal = Self {
             config: config.clone(),
@@ -381,6 +537,8 @@ impl Wal {
             next_segment_id: Arc::new(Mutex::new(max_segment_id + 1)),
             buffer: Arc::new(RwLock::new(VecDeque::new())),
             flush_handle: None,
+            cleanup_handle: None,
+            segments: Arc::new(Mutex::new(all_segments)),
         };
 
         Ok(wal)
@@ -392,6 +550,7 @@ impl Wal {
         let current_segment = self.current_segment.clone();
         let config = self.config.clone();
         let next_segment_id = self.next_segment_id.clone();
+        let segments = self.segments.clone();
 
         let handle = tokio::spawn(async move {
             let mut interval =
@@ -406,9 +565,14 @@ impl Wal {
                 };
 
                 if should_flush {
-                    if let Err(e) =
-                        Self::flush_buffer(&buffer, &current_segment, &config, &next_segment_id)
-                            .await
+                    if let Err(e) = Self::flush_buffer(
+                        &buffer,
+                        &current_segment,
+                        &config,
+                        &next_segment_id,
+                        &segments,
+                    )
+                    .await
                     {
                         log::error!("Failed to flush WAL buffer: {e}");
                     }
@@ -451,6 +615,7 @@ impl Wal {
                 &self.current_segment,
                 &self.config,
                 &self.next_segment_id,
+                &self.segments,
             )
             .await?;
         }
@@ -464,6 +629,7 @@ impl Wal {
         current_segment: &Arc<Mutex<WalSegment>>,
         config: &WalConfig,
         next_segment_id: &Arc<Mutex<u64>>,
+        segments: &Arc<Mutex<Vec<Arc<Mutex<WalSegment>>>>>,
     ) -> Result<()> {
         let entries_to_flush = {
             let mut buffer = buffer.write().await;
@@ -508,7 +674,21 @@ impl Wal {
                     current_id
                 };
 
-                *segment = WalSegment::new(&config.wal_dir, new_segment_id).await?;
+                let new_segment = WalSegment::new(&config.wal_dir, new_segment_id).await?;
+                *segment = new_segment;
+
+                // Add the new segment to the segments list
+                // Note: current_segment is already in segments list, so we update it there too
+                drop(segment); // Release lock before acquiring segments lock
+                let mut segs = segments.lock().await;
+                let new_seg_arc = Arc::new(Mutex::new(
+                    WalSegment::new(&config.wal_dir, new_segment_id).await?,
+                ));
+                segs.push(new_seg_arc);
+                drop(segs);
+
+                // Re-acquire the current segment lock
+                segment = current_segment.lock().await;
             }
 
             segment
@@ -526,6 +706,7 @@ impl Wal {
             &self.current_segment,
             &self.config,
             &self.next_segment_id,
+            &self.segments,
         )
         .await
     }
@@ -544,36 +725,53 @@ impl Wal {
 
     /// Shutdown the WAL and cleanup resources
     pub async fn shutdown(mut self) -> Result<()> {
-        // Stop background flush task
+        // Stop background tasks
         if let Some(handle) = self.flush_handle.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.cleanup_handle.take() {
             handle.abort();
         }
 
         // Flush any remaining entries
         self.flush().await?;
 
-        // Close current segment
-        let mut segment = self.current_segment.lock().await;
-        segment.close().await?;
+        // Close all segments
+        let segments = self.segments.lock().await;
+        for segment_arc in segments.iter() {
+            let mut segment = segment_arc.lock().await;
+            segment.close().await?;
+        }
 
         Ok(())
     }
 
-    /// Mark a WAL entry as processed
+    /// Mark a WAL entry as processed and persist the state to disk
     pub async fn mark_processed(&self, entry_id: Uuid) -> Result<()> {
-        let mut segment = self.current_segment.lock().await;
+        // Search all segments, not just current
+        let segments = self.segments.lock().await;
 
-        // Find the entry and mark it as processed
-        for entry in &mut segment.entries {
-            if entry.id == entry_id {
-                entry.processed = true;
-                // TODO: Persist the processed state to disk
-                log::debug!("Marked WAL entry {entry_id} as processed");
-                return Ok(());
+        for segment_arc in segments.iter() {
+            let mut segment = segment_arc.lock().await;
+
+            // Find the entry in this segment
+            for entry in &mut segment.entries {
+                if entry.id == entry_id {
+                    entry.processed = true;
+
+                    // Persist the processed state to disk
+                    segment.save_index().await?;
+
+                    log::debug!("Marked WAL entry {entry_id} as processed and persisted to index");
+                    return Ok(());
+                }
             }
         }
 
-        anyhow::bail!("WAL entry {} not found", entry_id)
+        anyhow::bail!(
+            "WAL entry {entry_id} not found in any of {} segments",
+            segments.len()
+        )
     }
 
     /// Get all unprocessed entries
@@ -587,32 +785,184 @@ impl Wal {
             .collect())
     }
 
-    /// Remove processed entries older than the retention period
-    pub async fn cleanup_processed_entries(&self, retention_secs: u64) -> Result<usize> {
-        let mut segment = self.current_segment.lock().await;
-        let current_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+    /// Delete fully-processed old segments
+    async fn delete_fully_processed_segments(&self) -> Result<usize> {
+        let mut segments = self.segments.lock().await;
+        let mut deleted_count = 0;
 
-        let initial_count = segment.entries.len();
+        // Find segments to delete (all processed, not the current segment)
+        let mut segments_to_delete = Vec::new();
+        for (i, segment_arc) in segments.iter().enumerate() {
+            // Skip the current segment (should be the last one)
+            if i == segments.len() - 1 {
+                continue;
+            }
 
-        // Remove entries that are processed and older than retention period
-        segment.entries.retain(|entry| {
-            if entry.processed {
-                let entry_age = current_time - entry.timestamp;
-                entry_age < retention_secs
-            } else {
-                true // Keep unprocessed entries
+            let segment = segment_arc.lock().await;
+            if segment.is_fully_processed() {
+                segments_to_delete.push(i);
+            }
+        }
+
+        // Delete segments in reverse order to maintain indices
+        for &index in segments_to_delete.iter().rev() {
+            let segment_arc = segments.remove(index);
+            let segment = segment_arc.lock().await;
+            segment.delete_files().await?;
+            deleted_count += 1;
+        }
+
+        if deleted_count > 0 {
+            log::info!("Deleted {deleted_count} fully-processed WAL segments");
+        }
+
+        Ok(deleted_count)
+    }
+
+    /// Compact a segment by rewriting it without processed entries
+    async fn compact_segment(
+        segment_arc: &Arc<Mutex<WalSegment>>,
+        config: &WalConfig,
+    ) -> Result<bool> {
+        let mut segment = segment_arc.lock().await;
+
+        // Check if compaction is needed
+        let processed_pct = segment.processed_percentage();
+        if processed_pct < config.compaction_threshold {
+            return Ok(false);
+        }
+
+        // Store original entry count before filtering
+        let original_entry_count = segment.entries.len();
+
+        log::info!(
+            "Compacting segment {} ({:.1}% processed)",
+            segment.id,
+            processed_pct * 100.0
+        );
+
+        // Collect unprocessed entries
+        let unprocessed_entries: Vec<_> = segment
+            .entries
+            .iter()
+            .filter(|e| !e.processed)
+            .cloned()
+            .collect();
+
+        if unprocessed_entries.is_empty() {
+            // All entries processed, segment can be deleted (handled by delete_fully_processed_segments)
+            return Ok(false);
+        }
+
+        // Read data for unprocessed entries
+        let mut entries_with_data = Vec::new();
+        for entry in &unprocessed_entries {
+            let data = segment.read_entry_data(entry).await?;
+            entries_with_data.push((entry.clone(), data));
+        }
+
+        // Close current segment files
+        segment.close().await?;
+
+        // Create temporary new segment
+        let temp_segment_id = segment.id;
+
+        // Delete old files
+        if segment.path.exists() {
+            tokio::fs::remove_file(&segment.path).await?;
+        }
+        if segment.data_path.exists() {
+            tokio::fs::remove_file(&segment.data_path).await?;
+        }
+        if segment.index_path.exists() {
+            tokio::fs::remove_file(&segment.index_path).await?;
+        }
+
+        // Create new compacted segment
+        let mut new_segment = WalSegment::new(&config.wal_dir, temp_segment_id).await?;
+
+        // Write unprocessed entries to new segment
+        for (entry, data) in entries_with_data {
+            new_segment
+                .append(
+                    entry.id,
+                    entry.operation,
+                    &data,
+                    &entry.tenant_id,
+                    &entry.dataset_id,
+                    entry.metadata,
+                )
+                .await?;
+        }
+
+        new_segment.close().await?;
+
+        // Replace old segment with compacted one
+        *segment = new_segment;
+
+        log::info!(
+            "Compacted segment {} from {} to {} entries",
+            temp_segment_id,
+            original_entry_count,
+            unprocessed_entries.len()
+        );
+
+        Ok(true)
+    }
+
+    /// Run cleanup: delete fully-processed segments and compact others
+    async fn cleanup(&self) -> Result<()> {
+        // Delete fully-processed old segments
+        self.delete_fully_processed_segments().await?;
+
+        // Compact segments that exceed the threshold
+        let segments = self.segments.lock().await;
+        for (i, segment_arc) in segments.iter().enumerate() {
+            // Skip the current segment (last one)
+            if i == segments.len() - 1 {
+                continue;
+            }
+
+            Self::compact_segment(segment_arc, &self.config).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Start background cleanup task
+    pub fn start_background_cleanup(&mut self) {
+        let config = self.config.clone();
+        let buffer = self.buffer.clone();
+        let current_segment = self.current_segment.clone();
+        let next_segment_id = self.next_segment_id.clone();
+        let segments = self.segments.clone();
+
+        let handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
+                config.cleanup_interval_secs,
+            ));
+
+            loop {
+                interval.tick().await;
+
+                // Create a temporary Wal instance for cleanup (reuses existing segments)
+                let wal = Wal {
+                    config: config.clone(),
+                    current_segment: current_segment.clone(),
+                    next_segment_id: next_segment_id.clone(),
+                    buffer: buffer.clone(),
+                    flush_handle: None,
+                    cleanup_handle: None,
+                    segments: segments.clone(),
+                };
+
+                if let Err(e) = wal.cleanup().await {
+                    log::error!("Failed to run WAL cleanup: {e}");
+                }
             }
         });
 
-        let removed_count = initial_count - segment.entries.len();
-        if removed_count > 0 {
-            log::info!("Cleaned up {removed_count} processed WAL entries");
-        }
-
-        Ok(removed_count)
+        self.cleanup_handle = Some(handle);
     }
 }
 
@@ -663,6 +1013,9 @@ mod tests {
             flush_interval_secs: 1,
             tenant_id: "test-tenant".to_string(),
             dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
         };
 
         let mut wal = Wal::new(config).await.unwrap();
