@@ -7,7 +7,7 @@ use common::model::{
     span::{Span, SpanKind, SpanStatus},
 };
 use datafusion::{
-    arrow::array::{BooleanArray, Int64Array, StringArray, UInt64Array},
+    arrow::array::{BooleanArray, StringArray, UInt64Array},
     logical_expr::{col, lit},
     prelude::SessionContext,
 };
@@ -273,14 +273,18 @@ impl TraceService {
                         })?
                         .value(row_index),
                     name: batch
-                        .column_by_name("name")
+                        .column_by_name("span_name")
                         .ok_or_else(|| {
-                            QuerierError::InvalidInput("Missing required column 'name'".to_string())
+                            QuerierError::InvalidInput(
+                                "Missing required column 'span_name'".to_string(),
+                            )
                         })?
                         .as_any()
                         .downcast_ref::<StringArray>()
                         .ok_or_else(|| {
-                            QuerierError::InvalidInput("Column 'name' has wrong type".to_string())
+                            QuerierError::InvalidInput(
+                                "Column 'span_name' has wrong type".to_string(),
+                            )
                         })?
                         .value(row_index)
                         .to_string(),
@@ -582,14 +586,18 @@ impl TraceQuerier for TraceService {
                         })?
                         .value(row_index),
                     name: batch
-                        .column_by_name("name")
+                        .column_by_name("span_name")
                         .ok_or_else(|| {
-                            QuerierError::InvalidInput("Missing required column 'name'".to_string())
+                            QuerierError::InvalidInput(
+                                "Missing required column 'span_name'".to_string(),
+                            )
                         })?
                         .as_any()
                         .downcast_ref::<StringArray>()
                         .ok_or_else(|| {
-                            QuerierError::InvalidInput("Column 'name' has wrong type".to_string())
+                            QuerierError::InvalidInput(
+                                "Column 'span_name' has wrong type".to_string(),
+                            )
                         })?
                         .value(row_index)
                         .to_string(),
@@ -637,13 +645,13 @@ impl TraceQuerier for TraceService {
                             )
                         })?
                         .as_any()
-                        .downcast_ref::<Int64Array>()
+                        .downcast_ref::<UInt64Array>()
                         .ok_or_else(|| {
                             QuerierError::InvalidInput(
                                 "Column 'start_time_unix_nano' has wrong type".to_string(),
                             )
                         })?
-                        .value(row_index) as u64,
+                        .value(row_index),
                     duration_nano: batch
                         .column_by_name("duration_nano")
                         .ok_or_else(|| {
@@ -652,13 +660,13 @@ impl TraceQuerier for TraceService {
                             )
                         })?
                         .as_any()
-                        .downcast_ref::<Int64Array>()
+                        .downcast_ref::<UInt64Array>()
                         .ok_or_else(|| {
                             QuerierError::InvalidInput(
                                 "Column 'duration_nano' has wrong type".to_string(),
                             )
                         })?
-                        .value(row_index) as u64,
+                        .value(row_index),
                 };
 
                 span_map.insert(span_id.clone(), span);
@@ -816,14 +824,18 @@ impl TraceQuerier for TraceService {
                         })?
                         .value(row_index),
                     name: batch
-                        .column_by_name("name")
+                        .column_by_name("span_name")
                         .ok_or_else(|| {
-                            QuerierError::InvalidInput("Missing required column 'name'".to_string())
+                            QuerierError::InvalidInput(
+                                "Missing required column 'span_name'".to_string(),
+                            )
                         })?
                         .as_any()
                         .downcast_ref::<StringArray>()
                         .ok_or_else(|| {
-                            QuerierError::InvalidInput("Column 'name' has wrong type".to_string())
+                            QuerierError::InvalidInput(
+                                "Column 'span_name' has wrong type".to_string(),
+                            )
                         })?
                         .value(row_index)
                         .to_string(),
@@ -869,13 +881,13 @@ impl TraceQuerier for TraceService {
                             )
                         })?
                         .as_any()
-                        .downcast_ref::<Int64Array>()
+                        .downcast_ref::<UInt64Array>()
                         .ok_or_else(|| {
                             QuerierError::InvalidInput(
                                 "Column 'start_time_unix_nano' has wrong type".to_string(),
                             )
                         })?
-                        .value(row_index) as u64,
+                        .value(row_index),
                     duration_nano: batch
                         .column_by_name("duration_nano")
                         .ok_or_else(|| {
@@ -884,13 +896,13 @@ impl TraceQuerier for TraceService {
                             )
                         })?
                         .as_any()
-                        .downcast_ref::<Int64Array>()
+                        .downcast_ref::<UInt64Array>()
                         .ok_or_else(|| {
                             QuerierError::InvalidInput(
                                 "Column 'duration_nano' has wrong type".to_string(),
                             )
                         })?
-                        .value(row_index) as u64,
+                        .value(row_index),
                     attributes: HashMap::new(),
                     resource: HashMap::new(),
                 };
