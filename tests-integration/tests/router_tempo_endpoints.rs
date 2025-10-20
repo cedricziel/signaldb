@@ -89,6 +89,9 @@ async fn setup_test_services() -> TestServices {
         flush_interval_secs: 1,
         tenant_id: "test-tenant".to_string(),
         dataset_id: "test-dataset".to_string(),
+        retention_secs: 3600,
+        cleanup_interval_secs: 300,
+        compaction_threshold: 0.5,
     };
 
     // Create flight transport for service communication
@@ -737,6 +740,9 @@ async fn setup_multi_tenant_test_services() -> TestServices {
         flush_interval_secs: 1,
         tenant_id: "acme".to_string(),
         dataset_id: "production".to_string(),
+        retention_secs: 3600,
+        cleanup_interval_secs: 300,
+        compaction_threshold: 0.5,
     };
 
     let globex_wal_dir = temp_dir.path().join("wal-globex");
@@ -748,6 +754,9 @@ async fn setup_multi_tenant_test_services() -> TestServices {
         flush_interval_secs: 1,
         tenant_id: "globex".to_string(),
         dataset_id: "production".to_string(),
+        retention_secs: 3600,
+        cleanup_interval_secs: 300,
+        compaction_threshold: 0.5,
     };
 
     // Create flight transport for service communication
