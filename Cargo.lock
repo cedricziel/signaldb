@@ -1665,6 +1665,7 @@ dependencies = [
  "opentelemetry-proto",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tempfile",
  "tempo-api",

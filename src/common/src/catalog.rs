@@ -1043,3 +1043,251 @@ impl Catalog {
         }
     }
 }
+
+#[cfg(test)]
+mod multi_tenancy_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn hash_api_key(key: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(key.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+
+    #[tokio::test]
+    async fn test_tenant_upsert_and_get() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        // Upsert a new tenant
+        catalog
+            .upsert_tenant("test-tenant", "Test Tenant", Some("production"), "config")
+            .await
+            .unwrap();
+
+        // Retrieve the tenant
+        let tenant = catalog.get_tenant("test-tenant").await.unwrap().unwrap();
+        assert_eq!(tenant.id, "test-tenant");
+        assert_eq!(tenant.name, "Test Tenant");
+        assert_eq!(tenant.default_dataset, Some("production".to_string()));
+        assert_eq!(tenant.source, "config");
+
+        // Update the tenant
+        catalog
+            .upsert_tenant("test-tenant", "Updated Tenant", Some("staging"), "database")
+            .await
+            .unwrap();
+
+        // Verify update
+        let updated = catalog.get_tenant("test-tenant").await.unwrap().unwrap();
+        assert_eq!(updated.name, "Updated Tenant");
+        assert_eq!(updated.default_dataset, Some("staging".to_string()));
+        assert_eq!(updated.source, "database");
+    }
+
+    #[tokio::test]
+    async fn test_list_tenants() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        // Create multiple tenants
+        catalog
+            .upsert_tenant("tenant1", "Tenant One", Some("prod"), "config")
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant("tenant2", "Tenant Two", None, "database")
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant("tenant3", "Tenant Three", Some("dev"), "config")
+            .await
+            .unwrap();
+
+        // List all tenants
+        let tenants = catalog.list_tenants().await.unwrap();
+        assert_eq!(tenants.len(), 3);
+
+        let tenant_ids: Vec<&str> = tenants.iter().map(|t| t.id.as_str()).collect();
+        assert!(tenant_ids.contains(&"tenant1"));
+        assert!(tenant_ids.contains(&"tenant2"));
+        assert!(tenant_ids.contains(&"tenant3"));
+    }
+
+    #[tokio::test]
+    async fn test_api_key_lifecycle() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        // Create a tenant first
+        catalog
+            .upsert_tenant("acme", "Acme Corp", Some("production"), "config")
+            .await
+            .unwrap();
+
+        // Create an API key
+        let api_key = "sk_acme_test_1234567890";
+        let key_hash = hash_api_key(api_key);
+        let key_id = catalog
+            .upsert_api_key("acme", &key_hash, Some("test-key"))
+            .await
+            .unwrap();
+
+        assert!(!key_id.is_empty());
+
+        // Validate the API key
+        let validation = catalog.validate_api_key(&key_hash).await.unwrap();
+        assert!(validation.is_some());
+        let (tenant_id, name) = validation.unwrap();
+        assert_eq!(tenant_id, "acme");
+        assert_eq!(name, Some("test-key".to_string()));
+
+        // Try to create the same key again (should return existing ID)
+        let duplicate_id = catalog
+            .upsert_api_key("acme", &key_hash, Some("test-key"))
+            .await
+            .unwrap();
+        assert_eq!(key_id, duplicate_id);
+
+        // Revoke the API key
+        catalog.revoke_api_key(&key_id).await.unwrap();
+
+        // Validation should now fail
+        let revoked_validation = catalog.validate_api_key(&key_hash).await.unwrap();
+        assert!(revoked_validation.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_api_key_tenant_isolation() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        // Create two tenants
+        catalog
+            .upsert_tenant("tenant-a", "Tenant A", None, "config")
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant("tenant-b", "Tenant B", None, "config")
+            .await
+            .unwrap();
+
+        // Create API keys for each tenant
+        let key_a = "sk_tenant_a_key";
+        let hash_a = hash_api_key(key_a);
+        catalog
+            .upsert_api_key("tenant-a", &hash_a, Some("key-a"))
+            .await
+            .unwrap();
+
+        let key_b = "sk_tenant_b_key";
+        let hash_b = hash_api_key(key_b);
+        catalog
+            .upsert_api_key("tenant-b", &hash_b, Some("key-b"))
+            .await
+            .unwrap();
+
+        // Validate keys return correct tenants
+        let (tenant_id_a, _) = catalog.validate_api_key(&hash_a).await.unwrap().unwrap();
+        assert_eq!(tenant_id_a, "tenant-a");
+
+        let (tenant_id_b, _) = catalog.validate_api_key(&hash_b).await.unwrap().unwrap();
+        assert_eq!(tenant_id_b, "tenant-b");
+    }
+
+    #[tokio::test]
+    async fn test_dataset_operations() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        // Create a tenant
+        catalog
+            .upsert_tenant("company", "Company Inc", Some("production"), "config")
+            .await
+            .unwrap();
+
+        // Create datasets
+        let dataset1_id = catalog
+            .create_dataset("company", "production")
+            .await
+            .unwrap();
+        let dataset2_id = catalog.create_dataset("company", "staging").await.unwrap();
+        let dataset3_id = catalog
+            .create_dataset("company", "development")
+            .await
+            .unwrap();
+
+        assert!(!dataset1_id.is_empty());
+        assert!(!dataset2_id.is_empty());
+        assert!(!dataset3_id.is_empty());
+        assert_ne!(dataset1_id, dataset2_id);
+
+        // Get datasets for tenant
+        let datasets = catalog.get_datasets("company").await.unwrap();
+        assert_eq!(datasets.len(), 3);
+
+        let dataset_names: Vec<&str> = datasets.iter().map(|d| d.name.as_str()).collect();
+        assert!(dataset_names.contains(&"production"));
+        assert!(dataset_names.contains(&"staging"));
+        assert!(dataset_names.contains(&"development"));
+
+        // Verify all datasets belong to the correct tenant
+        for dataset in datasets {
+            assert_eq!(dataset.tenant_id, "company");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dataset_tenant_isolation() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        // Create two tenants
+        catalog
+            .upsert_tenant("org-a", "Organization A", None, "config")
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant("org-b", "Organization B", None, "config")
+            .await
+            .unwrap();
+
+        // Create datasets for each tenant
+        catalog.create_dataset("org-a", "prod").await.unwrap();
+        catalog.create_dataset("org-a", "dev").await.unwrap();
+        catalog.create_dataset("org-b", "test").await.unwrap();
+
+        // Get datasets for org-a
+        let datasets_a = catalog.get_datasets("org-a").await.unwrap();
+        assert_eq!(datasets_a.len(), 2);
+        for dataset in datasets_a {
+            assert_eq!(dataset.tenant_id, "org-a");
+        }
+
+        // Get datasets for org-b
+        let datasets_b = catalog.get_datasets("org-b").await.unwrap();
+        assert_eq!(datasets_b.len(), 1);
+        assert_eq!(datasets_b[0].tenant_id, "org-b");
+        assert_eq!(datasets_b[0].name, "test");
+    }
+
+    #[tokio::test]
+    async fn test_get_nonexistent_tenant() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        let result = catalog.get_tenant("nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_validate_nonexistent_api_key() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        let fake_hash = "nonexistent_hash";
+        let result = catalog.validate_api_key(fake_hash).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_datasets_for_nonexistent_tenant() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        let datasets = catalog.get_datasets("nonexistent").await.unwrap();
+        assert!(datasets.is_empty());
+    }
+}

@@ -50,6 +50,7 @@ testcontainers-modules.workspace = true
 testcontainers = { workspace = true, features = ["blocking"] }
 tempfile.workspace = true
 figment = { workspace = true, features = ["test"] }
+sha2 = "0.10"
 
 [package.metadata.cargo-machete]
 # async-trait is used by discovery backends
