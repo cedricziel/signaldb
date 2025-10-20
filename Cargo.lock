@@ -19,6 +19,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-proto",
  "serde_json",
+ "tempfile",
  "tokio",
  "tonic 0.12.3",
  "tower 0.5.2",

@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
+use common::auth::TenantContext;
 use common::flight::conversion::otlp_traces_to_arrow;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
-use common::wal::{Wal, WalOperation, record_batch_to_bytes};
+use common::wal::{WalOperation, record_batch_to_bytes};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+
+use super::WalManager;
 // Flight protocol imports
 use arrow_flight::utils::batches_to_flight_data;
 use bytes::Bytes;
@@ -12,8 +15,8 @@ use futures::{StreamExt, stream};
 pub struct TraceHandler {
     /// Flight transport for forwarding telemetry
     flight_transport: Arc<InMemoryFlightTransport>,
-    /// WAL for durability
-    wal: Arc<Wal>,
+    /// WAL manager for multi-tenant WAL isolation
+    wal_manager: Arc<WalManager>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -36,7 +39,11 @@ impl MockTraceHandler {
         }
     }
 
-    pub async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
+    pub async fn handle_grpc_otlp_traces(
+        &self,
+        _tenant_context: &TenantContext,
+        request: ExportTraceServiceRequest,
+    ) {
         self.handle_grpc_otlp_traces_calls
             .lock()
             .await
@@ -49,16 +56,48 @@ impl MockTraceHandler {
 }
 
 impl TraceHandler {
-    /// Create a new handler with Flight transport and WAL
-    pub fn new(flight_transport: Arc<InMemoryFlightTransport>, wal: Arc<Wal>) -> Self {
+    /// Create a new handler with Flight transport and WAL manager
+    pub fn new(
+        flight_transport: Arc<InMemoryFlightTransport>,
+        wal_manager: Arc<WalManager>,
+    ) -> Self {
         Self {
             flight_transport,
-            wal,
+            wal_manager,
         }
     }
 
-    pub async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
-        log::info!("Handling OTLP trace request");
+    pub async fn handle_grpc_otlp_traces(
+        &self,
+        tenant_context: &TenantContext,
+        request: ExportTraceServiceRequest,
+    ) {
+        log::info!(
+            "Handling OTLP trace request for tenant='{}', dataset='{}'",
+            tenant_context.tenant_id,
+            tenant_context.dataset_id
+        );
+
+        // Get tenant/dataset-specific WAL
+        let wal = match self
+            .wal_manager
+            .get_wal(
+                &tenant_context.tenant_id,
+                &tenant_context.dataset_id,
+                "traces",
+            )
+            .await
+        {
+            Ok(wal) => wal,
+            Err(e) => {
+                log::error!(
+                    "Failed to get WAL for tenant='{}', dataset='{}': {e}",
+                    tenant_context.tenant_id,
+                    tenant_context.dataset_id
+                );
+                return;
+            }
+        };
 
         // Convert OTLP traces to Arrow RecordBatch
         let record_batch = otlp_traces_to_arrow(&request);
@@ -78,8 +117,7 @@ impl TraceHandler {
             }
         };
 
-        let wal_entry_id = match self
-            .wal
+        let wal_entry_id = match wal
             .append(WalOperation::WriteTraces, batch_bytes.clone())
             .await
         {
@@ -91,7 +129,7 @@ impl TraceHandler {
         };
 
         // Flush WAL to ensure durability
-        if let Err(e) = self.wal.flush().await {
+        if let Err(e) = wal.flush().await {
             log::error!("Failed to flush WAL: {e}");
             return;
         }
@@ -151,7 +189,7 @@ impl TraceHandler {
                 if success {
                     log::debug!("Successfully forwarded traces via Flight protocol");
                     // Mark WAL entry as processed after successful forwarding
-                    if let Err(e) = self.wal.mark_processed(wal_entry_id).await {
+                    if let Err(e) = wal.mark_processed(wal_entry_id).await {
                         log::warn!("Failed to mark WAL entry {wal_entry_id} as processed: {e}");
                     }
                 } else {

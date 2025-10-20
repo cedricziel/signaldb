@@ -1,10 +1,13 @@
 use std::sync::Arc;
 
+use common::auth::TenantContext;
 use common::flight::conversion::otlp_metrics_to_arrow;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
-use common::wal::{Wal, WalOperation, record_batch_to_bytes};
+use common::wal::{WalOperation, record_batch_to_bytes};
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+
+use super::WalManager;
 // Flight protocol imports
 use arrow_flight::utils::batches_to_flight_data;
 use bytes::Bytes;
@@ -13,8 +16,8 @@ use futures::{StreamExt, stream};
 pub struct MetricsHandler {
     /// Flight transport for forwarding telemetry
     flight_transport: Arc<InMemoryFlightTransport>,
-    /// WAL for durability
-    wal: Arc<Wal>,
+    /// WAL manager for multi-tenant WAL isolation
+    wal_manager: Arc<WalManager>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -37,7 +40,11 @@ impl MockMetricsHandler {
         }
     }
 
-    pub async fn handle_grpc_otlp_metrics(&self, request: ExportMetricsServiceRequest) {
+    pub async fn handle_grpc_otlp_metrics(
+        &self,
+        _tenant_context: &TenantContext,
+        request: ExportMetricsServiceRequest,
+    ) {
         self.handle_grpc_otlp_metrics_calls
             .lock()
             .await
@@ -50,11 +57,14 @@ impl MockMetricsHandler {
 }
 
 impl MetricsHandler {
-    /// Create a new handler with Flight transport and WAL
-    pub fn new(flight_transport: Arc<InMemoryFlightTransport>, wal: Arc<Wal>) -> Self {
+    /// Create a new handler with Flight transport and WAL manager
+    pub fn new(
+        flight_transport: Arc<InMemoryFlightTransport>,
+        wal_manager: Arc<WalManager>,
+    ) -> Self {
         Self {
             flight_transport,
-            wal,
+            wal_manager,
         }
     }
 
@@ -87,8 +97,37 @@ impl MetricsHandler {
         ("gauge".to_string(), "metrics_gauge".to_string())
     }
 
-    pub async fn handle_grpc_otlp_metrics(&self, request: ExportMetricsServiceRequest) {
-        log::info!("Handling OTLP metrics request");
+    pub async fn handle_grpc_otlp_metrics(
+        &self,
+        tenant_context: &TenantContext,
+        request: ExportMetricsServiceRequest,
+    ) {
+        log::info!(
+            "Handling OTLP metrics request for tenant='{}', dataset='{}'",
+            tenant_context.tenant_id,
+            tenant_context.dataset_id
+        );
+
+        // Get tenant/dataset-specific WAL
+        let wal = match self
+            .wal_manager
+            .get_wal(
+                &tenant_context.tenant_id,
+                &tenant_context.dataset_id,
+                "metrics",
+            )
+            .await
+        {
+            Ok(wal) => wal,
+            Err(e) => {
+                log::error!(
+                    "Failed to get WAL for tenant='{}', dataset='{}': {e}",
+                    tenant_context.tenant_id,
+                    tenant_context.dataset_id
+                );
+                return;
+            }
+        };
 
         // Determine metric type and target table
         let (metric_type, target_table) = Self::determine_metric_type_and_table(&request);
@@ -115,8 +154,7 @@ impl MetricsHandler {
             }
         };
 
-        let wal_entry_id = match self
-            .wal
+        let wal_entry_id = match wal
             .append(WalOperation::WriteMetrics, batch_bytes.clone())
             .await
         {
@@ -128,7 +166,7 @@ impl MetricsHandler {
         };
 
         // Flush WAL to ensure durability
-        if let Err(e) = self.wal.flush().await {
+        if let Err(e) = wal.flush().await {
             log::error!("Failed to flush WAL: {e}");
             return;
         }
@@ -188,7 +226,7 @@ impl MetricsHandler {
                 if success {
                     log::debug!("Successfully forwarded metrics via Flight protocol");
                     // Mark WAL entry as processed after successful forwarding
-                    if let Err(e) = self.wal.mark_processed(wal_entry_id).await {
+                    if let Err(e) = wal.mark_processed(wal_entry_id).await {
                         log::warn!("Failed to mark WAL entry {wal_entry_id} as processed: {e}");
                     }
                 } else {

@@ -1,3 +1,4 @@
+use acceptor::handler::WalManager;
 use acceptor::handler::otlp_grpc::TraceHandler;
 use acceptor::services::otlp_trace_service::TraceAcceptorService;
 use arrow_flight::flight_service_server::FlightServiceServer;
@@ -149,16 +150,33 @@ async fn setup_test_services() -> TestServices {
     .unwrap();
     let _querier_id = querier_bootstrap.service_id();
 
-    // Start acceptor
-    let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal.clone());
+    // Start acceptor with WalManager
+    let wal_manager = Arc::new(WalManager::new(
+        wal_config.clone(), // traces config
+        wal_config.clone(), // logs config
+        wal_config.clone(), // metrics config
+    ));
+    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
     let acceptor_service = TraceAcceptorService::new(trace_handler);
     let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let acceptor_addr = acceptor_listener.local_addr().unwrap();
     drop(acceptor_listener);
 
+    // Add test interceptor to inject TenantContext (since tests don't use real auth)
+    let acceptor_service_with_auth =
+        TraceServiceServer::with_interceptor(acceptor_service, |mut req: tonic::Request<()>| {
+            // Add test TenantContext to request extensions
+            req.extensions_mut().insert(common::auth::TenantContext {
+                tenant_id: "test-tenant".to_string(),
+                dataset_id: "test-dataset".to_string(),
+                api_key_name: Some("test-key".to_string()),
+                source: common::auth::TenantSource::Config,
+            });
+            Ok(req)
+        });
+
     let acceptor_server = Server::builder()
-        .add_service(TraceServiceServer::new(acceptor_service))
+        .add_service(acceptor_service_with_auth)
         .serve(acceptor_addr);
     tokio::spawn(acceptor_server);
 

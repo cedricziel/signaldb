@@ -4,16 +4,26 @@ use opentelemetry_proto::tonic::collector::trace::v1::{
 use tonic::{Request, Response, Status};
 
 use crate::handler::otlp_grpc::TraceHandler;
+use crate::middleware::get_tenant_context;
+use common::auth::TenantContext;
 
 #[async_trait::async_trait]
 pub trait TraceHandlerTrait {
-    async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest);
+    async fn handle_grpc_otlp_traces(
+        &self,
+        tenant_context: &TenantContext,
+        request: ExportTraceServiceRequest,
+    );
 }
 
 #[async_trait::async_trait]
 impl TraceHandlerTrait for TraceHandler {
-    async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
-        self.handle_grpc_otlp_traces(request).await;
+    async fn handle_grpc_otlp_traces(
+        &self,
+        tenant_context: &TenantContext,
+        request: ExportTraceServiceRequest,
+    ) {
+        self.handle_grpc_otlp_traces(tenant_context, request).await;
     }
 }
 
@@ -33,9 +43,14 @@ impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAccepto
         &self,
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        let request = request.into_inner();
+        // Extract tenant context from request extensions (added by auth middleware)
+        let tenant_context = get_tenant_context(&request)?;
 
-        self.handler.handle_grpc_otlp_traces(request).await;
+        let request_inner = request.into_inner();
+
+        self.handler
+            .handle_grpc_otlp_traces(&tenant_context, request_inner)
+            .await;
 
         Ok(Response::new(ExportTraceServiceResponse::default()))
     }
@@ -44,8 +59,12 @@ impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAccepto
 #[cfg(any(test, feature = "testing"))]
 #[async_trait::async_trait]
 impl TraceHandlerTrait for crate::handler::otlp_grpc::MockTraceHandler {
-    async fn handle_grpc_otlp_traces(&self, request: ExportTraceServiceRequest) {
-        self.handle_grpc_otlp_traces(request).await;
+    async fn handle_grpc_otlp_traces(
+        &self,
+        tenant_context: &TenantContext,
+        request: ExportTraceServiceRequest,
+    ) {
+        self.handle_grpc_otlp_traces(tenant_context, request).await;
     }
 }
 
@@ -106,7 +125,15 @@ mod tests {
             }],
         };
 
-        let tonic_request = Request::new(request);
+        // Add TenantContext to request extensions (normally added by auth middleware)
+        let mut tonic_request = Request::new(request);
+        tonic_request.extensions_mut().insert(TenantContext {
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            api_key_name: Some("test-key".to_string()),
+            source: common::auth::TenantSource::Config,
+        });
+
         let response = service.export(tonic_request).await;
 
         assert!(response.is_ok());
