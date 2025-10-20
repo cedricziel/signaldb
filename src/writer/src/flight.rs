@@ -104,7 +104,7 @@ impl FlightService for WriterFlightService {
             // Write to WAL - this ensures durability and serves as our buffer
             let entry_id = self
                 .wal
-                .append(WalOperation::WriteTraces, batch_bytes)
+                .append(WalOperation::WriteTraces, batch_bytes, None)
                 .await
                 .map_err(|e| Status::internal(format!("Failed to write to WAL: {e}")))?;
 

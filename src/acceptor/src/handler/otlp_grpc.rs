@@ -118,7 +118,7 @@ impl TraceHandler {
         };
 
         let wal_entry_id = match wal
-            .append(WalOperation::WriteTraces, batch_bytes.clone())
+            .append(WalOperation::WriteTraces, batch_bytes.clone(), None)
             .await
         {
             Ok(id) => id,

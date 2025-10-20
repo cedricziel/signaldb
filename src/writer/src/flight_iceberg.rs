@@ -190,15 +190,27 @@ impl FlightService for IcebergWriterFlightService {
 
         // Write all batches to WAL first for durability
         let mut wal_entry_ids = Vec::new();
+
+        // Serialize FlightMetadata to JSON for WAL storage (for writer routing)
+        let metadata_json = flight_metadata.as_ref().map(|metadata| {
+            serde_json::to_string(&serde_json::json!({
+                "schema_version": metadata.schema_version,
+                "signal_type": metadata.signal_type,
+                "target_table": metadata.target_table,
+            }))
+            .unwrap_or_default()
+        });
+
         for batch in &transformed_batches {
             // Serialize RecordBatch for WAL storage
             let batch_bytes = record_batch_to_bytes(batch)
                 .map_err(|e| Status::internal(format!("Failed to serialize batch: {e}")))?;
 
             // Write to WAL with correct operation type determined from metadata
+            // Pass metadata to enable proper table routing (e.g., metrics_exponential_histogram)
             let entry_id = self
                 .wal
-                .append(wal_operation.clone(), batch_bytes)
+                .append(wal_operation.clone(), batch_bytes, metadata_json.clone())
                 .await
                 .map_err(|e| Status::internal(format!("Failed to write to WAL: {e}")))?;
 

@@ -115,7 +115,7 @@ impl LogHandler {
         };
 
         let wal_entry_id = match wal
-            .append(WalOperation::WriteLogs, batch_bytes.clone())
+            .append(WalOperation::WriteLogs, batch_bytes.clone(), None)
             .await
         {
             Ok(id) => id,

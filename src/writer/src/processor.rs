@@ -141,12 +141,44 @@ impl WalProcessor {
 
     /// Determine which tenant and table an entry should go to
     /// Extracts tenant_id and dataset_id from the WalEntry and maps operation type to table name
+    /// For metrics, uses target_table from metadata if available, enabling routing to
+    /// metrics_exponential_histogram, metrics_summary, etc.
     fn determine_target_table(&self, entry: &WalEntry) -> Result<(String, String)> {
         // Map operation types to appropriate table
         let table_name = match entry.operation {
-            common::wal::WalOperation::WriteTraces => "traces",
-            common::wal::WalOperation::WriteLogs => "logs",
-            common::wal::WalOperation::WriteMetrics => "metrics_gauge", // Default to gauge, could be enhanced
+            common::wal::WalOperation::WriteTraces => "traces".to_string(),
+            common::wal::WalOperation::WriteLogs => "logs".to_string(),
+            common::wal::WalOperation::WriteMetrics => {
+                // Try to extract target_table from metadata
+                if let Some(ref metadata_str) = entry.metadata {
+                    if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(metadata_str) {
+                        if let Some(target_table) = metadata.get("target_table") {
+                            if let Some(table_str) = target_table.as_str() {
+                                log::debug!(
+                                    "Using target_table from metadata: {table_str} for WAL entry {}",
+                                    entry.id
+                                );
+                                table_str.to_string()
+                            } else {
+                                log::warn!(
+                                    "target_table in metadata is not a string, defaulting to metrics_gauge"
+                                );
+                                "metrics_gauge".to_string()
+                            }
+                        } else {
+                            log::debug!("No target_table in metadata, defaulting to metrics_gauge");
+                            "metrics_gauge".to_string()
+                        }
+                    } else {
+                        log::warn!("Failed to parse metadata JSON, defaulting to metrics_gauge");
+                        "metrics_gauge".to_string()
+                    }
+                } else {
+                    // No metadata available - use default
+                    log::debug!("No metadata available, defaulting to metrics_gauge");
+                    "metrics_gauge".to_string()
+                }
+            }
             common::wal::WalOperation::Flush => {
                 return Err(anyhow::anyhow!(
                     "Flush operations should not be processed as table writes"
@@ -155,7 +187,7 @@ impl WalProcessor {
         };
 
         // Extract tenant_id from the entry (already stored during WAL creation)
-        Ok((entry.tenant_id.clone(), table_name.to_string()))
+        Ok((entry.tenant_id.clone(), table_name))
     }
 
     /// Deserialize WAL entry data back to RecordBatch
@@ -292,6 +324,7 @@ mod tests {
             processed: false,
             tenant_id: "acme".to_string(),
             dataset_id: "production".to_string(),
+            metadata: None,
         };
 
         let (tenant, table) = processor.determine_target_table(&entry).unwrap();
@@ -310,6 +343,7 @@ mod tests {
             processed: false,
             tenant_id: "globex".to_string(),
             dataset_id: "staging".to_string(),
+            metadata: None,
         };
 
         let (tenant, table) = processor.determine_target_table(&entry).unwrap();

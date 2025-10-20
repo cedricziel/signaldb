@@ -29,6 +29,9 @@ pub struct WalEntry {
     pub tenant_id: String,
     /// Dataset ID for data partitioning
     pub dataset_id: String,
+    /// Optional metadata as JSON string (e.g., FlightMetadata with target_table)
+    #[serde(default)]
+    pub metadata: Option<String>,
 }
 
 /// Types of operations that can be logged in WAL
@@ -185,6 +188,7 @@ impl WalSegment {
         data: &[u8],
         tenant_id: &str,
         dataset_id: &str,
+        metadata: Option<String>,
     ) -> Result<Uuid> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -209,6 +213,7 @@ impl WalSegment {
             processed: false,
             tenant_id: tenant_id.to_string(),
             dataset_id: dataset_id.to_string(),
+            metadata,
         };
 
         // Serialize entry
@@ -315,8 +320,8 @@ impl Default for WalConfig {
     }
 }
 
-/// Type alias for WAL buffer entries
-type WalBuffer = Arc<RwLock<VecDeque<(Uuid, WalOperation, Vec<u8>)>>>;
+/// Type alias for WAL buffer entries (entry_id, operation, data, optional_metadata)
+type WalBuffer = Arc<RwLock<VecDeque<(Uuid, WalOperation, Vec<u8>, Option<String>)>>>;
 
 /// Write-Ahead Log implementation for durability
 pub struct Wal {
@@ -415,13 +420,23 @@ impl Wal {
     }
 
     /// Add an entry to the WAL
-    pub async fn append(&self, operation: WalOperation, data: Vec<u8>) -> Result<Uuid> {
+    ///
+    /// # Arguments
+    /// * `operation` - The type of WAL operation
+    /// * `data` - The data to write
+    /// * `metadata` - Optional metadata (e.g., JSON-serialized FlightMetadata with target_table)
+    pub async fn append(
+        &self,
+        operation: WalOperation,
+        data: Vec<u8>,
+        metadata: Option<String>,
+    ) -> Result<Uuid> {
         let entry_id = Uuid::new_v4();
 
         // Add to buffer first for batching
         {
             let mut buffer = self.buffer.write().await;
-            buffer.push_back((entry_id, operation.clone(), data.clone()));
+            buffer.push_back((entry_id, operation.clone(), data.clone(), metadata));
         }
 
         // Check if we need to flush immediately
@@ -479,7 +494,7 @@ impl Wal {
         let tenant_id = &config.tenant_id;
         let dataset_id = &config.dataset_id;
 
-        for (entry_id, operation, data) in entries_to_flush {
+        for (entry_id, operation, data, metadata) in entries_to_flush {
             // Check if we need to rotate to a new segment
             if segment.size + data.len() as u64 > config.max_segment_size {
                 // Close current segment
@@ -497,7 +512,7 @@ impl Wal {
             }
 
             segment
-                .append(entry_id, operation, &data, tenant_id, dataset_id)
+                .append(entry_id, operation, &data, tenant_id, dataset_id, metadata)
                 .await?;
         }
 
@@ -658,7 +673,7 @@ mod tests {
 
         // Append entry
         let _entry_id = wal
-            .append(WalOperation::WriteTraces, test_data.clone())
+            .append(WalOperation::WriteTraces, test_data.clone(), None)
             .await
             .unwrap();
 
