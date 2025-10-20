@@ -59,6 +59,8 @@ async fn test_writer_flight_service_creation() -> anyhow::Result<()> {
         max_segment_size: 1024 * 1024,
         max_buffer_entries: 10,
         flush_interval_secs: 1,
+        tenant_id: Some("test-tenant".to_string()),
+        dataset_id: Some("test-dataset".to_string()),
     };
     let wal = Arc::new(Wal::new(wal_config).await?);
 

@@ -140,9 +140,9 @@ impl WalProcessor {
     }
 
     /// Determine which tenant and table an entry should go to
-    /// For now, this is simplified but can be enhanced based on entry metadata
+    /// Extracts tenant_id and dataset_id from the WalEntry and maps operation type to table name
     fn determine_target_table(&self, entry: &WalEntry) -> Result<(String, String)> {
-        // For now, map operation types to default tenant and appropriate table
+        // Map operation types to appropriate table
         let table_name = match entry.operation {
             common::wal::WalOperation::WriteTraces => "traces",
             common::wal::WalOperation::WriteLogs => "logs",
@@ -154,10 +154,8 @@ impl WalProcessor {
             }
         };
 
-        // Use default tenant for now - this could be enhanced to extract from entry metadata
-        let tenant_id = self.config.get_default_tenant();
-
-        Ok((tenant_id.to_string(), table_name.to_string()))
+        // Extract tenant_id from the entry (already stored during WAL creation)
+        Ok((entry.tenant_id.clone(), table_name.to_string()))
     }
 
     /// Deserialize WAL entry data back to RecordBatch
@@ -250,6 +248,8 @@ mod tests {
             max_segment_size: 1024 * 1024, // 1MB
             max_buffer_entries: 1000,
             flush_interval_secs: 5,
+            tenant_id: Some("test-tenant".to_string()),
+            dataset_id: Some("test-dataset".to_string()),
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let config = Configuration::default();
@@ -270,6 +270,8 @@ mod tests {
             max_segment_size: 1024 * 1024, // 1MB
             max_buffer_entries: 1000,
             flush_interval_secs: 5,
+            tenant_id: Some("test-tenant".to_string()),
+            dataset_id: Some("test-dataset".to_string()),
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let config = Configuration::default();
@@ -288,10 +290,12 @@ mod tests {
                 .unwrap()
                 .as_secs(),
             processed: false,
+            tenant_id: "acme".to_string(),
+            dataset_id: "production".to_string(),
         };
 
         let (tenant, table) = processor.determine_target_table(&entry).unwrap();
-        assert_eq!(tenant, "default");
+        assert_eq!(tenant, "acme");
         assert_eq!(table, "traces");
 
         let entry = WalEntry {
@@ -304,10 +308,12 @@ mod tests {
                 .unwrap()
                 .as_secs(),
             processed: false,
+            tenant_id: "globex".to_string(),
+            dataset_id: "staging".to_string(),
         };
 
         let (tenant, table) = processor.determine_target_table(&entry).unwrap();
-        assert_eq!(tenant, "default");
+        assert_eq!(tenant, "globex");
         assert_eq!(table, "logs");
     }
 
@@ -319,6 +325,8 @@ mod tests {
             max_segment_size: 1024 * 1024, // 1MB
             max_buffer_entries: 1000,
             flush_interval_secs: 5,
+            tenant_id: Some("test-tenant".to_string()),
+            dataset_id: Some("test-dataset".to_string()),
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let config = Configuration::default();

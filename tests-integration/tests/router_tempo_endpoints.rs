@@ -87,6 +87,8 @@ async fn setup_test_services() -> TestServices {
         max_segment_size: 1024 * 1024,
         max_buffer_entries: 1,
         flush_interval_secs: 1,
+        tenant_id: Some("test-tenant".to_string()),
+        dataset_id: Some("test-dataset".to_string()),
     };
 
     // Create flight transport for service communication

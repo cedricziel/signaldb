@@ -25,6 +25,10 @@ pub struct WalEntry {
     pub data_offset: u64,
     /// Whether this entry has been processed
     pub processed: bool,
+    /// Tenant ID for multi-tenant isolation
+    pub tenant_id: String,
+    /// Dataset ID for data partitioning
+    pub dataset_id: String,
 }
 
 /// Types of operations that can be logged in WAL
@@ -179,6 +183,8 @@ impl WalSegment {
         entry_id: Uuid,
         operation: WalOperation,
         data: &[u8],
+        tenant_id: String,
+        dataset_id: String,
     ) -> Result<Uuid> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -201,6 +207,8 @@ impl WalSegment {
             data_size: data.len() as u64,
             data_offset,
             processed: false,
+            tenant_id,
+            dataset_id,
         };
 
         // Serialize entry
@@ -254,6 +262,10 @@ pub struct WalConfig {
     pub max_buffer_entries: usize,
     /// Maximum time to wait before forcing flush (in seconds)
     pub flush_interval_secs: u64,
+    /// Tenant ID for multi-tenant isolation (optional for backward compatibility)
+    pub tenant_id: Option<String>,
+    /// Dataset ID for data partitioning (optional for backward compatibility)
+    pub dataset_id: Option<String>,
 }
 
 impl Default for WalConfig {
@@ -263,6 +275,8 @@ impl Default for WalConfig {
             max_segment_size: 64 * 1024 * 1024, // 64MB
             max_buffer_entries: 1000,
             flush_interval_secs: 30,
+            tenant_id: None,
+            dataset_id: None,
         }
     }
 }
@@ -286,6 +300,8 @@ impl WalConfig {
             max_segment_size: self.max_segment_size,
             max_buffer_entries: self.max_buffer_entries,
             flush_interval_secs: self.flush_interval_secs,
+            tenant_id: Some(tenant.to_string()),
+            dataset_id: Some(dataset.to_string()),
         }
     }
 }
@@ -425,6 +441,16 @@ impl Wal {
 
         let mut segment = current_segment.lock().await;
 
+        // Get tenant_id and dataset_id from config, falling back to "default" for backward compatibility
+        let tenant_id = config
+            .tenant_id
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let dataset_id = config
+            .dataset_id
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+
         for (entry_id, operation, data) in entries_to_flush {
             // Check if we need to rotate to a new segment
             if segment.size + data.len() as u64 > config.max_segment_size {
@@ -442,7 +468,15 @@ impl Wal {
                 *segment = WalSegment::new(&config.wal_dir, new_segment_id).await?;
             }
 
-            segment.append(entry_id, operation, &data).await?;
+            segment
+                .append(
+                    entry_id,
+                    operation,
+                    &data,
+                    tenant_id.clone(),
+                    dataset_id.clone(),
+                )
+                .await?;
         }
 
         Ok(())
@@ -590,6 +624,8 @@ mod tests {
             max_segment_size: 1024,
             max_buffer_entries: 10,
             flush_interval_secs: 1,
+            tenant_id: Some("test-tenant".to_string()),
+            dataset_id: Some("test-dataset".to_string()),
         };
 
         let mut wal = Wal::new(config).await.unwrap();

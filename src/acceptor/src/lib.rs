@@ -127,6 +127,8 @@ pub async fn serve_otlp_grpc(
         max_segment_size: 64 * 1024 * 1024, // 64MB
         max_buffer_entries: 1000,
         flush_interval_secs: 30,
+        tenant_id: None, // Will be set by WalManager.for_tenant_dataset()
+        dataset_id: None,
     };
 
     // Base WAL config for logs - higher volume, more frequent flushes
@@ -137,6 +139,8 @@ pub async fn serve_otlp_grpc(
         max_segment_size: 64 * 1024 * 1024, // 64MB
         max_buffer_entries: 2000,           // Higher buffer for log volume
         flush_interval_secs: 15,            // Flush more frequently
+        tenant_id: None,                    // Will be set by WalManager.for_tenant_dataset()
+        dataset_id: None,
     };
 
     // Base WAL config for metrics - highest volume, most aggressive flushing
@@ -147,6 +151,8 @@ pub async fn serve_otlp_grpc(
         max_segment_size: 128 * 1024 * 1024, // 128MB - larger segments for high volume
         max_buffer_entries: 5000,            // Much higher buffer for metrics
         flush_interval_secs: 10,             // Flush frequently for metrics
+        tenant_id: None,                     // Will be set by WalManager.for_tenant_dataset()
+        dataset_id: None,
     };
 
     // Create WalManager with the three base configurations

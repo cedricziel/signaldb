@@ -172,6 +172,8 @@ mod tests {
             max_segment_size: 1024 * 1024, // 1MB for tests
             max_buffer_entries: 100,
             flush_interval_secs: 60,
+            tenant_id: None, // Will be set by for_tenant_dataset()
+            dataset_id: None,
         }
     }
 
