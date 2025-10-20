@@ -1,0 +1,4 @@
+# Generated proto files - created by build.rs from opentelemetry-proto
+common/
+resource/
+trace/
