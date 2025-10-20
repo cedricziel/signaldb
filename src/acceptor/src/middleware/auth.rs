@@ -23,11 +23,36 @@ fn extract_auth_headers(
         .to_str()
         .map_err(|_| AuthError::bad_request("Invalid Authorization header"))?;
 
-    // Parse Bearer token
-    let api_key = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| AuthError::bad_request("Authorization header must use Bearer scheme"))?
-        .to_string();
+    // Parse Bearer token (case-insensitive scheme, trim whitespace)
+    let api_key = {
+        // Find first whitespace to split scheme from token
+        let parts: Vec<&str> = auth_header.splitn(2, char::is_whitespace).collect();
+
+        if parts.len() != 2 {
+            return Err(AuthError::bad_request(
+                "Authorization header must be in format: Bearer <token>",
+            ));
+        }
+
+        let scheme = parts[0];
+        let token = parts[1].trim();
+
+        // Verify scheme is "bearer" (case-insensitive)
+        if !scheme.eq_ignore_ascii_case("bearer") {
+            return Err(AuthError::bad_request(
+                "Authorization header must use Bearer scheme",
+            ));
+        }
+
+        // Verify token is not empty after trimming
+        if token.is_empty() {
+            return Err(AuthError::bad_request(
+                "Authorization token cannot be empty",
+            ));
+        }
+
+        token.to_string()
+    };
 
     // Extract X-Tenant-ID header
     let tenant_id = headers
@@ -222,6 +247,117 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.status_code, 400);
         assert!(err.message.contains("Bearer"));
+    }
+
+    #[test]
+    fn test_extract_auth_headers_case_insensitive_bearer() {
+        // Test lowercase "bearer"
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("bearer test-api-key-123"),
+        );
+        headers.insert("x-tenant-id", HeaderValue::from_static("acme"));
+
+        let result = extract_auth_headers(&headers);
+        assert!(result.is_ok());
+        let (api_key, _, _) = result.unwrap();
+        assert_eq!(api_key, "test-api-key-123");
+
+        // Test uppercase "BEARER"
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("BEARER test-api-key-456"),
+        );
+        headers.insert("x-tenant-id", HeaderValue::from_static("acme"));
+
+        let result = extract_auth_headers(&headers);
+        assert!(result.is_ok());
+        let (api_key, _, _) = result.unwrap();
+        assert_eq!(api_key, "test-api-key-456");
+
+        // Test mixed case "BeArEr"
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("BeArEr test-api-key-789"),
+        );
+        headers.insert("x-tenant-id", HeaderValue::from_static("acme"));
+
+        let result = extract_auth_headers(&headers);
+        assert!(result.is_ok());
+        let (api_key, _, _) = result.unwrap();
+        assert_eq!(api_key, "test-api-key-789");
+    }
+
+    #[test]
+    fn test_extract_auth_headers_trim_whitespace() {
+        // Test leading whitespace in token
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer   test-api-key-123"),
+        );
+        headers.insert("x-tenant-id", HeaderValue::from_static("acme"));
+
+        let result = extract_auth_headers(&headers);
+        assert!(result.is_ok());
+        let (api_key, _, _) = result.unwrap();
+        assert_eq!(api_key, "test-api-key-123");
+
+        // Test trailing whitespace in token
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer test-api-key-456   "),
+        );
+        headers.insert("x-tenant-id", HeaderValue::from_static("acme"));
+
+        let result = extract_auth_headers(&headers);
+        assert!(result.is_ok());
+        let (api_key, _, _) = result.unwrap();
+        assert_eq!(api_key, "test-api-key-456");
+
+        // Test both leading and trailing whitespace
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer   test-api-key-789   "),
+        );
+        headers.insert("x-tenant-id", HeaderValue::from_static("acme"));
+
+        let result = extract_auth_headers(&headers);
+        assert!(result.is_ok());
+        let (api_key, _, _) = result.unwrap();
+        assert_eq!(api_key, "test-api-key-789");
+    }
+
+    #[test]
+    fn test_extract_auth_headers_empty_token() {
+        // Test empty token after trimming
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("Bearer    "));
+        headers.insert("x-tenant-id", HeaderValue::from_static("acme"));
+
+        let result = extract_auth_headers(&headers);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("empty"));
+    }
+
+    #[test]
+    fn test_extract_auth_headers_missing_token() {
+        // Test missing token (only scheme)
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("Bearer"));
+        headers.insert("x-tenant-id", HeaderValue::from_static("acme"));
+
+        let result = extract_auth_headers(&headers);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status_code, 400);
     }
 
     #[tokio::test]
