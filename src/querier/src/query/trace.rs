@@ -7,7 +7,8 @@ use common::model::{
     span::{Span, SpanKind, SpanStatus},
 };
 use datafusion::{
-    arrow::array::{BooleanArray, Int64Array, StringArray},
+    arrow::array::{BooleanArray, Int64Array, StringArray, UInt64Array},
+    logical_expr::{col, lit},
     prelude::SessionContext,
 };
 
@@ -73,39 +74,105 @@ impl TraceService {
         }
     }
 
+    /// Validate and construct a safe table reference for multi-tenant queries
+    ///
+    /// # Security
+    /// This function validates tenant_id and dataset_id to prevent SQL injection.
+    /// Only alphanumeric characters, underscores, and hyphens are allowed.
+    fn build_table_ref(
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+    ) -> Result<String, QuerierError> {
+        // Validate tenant_id and dataset_id contain only safe characters
+        let is_valid_identifier = |s: &str| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        };
+
+        if !is_valid_identifier(tenant_id) {
+            return Err(QuerierError::InvalidInput(format!(
+                "Invalid tenant_id '{tenant_id}': must contain only alphanumeric, underscore, or hyphen characters"
+            )));
+        }
+
+        if !is_valid_identifier(dataset_id) {
+            return Err(QuerierError::InvalidInput(format!(
+                "Invalid dataset_id '{dataset_id}': must contain only alphanumeric, underscore, or hyphen characters"
+            )));
+        }
+
+        if !is_valid_identifier(table_name) {
+            return Err(QuerierError::InvalidInput(format!(
+                "Invalid table_name '{table_name}': must contain only alphanumeric, underscore, or hyphen characters"
+            )));
+        }
+
+        // Build the fully qualified table name: iceberg.{tenant_id}.{dataset_id}.{table_name}
+        Ok(format!("iceberg.{tenant_id}.{dataset_id}.{table_name}"))
+    }
+
     /// Find a trace by ID with tenant isolation
     pub async fn find_by_id_with_tenant(
         &self,
         params: FindTraceByIdParams,
         tenant_id: &str,
-        _dataset_id: &str,
+        dataset_id: &str,
     ) -> Result<Option<model::trace::Trace>, QuerierError> {
         log::info!(
-            "Querying for trace_id: {} in tenant: {}",
+            "Querying for trace_id={} in tenant={}, dataset={}",
             params.trace_id,
-            tenant_id
+            tenant_id,
+            dataset_id
         );
 
-        // Query from tenant-specific Iceberg namespace
-        let query = format!(
-            "SELECT * FROM iceberg.{tenant_id}.traces WHERE trace_id = '{}'",
-            params.trace_id
-        );
+        // Build safe table reference with tenant and dataset isolation
+        let table_ref = Self::build_table_ref(tenant_id, dataset_id, "traces")?;
 
-        let df = self.session_context.sql(&query).await.map_err(|e| {
-            log::error!("Failed to execute query: {query:?}, {e:?}");
-            QuerierError::QueryFailed(e)
-        })?;
-
-        let results = df
-            .collect()
+        // Use DataFrame API with parameterized filter (prevents SQL injection)
+        let df = self
+            .session_context
+            .table(&table_ref)
             .await
-            .map_err(|e: datafusion::error::DataFusionError| {
-                log::error!("Failed to collect results: {e:?}");
+            .map_err(|e| {
+                log::error!(
+                    "Failed to access table '{}' for tenant={}, dataset={}: {}",
+                    table_ref,
+                    tenant_id,
+                    dataset_id,
+                    e
+                );
+                QuerierError::QueryFailed(e)
+            })?
+            .filter(col("trace_id").eq(lit(&params.trace_id)))
+            .map_err(|e| {
+                log::error!(
+                    "Failed to apply filter for trace_id={}: {}",
+                    params.trace_id,
+                    e
+                );
                 QuerierError::QueryFailed(e)
             })?;
 
-        log::info!("Query returned {} rows", results.len());
+        let results = df.collect().await.map_err(|e| {
+            log::error!(
+                "Failed to collect query results for trace_id={}, tenant={}, dataset={}: {}",
+                params.trace_id,
+                tenant_id,
+                dataset_id,
+                e
+            );
+            QuerierError::QueryFailed(e)
+        })?;
+
+        log::info!(
+            "Query returned {} rows for trace_id={}, tenant={}, dataset={}",
+            results.len(),
+            params.trace_id,
+            tenant_id,
+            dataset_id
+        );
 
         // bail if no results were found
         if results.is_empty() {
@@ -119,29 +186,51 @@ impl TraceService {
 
         for batch in results {
             for row_index in 0..batch.num_rows() {
+                // Use named column access instead of positions
                 let current_trace_id = batch
-                    .column(0)
+                    .column_by_name("trace_id")
+                    .ok_or_else(|| {
+                        QuerierError::InvalidInput("Missing required column 'trace_id'".to_string())
+                    })?
                     .as_any()
                     .downcast_ref::<StringArray>()
-                    .unwrap()
+                    .ok_or_else(|| {
+                        QuerierError::InvalidInput("Column 'trace_id' has wrong type".to_string())
+                    })?
                     .value(row_index)
                     .to_string();
+
                 if trace_id.is_empty() {
                     trace_id = current_trace_id.clone();
                 }
 
                 let span_id = batch
-                    .column(1)
+                    .column_by_name("span_id")
+                    .ok_or_else(|| {
+                        QuerierError::InvalidInput("Missing required column 'span_id'".to_string())
+                    })?
                     .as_any()
                     .downcast_ref::<StringArray>()
-                    .unwrap()
+                    .ok_or_else(|| {
+                        QuerierError::InvalidInput("Column 'span_id' has wrong type".to_string())
+                    })?
                     .value(row_index)
                     .to_string();
+
                 let parent_span_id = batch
-                    .column(2)
+                    .column_by_name("parent_span_id")
+                    .ok_or_else(|| {
+                        QuerierError::InvalidInput(
+                            "Missing required column 'parent_span_id'".to_string(),
+                        )
+                    })?
                     .as_any()
                     .downcast_ref::<StringArray>()
-                    .unwrap()
+                    .ok_or_else(|| {
+                        QuerierError::InvalidInput(
+                            "Column 'parent_span_id' has wrong type".to_string(),
+                        )
+                    })?
                     .value(row_index)
                     .to_string();
 
@@ -152,61 +241,113 @@ impl TraceService {
                     trace_id: trace_id.clone(),
                     status: SpanStatus::from_str(
                         batch
-                            .column_by_name("status")
-                            .expect("unable to find column status")
+                            .column_by_name("status_code")
+                            .ok_or_else(|| {
+                                QuerierError::InvalidInput(
+                                    "Missing required column 'status_code'".to_string(),
+                                )
+                            })?
                             .as_any()
                             .downcast_ref::<StringArray>()
-                            .unwrap()
+                            .ok_or_else(|| {
+                                QuerierError::InvalidInput(
+                                    "Column 'status_code' has wrong type".to_string(),
+                                )
+                            })?
                             .value(row_index),
                     )
                     .unwrap_or(SpanStatus::Unspecified),
                     is_root: batch
                         .column_by_name("is_root")
-                        .expect("unable to find column 'is_root'")
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Missing required column 'is_root'".to_string(),
+                            )
+                        })?
                         .as_any()
                         .downcast_ref::<BooleanArray>()
-                        .unwrap()
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Column 'is_root' has wrong type".to_string(),
+                            )
+                        })?
                         .value(row_index),
                     name: batch
-                        .column_by_name("span_name")
-                        .expect("unable to find column 'span_name'")
+                        .column_by_name("name")
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput("Missing required column 'name'".to_string())
+                        })?
                         .as_any()
                         .downcast_ref::<StringArray>()
-                        .unwrap()
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput("Column 'name' has wrong type".to_string())
+                        })?
                         .value(row_index)
                         .to_string(),
                     service_name: batch
                         .column_by_name("service_name")
-                        .expect("unable to find column 'service_name'")
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Missing required column 'service_name'".to_string(),
+                            )
+                        })?
                         .as_any()
                         .downcast_ref::<StringArray>()
-                        .unwrap()
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Column 'service_name' has wrong type".to_string(),
+                            )
+                        })?
                         .value(row_index)
                         .to_string(),
                     span_kind: SpanKind::from_str(
                         batch
                             .column_by_name("span_kind")
-                            .expect("unable to find column 'span_kind'")
+                            .ok_or_else(|| {
+                                QuerierError::InvalidInput(
+                                    "Missing required column 'span_kind'".to_string(),
+                                )
+                            })?
                             .as_any()
                             .downcast_ref::<StringArray>()
-                            .unwrap()
+                            .ok_or_else(|| {
+                                QuerierError::InvalidInput(
+                                    "Column 'span_kind' has wrong type".to_string(),
+                                )
+                            })?
                             .value(row_index),
                     )
                     .unwrap_or(SpanKind::Internal),
                     start_time_unix_nano: batch
                         .column_by_name("start_time_unix_nano")
-                        .expect("unable to find column 'start_time_unix_nano'")
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Missing required column 'start_time_unix_nano'".to_string(),
+                            )
+                        })?
                         .as_any()
-                        .downcast_ref::<Int64Array>()
-                        .unwrap()
-                        .value(row_index) as u64,
+                        .downcast_ref::<UInt64Array>()
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Column 'start_time_unix_nano' has wrong type".to_string(),
+                            )
+                        })?
+                        .value(row_index),
                     duration_nano: batch
                         .column_by_name("duration_nano")
-                        .expect("unable to find column 'duration_nano'")
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Missing required column 'duration_nano'".to_string(),
+                            )
+                        })?
                         .as_any()
-                        .downcast_ref::<Int64Array>()
-                        .unwrap()
-                        .value(row_index) as u64,
+                        .downcast_ref::<UInt64Array>()
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Column 'duration_nano' has wrong type".to_string(),
+                            )
+                        })?
+                        .value(row_index),
                     attributes: HashMap::new(),
                     resource: HashMap::new(),
                 };
@@ -229,22 +370,45 @@ impl TraceService {
         &self,
         _query: SearchQueryParams,
         tenant_id: &str,
-        _dataset_id: &str,
+        dataset_id: &str,
     ) -> Result<Vec<model::trace::Trace>, QuerierError> {
-        log::info!("Searching traces in tenant: {tenant_id}");
+        log::info!(
+            "Searching traces in tenant={}, dataset={}",
+            tenant_id,
+            dataset_id
+        );
 
-        // Query from tenant-specific Iceberg namespace
-        let query = format!("SELECT * FROM iceberg.{tenant_id}.traces;");
+        // Build safe table reference with tenant and dataset isolation
+        let table_ref = Self::build_table_ref(tenant_id, dataset_id, "traces")?;
 
-        let df = self
-            .session_context
-            .sql(&query)
-            .await
-            .map_err(QuerierError::QueryFailed)?;
+        // Use DataFrame API (prevents SQL injection)
+        let df = self.session_context.table(&table_ref).await.map_err(|e| {
+            log::error!(
+                "Failed to access table '{}' for tenant={}, dataset={}: {}",
+                table_ref,
+                tenant_id,
+                dataset_id,
+                e
+            );
+            QuerierError::QueryFailed(e)
+        })?;
 
-        let results = df.collect().await.map_err(QuerierError::QueryFailed)?;
+        let results = df.collect().await.map_err(|e| {
+            log::error!(
+                "Failed to collect query results for tenant={}, dataset={}: {}",
+                tenant_id,
+                dataset_id,
+                e
+            );
+            QuerierError::QueryFailed(e)
+        })?;
 
-        log::info!("Query returned {} rows", results.len());
+        log::info!(
+            "Query returned {} rows for tenant={}, dataset={}",
+            results.len(),
+            tenant_id,
+            dataset_id
+        );
 
         let traces = Vec::new();
 
@@ -269,32 +433,58 @@ impl TraceQuerier for TraceService {
         &self,
         params: FindTraceByIdParams,
     ) -> Result<Option<model::trace::Trace>, QuerierError> {
-        log::info!("Querying for trace_id: {}", params.trace_id);
+        // Use default tenant and dataset for non-tenant-aware queries
+        let tenant_id = "default";
+        let dataset_id = "default";
 
-        // Query directly from the Iceberg table
-        // The table should already be available via the catalog
-        let query = format!(
-            "SELECT * FROM iceberg.default.traces WHERE trace_id = '{}'",
-            params.trace_id
+        log::info!(
+            "Querying for trace_id={} in tenant={}, dataset={}",
+            params.trace_id,
+            tenant_id,
+            dataset_id
         );
 
-        let df = self.session_context.sql(&query).await.map_err(|e| {
-            log::error!("Failed to execute query: {query:?}, {e:?}");
+        // Build safe table reference
+        let table_ref = Self::build_table_ref(tenant_id, dataset_id, "traces")?;
 
-            QuerierError::QueryFailed(e)
-        })?;
-
-        let results = df
-            .collect()
+        // Use DataFrame API with parameterized filter (prevents SQL injection)
+        let df = self
+            .session_context
+            .table(&table_ref)
             .await
-            .map_err(|e: datafusion::error::DataFusionError| {
-                log::error!("Failed to collect results: {e:?}");
-
+            .map_err(|e| {
+                log::error!(
+                    "Failed to access table '{}' for trace_id={}: {}",
+                    table_ref,
+                    params.trace_id,
+                    e
+                );
+                QuerierError::QueryFailed(e)
+            })?
+            .filter(col("trace_id").eq(lit(&params.trace_id)))
+            .map_err(|e| {
+                log::error!(
+                    "Failed to apply filter for trace_id={}: {}",
+                    params.trace_id,
+                    e
+                );
                 QuerierError::QueryFailed(e)
             })?;
 
-        log::info!("Query returned {} rows", results.len());
-        log::info!("Results: {:?}", results);
+        let results = df.collect().await.map_err(|e| {
+            log::error!(
+                "Failed to collect query results for trace_id={}: {}",
+                params.trace_id,
+                e
+            );
+            QuerierError::QueryFailed(e)
+        })?;
+
+        log::info!(
+            "Query returned {} rows for trace_id={}",
+            results.len(),
+            params.trace_id
+        );
 
         // bail if no results were found
         if results.is_empty() {
