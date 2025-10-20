@@ -282,9 +282,9 @@ impl WalConfig {
             max_segment_size: 64 * 1024 * 1024, // 64MB
             max_buffer_entries: 1000,
             flush_interval_secs: 30,
-            // These will be set by for_tenant_dataset()
-            tenant_id: String::new(),
-            dataset_id: String::new(),
+            // Default tenant/dataset for single-tenant deployments
+            tenant_id: "default".to_string(),
+            dataset_id: "default".to_string(),
         }
     }
 }
