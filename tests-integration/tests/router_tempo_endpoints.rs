@@ -986,13 +986,12 @@ async fn test_read_path_tenant_isolation() {
     // Create router with multi-tenant support
     let router_state = create_router_state(&services).await;
 
-    // Create router with tempo routes nested under /tempo
+    // Create router with tempo routes (no nesting - routes are at /api/...)
     use axum::middleware;
     use common::auth::auth_middleware;
 
     let authenticator = router_state.authenticator().clone();
-    let app: Router = Router::new()
-        .nest("/tempo", tempo::router())
+    let app: Router = tempo::router()
         .with_state(router_state)
         .layer(middleware::from_fn(move |req, next| {
             auth_middleware(authenticator.clone(), req, next)
@@ -1023,7 +1022,7 @@ async fn test_read_path_tenant_isolation() {
     // Test 1: Acme can query their own trace
     println!("🔍 Test 1: Acme queries their own trace");
     let request = Request::builder()
-        .uri(format!("/tempo/api/traces/{acme_trace_id}"))
+        .uri(format!("/api/traces/{acme_trace_id}"))
         .header("Authorization", "Bearer acme-key-123")
         .header("X-Tenant-ID", "acme")
         .body(Body::empty())
@@ -1045,7 +1044,7 @@ async fn test_read_path_tenant_isolation() {
     // Test 2: Globex can query their own trace
     println!("🔍 Test 2: Globex queries their own trace");
     let request = Request::builder()
-        .uri(format!("/tempo/api/traces/{globex_trace_id}"))
+        .uri(format!("/api/traces/{globex_trace_id}"))
         .header("Authorization", "Bearer globex-key-456")
         .header("X-Tenant-ID", "globex")
         .body(Body::empty())
@@ -1065,7 +1064,7 @@ async fn test_read_path_tenant_isolation() {
     // Test 3: Acme CANNOT query Globex's trace (tenant isolation)
     println!("🔍 Test 3: Acme attempts to query Globex's trace (should fail)");
     let request = Request::builder()
-        .uri(format!("/tempo/api/traces/{globex_trace_id}"))
+        .uri(format!("/api/traces/{globex_trace_id}"))
         .header("Authorization", "Bearer acme-key-123")
         .header("X-Tenant-ID", "acme")
         .body(Body::empty())
@@ -1085,7 +1084,7 @@ async fn test_read_path_tenant_isolation() {
     // Test 4: Globex CANNOT query Acme's trace (tenant isolation)
     println!("🔍 Test 4: Globex attempts to query Acme's trace (should fail)");
     let request = Request::builder()
-        .uri(format!("/tempo/api/traces/{acme_trace_id}"))
+        .uri(format!("/api/traces/{acme_trace_id}"))
         .header("Authorization", "Bearer globex-key-456")
         .header("X-Tenant-ID", "globex")
         .body(Body::empty())
@@ -1118,13 +1117,12 @@ async fn test_read_path_authentication_failures() {
     let services = setup_multi_tenant_test_services().await;
     let router_state = create_router_state(&services).await;
 
-    // Create router with tempo routes nested under /tempo
+    // Create router with tempo routes (no nesting - routes are at /api/...)
     use axum::middleware;
     use common::auth::auth_middleware;
 
     let authenticator = router_state.authenticator().clone();
-    let app: Router = Router::new()
-        .nest("/tempo", tempo::router())
+    let app: Router = tempo::router()
         .with_state(router_state)
         .layer(middleware::from_fn(move |req, next| {
             auth_middleware(authenticator.clone(), req, next)
@@ -1133,7 +1131,7 @@ async fn test_read_path_authentication_failures() {
     // Test 1: Missing Authorization header
     println!("🔍 Test 1: Missing Authorization header");
     let request = Request::builder()
-        .uri("/tempo/api/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        .uri("/api/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         .header("X-Tenant-ID", "acme")
         .body(Body::empty())
         .unwrap();
@@ -1149,7 +1147,7 @@ async fn test_read_path_authentication_failures() {
     // Test 2: Missing X-Tenant-ID header
     println!("🔍 Test 2: Missing X-Tenant-ID header");
     let request = Request::builder()
-        .uri("/tempo/api/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        .uri("/api/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         .header("Authorization", "Bearer acme-key-123")
         .body(Body::empty())
         .unwrap();
@@ -1165,7 +1163,7 @@ async fn test_read_path_authentication_failures() {
     // Test 3: Invalid API key
     println!("🔍 Test 3: Invalid API key");
     let request = Request::builder()
-        .uri("/tempo/api/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        .uri("/api/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         .header("Authorization", "Bearer invalid-key-999")
         .header("X-Tenant-ID", "acme")
         .body(Body::empty())
@@ -1182,7 +1180,7 @@ async fn test_read_path_authentication_failures() {
     // Test 4: Wrong API key for tenant
     println!("🔍 Test 4: Wrong API key for tenant");
     let request = Request::builder()
-        .uri("/tempo/api/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        .uri("/api/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         .header("Authorization", "Bearer globex-key-456") // Globex key
         .header("X-Tenant-ID", "acme") // Acme tenant
         .body(Body::empty())
@@ -1199,7 +1197,7 @@ async fn test_read_path_authentication_failures() {
     // Test 5: Invalid Bearer format
     println!("🔍 Test 5: Invalid Bearer format");
     let request = Request::builder()
-        .uri("/tempo/api/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        .uri("/api/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         .header("Authorization", "Basic acme-key-123") // Not Bearer
         .header("X-Tenant-ID", "acme")
         .body(Body::empty())
