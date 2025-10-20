@@ -19,7 +19,8 @@ SignalDB is built on the FDAP stack with Apache Arrow Flight as the primary inte
 
 ### Core Design Principles
 
-- **Flight-First Communication**: Apache Arrow Flight for zero-copy, high-throughput data transfer
+* **Flight-First Communication**: Apache Arrow Flight for zero-copy, high-throughput data transfer
+
 * **WAL-Based Durability**: Write-Ahead Log ensures data persistence and crash recovery
 * **Catalog-Based Discovery**: Database-backed service registry with automatic health monitoring
 * **Iceberg Table Format**: ACID transactions with Apache Iceberg for reliable data management
@@ -31,6 +32,7 @@ SignalDB is built on the FDAP stack with Apache Arrow Flight as the primary inte
 #### Monolithic Deployment
 
 Single binary (`signaldb`) that includes all services - ideal for development and small deployments.
+
 * All services communicate via localhost Flight endpoints
 * Shared SQLite catalog for service discovery
 * Zero-configuration startup with sensible defaults
@@ -38,6 +40,7 @@ Single binary (`signaldb`) that includes all services - ideal for development an
 #### Microservices Deployment
 
 Independent services for scalable production deployments:
+
 * **signaldb-acceptor**: OTLP data ingestion (gRPC port 4317, HTTP port 4318)
 * **signaldb-router**: Query routing and Tempo API compatibility (HTTP port 3000, Flight port 50053)
 * **signaldb-writer**: Data persistence with WAL durability (Flight port 50051)
@@ -64,6 +67,7 @@ Client → Router → Querier → DataFusion → Iceberg Tables
 ### Service Discovery & Communication
 
 All services register in a shared catalog for automatic discovery:
+
 * **PostgreSQL/SQLite catalog** with heartbeat-based health checking
 * **Apache Arrow Flight** for high-performance inter-service communication
 * **Automatic service registration** with capability-based routing
@@ -84,7 +88,8 @@ SignalDB uses Apache Iceberg as the table format for reliable data management:
 
 ### Storage Features
 
-- **Intelligent Batch Processing**: Automatic splitting of large batches (50K rows, 128MB default)
+* **Intelligent Batch Processing**: Automatic splitting of large batches (50K rows, 128MB default)
+
 * **Connection Pooling**: Optimized catalog operations with configurable pool settings
 * **Retry Logic**: Exponential backoff for transient failures with configurable policies
 * **Memory Management**: Memory-aware batch processing to prevent OOM issues
@@ -145,6 +150,7 @@ is_default = true
 ### Authenticated OTLP Requests
 
 **gRPC Example**:
+
 ```bash
 grpcurl \
   -H "authorization: Bearer sk-acme-prod-key-123" \
@@ -156,6 +162,7 @@ grpcurl \
 ```
 
 **HTTP Example**:
+
 ```bash
 curl -X POST http://localhost:4318/v1/traces \
   -H "Authorization: Bearer sk-acme-prod-key-123" \
@@ -208,7 +215,8 @@ ttl = "300s"
 
 ### Prerequisites
 
-- Rust 1.86.0+ (required for edition 2024 and AWS SDK compatibility)
+* Rust 1.86.0+ (required for edition 2024 and AWS SDK compatibility)
+
 * Protocol Buffers compiler
 
 ### Building
@@ -371,6 +379,7 @@ Environment variables:
 SignalDB implements Write-Ahead Logging for data durability and crash recovery. The WAL ensures that incoming OTLP data is persisted to disk before acknowledgment, providing strong durability guarantees.
 
 **WAL Features:**
+
 * **Durability**: All data written to WAL before acknowledgment
 * **Recovery**: Automatic replay of unprocessed entries on restart
 * **Batching**: Efficient batch processing with configurable flush policies
