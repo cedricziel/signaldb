@@ -111,7 +111,6 @@ pub struct IcebergTableWriter {
     #[allow(dead_code)] // Will be used for data writing
     object_store: Arc<dyn ObjectStore>,
     tenant_id: String,
-    #[allow(dead_code)] // Stored for dataset-level isolation in storage paths
     dataset_id: String,
     session_ctx: SessionContext,
     #[allow(dead_code)] // Will be used for lazy registration
@@ -308,7 +307,7 @@ impl IcebergTableWriter {
         // For now, we'll skip the conversion since we're using JanKaul's types directly
         // The table is already in the correct format for use with datafusion_iceberg
         log::info!(
-            "Successfully created/loaded Iceberg table: {}",
+            "Successfully created/loaded Iceberg table: {} for tenant '{tenant_id}' dataset '{dataset_id}'",
             table.identifier()
         );
 
@@ -321,7 +320,9 @@ impl IcebergTableWriter {
         let datafusion_table = Arc::new(DataFusionTable::from(table.clone()));
         session_ctx.register_table(&table_name, datafusion_table)?;
 
-        log::info!("Registered Iceberg table '{table_name}' with DataFusion");
+        log::info!(
+            "Registered Iceberg table '{table_name}' for tenant '{tenant_id}' dataset '{dataset_id}' with DataFusion"
+        );
 
         Ok(Self {
             catalog,
@@ -499,11 +500,12 @@ impl IcebergTableWriter {
         let total_rows: usize = optimized_batches.iter().map(|b| b.num_rows()).sum();
 
         log::info!(
-            "Writing {} optimized batches with {} total rows to Iceberg table {} for tenant {}",
+            "Writing {} optimized batches with {} total rows to Iceberg table {} for tenant {}.{}",
             total_batches,
             total_rows,
             self.table.identifier(),
-            self.tenant_id
+            self.tenant_id,
+            self.dataset_id
         );
 
         // Process each optimized batch
@@ -738,10 +740,11 @@ impl IcebergTableWriter {
         }
 
         log::info!(
-            "Writing {} batches to Iceberg table {} for tenant {}",
+            "Writing {} batches to Iceberg table {} for tenant {}.{}",
             batches.len(),
             self.table.identifier(),
-            self.tenant_id
+            self.tenant_id,
+            self.dataset_id
         );
 
         // Count total rows across all batches
@@ -828,9 +831,11 @@ impl IcebergTableWriter {
         let transaction_id = uuid::Uuid::new_v4().simple().to_string();
 
         log::info!(
-            "Beginning transaction {} for Iceberg table {}",
+            "Beginning transaction {} for Iceberg table {} (tenant {}.{})",
             transaction_id,
-            self.table.identifier()
+            self.table.identifier(),
+            self.tenant_id,
+            self.dataset_id
         );
 
         // Update transaction state
@@ -875,9 +880,11 @@ impl IcebergTableWriter {
         };
 
         log::info!(
-            "Committing transaction {} for Iceberg table {} with {} pending operations",
+            "Committing transaction {} for Iceberg table {} (tenant {}.{}) with {} pending operations",
             transaction_id,
             self.table.identifier(),
+            self.tenant_id,
+            self.dataset_id,
             self.pending_operations.len()
         );
 
@@ -1088,9 +1095,11 @@ impl IcebergTableWriter {
         }
 
         log::warn!(
-            "Rolling back transaction {} for Iceberg table {} with {} pending operations",
+            "Rolling back transaction {} for Iceberg table {} (tenant {}.{}) with {} pending operations",
             transaction_id,
             self.table.identifier(),
+            self.tenant_id,
+            self.dataset_id,
             self.pending_operations.len()
         );
 
