@@ -86,11 +86,15 @@ async fn main() -> Result<()> {
     let (otlp_http_stopped_tx, _otlp_http_stopped_rx) = oneshot::channel::<()>();
 
     // Start OTLP/gRPC server
+    let wal_dir = std::env::var("ACCEPTOR_WAL_DIR")
+        .unwrap_or_else(|_| ".wal/acceptor".to_string())
+        .into();
     let grpc_handle = tokio::spawn(async move {
         serve_otlp_grpc(
             otlp_grpc_init_tx,
             otlp_grpc_shutdown_rx,
             otlp_grpc_stopped_tx,
+            wal_dir,
         )
         .await
         .expect("Failed to start OTLP/gRPC server");
