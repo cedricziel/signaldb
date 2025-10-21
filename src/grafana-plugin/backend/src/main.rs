@@ -76,10 +76,22 @@ impl backend::DataService for SignalDBDataSource {
                     async move {
                         let ref_id = query.ref_id.clone();
                         match handle_query(&router_url, &query.query).await {
-                            Ok(frame) => Ok(backend::DataResponse::new(
-                                ref_id,
-                                vec![frame.check().unwrap()],
-                            )),
+                            Ok(frame) => match frame.check() {
+                                Ok(validated_frame) => {
+                                    Ok(backend::DataResponse::new(ref_id, vec![validated_frame]))
+                                }
+                                Err(check_err) => {
+                                    tracing::error!(
+                                        "Frame validation failed for ref_id {}: {:?}",
+                                        ref_id,
+                                        check_err
+                                    );
+                                    Err(QueryError {
+                                        ref_id,
+                                        source: check_err.into(),
+                                    })
+                                }
+                            },
                             Err(e) => {
                                 tracing::error!("Query failed for ref_id {}: {:?}", ref_id, e);
                                 Err(QueryError { ref_id, source: e })
