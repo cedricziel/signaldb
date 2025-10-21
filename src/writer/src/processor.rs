@@ -55,8 +55,8 @@ impl WalProcessor {
 
         log::debug!("Processing {} pending WAL entries", pending_entries.len());
 
-        // Group entries by tenant and table for batch processing
-        let mut grouped_entries: HashMap<(String, String), Vec<(Uuid, RecordBatch)>> =
+        // Group entries by tenant, dataset, and table for batch processing
+        let mut grouped_entries: HashMap<(String, String, String), Vec<(Uuid, RecordBatch)>> =
             HashMap::new();
 
         for entry in pending_entries {
@@ -66,18 +66,19 @@ impl WalProcessor {
             }
 
             let (tenant_id, table_name) = self.determine_target_table(&entry)?;
+            let dataset_id = entry.dataset_id.clone();
             let batch = self.deserialize_entry_data(&entry).await?;
 
             grouped_entries
-                .entry((tenant_id, table_name))
+                .entry((tenant_id, dataset_id, table_name))
                 .or_default()
                 .push((entry.id, batch));
         }
 
         // Process each group using batch writes
-        for ((tenant_id, table_name), entries) in grouped_entries {
+        for ((tenant_id, dataset_id, table_name), entries) in grouped_entries {
             match self
-                .process_batch_for_table(&tenant_id, &table_name, entries)
+                .process_batch_for_table(&tenant_id, &dataset_id, &table_name, entries)
                 .await
             {
                 Ok(processed_ids) => {
@@ -101,10 +102,11 @@ impl WalProcessor {
     async fn process_batch_for_table(
         &mut self,
         tenant_id: &str,
+        dataset_id: &str,
         table_name: &str,
         entries: Vec<(Uuid, RecordBatch)>,
     ) -> Result<Vec<Uuid>> {
-        let writer_key = format!("{tenant_id}:{table_name}");
+        let writer_key = format!("{tenant_id}:{dataset_id}:{table_name}");
 
         // Get or create table writer
         if !self.table_writers.contains_key(&writer_key) {
@@ -112,6 +114,7 @@ impl WalProcessor {
                 &self.config,
                 self.object_store.clone(),
                 tenant_id,
+                dataset_id,
                 table_name,
             )
             .await?;
@@ -217,10 +220,16 @@ impl WalProcessor {
         }
 
         let (tenant_id, table_name) = self.determine_target_table(&entry)?;
+        let dataset_id = entry.dataset_id.clone();
         let batch = self.deserialize_entry_data(&entry).await?;
 
         match self
-            .process_batch_for_table(&tenant_id, &table_name, vec![(entry_id, batch)])
+            .process_batch_for_table(
+                &tenant_id,
+                &dataset_id,
+                &table_name,
+                vec![(entry_id, batch)],
+            )
             .await
         {
             Ok(_) => {

@@ -69,6 +69,7 @@ async fn test_writer_with_custom_pool_config() {
         &config,
         object_store,
         "test_tenant",
+        "test_dataset",
         "metrics_gauge",
         pool_config.clone(),
     )
@@ -119,6 +120,7 @@ async fn test_pool_config_updates() {
         &config,
         object_store,
         "test_tenant",
+        "test_dataset",
         "metrics_gauge",
         CatalogPoolConfig::default(),
     )
@@ -233,6 +235,7 @@ async fn test_concurrent_writer_creation_with_pooling() {
                 &config,
                 object_store,
                 &format!("tenant_{i}"),
+                "test_dataset",
                 "metrics_gauge",
                 pool_config,
             )

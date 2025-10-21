@@ -139,6 +139,7 @@ fn bench_single_batch_writes(c: &mut Criterion) {
                         &config,
                         object_store,
                         &format!("bench_tenant_{}", rand::random::<u32>()),
+                        "bench_dataset",
                         "metrics_gauge",
                     )
                     .await
@@ -179,6 +180,7 @@ fn bench_multi_batch_writes(c: &mut Criterion) {
                         &config,
                         object_store,
                         &format!("bench_tenant_{}", rand::random::<u32>()),
+                        "bench_dataset",
                         "metrics_gauge",
                     )
                     .await
@@ -213,6 +215,7 @@ fn bench_transaction_overhead(c: &mut Criterion) {
                 &config,
                 object_store,
                 &format!("bench_tenant_{}", rand::random::<u32>()),
+                "bench_dataset",
                 "metrics_gauge",
             )
             .await
@@ -232,6 +235,7 @@ fn bench_transaction_overhead(c: &mut Criterion) {
                 &config,
                 object_store,
                 &format!("bench_tenant_{}", rand::random::<u32>()),
+                "bench_dataset",
                 "metrics_gauge",
             )
             .await
@@ -264,6 +268,7 @@ fn bench_writer_creation(c: &mut Criterion) {
                     &config,
                     object_store,
                     &format!("bench_tenant_{}", rand::random::<u32>()),
+                    "bench_dataset",
                     "metrics_gauge",
                 )
                 .await
@@ -299,6 +304,7 @@ fn bench_concurrent_writes(c: &mut Criterion) {
                                 &config,
                                 object_store,
                                 &format!("bench_tenant_{}_{}", i, rand::random::<u32>()),
+                                "bench_dataset",
                                 "metrics_gauge",
                             )
                             .await
@@ -343,6 +349,7 @@ fn bench_memory_patterns(c: &mut Criterion) {
                         &config,
                         object_store,
                         &format!("bench_tenant_{}", rand::random::<u32>()),
+                        "bench_dataset",
                         "metrics_gauge",
                     )
                     .await

@@ -29,9 +29,15 @@ async fn test_transaction_basic_flow() -> Result<()> {
     };
 
     let object_store = Arc::new(InMemory::new());
-    let mut writer = create_iceberg_writer(&config, object_store, "test_tenant", "metrics_gauge")
-        .await
-        .expect("Failed to create Iceberg writer");
+    let mut writer = create_iceberg_writer(
+        &config,
+        object_store,
+        "test_tenant",
+        "test_dataset",
+        "metrics_gauge",
+    )
+    .await
+    .expect("Failed to create Iceberg writer");
 
     // Test 1: Begin transaction
     assert!(!writer.has_active_transaction());
@@ -126,8 +132,14 @@ async fn test_transaction_rollback() -> Result<()> {
     };
 
     let object_store = Arc::new(InMemory::new());
-    let mut writer =
-        create_iceberg_writer(&config, object_store, "test_tenant", "metrics_gauge").await?;
+    let mut writer = create_iceberg_writer(
+        &config,
+        object_store,
+        "test_tenant",
+        "test_dataset",
+        "metrics_gauge",
+    )
+    .await?;
 
     // Begin transaction
     let txn_id = writer.begin_transaction().await?;
@@ -223,8 +235,14 @@ async fn test_transaction_errors() -> Result<()> {
     };
 
     let object_store = Arc::new(InMemory::new());
-    let mut writer =
-        create_iceberg_writer(&config, object_store, "test_tenant", "metrics_gauge").await?;
+    let mut writer = create_iceberg_writer(
+        &config,
+        object_store,
+        "test_tenant",
+        "test_dataset",
+        "metrics_gauge",
+    )
+    .await?;
 
     // Test 1: Cannot begin transaction while one is active
     let txn_id1 = writer.begin_transaction().await?;
@@ -270,8 +288,14 @@ async fn test_write_batches_creates_transaction() -> Result<()> {
     };
 
     let object_store = Arc::new(InMemory::new());
-    let mut writer =
-        create_iceberg_writer(&config, object_store, "test_tenant", "metrics_gauge").await?;
+    let mut writer = create_iceberg_writer(
+        &config,
+        object_store,
+        "test_tenant",
+        "test_dataset",
+        "metrics_gauge",
+    )
+    .await?;
 
     // Create test batches
     let schema = Arc::new(Schema::new(vec![

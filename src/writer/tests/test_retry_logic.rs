@@ -29,9 +29,15 @@ async fn test_retry_config_default() -> Result<()> {
     };
 
     let object_store = Arc::new(InMemory::new());
-    let writer = create_iceberg_writer(&config, object_store, "test_tenant", "metrics_gauge")
-        .await
-        .expect("Failed to create Iceberg writer");
+    let writer = create_iceberg_writer(
+        &config,
+        object_store,
+        "test_tenant",
+        "test_dataset",
+        "metrics_gauge",
+    )
+    .await
+    .expect("Failed to create Iceberg writer");
 
     // Test default retry configuration
     let retry_config = writer.retry_config();
@@ -63,9 +69,15 @@ async fn test_retry_config_custom() -> Result<()> {
     };
 
     let object_store = Arc::new(InMemory::new());
-    let mut writer = create_iceberg_writer(&config, object_store, "test_tenant", "metrics_gauge")
-        .await
-        .expect("Failed to create Iceberg writer");
+    let mut writer = create_iceberg_writer(
+        &config,
+        object_store,
+        "test_tenant",
+        "test_dataset",
+        "metrics_gauge",
+    )
+    .await
+    .expect("Failed to create Iceberg writer");
 
     // Test custom retry configuration
     let custom_retry_config = RetryConfig {
@@ -106,9 +118,15 @@ async fn test_retry_logic_with_valid_batch() -> Result<()> {
     };
 
     let object_store = Arc::new(InMemory::new());
-    let mut writer = create_iceberg_writer(&config, object_store, "test_tenant", "metrics_gauge")
-        .await
-        .expect("Failed to create Iceberg writer");
+    let mut writer = create_iceberg_writer(
+        &config,
+        object_store,
+        "test_tenant",
+        "test_dataset",
+        "metrics_gauge",
+    )
+    .await
+    .expect("Failed to create Iceberg writer");
 
     // Configure shorter retry delays for faster testing
     let retry_config = RetryConfig {

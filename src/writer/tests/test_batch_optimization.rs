@@ -123,6 +123,7 @@ async fn test_custom_batch_config() {
         &config,
         object_store,
         "test_tenant",
+        "test_dataset",
         "metrics_gauge",
         pool_config,
     )
@@ -169,6 +170,7 @@ async fn test_catalog_caching() {
         &config,
         object_store,
         "test_tenant",
+        "test_dataset",
         "metrics_gauge",
         pool_config,
     )
@@ -214,6 +216,7 @@ async fn test_batch_splitting_logic() {
         &config,
         object_store,
         "test_tenant",
+        "test_dataset",
         "metrics_gauge",
         pool_config,
     )
@@ -257,6 +260,7 @@ async fn test_batch_size_optimization() {
         &config,
         object_store,
         "test_tenant",
+        "test_dataset",
         "metrics_gauge",
         pool_config,
     )
@@ -298,6 +302,7 @@ async fn test_memory_optimization() {
         &config,
         object_store,
         "test_tenant",
+        "test_dataset",
         "metrics_gauge",
         pool_config,
     )
@@ -337,6 +342,7 @@ async fn test_concurrent_batch_config() {
         &config,
         object_store,
         "test_tenant",
+        "test_dataset",
         "metrics_gauge",
         pool_config,
     )
