@@ -1,0 +1,43 @@
+# Grafana plugin development environment
+# This compose file runs alongside the main SignalDB services
+version: '3.8'
+
+services:
+  grafana-dev:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      # Enable development mode
+      GF_DEFAULT_APP_MODE: development
+      # Allow loading unsigned plugins
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: signaldb-signaldb-datasource
+      # Admin credentials
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      # Enable plugin logging
+      GF_LOG_FILTERS: plugin.signaldb-signaldb-datasource:debug
+    volumes:
+      # Mount the plugin directory
+      - ./:/var/lib/grafana/plugins/signaldb-signaldb-datasource:rw
+      # Mount provisioning for automatic datasource setup
+      - ./provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - plugin-watcher
+    networks:
+      - signaldb-network
+
+  # Watch and rebuild frontend on changes
+  plugin-watcher:
+    image: node:22-alpine
+    working_dir: /plugin
+    command: npm run dev
+    volumes:
+      - ./:/plugin:rw
+    environment:
+      NODE_ENV: development
+
+networks:
+  signaldb-network:
+    external: true
+    name: signaldb_default

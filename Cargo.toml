@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "src/acceptor",
     "src/common",
+    "src/grafana-plugin/backend",
     "src/querier",
     "src/router",
     "src/signal-producer",
@@ -28,6 +29,7 @@ writer = { path = "src/writer" }
 async-trait = "0.1.88"
 async-stream = "0.3.0"
 futures = "0.3.31"
+reqwest = { version = "0.12", features = ["json"] }
 
 # CLI framework
 clap = { version = "4.5", features = ["derive", "env"] }

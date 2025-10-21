@@ -72,6 +72,7 @@ feature-depth = 1
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste 1.x is unmaintained but is a dependency of datafusion. No security issues reported." },
     { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.8 is a transitive dependency of sqlx-mysql. We don't use MySQL features and the vulnerability is timing-based which isn't relevant for our use case." },
+    { id = "RUSTSEC-2025-0038", reason = "arrow2 0.18.0 is a transitive dependency of grafana-plugin-sdk v0.5.0. arrow2 is unmaintained and we cannot control this dependency. The Grafana plugin is for development/testing only." },
     #"RUSTSEC-0000-0000",
     #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
     #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish
