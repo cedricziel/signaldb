@@ -3,6 +3,7 @@ use crate::schema_transform::transform_trace_v1_to_v2;
 use anyhow::Result;
 use common::config::Configuration;
 use common::schema::{create_catalog_with_config, iceberg_schemas};
+use common::storage::storage_dsn_to_path;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -244,12 +245,15 @@ impl IcebergTableWriter {
             log::info!("Creating new Iceberg table: {table_ident}");
 
             // Construct table location based on storage configuration
+            // Extract the base path from the storage DSN (removing file:// scheme)
+            let storage_base_path = storage_dsn_to_path(&config.storage.dsn)?;
             let table_location = format!(
                 "{}/{}/{}",
-                config.storage.dsn.trim_end_matches('/'),
+                storage_base_path.trim_end_matches('/'),
                 tenant_id,
                 table_name
             );
+            log::debug!("Table location for {table_name}: {table_location}");
 
             // TODO: Temporarily disable partitioning to debug InvalidFormat error
             // The partition spec seems to cause issues when datafusion_iceberg reads the table
