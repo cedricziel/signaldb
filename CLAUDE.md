@@ -29,6 +29,44 @@ cargo machete --with-metadata  # Check for unused dependencies (enhanced analysi
 cargo fmt                  # Format code (run before committing)
 ```
 
+### Building Docker Images
+```bash
+# Build all services
+docker compose build
+
+# Build specific service
+docker compose build signaldb-writer
+docker compose build signaldb-acceptor
+docker compose build signaldb-querier
+docker compose build signaldb-router
+
+# Build with no cache (clean build)
+docker compose build --no-cache
+
+# Build and start services
+docker compose up --build
+
+# Using helper script
+./scripts/build-images.sh           # Build all services
+./scripts/build-images.sh writer    # Build specific service
+```
+
+**Docker Build Details**:
+- Uses multi-stage Dockerfile with Alpine Linux for minimal image sizes
+- Each service image is ~15-25MB (stripped binaries on Alpine base)
+- Build cache optimization: dependencies cached separately from source code
+- First build: ~5-10 minutes (downloads dependencies, compiles everything)
+- Incremental builds: <1 minute (only recompiles changed code)
+- Images use musl libc (Alpine-compatible) instead of glibc
+- Non-root user execution for security
+- Build artifacts stored in `target/release/`
+
+**Image Specifications**:
+- `signaldb/acceptor:latest` - OTLP ingestion service
+- `signaldb/router:latest` - HTTP API and Flight endpoint
+- `signaldb/writer:latest` - Data persistence and storage
+- `signaldb/querier:latest` - Query execution engine
+
 ### Running Individual Services
 ```bash
 # Main SignalDB services
@@ -39,10 +77,68 @@ cargo run --bin writer     # Data ingestion and storage service
 cargo run --bin querier    # Query execution engine (port 9000)
 ```
 
+### Local Development Mode
+Use the `run-dev.sh` script for a quick local development setup with local file storage:
+
+```bash
+# Run in monolithic mode (single process, easiest for development)
+./scripts/run-dev.sh
+
+# Run as microservices (separate processes, logs to .data/logs/)
+./scripts/run-dev.sh services
+
+# With PostgreSQL (starts via docker compose)
+./scripts/run-dev.sh --with-deps --postgres
+
+# SQLite mode (no dependencies, default)
+./scripts/run-dev.sh --sqlite
+```
+
+**What it does**:
+- Creates local storage directories (`.data/wal`, `.data/storage`, `.data/logs`)
+- Configures services to use local filesystem instead of MinIO
+- Uses SQLite by default (no dependencies) or PostgreSQL (with `--with-deps`)
+- Sets up proper service discovery and inter-service communication
+- Handles graceful shutdown with Ctrl+C
+
+**Storage locations**:
+- WAL files: `.data/wal/acceptor/`, `.data/wal/writer/`
+- Parquet data: `.data/storage/`
+- SQLite databases: `.data/signaldb.db`, `.data/catalog.db`
+- Service logs: `.data/logs/*.log` (services mode only)
+
+**Modes**:
+- **Monolithic** (default): All services in one process, logs to stdout, easiest for debugging
+- **Services**: Separate processes per service, logs to individual files, closer to production
+
 ### Infrastructure
 ```bash
-docker compose up          # Start PostgreSQL, Grafana, and supporting services
+docker compose up          # Start PostgreSQL, Grafana, MinIO, and supporting services
+docker compose up --build  # Build images first, then start services
 ```
+
+The docker-compose setup includes:
+- **PostgreSQL**: Service discovery and catalog backend
+- **Grafana**: Visualization and dashboards
+- **MinIO**: S3-compatible object storage (API: port 9000, Console: port 9001)
+- **SignalDB services**: Acceptor, Writer, Querier, Router (built from local Dockerfile)
+
+**Docker Compose Behavior**:
+- First run: Automatically builds all SignalDB service images from source
+- Subsequent runs: Uses cached images unless you specify `--build`
+- Images are tagged as `signaldb/{service}:latest`
+- Built from multi-stage `Dockerfile` with Alpine-based minimal runtime
+
+**Storage Architecture**:
+- Writer and Querier services are configured to use MinIO (S3) for Parquet data storage
+- WAL (Write-Ahead Log) still uses local volumes for durability guarantees
+- MinIO bucket `signaldb` is automatically created on startup via `minio-init` service
+
+MinIO credentials (default):
+- Access Key: `minioadmin`
+- Secret Key: `minioadmin`
+- Console URL: http://localhost:9001
+- API URL: http://localhost:9000
 
 ## Architecture Overview
 
@@ -132,12 +228,54 @@ SignalDB uses a pluggable storage system with DSN-based configuration:
 [storage]
 dsn = "file:///path/to/data"  # Local filesystem storage
 # dsn = "memory://"           # In-memory storage (for testing)
+# dsn = "s3://bucket-name/path"  # S3-compatible storage (MinIO, AWS S3)
 ```
 
 Supported storage backends:
 - **Local filesystem**: `file:///path/to/data`
 - **In-memory**: `memory://` (for testing and development)
-- **Future**: S3, Azure Blob, GCP Cloud Storage via DSN format
+- **S3-compatible**: `s3://bucket-name/path` (MinIO, AWS S3, etc.)
+- **Future**: Azure Blob, GCP Cloud Storage via DSN format
+
+**MinIO/S3 Configuration**:
+
+To use MinIO for object storage, configure environment variables:
+```bash
+# MinIO endpoint (local docker-compose setup)
+AWS_ENDPOINT_URL=http://localhost:9000
+AWS_ACCESS_KEY_ID=minioadmin
+AWS_SECRET_ACCESS_KEY=minioadmin
+AWS_REGION=us-east-1  # MinIO requires a region
+
+# Then use S3 storage DSN
+SIGNALDB_STORAGE_DSN=s3://signaldb/data
+```
+
+For docker-compose services, add to environment (already configured in `compose.yml`):
+```yaml
+environment:
+  AWS_ENDPOINT_URL: http://minio:9000
+  AWS_ACCESS_KEY_ID: minioadmin
+  AWS_SECRET_ACCESS_KEY: minioadmin
+  AWS_REGION: us-east-1
+  AWS_ALLOW_HTTP: "true"
+  SIGNALDB_STORAGE_DSN: s3://signaldb/data
+```
+
+The bucket `signaldb` is automatically created by the `minio-init` service in docker-compose.
+
+To manually create buckets via MinIO console (http://localhost:9001) or using `mc` CLI:
+```bash
+# Install MinIO client
+brew install minio/stable/mc  # macOS
+# Or download from https://min.io/download
+
+# Configure MinIO alias
+mc alias set local http://localhost:9000 minioadmin minioadmin
+
+# Create bucket
+mc mb local/signaldb
+```
 
 ### Schema and Catalog Integration
 
@@ -217,6 +355,101 @@ cargo run --bin signaldb-querier &
 - PostgreSQL recommended for service discovery
 - Requires proper configuration for inter-service communication
 
+## Grafana Datasource Plugin
+
+SignalDB includes a native Grafana datasource plugin located in `src/grafana-plugin/`. The plugin provides unified querying for traces, metrics, and logs through a single datasource.
+
+### Plugin Architecture
+
+**Frontend** (TypeScript/React):
+- Query editor with signal type selection (traces, metrics, logs)
+- Configuration editor for Router connection settings
+- Built with Grafana plugin SDK (@grafana/data, @grafana/ui)
+
+**Backend** (Rust):
+- Built with grafana-plugin-sdk (0.4.0)
+- Connects to SignalDB Router (HTTP or Flight)
+- Implements datasource query and health check handlers
+- Binary name: `gpx_signaldb_datasource`
+
+### Development Commands
+
+```bash
+# From workspace root
+npm install                     # Install all workspace dependencies
+
+# Frontend development
+npm run grafana:dev             # Watch and rebuild frontend
+npm run grafana:build           # Production build
+
+# Backend development (from src/grafana-plugin)
+cd src/grafana-plugin
+npm run build:backend           # Build Rust backend
+npm run dev:backend             # Watch and rebuild backend
+
+# Full plugin build
+npm run build                   # Build both frontend and backend
+```
+
+### Plugin Development
+
+Start the plugin development environment:
+
+```bash
+# 1. Start main SignalDB services (from root)
+docker compose up
+
+# 2. Build and start Grafana with plugin (from src/grafana-plugin)
+cd src/grafana-plugin
+npm install
+npm run build                   # Build plugin
+docker compose up               # Start Grafana dev server
+```
+
+Access Grafana at http://localhost:3000 (admin/admin). The SignalDB datasource will be available in Administration > Plugins.
+
+### Plugin Configuration
+
+Configure the datasource with:
+- **Router URL**: SignalDB Router address (default: http://localhost:3001)
+- **Protocol**: HTTP or Arrow Flight
+- **Timeout**: Query timeout in seconds (default: 30)
+
+### Query Types
+
+The plugin supports three signal types:
+
+1. **Traces**: Query using TraceQL syntax
+   - Example: `{ service.name = "my-service" } | duration > 100ms`
+
+2. **Metrics**: Query using PromQL syntax
+   - Example: `up{job="my-job"}`
+
+3. **Logs**: Query using LogQL syntax
+   - Example: `{app="my-app"} |= "error"`
+
+### Plugin Structure
+
+```
+src/grafana-plugin/
+├── backend/              # Rust backend (grafana-plugin-sdk)
+│   ├── src/
+│   │   └── main.rs      # Datasource implementation
+│   └── Cargo.toml
+├── src/                  # TypeScript frontend
+│   ├── components/
+│   │   ├── ConfigEditor.tsx
+│   │   └── QueryEditor.tsx
+│   ├── datasource.ts    # Datasource class
+│   ├── module.ts        # Plugin entry point
+│   ├── plugin.json      # Plugin metadata
+│   └── types.ts         # TypeScript types
+├── dist/                # Compiled binaries and frontend
+├── build-backend.sh     # Backend build script
+├── docker-compose.yaml  # Development environment
+└── package.json         # npm configuration
+```
+
 ## Development Memories
 - For arrow & parquet try using the ones re-exported by datafusion
 - We need to run cargo fmt after bigger chunks of work to apply the canonical formatting
@@ -225,6 +458,8 @@ cargo run --bin signaldb-querier &
 - Always run cargo commands from the workspace root
 - Run cargo clippy and fix all warnings before committing
 - Project uses Rust edition 2024, requires Rust 1.86.0+ minimum
+- The Grafana plugin uses npm workspaces - install dependencies from workspace root
+- Plugin backend must be built before starting Grafana dev server
 
 ## Code Quality Standards
 
