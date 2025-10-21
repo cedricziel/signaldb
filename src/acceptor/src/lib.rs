@@ -93,6 +93,7 @@ pub async fn serve_otlp_grpc(
     init_tx: oneshot::Sender<()>,
     shutdown_rx: oneshot::Receiver<()>,
     stopped_tx: oneshot::Sender<()>,
+    wal_dir: std::path::PathBuf,
 ) -> Result<(), anyhow::Error> {
     let addr: SocketAddr = "0.0.0.0:4317"
         .parse()
@@ -126,37 +127,25 @@ pub async fn serve_otlp_grpc(
     // The WalManager will create tenant/dataset-specific WALs on demand
 
     // Base WAL config for traces - baseline configuration
-    let mut traces_wal_config = WalConfig::with_defaults(
-        std::env::var("ACCEPTOR_WAL_DIR")
-            .unwrap_or_else(|_| ".wal".to_string())
-            .into(),
-    );
+    let mut traces_wal_config = WalConfig::with_defaults(wal_dir.clone());
     traces_wal_config.max_segment_size = 64 * 1024 * 1024; // 64MB
     traces_wal_config.max_buffer_entries = 1000;
     traces_wal_config.flush_interval_secs = 30;
 
     // Base WAL config for logs - higher volume, more frequent flushes
-    let mut logs_wal_config = WalConfig::with_defaults(
-        std::env::var("ACCEPTOR_WAL_DIR")
-            .unwrap_or_else(|_| ".wal".to_string())
-            .into(),
-    );
+    let mut logs_wal_config = WalConfig::with_defaults(wal_dir.clone());
     logs_wal_config.max_segment_size = 64 * 1024 * 1024; // 64MB
     logs_wal_config.max_buffer_entries = 2000; // Higher buffer for log volume
     logs_wal_config.flush_interval_secs = 15; // Flush more frequently
 
     // Base WAL config for metrics - highest volume, most aggressive flushing
-    let mut metrics_wal_config = WalConfig::with_defaults(
-        std::env::var("ACCEPTOR_WAL_DIR")
-            .unwrap_or_else(|_| ".wal".to_string())
-            .into(),
-    );
+    let mut metrics_wal_config = WalConfig::with_defaults(wal_dir.clone());
     metrics_wal_config.max_segment_size = 128 * 1024 * 1024; // 128MB - larger segments for high volume
     metrics_wal_config.max_buffer_entries = 5000; // Much higher buffer for metrics
     metrics_wal_config.flush_interval_secs = 10; // Flush frequently for metrics
 
     // Create WalManager with the three base configurations
-    // WAL paths will be: .wal/{tenant}/{dataset}/{signal}/
+    // WAL paths will be: {wal_dir}/{tenant}/{dataset}/{signal}/
     let wal_manager = Arc::new(WalManager::new(
         traces_wal_config,
         logs_wal_config,
@@ -164,7 +153,8 @@ pub async fn serve_otlp_grpc(
     ));
 
     log::info!(
-        "✅ Initialized WalManager for multi-tenant WAL isolation (paths: .wal/{{tenant}}/{{dataset}}/{{signal}})"
+        "✅ Initialized WalManager for multi-tenant WAL isolation (paths: {}/{{tenant}}/{{dataset}}/{{signal}})",
+        wal_dir.display()
     );
 
     // Create Authenticator for multi-tenant authentication (using catalog/auth_config extracted earlier)

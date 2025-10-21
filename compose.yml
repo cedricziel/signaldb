@@ -24,6 +24,10 @@ services:
       retries: 3
 
   signaldb-writer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: writer
     image: signaldb/writer:latest
     environment:
       SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
@@ -32,17 +36,23 @@ services:
       WRITER_ADVERTISE_ADDR: "signaldb-writer:50051"
       # WAL persistence configuration - mounted to persistent volume
       WRITER_WAL_DIR: "/data/wal"
-      SIGNALDB_STORAGE_ADAPTERS_LOCAL_URL: "file:///data/storage"
+      # S3/MinIO storage configuration
+      SIGNALDB_STORAGE_DSN: "s3://signaldb/data"
+      AWS_ENDPOINT_URL: "http://minio:9000"
+      AWS_ACCESS_KEY_ID: "minioadmin"
+      AWS_SECRET_ACCESS_KEY: "minioadmin"
+      AWS_REGION: "us-east-1"
+      AWS_ALLOW_HTTP: "true"
     volumes:
       # Persistent WAL storage to survive container restarts
       - writer-wal:/data/wal
-      # Persistent data storage
-      - writer-data:/data/storage
     ports:
       - "50051:50051"
     depends_on:
       postgres:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "50051"]
       interval: 30s
@@ -55,6 +65,10 @@ services:
           cpus: '1'
 
   signaldb-acceptor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: acceptor
     image: signaldb/acceptor:latest
     environment:
       SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
@@ -78,22 +92,36 @@ services:
       retries: 3
 
   signaldb-querier:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: querier
     image: signaldb/querier:latest
     environment:
       SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
       SIGNALDB_DISCOVERY_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
       QUERIER_FLIGHT_ADDR: "0.0.0.0:50054"
       QUERIER_ADVERTISE_ADDR: "signaldb-querier:50054"
-      SIGNALDB_STORAGE_ADAPTERS_LOCAL_URL: "file:///data/storage"
-    volumes:
-      - writer-data:/data/storage:ro  # Read-only access to writer data
+      # S3/MinIO storage configuration
+      SIGNALDB_STORAGE_DSN: "s3://signaldb/data"
+      AWS_ENDPOINT_URL: "http://minio:9000"
+      AWS_ACCESS_KEY_ID: "minioadmin"
+      AWS_SECRET_ACCESS_KEY: "minioadmin"
+      AWS_REGION: "us-east-1"
+      AWS_ALLOW_HTTP: "true"
     ports:
       - "50054:50054"
     depends_on:
       postgres:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
 
   signaldb-router:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: router
     image: signaldb/router:latest
     environment:
       SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
@@ -106,6 +134,37 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"    # MinIO API
+      - "9001:9001"    # MinIO Console
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set minio http://minio:9000 minioadmin minioadmin;
+      mc mb minio/signaldb --ignore-existing;
+      mc anonymous set download minio/signaldb;
+      echo 'MinIO bucket signaldb created successfully';
+      "
+    restart: "no"
 
 volumes:
   postgres-data:
@@ -122,10 +181,5 @@ volumes:
       type: none
       o: bind
       device: ./data/acceptor-wal
-  # Persistent data storage
-  writer-data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ./data/writer-storage
+  # MinIO object storage - stores all Parquet data
+  minio-data:

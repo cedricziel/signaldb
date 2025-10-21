@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use common::cli::{CommonArgs, CommonCommands, utils};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use tokio::sync::oneshot;
 
 #[derive(Parser)]
@@ -25,6 +26,14 @@ struct Cli {
 
     #[arg(long, help = "Bind address for servers", default_value = "0.0.0.0")]
     bind: String,
+
+    #[arg(
+        long,
+        env = "ACCEPTOR_WAL_DIR",
+        help = "WAL directory path",
+        default_value = ".wal/acceptor"
+    )]
+    wal_dir: PathBuf,
 }
 
 #[derive(Subcommand)]
@@ -88,8 +97,11 @@ async fn main() -> Result<()> {
     let (http_stopped_tx, http_stopped_rx) = oneshot::channel::<()>();
 
     // Spawn OTLP/gRPC acceptor
+    let wal_dir = cli.wal_dir.clone();
     let grpc_handle = tokio::spawn(async move {
-        if let Err(e) = serve_otlp_grpc(grpc_init_tx, grpc_shutdown_rx, grpc_stopped_tx).await {
+        if let Err(e) =
+            serve_otlp_grpc(grpc_init_tx, grpc_shutdown_rx, grpc_stopped_tx, wal_dir).await
+        {
             log::error!("OTLP/gRPC server error: {e}");
         }
     });

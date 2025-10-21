@@ -1,0 +1,49 @@
+{
+  "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
+  "type": "datasource",
+  "name": "SignalDB",
+  "id": "signaldb-signaldb-datasource",
+  "metrics": true,
+  "logs": true,
+  "tracing": true,
+  "backend": true,
+  "executable": "gpx_signaldb_datasource",
+  "info": {
+    "description": "Native datasource for SignalDB - unified observability signal database for traces, metrics, and logs",
+    "author": {
+      "name": "SignalDB",
+      "url": "https://github.com/signaldb/signaldb"
+    },
+    "keywords": [
+      "datasource",
+      "observability",
+      "traces",
+      "metrics",
+      "logs",
+      "otlp",
+      "tempo",
+      "fdap"
+    ],
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "links": [
+      {
+        "name": "GitHub",
+        "url": "https://github.com/signaldb/signaldb"
+      },
+      {
+        "name": "Documentation",
+        "url": "https://github.com/signaldb/signaldb/blob/main/README.md"
+      }
+    ],
+    "screenshots": [],
+    "version": "%VERSION%",
+    "updated": "%TODAY%"
+  },
+  "dependencies": {
+    "grafanaDependency": ">=10.4.0",
+    "plugins": []
+  }
+}
