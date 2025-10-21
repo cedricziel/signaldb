@@ -6277,6 +6277,7 @@ dependencies = [
  "router",
  "tokio",
  "tonic 0.12.3",
+ "writer",
 ]
 
 [[package]]
