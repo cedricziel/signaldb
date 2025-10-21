@@ -83,7 +83,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 log = "0.4"
-anyhow = "1.0.98"
+anyhow = "1.0.100"
 
 # Use the same axum version that tonic depends on
 axum = "0.7.9"
