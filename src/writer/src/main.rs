@@ -25,7 +25,12 @@ struct Cli {
     #[arg(long, help = "Arrow Flight server port", default_value = "50061")]
     flight_port: u16,
 
-    #[arg(long, help = "WAL directory path", default_value = ".wal/writer")]
+    #[arg(
+        long,
+        env = "WRITER_WAL_DIR",
+        help = "WAL directory path",
+        default_value = ".wal/writer"
+    )]
     wal_dir: PathBuf,
 
     #[arg(long, help = "Bind address for servers", default_value = "0.0.0.0")]
