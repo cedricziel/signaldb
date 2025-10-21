@@ -49,6 +49,7 @@ export function ConfigEditor(props: Props) {
     onOptionsChange({
       ...options,
       secureJsonData: {
+        ...options.secureJsonData,
         apiKey: event.target.value,
       },
     });
