@@ -60,7 +60,7 @@ jobs:
         run: tar -czf target-deps.tar.gz target/
 
       - name: Upload target artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: target-deps-${{ github.run_id }}
           path: target-deps.tar.gz
@@ -200,7 +200,7 @@ jobs:
           fi
 
       - name: Upload binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: binaries-${{ matrix.os }}-${{ matrix.deployment }}
           path: target/release/signaldb*
