@@ -4,10 +4,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use url::Url;
 
-// Keep Apache Iceberg for schema definitions (used throughout codebase)
-use iceberg::io::FileIOBuilder;
-use iceberg_catalog_memory::MemoryCatalog;
-
 // Use JanKaul's iceberg-rust for catalog implementation
 use iceberg_rust::catalog::Catalog as JanKaulCatalog;
 use iceberg_rust::object_store::ObjectStoreBuilder;
@@ -194,17 +190,10 @@ pub async fn create_default_catalog() -> Result<Arc<dyn JanKaulCatalog>> {
     create_catalog(SchemaConfig::default()).await
 }
 
-/// Wrapper to provide compatibility between JanKaul catalog and Apache Iceberg operations
-struct CatalogWrapper {
-    jankaul_catalog: Arc<dyn JanKaulCatalog>,
-    #[allow(dead_code)]
-    apache_catalog: Arc<dyn iceberg::Catalog>, // For schema operations only
-}
-
 /// Tenant-aware schema registry for managing catalogs and schemas per tenant
 pub struct TenantSchemaRegistry {
     pub(crate) config: Configuration,
-    catalogs: HashMap<String, CatalogWrapper>,
+    catalogs: HashMap<String, Arc<dyn JanKaulCatalog>>,
 }
 
 impl TenantSchemaRegistry {
@@ -227,36 +216,28 @@ impl TenantSchemaRegistry {
         }
 
         // Return cached catalog if available
-        if let Some(wrapper) = self.catalogs.get(tenant_id) {
-            return Ok(wrapper.jankaul_catalog.clone());
+        if let Some(catalog) = self.catalogs.get(tenant_id) {
+            return Ok(catalog.clone());
         }
 
-        // Create new catalogs for tenant
+        // Create new catalog for tenant
         let tenant_schema_config = self.config.get_tenant_schema_config(tenant_id);
 
         // Create object store builder from storage config
         let object_store_builder = create_object_store_builder_from_config(&self.config.storage)?;
 
         // Create JanKaul catalog for actual operations
-        let jankaul_catalog = create_jankaul_sql_catalog_with_builder(
+        let catalog = create_jankaul_sql_catalog_with_builder(
             &tenant_schema_config.catalog_uri,
             "signaldb",
             object_store_builder,
         )
         .await?;
 
-        // Create Apache catalog for schema compatibility (temporary)
-        let file_io = FileIOBuilder::new("memory").build()?;
-        let apache_catalog: Arc<dyn iceberg::Catalog> = Arc::new(MemoryCatalog::new(file_io, None));
+        // Cache the catalog
+        self.catalogs.insert(tenant_id.to_string(), catalog.clone());
 
-        // Cache both catalogs
-        let wrapper = CatalogWrapper {
-            jankaul_catalog: jankaul_catalog.clone(),
-            apache_catalog,
-        };
-        self.catalogs.insert(tenant_id.to_string(), wrapper);
-
-        Ok(jankaul_catalog)
+        Ok(catalog)
     }
 
     /// Get custom schemas for a tenant

@@ -1710,7 +1710,6 @@ dependencies = [
  "hex",
  "humantime-serde",
  "iceberg",
- "iceberg-catalog-memory",
  "iceberg-rust",
  "iceberg-sql-catalog",
  "log",
@@ -3734,20 +3733,6 @@ dependencies = [
  "url",
  "uuid",
  "zstd",
-]
-
-[[package]]
-name = "iceberg-catalog-memory"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64da7963b3b06b0780b26867e8992eb0b911cc3f9b59f48715792a19b73fc3b6"
-dependencies = [
- "async-trait",
- "futures",
- "iceberg",
- "itertools 0.13.0",
- "serde_json",
- "uuid",
 ]
 
 [[package]]
@@ -7030,7 +7015,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2 0.6.1",

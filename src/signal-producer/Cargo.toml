@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "time"] }
 
 opentelemetry.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["trace"] }
