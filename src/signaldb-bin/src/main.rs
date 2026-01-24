@@ -88,6 +88,10 @@ async fn main() -> Result<()> {
     let (_otlp_http_shutdown_tx, otlp_http_shutdown_rx) = oneshot::channel::<()>();
     let (otlp_http_stopped_tx, _otlp_http_stopped_rx) = oneshot::channel::<()>();
 
+    // Shutdown channels for Flight services
+    let (router_flight_shutdown_tx, router_flight_shutdown_rx) = oneshot::channel::<()>();
+    let (writer_flight_shutdown_tx, writer_flight_shutdown_rx) = oneshot::channel::<()>();
+
     // Initialize Writer components
     let object_store = common::storage::create_object_store(&config.storage)
         .context("Failed to initialize object store")?;
@@ -162,7 +166,10 @@ async fn main() -> Result<()> {
             .add_service(
                 arrow_flight::flight_service_server::FlightServiceServer::new(flight_service),
             )
-            .serve(flight_addr)
+            .serve_with_shutdown(flight_addr, async {
+                router_flight_shutdown_rx.await.ok();
+                log::info!("Router Flight service shutting down gracefully");
+            })
             .await
         {
             Ok(_) => log::info!("Router Flight service stopped"),
@@ -181,7 +188,10 @@ async fn main() -> Result<()> {
                     writer_flight_service,
                 ),
             )
-            .serve(writer_flight_addr)
+            .serve_with_shutdown(writer_flight_addr, async {
+                writer_flight_shutdown_rx.await.ok();
+                log::info!("Writer Flight service shutting down gracefully");
+            })
             .await
         {
             Ok(_) => log::info!("Writer Flight service stopped"),
@@ -209,6 +219,10 @@ async fn main() -> Result<()> {
     if let Err(e) = router_bootstrap.shutdown().await {
         log::error!("Failed to shutdown router service bootstrap: {e}");
     }
+
+    // Signal Flight servers to shutdown gracefully
+    let _ = router_flight_shutdown_tx.send(());
+    let _ = writer_flight_shutdown_tx.send(());
 
     // Wait for servers to stop
     let _ = grpc_handle.await;
