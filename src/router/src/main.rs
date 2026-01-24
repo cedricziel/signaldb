@@ -76,8 +76,8 @@ async fn main() -> Result<()> {
     let state = InMemoryStateImpl::new(router_bootstrap.catalog().clone(), config.clone());
 
     // Start background service discovery polling
-    if config.discovery.is_some() {
-        let poll_interval = config.discovery.as_ref().unwrap().poll_interval;
+    if let Some(discovery) = &config.discovery {
+        let poll_interval = discovery.poll_interval;
         state
             .service_registry()
             .start_background_polling(poll_interval)

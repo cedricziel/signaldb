@@ -71,8 +71,8 @@ async fn main() -> Result<()> {
     let state = InMemoryStateImpl::new(router_bootstrap.catalog().clone(), config.clone());
 
     // Start background service discovery polling
-    if config.discovery.is_some() {
-        let poll_interval = config.discovery.as_ref().unwrap().poll_interval;
+    if let Some(discovery) = &config.discovery {
+        let poll_interval = discovery.poll_interval;
         state
             .service_registry()
             .start_background_polling(poll_interval)
@@ -213,7 +213,15 @@ async fn main() -> Result<()> {
         log::error!("Failed to shutdown router service bootstrap: {e}");
     }
 
+    // Wait for servers to stop
+    let _ = grpc_handle.await;
+    let _ = http_handle.await;
+    let _ = http_router_handle.await;
+    let _ = flight_handle.await;
+    let _ = writer_flight_handle.await;
+
     // Shutdown Writer WAL and flush any remaining data
+    // Note: This must run after awaiting writer_flight_handle so the Arc reference is dropped
     if let Ok(wal) = Arc::try_unwrap(writer_wal) {
         wal.shutdown()
             .await
@@ -221,13 +229,6 @@ async fn main() -> Result<()> {
     } else {
         log::warn!("Could not get exclusive access to Writer WAL for shutdown - forcing flush");
     }
-
-    // Wait for servers to stop
-    let _ = grpc_handle.await;
-    let _ = http_handle.await;
-    let _ = http_router_handle.await;
-    let _ = flight_handle.await;
-    let _ = writer_flight_handle.await;
 
     Ok(())
 }
