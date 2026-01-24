@@ -45,7 +45,6 @@ object_store = { version = "0.12.4", features = ["aws"] }
 
 # Apache Iceberg support (for schema management)
 iceberg = { version = "0.5.1" }
-iceberg-catalog-memory = { version = "0.5.1" }
 # JanKaul's datafusion_iceberg (for write operations only)
 datafusion_iceberg = { version = "0.8.0" }
 iceberg-rust = { version = "0.8.0" }

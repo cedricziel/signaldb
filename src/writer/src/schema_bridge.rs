@@ -489,101 +489,9 @@ pub fn get_table_metadata_for_conversion(
     Ok((table_name, table_location))
 }
 
-/// Create a JanKaul iceberg-rust Table from ConvertedTableInfo
-/// This enables actual DataFusionTable registration for SQL operations
-pub async fn create_jankaul_table_from_converted(
-    table_info: &ConvertedTableInfo,
-    apache_catalog: &Arc<dyn iceberg::Catalog>,
-) -> Result<iceberg::table::Table> {
-    log::info!(
-        "Creating JanKaul Table from converted table info: {}",
-        table_info.name
-    );
-
-    // For now, we'll create an Apache Iceberg table and return it
-    // This is a temporary solution until full JanKaul table creation is implemented
-    // The key insight is that we need to properly create the table with the right catalog
-
-    // Create namespace and table identifier
-    let namespace = iceberg::NamespaceIdent::from_strs(vec!["default"])?;
-    let table_ident = iceberg::TableIdent::new(namespace.clone(), table_info.name.clone());
-
-    // Check if table already exists and load it
-    if apache_catalog.table_exists(&table_ident).await? {
-        log::debug!("Loading existing Apache Iceberg table: {}", table_info.name);
-        let table = apache_catalog.load_table(&table_ident).await?;
-        return Ok(table);
-    }
-
-    // Convert our schema back to Apache Iceberg format for table creation
-    let apache_schema = convert_converted_schema_to_apache(&table_info.schema)?;
-
-    // Create partition specs if any exist
-    let partition_spec = if !table_info.partition_specs.is_empty() {
-        convert_converted_partition_spec_to_apache(&table_info.partition_specs[0], &apache_schema)?
-    } else {
-        // Create unpartitioned spec
-        iceberg::spec::PartitionSpec::builder(apache_schema.clone())
-            .with_spec_id(1)
-            .build()?
-    };
-
-    // Create the table
-    log::debug!(
-        "Creating new Apache Iceberg table: {} at {}",
-        table_info.name,
-        table_info.location
-    );
-
-    // Create namespace if it doesn't exist
-    if !apache_catalog.namespace_exists(&namespace).await? {
-        apache_catalog
-            .create_namespace(&namespace, std::collections::HashMap::new())
-            .await?;
-    }
-
-    let table_creation = iceberg::TableCreation::builder()
-        .name(table_info.name.clone())
-        .schema(apache_schema)
-        .partition_spec(partition_spec)
-        .build();
-
-    let table = apache_catalog
-        .create_table(&namespace, table_creation)
-        .await?;
-
-    log::warn!(
-        "Created Apache Iceberg table instead of JanKaul table - full JanKaul integration pending"
-    );
-    log::info!("Successfully created table: {}", table_info.name);
-    Ok(table)
-}
-
-/// Convert ConvertedSchema back to Apache Iceberg Schema for table creation
-fn convert_converted_schema_to_apache(
-    converted_schema: &ConvertedSchema,
-) -> Result<iceberg::spec::Schema> {
-    log::debug!("Converting ConvertedSchema back to Apache Iceberg format");
-
-    let mut fields = Vec::new();
-
-    for field in &converted_schema.fields {
-        let apache_field = convert_converted_field_to_apache(field)?;
-        fields.push(apache_field);
-    }
-
-    let schema = iceberg::spec::Schema::builder()
-        .with_fields(fields)
-        .build()?;
-
-    log::debug!(
-        "Successfully converted schema with {} fields",
-        converted_schema.fields.len()
-    );
-    Ok(schema)
-}
-
 /// Convert ConvertedField back to Apache Iceberg NestedField
+/// Used in tests to verify round-trip conversion
+#[cfg(test)]
 fn convert_converted_field_to_apache(converted_field: &ConvertedField) -> Result<Arc<NestedField>> {
     let field_type = convert_converted_type_to_apache(&converted_field.field_type)?;
 
@@ -597,6 +505,8 @@ fn convert_converted_field_to_apache(converted_field: &ConvertedField) -> Result
 }
 
 /// Convert ConvertedType back to Apache Iceberg Type
+/// Used in tests to verify round-trip conversion
+#[cfg(test)]
 fn convert_converted_type_to_apache(converted_type: &ConvertedType) -> Result<ApacheType> {
     match converted_type {
         ConvertedType::Primitive(primitive) => {
@@ -658,6 +568,8 @@ fn convert_converted_type_to_apache(converted_type: &ConvertedType) -> Result<Ap
 }
 
 /// Convert ConvertedPrimitiveType back to Apache Iceberg PrimitiveType
+/// Used in tests to verify round-trip conversion
+#[cfg(test)]
 fn convert_converted_primitive_to_apache(
     converted_primitive: &ConvertedPrimitiveType,
 ) -> Result<ApachePrimitiveType> {
@@ -684,42 +596,6 @@ fn convert_converted_primitive_to_apache(
     };
 
     Ok(apache_primitive)
-}
-
-/// Convert ConvertedPartitionSpec back to Apache Iceberg PartitionSpec
-fn convert_converted_partition_spec_to_apache(
-    converted_spec: &ConvertedPartitionSpec,
-    schema: &iceberg::spec::Schema,
-) -> Result<iceberg::spec::PartitionSpec> {
-    let mut builder =
-        iceberg::spec::PartitionSpec::builder(schema.clone()).with_spec_id(converted_spec.spec_id);
-
-    for field in &converted_spec.fields {
-        let transform = convert_converted_transform_to_apache(&field.transform)?;
-        builder = builder.add_partition_field(&field.name, &field.name, transform)?;
-    }
-
-    let spec = builder.build()?;
-    Ok(spec)
-}
-
-/// Convert ConvertedTransform back to Apache Iceberg Transform
-fn convert_converted_transform_to_apache(
-    converted_transform: &ConvertedTransform,
-) -> Result<iceberg::spec::Transform> {
-    let apache_transform = match converted_transform {
-        ConvertedTransform::Identity => iceberg::spec::Transform::Identity,
-        ConvertedTransform::Bucket(num_buckets) => iceberg::spec::Transform::Bucket(*num_buckets),
-        ConvertedTransform::Truncate(width) => iceberg::spec::Transform::Truncate(*width),
-        ConvertedTransform::Year => iceberg::spec::Transform::Year,
-        ConvertedTransform::Month => iceberg::spec::Transform::Month,
-        ConvertedTransform::Day => iceberg::spec::Transform::Day,
-        ConvertedTransform::Hour => iceberg::spec::Transform::Hour,
-        ConvertedTransform::Void => iceberg::spec::Transform::Void,
-        ConvertedTransform::Unknown => iceberg::spec::Transform::Unknown,
-    };
-
-    Ok(apache_transform)
 }
 
 /// Connection pool configuration for catalog operations
