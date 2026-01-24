@@ -3,10 +3,13 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use common::cli::{CommonArgs, CommonCommands, utils};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
+use common::wal::{Wal, WalConfig};
 use router::{InMemoryStateImpl, RouterState, create_flight_service, create_router};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::sync::oneshot;
 use tonic::transport::Server;
+use writer::IcebergWriterFlightService;
 
 #[derive(Parser)]
 #[command(name = "signaldb")]
@@ -68,8 +71,8 @@ async fn main() -> Result<()> {
     let state = InMemoryStateImpl::new(router_bootstrap.catalog().clone(), config.clone());
 
     // Start background service discovery polling
-    if config.discovery.is_some() {
-        let poll_interval = config.discovery.as_ref().unwrap().poll_interval;
+    if let Some(discovery) = &config.discovery {
+        let poll_interval = discovery.poll_interval;
         state
             .service_registry()
             .start_background_polling(poll_interval)
@@ -85,12 +88,44 @@ async fn main() -> Result<()> {
     let (_otlp_http_shutdown_tx, otlp_http_shutdown_rx) = oneshot::channel::<()>();
     let (otlp_http_stopped_tx, _otlp_http_stopped_rx) = oneshot::channel::<()>();
 
+    // Shutdown channels for Flight services
+    let (router_flight_shutdown_tx, router_flight_shutdown_rx) = oneshot::channel::<()>();
+    let (writer_flight_shutdown_tx, writer_flight_shutdown_rx) = oneshot::channel::<()>();
+
+    // Initialize Writer components
+    let object_store = common::storage::create_object_store(&config.storage)
+        .context("Failed to initialize object store")?;
+
+    let writer_wal_dir =
+        std::env::var("WRITER_WAL_DIR").unwrap_or_else(|_| ".data/wal/writer".to_string());
+    let writer_wal_config = WalConfig {
+        wal_dir: writer_wal_dir.into(),
+        ..Default::default()
+    };
+
+    let mut writer_wal = Wal::new(writer_wal_config)
+        .await
+        .context("Failed to initialize Writer WAL")?;
+    writer_wal.start_background_flush();
+    let writer_wal = Arc::new(writer_wal);
+
+    // Create Iceberg-based Flight ingestion service with WAL
+    let writer_flight_service =
+        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+
+    // Start background WAL processing for Iceberg writes
+    let writer_bg_handle = writer_flight_service.start_background_processing();
+
     // Start OTLP/gRPC server
+    let wal_dir = std::env::var("ACCEPTOR_WAL_DIR")
+        .unwrap_or_else(|_| ".wal/acceptor".to_string())
+        .into();
     let grpc_handle = tokio::spawn(async move {
         serve_otlp_grpc(
             otlp_grpc_init_tx,
             otlp_grpc_shutdown_rx,
             otlp_grpc_stopped_tx,
+            wal_dir,
         )
         .await
         .expect("Failed to start OTLP/gRPC server");
@@ -121,21 +156,46 @@ async fn main() -> Result<()> {
         // that supports the current usage pattern
     });
 
-    // Start Flight service
+    // Start Router Flight service
     let flight_service = create_flight_service(state);
     let flight_addr = SocketAddr::from(([0, 0, 0, 0], 50053));
     let flight_handle = tokio::spawn(async move {
-        log::info!("Starting Flight service on {flight_addr}");
+        log::info!("Starting Router Flight service on {flight_addr}");
 
         match Server::builder()
             .add_service(
                 arrow_flight::flight_service_server::FlightServiceServer::new(flight_service),
             )
-            .serve(flight_addr)
+            .serve_with_shutdown(flight_addr, async {
+                router_flight_shutdown_rx.await.ok();
+                log::info!("Router Flight service shutting down gracefully");
+            })
             .await
         {
-            Ok(_) => log::info!("Flight service stopped"),
-            Err(e) => log::error!("Flight service error: {e}"),
+            Ok(_) => log::info!("Router Flight service stopped"),
+            Err(e) => log::error!("Router Flight service error: {e}"),
+        }
+    });
+
+    // Start Writer Flight service
+    let writer_flight_addr = SocketAddr::from(([0, 0, 0, 0], 50051));
+    let writer_flight_handle = tokio::spawn(async move {
+        log::info!("Starting Writer Flight service on {writer_flight_addr}");
+
+        match Server::builder()
+            .add_service(
+                arrow_flight::flight_service_server::FlightServiceServer::new(
+                    writer_flight_service,
+                ),
+            )
+            .serve_with_shutdown(writer_flight_addr, async {
+                writer_flight_shutdown_rx.await.ok();
+                log::info!("Writer Flight service shutting down gracefully");
+            })
+            .await
+        {
+            Ok(_) => log::info!("Writer Flight service stopped"),
+            Err(e) => log::error!("Writer Flight service error: {e}"),
         }
     });
 
@@ -154,16 +214,36 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to listen for ctrl+c signal")?;
     log::info!("Shutting down service discovery and other services");
+
     // Graceful deregistration using service bootstrap
     if let Err(e) = router_bootstrap.shutdown().await {
         log::error!("Failed to shutdown router service bootstrap: {e}");
     }
+
+    // Signal Flight servers to shutdown gracefully
+    let _ = router_flight_shutdown_tx.send(());
+    let _ = writer_flight_shutdown_tx.send(());
 
     // Wait for servers to stop
     let _ = grpc_handle.await;
     let _ = http_handle.await;
     let _ = http_router_handle.await;
     let _ = flight_handle.await;
+    let _ = writer_flight_handle.await;
+
+    // Stop background WAL processing task to release Arc<Wal> reference
+    log::info!("Stopping background WAL processing task");
+    writer_bg_handle.abort();
+    let _ = writer_bg_handle.await;
+
+    // Shutdown Writer WAL and flush any remaining data
+    if let Ok(wal) = Arc::try_unwrap(writer_wal) {
+        wal.shutdown()
+            .await
+            .context("Failed to shutdown Writer WAL")?;
+    } else {
+        log::warn!("Could not get exclusive access to Writer WAL for shutdown - forcing flush");
+    }
 
     Ok(())
 }

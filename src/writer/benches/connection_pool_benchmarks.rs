@@ -119,6 +119,7 @@ fn bench_writer_creation_no_pool(c: &mut Criterion) {
                     &config,
                     object_store,
                     &format!("tenant_{}", rand::random::<u32>()),
+                    "bench_dataset",
                     "metrics_gauge",
                 )
                 .await
@@ -156,6 +157,7 @@ fn bench_writer_creation_with_pool(c: &mut Criterion) {
                             &config,
                             object_store,
                             &format!("tenant_{}", rand::random::<u32>()),
+                            "bench_dataset",
                             "metrics_gauge",
                             pool_config.clone(),
                         )
@@ -193,6 +195,7 @@ fn bench_concurrent_writer_creation(c: &mut Criterion) {
                                 &config,
                                 object_store,
                                 &format!("tenant_{}_{}", i, rand::random::<u32>()),
+                                "bench_dataset",
                                 "metrics_gauge",
                             )
                             .await
@@ -232,6 +235,7 @@ fn bench_concurrent_writer_creation(c: &mut Criterion) {
                                 &config,
                                 object_store,
                                 &format!("tenant_{}_{}", i, rand::random::<u32>()),
+                                "bench_dataset",
                                 "metrics_gauge",
                                 pool_config,
                             )
@@ -267,6 +271,7 @@ fn bench_write_performance_comparison(c: &mut Criterion) {
                 &config,
                 object_store,
                 &format!("tenant_{}", rand::random::<u32>()),
+                "bench_dataset",
                 "metrics_gauge",
             )
             .await
@@ -294,6 +299,7 @@ fn bench_write_performance_comparison(c: &mut Criterion) {
                 &config,
                 object_store,
                 &format!("tenant_{}", rand::random::<u32>()),
+                "bench_dataset",
                 "metrics_gauge",
                 pool_config,
             )

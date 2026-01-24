@@ -28,9 +28,10 @@ pub struct CommonArgs {
 }
 
 /// Common subcommands available for all services
-#[derive(Subcommand, Debug, Clone)]
+#[derive(Subcommand, Debug, Clone, Default)]
 pub enum CommonCommands {
     /// Start the service (default behavior)
+    #[default]
     Start,
     /// Show current configuration and exit
     Config {
@@ -41,12 +42,6 @@ pub enum CommonCommands {
     Validate,
     /// Show version information and exit
     Version,
-}
-
-impl Default for CommonCommands {
-    fn default() -> Self {
-        Self::Start
-    }
 }
 
 /// Utility functions for CLI operations

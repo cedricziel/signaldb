@@ -81,6 +81,7 @@ let mut writer = create_iceberg_writer(
     &config,
     object_store,
     "my_tenant",
+    "my_dataset",
     "metrics_gauge"
 ).await?;
 
@@ -109,7 +110,8 @@ let pool_config = CatalogPoolConfig {
 let mut writer = create_iceberg_writer_with_pool(
     &config,
     object_store,
-    "my_tenant", 
+    "my_tenant",
+    "my_dataset",
     "metrics_gauge",
     pool_config
 ).await?;

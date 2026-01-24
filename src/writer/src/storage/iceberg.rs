@@ -3,6 +3,7 @@ use crate::schema_transform::transform_trace_v1_to_v2;
 use anyhow::Result;
 use common::config::Configuration;
 use common::schema::{create_catalog_with_config, iceberg_schemas};
+use common::storage::storage_dsn_to_path;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -110,6 +111,7 @@ pub struct IcebergTableWriter {
     #[allow(dead_code)] // Will be used for data writing
     object_store: Arc<dyn ObjectStore>,
     tenant_id: String,
+    dataset_id: String,
     session_ctx: SessionContext,
     #[allow(dead_code)] // Will be used for lazy registration
     table_registered: bool,
@@ -139,9 +141,18 @@ impl IcebergTableWriter {
         config: &Configuration,
         object_store: Arc<dyn ObjectStore>,
         tenant_id: String,
+        dataset_id: String,
         table_name: String,
     ) -> Result<Self> {
-        Self::new_with_pool_config(config, object_store, tenant_id, table_name, None).await
+        Self::new_with_pool_config(
+            config,
+            object_store,
+            tenant_id,
+            dataset_id,
+            table_name,
+            None,
+        )
+        .await
     }
 
     /// Create a new IcebergTableWriter with custom connection pool configuration
@@ -149,6 +160,7 @@ impl IcebergTableWriter {
         config: &Configuration,
         object_store: Arc<dyn ObjectStore>,
         tenant_id: String,
+        dataset_id: String,
         table_name: String,
         pool_config: Option<CatalogPoolConfig>,
     ) -> Result<Self> {
@@ -244,12 +256,16 @@ impl IcebergTableWriter {
             log::info!("Creating new Iceberg table: {table_ident}");
 
             // Construct table location based on storage configuration
+            // Extract the base path from the storage DSN (removing file:// scheme)
+            let storage_base_path = storage_dsn_to_path(&config.storage.dsn)?;
             let table_location = format!(
-                "{}/{}/{}",
-                config.storage.dsn.trim_end_matches('/'),
+                "{}/{}/{}/{}",
+                storage_base_path.trim_end_matches('/'),
                 tenant_id,
+                dataset_id,
                 table_name
             );
+            log::debug!("Table location for {table_name}: {table_location}");
 
             // TODO: Temporarily disable partitioning to debug InvalidFormat error
             // The partition spec seems to cause issues when datafusion_iceberg reads the table
@@ -291,7 +307,7 @@ impl IcebergTableWriter {
         // For now, we'll skip the conversion since we're using JanKaul's types directly
         // The table is already in the correct format for use with datafusion_iceberg
         log::info!(
-            "Successfully created/loaded Iceberg table: {}",
+            "Successfully created/loaded Iceberg table: {} for tenant '{tenant_id}' dataset '{dataset_id}'",
             table.identifier()
         );
 
@@ -304,13 +320,16 @@ impl IcebergTableWriter {
         let datafusion_table = Arc::new(DataFusionTable::from(table.clone()));
         session_ctx.register_table(&table_name, datafusion_table)?;
 
-        log::info!("Registered Iceberg table '{table_name}' with DataFusion");
+        log::info!(
+            "Registered Iceberg table '{table_name}' for tenant '{tenant_id}' dataset '{dataset_id}' with DataFusion"
+        );
 
         Ok(Self {
             catalog,
             table,
             object_store,
             tenant_id,
+            dataset_id,
             session_ctx,
             table_registered: false, // Table registration deferred
             transaction_state: TransactionState::None,
@@ -481,11 +500,12 @@ impl IcebergTableWriter {
         let total_rows: usize = optimized_batches.iter().map(|b| b.num_rows()).sum();
 
         log::info!(
-            "Writing {} optimized batches with {} total rows to Iceberg table {} for tenant {}",
+            "Writing {} optimized batches with {} total rows to Iceberg table {} for tenant {}.{}",
             total_batches,
             total_rows,
             self.table.identifier(),
-            self.tenant_id
+            self.tenant_id,
+            self.dataset_id
         );
 
         // Process each optimized batch
@@ -720,10 +740,11 @@ impl IcebergTableWriter {
         }
 
         log::info!(
-            "Writing {} batches to Iceberg table {} for tenant {}",
+            "Writing {} batches to Iceberg table {} for tenant {}.{}",
             batches.len(),
             self.table.identifier(),
-            self.tenant_id
+            self.tenant_id,
+            self.dataset_id
         );
 
         // Count total rows across all batches
@@ -810,9 +831,11 @@ impl IcebergTableWriter {
         let transaction_id = uuid::Uuid::new_v4().simple().to_string();
 
         log::info!(
-            "Beginning transaction {} for Iceberg table {}",
+            "Beginning transaction {} for Iceberg table {} (tenant {}.{})",
             transaction_id,
-            self.table.identifier()
+            self.table.identifier(),
+            self.tenant_id,
+            self.dataset_id
         );
 
         // Update transaction state
@@ -857,9 +880,11 @@ impl IcebergTableWriter {
         };
 
         log::info!(
-            "Committing transaction {} for Iceberg table {} with {} pending operations",
+            "Committing transaction {} for Iceberg table {} (tenant {}.{}) with {} pending operations",
             transaction_id,
             self.table.identifier(),
+            self.tenant_id,
+            self.dataset_id,
             self.pending_operations.len()
         );
 
@@ -1070,9 +1095,11 @@ impl IcebergTableWriter {
         }
 
         log::warn!(
-            "Rolling back transaction {} for Iceberg table {} with {} pending operations",
+            "Rolling back transaction {} for Iceberg table {} (tenant {}.{}) with {} pending operations",
             transaction_id,
             self.table.identifier(),
+            self.tenant_id,
+            self.dataset_id,
             self.pending_operations.len()
         );
 
@@ -1194,9 +1221,17 @@ pub async fn create_iceberg_writer(
     config: &Configuration,
     object_store: Arc<dyn ObjectStore>,
     tenant_id: impl Into<String>,
+    dataset_id: impl Into<String>,
     table_name: impl Into<String>,
 ) -> Result<IcebergTableWriter> {
-    IcebergTableWriter::new(config, object_store, tenant_id.into(), table_name.into()).await
+    IcebergTableWriter::new(
+        config,
+        object_store,
+        tenant_id.into(),
+        dataset_id.into(),
+        table_name.into(),
+    )
+    .await
 }
 
 /// Factory function to create IcebergTableWriter instances with custom pool configuration
@@ -1204,6 +1239,7 @@ pub async fn create_iceberg_writer_with_pool(
     config: &Configuration,
     object_store: Arc<dyn ObjectStore>,
     tenant_id: impl Into<String>,
+    dataset_id: impl Into<String>,
     table_name: impl Into<String>,
     pool_config: CatalogPoolConfig,
 ) -> Result<IcebergTableWriter> {
@@ -1211,6 +1247,7 @@ pub async fn create_iceberg_writer_with_pool(
         config,
         object_store,
         tenant_id.into(),
+        dataset_id.into(),
         table_name.into(),
         Some(pool_config),
     )
@@ -1230,7 +1267,8 @@ mod tests {
         let object_store = Arc::new(InMemory::new());
 
         // Try to create a writer for the traces table
-        let result = create_iceberg_writer(&config, object_store, "default", "traces").await;
+        let result =
+            create_iceberg_writer(&config, object_store, "default", "default", "traces").await;
 
         // This should work now that table creation is implemented
         // It might fail due to catalog setup issues in tests, but not due to "not implemented"
@@ -1259,7 +1297,8 @@ mod tests {
         let object_store = Arc::new(InMemory::new());
 
         // Try to create a writer
-        let result = create_iceberg_writer(&config, object_store, "test-tenant", "traces").await;
+        let result =
+            create_iceberg_writer(&config, object_store, "test-tenant", "local", "traces").await;
 
         // This might work or fail due to test environment setup, but not due to "not implemented"
         if let Err(e) = result {
@@ -1285,8 +1324,14 @@ mod tests {
         let object_store = Arc::new(InMemory::new());
 
         // Create a writer
-        let result =
-            create_iceberg_writer(&config, object_store, "test_tenant", "test_table").await;
+        let result = create_iceberg_writer(
+            &config,
+            object_store,
+            "test_tenant",
+            "test_dataset",
+            "test_table",
+        )
+        .await;
         if let Ok(mut writer) = result {
             // Test transaction lifecycle
             let transaction_id = writer.begin_transaction().await.unwrap();
@@ -1327,8 +1372,14 @@ mod tests {
         let object_store = Arc::new(InMemory::new());
 
         // Create a writer
-        let result =
-            create_iceberg_writer(&config, object_store, "test_tenant", "test_table").await;
+        let result = create_iceberg_writer(
+            &config,
+            object_store,
+            "test_tenant",
+            "test_dataset",
+            "test_table",
+        )
+        .await;
         if let Ok(mut writer) = result {
             // Create test data
             let schema = Arc::new(Schema::new(vec![

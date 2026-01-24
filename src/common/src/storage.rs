@@ -10,6 +10,48 @@ pub fn create_object_store(storage_config: &StorageConfig) -> Result<Arc<dyn Obj
     create_object_store_from_dsn(&storage_config.dsn)
 }
 
+/// Extract the filesystem path from a storage DSN
+/// Returns the path component without the URL scheme for file:// URLs,
+/// or the original DSN for other schemes
+///
+/// # Examples
+/// ```
+/// use common::storage::storage_dsn_to_path;
+///
+/// assert_eq!(storage_dsn_to_path("file:///.data/storage").unwrap(), ".data/storage");
+/// assert_eq!(storage_dsn_to_path("file:///tmp/data").unwrap(), "/tmp/data");
+/// assert_eq!(storage_dsn_to_path("memory://").unwrap(), "memory://");
+/// ```
+pub fn storage_dsn_to_path(dsn: &str) -> Result<String> {
+    let url =
+        Url::parse(dsn).map_err(|e| anyhow::anyhow!("Invalid storage DSN '{}': {}", dsn, e))?;
+
+    match url.scheme() {
+        "file" => {
+            let path = url.path();
+            if path.is_empty() || path == "/" {
+                return Err(anyhow::anyhow!(
+                    "File DSN must specify a path: file:///path/to/storage"
+                ));
+            }
+            // Remove leading slash for relative paths like /.data/storage -> .data/storage
+            // Keep leading slash for absolute paths like /tmp/data -> /tmp/data
+            let path = if path.starts_with("/.") {
+                &path[1..]
+            } else {
+                path
+            };
+            Ok(path.to_string())
+        }
+        "memory" => Ok("memory://".to_string()),
+        "s3" => Ok(dsn.to_string()), // Keep S3 URLs as-is
+        scheme => Err(anyhow::anyhow!(
+            "Unsupported storage scheme: {}. Supported: file, memory, s3",
+            scheme
+        )),
+    }
+}
+
 /// Create an object store from a DSN string
 pub fn create_object_store_from_dsn(dsn: &str) -> Result<Arc<dyn ObjectStore>> {
     let url =
@@ -187,6 +229,61 @@ mod tests {
     #[test]
     fn test_file_dsn_without_path() {
         let result = create_object_store_from_dsn("file://");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("File DSN must specify a path")
+        );
+    }
+
+    #[test]
+    fn test_storage_dsn_to_path_relative() {
+        // Relative path starting with dot
+        let result = storage_dsn_to_path("file:///.data/storage").unwrap();
+        assert_eq!(result, ".data/storage");
+    }
+
+    #[test]
+    fn test_storage_dsn_to_path_absolute() {
+        // Absolute path
+        let result = storage_dsn_to_path("file:///tmp/data").unwrap();
+        assert_eq!(result, "/tmp/data");
+    }
+
+    #[test]
+    fn test_storage_dsn_to_path_memory() {
+        // Memory scheme
+        let result = storage_dsn_to_path("memory://").unwrap();
+        assert_eq!(result, "memory://");
+    }
+
+    #[test]
+    fn test_storage_dsn_to_path_s3() {
+        // S3 scheme - keep as-is
+        let dsn = "s3://bucket/prefix";
+        let result = storage_dsn_to_path(dsn).unwrap();
+        assert_eq!(result, dsn);
+    }
+
+    #[test]
+    fn test_storage_dsn_to_path_invalid() {
+        // Invalid DSN
+        let result = storage_dsn_to_path("not-a-url");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid storage DSN")
+        );
+    }
+
+    #[test]
+    fn test_storage_dsn_to_path_no_path() {
+        // File URL without path
+        let result = storage_dsn_to_path("file://");
         assert!(result.is_err());
         assert!(
             result

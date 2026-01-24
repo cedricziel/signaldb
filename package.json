@@ -1,0 +1,16 @@
+{
+  "name": "signaldb-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "src/grafana-plugin"
+  ],
+  "scripts": {
+    "grafana:dev": "npm run dev --workspace=src/grafana-plugin",
+    "grafana:build": "npm run build --workspace=src/grafana-plugin",
+    "grafana:test": "npm run test:ci --workspace=src/grafana-plugin"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -112,6 +112,7 @@ async fn test_simple_e2e_write() -> Result<()> {
         &config,
         object_store.clone(),
         "simple_tenant",
+        "test_dataset",
         "metrics_gauge",
     )
     .await?;
@@ -139,6 +140,7 @@ async fn test_simple_e2e_multi_batch() -> Result<()> {
         &config,
         object_store.clone(),
         "simple_tenant",
+        "test_dataset",
         "metrics_gauge",
     )
     .await?;
@@ -169,6 +171,7 @@ async fn test_simple_e2e_transaction() -> Result<()> {
         &config,
         object_store.clone(),
         "simple_tenant",
+        "test_dataset",
         "metrics_gauge",
     )
     .await?;
@@ -198,6 +201,7 @@ async fn test_simple_e2e_rollback() -> Result<()> {
         &config,
         object_store.clone(),
         "simple_tenant",
+        "test_dataset",
         "metrics_gauge",
     )
     .await?;

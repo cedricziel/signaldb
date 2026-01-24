@@ -1,0 +1,29 @@
+[package]
+name = "signaldb-grafana-datasource"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "gpx_signaldb_datasource"
+path = "src/main.rs"
+
+[dependencies]
+# Grafana Plugin SDK for Rust
+grafana-plugin-sdk = "0.5.0"
+
+# Async runtime
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+chrono = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
