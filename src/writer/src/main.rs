@@ -124,10 +124,8 @@ async fn main() -> anyhow::Result<()> {
         IcebergWriterFlightService::new(config.clone(), object_store.clone(), wal.clone());
 
     // Start background WAL processing for Iceberg writes
-    flight_service
-        .start_background_processing()
-        .await
-        .context("Failed to start background WAL processing")?;
+    let writer_bg_handle = flight_service.start_background_processing();
+
     log::info!("Starting Flight ingest service on {flight_addr}");
     let flight_handle = tokio::spawn(async move {
         Server::builder()
@@ -149,6 +147,17 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to unregister Flight service: {}", e))?;
 
+    // Note: ServiceBootstrap shutdown is handled via drop impl when flight_transport is dropped
+
+    // Shutdown Flight server first
+    flight_handle.abort();
+    let _ = flight_handle.await;
+
+    // Stop background WAL processing task to release Arc<Wal> reference
+    log::info!("Stopping background WAL processing task");
+    writer_bg_handle.abort();
+    let _ = writer_bg_handle.await;
+
     // Shutdown WAL and flush any remaining data
     if let Ok(wal) = Arc::try_unwrap(wal) {
         wal.shutdown().await.context("Failed to shutdown WAL")?;
@@ -156,11 +165,6 @@ async fn main() -> anyhow::Result<()> {
         log::warn!("Could not get exclusive access to WAL for shutdown - forcing flush");
         // WAL will be dropped and cleaned up automatically
     }
-
-    // Note: ServiceBootstrap shutdown is handled via drop impl when flight_transport is dropped
-
-    // Shutdown Flight server
-    flight_handle.abort();
 
     Ok(())
 }

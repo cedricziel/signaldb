@@ -110,10 +110,7 @@ async fn main() -> Result<()> {
         IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
 
     // Start background WAL processing for Iceberg writes
-    writer_flight_service
-        .start_background_processing()
-        .await
-        .context("Failed to start background WAL processing")?;
+    let writer_bg_handle = writer_flight_service.start_background_processing();
 
     // Start OTLP/gRPC server
     let wal_dir = std::env::var("ACCEPTOR_WAL_DIR")
@@ -220,8 +217,12 @@ async fn main() -> Result<()> {
     let _ = flight_handle.await;
     let _ = writer_flight_handle.await;
 
+    // Stop background WAL processing task to release Arc<Wal> reference
+    log::info!("Stopping background WAL processing task");
+    writer_bg_handle.abort();
+    let _ = writer_bg_handle.await;
+
     // Shutdown Writer WAL and flush any remaining data
-    // Note: This must run after awaiting writer_flight_handle so the Arc reference is dropped
     if let Ok(wal) = Arc::try_unwrap(writer_wal) {
         wal.shutdown()
             .await

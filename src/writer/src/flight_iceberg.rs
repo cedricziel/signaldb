@@ -40,11 +40,13 @@ impl IcebergWriterFlightService {
         }
     }
 
-    /// Start the background WAL processing loop
-    pub async fn start_background_processing(&self) -> Result<(), anyhow::Error> {
+    /// Start the background WAL processing loop.
+    /// Returns the JoinHandle for the spawned task. Caller must abort() this handle
+    /// during shutdown to release the Arc<Wal> reference before calling Arc::try_unwrap.
+    pub fn start_background_processing(&self) -> tokio::task::JoinHandle<()> {
         let processor = self.processor.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             loop {
                 let mut processor_guard = processor.lock().await;
                 if let Err(e) = processor_guard.process_pending_entries().await {
@@ -57,7 +59,8 @@ impl IcebergWriterFlightService {
             }
         });
 
-        Ok(())
+        log::info!("Started background WAL processing task");
+        handle
     }
 }
 
