@@ -29,6 +29,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Configure git to use HTTPS instead of SSH
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
 
