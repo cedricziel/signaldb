@@ -2,7 +2,7 @@
 # Uses Alpine Linux for minimal image sizes (~15-25MB per service)
 
 # Builder stage - compile all services with musl for Alpine compatibility
-FROM rust:1.86-alpine AS builder
+FROM rust:1.93-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache \

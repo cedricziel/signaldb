@@ -78,3 +78,10 @@ updates:
       interval: "daily"
     assignees:
       - cedricziel
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    assignees:
+      - cedricziel
