@@ -358,13 +358,13 @@ jobs:
         working-directory: .
 
       - name: Download frontend build
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: grafana-plugin-frontend
           path: src/grafana-plugin/dist
 
       - name: Download all backend binaries
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           pattern: grafana-plugin-backend-*
           path: src/grafana-plugin/dist
