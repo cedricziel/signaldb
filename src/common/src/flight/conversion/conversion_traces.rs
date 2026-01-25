@@ -411,14 +411,14 @@ fn parse_events_from_list_array(
 
                 // Parse attributes from JSON
                 let mut attributes = Vec::new();
-                if let Ok(attrs_value) = serde_json::from_str::<serde_json::Value>(attrs_json) {
-                    if let Some(attrs_obj) = attrs_value.as_object() {
-                        for (key, value) in attrs_obj {
-                            attributes.push(KeyValue {
-                                key: key.clone(),
-                                value: Some(json_value_to_any_value(value)),
-                            });
-                        }
+                if let Ok(attrs_value) = serde_json::from_str::<serde_json::Value>(attrs_json)
+                    && let Some(attrs_obj) = attrs_value.as_object()
+                {
+                    for (key, value) in attrs_obj {
+                        attributes.push(KeyValue {
+                            key: key.clone(),
+                            value: Some(json_value_to_any_value(value)),
+                        });
                     }
                 }
 
@@ -475,14 +475,14 @@ fn parse_links_from_list_array(
 
                 // Parse attributes from JSON
                 let mut attributes = Vec::new();
-                if let Ok(attrs_value) = serde_json::from_str::<serde_json::Value>(attrs_json) {
-                    if let Some(attrs_obj) = attrs_value.as_object() {
-                        for (key, value) in attrs_obj {
-                            attributes.push(KeyValue {
-                                key: key.clone(),
-                                value: Some(json_value_to_any_value(value)),
-                            });
-                        }
+                if let Ok(attrs_value) = serde_json::from_str::<serde_json::Value>(attrs_json)
+                    && let Some(attrs_obj) = attrs_value.as_object()
+                {
+                    for (key, value) in attrs_obj {
+                        attributes.push(KeyValue {
+                            key: key.clone(),
+                            value: Some(json_value_to_any_value(value)),
+                        });
                     }
                 }
 

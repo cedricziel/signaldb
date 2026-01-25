@@ -151,17 +151,17 @@ impl InMemoryFlightTransport {
 
             for ingester in ingesters {
                 let parts: Vec<&str> = ingester.address.split(':').collect();
-                if parts.len() == 2 {
-                    if let Ok(port) = parts[1].parse::<u16>() {
-                        let metadata = FlightServiceMetadata::new(
-                            ingester.id,
-                            ingester.service_type.clone(),
-                            ingester.address.clone(),
-                            port,
-                            ingester.capabilities.clone(),
-                        );
-                        services.push(metadata);
-                    }
+                if parts.len() == 2
+                    && let Ok(port) = parts[1].parse::<u16>()
+                {
+                    let metadata = FlightServiceMetadata::new(
+                        ingester.id,
+                        ingester.service_type.clone(),
+                        ingester.address.clone(),
+                        port,
+                        ingester.capabilities.clone(),
+                    );
+                    services.push(metadata);
                 }
             }
 
@@ -280,17 +280,17 @@ impl InMemoryFlightTransport {
 
             for ingester in ingesters {
                 let parts: Vec<&str> = ingester.address.split(':').collect();
-                if parts.len() == 2 {
-                    if let Ok(port) = parts[1].parse::<u16>() {
-                        let metadata = FlightServiceMetadata::new(
-                            ingester.id,
-                            ingester.service_type,
-                            ingester.address,
-                            port,
-                            ingester.capabilities,
-                        );
-                        services.push(metadata);
-                    }
+                if parts.len() == 2
+                    && let Ok(port) = parts[1].parse::<u16>()
+                {
+                    let metadata = FlightServiceMetadata::new(
+                        ingester.id,
+                        ingester.service_type,
+                        ingester.address,
+                        port,
+                        ingester.capabilities,
+                    );
+                    services.push(metadata);
                 }
             }
 

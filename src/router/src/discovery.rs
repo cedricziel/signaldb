@@ -164,23 +164,22 @@ impl ServiceRegistry {
         for ingester in services.values() {
             // Parse address to extract hostname and port
             let parts: Vec<&str> = ingester.address.split(':').collect();
-            if parts.len() == 2 {
-                if let Ok(port) = parts[1].parse::<u16>() {
-                    // Determine service type and capabilities based on port or other heuristics
-                    let (service_type, capabilities) =
-                        self.infer_service_type_and_capabilities(port);
+            if parts.len() == 2
+                && let Ok(port) = parts[1].parse::<u16>()
+            {
+                // Determine service type and capabilities based on port or other heuristics
+                let (service_type, capabilities) = self.infer_service_type_and_capabilities(port);
 
-                    // Check if this service has the requested capability
-                    if capabilities.contains(&capability) {
-                        let metadata = FlightServiceMetadata::new(
-                            ingester.id,
-                            service_type,
-                            ingester.address.clone(),
-                            port,
-                            capabilities,
-                        );
-                        flight_services.push(metadata);
-                    }
+                // Check if this service has the requested capability
+                if capabilities.contains(&capability) {
+                    let metadata = FlightServiceMetadata::new(
+                        ingester.id,
+                        service_type,
+                        ingester.address.clone(),
+                        port,
+                        capabilities,
+                    );
+                    flight_services.push(metadata);
                 }
             }
         }

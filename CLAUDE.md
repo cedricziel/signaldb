@@ -184,7 +184,7 @@ catalog_uri = "sqlite::memory:"  # or sqlite:///path/to/catalog.db
 
 ### Rust Edition 2024
 
-Project requires Rust 1.86.0+ minimum.
+Project requires Rust 1.88.0+ minimum.
 
 ### Clippy Compliance
 

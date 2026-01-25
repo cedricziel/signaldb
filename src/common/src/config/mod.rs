@@ -348,10 +348,10 @@ impl Configuration {
 
     /// Get the effective schema configuration for a given tenant
     pub fn get_tenant_schema_config(&self, tenant_id: &str) -> SchemaConfig {
-        if let Some(tenant_config) = self.tenants.tenants.get(tenant_id) {
-            if let Some(ref tenant_schema) = tenant_config.schema {
-                return tenant_schema.clone();
-            }
+        if let Some(tenant_config) = self.tenants.tenants.get(tenant_id)
+            && let Some(ref tenant_schema) = tenant_config.schema
+        {
+            return tenant_schema.clone();
         }
 
         // Fall back to global schema config

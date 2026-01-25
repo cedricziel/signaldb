@@ -1058,23 +1058,23 @@ fn extract_histogram_data_points(
             "count".to_string(),
             JsonValue::Number(serde_json::Number::from(point.count)),
         );
-        if let Some(sum) = point.sum {
-            if let Some(num) = serde_json::Number::from_f64(sum) {
-                point_map.insert("sum".to_string(), JsonValue::Number(num));
-            }
+        if let Some(sum) = point.sum
+            && let Some(num) = serde_json::Number::from_f64(sum)
+        {
+            point_map.insert("sum".to_string(), JsonValue::Number(num));
         }
 
         // Add min/max if present
-        if let Some(min) = point.min {
-            if let Some(num) = serde_json::Number::from_f64(min) {
-                point_map.insert("min".to_string(), JsonValue::Number(num));
-            }
+        if let Some(min) = point.min
+            && let Some(num) = serde_json::Number::from_f64(min)
+        {
+            point_map.insert("min".to_string(), JsonValue::Number(num));
         }
 
-        if let Some(max) = point.max {
-            if let Some(num) = serde_json::Number::from_f64(max) {
-                point_map.insert("max".to_string(), JsonValue::Number(num));
-            }
+        if let Some(max) = point.max
+            && let Some(num) = serde_json::Number::from_f64(max)
+        {
+            point_map.insert("max".to_string(), JsonValue::Number(num));
         }
 
         // Add bucket boundaries and counts
@@ -1141,10 +1141,10 @@ fn extract_exponential_histogram_data_points(
             "count".to_string(),
             JsonValue::Number(serde_json::Number::from(point.count)),
         );
-        if let Some(sum) = point.sum {
-            if let Some(num) = serde_json::Number::from_f64(sum) {
-                point_map.insert("sum".to_string(), JsonValue::Number(num));
-            }
+        if let Some(sum) = point.sum
+            && let Some(num) = serde_json::Number::from_f64(sum)
+        {
+            point_map.insert("sum".to_string(), JsonValue::Number(num));
         }
         point_map.insert(
             "scale".to_string(),
@@ -1156,16 +1156,16 @@ fn extract_exponential_histogram_data_points(
         );
 
         // Add min/max if present
-        if let Some(min) = point.min {
-            if let Some(num) = serde_json::Number::from_f64(min) {
-                point_map.insert("min".to_string(), JsonValue::Number(num));
-            }
+        if let Some(min) = point.min
+            && let Some(num) = serde_json::Number::from_f64(min)
+        {
+            point_map.insert("min".to_string(), JsonValue::Number(num));
         }
 
-        if let Some(max) = point.max {
-            if let Some(num) = serde_json::Number::from_f64(max) {
-                point_map.insert("max".to_string(), JsonValue::Number(num));
-            }
+        if let Some(max) = point.max
+            && let Some(num) = serde_json::Number::from_f64(max)
+        {
+            point_map.insert("max".to_string(), JsonValue::Number(num));
         }
 
         // Add positive and negative buckets
