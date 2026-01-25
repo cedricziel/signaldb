@@ -115,7 +115,6 @@ pub async fn auth_middleware(
 /// ```
 pub struct TenantContextExtractor(pub TenantContext);
 
-#[axum::async_trait]
 impl<S> axum::extract::FromRequestParts<S> for TenantContextExtractor
 where
     S: Send + Sync,

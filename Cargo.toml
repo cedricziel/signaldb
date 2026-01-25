@@ -86,7 +86,7 @@ log = "0.4"
 anyhow = "1.0.100"
 
 # Use the same axum version that tonic depends on
-axum = "0.7.9"
+axum = "0.8.8"
 tower-http = "0.6.6"
 
 serde = { version = "1.0.219", features = ["derive"] }

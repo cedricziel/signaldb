@@ -140,7 +140,6 @@ pub async fn auth_middleware(
 /// ```
 pub struct TenantContextExtractor(pub TenantContext);
 
-#[axum::async_trait]
 impl axum::extract::FromRequestParts<()> for TenantContextExtractor {
     type Rejection = (StatusCode, String);
 
