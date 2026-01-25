@@ -114,7 +114,7 @@ env_logger = "0.11.5"
 tower = "0.5.2"
 
 testcontainers = "0.26.3"
-testcontainers-modules = { version = "0.13", features = ["postgres", "kafka"] }
+testcontainers-modules = { version = "0.14", features = ["postgres", "kafka"] }
 tempfile = "3.20.0"
 rand = "0.9"
 
