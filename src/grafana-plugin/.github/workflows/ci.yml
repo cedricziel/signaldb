@@ -52,7 +52,7 @@ jobs:
         run: pnpm test:ci
 
       - name: Build frontend
-        run: pnpm build
+        run: pnpm build:frontend
 
       - name: Check for backend
         id: check-for-backend
