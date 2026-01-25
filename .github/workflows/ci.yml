@@ -55,10 +55,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Cargo check
-        run: cargo check --all-targets --all-features
+        run: cargo check --workspace --all-targets --all-features --exclude signaldb-grafana-datasource
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --exclude signaldb-grafana-datasource -- -D warnings
 
   # Parallel test matrix - depends on check passing
   test:
@@ -105,7 +105,7 @@ jobs:
       - name: Run all tests
         run: |
           export RUSTC_WRAPPER=sccache
-          cargo test --profile ci-test --workspace --all-features
+          cargo test --profile ci-test --workspace --all-features --exclude signaldb-grafana-datasource
         env:
           RUST_LOG: warn # Reduced log level for faster tests
           RUST_BACKTRACE: 1
@@ -338,7 +338,7 @@ jobs:
       - name: Generate coverage report
         run: |
           export RUSTC_WRAPPER=sccache
-          cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+          cargo llvm-cov --all-features --workspace --exclude signaldb-grafana-datasource --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5

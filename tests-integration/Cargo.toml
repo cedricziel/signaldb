@@ -39,7 +39,7 @@ hex.workspace = true
 # For test-specific utilities
 env_logger.workspace = true
 url.workspace = true
-testcontainers-modules = { workspace = true, features = ["minio", "postgres"] }
+testcontainers-modules.workspace = true
 aws-config.workspace = true
 aws-sdk-s3.workspace = true
 aws-credential-types.workspace = true

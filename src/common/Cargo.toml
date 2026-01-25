@@ -49,7 +49,7 @@ sha2 = "0.10"
 
 [dev-dependencies]
 testcontainers-modules.workspace = true
-testcontainers = { workspace = true, features = ["blocking"] }
+testcontainers.workspace = true
 tempfile.workspace = true
 figment = { workspace = true, features = ["test"] }
 sha2 = "0.10"
