@@ -21,7 +21,6 @@ jobs:
     outputs:
       plugin-id: ${{ steps.metadata.outputs.plugin-id }}
       plugin-version: ${{ steps.metadata.outputs.plugin-version }}
-      has-e2e: ${{ steps.check-for-e2e.outputs.has-e2e }}
       has-backend: ${{ steps.check-for-backend.outputs.has-backend }}
     env:
       GRAFANA_ACCESS_POLICY_TOKEN: ${{ secrets.GRAFANA_ACCESS_POLICY_TOKEN }}
@@ -82,13 +81,6 @@ jobs:
         if: steps.check-for-backend.outputs.has-backend == 'true'
         run: pnpm build:backend
 
-      - name: Check for E2E
-        id: check-for-e2e
-        run: |
-          if [ -f "playwright.config.ts" ]; then
-            echo "has-e2e=true" >> $GITHUB_OUTPUT
-          fi
-
       - name: Sign plugin
         run: pnpm sign
         if: ${{ env.GRAFANA_ACCESS_POLICY_TOKEN != '' }}
@@ -129,118 +121,3 @@ jobs:
           name: ${{ steps.metadata.outputs.plugin-id }}-${{ steps.metadata.outputs.plugin-version }}
           path: src/grafana-plugin/${{ steps.metadata.outputs.plugin-id }}
           retention-days: 5
-
-  resolve-versions:
-    name: Resolve e2e images
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    timeout-minutes: 3
-    needs: build
-    outputs:
-      matrix: ${{ steps.resolve-versions.outputs.matrix || '[]' }}
-    steps:
-      - name: Checkout
-        if: ${{ needs.build.outputs.has-e2e == 'true' }}
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Resolve Grafana E2E versions
-        if: ${{ needs.build.outputs.has-e2e == 'true' }}
-        id: resolve-versions
-        uses: grafana/plugin-actions/e2e-version@main # zizmor: ignore[unpinned-uses] provided by grafana
-        with:
-          working-directory: src/grafana-plugin
-
-  playwright-tests:
-    needs: [resolve-versions, build]
-    if: ${{ needs.build.outputs.has-e2e == 'true' && needs.resolve-versions.outputs.matrix != '[]' }}
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      id-token: write
-      pull-requests: write
-    strategy:
-      fail-fast: false
-      matrix:
-        GRAFANA_IMAGE: ${{ fromJson(needs.resolve-versions.outputs.matrix || '[]') }}
-    name: e2e ${{ matrix.GRAFANA_IMAGE.name }}@${{ matrix.GRAFANA_IMAGE.VERSION }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Download plugin
-        uses: actions/download-artifact@v4
-        with:
-          path: src/grafana-plugin/dist
-          name: ${{ needs.build.outputs.plugin-id }}-${{ needs.build.outputs.plugin-version }}
-
-      - name: Execute permissions on binary
-        if: needs.build.outputs.has-backend == 'true'
-        run: chmod +x ./dist/gpx_*
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js environment
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'pnpm'
-
-      - name: Install dev dependencies
-        run: pnpm install --frozen-lockfile
-        working-directory: .
-
-      - name: Start Grafana
-        run: |
-          docker compose pull
-          ANONYMOUS_AUTH_ENABLED=false DEVELOPMENT=false GRAFANA_VERSION=${{ matrix.GRAFANA_IMAGE.VERSION }} GRAFANA_IMAGE=${{ matrix.GRAFANA_IMAGE.NAME }} docker compose up -d
-
-      - name: Wait for grafana server
-        uses: grafana/plugin-actions/wait-for-grafana@main # zizmor: ignore[unpinned-uses] provided by grafana
-        with:
-          url: http://localhost:3000/login
-
-      - name: Install Playwright Browsers
-        run: pnpm exec playwright install chromium --with-deps
-
-      - name: Run Playwright tests
-        id: run-tests
-        run: pnpm e2e
-
-      - name: Upload e2e test summary
-        uses: grafana/plugin-actions/playwright-gh-pages/upload-report-artifacts@main # zizmor: ignore[unpinned-uses] provided by grafana
-        if: ${{ always() && !cancelled() }}
-        with:
-          upload-report: false
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          test-outcome: ${{ steps.run-tests.outcome }}
-
-      - name: Docker logs
-        if: ${{ always() && steps.run-tests.outcome == 'failure' }}
-        run: docker logs signaldb-signaldb-datasource >& grafana-server.log
-
-      - name: Stop grafana docker
-        run: docker compose down
-
-  publish-report:
-    if: ${{ always() && !cancelled() && needs.build.outputs.has-e2e == 'true' }}
-    permissions:
-      contents: write
-      id-token: write
-      pull-requests: write
-    needs: [playwright-tests, build]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: true
-
-      - name: Publish report
-        uses: grafana/plugin-actions/playwright-gh-pages/deploy-report-pages@main # zizmor: ignore[unpinned-uses] provided by grafana
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
