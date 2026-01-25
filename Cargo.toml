@@ -50,10 +50,7 @@ datafusion_iceberg = { git = "https://github.com/JanKaul/iceberg-rust", branch =
 iceberg-rust = { git = "https://github.com/JanKaul/iceberg-rust", branch = "main" }
 iceberg-sql-catalog = { git = "https://github.com/JanKaul/iceberg-rust", branch = "main" }
 
-tonic = { version = "0.14.2", features = [
-    "transport",
-    "channel",
-] }
+tonic = { version = "0.14.2", features = ["transport", "channel"] }
 tonic-build = "0.14.2"
 tonic-prost = "0.14.2"
 tonic-prost-build = "0.14.2"
@@ -146,5 +143,35 @@ aws-config = "1.5.10"
 aws-sdk-s3 = "1.120.0"
 aws-credential-types = "1.2.7"
 
+
+# ------------------------------------------------------------
+# Profiles
+# ------------------------------------------------------------
+
+# Fast local dev, good incremental behavior
 [profile.dev]
-split-debuginfo = "unpacked"
+incremental = true
+debug = 1
+split-debuginfo = "packed" # macOS only; ignored elsewhere
+codegen-units = 16
+opt-level = 0
+
+# Tests inherit dev to maximize reuse of compiled deps
+[profile.test]
+inherits = "dev"
+
+# Production / benchmarks
+[profile.release]
+opt-level = 3
+lto = "thin"      # ~95% perf at much faster link times
+codegen-units = 8
+panic = "abort"
+debug = 0
+strip = "symbols"
+
+# CI-optimized tests (fast linking, small artifacts)
+[profile.ci-test]
+inherits = "test"
+debug = 0
+strip = true
+incremental = false

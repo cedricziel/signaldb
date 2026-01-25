@@ -1,25 +1,8 @@
-[profile.release]
-lto = "thin"      # 95 % of the perf at ~40 % of the link time
-opt-level = 3
-codegen-units = 8 # good perf / far quicker builds
-panic = "abort"
-
-[profile.dev]
-incremental = true         # make intent explicit
-split-debuginfo = "packed" # macOS only; omit on Linux/Windows
-
-[profile.test]
-opt-level = 0
-codegen-units = 256
-lto = "off"
-incremental = true
-debug = 1  # Reduced from 2
-split-debuginfo = "unpacked"
-
-[profile.ci-test]
-inherits = "test"
-debug = 0  # No debug info in CI
-strip = true  # Strip symbols
+# ------------------------------------------------------------
+# Shared build cache across the entire workspace
+# ------------------------------------------------------------
+[build]
+target-dir = "target"
 
 [env]
 RUST_BACKTRACE = { value = "1", condition = { env_not_set = "RUST_BACKTRACE" } }
