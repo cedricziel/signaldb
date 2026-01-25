@@ -34,7 +34,7 @@ updates:
           - "opentelemetry*"
 
   - package-ecosystem: "npm"
-    directory: "/src/grafana-plugin"
+    directory: "/"
     schedule:
       interval: "weekly"
     assignees:
