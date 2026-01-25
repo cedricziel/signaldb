@@ -2,15 +2,13 @@
   "name": "signaldb-monorepo",
   "version": "0.1.0",
   "private": true,
-  "workspaces": [
-    "src/grafana-plugin"
-  ],
   "scripts": {
-    "grafana:dev": "npm run dev --workspace=src/grafana-plugin",
-    "grafana:build": "npm run build --workspace=src/grafana-plugin",
-    "grafana:test": "npm run test:ci --workspace=src/grafana-plugin"
+    "grafana:dev": "pnpm --filter signaldb-datasource dev",
+    "grafana:build": "pnpm --filter signaldb-datasource build",
+    "grafana:test": "pnpm --filter signaldb-datasource test:ci"
   },
   "engines": {
     "node": ">=22"
-  }
+  },
+  "packageManager": "pnpm@9.15.4"
 }

@@ -25,4 +25,4 @@ jobs:
       - uses: grafana/plugin-actions/bundle-size@main # zizmor: ignore[unpinned-uses] provided by grafana
         with:
           working-directory: src/grafana-plugin
-          package-manager: npm
+          package-manager: pnpm

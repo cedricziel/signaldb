@@ -228,18 +228,21 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: package-lock.json
+          cache: 'pnpm'
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
+        working-directory: .
 
       - name: Build frontend
-        run: npm run build:frontend
+        run: pnpm build:frontend
 
       - name: Get plugin metadata
         id: metadata
@@ -340,15 +343,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: package-lock.json
+          cache: 'pnpm'
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
+        working-directory: .
 
       - name: Download frontend build
         uses: actions/download-artifact@v5
@@ -367,7 +373,7 @@ jobs:
         run: chmod +x dist/gpx_signaldb_datasource_* || true
 
       - name: Sign plugin
-        run: npm run sign
+        run: pnpm sign
         if: ${{ env.GRAFANA_ACCESS_POLICY_TOKEN != '' }}
 
       - name: Package plugin
