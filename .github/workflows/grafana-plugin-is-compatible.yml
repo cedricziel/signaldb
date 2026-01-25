@@ -1,0 +1,14 @@
+name: Grafana Plugin - API Compatibility Check
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/grafana-plugin/**'
+      - '.github/workflows/grafana-plugin-is-compatible*.yml'
+
+jobs:
+  compatibility:
+    name: Grafana API Compatibility
+    uses: ./.github/workflows/grafana-plugin-is-compatible-reusable.yml

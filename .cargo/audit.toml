@@ -6,4 +6,8 @@ ignore = [
     # Advisory about a vulnerability in rsa, which we don't use, but it is pulled in via sqlx due
     # to a bug in cargo. See https://github.com/shuttle-hq/shuttle/pull/1475 for context.
     "RUSTSEC-2023-0071",
+    # arrow2 0.18.0 is a transitive dependency of grafana-plugin-sdk v0.5.0.
+    # arrow2 is unmaintained with no fix available. The Grafana plugin is for development/testing.
+    # Tracked: https://github.com/grafana/grafana-plugin-sdk-rust/issues
+    "RUSTSEC-2025-0038",
 ]

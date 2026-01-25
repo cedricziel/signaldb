@@ -1,0 +1,26 @@
+name: Grafana Plugin - Bundle Stats
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/grafana-plugin/**'
+      - '.github/workflows/grafana-plugin-bundle-stats*.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/grafana-plugin/**'
+      - '.github/workflows/grafana-plugin-bundle-stats*.yml'
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  bundle-stats:
+    name: Bundle Stats
+    uses: ./.github/workflows/grafana-plugin-bundle-stats-reusable.yml
