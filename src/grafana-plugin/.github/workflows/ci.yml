@@ -155,7 +155,7 @@ jobs:
 
   playwright-tests:
     needs: [resolve-versions, build]
-    if: ${{ needs.build.outputs.has-e2e == 'true' }}
+    if: ${{ needs.build.outputs.has-e2e == 'true' && needs.resolve-versions.outputs.matrix != '[]' }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -164,8 +164,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        GRAFANA_IMAGE: ${{ fromJson(needs.resolve-versions.outputs.matrix) }}
-    name: e2e test ${{ matrix.GRAFANA_IMAGE.name }}@${{ matrix.GRAFANA_IMAGE.VERSION }}
+        GRAFANA_IMAGE: ${{ fromJson(needs.resolve-versions.outputs.matrix || '[]') }}
+    name: e2e ${{ matrix.GRAFANA_IMAGE.name }}@${{ matrix.GRAFANA_IMAGE.VERSION }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
