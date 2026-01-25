@@ -21,8 +21,6 @@ jobs:
   check:
     name: Check & Lint
     runs-on: ubuntu-latest
-    outputs:
-      cache-key: ${{ steps.cache-key.outputs.key }}
     steps:
       - uses: actions/checkout@v6
 
@@ -33,13 +31,14 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt, clippy
-          cache: true
+          cache: false  # Using Swatinem/rust-cache instead
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "check"
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Install system dependencies
         run: |
@@ -54,17 +53,6 @@ jobs:
 
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
-
-      # Cache compiled dependencies for other jobs
-      - name: Compress target for sharing
-        run: tar -czf target-deps.tar.gz target/
-
-      - name: Upload target artifact
-        uses: actions/upload-artifact@v5
-        with:
-          name: target-deps-${{ github.run_id }}
-          path: target-deps.tar.gz
-          retention-days: 1
 
   # Parallel test matrix - depends on check passing
   test:
@@ -86,13 +74,14 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: ${{ matrix.rust }}
-          cache: true
+          cache: false  # Using Swatinem/rust-cache instead
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "test-${{ matrix.rust }}"
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Install system dependencies
         run: |
@@ -101,15 +90,6 @@ jobs:
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.9
-
-      # Download pre-compiled dependencies
-      - name: Download target artifact
-        uses: actions/download-artifact@v6
-        with:
-          name: target-deps-${{ github.run_id }}
-
-      - name: Extract target directory
-        run: tar -xzf target-deps.tar.gz
 
       - name: Setup test environment
         run: |
@@ -150,13 +130,14 @@ jobs:
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          cache: true
+          cache: false  # Using Swatinem/rust-cache instead
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "build-${{ matrix.os }}"
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Install system dependencies (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
@@ -264,7 +245,14 @@ jobs:
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          cache: true
+          cache: false  # Using Swatinem/rust-cache instead
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "security"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.9
@@ -314,12 +302,14 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: llvm-tools-preview
-          cache: true
+          cache: false  # Using Swatinem/rust-cache instead
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "coverage"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Install system dependencies
         run: |
