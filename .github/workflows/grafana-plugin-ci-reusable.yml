@@ -137,16 +137,17 @@ jobs:
       contents: read
     timeout-minutes: 3
     needs: build
-    if: ${{ needs.build.outputs.has-e2e == 'true' }}
     outputs:
-      matrix: ${{ steps.resolve-versions.outputs.matrix }}
+      matrix: ${{ steps.resolve-versions.outputs.matrix || '[]' }}
     steps:
       - name: Checkout
+        if: ${{ needs.build.outputs.has-e2e == 'true' }}
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
       - name: Resolve Grafana E2E versions
+        if: ${{ needs.build.outputs.has-e2e == 'true' }}
         id: resolve-versions
         uses: grafana/plugin-actions/e2e-version@main # zizmor: ignore[unpinned-uses] provided by grafana
         with:
