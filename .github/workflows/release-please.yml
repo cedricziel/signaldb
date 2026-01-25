@@ -252,7 +252,7 @@ jobs:
           echo "plugin-id=${PLUGIN_ID}" >> $GITHUB_OUTPUT
 
       - name: Upload frontend build
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: grafana-plugin-frontend
           path: src/grafana-plugin/dist
@@ -325,7 +325,7 @@ jobs:
           cp target/${{ matrix.target.rust-target }}/release/gpx_signaldb_datasource.exe artifact/gpx_signaldb_datasource_${{ matrix.target.os }}_${{ matrix.target.arch }}.exe
 
       - name: Upload backend binary
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: grafana-plugin-backend-${{ matrix.target.os }}-${{ matrix.target.arch }}
           path: artifact/
