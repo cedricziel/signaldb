@@ -68,8 +68,10 @@ jobs:
     - name: Setup Rust cache
       uses: Swatinem/rust-cache@v2
       with:
-        key: db-test-${{ matrix.database.type }}-${{ matrix.database.version }}
-    
+        shared-key: "db-test-${{ matrix.database.type }}-${{ matrix.database.version }}"
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+        cache-on-failure: true
+
     - name: Install system dependencies
       run: |
         sudo apt-get update
@@ -141,8 +143,10 @@ jobs:
     - name: Setup Rust cache
       uses: Swatinem/rust-cache@v2
       with:
-        key: deploy-test-${{ matrix.os }}-${{ matrix.deployment.type }}
-    
+        shared-key: "deploy-test-${{ matrix.os }}-${{ matrix.deployment.type }}"
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+        cache-on-failure: true
+
     - name: Install system dependencies (Ubuntu)
       if: matrix.os == 'ubuntu-latest'
       run: |
@@ -234,8 +238,10 @@ jobs:
     - name: Setup Rust cache
       uses: Swatinem/rust-cache@v2
       with:
-        key: bench-${{ matrix.database }}-${{ matrix.load }}
-    
+        shared-key: "bench-${{ matrix.database }}-${{ matrix.load }}"
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+        cache-on-failure: true
+
     - name: Install system dependencies
       run: |
         sudo apt-get update
@@ -311,8 +317,10 @@ jobs:
     - name: Setup Rust cache
       uses: Swatinem/rust-cache@v2
       with:
-        key: e2e-${{ matrix.scenario.name }}
-    
+        shared-key: "e2e-${{ matrix.scenario.name }}"
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+        cache-on-failure: true
+
     - name: Install system dependencies
       run: |
         sudo apt-get update
