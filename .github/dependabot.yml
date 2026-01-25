@@ -9,6 +9,8 @@ updates:
       # These are peer deps of Cargo and should not be automatically bumped
       - dependency-name: "semver"
       - dependency-name: "crates-io"
+      # Pinned to 1.3.3 for compatibility
+      - dependency-name: "bincode"
     assignees:
       - cedricziel
     groups:
