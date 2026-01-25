@@ -14,10 +14,10 @@ serde_json.workspace = true
 prost.workspace = true
 
 tonic.workspace = true
+tonic-prost.workspace = true
 
 [build-dependencies]
-prost-build.workspace = true
-tonic-build = { workspace = true, features = ["prost"] }
+tonic-prost-build.workspace = true
 
 [features]
 default = []
@@ -25,4 +25,4 @@ client = []
 server = []
 
 [package.metadata.cargo-machete]
-ignored = ["prost-build", "tonic-build"]
+ignored = ["tonic-prost-build"]

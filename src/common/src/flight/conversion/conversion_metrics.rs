@@ -535,6 +535,7 @@ pub fn arrow_to_otlp_metrics(batch: &RecordBatch) -> ExportMetricsServiceRequest
             resource: Some(Resource {
                 attributes: resource_attributes_map.get(&resource_key).unwrap().clone(),
                 dropped_attributes_count: 0,
+                entity_refs: vec![],
             }),
             scope_metrics: scope_metrics_vec,
             schema_url: "".to_string(),

@@ -680,6 +680,7 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
                 resource: Some(opentelemetry_proto::tonic::resource::v1::Resource {
                     attributes: resource_attributes.clone(),
                     dropped_attributes_count: 0,
+                    entity_refs: vec![],
                 }),
                 scope_spans: vec![],
                 schema_url: "".to_string(),
@@ -817,6 +818,7 @@ mod tests {
         let resource = opentelemetry_proto::tonic::resource::v1::Resource {
             attributes: resource_attributes,
             dropped_attributes_count: 0,
+            entity_refs: vec![],
         };
 
         // Create scope spans
@@ -1159,6 +1161,7 @@ mod tests {
         let resource = opentelemetry_proto::tonic::resource::v1::Resource {
             attributes: resource_attributes,
             dropped_attributes_count: 0,
+            entity_refs: vec![],
         };
 
         // Create scope spans

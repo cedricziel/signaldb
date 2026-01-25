@@ -99,6 +99,7 @@ mod tests {
                         }),
                     }],
                     dropped_attributes_count: 0,
+                    entity_refs: vec![],
                 }),
                 scope_metrics: vec![ScopeMetrics {
                     scope: None,

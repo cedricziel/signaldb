@@ -432,6 +432,7 @@ mod tests {
                 resource: Some(Resource {
                     attributes: vec![],
                     dropped_attributes_count: 0,
+                    entity_refs: vec![],
                 }),
                 scope_metrics: vec![ScopeMetrics {
                     scope: None,
@@ -584,6 +585,7 @@ mod tests {
                 resource: Some(Resource {
                     attributes: vec![],
                     dropped_attributes_count: 0,
+                    entity_refs: vec![],
                 }),
                 scope_metrics: vec![ScopeMetrics {
                     scope: None,
@@ -648,6 +650,7 @@ mod tests {
                 resource: Some(Resource {
                     attributes: vec![],
                     dropped_attributes_count: 0,
+                    entity_refs: vec![],
                 }),
                 scope_metrics: vec![ScopeMetrics {
                     scope: None,
@@ -725,6 +728,7 @@ mod tests {
                 resource: Some(Resource {
                     attributes: vec![],
                     dropped_attributes_count: 0,
+                    entity_refs: vec![],
                 }),
                 scope_metrics: vec![ScopeMetrics {
                     scope: None,
@@ -804,6 +808,7 @@ mod tests {
                 resource: Some(Resource {
                     attributes: vec![],
                     dropped_attributes_count: 0,
+                    entity_refs: vec![],
                 }),
                 scope_metrics: vec![ScopeMetrics {
                     scope: None,
