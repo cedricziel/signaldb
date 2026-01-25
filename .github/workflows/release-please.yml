@@ -18,6 +18,9 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      grafana-plugin--release_created: ${{ steps.release.outputs['src/grafana-plugin--release_created'] }}
+      grafana-plugin--tag_name: ${{ steps.release.outputs['src/grafana-plugin--tag_name'] }}
+      grafana-plugin--version: ${{ steps.release.outputs['src/grafana-plugin--version'] }}
     steps:
       - name: Run release-please
         id: release
@@ -208,5 +211,191 @@ jobs:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
           draft: false
           prerelease: ${{ contains(needs.release-please.outputs.tag_name, 'alpha') || contains(needs.release-please.outputs.tag_name, 'beta') || contains(needs.release-please.outputs.tag_name, 'rc') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Grafana Plugin Release Jobs
+  grafana-plugin-frontend:
+    name: Build Grafana Plugin Frontend
+    runs-on: ubuntu-latest
+    needs: release-please
+    if: ${{ needs.release-please.outputs['grafana-plugin--release_created'] == 'true' }}
+    outputs:
+      plugin-id: ${{ steps.metadata.outputs.plugin-id }}
+    defaults:
+      run:
+        working-directory: src/grafana-plugin
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build:frontend
+
+      - name: Get plugin metadata
+        id: metadata
+        run: |
+          PLUGIN_ID=$(cat dist/plugin.json | jq -r .id)
+          echo "plugin-id=${PLUGIN_ID}" >> $GITHUB_OUTPUT
+
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v5
+        with:
+          name: grafana-plugin-frontend
+          path: src/grafana-plugin/dist
+          retention-days: 1
+
+  grafana-plugin-backend:
+    name: Build Grafana Plugin Backend (${{ matrix.target.os }}-${{ matrix.target.arch }})
+    runs-on: ${{ matrix.target.runner }}
+    needs: release-please
+    if: ${{ needs.release-please.outputs['grafana-plugin--release_created'] == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - os: linux
+            arch: amd64
+            rust-target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            rust-target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - os: darwin
+            arch: amd64
+            rust-target: x86_64-apple-darwin
+            runner: macos-latest
+          - os: darwin
+            arch: arm64
+            rust-target: aarch64-apple-darwin
+            runner: macos-latest
+          - os: windows
+            arch: amd64
+            rust-target: x86_64-pc-windows-msvc
+            runner: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target.rust-target }}
+
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: matrix.target.os == 'linux' && matrix.target.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: grafana-plugin-${{ matrix.target.rust-target }}
+
+      - name: Build backend
+        run: cargo build --release -p signaldb-grafana-datasource --target ${{ matrix.target.rust-target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Prepare artifact (Unix)
+        if: matrix.target.os != 'windows'
+        run: |
+          mkdir -p artifact
+          cp target/${{ matrix.target.rust-target }}/release/gpx_signaldb_datasource artifact/gpx_signaldb_datasource_${{ matrix.target.os }}_${{ matrix.target.arch }}
+
+      - name: Prepare artifact (Windows)
+        if: matrix.target.os == 'windows'
+        shell: bash
+        run: |
+          mkdir -p artifact
+          cp target/${{ matrix.target.rust-target }}/release/gpx_signaldb_datasource.exe artifact/gpx_signaldb_datasource_${{ matrix.target.os }}_${{ matrix.target.arch }}.exe
+
+      - name: Upload backend binary
+        uses: actions/upload-artifact@v5
+        with:
+          name: grafana-plugin-backend-${{ matrix.target.os }}-${{ matrix.target.arch }}
+          path: artifact/
+          retention-days: 1
+
+  grafana-plugin-package:
+    name: Package and Release Grafana Plugin
+    runs-on: ubuntu-latest
+    needs: [release-please, grafana-plugin-frontend, grafana-plugin-backend]
+    if: ${{ needs.release-please.outputs['grafana-plugin--release_created'] == 'true' }}
+    env:
+      GRAFANA_ACCESS_POLICY_TOKEN: ${{ secrets.GRAFANA_ACCESS_POLICY_TOKEN }}
+    defaults:
+      run:
+        working-directory: src/grafana-plugin
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download frontend build
+        uses: actions/download-artifact@v5
+        with:
+          name: grafana-plugin-frontend
+          path: src/grafana-plugin/dist
+
+      - name: Download all backend binaries
+        uses: actions/download-artifact@v5
+        with:
+          pattern: grafana-plugin-backend-*
+          path: src/grafana-plugin/dist
+          merge-multiple: true
+
+      - name: Set executable permissions
+        run: chmod +x dist/gpx_signaldb_datasource_* || true
+
+      - name: Sign plugin
+        run: npm run sign
+        if: ${{ env.GRAFANA_ACCESS_POLICY_TOKEN != '' }}
+
+      - name: Package plugin
+        id: package
+        run: |
+          PLUGIN_ID=$(cat dist/plugin.json | jq -r .id)
+          VERSION="${{ needs.release-please.outputs['grafana-plugin--version'] }}"
+          ARCHIVE="${PLUGIN_ID}-${VERSION}.zip"
+          mv dist ${PLUGIN_ID}
+          zip ${ARCHIVE} ${PLUGIN_ID} -r
+          echo "archive=${ARCHIVE}" >> $GITHUB_OUTPUT
+          echo "plugin-id=${PLUGIN_ID}" >> $GITHUB_OUTPUT
+
+      - name: Validate plugin
+        run: |
+          docker run --pull=always \
+            -v $PWD/${{ steps.package.outputs.archive }}:/archive.zip \
+            grafana/plugin-validator-cli /archive.zip
+
+      - name: Generate checksums
+        run: sha256sum ${{ steps.package.outputs.archive }} > ${{ steps.package.outputs.archive }}.sha256
+
+      - name: Upload plugin to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            src/grafana-plugin/${{ steps.package.outputs.archive }}
+            src/grafana-plugin/${{ steps.package.outputs.archive }}.sha256
+          tag_name: ${{ needs.release-please.outputs['grafana-plugin--tag_name'] }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

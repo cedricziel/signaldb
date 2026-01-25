@@ -33,6 +33,39 @@ updates:
         patterns:
           - "opentelemetry*"
 
+  - package-ecosystem: "npm"
+    directory: "/src/grafana-plugin"
+    schedule:
+      interval: "weekly"
+    assignees:
+      - cedricziel
+    groups:
+      grafana-ecosystem:
+        patterns:
+          - "@grafana/*"
+        update-types:
+          - "minor"
+          - "patch"
+      react:
+        patterns:
+          - "react*"
+          - "@types/react*"
+      testing:
+        patterns:
+          - "jest*"
+          - "@testing-library/*"
+          - "@playwright/*"
+      typescript-eslint:
+        patterns:
+          - "@typescript-eslint/*"
+          - "eslint*"
+          - "typescript"
+      build-tools:
+        patterns:
+          - "webpack*"
+          - "@swc/*"
+          - "sass*"
+
   - package-ecosystem: "devcontainers"
     directory: "/"
     schedule:

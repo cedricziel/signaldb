@@ -1,0 +1,22 @@
+name: Grafana Plugin CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/grafana-plugin/**'
+      - '.github/workflows/grafana-plugin-ci.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/grafana-plugin/**'
+      - '.github/workflows/grafana-plugin-ci.yml'
+
+jobs:
+  ci:
+    name: Grafana Plugin
+    uses: ./.github/workflows/grafana-plugin-ci-reusable.yml
+    secrets:
+      GRAFANA_ACCESS_POLICY_TOKEN: ${{ secrets.GRAFANA_ACCESS_POLICY_TOKEN }}
