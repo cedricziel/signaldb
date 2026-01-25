@@ -139,7 +139,7 @@ cargo-husky = { version = "1", default-features = false, features = [
     "run-cargo-fmt",
     "run-cargo-clippy",
 ] }
-toml = "0.8"
+toml = "0.9"
 
 # AWS SDK dependencies
 aws-config = "1.5.10"
