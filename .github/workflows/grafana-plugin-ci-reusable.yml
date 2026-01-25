@@ -116,7 +116,7 @@ jobs:
           ARCHIVE: ${{ steps.metadata.outputs.archive }}
 
       - name: Archive Build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.metadata.outputs.plugin-id }}-${{ steps.metadata.outputs.plugin-version }}
           path: src/grafana-plugin/${{ steps.metadata.outputs.plugin-id }}
