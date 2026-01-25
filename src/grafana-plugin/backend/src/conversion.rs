@@ -111,6 +111,9 @@ pub fn batches_to_frame_with_time(
 }
 
 /// Convert Arrow column arrays to a Grafana Field.
+///
+/// Returns None if any array fails to downcast to the expected type,
+/// logging a warning in that case.
 fn convert_column_to_field(
     arrays: &[&dyn Array],
     field_name: &str,
@@ -118,10 +121,22 @@ fn convert_column_to_field(
 ) -> Option<Field> {
     match data_type {
         DataType::Utf8 => {
-            let values: Vec<Option<String>> = arrays
+            // Pre-check: verify all arrays can be downcast to StringArray
+            let typed_arrays: Vec<&StringArray> = arrays
                 .iter()
-                .flat_map(|arr| {
-                    let string_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
+                .filter_map(|arr| arr.as_any().downcast_ref::<StringArray>())
+                .collect();
+
+            if typed_arrays.len() != arrays.len() {
+                tracing::warn!(
+                    "Failed to downcast some arrays to StringArray for field '{field_name}'"
+                );
+                return None;
+            }
+
+            let values: Vec<Option<String>> = typed_arrays
+                .iter()
+                .flat_map(|string_arr| {
                     (0..string_arr.len()).map(move |i| {
                         if string_arr.is_null(i) {
                             None
@@ -135,10 +150,22 @@ fn convert_column_to_field(
         }
 
         DataType::UInt64 => {
-            let values: Vec<Option<u64>> = arrays
+            // Pre-check: verify all arrays can be downcast to UInt64Array
+            let typed_arrays: Vec<&UInt64Array> = arrays
                 .iter()
-                .flat_map(|arr| {
-                    let uint_arr = arr.as_any().downcast_ref::<UInt64Array>().unwrap();
+                .filter_map(|arr| arr.as_any().downcast_ref::<UInt64Array>())
+                .collect();
+
+            if typed_arrays.len() != arrays.len() {
+                tracing::warn!(
+                    "Failed to downcast some arrays to UInt64Array for field '{field_name}'"
+                );
+                return None;
+            }
+
+            let values: Vec<Option<u64>> = typed_arrays
+                .iter()
+                .flat_map(|uint_arr| {
                     (0..uint_arr.len()).map(move |i| {
                         if uint_arr.is_null(i) {
                             None
@@ -152,10 +179,22 @@ fn convert_column_to_field(
         }
 
         DataType::UInt32 => {
-            let values: Vec<Option<u64>> = arrays
+            // Pre-check: verify all arrays can be downcast to UInt32Array
+            let typed_arrays: Vec<&UInt32Array> = arrays
                 .iter()
-                .flat_map(|arr| {
-                    let uint_arr = arr.as_any().downcast_ref::<UInt32Array>().unwrap();
+                .filter_map(|arr| arr.as_any().downcast_ref::<UInt32Array>())
+                .collect();
+
+            if typed_arrays.len() != arrays.len() {
+                tracing::warn!(
+                    "Failed to downcast some arrays to UInt32Array for field '{field_name}'"
+                );
+                return None;
+            }
+
+            let values: Vec<Option<u64>> = typed_arrays
+                .iter()
+                .flat_map(|uint_arr| {
                     (0..uint_arr.len()).map(move |i| {
                         if uint_arr.is_null(i) {
                             None
@@ -169,10 +208,22 @@ fn convert_column_to_field(
         }
 
         DataType::Int64 => {
-            let values: Vec<Option<i64>> = arrays
+            // Pre-check: verify all arrays can be downcast to Int64Array
+            let typed_arrays: Vec<&Int64Array> = arrays
                 .iter()
-                .flat_map(|arr| {
-                    let int_arr = arr.as_any().downcast_ref::<Int64Array>().unwrap();
+                .filter_map(|arr| arr.as_any().downcast_ref::<Int64Array>())
+                .collect();
+
+            if typed_arrays.len() != arrays.len() {
+                tracing::warn!(
+                    "Failed to downcast some arrays to Int64Array for field '{field_name}'"
+                );
+                return None;
+            }
+
+            let values: Vec<Option<i64>> = typed_arrays
+                .iter()
+                .flat_map(|int_arr| {
                     (0..int_arr.len()).map(move |i| {
                         if int_arr.is_null(i) {
                             None
@@ -186,10 +237,22 @@ fn convert_column_to_field(
         }
 
         DataType::Int32 => {
-            let values: Vec<Option<i64>> = arrays
+            // Pre-check: verify all arrays can be downcast to Int32Array
+            let typed_arrays: Vec<&Int32Array> = arrays
                 .iter()
-                .flat_map(|arr| {
-                    let int_arr = arr.as_any().downcast_ref::<Int32Array>().unwrap();
+                .filter_map(|arr| arr.as_any().downcast_ref::<Int32Array>())
+                .collect();
+
+            if typed_arrays.len() != arrays.len() {
+                tracing::warn!(
+                    "Failed to downcast some arrays to Int32Array for field '{field_name}'"
+                );
+                return None;
+            }
+
+            let values: Vec<Option<i64>> = typed_arrays
+                .iter()
+                .flat_map(|int_arr| {
                     (0..int_arr.len()).map(move |i| {
                         if int_arr.is_null(i) {
                             None
@@ -203,10 +266,22 @@ fn convert_column_to_field(
         }
 
         DataType::Float64 => {
-            let values: Vec<Option<f64>> = arrays
+            // Pre-check: verify all arrays can be downcast to Float64Array
+            let typed_arrays: Vec<&Float64Array> = arrays
                 .iter()
-                .flat_map(|arr| {
-                    let float_arr = arr.as_any().downcast_ref::<Float64Array>().unwrap();
+                .filter_map(|arr| arr.as_any().downcast_ref::<Float64Array>())
+                .collect();
+
+            if typed_arrays.len() != arrays.len() {
+                tracing::warn!(
+                    "Failed to downcast some arrays to Float64Array for field '{field_name}'"
+                );
+                return None;
+            }
+
+            let values: Vec<Option<f64>> = typed_arrays
+                .iter()
+                .flat_map(|float_arr| {
                     (0..float_arr.len()).map(move |i| {
                         if float_arr.is_null(i) {
                             None
@@ -220,10 +295,22 @@ fn convert_column_to_field(
         }
 
         DataType::Boolean => {
-            let values: Vec<Option<bool>> = arrays
+            // Pre-check: verify all arrays can be downcast to BooleanArray
+            let typed_arrays: Vec<&BooleanArray> = arrays
                 .iter()
-                .flat_map(|arr| {
-                    let bool_arr = arr.as_any().downcast_ref::<BooleanArray>().unwrap();
+                .filter_map(|arr| arr.as_any().downcast_ref::<BooleanArray>())
+                .collect();
+
+            if typed_arrays.len() != arrays.len() {
+                tracing::warn!(
+                    "Failed to downcast some arrays to BooleanArray for field '{field_name}'"
+                );
+                return None;
+            }
+
+            let values: Vec<Option<bool>> = typed_arrays
+                .iter()
+                .flat_map(|bool_arr| {
                     (0..bool_arr.len()).map(move |i| {
                         if bool_arr.is_null(i) {
                             None
