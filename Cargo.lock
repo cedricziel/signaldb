@@ -5770,6 +5770,7 @@ dependencies = [
  "datafusion",
  "futures",
  "log",
+ "serde",
  "serde_json",
  "tempo-api",
  "tokio",

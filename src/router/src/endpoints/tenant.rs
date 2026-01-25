@@ -14,14 +14,17 @@ pub fn router<S: RouterState>() -> Router<S> {
     Router::new()
         .route("/tenants", get(list_tenants::<S>))
         .route("/tenants", post(create_tenant::<S>))
-        .route("/tenants/:tenant_id", get(get_tenant::<S>))
-        .route("/tenants/:tenant_id", put(update_tenant::<S>))
-        .route("/tenants/:tenant_id/tables", get(list_tenant_tables::<S>))
+        .route("/tenants/{tenant_id}", get(get_tenant::<S>))
+        .route("/tenants/{tenant_id}", put(update_tenant::<S>))
+        .route("/tenants/{tenant_id}/tables", get(list_tenant_tables::<S>))
         .route(
-            "/tenants/:tenant_id/tables/create",
+            "/tenants/{tenant_id}/tables/create",
             post(create_tenant_tables::<S>),
         )
-        .route("/tenants/:tenant_id/schemas", get(list_tenant_schemas::<S>))
+        .route(
+            "/tenants/{tenant_id}/schemas",
+            get(list_tenant_schemas::<S>),
+        )
         .route("/schemas/available", get(list_available_schemas))
 }
 

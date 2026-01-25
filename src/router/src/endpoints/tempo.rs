@@ -13,6 +13,7 @@ use datafusion::arrow::{
     record_batch::RecordBatch,
 };
 use futures::StreamExt;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::Write;
 use tempo_api::{
@@ -20,18 +21,32 @@ use tempo_api::{
     TraceQueryParams,
 };
 
+/// Query parameters for v2 tag search
+#[derive(Debug, Deserialize)]
+pub struct TagSearchV2Params {
+    pub scope: Option<tempo_api::TagScope>,
+}
+
+/// Query parameters for v2 tag value search
+#[derive(Debug, Deserialize)]
+pub struct TagValueSearchV2Params {
+    pub start: Option<i32>,
+    pub end: Option<i32>,
+    pub q: Option<String>,
+}
+
 pub fn router<S: RouterState>() -> Router<S> {
     Router::new()
         .route("/api/echo", get(echo))
-        .route("/api/traces/:trace_id", get(query_single_trace::<S>))
+        .route("/api/traces/{trace_id}", get(query_single_trace::<S>))
         .route("/api/search", get(search::<S>))
         .route("/api/search/tags", get(search_tags))
-        .route("/api/search/tag/:tag_name/values", get(search_tag_values))
+        .route("/api/search/tag/{tag_name}/values", get(search_tag_values))
         // v2 routes
-        .route("/api/v2/traces/:trace_id", get(query_single_trace::<S>)) // V2 uses same handler for now
+        .route("/api/v2/traces/{trace_id}", get(query_single_trace::<S>)) // V2 uses same handler for now
         .route("/api/v2/search/tags", get(search_tags_v2))
         .route(
-            "/api/v2/search/tag/:tag_name/values",
+            "/api/v2/search/tag/{tag_name}/values",
             get(search_tag_values_v2),
         )
         // metrics endpoints
@@ -708,19 +723,17 @@ pub async fn search_tag_values(
 /// GET /api/v2/search/tags?scope=<resource|span|intrinsic>
 #[tracing::instrument]
 pub async fn search_tags_v2(
-    _scope: Option<Query<tempo_api::TagScope>>,
+    Query(_params): Query<TagSearchV2Params>,
 ) -> Result<axum::Json<tempo_api::v2::TagSearchResponse>, axum::http::StatusCode> {
     let response = tempo_api::v2::TagSearchResponse { scopes: vec![] };
     Ok(axum::Json(response))
 }
 
-/// GET /api/v2/search/tag/:tag_name/values
+/// GET /api/v2/search/tag/{tag_name}/values
 #[tracing::instrument]
 pub async fn search_tag_values_v2(
     Path(_scoped_tag): Path<String>,
-    _start: Option<Query<i32>>,
-    _end: Option<Query<i32>>,
-    _q: Option<Query<String>>,
+    Query(_params): Query<TagValueSearchV2Params>,
 ) -> Result<axum::Json<tempo_api::v2::TagValuesResponse>, axum::http::StatusCode> {
     let response = tempo_api::v2::TagValuesResponse { tag_values: vec![] };
     Ok(axum::Json(response))
