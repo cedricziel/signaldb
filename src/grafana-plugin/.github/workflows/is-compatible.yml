@@ -32,6 +32,11 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: .
 
+      - name: Install mold linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mold
+
       - name: Build plugin
         run: pnpm build
 
