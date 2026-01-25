@@ -1,0 +1,63 @@
+name: Rust Version Maintenance
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sundays
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-and-update-msrv:
+    name: Check and Update MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get current project MSRV
+        id: current
+        run: |
+          MSRV=$(grep -E '^rust-version\s*=' Cargo.toml | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+          echo "msrv=${MSRV}" >> $GITHUB_OUTPUT
+
+      - name: Get DataFusion MSRV from crates.io
+        id: datafusion
+        run: |
+          CRATE_INFO=$(curl -sL "https://crates.io/api/v1/crates/datafusion")
+          DF_MSRV=$(echo "$CRATE_INFO" | jq -r '.versions[0].rust_version // empty')
+          echo "msrv=${DF_MSRV}" >> $GITHUB_OUTPUT
+
+      - name: Compare and update if needed
+        if: steps.current.outputs.msrv != steps.datafusion.outputs.msrv
+        run: |
+          NEW_MSRV="${{ steps.datafusion.outputs.msrv }}"
+          CURRENT="${{ steps.current.outputs.msrv }}"
+
+          # Update Cargo.toml
+          sed -i "s/^rust-version = \"[^\"]*\"/rust-version = \"${NEW_MSRV}\"/" Cargo.toml
+
+          # Update CI test matrix
+          sed -i "s/\[stable, beta, ${CURRENT}\]/[stable, beta, ${NEW_MSRV}]/" .github/workflows/ci.yml
+
+      - name: Create PR
+        if: steps.current.outputs.msrv != steps.datafusion.outputs.msrv
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEW_MSRV="${{ steps.datafusion.outputs.msrv }}"
+          CURRENT="${{ steps.current.outputs.msrv }}"
+          BRANCH="chore/update-msrv-${NEW_MSRV}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add Cargo.toml .github/workflows/ci.yml
+          git commit -m "chore(deps): update Rust MSRV from ${CURRENT} to ${NEW_MSRV}"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --title "chore(deps): update Rust MSRV to ${NEW_MSRV}" \
+            --body "Aligns project MSRV with DataFusion ${NEW_MSRV}." \
+            --label "dependencies"
