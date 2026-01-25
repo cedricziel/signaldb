@@ -1,10 +1,11 @@
 use common::config::{Configuration, DefaultSchemas, SchemaConfig, StorageConfig};
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use datafusion::arrow::array::{
     Date32Array, Float64Array, Int32Array, RecordBatch, StringArray, TimestampNanosecondArray,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use object_store::memory::InMemory;
+use std::hint::black_box;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use writer::create_iceberg_writer;

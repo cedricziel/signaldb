@@ -123,7 +123,7 @@ rand = "0.9"
 pretty_assertions = "1.4"
 rdkafka = { version = "0.36", features = ["tokio"] }
 
-criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+criterion = { version = "0.8", features = ["html_reports", "async_tokio"] }
 
 chrono = { version = "0.4", features = ["serde"] }
 sqlx = { version = "0.8", default-features = false, features = [
