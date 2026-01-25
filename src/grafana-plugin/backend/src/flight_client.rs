@@ -1,11 +1,12 @@
 //! Flight client for connecting to SignalDB router.
 
 use arrow_flight::Ticket;
+use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use datafusion::arrow::datatypes::Schema;
-use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
-use std::io::Cursor;
+use futures::TryStreamExt;
+use futures::stream::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::transport::{Channel, Endpoint};
@@ -64,45 +65,37 @@ impl SignalDBFlightClient {
             .await
             .map_err(|e| FlightClientError::Query(e.to_string()))?;
 
-        let mut stream = response.into_inner();
-        let mut schema: Option<Arc<Schema>> = None;
+        // Use FlightRecordBatchStream to properly decode FlightData messages
+        let flight_stream = response.into_inner();
+        let mut record_batch_stream = FlightRecordBatchStream::new_from_flight_data(
+            flight_stream.map_err(|e| arrow_flight::error::FlightError::Tonic(Box::new(e))),
+        );
+
         let mut batches = Vec::new();
-        let mut ipc_data = Vec::new();
+        let mut schema: Option<Arc<Schema>> = None;
 
-        // Collect all flight data messages
-        while let Some(flight_data) = stream
-            .message()
-            .await
-            .map_err(|e| FlightClientError::Query(e.to_string()))?
-        {
-            // Schema message (header has data, body is empty)
-            if !flight_data.data_header.is_empty() {
-                // Accumulate the IPC message
-                ipc_data.extend_from_slice(&flight_data.data_header);
-            }
-            // Data batch message (body has data)
-            if !flight_data.data_body.is_empty() {
-                ipc_data.extend_from_slice(&flight_data.data_body);
-            }
-        }
-
-        // If we collected IPC data, try to decode it as a stream
-        if !ipc_data.is_empty() {
-            let cursor = Cursor::new(&ipc_data);
-            match StreamReader::try_new(cursor, None) {
-                Ok(reader) => {
-                    schema = Some(reader.schema());
-                    for batch in reader.flatten() {
-                        batches.push(batch);
+        // Iterate over the stream, handling errors explicitly
+        while let Some(result) = record_batch_stream.next().await {
+            match result {
+                Ok(batch) => {
+                    // Capture schema from first batch
+                    if schema.is_none() {
+                        schema = Some(batch.schema());
                     }
+                    batches.push(batch);
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to decode IPC stream: {e}");
+                    return Err(FlightClientError::Decode(format!(
+                        "Failed to decode record batch: {e}"
+                    )));
                 }
             }
         }
 
-        let final_schema = schema.unwrap_or_else(|| Arc::new(Schema::empty()));
+        // If we have batches but no schema captured, get it from the stream
+        let final_schema = schema
+            .or_else(|| record_batch_stream.schema().cloned())
+            .unwrap_or_else(|| Arc::new(Schema::empty()));
 
         tracing::debug!(
             "Query returned {} batches with {} total rows",

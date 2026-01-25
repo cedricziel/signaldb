@@ -20,6 +20,14 @@ pub enum ConversionError {
     ColumnNotFound(String),
     #[error("Data extraction failed: {0}")]
     DataExtraction(String),
+    #[error("Invalid timestamp: seconds={secs}, nanoseconds={nsecs}")]
+    InvalidTimestamp { secs: i64, nsecs: u32 },
+    #[error("Type mismatch for column '{column}': expected {expected}, got {actual}")]
+    TypeMismatch {
+        column: String,
+        expected: String,
+        actual: String,
+    },
 }
 
 /// Convert Arrow RecordBatches to a Grafana Frame.
@@ -329,37 +337,61 @@ fn convert_column_to_field(
 }
 
 /// Convert nanosecond timestamp to DateTime<Utc>.
-pub fn nanos_to_datetime(nanos: u64) -> DateTime<Utc> {
+///
+/// Returns `None` if the timestamp is out of range for a valid DateTime.
+pub fn nanos_to_datetime(nanos: u64) -> Option<DateTime<Utc>> {
     let secs = (nanos / 1_000_000_000) as i64;
     let nsecs = (nanos % 1_000_000_000) as u32;
-    Utc.timestamp_opt(secs, nsecs).single().unwrap_or_default()
+    Utc.timestamp_opt(secs, nsecs).single()
 }
 
 /// Convert Arrow timestamp column to Grafana time field.
+///
+/// Returns an error if a column exists but has the wrong type.
 pub fn convert_timestamp_column_to_time_field(
     batches: &[RecordBatch],
     column_name: &str,
     field_name: &str,
 ) -> Result<Field, ConversionError> {
-    let values: Vec<DateTime<Utc>> = batches
-        .iter()
-        .filter_map(|batch| batch.column_by_name(column_name))
-        .flat_map(|col| {
-            let uint_arr = col.as_any().downcast_ref::<UInt64Array>();
-            match uint_arr {
-                Some(arr) => (0..arr.len())
-                    .map(|i| {
-                        if arr.is_null(i) {
-                            Utc.timestamp_opt(0, 0).single().unwrap_or_default()
+    let mut values: Vec<DateTime<Utc>> = Vec::new();
+
+    for batch in batches {
+        if let Some(col) = batch.column_by_name(column_name) {
+            // Check if the column can be downcast to UInt64Array
+            match col.as_any().downcast_ref::<UInt64Array>() {
+                Some(arr) => {
+                    for i in 0..arr.len() {
+                        let dt = if arr.is_null(i) {
+                            // Use Unix epoch for null values
+                            Utc.timestamp_opt(0, 0)
+                                .single()
+                                .ok_or(ConversionError::InvalidTimestamp { secs: 0, nsecs: 0 })?
                         } else {
-                            nanos_to_datetime(arr.value(i))
-                        }
-                    })
-                    .collect::<Vec<_>>(),
-                None => vec![],
+                            let nanos = arr.value(i);
+                            nanos_to_datetime(nanos).ok_or_else(|| {
+                                let secs = (nanos / 1_000_000_000) as i64;
+                                let nsecs = (nanos % 1_000_000_000) as u32;
+                                ConversionError::InvalidTimestamp { secs, nsecs }
+                            })?
+                        };
+                        values.push(dt);
+                    }
+                }
+                None => {
+                    // Column exists but is not UInt64Array - this is an error
+                    let actual_type = format!("{:?}", col.data_type());
+                    tracing::warn!(
+                        "Column '{column_name}' has unexpected type {actual_type}, expected UInt64"
+                    );
+                    return Err(ConversionError::TypeMismatch {
+                        column: column_name.to_string(),
+                        expected: "UInt64".to_string(),
+                        actual: actual_type,
+                    });
+                }
             }
-        })
-        .collect();
+        }
+    }
 
     Ok(values.into_field(field_name))
 }
@@ -414,7 +446,7 @@ mod tests {
     #[test]
     fn test_nanos_to_datetime() {
         let nanos = 1_704_067_200_000_000_000_u64; // 2024-01-01 00:00:00 UTC
-        let dt = nanos_to_datetime(nanos);
+        let dt = nanos_to_datetime(nanos).expect("valid timestamp");
         assert_eq!(dt.year(), 2024);
         assert_eq!(dt.month(), 1);
         assert_eq!(dt.day(), 1);
@@ -423,7 +455,7 @@ mod tests {
     #[test]
     fn test_nanos_to_datetime_with_subseconds() {
         let nanos = 1_704_067_200_500_000_000_u64; // 2024-01-01 00:00:00.5 UTC
-        let dt = nanos_to_datetime(nanos);
+        let dt = nanos_to_datetime(nanos).expect("valid timestamp");
         assert_eq!(dt.year(), 2024);
         assert_eq!(dt.timestamp_subsec_millis(), 500);
     }
@@ -635,9 +667,29 @@ mod tests {
     #[test]
     fn test_nanos_to_datetime_zero() {
         let nanos = 0_u64;
-        let dt = nanos_to_datetime(nanos);
+        let dt = nanos_to_datetime(nanos).expect("valid timestamp");
         assert_eq!(dt.year(), 1970);
         assert_eq!(dt.month(), 1);
         assert_eq!(dt.day(), 1);
+    }
+
+    #[test]
+    fn test_timestamp_column_wrong_type() {
+        // Create a batch with a string column where we expect UInt64
+        let schema = Arc::new(Schema::new(vec![ArrowField::new(
+            "timestamp",
+            DataType::Utf8,
+            false,
+        )]));
+        let timestamps: ArrayRef = Arc::new(StringArray::from(vec!["not a number"]));
+        let batch = RecordBatch::try_new(schema, vec![timestamps]).unwrap();
+
+        let result = convert_timestamp_column_to_time_field(&[batch], "timestamp", "time");
+        assert!(result.is_err());
+        if let Err(ConversionError::TypeMismatch { column, .. }) = result {
+            assert_eq!(column, "timestamp");
+        } else {
+            panic!("Expected TypeMismatch error");
+        }
     }
 }

@@ -6,7 +6,6 @@ use grafana_plugin_sdk::{backend, data, prelude::*};
 use serde::Deserialize;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::Mutex;
 
 /// Default Flight service URL
 const DEFAULT_FLIGHT_URL: &str = "http://localhost:50053";
@@ -33,8 +32,6 @@ pub struct SignalDBDataSource {
     router_url: Arc<str>,
     /// Query timeout in seconds
     timeout_secs: u32,
-    /// Flight client (lazily initialized)
-    flight_client: Arc<Mutex<Option<SignalDBFlightClient>>>,
 }
 
 /// Query error type
@@ -79,11 +76,11 @@ impl SignalDBDataSource {
         Self {
             router_url: Arc::from(router_url.as_str()),
             timeout_secs,
-            flight_client: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Create a new instance with configuration from frontend settings.
+    #[allow(dead_code)]
     pub fn with_config(config: DataSourceConfig) -> Self {
         let router_url = config
             .router_url
@@ -98,26 +95,15 @@ impl SignalDBDataSource {
         Self {
             router_url: Arc::from(router_url.as_str()),
             timeout_secs,
-            flight_client: Arc::new(Mutex::new(None)),
         }
     }
 
-    /// Get or create a Flight client connection.
-    async fn get_flight_client(&self) -> anyhow::Result<SignalDBFlightClient> {
-        let mut client_guard = self.flight_client.lock().await;
-
-        if client_guard.is_none() {
-            tracing::debug!(
-                "Creating new Flight client connection to {}",
-                self.router_url
-            );
-            let client = SignalDBFlightClient::connect(&self.router_url, self.timeout_secs).await?;
-            *client_guard = Some(client);
-        }
-
-        // Clone the client for use (we can't return a reference held by the lock)
-        // For now, create a new connection each time - connection pooling can be added later
-        drop(client_guard);
+    /// Create a new Flight client connection.
+    ///
+    /// Each call creates a fresh connection. Connection pooling can be added
+    /// in the future if needed for performance.
+    async fn create_flight_client(&self) -> anyhow::Result<SignalDBFlightClient> {
+        tracing::debug!("Creating Flight client connection to {}", self.router_url);
         Ok(SignalDBFlightClient::connect(&self.router_url, self.timeout_secs).await?)
     }
 }
@@ -210,7 +196,7 @@ impl SignalDBDataSource {
         tracing::debug!("Executing Flight query with ticket: {ticket}");
 
         // Connect and execute query
-        let mut client = self.get_flight_client().await?;
+        let mut client = self.create_flight_client().await?;
         let (batches, schema) = client.query(&ticket).await?;
 
         if batches.is_empty() {
