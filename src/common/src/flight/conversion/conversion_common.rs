@@ -66,12 +66,11 @@ pub fn extract_resource_json(resource: &Option<Resource>) -> String {
 pub fn extract_service_name(resource: &Option<Resource>) -> String {
     if let Some(resource) = resource {
         for attr in &resource.attributes {
-            if attr.key == "service.name" {
-                if let Some(val) = &attr.value {
-                    if let Some(Value::StringValue(s)) = &val.value {
-                        return s.clone();
-                    }
-                }
+            if attr.key == "service.name"
+                && let Some(val) = &attr.value
+                && let Some(Value::StringValue(s)) = &val.value
+            {
+                return s.clone();
             }
         }
     }

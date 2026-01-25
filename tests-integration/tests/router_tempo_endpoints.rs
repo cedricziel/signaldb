@@ -114,7 +114,7 @@ async fn setup_test_services() -> TestServices {
         IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
 
     // Start background WAL processing
-    writer_service.start_background_processing().await.unwrap();
+    let _writer_bg_handle = writer_service.start_background_processing();
 
     let writer_server = Server::builder()
         .add_service(FlightServiceServer::new(writer_service))
@@ -779,7 +779,7 @@ async fn setup_multi_tenant_test_services() -> TestServices {
     let writer_service =
         IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
 
-    writer_service.start_background_processing().await.unwrap();
+    let _writer_bg_handle = writer_service.start_background_processing();
 
     let writer_server = Server::builder()
         .add_service(FlightServiceServer::new(writer_service))

@@ -7,7 +7,7 @@ use bytes::Bytes;
 use common::flight::schema::FlightSchemas;
 use common::flight::transport::ServiceCapability;
 use datafusion::arrow::datatypes::Schema;
-use datafusion::arrow::ipc::writer::IpcWriteOptions;
+use datafusion::arrow::ipc::writer::{CompressionContext, IpcWriteOptions};
 use datafusion::arrow::{ipc, record_batch::RecordBatch};
 use futures::stream::BoxStream;
 use futures::{StreamExt, stream};
@@ -182,8 +182,14 @@ impl<S: RouterState> SignalDBFlightService<S> {
         // Then send each batch
         for batch in batches {
             let mut batch_dict_tracker = ipc::writer::DictionaryTracker::new(false);
+            let mut compression_context = CompressionContext::default();
             let (_, batch_data) = data_gen
-                .encoded_batch(&batch, &mut batch_dict_tracker, &options)
+                .encode(
+                    &batch,
+                    &mut batch_dict_tracker,
+                    &options,
+                    &mut compression_context,
+                )
                 .map_err(|e| Status::internal(format!("Failed to encode batch: {e}")))?;
 
             flight_data.push(FlightData {

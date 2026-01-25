@@ -361,6 +361,7 @@ pub fn arrow_to_otlp_logs(batch: &RecordBatch) -> ExportLogsServiceRequest {
             resource: Some(Resource {
                 attributes: resource_attributes_map.get(&resource_key).unwrap().clone(),
                 dropped_attributes_count: 0,
+                entity_refs: vec![],
             }),
             scope_logs: scope_logs_vec,
             schema_url: "".to_string(),

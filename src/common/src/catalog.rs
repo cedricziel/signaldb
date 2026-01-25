@@ -478,10 +478,10 @@ impl Catalog {
                     .await;
 
                 // Ignore duplicate key errors
-                if let Err(sqlx::Error::Database(db_err)) = &result {
-                    if db_err.message().contains("UNIQUE constraint failed") {
-                        return Ok(());
-                    }
+                if let Err(sqlx::Error::Database(db_err)) = &result
+                    && db_err.message().contains("UNIQUE constraint failed")
+                {
+                    return Ok(());
                 }
 
                 result?;
@@ -521,10 +521,10 @@ impl Catalog {
                     .await;
 
                 // Ignore duplicate key errors
-                if let Err(sqlx::Error::Database(db_err)) = &result {
-                    if db_err.message().contains("UNIQUE constraint failed") {
-                        return Ok(());
-                    }
+                if let Err(sqlx::Error::Database(db_err)) = &result
+                    && db_err.message().contains("UNIQUE constraint failed")
+                {
+                    return Ok(());
                 }
 
                 result?;

@@ -488,17 +488,15 @@ impl Wal {
         let mut segment_ids = Vec::new();
         let mut dir = tokio::fs::read_dir(&config.wal_dir).await?;
         while let Some(entry) = dir.next_entry().await? {
-            if let Some(name) = entry.file_name().to_str() {
-                if name.starts_with("wal-") && name.ends_with(".log") {
-                    if let Some(id_str) = name
-                        .strip_prefix("wal-")
-                        .and_then(|s| s.strip_suffix(".log"))
-                    {
-                        if let Ok(id) = id_str.parse::<u64>() {
-                            segment_ids.push(id);
-                        }
-                    }
-                }
+            if let Some(name) = entry.file_name().to_str()
+                && name.starts_with("wal-")
+                && name.ends_with(".log")
+                && let Some(id_str) = name
+                    .strip_prefix("wal-")
+                    .and_then(|s| s.strip_suffix(".log"))
+                && let Ok(id) = id_str.parse::<u64>()
+            {
+                segment_ids.push(id);
             }
         }
 
@@ -564,8 +562,8 @@ impl Wal {
                     buffer.len() >= config.max_buffer_entries || !buffer.is_empty()
                 };
 
-                if should_flush {
-                    if let Err(e) = Self::flush_buffer(
+                if should_flush
+                    && let Err(e) = Self::flush_buffer(
                         &buffer,
                         &current_segment,
                         &config,
@@ -573,9 +571,8 @@ impl Wal {
                         &segments,
                     )
                     .await
-                    {
-                        log::error!("Failed to flush WAL buffer: {e}");
-                    }
+                {
+                    log::error!("Failed to flush WAL buffer: {e}");
                 }
             }
         });

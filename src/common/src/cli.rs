@@ -128,10 +128,10 @@ pub mod utils {
         }
 
         // Validate discovery configuration if present
-        if let Some(discovery) = &config.discovery {
-            if discovery.dsn.is_empty() {
-                anyhow::bail!("Discovery DSN cannot be empty when discovery is enabled");
-            }
+        if let Some(discovery) = &config.discovery
+            && discovery.dsn.is_empty()
+        {
+            anyhow::bail!("Discovery DSN cannot be empty when discovery is enabled");
         }
 
         log::info!("✅ Configuration validation passed");

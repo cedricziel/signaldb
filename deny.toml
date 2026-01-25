@@ -103,6 +103,7 @@ allow = [
     "Zlib",
     "ISC",
     "CDLA-Permissive-2.0",
+    "bzip2-1.0.6",  # Permissive license from libbz2-rs-sys (bzip2 compression)
 ] # List of explicitly allowed licenses
 # See https://spdx.org/licenses/ for list of possible licenses
 # [possible values: any SPDX 3.11 short identifier (+ optional exception)].
@@ -293,7 +294,9 @@ unknown-git = "warn"
 # if not specified. If it is specified but empty, no registries are allowed.
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # List of URLs for allowed Git repositories
-allow-git = []
+allow-git = [
+    "https://github.com/JanKaul/iceberg-rust",
+]
 
 [sources.allow-org]
 # github.com organizations to allow git sources for

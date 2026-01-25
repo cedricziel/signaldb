@@ -5,8 +5,6 @@ use std::{
     time::SystemTime,
 };
 
-extern crate prost_build;
-
 /// Check if source file is newer than target file
 fn is_source_newer(source: &Path, target: &Path) -> bool {
     if !target.exists() {
@@ -160,17 +158,13 @@ fn main() {
     };
 
     if needs_regeneration {
-        let mut config = prost_build::Config::default();
-        config.out_dir(&out_path);
-        config.disable_comments(["."]);
-
-        tonic_build::configure()
+        tonic_prost_build::configure()
+            .out_dir(&out_path)
             .build_client(true)
             .client_mod_attribute("tempopb", "#[cfg(feature = \"client\")]")
             .build_server(true)
             .server_mod_attribute("tempopb", "#[cfg(feature = \"server\")]")
-            .compile_protos_with_config(
-                config,
+            .compile_protos(
                 &["proto/tempo.proto"],
                 &[otel_proto_path.to_str().unwrap(), "proto/"],
             )
