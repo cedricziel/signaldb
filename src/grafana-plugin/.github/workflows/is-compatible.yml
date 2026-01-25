@@ -43,7 +43,7 @@ jobs:
       - name: Find module.ts or module.tsx
         id: find-module-ts
         run: |
-          MODULETS="$(find ./src -type f \( -name "module.ts" -o -name "module.tsx" \))"
+          MODULETS="$(find ./src -type f \( -name "module.ts" -o -name "module.tsx" \) | sed 's|^\./||')"
           echo "modulets=${MODULETS}" >> $GITHUB_OUTPUT
 
       - name: Compatibility check
