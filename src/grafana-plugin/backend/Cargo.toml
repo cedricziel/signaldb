@@ -27,3 +27,11 @@ thiserror = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
+
+# Flight client
+arrow-flight = { workspace = true }
+tonic = { workspace = true }
+tokio = { workspace = true }
+
+# Arrow data handling
+datafusion = { workspace = true }

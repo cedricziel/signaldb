@@ -6305,12 +6305,16 @@ name = "signaldb-grafana-datasource"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrow-flight",
  "async-trait",
  "chrono",
+ "datafusion",
  "futures",
  "grafana-plugin-sdk",
  "serde",
  "thiserror 2.0.18",
+ "tokio",
+ "tonic 0.14.2",
  "tracing",
 ]
 
