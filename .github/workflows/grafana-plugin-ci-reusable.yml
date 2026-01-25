@@ -154,6 +154,7 @@ jobs:
 
   playwright-tests:
     needs: [resolve-versions, build]
+    if: ${{ needs.build.outputs.has-e2e == 'true' }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -226,12 +227,12 @@ jobs:
         run: docker compose down
 
   publish-report:
-    if: ${{ always() && !cancelled() }}
+    if: ${{ always() && !cancelled() && needs.build.outputs.has-e2e == 'true' }}
     permissions:
       contents: write
       id-token: write
       pull-requests: write
-    needs: [playwright-tests]
+    needs: [playwright-tests, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
