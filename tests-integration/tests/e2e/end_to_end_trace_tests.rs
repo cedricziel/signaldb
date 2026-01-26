@@ -596,8 +596,10 @@ async fn validate_trace_query_data(
         .await
         .map_err(|e| format!("Failed to get querier client: {e}"))?;
 
-    let query_ticket =
-        arrow_flight::Ticket::new(format!("find_trace:default:default:{}", hex::encode(expected_trace_id)));
+    let query_ticket = arrow_flight::Ticket::new(format!(
+        "find_trace:default:default:{}",
+        hex::encode(expected_trace_id)
+    ));
 
     println!(
         "🔍 Validating trace data for {} ({})",
@@ -811,8 +813,10 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
                 .await
                 .expect("Failed to get querier client");
 
-            let query_ticket =
-                arrow_flight::Ticket::new(format!("find_trace:default:default:{}", hex::encode(&trace_id)));
+            let query_ticket = arrow_flight::Ticket::new(format!(
+                "find_trace:default:default:{}",
+                hex::encode(&trace_id)
+            ));
             let query_result =
                 timeout(Duration::from_secs(10), query_client.do_get(query_ticket)).await;
 
@@ -855,8 +859,10 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
 
     match router_query_result {
         Ok(mut router_client) => {
-            let router_ticket =
-                arrow_flight::Ticket::new(format!("find_trace:default:default:{}", hex::encode(&trace_id)));
+            let router_ticket = arrow_flight::Ticket::new(format!(
+                "find_trace:default:default:{}",
+                hex::encode(&trace_id)
+            ));
 
             match timeout(Duration::from_secs(10), router_client.do_get(router_ticket)).await {
                 Ok(Ok(response)) => {
@@ -981,8 +987,10 @@ async fn test_monolithic_mode_trace_pipeline() {
                 .await
                 .expect("Failed to get querier client");
 
-            let query_ticket =
-                arrow_flight::Ticket::new(format!("find_trace:default:default:{}", hex::encode(&trace_id)));
+            let query_ticket = arrow_flight::Ticket::new(format!(
+                "find_trace:default:default:{}",
+                hex::encode(&trace_id)
+            ));
             let query_result =
                 timeout(Duration::from_secs(5), query_client.do_get(query_ticket)).await;
 

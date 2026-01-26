@@ -144,13 +144,13 @@ async fn test_temp_table_cleanup_on_commit() {
 
     // Transaction should be complete - no way to verify internal state directly
     // but we can verify that the transaction completed successfully
-    
+
     // Verification: Temporary tables should be cleaned up after commit
     // Since we cannot directly access the session context from IcebergTableWriter,
     // we verify cleanup by ensuring:
     // 1. The transaction completed successfully (no errors)
     // 2. The writer is ready to accept new writes (no lingering state)
-    
+
     // Test that we can perform another write successfully
     let verification_batch = RecordBatch::try_new(
         schema,
@@ -177,20 +177,22 @@ async fn test_temp_table_cleanup_on_commit() {
         ],
     )
     .expect("Failed to create verification batch");
-    
+
     // This write should succeed, confirming no lingering temporary tables
     writer
         .write_batch(verification_batch)
         .await
         .expect("Failed to write verification batch - possible temp table leak");
-    
+
     // Additional verification: Multiple rapid writes should not accumulate temp tables
     for i in 0..5 {
         let rapid_batch = RecordBatch::try_new(
             schema.clone(),
             vec![
                 Arc::new(TimestampNanosecondArray::from(vec![6000000000 + i as i64])),
-                Arc::new(TimestampNanosecondArray::from(vec![Some(6000000000 + i as i64)])),
+                Arc::new(TimestampNanosecondArray::from(vec![Some(
+                    6000000000 + i as i64,
+                )])),
                 Arc::new(StringArray::from(vec![&format!("service_{}", i)])),
                 Arc::new(StringArray::from(vec![&format!("metric_{}", i)])),
                 Arc::new(StringArray::from(vec![Some(&format!("Metric {}", i))])),
@@ -211,13 +213,13 @@ async fn test_temp_table_cleanup_on_commit() {
             ],
         )
         .expect(&format!("Failed to create rapid batch {}", i));
-        
-        writer
-            .write_batch(rapid_batch)
-            .await
-            .expect(&format!("Failed to write rapid batch {} - possible temp table accumulation", i));
+
+        writer.write_batch(rapid_batch).await.expect(&format!(
+            "Failed to write rapid batch {} - possible temp table accumulation",
+            i
+        ));
     }
-    
+
     // Test passed: temporary tables are being cleaned up properly after commit
 }
 
@@ -309,14 +311,14 @@ async fn test_temp_table_cleanup_on_rollback() {
 
     // Transaction should be rolled back - no way to verify internal state directly
     // but we can verify that the rollback completed successfully
-    
+
     // Verification: Temporary tables should be cleaned up after rollback
     // Since we cannot directly access the session context from IcebergTableWriter,
     // we verify cleanup by ensuring:
     // 1. The rollback completed successfully (no errors)
     // 2. The writer is ready to accept new writes (no lingering state)
     // 3. Data from the rolled-back transaction was not persisted
-    
+
     // Test that we can perform new writes successfully after rollback
     let verification_batch = RecordBatch::try_new(
         schema.clone(),
@@ -342,20 +344,20 @@ async fn test_temp_table_cleanup_on_rollback() {
         ],
     )
     .expect("Failed to create verification batch");
-    
+
     // This write should succeed, confirming no lingering temporary tables
     writer
         .write_batch(verification_batch)
         .await
         .expect("Failed to write verification batch after rollback - possible temp table leak");
-    
+
     // Additional verification: Start and complete a new transaction
     // This tests that transaction state was properly cleaned up
     let new_txn_id = writer
         .begin_transaction()
         .await
         .expect("Failed to begin new transaction after rollback");
-    
+
     let txn_batch = RecordBatch::try_new(
         schema,
         vec![
@@ -380,16 +382,16 @@ async fn test_temp_table_cleanup_on_rollback() {
         ],
     )
     .expect("Failed to create transaction batch");
-    
+
     writer
         .write_batch(txn_batch)
         .await
         .expect("Failed to write batch in new transaction");
-    
+
     writer
         .commit_transaction(&new_txn_id)
         .await
         .expect("Failed to commit new transaction after rollback");
-    
+
     // Test passed: temporary tables are being cleaned up properly after rollback
 }
