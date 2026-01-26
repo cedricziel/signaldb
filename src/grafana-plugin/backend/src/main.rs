@@ -1,7 +1,7 @@
 mod conversion;
 mod flight_client;
 
-use flight_client::SignalDBFlightClient;
+use flight_client::{AuthContext, SignalDBFlightClient};
 use grafana_plugin_sdk::{backend, data, prelude::*};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ const DEFAULT_FLIGHT_URL: &str = "http://localhost:50053";
 /// Default query timeout in seconds
 const DEFAULT_TIMEOUT_SECS: u32 = 30;
 
-/// Configuration from frontend datasource settings.
+/// Configuration from frontend datasource settings (JSON data).
 #[derive(Debug, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DataSourceConfig {
@@ -22,11 +22,27 @@ pub struct DataSourceConfig {
     pub protocol: Option<String>,
     /// Query timeout in seconds
     pub timeout: Option<u32>,
+    /// Tenant ID for multi-tenancy
+    pub tenant_id: Option<String>,
+    /// Dataset ID for data isolation
+    pub dataset_id: Option<String>,
+}
+
+/// Secure JSON data (decrypted by Grafana before passing to plugin).
+#[derive(Debug, Deserialize, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalDBSecureJsonData {
+    /// API key for authentication
+    pub api_key: Option<String>,
 }
 
 /// SignalDB datasource plugin for Grafana
 #[derive(Clone, Debug, Default, GrafanaPlugin)]
-#[grafana_plugin(plugin_type = "datasource")]
+#[grafana_plugin(
+    plugin_type = "datasource",
+    json_data = DataSourceConfig,
+    secure_json_data = SignalDBSecureJsonData
+)]
 pub struct SignalDBDataSource {
     /// Router URL (e.g., "http://localhost:3001" for HTTP or "http://localhost:50053" for Flight)
     router_url: Arc<str>,
@@ -123,6 +139,28 @@ impl backend::DataService for SignalDBDataSource {
             request.queries.len()
         );
 
+        // Extract authentication context from plugin settings
+        let auth = request
+            .plugin_context
+            .instance_settings
+            .as_ref()
+            .and_then(|settings| {
+                let api_key = settings.decrypted_secure_json_data.api_key.clone();
+                let tenant_id = settings.json_data.tenant_id.clone();
+                let dataset_id = settings.json_data.dataset_id.clone();
+
+                // Only return auth context if we have at least some auth info
+                if api_key.is_some() || tenant_id.is_some() || dataset_id.is_some() {
+                    Some(AuthContext {
+                        api_key,
+                        tenant_id,
+                        dataset_id,
+                    })
+                } else {
+                    None
+                }
+            });
+
         let datasource = self.clone();
 
         Box::pin(
@@ -131,9 +169,10 @@ impl backend::DataService for SignalDBDataSource {
                 .into_iter()
                 .map(|query| {
                     let ds = datasource.clone();
+                    let auth = auth.clone();
                     async move {
                         let ref_id = query.ref_id.clone();
-                        match ds.handle_query(&query.query).await {
+                        match ds.handle_query(&query.query, auth.as_ref()).await {
                             Ok(frame) => match frame.check() {
                                 Ok(validated_frame) => {
                                     Ok(backend::DataResponse::new(ref_id, vec![validated_frame]))
@@ -164,7 +203,11 @@ impl backend::DataService for SignalDBDataSource {
 
 impl SignalDBDataSource {
     /// Handle a single query.
-    async fn handle_query(&self, query: &SignalDBQuery) -> anyhow::Result<data::Frame> {
+    async fn handle_query(
+        &self,
+        query: &SignalDBQuery,
+        auth: Option<&AuthContext>,
+    ) -> anyhow::Result<data::Frame> {
         tracing::debug!(
             "Processing {} query: {}",
             query.signal_type,
@@ -172,18 +215,22 @@ impl SignalDBDataSource {
         );
 
         match query.signal_type.as_str() {
-            "traces" => self.query_traces(query).await,
-            "metrics" => self.query_metrics(query).await,
-            "logs" => self.query_logs(query).await,
+            "traces" => self.query_traces(query, auth).await,
+            "metrics" => self.query_metrics(query, auth).await,
+            "logs" => self.query_logs(query, auth).await,
             _ => Err(anyhow::anyhow!(
-                "Unknown signal type: {}",
+                "Unknown signal type '{}'. Supported types: traces, metrics, logs",
                 query.signal_type
             )),
         }
     }
 
     /// Query traces via Flight.
-    async fn query_traces(&self, query: &SignalDBQuery) -> anyhow::Result<data::Frame> {
+    async fn query_traces(
+        &self,
+        query: &SignalDBQuery,
+        auth: Option<&AuthContext>,
+    ) -> anyhow::Result<data::Frame> {
         // Build the Flight ticket
         // Format: "traces" for listing, "trace_by_id?id=<trace_id>" for specific trace
         let ticket = if query.query_text.is_empty() {
@@ -197,7 +244,7 @@ impl SignalDBDataSource {
 
         // Connect and execute query
         let mut client = self.create_flight_client().await?;
-        let (batches, schema) = client.query(&ticket).await?;
+        let (batches, schema) = client.query_with_auth(&ticket, auth).await?;
 
         if batches.is_empty() {
             tracing::debug!("No trace data returned from Flight query");
@@ -216,36 +263,64 @@ impl SignalDBDataSource {
         Ok(frame)
     }
 
-    /// Query metrics via Flight (placeholder - returns mock data for now).
-    async fn query_metrics(&self, _query: &SignalDBQuery) -> anyhow::Result<data::Frame> {
-        // TODO: Implement metrics query via Flight
-        use chrono::prelude::*;
-        Ok([
-            [
-                Utc.with_ymd_and_hms(2021, 1, 1, 12, 0, 0).single().unwrap(),
-                Utc.with_ymd_and_hms(2021, 1, 1, 12, 0, 1).single().unwrap(),
-                Utc.with_ymd_and_hms(2021, 1, 1, 12, 0, 2).single().unwrap(),
-            ]
-            .into_field("time"),
-            [1.0_f64, 2.0, 3.0].into_field("value"),
-        ]
-        .into_frame("metrics"))
+    /// Query metrics via Flight.
+    async fn query_metrics(
+        &self,
+        _query: &SignalDBQuery,
+        auth: Option<&AuthContext>,
+    ) -> anyhow::Result<data::Frame> {
+        let ticket = "metrics".to_string();
+
+        tracing::debug!("Executing Flight query for metrics");
+
+        let mut client = self.create_flight_client().await?;
+        let (batches, schema) = client.query_with_auth(&ticket, auth).await?;
+
+        if batches.is_empty() {
+            tracing::debug!("No metrics data returned from Flight query");
+            return Ok(create_empty_metrics_frame());
+        }
+
+        // Convert Arrow batches to Grafana Frame with time field
+        let frame = conversion::batches_to_frame_with_time(
+            &batches,
+            &schema,
+            "metrics",
+            "time_unix_nano",
+            "time",
+        )?;
+
+        Ok(frame)
     }
 
-    /// Query logs via Flight (placeholder - returns mock data for now).
-    async fn query_logs(&self, _query: &SignalDBQuery) -> anyhow::Result<data::Frame> {
-        // TODO: Implement logs query via Flight
-        use chrono::prelude::*;
-        Ok([
-            [
-                Utc.with_ymd_and_hms(2021, 1, 1, 12, 0, 0).single().unwrap(),
-                Utc.with_ymd_and_hms(2021, 1, 1, 12, 0, 1).single().unwrap(),
-                Utc.with_ymd_and_hms(2021, 1, 1, 12, 0, 2).single().unwrap(),
-            ]
-            .into_field("time"),
-            ["log line 1", "log line 2", "log line 3"].into_field("line"),
-        ]
-        .into_frame("logs"))
+    /// Query logs via Flight.
+    async fn query_logs(
+        &self,
+        _query: &SignalDBQuery,
+        auth: Option<&AuthContext>,
+    ) -> anyhow::Result<data::Frame> {
+        let ticket = "logs".to_string();
+
+        tracing::debug!("Executing Flight query for logs");
+
+        let mut client = self.create_flight_client().await?;
+        let (batches, schema) = client.query_with_auth(&ticket, auth).await?;
+
+        if batches.is_empty() {
+            tracing::debug!("No logs data returned from Flight query");
+            return Ok(create_empty_logs_frame());
+        }
+
+        // Convert Arrow batches to Grafana Frame with time field
+        let frame = conversion::batches_to_frame_with_time(
+            &batches,
+            &schema,
+            "logs",
+            "time_unix_nano",
+            "time",
+        )?;
+
+        Ok(frame)
     }
 }
 
@@ -258,6 +333,28 @@ fn create_empty_traces_frame() -> data::Frame {
         Vec::<u64>::new().into_field("duration"),
     ]
     .into_frame("traces")
+}
+
+/// Create an empty metrics frame with expected columns.
+fn create_empty_metrics_frame() -> data::Frame {
+    use chrono::prelude::*;
+    [
+        Vec::<DateTime<Utc>>::new().into_field("time"),
+        Vec::<String>::new().into_field("name"),
+        Vec::<String>::new().into_field("metric_type"),
+    ]
+    .into_frame("metrics")
+}
+
+/// Create an empty logs frame with expected columns.
+fn create_empty_logs_frame() -> data::Frame {
+    use chrono::prelude::*;
+    [
+        Vec::<DateTime<Utc>>::new().into_field("time"),
+        Vec::<String>::new().into_field("body"),
+        Vec::<String>::new().into_field("severity_text"),
+    ]
+    .into_frame("logs")
 }
 
 #[grafana_plugin_sdk::main(
