@@ -376,10 +376,12 @@ mod tests {
             enabled: true,
             tenants: vec![TenantConfig {
                 id: "acme".to_string(),
+                slug: "acme".to_string(),
                 name: "Acme Corp".to_string(),
                 default_dataset: Some("production".to_string()),
                 datasets: vec![DatasetConfig {
                     id: "production".to_string(),
+                    slug: "production".to_string(),
                     is_default: true,
                 }],
                 api_keys: vec![ApiKeyConfig {

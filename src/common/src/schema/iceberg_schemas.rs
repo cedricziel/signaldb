@@ -701,46 +701,38 @@ pub fn create_metrics_summary_schema() -> Result<Schema> {
 }
 
 /// Create partition specification for traces table
-/// Partitions by date (daily) and sub-partitions by hour for better query performance
+/// Partitions by hour using Iceberg's built-in Hour transform on the timestamp column.
+/// Hour-level partitioning also enables day/month/year pruning automatically.
 pub fn create_traces_partition_spec() -> Result<PartitionSpec> {
     let schema = create_traces_schema()?;
-    let current_version = SCHEMA_DEFINITIONS.current_trace_version();
-    let resolved_schema = SCHEMA_DEFINITIONS.resolve_trace_schema(current_version)?;
-
-    let mut builder = PartitionSpec::builder(schema).with_spec_id(1);
-
-    // Add partition fields from TOML definition
-    for partition_field in &resolved_schema.partition_by {
-        builder =
-            builder.add_partition_field(partition_field, partition_field, Transform::Identity)?;
-    }
-
-    builder
+    PartitionSpec::builder(schema)
+        .with_spec_id(0)
+        .add_partition_field("timestamp", "timestamp_hour", Transform::Hour)?
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to create traces partition spec: {}", e))
 }
 
 /// Create partition specification for logs table
-/// Partitions by date (daily) and sub-partitions by hour for better query performance
+/// Partitions by hour using Iceberg's built-in Hour transform on the timestamp column.
+/// Hour-level partitioning also enables day/month/year pruning automatically.
 pub fn create_logs_partition_spec() -> Result<PartitionSpec> {
     let schema = create_logs_schema()?;
     PartitionSpec::builder(schema)
-        .with_spec_id(1)
-        .add_partition_field("date_day", "date_day", Transform::Identity)?
-        .add_partition_field("hour", "hour", Transform::Identity)?
+        .with_spec_id(0)
+        .add_partition_field("timestamp", "timestamp_hour", Transform::Hour)?
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to create logs partition spec: {}", e))
 }
 
 /// Create partition specification for metrics tables
-/// Partitions by date (daily) and sub-partitions by hour for better query performance
+/// Partitions by hour using Iceberg's built-in Hour transform on the timestamp column.
+/// Hour-level partitioning also enables day/month/year pruning automatically.
 pub fn create_metrics_partition_spec() -> Result<PartitionSpec> {
-    // Use metrics gauge schema as the base (they all have the same partition fields)
+    // Use metrics gauge schema as the base (they all have the same timestamp column)
     let schema = create_metrics_gauge_schema()?;
     PartitionSpec::builder(schema)
-        .with_spec_id(1)
-        .add_partition_field("date_day", "date_day", Transform::Identity)?
-        .add_partition_field("hour", "hour", Transform::Identity)?
+        .with_spec_id(0)
+        .add_partition_field("timestamp", "timestamp_hour", Transform::Hour)?
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to create metrics partition spec: {}", e))
 }
@@ -967,34 +959,30 @@ mod tests {
             );
         }
 
-        // Find date_day and hour field IDs
-        let date_day_field = schema
-            .field_by_name("date_day")
-            .expect("date_day field not found");
-        let hour_field = schema.field_by_name("hour").expect("hour field not found");
+        // Find timestamp field ID
+        let timestamp_field = schema
+            .field_by_name("timestamp")
+            .expect("timestamp field not found");
 
-        println!("\ndate_day field ID: {}", date_day_field.id);
-        println!("hour field ID: {}", hour_field.id);
+        println!("\ntimestamp field ID: {}", timestamp_field.id);
 
-        // Verify partition field source IDs match schema field IDs
-        let date_day_partition = partition_spec
-            .fields()
-            .iter()
-            .find(|f| f.name == "date_day")
-            .expect("date_day partition field not found");
+        // Verify partition field source ID matches the timestamp schema field ID
         let hour_partition = partition_spec
             .fields()
             .iter()
-            .find(|f| f.name == "hour")
-            .expect("hour partition field not found");
+            .find(|f| f.name == "timestamp_hour")
+            .expect("timestamp_hour partition field not found");
 
         assert_eq!(
-            date_day_partition.source_id, date_day_field.id,
-            "date_day partition source_id should match schema field id"
+            hour_partition.source_id, timestamp_field.id,
+            "timestamp_hour partition source_id should match timestamp schema field id"
         );
+
+        // Verify only one partition field (Hour subsumes Day)
         assert_eq!(
-            hour_partition.source_id, hour_field.id,
-            "hour partition source_id should match schema field id"
+            partition_spec.fields().len(),
+            1,
+            "Should have exactly 1 partition field (Hour)"
         );
     }
 }

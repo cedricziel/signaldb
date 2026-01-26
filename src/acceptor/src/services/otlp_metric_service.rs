@@ -130,6 +130,8 @@ mod tests {
         tonic_request.extensions_mut().insert(TenantContext {
             tenant_id: "test-tenant".to_string(),
             dataset_id: "test-dataset".to_string(),
+            tenant_slug: "test-tenant".to_string(),
+            dataset_slug: "test-dataset".to_string(),
             api_key_name: Some("test-key".to_string()),
             source: common::auth::TenantSource::Config,
         });

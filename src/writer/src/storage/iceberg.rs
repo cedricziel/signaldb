@@ -166,15 +166,32 @@ impl IcebergTableWriter {
     ) -> Result<Self> {
         let catalog = create_catalog_with_config(config).await?;
 
-        // Create namespace and table if they don't exist
-        // Use "default" namespace for consistency with existing tests
-        let namespace = Namespace::try_new(&["default".to_string()])?;
+        // Resolve slugs from config for Iceberg namespace paths
+        let tenant_slug = config
+            .auth
+            .tenants
+            .iter()
+            .find(|t| t.id == tenant_id)
+            .map(|t| t.slug.clone())
+            .unwrap_or_else(|| tenant_id.clone());
 
-        // Skip namespace creation for now - SqlCatalog doesn't implement it yet
-        // The default namespace should exist by default in most catalog implementations
+        let dataset_slug = config
+            .auth
+            .tenants
+            .iter()
+            .find(|t| t.id == tenant_id)
+            .and_then(|t| t.datasets.iter().find(|d| d.id == dataset_id))
+            .map(|d| d.slug.clone())
+            .unwrap_or_else(|| dataset_id.clone());
+
+        // Create namespace and table using slug-based paths
+        let namespace = Namespace::try_new(&[tenant_slug.clone(), dataset_slug.clone()])?;
+
+        // Namespace is implicitly created when tables are created via the SQL catalog
         log::debug!("Using namespace: {namespace:?}");
 
-        let table_ident = Identifier::new(&["default".to_string()], &table_name);
+        let table_ident =
+            Identifier::new(&[tenant_slug.clone(), dataset_slug.clone()], &table_name);
 
         // Check if table exists, create if not
         let table = if catalog.tabular_exists(&table_ident).await? {
@@ -267,29 +284,13 @@ impl IcebergTableWriter {
             );
             log::debug!("Table location for {table_name}: {table_location}");
 
-            // TODO: Temporarily disable partitioning to debug InvalidFormat error
-            // The partition spec seems to cause issues when datafusion_iceberg reads the table
-            let table_creation = if false {
-                // Temporarily disabled - partition spec causes InvalidFormat error on read
-                CreateTableBuilder::default()
-                    .with_name(table_name.clone())
-                    .with_schema(schema)
-                    .with_partition_spec(partition_spec)
-                    .with_location(table_location)
-                    .create()
-                    .map_err(|e| anyhow::anyhow!("Failed to build CreateTable: {}", e))?
-            } else {
-                // Create unpartitioned table for now
-                log::warn!(
-                    "Creating unpartitioned table {table_name} due to partition spec compatibility issues"
-                );
-                CreateTableBuilder::default()
-                    .with_name(table_name.clone())
-                    .with_schema(schema)
-                    .with_location(table_location)
-                    .create()
-                    .map_err(|e| anyhow::anyhow!("Failed to build CreateTable: {}", e))?
-            };
+            let table_creation = CreateTableBuilder::default()
+                .with_name(table_name.clone())
+                .with_schema(schema)
+                .with_partition_spec(partition_spec)
+                .with_location(table_location)
+                .create()
+                .map_err(|e| anyhow::anyhow!("Failed to build CreateTable: {}", e))?;
 
             catalog
                 .clone()

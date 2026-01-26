@@ -564,10 +564,10 @@ pub async fn query_single_trace<S: RouterState>(
         }
     };
 
-    // Create Flight query for trace lookup with tenant context
+    // Create Flight query for trace lookup with tenant context (using slugs for Iceberg namespace)
     let ticket = Ticket::new(format!(
         "find_trace:{}:{}:{trace_id}",
-        tenant_ctx.0.tenant_id, tenant_ctx.0.dataset_id
+        tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
     ));
 
     match client.do_get(ticket).await {
@@ -660,7 +660,7 @@ pub async fn search<S: RouterState>(
     })?;
     let ticket = Ticket::new(format!(
         "search_traces:{}:{}:{search_params}",
-        tenant_ctx.0.tenant_id, tenant_ctx.0.dataset_id
+        tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
     ));
 
     match client.do_get(ticket).await {
@@ -847,6 +847,8 @@ mod tests {
 
         // Create a test tenant context
         let tenant_ctx = common::auth::TenantContext::new(
+            "test-tenant".to_string(),
+            "test-dataset".to_string(),
             "test-tenant".to_string(),
             "test-dataset".to_string(),
             None,

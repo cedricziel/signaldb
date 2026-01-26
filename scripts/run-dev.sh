@@ -97,6 +97,7 @@ enabled = true
 # Development tenant
 [[auth.tenants]]
 id = "dev"
+slug = "dev"
 name = "Development Tenant"
 default_dataset = "local"
 
@@ -106,6 +107,7 @@ name = "Development Key"
 
 [[auth.tenants.datasets]]
 id = "local"
+slug = "local"
 is_default = true
 EOF
 

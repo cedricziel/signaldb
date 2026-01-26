@@ -52,7 +52,7 @@ field_additions = [
     { name = "date_day", type = "date", required = true, computed = "date_from_timestamp" },
     { name = "hour", type = "int32", required = true, computed = "hour_from_timestamp" },
 ]
-partition_by = ["date_day", "hour"]
+partition_by = ["timestamp"]
 
 # ==============================================================================
 # LOGS TABLE SCHEMAS
@@ -80,7 +80,7 @@ fields = [
     { name = "date_day", type = "date", required = true, computed = "date_from_timestamp" },
     { name = "hour", type = "int32", required = true, computed = "hour_from_timestamp" },
 ]
-partition_by = ["date_day", "hour"]
+partition_by = ["timestamp"]
 
 # ==============================================================================
 # METRICS TABLE SCHEMAS
@@ -109,7 +109,7 @@ fields = [
     { name = "date_day", type = "date", required = true, computed = "date_from_timestamp" },
     { name = "hour", type = "int32", required = true, computed = "hour_from_timestamp" },
 ]
-partition_by = ["date_day", "hour"]
+partition_by = ["timestamp"]
 
 [metrics_sum.v1]
 description = "Sum metrics schema"
@@ -136,7 +136,7 @@ fields = [
     { name = "date_day", type = "date", required = true, computed = "date_from_timestamp" },
     { name = "hour", type = "int32", required = true, computed = "hour_from_timestamp" },
 ]
-partition_by = ["date_day", "hour"]
+partition_by = ["timestamp"]
 
 [metrics_histogram.v1]
 description = "Histogram metrics schema"
@@ -167,4 +167,4 @@ fields = [
     { name = "date_day", type = "date", required = true, computed = "date_from_timestamp" },
     { name = "hour", type = "int32", required = true, computed = "hour_from_timestamp" },
 ]
-partition_by = ["date_day", "hour"]
+partition_by = ["timestamp"]

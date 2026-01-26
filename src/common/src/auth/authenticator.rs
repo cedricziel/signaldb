@@ -83,9 +83,20 @@ impl Authenticator {
             // Resolve dataset
             let resolved_dataset = self.resolve_dataset(tenant_config, dataset_id)?;
 
+            // Resolve slugs from config
+            let tenant_slug = tenant_config.slug.clone();
+            let dataset_slug = tenant_config
+                .datasets
+                .iter()
+                .find(|d| d.id == resolved_dataset)
+                .map(|d| d.slug.clone())
+                .unwrap_or_else(|| resolved_dataset.clone());
+
             return Ok(TenantContext::new(
                 tenant_id.to_string(),
                 resolved_dataset,
+                tenant_slug,
+                dataset_slug,
                 api_key_name.clone(),
                 TenantSource::Config,
             ));
@@ -151,7 +162,10 @@ impl Authenticator {
             )));
         }
 
+        // For DB-based tenants, use IDs as slugs (DB slug columns are a follow-up)
         Ok(TenantContext::new(
+            tenant_id.to_string(),
+            resolved_dataset.clone(),
             tenant_id.to_string(),
             resolved_dataset,
             api_key_name,
@@ -235,15 +249,18 @@ mod tests {
             enabled: true,
             tenants: vec![TenantConfig {
                 id: "acme".to_string(),
+                slug: "acme".to_string(),
                 name: "Acme Corp".to_string(),
                 default_dataset: Some("production".to_string()),
                 datasets: vec![
                     DatasetConfig {
                         id: "production".to_string(),
+                        slug: "production".to_string(),
                         is_default: true,
                     },
                     DatasetConfig {
                         id: "staging".to_string(),
+                        slug: "staging".to_string(),
                         is_default: false,
                     },
                 ],
@@ -265,6 +282,8 @@ mod tests {
         let ctx = result.unwrap();
         assert_eq!(ctx.tenant_id, "acme");
         assert_eq!(ctx.dataset_id, "production");
+        assert_eq!(ctx.tenant_slug, "acme");
+        assert_eq!(ctx.dataset_slug, "production");
         assert_eq!(ctx.api_key_name, Some("prod-key".to_string()));
         assert_eq!(ctx.source, TenantSource::Config);
 
@@ -275,6 +294,7 @@ mod tests {
         assert!(result.is_ok());
         let ctx = result.unwrap();
         assert_eq!(ctx.dataset_id, "staging");
+        assert_eq!(ctx.dataset_slug, "staging");
     }
 
     #[tokio::test]
@@ -301,10 +321,12 @@ mod tests {
             enabled: true,
             tenants: vec![TenantConfig {
                 id: "acme".to_string(),
+                slug: "acme".to_string(),
                 name: "Acme Corp".to_string(),
                 default_dataset: Some("production".to_string()),
                 datasets: vec![DatasetConfig {
                     id: "production".to_string(),
+                    slug: "production".to_string(),
                     is_default: true,
                 }],
                 api_keys: vec![ApiKeyConfig {
@@ -333,10 +355,12 @@ mod tests {
             enabled: true,
             tenants: vec![TenantConfig {
                 id: "acme".to_string(),
+                slug: "acme".to_string(),
                 name: "Acme Corp".to_string(),
                 default_dataset: Some("production".to_string()),
                 datasets: vec![DatasetConfig {
                     id: "production".to_string(),
+                    slug: "production".to_string(),
                     is_default: true,
                 }],
                 api_keys: vec![ApiKeyConfig {
@@ -364,6 +388,7 @@ mod tests {
             enabled: true,
             tenants: vec![TenantConfig {
                 id: "acme".to_string(),
+                slug: "acme".to_string(),
                 name: "Acme Corp".to_string(),
                 default_dataset: None,
                 datasets: vec![],

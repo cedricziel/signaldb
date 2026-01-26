@@ -22,13 +22,13 @@ use crate::query::{FindTraceByIdParams, SearchQueryParams};
 #[derive(Debug)]
 enum TicketRequest {
     FindTrace {
-        tenant_id: String,
-        dataset_id: String,
+        tenant_slug: String,
+        dataset_slug: String,
         trace_id: String,
     },
     SearchTraces {
-        tenant_id: String,
-        dataset_id: String,
+        tenant_slug: String,
+        dataset_slug: String,
         params: SearchQueryParams,
     },
     SqlQuery {
@@ -121,34 +121,34 @@ impl QuerierFlightService {
     /// Parse ticket content to determine query type and parameters
     #[allow(clippy::result_large_err)]
     fn parse_ticket(&self, ticket_content: &str) -> Result<TicketRequest, Status> {
-        // New format: find_trace:{tenant_id}:{dataset_id}:{trace_id}
+        // New format: find_trace:{tenant_slug}:{dataset_slug}:{trace_id}
         if let Some(remainder) = ticket_content.strip_prefix("find_trace:") {
             let parts: Vec<&str> = remainder.splitn(3, ':').collect();
             if parts.len() == 3 {
                 log::info!(
-                    "Parsing find_trace ticket for tenant={}, dataset={}, trace_id={}",
+                    "Parsing find_trace ticket for tenant_slug={}, dataset_slug={}, trace_id={}",
                     parts[0],
                     parts[1],
                     parts[2]
                 );
                 return Ok(TicketRequest::FindTrace {
-                    tenant_id: parts[0].to_string(),
-                    dataset_id: parts[1].to_string(),
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
                     trace_id: parts[2].to_string(),
                 });
             } else {
                 return Err(Status::invalid_argument(
-                    "Invalid find_trace ticket format. Expected: find_trace:tenant:dataset:trace_id",
+                    "Invalid find_trace ticket format. Expected: find_trace:tenant_slug:dataset_slug:trace_id",
                 ));
             }
         }
 
-        // New format: search_traces:{tenant_id}:{dataset_id}:{search_params_json}
+        // New format: search_traces:{tenant_slug}:{dataset_slug}:{search_params_json}
         if let Some(remainder) = ticket_content.strip_prefix("search_traces:") {
             let parts: Vec<&str> = remainder.splitn(3, ':').collect();
             if parts.len() == 3 {
                 log::info!(
-                    "Parsing search_traces ticket for tenant={}, dataset={}, params={}",
+                    "Parsing search_traces ticket for tenant_slug={}, dataset_slug={}, params={}",
                     parts[0],
                     parts[1],
                     parts[2]
@@ -157,13 +157,13 @@ impl QuerierFlightService {
                     Status::invalid_argument(format!("Invalid search parameters: {e}"))
                 })?;
                 return Ok(TicketRequest::SearchTraces {
-                    tenant_id: parts[0].to_string(),
-                    dataset_id: parts[1].to_string(),
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
                     params,
                 });
             } else {
                 return Err(Status::invalid_argument(
-                    "Invalid search_traces ticket format. Expected: search_traces:tenant:dataset:params",
+                    "Invalid search_traces ticket format. Expected: search_traces:tenant_slug:dataset_slug:params",
                 ));
             }
         }
@@ -383,12 +383,12 @@ impl FlightService for QuerierFlightService {
         let ticket_request = self.parse_ticket(&ticket_content)?;
         let batches = match ticket_request {
             TicketRequest::FindTrace {
-                tenant_id,
-                dataset_id,
+                tenant_slug,
+                dataset_slug,
                 trace_id,
             } => {
                 log::info!(
-                    "Executing find_trace for tenant={tenant_id}, dataset={dataset_id}, trace_id={trace_id}"
+                    "Executing find_trace for tenant_slug={tenant_slug}, dataset_slug={dataset_slug}, trace_id={trace_id}"
                 );
 
                 let params = FindTraceByIdParams {
@@ -399,7 +399,7 @@ impl FlightService for QuerierFlightService {
 
                 match self
                     .trace_service
-                    .find_by_id_with_tenant(params, &tenant_id, &dataset_id)
+                    .find_by_id_with_tenant(params, &tenant_slug, &dataset_slug)
                     .await
                 {
                     Ok(Some(trace)) => {
@@ -419,17 +419,17 @@ impl FlightService for QuerierFlightService {
                 }
             }
             TicketRequest::SearchTraces {
-                tenant_id,
-                dataset_id,
+                tenant_slug,
+                dataset_slug,
                 params,
             } => {
                 log::info!(
-                    "Executing search_traces for tenant={tenant_id}, dataset={dataset_id}, params={params:?}"
+                    "Executing search_traces for tenant_slug={tenant_slug}, dataset_slug={dataset_slug}, params={params:?}"
                 );
 
                 match self
                     .trace_service
-                    .find_traces_with_tenant(params, &tenant_id, &dataset_id)
+                    .find_traces_with_tenant(params, &tenant_slug, &dataset_slug)
                     .await
                 {
                     Ok(traces) => {

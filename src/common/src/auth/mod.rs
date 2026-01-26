@@ -16,6 +16,10 @@ pub struct TenantContext {
     pub tenant_id: String,
     /// Dataset identifier (resolved from header or default)
     pub dataset_id: String,
+    /// URL-friendly tenant slug for Iceberg namespace paths
+    pub tenant_slug: String,
+    /// URL-friendly dataset slug for Iceberg namespace paths
+    pub dataset_slug: String,
     /// Optional API key name for logging/audit
     pub api_key_name: Option<String>,
     /// Source of the tenant configuration (config file or database)
@@ -27,12 +31,16 @@ impl TenantContext {
     pub fn new(
         tenant_id: String,
         dataset_id: String,
+        tenant_slug: String,
+        dataset_slug: String,
         api_key_name: Option<String>,
         source: TenantSource,
     ) -> Self {
         Self {
             tenant_id,
             dataset_id,
+            tenant_slug,
+            dataset_slug,
             api_key_name,
             source,
         }
@@ -109,12 +117,16 @@ mod tests {
         let ctx = TenantContext::new(
             "acme".to_string(),
             "production".to_string(),
+            "acme".to_string(),
+            "production".to_string(),
             Some("prod-key".to_string()),
             TenantSource::Config,
         );
 
         assert_eq!(ctx.tenant_id, "acme");
         assert_eq!(ctx.dataset_id, "production");
+        assert_eq!(ctx.tenant_slug, "acme");
+        assert_eq!(ctx.dataset_slug, "production");
         assert_eq!(ctx.api_key_name, Some("prod-key".to_string()));
         assert_eq!(ctx.source, TenantSource::Config);
     }

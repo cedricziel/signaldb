@@ -18,7 +18,8 @@ async fn test_iceberg_writer_integration() -> Result<()> {
     let object_store = Arc::new(InMemory::new());
 
     // Test that we can create an Iceberg writer (should work now with table creation)
-    let result = create_iceberg_writer(&config, object_store.clone(), "default", "traces").await;
+    let result =
+        create_iceberg_writer(&config, object_store.clone(), "default", "default", "traces").await;
 
     // Table creation is now implemented, but may fail due to test environment
     if let Err(e) = result {

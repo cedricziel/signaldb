@@ -209,6 +209,8 @@ pub struct ApiKeyConfig {
 pub struct DatasetConfig {
     /// Dataset ID/name (e.g., "production", "staging")
     pub id: String,
+    /// URL-friendly slug for Iceberg namespace paths
+    pub slug: String,
     /// Whether this dataset is the default for the tenant
     #[serde(default)]
     pub is_default: bool,
@@ -219,6 +221,8 @@ pub struct DatasetConfig {
 pub struct TenantConfig {
     /// Unique tenant identifier
     pub id: String,
+    /// URL-friendly slug for Iceberg namespace paths
+    pub slug: String,
     /// Human-readable tenant name
     pub name: String,
     /// Default dataset ID when X-Dataset-ID header is missing
