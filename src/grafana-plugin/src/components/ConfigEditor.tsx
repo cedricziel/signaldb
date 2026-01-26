@@ -45,6 +45,26 @@ export function ConfigEditor(props: Props) {
     });
   };
 
+  const onTenantIdChange = (event: ChangeEvent<HTMLInputElement>) => {
+    onOptionsChange({
+      ...options,
+      jsonData: {
+        ...jsonData,
+        tenantId: event.target.value || undefined,
+      },
+    });
+  };
+
+  const onDatasetIdChange = (event: ChangeEvent<HTMLInputElement>) => {
+    onOptionsChange({
+      ...options,
+      jsonData: {
+        ...jsonData,
+        datasetId: event.target.value || undefined,
+      },
+    });
+  };
+
   const onAPIKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
     onOptionsChange({
       ...options,
@@ -103,6 +123,26 @@ export function ConfigEditor(props: Props) {
           placeholder="30"
           width={20}
           type="number"
+        />
+      </InlineField>
+
+      <InlineField label="Tenant ID" labelWidth={20} interactive tooltip="Tenant identifier for multi-tenancy (optional)">
+        <Input
+          id="config-editor-tenant-id"
+          onChange={onTenantIdChange}
+          value={jsonData.tenantId || ''}
+          placeholder="default"
+          width={30}
+        />
+      </InlineField>
+
+      <InlineField label="Dataset ID" labelWidth={20} interactive tooltip="Dataset identifier for data isolation (optional)">
+        <Input
+          id="config-editor-dataset-id"
+          onChange={onDatasetIdChange}
+          value={jsonData.datasetId || ''}
+          placeholder="default"
+          width={30}
         />
       </InlineField>
 

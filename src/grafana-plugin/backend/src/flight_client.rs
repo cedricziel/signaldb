@@ -9,7 +9,16 @@ use futures::TryStreamExt;
 use futures::stream::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
+use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, Endpoint};
+
+/// Authentication context for Flight requests.
+#[derive(Debug, Clone, Default)]
+pub struct AuthContext {
+    pub api_key: Option<String>,
+    pub tenant_id: Option<String>,
+    pub dataset_id: Option<String>,
+}
 
 /// Error type for Flight client operations.
 #[derive(Debug, thiserror::Error)]
@@ -49,16 +58,61 @@ impl SignalDBFlightClient {
         Ok(Self { client })
     }
 
-    /// Execute a query and return record batches.
+    /// Execute a query without authentication and return record batches.
+    #[allow(dead_code)]
     pub async fn query(
         &mut self,
         ticket: &str,
+    ) -> Result<(Vec<RecordBatch>, Arc<Schema>), FlightClientError> {
+        self.query_with_auth(ticket, None).await
+    }
+
+    /// Execute a query with optional authentication headers and return record batches.
+    pub async fn query_with_auth(
+        &mut self,
+        ticket: &str,
+        auth: Option<&AuthContext>,
     ) -> Result<(Vec<RecordBatch>, Arc<Schema>), FlightClientError> {
         let ticket = Ticket {
             ticket: ticket.as_bytes().to_vec().into(),
         };
 
-        let request = tonic::Request::new(ticket);
+        let mut request = tonic::Request::new(ticket);
+
+        // Add authentication headers if provided
+        if let Some(ctx) = auth {
+            if let Some(key) = &ctx.api_key {
+                match MetadataValue::try_from(format!("Bearer {key}")) {
+                    Ok(value) => {
+                        request.metadata_mut().insert("authorization", value);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to set authorization header: {e}");
+                    }
+                }
+            }
+            if let Some(tenant) = &ctx.tenant_id {
+                match MetadataValue::try_from(tenant.as_str()) {
+                    Ok(value) => {
+                        request.metadata_mut().insert("x-tenant-id", value);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to set x-tenant-id header: {e}");
+                    }
+                }
+            }
+            if let Some(dataset) = &ctx.dataset_id {
+                match MetadataValue::try_from(dataset.as_str()) {
+                    Ok(value) => {
+                        request.metadata_mut().insert("x-dataset-id", value);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to set x-dataset-id header: {e}");
+                    }
+                }
+            }
+        }
+
         let response = self
             .client
             .do_get(request)

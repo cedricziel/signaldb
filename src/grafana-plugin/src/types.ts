@@ -67,6 +67,16 @@ export interface SignalDBDataSourceOptions extends DataSourceJsonData {
    * Timeout for queries in seconds
    */
   timeout?: number;
+
+  /**
+   * Tenant ID for multi-tenancy
+   */
+  tenantId?: string;
+
+  /**
+   * Dataset ID for data isolation
+   */
+  datasetId?: string;
 }
 
 /**
