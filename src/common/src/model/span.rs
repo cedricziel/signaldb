@@ -7,6 +7,11 @@ use datafusion::arrow::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Sentinel value representing an empty/absent parent span ID in OTLP traces.
+/// Root spans use this value (all zero bytes in the 8-byte span ID) to indicate
+/// they have no parent.
+pub const EMPTY_PARENT_SPAN_ID: &str = "00000000";
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum SpanKind {
     Internal,
@@ -155,6 +160,50 @@ impl Span {
         )
         .unwrap()
     }
+}
+
+/// Build a hierarchical span tree from a flat map of spans.
+///
+/// Links child spans to their parents and returns the root spans (those marked
+/// `is_root` or with an empty/absent parent span ID). The input `span_map` is
+/// consumed and mutated in place so that parent spans contain their children.
+pub fn build_span_hierarchy(mut span_map: HashMap<String, Span>) -> Vec<Span> {
+    // Collect parent-child relationships
+    let mut parent_child_pairs = Vec::new();
+    for span in span_map.values() {
+        if !is_root_parent_id(&span.parent_span_id) {
+            parent_child_pairs.push((span.parent_span_id.clone(), span.span_id.clone()));
+        }
+    }
+
+    // Group children by parent
+    let mut child_spans: HashMap<String, Vec<Span>> = HashMap::new();
+    for (parent_span_id, span_id) in parent_child_pairs {
+        if let Some(child_span) = span_map.get(&span_id) {
+            child_spans
+                .entry(parent_span_id)
+                .or_default()
+                .push(child_span.clone());
+        }
+    }
+
+    // Attach children to parents
+    for (parent_span_id, children) in child_spans {
+        if let Some(parent_span) = span_map.get_mut(&parent_span_id) {
+            parent_span.children.extend(children);
+        }
+    }
+
+    // Collect root spans
+    span_map
+        .into_values()
+        .filter(|span| span.is_root || is_root_parent_id(&span.parent_span_id))
+        .collect()
+}
+
+/// Returns true if the parent span ID indicates a root span (empty or the zero sentinel).
+fn is_root_parent_id(parent_span_id: &str) -> bool {
+    parent_span_id.is_empty() || parent_span_id == EMPTY_PARENT_SPAN_ID
 }
 
 /// A batch of spans.

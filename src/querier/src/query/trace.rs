@@ -191,7 +191,6 @@ impl TraceService {
 
         // Create a map to store all spans by their span_id for easy lookup
         let mut span_map: HashMap<String, Span> = HashMap::new();
-        let mut root_spans = Vec::new();
         let mut trace_id = String::new();
 
         for batch in results {
@@ -394,38 +393,7 @@ impl TraceService {
             }
         }
 
-        // Collect parent-child relationships first
-        let mut parent_child_pairs = Vec::new();
-        for span in span_map.values() {
-            if span.parent_span_id != "00000000" {
-                parent_child_pairs.push((span.parent_span_id.clone(), span.span_id.clone()));
-            }
-        }
-
-        // Collect child spans first
-        let mut child_spans: HashMap<String, Vec<Span>> = HashMap::new();
-        for (parent_span_id, span_id) in parent_child_pairs {
-            if let Some(child_span) = span_map.get(&span_id) {
-                child_spans
-                    .entry(parent_span_id)
-                    .or_default()
-                    .push(child_span.clone());
-            }
-        }
-
-        // Build the hierarchy by linking child spans to their parents
-        for (parent_span_id, children) in child_spans {
-            if let Some(parent_span) = span_map.get_mut(&parent_span_id) {
-                parent_span.children.extend(children);
-            }
-        }
-
-        // Collect root spans (those marked as root or with no parent)
-        for span in span_map.values() {
-            if span.is_root || span.parent_span_id == "00000000" {
-                root_spans.push(span.clone());
-            }
-        }
+        let root_spans = model::span::build_span_hierarchy(span_map);
 
         Ok(Some(model::trace::Trace {
             trace_id,
@@ -498,12 +466,16 @@ impl TraceService {
                 })?;
         }
 
-        // Apply limit (generous since multiple spans per trace)
+        // Apply limit — we query for more spans than the requested trace count because
+        // each trace typically contains many spans. This estimate avoids truncating traces.
         let limit = query.limit.unwrap_or(20) as usize;
-        df = df.limit(0, Some(limit * 50)).map_err(|e| {
-            log::error!("Failed to apply limit: {e}");
-            QuerierError::QueryFailed(e)
-        })?;
+        const SPANS_PER_TRACE_ESTIMATE: usize = 50;
+        df = df
+            .limit(0, Some(limit * SPANS_PER_TRACE_ESTIMATE))
+            .map_err(|e| {
+                log::error!("Failed to apply limit: {e}");
+                QuerierError::QueryFailed(e)
+            })?;
 
         let results = df.collect().await.map_err(|e| {
             log::error!(
@@ -730,43 +702,7 @@ impl TraceService {
                 break;
             }
 
-            let mut root_spans = Vec::new();
-
-            // Collect parent-child relationships
-            let mut parent_child_pairs = Vec::new();
-            for span in span_map.values() {
-                if span.parent_span_id != "00000000" {
-                    parent_child_pairs.push((span.parent_span_id.clone(), span.span_id.clone()));
-                }
-            }
-
-            // Group children by parent
-            let mut child_spans: HashMap<String, Vec<Span>> = HashMap::new();
-            for (parent_span_id, span_id) in parent_child_pairs {
-                if let Some(child_span) = span_map.get(&span_id) {
-                    child_spans
-                        .entry(parent_span_id)
-                        .or_default()
-                        .push(child_span.clone());
-                }
-            }
-
-            // We need a mutable copy to build hierarchy
-            let mut span_map_mut = span_map;
-
-            // Build hierarchy
-            for (parent_span_id, children) in child_spans {
-                if let Some(parent_span) = span_map_mut.get_mut(&parent_span_id) {
-                    parent_span.children.extend(children);
-                }
-            }
-
-            // Collect root spans
-            for span in span_map_mut.values() {
-                if span.is_root || span.parent_span_id == "00000000" {
-                    root_spans.push(span.clone());
-                }
-            }
+            let root_spans = model::span::build_span_hierarchy(span_map);
 
             traces.push(model::trace::Trace {
                 trace_id,
@@ -852,7 +788,6 @@ impl TraceQuerier for TraceService {
 
         // Create a map to store all spans by their span_id for easy lookup
         let mut span_map: HashMap<String, Span> = HashMap::new();
-        let mut root_spans = Vec::new();
         let mut trace_id = String::new();
 
         for batch in results {
@@ -1052,41 +987,12 @@ impl TraceQuerier for TraceService {
             }
         }
 
-        // Collect parent-child relationships first
-        let mut parent_child_pairs = Vec::new();
-        for span in span_map.values() {
-            if span.parent_span_id != "00000000" {
-                parent_child_pairs.push((span.parent_span_id.clone(), span.span_id.clone()));
-            } else {
-                root_spans.push(span.clone());
-            }
-        }
+        let root_spans = model::span::build_span_hierarchy(span_map);
 
-        // Collect child spans first
-        let mut child_spans: HashMap<String, Vec<Span>> = HashMap::new();
-        for (parent_span_id, span_id) in parent_child_pairs {
-            if let Some(child_span) = span_map.get(&span_id) {
-                child_spans
-                    .entry(parent_span_id)
-                    .or_default()
-                    .push(child_span.clone());
-            }
-        }
-
-        // Build the hierarchy by linking child spans to their parents
-        for (parent_span_id, children) in child_spans {
-            if let Some(parent_span) = span_map.get_mut(&parent_span_id) {
-                parent_span.children.extend(children);
-            }
-        }
-
-        // Create the final trace structure
-        let trace = model::trace::Trace {
+        Ok(Some(model::trace::Trace {
             spans: root_spans,
             trace_id,
-        };
-
-        Ok(Some(trace))
+        }))
     }
 
     #[tracing::instrument]
