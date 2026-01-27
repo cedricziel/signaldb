@@ -49,7 +49,7 @@ struct TestServices {
 async fn setup_test_services() -> TestServices {
     let temp_dir = TempDir::new().unwrap();
 
-    // Use filesystem storage for now due to JanKaul S3 URL bug
+    // Use filesystem storage for now due to iceberg-rust S3 URL bug
     // TODO: Switch back to MinIO once the URL construction issue is resolved
     let storage_path = temp_dir.path().join("storage");
     std::fs::create_dir_all(&storage_path).unwrap();

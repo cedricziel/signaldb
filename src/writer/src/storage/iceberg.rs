@@ -1,4 +1,4 @@
-use crate::schema_bridge::{CatalogPoolConfig, create_jankaul_sql_catalog_with_pool};
+use crate::catalog::{CatalogPoolConfig, create_sql_catalog_with_pool};
 use crate::schema_transform::transform_trace_v1_to_v2;
 use anyhow::Result;
 use common::config::Configuration;
@@ -205,7 +205,7 @@ impl IcebergTableWriter {
             }
         } else {
             // Create table with appropriate schema based on table name
-            // Schema functions return JanKaul iceberg-rust types directly
+            // Schema functions return iceberg-rust types directly
             let schema = match table_name.as_str() {
                 "traces" => {
                     let s = iceberg_schemas::create_traces_schema()?;
@@ -284,7 +284,6 @@ impl IcebergTableWriter {
         let runtime_env = Arc::new(RuntimeEnv::default());
         let session_ctx = SessionContext::new_with_config_rt(SessionConfig::default(), runtime_env);
 
-        // For now, we'll skip the conversion since we're using JanKaul's types directly
         // The table is already in the correct format for use with datafusion_iceberg
         log::info!(
             "Successfully created/loaded Iceberg table: {} for tenant '{tenant_id}' dataset '{dataset_id}'",
@@ -330,7 +329,7 @@ impl IcebergTableWriter {
         &mut self,
         pool_config: &CatalogPoolConfig,
     ) -> Result<Arc<dyn IcebergRustCatalog>> {
-        // Only create JanKaul SQL catalog for SQL catalog types
+        // Only create SQL catalog for SQL catalog types
         if self.catalog_type != "sql" {
             return Err(anyhow::anyhow!(
                 "Cached catalog operations not supported for catalog type: {}",
@@ -340,7 +339,7 @@ impl IcebergTableWriter {
 
         if !self.batch_config.enable_catalog_caching {
             // Caching disabled, create new catalog
-            return create_jankaul_sql_catalog_with_pool(
+            return create_sql_catalog_with_pool(
                 &self.catalog_uri,
                 &self.catalog_name,
                 Some(pool_config.clone()),
@@ -364,7 +363,7 @@ impl IcebergTableWriter {
             "Creating new catalog and caching for {} seconds",
             self.batch_config.catalog_cache_ttl_seconds
         );
-        let catalog = create_jankaul_sql_catalog_with_pool(
+        let catalog = create_sql_catalog_with_pool(
             &self.catalog_uri,
             &self.catalog_name,
             Some(pool_config.clone()),

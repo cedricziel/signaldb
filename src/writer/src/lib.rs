@@ -10,9 +10,7 @@ pub use processor::{ProcessorStats, WalProcessor};
 pub mod flight_iceberg;
 pub use flight_iceberg::IcebergWriterFlightService;
 
-pub mod schema_bridge;
-pub use schema_bridge::{
-    CatalogPoolConfig, create_jankaul_sql_catalog, create_jankaul_sql_catalog_with_pool,
-};
+pub mod catalog;
+pub use catalog::{CatalogPoolConfig, create_sql_catalog, create_sql_catalog_with_pool};
 
 pub mod schema_transform;

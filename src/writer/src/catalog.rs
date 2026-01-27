@@ -30,22 +30,22 @@ impl Default for CatalogPoolConfig {
     }
 }
 
-/// Create a JanKaul SQL catalog for use with DataFusion
+/// Create a SQL catalog for use with DataFusion
 /// This replaces the complex catalog adapter approach with a simpler pattern
-pub async fn create_jankaul_sql_catalog(
+pub async fn create_sql_catalog(
     catalog_uri: &str,
     catalog_name: &str,
 ) -> Result<Arc<dyn IcebergRustCatalog>> {
-    create_jankaul_sql_catalog_with_pool(catalog_uri, catalog_name, None).await
+    create_sql_catalog_with_pool(catalog_uri, catalog_name, None).await
 }
 
-/// Create a JanKaul SQL catalog with connection pooling for production performance
-pub async fn create_jankaul_sql_catalog_with_pool(
+/// Create a SQL catalog with connection pooling for production performance
+pub async fn create_sql_catalog_with_pool(
     catalog_uri: &str,
     catalog_name: &str,
     pool_config: Option<CatalogPoolConfig>,
 ) -> Result<Arc<dyn IcebergRustCatalog>> {
-    log::info!("Creating JanKaul SQL catalog with URI: {catalog_uri}");
+    log::info!("Creating SQL catalog with URI: {catalog_uri}");
 
     use iceberg_rust::object_store::ObjectStoreBuilder;
     use iceberg_sql_catalog::SqlCatalog;
@@ -77,7 +77,7 @@ pub async fn create_jankaul_sql_catalog_with_pool(
 
     let catalog_arc: Arc<dyn IcebergRustCatalog> = Arc::new(catalog);
 
-    log::info!("Successfully created JanKaul SQL catalog: {catalog_name}");
+    log::info!("Successfully created SQL catalog: {catalog_name}");
     Ok(catalog_arc)
 }
 

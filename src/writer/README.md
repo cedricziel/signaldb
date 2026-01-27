@@ -1,6 +1,6 @@
 # SignalDB Writer
 
-The writer component of SignalDB is responsible for consuming messages from the queue system and persisting them to Apache Iceberg tables with full ACID transaction support. It provides reliable, high-performance data storage with advanced optimization features.
+The writer component of SignalDB is responsible for consuming messages from the queue system and persisting them to Iceberg tables with full ACID transaction support. It provides reliable, high-performance data storage with advanced optimization features.
 
 ## Goals
 
@@ -42,11 +42,11 @@ The core component that provides ACID transaction support:
 - **Connection Pooling**: Optimized catalog operations
 - **Retry Logic**: Configurable exponential backoff for reliability
 
-### 2. Schema Bridge
-Converts between Apache Iceberg and JanKaul's iceberg-rust formats:
-- **Type System Conversion**: Full support for all Iceberg data types
-- **Metadata Mapping**: Table schemas, partition specs, and metadata
-- **Catalog Integration**: Seamless DataFusion integration
+### 2. SQL Catalog
+Manages Iceberg table metadata and catalog operations:
+- **Connection Pooling**: Optimized catalog access for production workloads
+- **Catalog Configuration**: SQLite and PostgreSQL backend support
+- **DataFusion Integration**: Seamless query engine integration
 
 ### 3. Performance Optimization
 Advanced features for production workloads:
@@ -344,7 +344,7 @@ Iceberg integration provides several advantages over direct Parquet:
 Enable detailed logging for troubleshooting:
 
 ```bash
-RUST_LOG=writer=debug,iceberg=debug,datafusion=debug cargo test
+RUST_LOG=writer=debug,iceberg_rust=debug,datafusion=debug cargo test
 ```
 
 For production debugging, use structured logging with correlation IDs and transaction tracking.

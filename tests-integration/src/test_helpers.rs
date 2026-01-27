@@ -24,7 +24,7 @@ impl MinioTestContext {
         // Store the endpoint information separately from the bucket name
         let dsn = Url::parse(&format!("s3://127.0.0.1:{host_port}/signaldb-test"))?;
 
-        // Set MinIO credentials as environment variables for JanKaul
+        // Set MinIO credentials as environment variables for iceberg-rust
         unsafe {
             std::env::set_var("AWS_ACCESS_KEY_ID", "minioadmin");
             std::env::set_var("AWS_SECRET_ACCESS_KEY", "minioadmin");
