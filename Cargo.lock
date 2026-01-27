@@ -6872,6 +6872,7 @@ dependencies = [
  "env_logger",
  "futures",
  "hex",
+ "iceberg-rust",
  "log",
  "object_store",
  "opentelemetry-proto",

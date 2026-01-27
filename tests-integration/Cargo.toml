@@ -36,6 +36,9 @@ tower.workspace = true
 serde_json.workspace = true
 hex.workspace = true
 
+# Iceberg catalog for integration tests
+iceberg-rust.workspace = true
+
 # For test-specific utilities
 env_logger.workspace = true
 url.workspace = true
@@ -44,6 +47,10 @@ aws-config.workspace = true
 aws-sdk-s3.workspace = true
 aws-credential-types.workspace = true
 
+[[test]]
+name = "iceberg_integration"
+path = "tests/writer/iceberg_integration.rs"
+
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory
-ignored = ["acceptor", "anyhow", "arrow-flight", "datafusion", "futures", "log", "opentelemetry-proto", "querier", "router", "tokio", "tokio-stream", "tonic", "writer"]
+ignored = ["acceptor", "anyhow", "arrow-flight", "datafusion", "futures", "iceberg-rust", "log", "opentelemetry-proto", "querier", "router", "tokio", "tokio-stream", "tonic", "writer"]

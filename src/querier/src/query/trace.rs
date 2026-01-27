@@ -8,6 +8,7 @@ use common::model::{
 };
 use datafusion::{
     arrow::array::{BooleanArray, StringArray, UInt64Array},
+    common::TableReference,
     logical_expr::{col, lit},
     prelude::SessionContext,
 };
@@ -76,30 +77,34 @@ impl TraceService {
 
     /// Validate and construct a safe table reference for multi-tenant queries
     ///
+    /// Uses slug-based namespace paths to match the Iceberg namespace structure.
+    /// Returns a DataFusion `TableReference::full()` to avoid string-parsing ambiguity
+    /// with dot-separated schema names.
+    ///
     /// # Security
-    /// This function validates tenant_id and dataset_id to prevent SQL injection.
+    /// This function validates inputs to prevent SQL injection.
     /// Only alphanumeric characters, underscores, and hyphens are allowed.
     fn build_table_ref(
-        tenant_id: &str,
-        dataset_id: &str,
+        tenant_slug: &str,
+        dataset_slug: &str,
         table_name: &str,
-    ) -> Result<String, QuerierError> {
-        // Validate tenant_id and dataset_id contain only safe characters
+    ) -> Result<TableReference, QuerierError> {
+        // Validate inputs contain only safe characters
         let is_valid_identifier = |s: &str| {
             !s.is_empty()
                 && s.chars()
                     .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
         };
 
-        if !is_valid_identifier(tenant_id) {
+        if !is_valid_identifier(tenant_slug) {
             return Err(QuerierError::InvalidInput(format!(
-                "Invalid tenant_id '{tenant_id}': must contain only alphanumeric, underscore, or hyphen characters"
+                "Invalid tenant_slug '{tenant_slug}': must contain only alphanumeric, underscore, or hyphen characters"
             )));
         }
 
-        if !is_valid_identifier(dataset_id) {
+        if !is_valid_identifier(dataset_slug) {
             return Err(QuerierError::InvalidInput(format!(
-                "Invalid dataset_id '{dataset_id}': must contain only alphanumeric, underscore, or hyphen characters"
+                "Invalid dataset_slug '{dataset_slug}': must contain only alphanumeric, underscore, or hyphen characters"
             )));
         }
 
@@ -109,38 +114,43 @@ impl TraceService {
             )));
         }
 
-        // Build the fully qualified table name: iceberg.{tenant_id}.{dataset_id}.{table_name}
-        Ok(format!("iceberg.{tenant_id}.{dataset_id}.{table_name}"))
+        // Build fully qualified table reference: iceberg."{tenant_slug}.{dataset_slug}".{table_name}
+        // The schema name combines tenant and dataset slugs, matching the Iceberg namespace structure
+        let schema_name = format!("{tenant_slug}.{dataset_slug}");
+        Ok(TableReference::full(
+            "iceberg".to_string(),
+            schema_name,
+            table_name.to_string(),
+        ))
     }
 
     /// Find a trace by ID with tenant isolation
     pub async fn find_by_id_with_tenant(
         &self,
         params: FindTraceByIdParams,
-        tenant_id: &str,
-        dataset_id: &str,
+        tenant_slug: &str,
+        dataset_slug: &str,
     ) -> Result<Option<model::trace::Trace>, QuerierError> {
         log::info!(
-            "Querying for trace_id={} in tenant={}, dataset={}",
+            "Querying for trace_id={} in tenant_slug={}, dataset_slug={}",
             params.trace_id,
-            tenant_id,
-            dataset_id
+            tenant_slug,
+            dataset_slug
         );
 
         // Build safe table reference with tenant and dataset isolation
-        let table_ref = Self::build_table_ref(tenant_id, dataset_id, "traces")?;
+        let table_ref = Self::build_table_ref(tenant_slug, dataset_slug, "traces")?;
 
         // Use DataFrame API with parameterized filter (prevents SQL injection)
         let df = self
             .session_context
-            .table(&table_ref)
+            .table(table_ref)
             .await
             .map_err(|e| {
                 log::error!(
-                    "Failed to access table '{}' for tenant={}, dataset={}: {}",
-                    table_ref,
-                    tenant_id,
-                    dataset_id,
+                    "Failed to access table for tenant_slug={}, dataset_slug={}: {}",
+                    tenant_slug,
+                    dataset_slug,
                     e
                 );
                 QuerierError::QueryFailed(e)
@@ -157,21 +167,21 @@ impl TraceService {
 
         let results = df.collect().await.map_err(|e| {
             log::error!(
-                "Failed to collect query results for trace_id={}, tenant={}, dataset={}: {}",
+                "Failed to collect query results for trace_id={}, tenant_slug={}, dataset_slug={}: {}",
                 params.trace_id,
-                tenant_id,
-                dataset_id,
+                tenant_slug,
+                dataset_slug,
                 e
             );
             QuerierError::QueryFailed(e)
         })?;
 
         log::info!(
-            "Query returned {} rows for trace_id={}, tenant={}, dataset={}",
+            "Query returned {} rows for trace_id={}, tenant_slug={}, dataset_slug={}",
             results.len(),
             params.trace_id,
-            tenant_id,
-            dataset_id
+            tenant_slug,
+            dataset_slug
         );
 
         // bail if no results were found
@@ -403,25 +413,24 @@ impl TraceService {
     pub async fn find_traces_with_tenant(
         &self,
         _query: SearchQueryParams,
-        tenant_id: &str,
-        dataset_id: &str,
+        tenant_slug: &str,
+        dataset_slug: &str,
     ) -> Result<Vec<model::trace::Trace>, QuerierError> {
         log::info!(
-            "Searching traces in tenant={}, dataset={}",
-            tenant_id,
-            dataset_id
+            "Searching traces in tenant_slug={}, dataset_slug={}",
+            tenant_slug,
+            dataset_slug
         );
 
         // Build safe table reference with tenant and dataset isolation
-        let table_ref = Self::build_table_ref(tenant_id, dataset_id, "traces")?;
+        let table_ref = Self::build_table_ref(tenant_slug, dataset_slug, "traces")?;
 
         // Use DataFrame API (prevents SQL injection)
-        let df = self.session_context.table(&table_ref).await.map_err(|e| {
+        let df = self.session_context.table(table_ref).await.map_err(|e| {
             log::error!(
-                "Failed to access table '{}' for tenant={}, dataset={}: {}",
-                table_ref,
-                tenant_id,
-                dataset_id,
+                "Failed to access table for tenant_slug={}, dataset_slug={}: {}",
+                tenant_slug,
+                dataset_slug,
                 e
             );
             QuerierError::QueryFailed(e)
@@ -429,19 +438,19 @@ impl TraceService {
 
         let results = df.collect().await.map_err(|e| {
             log::error!(
-                "Failed to collect query results for tenant={}, dataset={}: {}",
-                tenant_id,
-                dataset_id,
+                "Failed to collect query results for tenant_slug={}, dataset_slug={}: {}",
+                tenant_slug,
+                dataset_slug,
                 e
             );
             QuerierError::QueryFailed(e)
         })?;
 
         log::info!(
-            "Query returned {} rows for tenant={}, dataset={}",
+            "Query returned {} rows for tenant_slug={}, dataset_slug={}",
             results.len(),
-            tenant_id,
-            dataset_id
+            tenant_slug,
+            dataset_slug
         );
 
         let traces = Vec::new();
@@ -484,12 +493,11 @@ impl TraceQuerier for TraceService {
         // Use DataFrame API with parameterized filter (prevents SQL injection)
         let df = self
             .session_context
-            .table(&table_ref)
+            .table(table_ref)
             .await
             .map_err(|e| {
                 log::error!(
-                    "Failed to access table '{}' for trace_id={}: {}",
-                    table_ref,
+                    "Failed to access table for trace_id={}: {}",
                     params.trace_id,
                     e
                 );
@@ -759,10 +767,9 @@ impl TraceQuerier for TraceService {
         let table_ref = Self::build_table_ref(tenant_id, dataset_id, "traces")?;
 
         // Use DataFrame API (prevents SQL injection)
-        let df = self.session_context.table(&table_ref).await.map_err(|e| {
+        let df = self.session_context.table(table_ref).await.map_err(|e| {
             log::error!(
-                "Failed to access table '{}' for tenant={}, dataset={}: {}",
-                table_ref,
+                "Failed to access table for tenant={}, dataset={}: {}",
                 tenant_id,
                 dataset_id,
                 e

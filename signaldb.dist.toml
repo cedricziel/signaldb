@@ -17,6 +17,7 @@ enabled = true  # Set to false to disable authentication (dev/testing only)
 # Example tenant: Acme Corporation
 [[auth.tenants]]
 id = "acme"
+slug = "acme"
 name = "Acme Corporation"
 default_dataset = "production"  # Used when X-Dataset-ID header is not provided
 
@@ -34,15 +35,18 @@ name = "Staging Key"
 # Tenants can have multiple datasets for environment isolation
 [[auth.tenants.datasets]]
 id = "production"
+slug = "production"
 is_default = true
 
 [[auth.tenants.datasets]]
 id = "staging"
+slug = "staging"
 is_default = false
 
 # Example tenant: Beta Inc
 [[auth.tenants]]
 id = "beta"
+slug = "beta"
 name = "Beta Inc"
 default_dataset = "default"
 
@@ -52,6 +56,7 @@ name = "Beta Production Key"
 
 [[auth.tenants.datasets]]
 id = "default"
+slug = "default"
 is_default = true
 
 # Optional: Custom schema configuration per tenant

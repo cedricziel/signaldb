@@ -174,6 +174,8 @@ async fn setup_test_services() -> TestServices {
             req.extensions_mut().insert(common::auth::TenantContext {
                 tenant_id: "test-tenant".to_string(),
                 dataset_id: "test-dataset".to_string(),
+                tenant_slug: "test-tenant".to_string(),
+                dataset_slug: "test-dataset".to_string(),
                 api_key_name: Some("test-key".to_string()),
                 source: common::auth::TenantSource::Config,
             });
@@ -701,10 +703,12 @@ async fn setup_multi_tenant_test_services() -> TestServices {
         tenants: vec![
             common::config::TenantConfig {
                 id: "acme".to_string(),
+                slug: "acme".to_string(),
                 name: "Acme Corp".to_string(),
                 default_dataset: Some("production".to_string()),
                 datasets: vec![common::config::DatasetConfig {
                     id: "production".to_string(),
+                    slug: "production".to_string(),
                     is_default: true,
                 }],
                 api_keys: vec![common::config::ApiKeyConfig {
@@ -715,10 +719,12 @@ async fn setup_multi_tenant_test_services() -> TestServices {
             },
             common::config::TenantConfig {
                 id: "globex".to_string(),
+                slug: "globex".to_string(),
                 name: "Globex Corporation".to_string(),
                 default_dataset: Some("production".to_string()),
                 datasets: vec![common::config::DatasetConfig {
                     id: "production".to_string(),
+                    slug: "production".to_string(),
                     is_default: true,
                 }],
                 api_keys: vec![common::config::ApiKeyConfig {
@@ -851,8 +857,10 @@ async fn setup_multi_tenant_test_services() -> TestServices {
 
             // Inject tenant context into request extensions
             req.extensions_mut().insert(common::auth::TenantContext {
-                tenant_id,
-                dataset_id,
+                tenant_id: tenant_id.clone(),
+                dataset_id: dataset_id.clone(),
+                tenant_slug: tenant_id,
+                dataset_slug: dataset_id,
                 api_key_name: Some("test-key".to_string()),
                 source: common::auth::TenantSource::Config,
             });

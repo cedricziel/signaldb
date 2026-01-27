@@ -474,7 +474,7 @@ async fn test_sql_insert_with_logs_table() -> Result<()> {
     // we verify persistence by:
     // 1. Creating another writer instance (which will connect to the same catalog)
     // 2. Writing additional data to confirm the table exists and is functional
-    // 
+    //
     // TODO: For full query verification, we would need to either:
     // - Expose the session context from IcebergTableWriter for testing
     // - Use a Querier component to read back the data
@@ -640,7 +640,7 @@ async fn test_sql_insert_with_traces_table() -> Result<()> {
     // Verify data was persisted correctly
     // Note: Since IcebergTableWriter doesn't expose the session context directly,
     // we verify persistence by confirming the write operation completed successfully.
-    // 
+    //
     // TODO: For full query verification, we would need to either:
     // - Expose the session context from IcebergTableWriter for testing
     // - Use a Querier component to read back the data
