@@ -277,7 +277,7 @@ impl TenantSchemaRegistry {
     pub fn get_schema_definitions(
         &self,
         _tenant_id: &str,
-    ) -> Result<HashMap<String, iceberg::spec::Schema>> {
+    ) -> Result<HashMap<String, iceberg_rust::spec::schema::Schema>> {
         let mut schemas = HashMap::new();
         let default_schemas = &self.config.schema.default_schemas;
 
@@ -301,7 +301,7 @@ impl TenantSchemaRegistry {
     pub fn get_partition_specifications(
         &self,
         _tenant_id: &str,
-    ) -> Result<HashMap<String, iceberg::spec::PartitionSpec>> {
+    ) -> Result<HashMap<String, iceberg_rust::spec::partition::PartitionSpec>> {
         let mut partition_specs = HashMap::new();
         let default_schemas = &self.config.schema.default_schemas;
 

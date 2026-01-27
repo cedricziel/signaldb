@@ -205,21 +205,19 @@ impl IcebergTableWriter {
             }
         } else {
             // Create table with appropriate schema based on table name
-            // Use TOML-based schema definitions
-            let apache_schema = match table_name.as_str() {
+            // Schema functions return JanKaul iceberg-rust types directly
+            let schema = match table_name.as_str() {
                 "traces" => {
-                    let schema = iceberg_schemas::create_traces_schema()?;
+                    let s = iceberg_schemas::create_traces_schema()?;
                     log::debug!(
                         "Creating traces table with {} fields: {:?}",
-                        schema.as_struct().fields().len(),
-                        schema
-                            .as_struct()
-                            .fields()
+                        s.fields().len(),
+                        s.fields()
                             .iter()
                             .map(|f| f.name.as_str())
                             .collect::<Vec<_>>()
                     );
-                    schema
+                    s
                 }
                 "logs" => iceberg_schemas::create_logs_schema()?,
                 "metrics_gauge" => iceberg_schemas::create_metrics_gauge_schema()?,
@@ -230,7 +228,7 @@ impl IcebergTableWriter {
                 }
             };
 
-            let apache_partition_spec = match table_name.as_str() {
+            let partition_spec = match table_name.as_str() {
                 "traces" => iceberg_schemas::create_traces_partition_spec()?,
                 "logs" => iceberg_schemas::create_logs_partition_spec()?,
                 "metrics_gauge" | "metrics_sum" | "metrics_histogram" => {
@@ -245,29 +243,10 @@ impl IcebergTableWriter {
             };
 
             log::debug!(
-                "Apache partition spec for {}: {} fields",
+                "Partition spec for {}: {} fields",
                 table_name,
-                apache_partition_spec.fields().len()
+                partition_spec.fields().len()
             );
-
-            // Convert Apache Iceberg schema to JanKaul's format
-            let converted_schema = crate::schema_bridge::convert_schema_to_jankaul(&apache_schema)?;
-            let converted_partition_spec =
-                crate::schema_bridge::convert_partition_spec_to_jankaul(&apache_partition_spec)?;
-
-            log::debug!(
-                "Converted partition spec for {}: {} fields",
-                table_name,
-                converted_partition_spec.fields.len()
-            );
-
-            // Create JanKaul Schema from converted data
-            let schema =
-                crate::schema_bridge::create_jankaul_schema_from_converted(&converted_schema)?;
-            let partition_spec =
-                crate::schema_bridge::create_jankaul_partition_spec_from_converted(
-                    &converted_partition_spec,
-                )?;
 
             // Create the table using the catalog
             log::info!("Creating new Iceberg table: {table_ident}");

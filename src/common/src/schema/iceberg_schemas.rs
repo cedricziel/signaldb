@@ -1,9 +1,65 @@
 use crate::config::DefaultSchemas;
 use crate::schema::SCHEMA_DEFINITIONS;
 use anyhow::Result;
-use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
-use iceberg::spec::{PartitionSpec, Transform};
-use std::sync::Arc;
+use iceberg_rust::spec::partition::{
+    PartitionField, PartitionSpec, PartitionSpecBuilder, Transform,
+};
+use iceberg_rust::spec::schema::Schema;
+use iceberg_rust::spec::types::{PrimitiveType, StructField, StructType, Type};
+
+/// Helper to create a required StructField
+fn required_field(id: i32, name: &str, prim: PrimitiveType) -> StructField {
+    StructField {
+        id,
+        name: name.to_string(),
+        required: true,
+        field_type: Type::Primitive(prim),
+        doc: None,
+    }
+}
+
+/// Helper to create an optional StructField
+fn optional_field(id: i32, name: &str, prim: PrimitiveType) -> StructField {
+    StructField {
+        id,
+        name: name.to_string(),
+        required: false,
+        field_type: Type::Primitive(prim),
+        doc: None,
+    }
+}
+
+/// Create an hour partition spec for a schema, partitioning on the given source field.
+/// Uses the Iceberg convention: partition field_id = 1000 + source_id.
+fn create_hour_partition_spec(
+    schema: &Schema,
+    source_field_name: &str,
+    partition_name: &str,
+) -> Result<PartitionSpec> {
+    let source_field = schema
+        .fields()
+        .iter()
+        .find(|f| f.name == source_field_name)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Field '{}' not found in schema for partition spec",
+                source_field_name
+            )
+        })?;
+
+    let partition_field = PartitionField::new(
+        source_field.id,
+        1000 + source_field.id,
+        partition_name,
+        Transform::Hour,
+    );
+
+    PartitionSpecBuilder::default()
+        .with_spec_id(0)
+        .with_partition_field(partition_field)
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to build partition spec: {}", e))
+}
 
 /// Create Iceberg schema for traces table using TOML definitions
 pub fn create_traces_schema() -> Result<Schema> {
@@ -30,113 +86,34 @@ pub fn create_logs_schema() -> Result<Schema> {
 pub fn create_metrics_gauge_schema() -> Result<Schema> {
     let fields = vec![
         // Timing
-        Arc::new(NestedField::required(
-            1,
-            "timestamp",
-            Type::Primitive(PrimitiveType::TimestampNs),
-        )),
-        Arc::new(NestedField::optional(
-            2,
-            "start_timestamp",
-            Type::Primitive(PrimitiveType::TimestampNs),
-        )),
+        required_field(1, "timestamp", PrimitiveType::Timestamp),
+        optional_field(2, "start_timestamp", PrimitiveType::Timestamp),
         // Metric identification
-        Arc::new(NestedField::required(
-            3,
-            "service_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::required(
-            4,
-            "metric_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            5,
-            "metric_description",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            6,
-            "metric_unit",
-            Type::Primitive(PrimitiveType::String),
-        )),
+        required_field(3, "service_name", PrimitiveType::String),
+        required_field(4, "metric_name", PrimitiveType::String),
+        optional_field(5, "metric_description", PrimitiveType::String),
+        optional_field(6, "metric_unit", PrimitiveType::String),
         // Value
-        Arc::new(NestedField::required(
-            7,
-            "value",
-            Type::Primitive(PrimitiveType::Double),
-        )),
-        Arc::new(NestedField::optional(
-            8,
-            "flags",
-            Type::Primitive(PrimitiveType::Int),
-        )),
+        required_field(7, "value", PrimitiveType::Double),
+        optional_field(8, "flags", PrimitiveType::Int),
         // Resource and scope information
-        Arc::new(NestedField::optional(
-            9,
-            "resource_schema_url",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            10,
-            "resource_attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        Arc::new(NestedField::optional(
-            11,
-            "scope_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            12,
-            "scope_version",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            13,
-            "scope_schema_url",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            14,
-            "scope_attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        Arc::new(NestedField::optional(
-            15,
-            "scope_dropped_attr_count",
-            Type::Primitive(PrimitiveType::Int),
-        )),
+        optional_field(9, "resource_schema_url", PrimitiveType::String),
+        optional_field(10, "resource_attributes", PrimitiveType::String), // JSON string
+        optional_field(11, "scope_name", PrimitiveType::String),
+        optional_field(12, "scope_version", PrimitiveType::String),
+        optional_field(13, "scope_schema_url", PrimitiveType::String),
+        optional_field(14, "scope_attributes", PrimitiveType::String), // JSON string
+        optional_field(15, "scope_dropped_attr_count", PrimitiveType::Int),
         // Metric attributes
-        Arc::new(NestedField::optional(
-            16,
-            "attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
+        optional_field(16, "attributes", PrimitiveType::String), // JSON string
         // Exemplars - stored as JSON string for simplicity
-        Arc::new(NestedField::optional(
-            17,
-            "exemplars",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
+        optional_field(17, "exemplars", PrimitiveType::String), // JSON string
         // Additional fields for query optimization
-        Arc::new(NestedField::required(
-            18,
-            "date_day",
-            Type::Primitive(PrimitiveType::Date),
-        )), // Partition key
-        Arc::new(NestedField::required(
-            19,
-            "hour",
-            Type::Primitive(PrimitiveType::Int),
-        )), // Sub-partition key
+        required_field(18, "date_day", PrimitiveType::Date), // Partition key
+        required_field(19, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
 
-    Schema::builder()
-        .with_fields(fields)
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to create metrics gauge schema: {}", e))
+    Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
 
 /// Create Iceberg schema for metrics sum table
@@ -144,123 +121,36 @@ pub fn create_metrics_gauge_schema() -> Result<Schema> {
 pub fn create_metrics_sum_schema() -> Result<Schema> {
     let fields = vec![
         // Timing
-        Arc::new(NestedField::required(
-            1,
-            "timestamp",
-            Type::Primitive(PrimitiveType::TimestampNs),
-        )),
-        Arc::new(NestedField::optional(
-            2,
-            "start_timestamp",
-            Type::Primitive(PrimitiveType::TimestampNs),
-        )),
+        required_field(1, "timestamp", PrimitiveType::Timestamp),
+        optional_field(2, "start_timestamp", PrimitiveType::Timestamp),
         // Metric identification
-        Arc::new(NestedField::required(
-            3,
-            "service_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::required(
-            4,
-            "metric_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            5,
-            "metric_description",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            6,
-            "metric_unit",
-            Type::Primitive(PrimitiveType::String),
-        )),
+        required_field(3, "service_name", PrimitiveType::String),
+        required_field(4, "metric_name", PrimitiveType::String),
+        optional_field(5, "metric_description", PrimitiveType::String),
+        optional_field(6, "metric_unit", PrimitiveType::String),
         // Value and aggregation info
-        Arc::new(NestedField::required(
-            7,
-            "value",
-            Type::Primitive(PrimitiveType::Double),
-        )),
-        Arc::new(NestedField::optional(
-            8,
-            "flags",
-            Type::Primitive(PrimitiveType::Int),
-        )),
-        Arc::new(NestedField::required(
-            9,
-            "aggregation_temporality",
-            Type::Primitive(PrimitiveType::Int),
-        )),
-        Arc::new(NestedField::required(
-            10,
-            "is_monotonic",
-            Type::Primitive(PrimitiveType::Boolean),
-        )),
+        required_field(7, "value", PrimitiveType::Double),
+        optional_field(8, "flags", PrimitiveType::Int),
+        required_field(9, "aggregation_temporality", PrimitiveType::Int),
+        required_field(10, "is_monotonic", PrimitiveType::Boolean),
         // Resource and scope information
-        Arc::new(NestedField::optional(
-            11,
-            "resource_schema_url",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            12,
-            "resource_attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        Arc::new(NestedField::optional(
-            13,
-            "scope_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            14,
-            "scope_version",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            15,
-            "scope_schema_url",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            16,
-            "scope_attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        Arc::new(NestedField::optional(
-            17,
-            "scope_dropped_attr_count",
-            Type::Primitive(PrimitiveType::Int),
-        )),
+        optional_field(11, "resource_schema_url", PrimitiveType::String),
+        optional_field(12, "resource_attributes", PrimitiveType::String), // JSON string
+        optional_field(13, "scope_name", PrimitiveType::String),
+        optional_field(14, "scope_version", PrimitiveType::String),
+        optional_field(15, "scope_schema_url", PrimitiveType::String),
+        optional_field(16, "scope_attributes", PrimitiveType::String), // JSON string
+        optional_field(17, "scope_dropped_attr_count", PrimitiveType::Int),
         // Metric attributes
-        Arc::new(NestedField::optional(
-            18,
-            "attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
+        optional_field(18, "attributes", PrimitiveType::String), // JSON string
         // Exemplars - stored as JSON string for simplicity
-        Arc::new(NestedField::optional(
-            19,
-            "exemplars",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
+        optional_field(19, "exemplars", PrimitiveType::String), // JSON string
         // Additional fields for query optimization
-        Arc::new(NestedField::required(
-            20,
-            "date_day",
-            Type::Primitive(PrimitiveType::Date),
-        )), // Partition key
-        Arc::new(NestedField::required(
-            21,
-            "hour",
-            Type::Primitive(PrimitiveType::Int),
-        )), // Sub-partition key
+        required_field(20, "date_day", PrimitiveType::Date), // Partition key
+        required_field(21, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
 
-    Schema::builder()
-        .with_fields(fields)
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to create metrics sum schema: {}", e))
+    Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
 
 /// Create Iceberg schema for metrics histogram table
@@ -268,143 +158,40 @@ pub fn create_metrics_sum_schema() -> Result<Schema> {
 pub fn create_metrics_histogram_schema() -> Result<Schema> {
     let fields = vec![
         // Timing
-        Arc::new(NestedField::required(
-            1,
-            "timestamp",
-            Type::Primitive(PrimitiveType::TimestampNs),
-        )),
-        Arc::new(NestedField::optional(
-            2,
-            "start_timestamp",
-            Type::Primitive(PrimitiveType::TimestampNs),
-        )),
+        required_field(1, "timestamp", PrimitiveType::Timestamp),
+        optional_field(2, "start_timestamp", PrimitiveType::Timestamp),
         // Metric identification
-        Arc::new(NestedField::required(
-            3,
-            "service_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::required(
-            4,
-            "metric_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            5,
-            "metric_description",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            6,
-            "metric_unit",
-            Type::Primitive(PrimitiveType::String),
-        )),
+        required_field(3, "service_name", PrimitiveType::String),
+        required_field(4, "metric_name", PrimitiveType::String),
+        optional_field(5, "metric_description", PrimitiveType::String),
+        optional_field(6, "metric_unit", PrimitiveType::String),
         // Histogram data
-        Arc::new(NestedField::required(
-            7,
-            "count",
-            Type::Primitive(PrimitiveType::Long),
-        )),
-        Arc::new(NestedField::optional(
-            8,
-            "sum",
-            Type::Primitive(PrimitiveType::Double),
-        )),
-        Arc::new(NestedField::optional(
-            9,
-            "min",
-            Type::Primitive(PrimitiveType::Double),
-        )),
-        Arc::new(NestedField::optional(
-            10,
-            "max",
-            Type::Primitive(PrimitiveType::Double),
-        )),
-        Arc::new(NestedField::optional(
-            11,
-            "bucket_counts",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON array string
-        Arc::new(NestedField::optional(
-            12,
-            "explicit_bounds",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON array string
-        Arc::new(NestedField::optional(
-            13,
-            "flags",
-            Type::Primitive(PrimitiveType::Int),
-        )),
-        Arc::new(NestedField::required(
-            14,
-            "aggregation_temporality",
-            Type::Primitive(PrimitiveType::Int),
-        )),
+        required_field(7, "count", PrimitiveType::Long),
+        optional_field(8, "sum", PrimitiveType::Double),
+        optional_field(9, "min", PrimitiveType::Double),
+        optional_field(10, "max", PrimitiveType::Double),
+        optional_field(11, "bucket_counts", PrimitiveType::String), // JSON array string
+        optional_field(12, "explicit_bounds", PrimitiveType::String), // JSON array string
+        optional_field(13, "flags", PrimitiveType::Int),
+        required_field(14, "aggregation_temporality", PrimitiveType::Int),
         // Resource and scope information
-        Arc::new(NestedField::optional(
-            15,
-            "resource_schema_url",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            16,
-            "resource_attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        Arc::new(NestedField::optional(
-            17,
-            "scope_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            18,
-            "scope_version",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            19,
-            "scope_schema_url",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            20,
-            "scope_attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        Arc::new(NestedField::optional(
-            21,
-            "scope_dropped_attr_count",
-            Type::Primitive(PrimitiveType::Int),
-        )),
+        optional_field(15, "resource_schema_url", PrimitiveType::String),
+        optional_field(16, "resource_attributes", PrimitiveType::String), // JSON string
+        optional_field(17, "scope_name", PrimitiveType::String),
+        optional_field(18, "scope_version", PrimitiveType::String),
+        optional_field(19, "scope_schema_url", PrimitiveType::String),
+        optional_field(20, "scope_attributes", PrimitiveType::String), // JSON string
+        optional_field(21, "scope_dropped_attr_count", PrimitiveType::Int),
         // Metric attributes
-        Arc::new(NestedField::optional(
-            22,
-            "attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
+        optional_field(22, "attributes", PrimitiveType::String), // JSON string
         // Exemplars - stored as JSON string for simplicity
-        Arc::new(NestedField::optional(
-            23,
-            "exemplars",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
+        optional_field(23, "exemplars", PrimitiveType::String), // JSON string
         // Additional fields for query optimization
-        Arc::new(NestedField::required(
-            24,
-            "date_day",
-            Type::Primitive(PrimitiveType::Date),
-        )), // Partition key
-        Arc::new(NestedField::required(
-            25,
-            "hour",
-            Type::Primitive(PrimitiveType::Int),
-        )), // Sub-partition key
+        required_field(24, "date_day", PrimitiveType::Date), // Partition key
+        required_field(25, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
 
-    Schema::builder()
-        .with_fields(fields)
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to create metrics histogram schema: {}", e))
+    Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
 
 /// Create Iceberg schema for metrics exponential histogram table
@@ -412,168 +199,45 @@ pub fn create_metrics_histogram_schema() -> Result<Schema> {
 pub fn create_metrics_exponential_histogram_schema() -> Result<Schema> {
     let fields = vec![
         // Timing
-        Arc::new(NestedField::required(
-            1,
-            "timestamp",
-            Type::Primitive(PrimitiveType::TimestampNs),
-        )),
-        Arc::new(NestedField::optional(
-            2,
-            "start_timestamp",
-            Type::Primitive(PrimitiveType::TimestampNs),
-        )),
+        required_field(1, "timestamp", PrimitiveType::Timestamp),
+        optional_field(2, "start_timestamp", PrimitiveType::Timestamp),
         // Metric identification
-        Arc::new(NestedField::required(
-            3,
-            "service_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::required(
-            4,
-            "metric_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            5,
-            "metric_description",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            6,
-            "metric_unit",
-            Type::Primitive(PrimitiveType::String),
-        )),
+        required_field(3, "service_name", PrimitiveType::String),
+        required_field(4, "metric_name", PrimitiveType::String),
+        optional_field(5, "metric_description", PrimitiveType::String),
+        optional_field(6, "metric_unit", PrimitiveType::String),
         // Exponential histogram data
-        Arc::new(NestedField::required(
-            7,
-            "count",
-            Type::Primitive(PrimitiveType::Long),
-        )),
-        Arc::new(NestedField::optional(
-            8,
-            "sum",
-            Type::Primitive(PrimitiveType::Double),
-        )),
-        Arc::new(NestedField::optional(
-            9,
-            "min",
-            Type::Primitive(PrimitiveType::Double),
-        )),
-        Arc::new(NestedField::optional(
-            10,
-            "max",
-            Type::Primitive(PrimitiveType::Double),
-        )),
-        Arc::new(NestedField::optional(
-            11,
-            "scale",
-            Type::Primitive(PrimitiveType::Int),
-        )),
-        Arc::new(NestedField::optional(
-            12,
-            "zero_count",
-            Type::Primitive(PrimitiveType::Long),
-        )),
-        Arc::new(NestedField::optional(
-            13,
-            "positive_offset",
-            Type::Primitive(PrimitiveType::Int),
-        )),
-        Arc::new(NestedField::optional(
-            14,
-            "positive_bucket_counts",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON array string
-        Arc::new(NestedField::optional(
-            15,
-            "negative_offset",
-            Type::Primitive(PrimitiveType::Int),
-        )),
-        Arc::new(NestedField::optional(
-            16,
-            "negative_bucket_counts",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON array string
-        Arc::new(NestedField::optional(
-            17,
-            "flags",
-            Type::Primitive(PrimitiveType::Int),
-        )),
-        Arc::new(NestedField::required(
-            18,
-            "aggregation_temporality",
-            Type::Primitive(PrimitiveType::Int),
-        )),
-        Arc::new(NestedField::optional(
-            19,
-            "zero_threshold",
-            Type::Primitive(PrimitiveType::Double),
-        )),
+        required_field(7, "count", PrimitiveType::Long),
+        optional_field(8, "sum", PrimitiveType::Double),
+        optional_field(9, "min", PrimitiveType::Double),
+        optional_field(10, "max", PrimitiveType::Double),
+        optional_field(11, "scale", PrimitiveType::Int),
+        optional_field(12, "zero_count", PrimitiveType::Long),
+        optional_field(13, "positive_offset", PrimitiveType::Int),
+        optional_field(14, "positive_bucket_counts", PrimitiveType::String), // JSON array string
+        optional_field(15, "negative_offset", PrimitiveType::Int),
+        optional_field(16, "negative_bucket_counts", PrimitiveType::String), // JSON array string
+        optional_field(17, "flags", PrimitiveType::Int),
+        required_field(18, "aggregation_temporality", PrimitiveType::Int),
+        optional_field(19, "zero_threshold", PrimitiveType::Double),
         // Resource and scope information
-        Arc::new(NestedField::optional(
-            20,
-            "resource_schema_url",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            21,
-            "resource_attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        Arc::new(NestedField::optional(
-            22,
-            "scope_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            23,
-            "scope_version",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            24,
-            "scope_schema_url",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            25,
-            "scope_attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        Arc::new(NestedField::optional(
-            26,
-            "scope_dropped_attr_count",
-            Type::Primitive(PrimitiveType::Int),
-        )),
+        optional_field(20, "resource_schema_url", PrimitiveType::String),
+        optional_field(21, "resource_attributes", PrimitiveType::String), // JSON string
+        optional_field(22, "scope_name", PrimitiveType::String),
+        optional_field(23, "scope_version", PrimitiveType::String),
+        optional_field(24, "scope_schema_url", PrimitiveType::String),
+        optional_field(25, "scope_attributes", PrimitiveType::String), // JSON string
+        optional_field(26, "scope_dropped_attr_count", PrimitiveType::Int),
         // Metric attributes
-        Arc::new(NestedField::optional(
-            27,
-            "attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
+        optional_field(27, "attributes", PrimitiveType::String), // JSON string
         // Exemplars - stored as JSON string for simplicity
-        Arc::new(NestedField::optional(
-            28,
-            "exemplars",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
+        optional_field(28, "exemplars", PrimitiveType::String), // JSON string
         // Additional fields for query optimization
-        Arc::new(NestedField::required(
-            29,
-            "date_day",
-            Type::Primitive(PrimitiveType::Date),
-        )), // Partition key
-        Arc::new(NestedField::required(
-            30,
-            "hour",
-            Type::Primitive(PrimitiveType::Int),
-        )), // Sub-partition key
+        required_field(29, "date_day", PrimitiveType::Date), // Partition key
+        required_field(30, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
 
-    Schema::builder()
-        .with_fields(fields)
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to create metrics exponential histogram schema: {e}"))
+    Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
 
 /// Create Iceberg schema for metrics summary table
@@ -581,123 +245,36 @@ pub fn create_metrics_exponential_histogram_schema() -> Result<Schema> {
 pub fn create_metrics_summary_schema() -> Result<Schema> {
     let fields = vec![
         // Timing
-        Arc::new(NestedField::required(
-            1,
-            "timestamp",
-            Type::Primitive(PrimitiveType::TimestampNs),
-        )),
-        Arc::new(NestedField::optional(
-            2,
-            "start_timestamp",
-            Type::Primitive(PrimitiveType::TimestampNs),
-        )),
+        required_field(1, "timestamp", PrimitiveType::Timestamp),
+        optional_field(2, "start_timestamp", PrimitiveType::Timestamp),
         // Metric identification
-        Arc::new(NestedField::required(
-            3,
-            "service_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::required(
-            4,
-            "metric_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            5,
-            "metric_description",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            6,
-            "metric_unit",
-            Type::Primitive(PrimitiveType::String),
-        )),
+        required_field(3, "service_name", PrimitiveType::String),
+        required_field(4, "metric_name", PrimitiveType::String),
+        optional_field(5, "metric_description", PrimitiveType::String),
+        optional_field(6, "metric_unit", PrimitiveType::String),
         // Summary data
-        Arc::new(NestedField::required(
-            7,
-            "count",
-            Type::Primitive(PrimitiveType::Long),
-        )),
-        Arc::new(NestedField::required(
-            8,
-            "sum",
-            Type::Primitive(PrimitiveType::Double),
-        )),
-        Arc::new(NestedField::optional(
-            9,
-            "quantile_values",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON array of {quantile, value} objects
-        Arc::new(NestedField::optional(
-            10,
-            "flags",
-            Type::Primitive(PrimitiveType::Int),
-        )),
+        required_field(7, "count", PrimitiveType::Long),
+        required_field(8, "sum", PrimitiveType::Double),
+        optional_field(9, "quantile_values", PrimitiveType::String), // JSON array of {quantile, value} objects
+        optional_field(10, "flags", PrimitiveType::Int),
         // Resource and scope information
-        Arc::new(NestedField::optional(
-            11,
-            "resource_schema_url",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            12,
-            "resource_attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        Arc::new(NestedField::optional(
-            13,
-            "scope_name",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            14,
-            "scope_version",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            15,
-            "scope_schema_url",
-            Type::Primitive(PrimitiveType::String),
-        )),
-        Arc::new(NestedField::optional(
-            16,
-            "scope_attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
-        Arc::new(NestedField::optional(
-            17,
-            "scope_dropped_attr_count",
-            Type::Primitive(PrimitiveType::Int),
-        )),
+        optional_field(11, "resource_schema_url", PrimitiveType::String),
+        optional_field(12, "resource_attributes", PrimitiveType::String), // JSON string
+        optional_field(13, "scope_name", PrimitiveType::String),
+        optional_field(14, "scope_version", PrimitiveType::String),
+        optional_field(15, "scope_schema_url", PrimitiveType::String),
+        optional_field(16, "scope_attributes", PrimitiveType::String), // JSON string
+        optional_field(17, "scope_dropped_attr_count", PrimitiveType::Int),
         // Metric attributes
-        Arc::new(NestedField::optional(
-            18,
-            "attributes",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
+        optional_field(18, "attributes", PrimitiveType::String), // JSON string
         // Exemplars - stored as JSON string for simplicity
-        Arc::new(NestedField::optional(
-            19,
-            "exemplars",
-            Type::Primitive(PrimitiveType::String),
-        )), // JSON string
+        optional_field(19, "exemplars", PrimitiveType::String), // JSON string
         // Additional fields for query optimization
-        Arc::new(NestedField::required(
-            20,
-            "date_day",
-            Type::Primitive(PrimitiveType::Date),
-        )), // Partition key
-        Arc::new(NestedField::required(
-            21,
-            "hour",
-            Type::Primitive(PrimitiveType::Int),
-        )), // Sub-partition key
+        required_field(20, "date_day", PrimitiveType::Date), // Partition key
+        required_field(21, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
 
-    Schema::builder()
-        .with_fields(fields)
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to create metrics summary schema: {e}"))
+    Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
 
 /// Create partition specification for traces table
@@ -705,11 +282,7 @@ pub fn create_metrics_summary_schema() -> Result<Schema> {
 /// Hour-level partitioning also enables day/month/year pruning automatically.
 pub fn create_traces_partition_spec() -> Result<PartitionSpec> {
     let schema = create_traces_schema()?;
-    PartitionSpec::builder(schema)
-        .with_spec_id(0)
-        .add_partition_field("timestamp", "timestamp_hour", Transform::Hour)?
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to create traces partition spec: {}", e))
+    create_hour_partition_spec(&schema, "timestamp", "timestamp_hour")
 }
 
 /// Create partition specification for logs table
@@ -717,11 +290,7 @@ pub fn create_traces_partition_spec() -> Result<PartitionSpec> {
 /// Hour-level partitioning also enables day/month/year pruning automatically.
 pub fn create_logs_partition_spec() -> Result<PartitionSpec> {
     let schema = create_logs_schema()?;
-    PartitionSpec::builder(schema)
-        .with_spec_id(0)
-        .add_partition_field("timestamp", "timestamp_hour", Transform::Hour)?
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to create logs partition spec: {}", e))
+    create_hour_partition_spec(&schema, "timestamp", "timestamp_hour")
 }
 
 /// Create partition specification for metrics tables
@@ -730,11 +299,7 @@ pub fn create_logs_partition_spec() -> Result<PartitionSpec> {
 pub fn create_metrics_partition_spec() -> Result<PartitionSpec> {
     // Use metrics gauge schema as the base (they all have the same timestamp column)
     let schema = create_metrics_gauge_schema()?;
-    PartitionSpec::builder(schema)
-        .with_spec_id(0)
-        .add_partition_field("timestamp", "timestamp_hour", Transform::Hour)?
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to create metrics partition spec: {}", e))
+    create_hour_partition_spec(&schema, "timestamp", "timestamp_hour")
 }
 
 /// All available table schemas
@@ -845,78 +410,73 @@ impl TableSchema {
 mod tests {
     use super::*;
 
+    /// Helper: find a field by name in a schema
+    fn has_field(schema: &Schema, name: &str) -> bool {
+        schema.fields().iter().any(|f| f.name == name)
+    }
+
     #[test]
     fn test_traces_schema_creation() {
         let schema = create_traces_schema().unwrap();
-        // Verify schema was created successfully (we already know this from unwrap above)
-        assert!(schema.field_by_name("trace_id").is_some());
 
         // Check for key fields
-        assert!(schema.field_by_name("trace_id").is_some());
-        assert!(schema.field_by_name("span_id").is_some());
-        assert!(schema.field_by_name("timestamp").is_some());
-        assert!(schema.field_by_name("service_name").is_some());
-        assert!(schema.field_by_name("date_day").is_some());
+        assert!(has_field(&schema, "trace_id"));
+        assert!(has_field(&schema, "span_id"));
+        assert!(has_field(&schema, "timestamp"));
+        assert!(has_field(&schema, "service_name"));
+        assert!(has_field(&schema, "date_day"));
     }
 
     #[test]
     fn test_logs_schema_creation() {
         let schema = create_logs_schema().unwrap();
-        // Verify schema was created successfully (we already know this from unwrap above)
-        assert!(schema.field_by_name("timestamp").is_some());
 
         // Check for key fields
-        assert!(schema.field_by_name("timestamp").is_some());
-        assert!(schema.field_by_name("service_name").is_some());
-        assert!(schema.field_by_name("severity_text").is_some());
-        assert!(schema.field_by_name("body").is_some());
-        assert!(schema.field_by_name("date_day").is_some());
+        assert!(has_field(&schema, "timestamp"));
+        assert!(has_field(&schema, "service_name"));
+        assert!(has_field(&schema, "severity_text"));
+        assert!(has_field(&schema, "body"));
+        assert!(has_field(&schema, "date_day"));
     }
 
     #[test]
     fn test_metrics_gauge_schema_creation() {
         let schema = create_metrics_gauge_schema().unwrap();
-        // Verify schema was created successfully (we already know this from unwrap above)
-        assert!(schema.field_by_name("timestamp").is_some());
 
         // Check for key fields
-        assert!(schema.field_by_name("timestamp").is_some());
-        assert!(schema.field_by_name("service_name").is_some());
-        assert!(schema.field_by_name("metric_name").is_some());
-        assert!(schema.field_by_name("value").is_some());
-        assert!(schema.field_by_name("date_day").is_some());
+        assert!(has_field(&schema, "timestamp"));
+        assert!(has_field(&schema, "service_name"));
+        assert!(has_field(&schema, "metric_name"));
+        assert!(has_field(&schema, "value"));
+        assert!(has_field(&schema, "date_day"));
     }
 
     #[test]
     fn test_metrics_sum_schema_creation() {
         let schema = create_metrics_sum_schema().unwrap();
-        // Verify schema was created successfully (we already know this from unwrap above)
-        assert!(schema.field_by_name("timestamp").is_some());
 
         // Check for key fields
-        assert!(schema.field_by_name("timestamp").is_some());
-        assert!(schema.field_by_name("service_name").is_some());
-        assert!(schema.field_by_name("metric_name").is_some());
-        assert!(schema.field_by_name("value").is_some());
-        assert!(schema.field_by_name("aggregation_temporality").is_some());
-        assert!(schema.field_by_name("is_monotonic").is_some());
-        assert!(schema.field_by_name("date_day").is_some());
+        assert!(has_field(&schema, "timestamp"));
+        assert!(has_field(&schema, "service_name"));
+        assert!(has_field(&schema, "metric_name"));
+        assert!(has_field(&schema, "value"));
+        assert!(has_field(&schema, "aggregation_temporality"));
+        assert!(has_field(&schema, "is_monotonic"));
+        assert!(has_field(&schema, "date_day"));
     }
 
     #[test]
     fn test_metrics_histogram_schema_creation() {
         let schema = create_metrics_histogram_schema().unwrap();
-        // Verify schema was created successfully (we already know this from unwrap above)
-        assert!(schema.field_by_name("timestamp").is_some());
 
         // Check for key fields
-        assert!(schema.field_by_name("timestamp").is_some());
-        assert!(schema.field_by_name("service_name").is_some());
-        assert!(schema.field_by_name("metric_name").is_some());
-        assert!(schema.field_by_name("count").is_some());
-        assert!(schema.field_by_name("bucket_counts").is_some());
-        assert!(schema.field_by_name("explicit_bounds").is_some());
-        assert!(schema.field_by_name("date_day").is_some());
+        assert!(has_field(&schema, "timestamp"));
+        assert!(has_field(&schema, "service_name"));
+        assert!(has_field(&schema, "metric_name"));
+        assert!(has_field(&schema, "count"));
+        assert!(has_field(&schema, "bucket_counts"));
+        assert!(has_field(&schema, "explicit_bounds"));
+        assert!(has_field(&schema, "date_day"));
     }
 
     #[test]
@@ -943,7 +503,7 @@ mod tests {
         let schema = create_traces_schema().unwrap();
 
         println!("Traces schema fields:");
-        for field in schema.as_struct().fields() {
+        for field in schema.fields().iter() {
             println!("  Field ID: {}, Name: {}", field.id, field.name);
         }
 
@@ -955,13 +515,17 @@ mod tests {
         for field in partition_spec.fields() {
             println!(
                 "  Partition field: {} (field_id: {}, source_id: {})",
-                field.name, field.field_id, field.source_id
+                field.name(),
+                field.field_id(),
+                field.source_id()
             );
         }
 
         // Find timestamp field ID
         let timestamp_field = schema
-            .field_by_name("timestamp")
+            .fields()
+            .iter()
+            .find(|f| f.name == "timestamp")
             .expect("timestamp field not found");
 
         println!("\ntimestamp field ID: {}", timestamp_field.id);
@@ -970,11 +534,12 @@ mod tests {
         let hour_partition = partition_spec
             .fields()
             .iter()
-            .find(|f| f.name == "timestamp_hour")
+            .find(|f| f.name() == "timestamp_hour")
             .expect("timestamp_hour partition field not found");
 
         assert_eq!(
-            hour_partition.source_id, timestamp_field.id,
+            *hour_partition.source_id(),
+            timestamp_field.id,
             "timestamp_hour partition source_id should match timestamp schema field id"
         );
 

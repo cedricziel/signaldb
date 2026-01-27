@@ -36,8 +36,6 @@ tonic.workspace = true
 axum.workspace = true
 tower.workspace = true
 
-iceberg.workspace = true
-
 # JanKaul's iceberg-rust implementation
 iceberg-rust.workspace = true
 iceberg-sql-catalog.workspace = true

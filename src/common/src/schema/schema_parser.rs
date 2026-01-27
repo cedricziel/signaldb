@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow};
-use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
+use iceberg_rust::spec::schema::Schema;
+use iceberg_rust::spec::types::{PrimitiveType, StructField, StructType, Type};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 /// Schema definitions loaded from TOML
 #[derive(Debug, Deserialize)]
@@ -178,7 +178,7 @@ impl ResolvedSchema {
                 "uint64" => Type::Primitive(PrimitiveType::Long), // Map uint64 to long
                 "double" => Type::Primitive(PrimitiveType::Double),
                 "boolean" => Type::Primitive(PrimitiveType::Boolean),
-                "timestamp_ns" => Type::Primitive(PrimitiveType::TimestampNs),
+                "timestamp_ns" => Type::Primitive(PrimitiveType::Timestamp), // No TimestampNs in iceberg-rust
                 "date" => Type::Primitive(PrimitiveType::Date),
                 "list<struct>" => {
                     // For now, use string for complex types
@@ -188,19 +188,18 @@ impl ResolvedSchema {
                 _ => return Err(anyhow!("Unsupported field type: {}", field.field_type)),
             };
 
-            let nested_field = if field.required {
-                NestedField::required(idx as i32 + 1, &field.name, field_type)
-            } else {
-                NestedField::optional(idx as i32 + 1, &field.name, field_type)
+            let struct_field = StructField {
+                id: idx as i32 + 1,
+                name: field.name.clone(),
+                required: field.required,
+                field_type,
+                doc: None,
             };
 
-            fields.push(Arc::new(nested_field));
+            fields.push(struct_field);
         }
 
-        Schema::builder()
-            .with_fields(fields)
-            .build()
-            .map_err(|e| anyhow!("Failed to create Iceberg schema: {}", e))
+        Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
     }
 
     /// Get field names that need to be computed
