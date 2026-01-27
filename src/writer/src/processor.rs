@@ -150,10 +150,14 @@ impl WalProcessor {
         let mut tenant_id = entry.tenant_id.clone();
         let mut dataset_id = entry.dataset_id.clone();
 
+        // Parse metadata JSON once and reuse for both tenant/dataset and target_table
+        let parsed_metadata = entry
+            .metadata
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+
         // Override with metadata-provided tenant/dataset (from Flight metadata)
-        if let Some(ref metadata_str) = entry.metadata
-            && let Ok(metadata) = serde_json::from_str::<serde_json::Value>(metadata_str)
-        {
+        if let Some(ref metadata) = parsed_metadata {
             if let Some(tid) = metadata.get("tenant_id").and_then(|v| v.as_str()) {
                 tenant_id = tid.to_string();
             }
@@ -167,35 +171,28 @@ impl WalProcessor {
             common::wal::WalOperation::WriteTraces => "traces".to_string(),
             common::wal::WalOperation::WriteLogs => "logs".to_string(),
             common::wal::WalOperation::WriteMetrics => {
-                // Try to extract target_table from metadata
-                if let Some(ref metadata_str) = entry.metadata {
-                    if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(metadata_str) {
-                        if let Some(target_table) = metadata.get("target_table") {
-                            if let Some(table_str) = target_table.as_str() {
-                                log::debug!(
-                                    "Using target_table from metadata: {table_str} for WAL entry {}",
-                                    entry.id
-                                );
-                                table_str.to_string()
-                            } else {
-                                log::warn!(
-                                    "target_table in metadata is not a string, defaulting to metrics_gauge"
-                                );
-                                "metrics_gauge".to_string()
-                            }
+                // Try to extract target_table from the already-parsed metadata
+                parsed_metadata
+                    .as_ref()
+                    .and_then(|m| m.get("target_table"))
+                    .map(|target_table| {
+                        if let Some(table_str) = target_table.as_str() {
+                            log::debug!(
+                                "Using target_table from metadata: {table_str} for WAL entry {}",
+                                entry.id
+                            );
+                            table_str.to_string()
                         } else {
-                            log::debug!("No target_table in metadata, defaulting to metrics_gauge");
+                            log::warn!(
+                                "target_table in metadata is not a string, defaulting to metrics_gauge"
+                            );
                             "metrics_gauge".to_string()
                         }
-                    } else {
-                        log::warn!("Failed to parse metadata JSON, defaulting to metrics_gauge");
+                    })
+                    .unwrap_or_else(|| {
+                        log::debug!("No target_table in metadata, defaulting to metrics_gauge");
                         "metrics_gauge".to_string()
-                    }
-                } else {
-                    // No metadata available - use default
-                    log::debug!("No metadata available, defaulting to metrics_gauge");
-                    "metrics_gauge".to_string()
-                }
+                    })
             }
             common::wal::WalOperation::Flush => {
                 return Err(anyhow::anyhow!(
