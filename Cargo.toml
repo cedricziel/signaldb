@@ -55,9 +55,7 @@ parquet = { version = "57.0.0", features = ["arrow", "async"] }
 arrow-flight = { version = "57.0.0" }
 object_store = { version = "0.12.4", features = ["aws"] }
 
-# Apache Iceberg support (for schema management)
-iceberg = { version = "0.8.0" }
-# JanKaul's datafusion_iceberg (for write operations only - using git for datafusion 51 support)
+# Iceberg table format support (schema, catalog, and write operations)
 datafusion_iceberg = { git = "https://github.com/JanKaul/iceberg-rust", rev = "31d6d911" }
 iceberg-rust = { git = "https://github.com/JanKaul/iceberg-rust", rev = "31d6d911" }
 iceberg-sql-catalog = { git = "https://github.com/JanKaul/iceberg-rust", rev = "31d6d911" }

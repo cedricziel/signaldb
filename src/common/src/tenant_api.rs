@@ -185,7 +185,7 @@ impl TenantApi {
     pub fn get_schema_definitions(
         &self,
         tenant_id: &str,
-    ) -> Result<HashMap<String, iceberg::spec::Schema>> {
+    ) -> Result<HashMap<String, iceberg_rust::spec::schema::Schema>> {
         self.registry.get_schema_definitions(tenant_id)
     }
 
@@ -193,7 +193,7 @@ impl TenantApi {
     pub fn get_partition_specifications(
         &self,
         tenant_id: &str,
-    ) -> Result<HashMap<String, iceberg::spec::PartitionSpec>> {
+    ) -> Result<HashMap<String, iceberg_rust::spec::partition::PartitionSpec>> {
         self.registry.get_partition_specifications(tenant_id)
     }
 

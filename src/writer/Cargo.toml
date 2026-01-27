@@ -16,9 +16,7 @@ datafusion.workspace = true
 arrow-flight.workspace = true
 object_store.workspace = true
 
-# Apache Iceberg support (for compatibility)
-iceberg.workspace = true
-# JanKaul's iceberg-rust (for write operations)
+# Iceberg table format support
 iceberg-rust.workspace = true
 iceberg-sql-catalog.workspace = true
 datafusion_iceberg.workspace = true

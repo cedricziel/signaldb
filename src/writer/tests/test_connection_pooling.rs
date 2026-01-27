@@ -153,10 +153,10 @@ async fn test_pool_config_updates() {
 /// Test connection pooling with memory catalog (should use direct connection)
 #[tokio::test]
 async fn test_memory_catalog_bypasses_pooling() -> Result<()> {
-    use writer::create_jankaul_sql_catalog_with_pool;
+    use writer::create_sql_catalog_with_pool;
 
     // In-memory catalog should bypass pooling
-    let catalog_result = create_jankaul_sql_catalog_with_pool(
+    let catalog_result = create_sql_catalog_with_pool(
         "sqlite://", // In-memory SQLite
         "test_catalog",
         Some(CatalogPoolConfig::default()),

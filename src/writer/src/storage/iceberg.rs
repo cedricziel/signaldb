@@ -1,4 +1,4 @@
-use crate::schema_bridge::{CatalogPoolConfig, create_jankaul_sql_catalog_with_pool};
+use crate::catalog::{CatalogPoolConfig, create_sql_catalog_with_pool};
 use crate::schema_transform::transform_trace_v1_to_v2;
 use anyhow::Result;
 use common::config::Configuration;
@@ -205,21 +205,19 @@ impl IcebergTableWriter {
             }
         } else {
             // Create table with appropriate schema based on table name
-            // Use TOML-based schema definitions
-            let apache_schema = match table_name.as_str() {
+            // Schema functions return iceberg-rust types directly
+            let schema = match table_name.as_str() {
                 "traces" => {
-                    let schema = iceberg_schemas::create_traces_schema()?;
+                    let s = iceberg_schemas::create_traces_schema()?;
                     log::debug!(
                         "Creating traces table with {} fields: {:?}",
-                        schema.as_struct().fields().len(),
-                        schema
-                            .as_struct()
-                            .fields()
+                        s.fields().len(),
+                        s.fields()
                             .iter()
                             .map(|f| f.name.as_str())
                             .collect::<Vec<_>>()
                     );
-                    schema
+                    s
                 }
                 "logs" => iceberg_schemas::create_logs_schema()?,
                 "metrics_gauge" => iceberg_schemas::create_metrics_gauge_schema()?,
@@ -230,7 +228,7 @@ impl IcebergTableWriter {
                 }
             };
 
-            let apache_partition_spec = match table_name.as_str() {
+            let partition_spec = match table_name.as_str() {
                 "traces" => iceberg_schemas::create_traces_partition_spec()?,
                 "logs" => iceberg_schemas::create_logs_partition_spec()?,
                 "metrics_gauge" | "metrics_sum" | "metrics_histogram" => {
@@ -245,29 +243,10 @@ impl IcebergTableWriter {
             };
 
             log::debug!(
-                "Apache partition spec for {}: {} fields",
+                "Partition spec for {}: {} fields",
                 table_name,
-                apache_partition_spec.fields().len()
+                partition_spec.fields().len()
             );
-
-            // Convert Apache Iceberg schema to JanKaul's format
-            let converted_schema = crate::schema_bridge::convert_schema_to_jankaul(&apache_schema)?;
-            let converted_partition_spec =
-                crate::schema_bridge::convert_partition_spec_to_jankaul(&apache_partition_spec)?;
-
-            log::debug!(
-                "Converted partition spec for {}: {} fields",
-                table_name,
-                converted_partition_spec.fields.len()
-            );
-
-            // Create JanKaul Schema from converted data
-            let schema =
-                crate::schema_bridge::create_jankaul_schema_from_converted(&converted_schema)?;
-            let partition_spec =
-                crate::schema_bridge::create_jankaul_partition_spec_from_converted(
-                    &converted_partition_spec,
-                )?;
 
             // Create the table using the catalog
             log::info!("Creating new Iceberg table: {table_ident}");
@@ -305,7 +284,6 @@ impl IcebergTableWriter {
         let runtime_env = Arc::new(RuntimeEnv::default());
         let session_ctx = SessionContext::new_with_config_rt(SessionConfig::default(), runtime_env);
 
-        // For now, we'll skip the conversion since we're using JanKaul's types directly
         // The table is already in the correct format for use with datafusion_iceberg
         log::info!(
             "Successfully created/loaded Iceberg table: {} for tenant '{tenant_id}' dataset '{dataset_id}'",
@@ -351,7 +329,7 @@ impl IcebergTableWriter {
         &mut self,
         pool_config: &CatalogPoolConfig,
     ) -> Result<Arc<dyn IcebergRustCatalog>> {
-        // Only create JanKaul SQL catalog for SQL catalog types
+        // Only create SQL catalog for SQL catalog types
         if self.catalog_type != "sql" {
             return Err(anyhow::anyhow!(
                 "Cached catalog operations not supported for catalog type: {}",
@@ -361,7 +339,7 @@ impl IcebergTableWriter {
 
         if !self.batch_config.enable_catalog_caching {
             // Caching disabled, create new catalog
-            return create_jankaul_sql_catalog_with_pool(
+            return create_sql_catalog_with_pool(
                 &self.catalog_uri,
                 &self.catalog_name,
                 Some(pool_config.clone()),
@@ -385,7 +363,7 @@ impl IcebergTableWriter {
             "Creating new catalog and caching for {} seconds",
             self.batch_config.catalog_cache_ttl_seconds
         );
-        let catalog = create_jankaul_sql_catalog_with_pool(
+        let catalog = create_sql_catalog_with_pool(
             &self.catalog_uri,
             &self.catalog_name,
             Some(pool_config.clone()),
