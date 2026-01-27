@@ -7,10 +7,10 @@ use datafusion::arrow::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Sentinel value representing an empty/absent parent span ID in OTLP traces.
-/// Root spans use this value (all zero bytes in the 8-byte span ID) to indicate
-/// they have no parent.
-pub const EMPTY_PARENT_SPAN_ID: &str = "00000000";
+/// 16-character hex sentinel for root/absent parent span IDs in OTLP traces.
+/// OTLP span IDs are 8 bytes (16 hex characters); root spans encode the
+/// parent span ID as all zeroes to indicate they have no parent.
+pub const EMPTY_PARENT_SPAN_ID: &str = "0000000000000000";
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum SpanKind {
@@ -164,10 +164,17 @@ impl Span {
 
 /// Build a hierarchical span tree from a flat map of spans.
 ///
-/// Links child spans to their parents and returns the root spans (those marked
-/// `is_root` or with an empty/absent parent span ID). The input `span_map` is
-/// consumed and mutated in place so that parent spans contain their children.
+/// Links child spans to their parents and returns the root spans. A span is
+/// considered a root if any of the following is true:
+/// - `span.is_root` is set
+/// - its `parent_span_id` is empty or the zero sentinel ([`EMPTY_PARENT_SPAN_ID`])
+/// - its `parent_span_id` references a span not present in `span_map` (orphan)
+///
+/// The input `span_map` is consumed and mutated in place so that parent spans
+/// contain their children.
 pub fn build_span_hierarchy(mut span_map: HashMap<String, Span>) -> Vec<Span> {
+    use std::collections::HashSet;
+
     // Collect parent-child relationships
     let mut parent_child_pairs = Vec::new();
     for span in span_map.values() {
@@ -187,17 +194,27 @@ pub fn build_span_hierarchy(mut span_map: HashMap<String, Span>) -> Vec<Span> {
         }
     }
 
-    // Attach children to parents
+    // Attach children to parents; track orphan span IDs whose parent is missing
+    let mut orphan_ids: HashSet<String> = HashSet::new();
     for (parent_span_id, children) in child_spans {
         if let Some(parent_span) = span_map.get_mut(&parent_span_id) {
             parent_span.children.extend(children);
+        } else {
+            // Parent not in span_map — treat these children as roots
+            for child in &children {
+                orphan_ids.insert(child.span_id.clone());
+            }
         }
     }
 
-    // Collect root spans
+    // Collect root spans (explicitly marked, zero-parent, or orphaned)
     span_map
         .into_values()
-        .filter(|span| span.is_root || is_root_parent_id(&span.parent_span_id))
+        .filter(|span| {
+            span.is_root
+                || is_root_parent_id(&span.parent_span_id)
+                || orphan_ids.contains(&span.span_id)
+        })
         .collect()
 }
 

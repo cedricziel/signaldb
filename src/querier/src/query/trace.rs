@@ -468,14 +468,22 @@ impl TraceService {
 
         // Apply limit — we query for more spans than the requested trace count because
         // each trace typically contains many spans. This estimate avoids truncating traces.
-        let limit = query.limit.unwrap_or(20) as usize;
         const SPANS_PER_TRACE_ESTIMATE: usize = 50;
-        df = df
-            .limit(0, Some(limit * SPANS_PER_TRACE_ESTIMATE))
-            .map_err(|e| {
-                log::error!("Failed to apply limit: {e}");
-                QuerierError::QueryFailed(e)
-            })?;
+        let raw_limit = query.limit.unwrap_or(20);
+        let limit: usize = usize::try_from(raw_limit).map_err(|_| {
+            QuerierError::InvalidInput(format!(
+                "Invalid limit '{raw_limit}': must be a non-negative integer"
+            ))
+        })?;
+        let span_limit = limit.checked_mul(SPANS_PER_TRACE_ESTIMATE).ok_or_else(|| {
+            QuerierError::InvalidInput(format!(
+                "Limit {limit} * {SPANS_PER_TRACE_ESTIMATE} overflows"
+            ))
+        })?;
+        df = df.limit(0, Some(span_limit)).map_err(|e| {
+            log::error!("Failed to apply limit: {e}");
+            QuerierError::QueryFailed(e)
+        })?;
 
         let results = df.collect().await.map_err(|e| {
             log::error!(
