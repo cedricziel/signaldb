@@ -9,13 +9,11 @@ use common::auth::TenantContextExtractor;
 use common::flight::transport::ServiceCapability;
 use datafusion::arrow::{
     array::{BooleanArray, StringArray, UInt64Array},
-    ipc::reader::StreamReader,
     record_batch::RecordBatch,
 };
 use futures::StreamExt;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::io::Write;
 use tempo_api::{
     self, MetricSeries, MetricsData, MetricsQueryParams, MetricsRangeQueryParams, MetricsResponse,
     TraceQueryParams,
@@ -368,16 +366,8 @@ fn flight_data_to_search_results(
         });
     }
 
-    // Convert FlightData to RecordBatches
-    let mut cursor = std::io::Cursor::new(Vec::new());
-    for data in &flight_data {
-        cursor.write_all(&data.data_body)?;
-    }
-    cursor.set_position(0);
-
-    let reader = StreamReader::try_new(cursor, None)?;
-    let batches: Result<Vec<RecordBatch>, _> = reader.collect();
-    let batches = batches?;
+    // Convert FlightData to RecordBatches using Arrow Flight utilities
+    let batches = flight_data_to_batches(&flight_data)?;
 
     if batches.is_empty() {
         return Ok(tempo_api::SearchResult {
