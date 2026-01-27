@@ -6,7 +6,9 @@ use axum::{
     Router,
     body::Body,
     http::{Request, StatusCode},
+    middleware,
 };
+use common::auth::auth_middleware;
 use common::catalog::Catalog;
 use common::config::Configuration;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
@@ -19,7 +21,7 @@ use opentelemetry_proto::tonic::{
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
 };
 use querier::flight::QuerierFlightService;
-use router::{InMemoryStateImpl, discovery::ServiceRegistry, endpoints::tempo};
+use router::{InMemoryStateImpl, RouterState, discovery::ServiceRegistry, endpoints::tempo};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -82,6 +84,27 @@ async fn setup_test_services() -> TestServices {
         dsn: storage_dsn.clone(),
     };
 
+    // Configure single-tenant authentication for test
+    config.auth = common::config::AuthConfig {
+        enabled: true,
+        tenants: vec![common::config::TenantConfig {
+            id: "test-tenant".to_string(),
+            slug: "test-tenant".to_string(),
+            name: "Test Tenant".to_string(),
+            default_dataset: Some("test-dataset".to_string()),
+            datasets: vec![common::config::DatasetConfig {
+                id: "test-dataset".to_string(),
+                slug: "test-dataset".to_string(),
+                is_default: true,
+            }],
+            api_keys: vec![common::config::ApiKeyConfig {
+                key: "test-key-123".to_string(),
+                name: Some("test-key".to_string()),
+            }],
+            schema_config: None,
+        }],
+    };
+
     let wal_config = WalConfig {
         wal_dir: PathBuf::from(temp_dir.path()),
         max_segment_size: 1024 * 1024,
@@ -127,6 +150,26 @@ async fn setup_test_services() -> TestServices {
             .await
             .unwrap();
     let _writer_id = writer_bootstrap.service_id();
+
+    // Pre-create Iceberg namespace so the querier's Mirror cache includes it.
+    // The Mirror (in datafusion_iceberg) caches namespaces at construction time
+    // and schema_exists() only checks the cache. Without this, the querier
+    // cannot resolve "test-tenant.test-dataset" because the namespace doesn't
+    // exist until the writer processes data (which happens after querier init).
+    {
+        use iceberg_rust::catalog::namespace::Namespace;
+
+        let iceberg_catalog = common::schema::create_catalog_with_config(&config)
+            .await
+            .expect("Failed to create Iceberg catalog for namespace pre-creation");
+        let namespace =
+            Namespace::try_new(&["test-tenant".to_string(), "test-dataset".to_string()]).unwrap();
+        iceberg_catalog
+            .create_namespace(&namespace, None)
+            .await
+            .expect("Failed to pre-create Iceberg namespace");
+        println!("Pre-created Iceberg namespace: test-tenant.test-dataset");
+    }
 
     // Start querier service with Iceberg support
     let querier_service = QuerierFlightService::new_with_iceberg(
@@ -428,7 +471,13 @@ async fn test_tempo_endpoints_end_to_end() {
 
     // Create router state connected to services
     let router_state = create_router_state(&services).await;
-    let app: Router = tempo::router().with_state(router_state);
+
+    let authenticator = router_state.authenticator().clone();
+    let app: Router = tempo::router()
+        .with_state(router_state)
+        .layer(middleware::from_fn(move |req, next| {
+            auth_middleware(authenticator.clone(), req, next)
+        }));
     println!("✅ Router state created");
 
     // Send test trace via OTLP
@@ -445,6 +494,8 @@ async fn test_tempo_endpoints_end_to_end() {
     println!("🔍 Testing trace query endpoint...");
     let request = Request::builder()
         .uri(format!("/api/traces/{trace_id}"))
+        .header("Authorization", "Bearer test-key-123")
+        .header("X-Tenant-ID", "test-tenant")
         .body(Body::empty())
         .unwrap();
 
@@ -488,7 +539,13 @@ async fn test_tempo_search_endpoint() {
 
     let services = setup_test_services().await;
     let router_state = create_router_state(&services).await;
-    let app: Router = tempo::router().with_state(router_state);
+
+    let authenticator = router_state.authenticator().clone();
+    let app: Router = tempo::router()
+        .with_state(router_state)
+        .layer(axum::middleware::from_fn(move |req, next| {
+            common::auth::auth_middleware(authenticator.clone(), req, next)
+        }));
 
     // Send test trace first
     let _trace_id = send_test_trace(&services, "search-test-span").await;
@@ -497,6 +554,8 @@ async fn test_tempo_search_endpoint() {
     // Test search endpoint
     let request = Request::builder()
         .uri("/api/search")
+        .header("Authorization", "Bearer test-key-123")
+        .header("X-Tenant-ID", "test-tenant")
         .body(Body::empty())
         .unwrap();
 
@@ -634,13 +693,40 @@ async fn test_tempo_v2_trace_endpoint() {
     let catalog = common::catalog::Catalog::new("sqlite::memory:")
         .await
         .unwrap();
-    let config = Configuration::default();
+    let mut config = Configuration::default();
+    config.auth = common::config::AuthConfig {
+        enabled: true,
+        tenants: vec![common::config::TenantConfig {
+            id: "test-tenant".to_string(),
+            slug: "test-tenant".to_string(),
+            name: "Test Tenant".to_string(),
+            default_dataset: Some("test-dataset".to_string()),
+            datasets: vec![common::config::DatasetConfig {
+                id: "test-dataset".to_string(),
+                slug: "test-dataset".to_string(),
+                is_default: true,
+            }],
+            api_keys: vec![common::config::ApiKeyConfig {
+                key: "test-key-123".to_string(),
+                name: Some("test-key".to_string()),
+            }],
+            schema_config: None,
+        }],
+    };
     let state = InMemoryStateImpl::new(catalog, config);
-    let app: Router = tempo::router().with_state(state);
+
+    let authenticator = state.authenticator().clone();
+    let app: Router = tempo::router()
+        .with_state(state)
+        .layer(axum::middleware::from_fn(move |req, next| {
+            common::auth::auth_middleware(authenticator.clone(), req, next)
+        }));
 
     // Test V2 trace endpoint (should work same as V1 for now)
     let request = Request::builder()
         .uri("/api/v2/traces/42424242424242424242424242424242")
+        .header("Authorization", "Bearer test-key-123")
+        .header("X-Tenant-ID", "test-tenant")
         .body(Body::empty())
         .unwrap();
 
@@ -796,6 +882,25 @@ async fn setup_multi_tenant_test_services() -> TestServices {
             .await
             .unwrap();
     let _writer_id = writer_bootstrap.service_id();
+
+    // Pre-create Iceberg namespaces so the querier's Mirror cache includes them.
+    {
+        use iceberg_rust::catalog::namespace::Namespace;
+
+        let iceberg_catalog = common::schema::create_catalog_with_config(&config)
+            .await
+            .expect("Failed to create Iceberg catalog for namespace pre-creation");
+        for (tenant, dataset) in &[("acme", "production"), ("globex", "production")] {
+            let namespace = Namespace::try_new(&[tenant.to_string(), dataset.to_string()]).unwrap();
+            iceberg_catalog
+                .create_namespace(&namespace, None)
+                .await
+                .unwrap_or_else(|e| {
+                    panic!("Failed to pre-create namespace {tenant}.{dataset}: {e}")
+                });
+            println!("Pre-created Iceberg namespace: {tenant}.{dataset}");
+        }
+    }
 
     // Start querier service with Iceberg support
     let querier_service = QuerierFlightService::new_with_iceberg(
@@ -987,8 +1092,6 @@ async fn send_trace_for_tenant(
 /// Test multi-tenant read path isolation
 #[tokio::test]
 async fn test_read_path_tenant_isolation() {
-    use router::RouterState; // Import trait for authenticator() method
-
     let _ = env_logger::builder()
         .filter_level(log::LevelFilter::Debug)
         .try_init();
@@ -1003,9 +1106,6 @@ async fn test_read_path_tenant_isolation() {
     let router_state = create_router_state(&services).await;
 
     // Create router with tempo routes (no nesting - routes are at /api/...)
-    use axum::middleware;
-    use common::auth::auth_middleware;
-
     let authenticator = router_state.authenticator().clone();
     let app: Router = tempo::router()
         .with_state(router_state)
@@ -1122,8 +1222,6 @@ async fn test_read_path_tenant_isolation() {
 /// Test authentication failures on read path
 #[tokio::test]
 async fn test_read_path_authentication_failures() {
-    use router::RouterState; // Import trait for authenticator() method
-
     let _ = env_logger::builder()
         .filter_level(log::LevelFilter::Debug)
         .try_init();
@@ -1134,9 +1232,6 @@ async fn test_read_path_authentication_failures() {
     let router_state = create_router_state(&services).await;
 
     // Create router with tempo routes (no nesting - routes are at /api/...)
-    use axum::middleware;
-    use common::auth::auth_middleware;
-
     let authenticator = router_state.authenticator().clone();
     let app: Router = tempo::router()
         .with_state(router_state)
