@@ -212,6 +212,8 @@ impl QuerierFlightService {
         let mut span_kinds = Vec::new();
         let mut start_times = Vec::new();
         let mut duration_nanos = Vec::new();
+        let mut span_attributes_json = Vec::new();
+        let mut resource_json = Vec::new();
 
         for span in &all_spans {
             trace_ids.push(span.trace_id.clone());
@@ -224,6 +226,8 @@ impl QuerierFlightService {
             span_kinds.push(format!("{:?}", span.span_kind));
             start_times.push(span.start_time_unix_nano);
             duration_nanos.push(span.duration_nano);
+            span_attributes_json.push(serde_json::to_string(&span.attributes).unwrap_or_default());
+            resource_json.push(serde_json::to_string(&span.resource).unwrap_or_default());
         }
 
         let batch = RecordBatch::try_new(
@@ -239,6 +243,8 @@ impl QuerierFlightService {
                 Arc::new(StringArray::from(span_kinds)),
                 Arc::new(UInt64Array::from(start_times)),
                 Arc::new(UInt64Array::from(duration_nanos)),
+                Arc::new(StringArray::from(span_attributes_json)),
+                Arc::new(StringArray::from(resource_json)),
             ],
         )?;
 

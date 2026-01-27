@@ -8,7 +8,7 @@ use axum::{
 use common::auth::TenantContextExtractor;
 use common::flight::transport::ServiceCapability;
 use datafusion::arrow::{
-    array::{BooleanArray, StringArray, UInt64Array},
+    array::{Array, BooleanArray, StringArray, UInt64Array},
     record_batch::RecordBatch,
 };
 use futures::StreamExt;
@@ -177,6 +177,30 @@ fn record_batches_to_trace(
                 .ok_or("Invalid is_root column type")?
                 .value(row_index);
 
+            let attributes = batch
+                .column_by_name("span_attributes")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .and_then(|arr| {
+                    if arr.is_null(row_index) {
+                        None
+                    } else {
+                        serde_json::from_str(arr.value(row_index)).ok()
+                    }
+                })
+                .unwrap_or_default();
+
+            let resource = batch
+                .column_by_name("resource_attributes")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .and_then(|arr| {
+                    if arr.is_null(row_index) {
+                        None
+                    } else {
+                        serde_json::from_str(arr.value(row_index)).ok()
+                    }
+                })
+                .unwrap_or_default();
+
             let span = common::model::span::Span {
                 trace_id: span_trace_id,
                 span_id: span_id.clone(),
@@ -192,8 +216,8 @@ fn record_batches_to_trace(
                     .unwrap_or(common::model::span::SpanKind::Internal),
                 start_time_unix_nano,
                 duration_nano,
-                attributes: HashMap::new(), // TODO: Extract attributes if available
-                resource: HashMap::new(),   // TODO: Extract resource if available
+                attributes,
+                resource,
                 children: Vec::new(),
             };
 
@@ -466,6 +490,30 @@ fn flight_data_to_search_results(
                 .ok_or("Invalid is_root column type")?
                 .value(row_index);
 
+            let attributes = batch
+                .column_by_name("span_attributes")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .and_then(|arr| {
+                    if arr.is_null(row_index) {
+                        None
+                    } else {
+                        serde_json::from_str(arr.value(row_index)).ok()
+                    }
+                })
+                .unwrap_or_default();
+
+            let resource = batch
+                .column_by_name("resource_attributes")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .and_then(|arr| {
+                    if arr.is_null(row_index) {
+                        None
+                    } else {
+                        serde_json::from_str(arr.value(row_index)).ok()
+                    }
+                })
+                .unwrap_or_default();
+
             let span = common::model::span::Span {
                 trace_id: trace_id.clone(),
                 span_id,
@@ -481,8 +529,8 @@ fn flight_data_to_search_results(
                     .unwrap_or(common::model::span::SpanKind::Internal),
                 start_time_unix_nano,
                 duration_nano,
-                attributes: HashMap::new(),
-                resource: HashMap::new(),
+                attributes,
+                resource,
                 children: Vec::new(),
             };
 

@@ -158,6 +158,8 @@ pub fn create_span_batch_schema() -> Schema {
         Field::new("span_kind", DataType::Utf8, false),
         Field::new("start_time_unix_nano", DataType::UInt64, false),
         Field::new("duration_nano", DataType::UInt64, false),
+        Field::new("span_attributes", DataType::Utf8, true),
+        Field::new("resource_attributes", DataType::Utf8, true),
     ]))
 }
 
@@ -250,5 +252,7 @@ mod tests {
         assert!(schema.field_with_name("span_kind").is_ok());
         assert!(schema.field_with_name("start_time_unix_nano").is_ok());
         assert!(schema.field_with_name("duration_nano").is_ok());
+        assert!(schema.field_with_name("span_attributes").is_ok());
+        assert!(schema.field_with_name("resource_attributes").is_ok());
     }
 }
