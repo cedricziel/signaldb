@@ -21,7 +21,7 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
 use tonic::transport::Server;
-use writer::WriterFlightService;
+use writer::IcebergWriterFlightService;
 
 /// Test the complete flow: Acceptor → Writer → WAL → Object Store
 #[tokio::test]
@@ -68,7 +68,9 @@ async fn test_acceptor_writer_flow() {
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
 
-    let writer_service = WriterFlightService::new(object_store.clone(), wal.clone());
+    let writer_service =
+        IcebergWriterFlightService::new(config.clone(), object_store.clone(), wal.clone());
+    let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
         .add_service(FlightServiceServer::new(writer_service))
         .serve(writer_addr);
@@ -294,7 +296,7 @@ async fn test_querier_integration() {
     let test_data = create_test_span_data();
     let test_file_path = "batch/test_spans.parquet";
 
-    writer::write_batch_to_object_store(object_store.clone(), test_file_path, test_data.clone())
+    write_batch_to_object_store(object_store.clone(), test_file_path, test_data.clone())
         .await
         .expect("Failed to write test data to object store");
 
@@ -419,7 +421,9 @@ async fn test_end_to_end_pipeline() {
 
     // Start writer
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
+    let writer_service =
+        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+    let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
@@ -590,7 +594,9 @@ async fn test_direct_acceptor_writer_flight() {
 
     // Start writer
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
+    let writer_service =
+        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+    let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
@@ -747,7 +753,7 @@ async fn test_object_store_write_isolation() {
     // Test: Can we write directly to object store?
     let path = "test/direct_write.parquet";
     let write_result =
-        writer::write_batch_to_object_store(object_store.clone(), path, test_data).await;
+        write_batch_to_object_store(object_store.clone(), path, test_data).await;
 
     println!(
         "Direct object store write result: {:?}",
@@ -842,7 +848,7 @@ async fn test_otlp_to_arrow_conversion() {
     let path = "test/otlp_converted.parquet";
 
     let write_result =
-        writer::write_batch_to_object_store(object_store.clone(), path, record_batch).await;
+        write_batch_to_object_store(object_store.clone(), path, record_batch).await;
 
     println!("Write converted data result: {:?}", write_result.is_ok());
 
@@ -889,10 +895,11 @@ async fn test_acceptor_processing_simulation() {
 
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
     let _catalog = Catalog::new("sqlite::memory:").await.unwrap();
+    let config = Configuration::default();
 
     // Create flight transport and writer (same as end-to-end test)
     let service_bootstrap = ServiceBootstrap::new(
-        Configuration::default(),
+        config.clone(),
         ServiceType::Writer,
         "127.0.0.1:50056".to_string(),
     )
@@ -902,7 +909,9 @@ async fn test_acceptor_processing_simulation() {
 
     // Start writer
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
+    let writer_service =
+        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+    let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
@@ -1039,7 +1048,9 @@ async fn test_grpc_service_layer() {
 
     // Start writer
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
+    let writer_service =
+        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+    let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
@@ -1218,7 +1229,9 @@ async fn test_end_to_end_without_querier() {
 
     // Start writer (same as end-to-end)
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
+    let writer_service =
+        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+    let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
@@ -1364,7 +1377,9 @@ async fn test_object_store_sharing_investigation() {
 
     // Step 1: Start writer and write some data
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
+    let writer_service =
+        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+    let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
@@ -2006,6 +2021,29 @@ async fn test_service_capability_conflicts() {
         .unwrap();
 
     println!("✓ Service capability conflicts test completed");
+}
+
+/// Helper function to write a RecordBatch to object store as Parquet
+async fn write_batch_to_object_store(
+    object_store: Arc<dyn ObjectStore>,
+    path: &str,
+    batch: datafusion::arrow::record_batch::RecordBatch,
+) -> anyhow::Result<()> {
+    use datafusion::parquet::arrow::async_writer::ParquetObjectWriter;
+    use datafusion::parquet::arrow::AsyncArrowWriter;
+    use datafusion::parquet::file::properties::{WriterProperties, WriterVersion};
+
+    let path = object_store::path::Path::from(path);
+    let props = WriterProperties::builder()
+        .set_writer_version(WriterVersion::PARQUET_2_0)
+        .build();
+    let schema = batch.schema();
+    let object_store_writer = ParquetObjectWriter::new(object_store, path);
+    let mut arrow_writer = AsyncArrowWriter::try_new(object_store_writer, schema, Some(props))
+        .map_err(|e| anyhow::anyhow!("Failed to create parquet writer: {e}"))?;
+    arrow_writer.write(&batch).await?;
+    arrow_writer.close().await?;
+    Ok(())
 }
 
 /// Helper function to create test span data for querier testing

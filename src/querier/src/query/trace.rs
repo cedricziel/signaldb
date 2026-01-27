@@ -7,7 +7,7 @@ use common::model::{
     span::{Span, SpanKind, SpanStatus},
 };
 use datafusion::{
-    arrow::array::{BooleanArray, StringArray, UInt64Array},
+    arrow::array::{BooleanArray, Int64Array, StringArray},
     common::TableReference,
     logical_expr::{col, lit},
     prelude::SessionContext,
@@ -340,28 +340,28 @@ impl TraceService {
                             )
                         })?
                         .as_any()
-                        .downcast_ref::<UInt64Array>()
+                        .downcast_ref::<Int64Array>()
                         .ok_or_else(|| {
                             QuerierError::InvalidInput(
                                 "Column 'start_time_unix_nano' has wrong type".to_string(),
                             )
                         })?
-                        .value(row_index),
+                        .value(row_index) as u64,
                     duration_nano: batch
-                        .column_by_name("duration_nano")
+                        .column_by_name("duration_nanos")
                         .ok_or_else(|| {
                             QuerierError::InvalidInput(
-                                "Missing required column 'duration_nano'".to_string(),
+                                "Missing required column 'duration_nanos'".to_string(),
                             )
                         })?
                         .as_any()
-                        .downcast_ref::<UInt64Array>()
+                        .downcast_ref::<Int64Array>()
                         .ok_or_else(|| {
                             QuerierError::InvalidInput(
-                                "Column 'duration_nano' has wrong type".to_string(),
+                                "Column 'duration_nanos' has wrong type".to_string(),
                             )
                         })?
-                        .value(row_index),
+                        .value(row_index) as u64,
                     attributes: HashMap::new(),
                     resource: HashMap::new(),
                 };
@@ -683,28 +683,28 @@ impl TraceQuerier for TraceService {
                             )
                         })?
                         .as_any()
-                        .downcast_ref::<UInt64Array>()
+                        .downcast_ref::<Int64Array>()
                         .ok_or_else(|| {
                             QuerierError::InvalidInput(
                                 "Column 'start_time_unix_nano' has wrong type".to_string(),
                             )
                         })?
-                        .value(row_index),
+                        .value(row_index) as u64,
                     duration_nano: batch
-                        .column_by_name("duration_nano")
+                        .column_by_name("duration_nanos")
                         .ok_or_else(|| {
                             QuerierError::InvalidInput(
-                                "Missing required column 'duration_nano'".to_string(),
+                                "Missing required column 'duration_nanos'".to_string(),
                             )
                         })?
                         .as_any()
-                        .downcast_ref::<UInt64Array>()
+                        .downcast_ref::<Int64Array>()
                         .ok_or_else(|| {
                             QuerierError::InvalidInput(
-                                "Column 'duration_nano' has wrong type".to_string(),
+                                "Column 'duration_nanos' has wrong type".to_string(),
                             )
                         })?
-                        .value(row_index),
+                        .value(row_index) as u64,
                 };
 
                 span_map.insert(span_id.clone(), span);
@@ -918,28 +918,28 @@ impl TraceQuerier for TraceService {
                             )
                         })?
                         .as_any()
-                        .downcast_ref::<UInt64Array>()
+                        .downcast_ref::<Int64Array>()
                         .ok_or_else(|| {
                             QuerierError::InvalidInput(
                                 "Column 'start_time_unix_nano' has wrong type".to_string(),
                             )
                         })?
-                        .value(row_index),
+                        .value(row_index) as u64,
                     duration_nano: batch
-                        .column_by_name("duration_nano")
+                        .column_by_name("duration_nanos")
                         .ok_or_else(|| {
                             QuerierError::InvalidInput(
-                                "Missing required column 'duration_nano'".to_string(),
+                                "Missing required column 'duration_nanos'".to_string(),
                             )
                         })?
                         .as_any()
-                        .downcast_ref::<UInt64Array>()
+                        .downcast_ref::<Int64Array>()
                         .ok_or_else(|| {
                             QuerierError::InvalidInput(
-                                "Column 'duration_nano' has wrong type".to_string(),
+                                "Column 'duration_nanos' has wrong type".to_string(),
                             )
                         })?
-                        .value(row_index),
+                        .value(row_index) as u64,
                     attributes: HashMap::new(),
                     resource: HashMap::new(),
                 };
@@ -980,7 +980,7 @@ mod tests {
                 span_name VARCHAR,
                 span_kind VARCHAR,
                 start_time_unix_nano BIGINT,
-                duration_nano BIGINT,
+                duration_nanos BIGINT,
                 status_code VARCHAR,
                 is_root BOOLEAN,
                 service_name VARCHAR

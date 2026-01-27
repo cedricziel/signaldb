@@ -4,7 +4,7 @@ use common::schema::SCHEMA_DEFINITIONS;
 use common::schema::schema_parser::ResolvedSchema;
 use datafusion::arrow::{
     array::{
-        Array, ArrayRef, Date32Array, Int32Array, Int64Array, StringArray,
+        Array, ArrayRef, Date32Array, Int32Array, Int64Array, ListArray, StringArray, StructArray,
         TimestampNanosecondArray, UInt64Array,
     },
     datatypes::{DataType, Field, Schema},
@@ -18,6 +18,8 @@ pub struct FlightMetadata {
     pub schema_version: String,
     pub signal_type: Option<String>,
     pub target_table: Option<String>,
+    pub tenant_id: Option<String>,
+    pub dataset_id: Option<String>,
 }
 
 /// Extract schema version from Flight metadata
@@ -60,10 +62,22 @@ pub fn extract_flight_metadata(metadata: &[u8]) -> Result<FlightMetadata> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    let tenant_id = metadata_json
+        .get("tenant_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let dataset_id = metadata_json
+        .get("dataset_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     Ok(FlightMetadata {
         schema_version,
         signal_type,
         target_table,
+        tenant_id,
+        dataset_id,
     })
 }
 
@@ -138,11 +152,13 @@ pub fn transform_trace_v1_to_v2(batch: RecordBatch) -> Result<RecordBatch> {
             }
 
             // Complex types converted to JSON strings
-            "events" | "links" => {
-                // For now, convert these to JSON string representation
-                // TODO: Properly serialize complex Arrow structures
-                let len = batch.num_rows();
-                Arc::new(StringArray::from(vec![Some("[]"); len]))
+            "events" => {
+                let col = get_column_by_name(&batch, "events")?;
+                serialize_list_array_to_json_strings(&col, batch.num_rows(), "events")?
+            }
+            "links" => {
+                let col = get_column_by_name(&batch, "links")?;
+                serialize_list_array_to_json_strings(&col, batch.num_rows(), "links")?
             }
 
             // Renamed fields
@@ -234,17 +250,13 @@ pub fn transform_trace_v1_to_v2(batch: RecordBatch) -> Result<RecordBatch> {
                 Arc::new(Int32Array::from(hours))
             }
 
-            // New optional fields with default empty values
+            // Scope and resource metadata fields - now present in v1 schema
             "trace_state"
             | "resource_schema_url"
             | "scope_name"
             | "scope_version"
             | "scope_schema_url"
-            | "scope_attributes" => {
-                // Create array of nulls for these new optional fields
-                let len = batch.num_rows();
-                Arc::new(StringArray::from(vec![None as Option<&str>; len]))
-            }
+            | "scope_attributes" => get_column_by_name(&batch, &field.name)?,
 
             _ => return Err(anyhow!("Unknown field in v2 schema: {}", field.name)),
         };
@@ -270,6 +282,59 @@ fn get_column_by_name(batch: &RecordBatch, name: &str) -> Result<ArrayRef> {
         .column_with_name(name)
         .map(|(idx, _)| batch.column(idx).clone())
         .ok_or_else(|| anyhow!("Column '{}' not found in batch", name))
+}
+
+/// Serialize a ListArray (containing StructArrays) to JSON string arrays
+/// Each row's list of structs becomes a JSON array string like '[{"name":"event1",...},...]'
+fn serialize_list_array_to_json_strings(
+    col: &ArrayRef,
+    num_rows: usize,
+    field_name: &str,
+) -> Result<ArrayRef> {
+    let list_array = col
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .ok_or_else(|| anyhow!("{field_name} is not a ListArray"))?;
+
+    let mut json_strings: Vec<Option<String>> = Vec::with_capacity(num_rows);
+
+    for row in 0..num_rows {
+        if list_array.is_null(row) {
+            json_strings.push(Some("[]".to_string()));
+            continue;
+        }
+
+        let list_values = list_array.value(row);
+        let struct_array = list_values
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .ok_or_else(|| anyhow!("{field_name} list items are not StructArray"))?;
+
+        let mut items = Vec::new();
+        for i in 0..struct_array.len() {
+            let mut obj = serde_json::Map::new();
+            for (col_idx, field) in struct_array.fields().iter().enumerate() {
+                let col_array = struct_array.column(col_idx);
+                let value = if col_array.is_null(i) {
+                    serde_json::Value::Null
+                } else if let Some(str_arr) = col_array.as_any().downcast_ref::<StringArray>() {
+                    serde_json::Value::String(str_arr.value(i).to_string())
+                } else if let Some(uint_arr) = col_array.as_any().downcast_ref::<UInt64Array>() {
+                    serde_json::Value::Number(uint_arr.value(i).into())
+                } else {
+                    serde_json::Value::Null
+                };
+                obj.insert(field.name().clone(), value);
+            }
+            items.push(serde_json::Value::Object(obj));
+        }
+
+        json_strings.push(Some(
+            serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string()),
+        ));
+    }
+
+    Ok(Arc::new(StringArray::from(json_strings)))
 }
 
 /// Create Arrow schema from resolved schema

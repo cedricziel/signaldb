@@ -1,5 +1,5 @@
 use crate::RouterState;
-use arrow_flight::{FlightData, Ticket};
+use arrow_flight::{FlightData, Ticket, utils::flight_data_to_batches};
 use axum::{
     Router,
     extract::{Path, Query, State},
@@ -63,16 +63,8 @@ fn flight_data_to_tempo_trace(
         return Ok(None);
     }
 
-    // Convert FlightData to RecordBatches
-    let mut cursor = std::io::Cursor::new(Vec::new());
-    for data in &flight_data {
-        cursor.write_all(&data.data_body)?;
-    }
-    cursor.set_position(0);
-
-    let reader = StreamReader::try_new(cursor, None)?;
-    let batches: Result<Vec<RecordBatch>, _> = reader.collect();
-    let batches = batches?;
+    // Convert FlightData to RecordBatches using Arrow Flight utilities
+    let batches = flight_data_to_batches(&flight_data)?;
 
     if batches.is_empty() {
         return Ok(None);
@@ -607,17 +599,9 @@ pub async fn query_single_trace<S: RouterState>(
         }
     }
 
-    // Return empty trace if no data found
-    let trace = tempo_api::Trace {
-        trace_id,
-        root_service_name: "unknown".to_string(),
-        root_trace_name: "unknown".to_string(),
-        start_time_unix_nano: "0".to_string(),
-        duration_ms: 0u64,
-        span_sets: vec![],
-    };
-
-    Ok(axum::Json(trace))
+    // Return 404 when no trace data is found
+    log::info!("Trace {trace_id} not found");
+    Err(axum::http::StatusCode::NOT_FOUND)
 }
 
 /// GET https://grafana.com/docs/tempo/latest/api_docs/#search

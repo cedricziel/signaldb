@@ -137,6 +137,8 @@ impl FlightService for IcebergWriterFlightService {
                             schema_version: "v1".to_string(),
                             signal_type: Some("traces".to_string()),
                             target_table: None,
+                            tenant_id: None,
+                            dataset_id: None,
                         });
                     }
                 }
@@ -200,6 +202,8 @@ impl FlightService for IcebergWriterFlightService {
                 "schema_version": metadata.schema_version,
                 "signal_type": metadata.signal_type,
                 "target_table": metadata.target_table,
+                "tenant_id": metadata.tenant_id,
+                "dataset_id": metadata.dataset_id,
             }))
             .unwrap_or_default()
         });

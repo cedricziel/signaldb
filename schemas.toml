@@ -30,6 +30,12 @@ fields = [
     { name = "resource_json", type = "string", required = false },
     { name = "events", type = "list<struct>", required = false },
     { name = "links", type = "list<struct>", required = false },
+    { name = "trace_state", type = "string", required = false },
+    { name = "resource_schema_url", type = "string", required = false },
+    { name = "scope_name", type = "string", required = false },
+    { name = "scope_version", type = "string", required = false },
+    { name = "scope_schema_url", type = "string", required = false },
+    { name = "scope_attributes", type = "string", required = false },
 ]
 
 [traces.v2]
@@ -42,13 +48,7 @@ field_renames = [
     { from = "resource_json", to = "resource_attributes" },
 ]
 field_additions = [
-    { name = "trace_state", type = "string", required = false },
     { name = "timestamp", type = "timestamp_ns", required = true, computed = "start_time_unix_nano" },
-    { name = "resource_schema_url", type = "string", required = false },
-    { name = "scope_name", type = "string", required = false },
-    { name = "scope_version", type = "string", required = false },
-    { name = "scope_schema_url", type = "string", required = false },
-    { name = "scope_attributes", type = "string", required = false },
     { name = "date_day", type = "date", required = true, computed = "date_from_timestamp" },
     { name = "hour", type = "int32", required = true, computed = "hour_from_timestamp" },
 ]

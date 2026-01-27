@@ -79,6 +79,13 @@ impl FlightSchemas {
                 ))),
                 true,
             ),
+            // Scope and resource metadata
+            Field::new("trace_state", DataType::Utf8, true),
+            Field::new("resource_schema_url", DataType::Utf8, true),
+            Field::new("scope_name", DataType::Utf8, true),
+            Field::new("scope_version", DataType::Utf8, true),
+            Field::new("scope_schema_url", DataType::Utf8, true),
+            Field::new("scope_attributes", DataType::Utf8, true),
         ];
 
         Schema::new(Fields::from(fields))
@@ -144,9 +151,9 @@ pub fn create_span_batch_schema() -> Schema {
         Field::new("trace_id", DataType::Utf8, false),
         Field::new("span_id", DataType::Utf8, false),
         Field::new("parent_span_id", DataType::Utf8, true),
-        Field::new("status", DataType::Utf8, false),
+        Field::new("status_code", DataType::Utf8, false),
         Field::new("is_root", DataType::Boolean, false),
-        Field::new("name", DataType::Utf8, false),
+        Field::new("span_name", DataType::Utf8, false),
         Field::new("service_name", DataType::Utf8, false),
         Field::new("span_kind", DataType::Utf8, false),
         Field::new("start_time_unix_nano", DataType::UInt64, false),
@@ -179,6 +186,12 @@ mod tests {
         assert!(trace_schema.field_with_name("resource_json").is_ok());
         assert!(trace_schema.field_with_name("events").is_ok());
         assert!(trace_schema.field_with_name("links").is_ok());
+        assert!(trace_schema.field_with_name("trace_state").is_ok());
+        assert!(trace_schema.field_with_name("resource_schema_url").is_ok());
+        assert!(trace_schema.field_with_name("scope_name").is_ok());
+        assert!(trace_schema.field_with_name("scope_version").is_ok());
+        assert!(trace_schema.field_with_name("scope_schema_url").is_ok());
+        assert!(trace_schema.field_with_name("scope_attributes").is_ok());
 
         // Verify log schema
         let log_schema = schemas.log_schema;
@@ -230,9 +243,9 @@ mod tests {
         assert!(schema.field_with_name("trace_id").is_ok());
         assert!(schema.field_with_name("span_id").is_ok());
         assert!(schema.field_with_name("parent_span_id").is_ok());
-        assert!(schema.field_with_name("status").is_ok());
+        assert!(schema.field_with_name("status_code").is_ok());
         assert!(schema.field_with_name("is_root").is_ok());
-        assert!(schema.field_with_name("name").is_ok());
+        assert!(schema.field_with_name("span_name").is_ok());
         assert!(schema.field_with_name("service_name").is_ok());
         assert!(schema.field_with_name("span_kind").is_ok());
         assert!(schema.field_with_name("start_time_unix_nano").is_ok());

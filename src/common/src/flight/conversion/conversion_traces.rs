@@ -41,6 +41,12 @@ pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> RecordBatch 
     let mut resource_jsons = Vec::new();
     let mut events_data = Vec::new();
     let mut links_data = Vec::new();
+    let mut trace_states: Vec<Option<String>> = Vec::new();
+    let mut resource_schema_urls: Vec<Option<String>> = Vec::new();
+    let mut scope_names: Vec<Option<String>> = Vec::new();
+    let mut scope_versions: Vec<Option<String>> = Vec::new();
+    let mut scope_schema_urls: Vec<Option<String>> = Vec::new();
+    let mut scope_attributes_jsons: Vec<Option<String>> = Vec::new();
 
     for resource_spans in &request.resource_spans {
         // Extract resource attributes as JSON
@@ -49,7 +55,46 @@ pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> RecordBatch 
         // Extract service name from resource attributes
         let service_name = extract_service_name(&resource_spans.resource);
 
+        // Extract resource schema URL
+        let resource_schema_url = if resource_spans.schema_url.is_empty() {
+            None
+        } else {
+            Some(resource_spans.schema_url.clone())
+        };
+
         for scope_spans in &resource_spans.scope_spans {
+            // Extract scope metadata
+            let (scope_name, scope_version, scope_schema_url, scope_attributes_json) =
+                if let Some(scope) = &scope_spans.scope {
+                    let name = if scope.name.is_empty() {
+                        None
+                    } else {
+                        Some(scope.name.clone())
+                    };
+                    let version = if scope.version.is_empty() {
+                        None
+                    } else {
+                        Some(scope.version.clone())
+                    };
+                    let schema_url = if scope_spans.schema_url.is_empty() {
+                        None
+                    } else {
+                        Some(scope_spans.schema_url.clone())
+                    };
+                    let attrs = if scope.attributes.is_empty() {
+                        None
+                    } else {
+                        let mut attrs_map = Map::new();
+                        for attr in &scope.attributes {
+                            attrs_map.insert(attr.key.clone(), extract_value(&attr.value));
+                        }
+                        Some(serde_json::to_string(&attrs_map).unwrap_or_else(|_| "{}".to_string()))
+                    };
+                    (name, version, schema_url, attrs)
+                } else {
+                    (None, None, None, None)
+                };
+
             for span in &scope_spans.spans {
                 // Convert trace and span IDs to hex strings
                 let trace_id = if span.trace_id.len() == 16 {
@@ -119,6 +164,19 @@ pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> RecordBatch 
                 resource_jsons.push(resource_json.clone());
                 events_data.push(events);
                 links_data.push(links);
+
+                // Scope and resource metadata
+                let trace_state = if span.trace_state.is_empty() {
+                    None
+                } else {
+                    Some(span.trace_state.clone())
+                };
+                trace_states.push(trace_state);
+                resource_schema_urls.push(resource_schema_url.clone());
+                scope_names.push(scope_name.clone());
+                scope_versions.push(scope_version.clone());
+                scope_schema_urls.push(scope_schema_url.clone());
+                scope_attributes_jsons.push(scope_attributes_json.clone());
             }
         }
     }
@@ -145,6 +203,14 @@ pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> RecordBatch 
     // Create links list array
     let links_array = create_links_array(&links_data);
 
+    // Create scope/resource metadata arrays
+    let trace_state_array: ArrayRef = Arc::new(StringArray::from(trace_states));
+    let resource_schema_url_array: ArrayRef = Arc::new(StringArray::from(resource_schema_urls));
+    let scope_name_array: ArrayRef = Arc::new(StringArray::from(scope_names));
+    let scope_version_array: ArrayRef = Arc::new(StringArray::from(scope_versions));
+    let scope_schema_url_array: ArrayRef = Arc::new(StringArray::from(scope_schema_urls));
+    let scope_attributes_array: ArrayRef = Arc::new(StringArray::from(scope_attributes_jsons));
+
     // Clone schema for potential error case
     let schema_clone = schema.clone();
 
@@ -168,6 +234,12 @@ pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> RecordBatch 
             resource_json_array,
             events_array,
             links_array,
+            trace_state_array,
+            resource_schema_url_array,
+            scope_name_array,
+            scope_version_array,
+            scope_schema_url_array,
+            scope_attributes_array,
         ],
     );
 
@@ -501,79 +573,71 @@ fn parse_links_from_list_array(
     links
 }
 
+/// Helper to get a column by name as a specific array type
+fn get_string_column<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a StringArray> {
+    batch
+        .schema()
+        .column_with_name(name)
+        .and_then(|(idx, _)| batch.column(idx).as_any().downcast_ref::<StringArray>())
+}
+
+fn get_uint64_column<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a UInt64Array> {
+    batch
+        .schema()
+        .column_with_name(name)
+        .and_then(|(idx, _)| batch.column(idx).as_any().downcast_ref::<UInt64Array>())
+}
+
+fn get_list_column<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a ListArray> {
+    batch
+        .schema()
+        .column_with_name(name)
+        .and_then(|(idx, _)| batch.column(idx).as_any().downcast_ref::<ListArray>())
+}
+
 /// Convert Arrow RecordBatch to OTLP ExportTraceServiceRequest
 pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
+    use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
     use opentelemetry_proto::tonic::trace::v1::Status;
     use std::convert::TryInto;
 
-    let columns = batch.columns();
-
-    // Extract columns by index based on the schema order in otlp_traces_to_arrow
-    let trace_id_array = columns[0]
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .expect("trace_id column should be StringArray");
-    let span_id_array = columns[1]
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .expect("span_id column should be StringArray");
-    let parent_span_id_array = columns[2]
-        .as_any()
-        .downcast_ref::<StringArray>()
+    // Extract columns by name for robustness across schema versions
+    let trace_id_array =
+        get_string_column(batch, "trace_id").expect("trace_id column should be StringArray");
+    let span_id_array =
+        get_string_column(batch, "span_id").expect("span_id column should be StringArray");
+    let parent_span_id_array = get_string_column(batch, "parent_span_id")
         .expect("parent_span_id column should be StringArray");
-    let name_array = columns[3]
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .expect("name column should be StringArray");
-    let service_name_array = columns[4]
-        .as_any()
-        .downcast_ref::<StringArray>()
+    let name_array = get_string_column(batch, "name").expect("name column should be StringArray");
+    let service_name_array = get_string_column(batch, "service_name")
         .expect("service_name column should be StringArray");
-    let start_time_array = columns[5]
-        .as_any()
-        .downcast_ref::<UInt64Array>()
+    let start_time_array = get_uint64_column(batch, "start_time_unix_nano")
         .expect("start_time_unix_nano column should be UInt64Array");
-    let end_time_array = columns[6]
-        .as_any()
-        .downcast_ref::<UInt64Array>()
+    let end_time_array = get_uint64_column(batch, "end_time_unix_nano")
         .expect("end_time_unix_nano column should be UInt64Array");
-    let _duration_array = columns[7]
-        .as_any()
-        .downcast_ref::<UInt64Array>()
-        .expect("duration column should be UInt64Array");
-    let span_kind_array = columns[8]
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .expect("span_kind column should be StringArray");
-    let status_code_array = columns[9]
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .expect("status_code column should be StringArray");
-    let status_message_array = columns[10]
-        .as_any()
-        .downcast_ref::<StringArray>()
+    let span_kind_array =
+        get_string_column(batch, "span_kind").expect("span_kind column should be StringArray");
+    let status_code_array =
+        get_string_column(batch, "status_code").expect("status_code column should be StringArray");
+    let status_message_array = get_string_column(batch, "status_message")
         .expect("status_message column should be StringArray");
-    let _is_root_array = columns[11]
-        .as_any()
-        .downcast_ref::<BooleanArray>()
-        .expect("is_root column should be BooleanArray");
-    let attributes_json_array = columns[12]
-        .as_any()
-        .downcast_ref::<StringArray>()
+    let attributes_json_array = get_string_column(batch, "attributes_json")
         .expect("attributes_json column should be StringArray");
-    let resource_json_array = columns[13]
-        .as_any()
-        .downcast_ref::<StringArray>()
+    let resource_json_array = get_string_column(batch, "resource_json")
         .expect("resource_json column should be StringArray");
-    let events_array = columns[14]
-        .as_any()
-        .downcast_ref::<ListArray>()
-        .expect("events column should be ListArray");
-    let links_array = columns[15]
-        .as_any()
-        .downcast_ref::<ListArray>()
-        .expect("links column should be ListArray");
+    let events_array = get_list_column(batch, "events").expect("events column should be ListArray");
+    let links_array = get_list_column(batch, "links").expect("links column should be ListArray");
 
+    // Optional columns (may not be present in older data)
+    let trace_state_array = get_string_column(batch, "trace_state");
+    let resource_schema_url_array = get_string_column(batch, "resource_schema_url");
+    let scope_name_array = get_string_column(batch, "scope_name");
+    let scope_version_array = get_string_column(batch, "scope_version");
+    let scope_schema_url_array = get_string_column(batch, "scope_schema_url");
+    let scope_attributes_array = get_string_column(batch, "scope_attributes");
+
+    // Group by (service_name, resource_schema_url) -> ResourceSpans
+    // Then within each ResourceSpans, group by (scope_name, scope_version, scope_schema_url) -> ScopeSpans
     let mut resource_spans_map = std::collections::HashMap::<String, ResourceSpans>::new();
 
     for row in 0..batch.num_rows() {
@@ -600,6 +664,61 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
         let attributes_json_str = attributes_json_array.value(row);
         let resource_json_str = resource_json_array.value(row);
 
+        // Extract optional fields
+        let trace_state = trace_state_array
+            .and_then(|a| {
+                if a.is_null(row) {
+                    None
+                } else {
+                    Some(a.value(row).to_string())
+                }
+            })
+            .unwrap_or_default();
+
+        let resource_schema_url = resource_schema_url_array
+            .and_then(|a| {
+                if a.is_null(row) {
+                    None
+                } else {
+                    Some(a.value(row).to_string())
+                }
+            })
+            .unwrap_or_default();
+
+        let scope_name = scope_name_array.and_then(|a| {
+            if a.is_null(row) {
+                None
+            } else {
+                Some(a.value(row).to_string())
+            }
+        });
+
+        let scope_version = scope_version_array.and_then(|a| {
+            if a.is_null(row) {
+                None
+            } else {
+                Some(a.value(row).to_string())
+            }
+        });
+
+        let scope_schema_url = scope_schema_url_array
+            .and_then(|a| {
+                if a.is_null(row) {
+                    None
+                } else {
+                    Some(a.value(row).to_string())
+                }
+            })
+            .unwrap_or_default();
+
+        let scope_attributes_str = scope_attributes_array.and_then(|a| {
+            if a.is_null(row) {
+                None
+            } else {
+                Some(a.value(row).to_string())
+            }
+        });
+
         // Convert span kind string to enum
         let span_kind = match span_kind_str {
             "Internal" => 0,
@@ -625,9 +744,7 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
             map.into_iter()
                 .map(|(k, v)| KeyValue {
                     key: k,
-                    value: Some(
-                        crate::flight::conversion::conversion_common::json_value_to_any_value(&v),
-                    ),
+                    value: Some(json_value_to_any_value(&v)),
                 })
                 .collect()
         } else {
@@ -641,13 +758,37 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
             map.into_iter()
                 .map(|(k, v)| KeyValue {
                     key: k,
-                    value: Some(
-                        crate::flight::conversion::conversion_common::json_value_to_any_value(&v),
-                    ),
+                    value: Some(json_value_to_any_value(&v)),
                 })
                 .collect()
         } else {
             vec![]
+        };
+
+        // Parse scope attributes if present
+        let scope_attrs: Vec<KeyValue> = scope_attributes_str
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.as_object().cloned())
+            .map(|map| {
+                map.into_iter()
+                    .map(|(k, v)| KeyValue {
+                        key: k,
+                        value: Some(json_value_to_any_value(&v)),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Build scope
+        let scope = if scope_name.is_some() || scope_version.is_some() || !scope_attrs.is_empty() {
+            Some(InstrumentationScope {
+                name: scope_name.unwrap_or_default(),
+                version: scope_version.unwrap_or_default(),
+                attributes: scope_attrs,
+                dropped_attributes_count: 0,
+            })
+        } else {
+            None
         };
 
         // Construct the Span
@@ -670,35 +811,39 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
                 message: status_message_str.to_string(),
             }),
             flags: 0,
-            trace_state: "".to_string(),
+            trace_state,
         };
 
-        // Group spans by service name in resource_spans_map
-        let resource_spans = resource_spans_map
-            .entry(service_name.clone())
-            .or_insert_with(|| ResourceSpans {
-                resource: Some(opentelemetry_proto::tonic::resource::v1::Resource {
-                    attributes: resource_attributes.clone(),
-                    dropped_attributes_count: 0,
-                    entity_refs: vec![],
-                }),
-                scope_spans: vec![],
-                schema_url: "".to_string(),
-            });
+        // Build a key for grouping by resource (service_name + resource_schema_url)
+        let resource_key = format!("{service_name}|{resource_schema_url}");
 
-        // Find or create ScopeSpans for this service
-        let scope_spans = resource_spans.scope_spans.iter_mut().find(|_ss| {
-            // For now, no scope differentiation, so just use the first one
-            true
-        });
+        // Group spans by resource in resource_spans_map
+        let resource_spans =
+            resource_spans_map
+                .entry(resource_key)
+                .or_insert_with(|| ResourceSpans {
+                    resource: Some(opentelemetry_proto::tonic::resource::v1::Resource {
+                        attributes: resource_attributes.clone(),
+                        dropped_attributes_count: 0,
+                        entity_refs: vec![],
+                    }),
+                    scope_spans: vec![],
+                    schema_url: resource_schema_url.clone(),
+                });
 
-        if let Some(scope_spans) = scope_spans {
+        // Find or create ScopeSpans matching scope
+        let matching_scope = resource_spans
+            .scope_spans
+            .iter_mut()
+            .find(|ss| ss.scope == scope && ss.schema_url == scope_schema_url);
+
+        if let Some(scope_spans) = matching_scope {
             scope_spans.spans.push(span);
         } else {
             resource_spans.scope_spans.push(ScopeSpans {
-                scope: None,
+                scope: scope.clone(),
                 spans: vec![span],
-                schema_url: "".to_string(),
+                schema_url: scope_schema_url,
             });
         }
     }
@@ -712,10 +857,7 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
 mod tests {
     use super::*;
 
-    use datafusion::arrow::{
-        array::{BooleanArray, StringArray, UInt64Array},
-        datatypes::Schema,
-    };
+    use datafusion::arrow::array::{BooleanArray, StringArray, UInt64Array};
     use opentelemetry_proto::tonic::{
         common::v1::{AnyValue, KeyValue},
         trace::v1::{Span, Status},
@@ -821,18 +963,35 @@ mod tests {
             entity_refs: vec![],
         };
 
+        // Create scope with metadata
+        let scope = opentelemetry_proto::tonic::common::v1::InstrumentationScope {
+            name: "test-library".to_string(),
+            version: "1.0.0".to_string(),
+            attributes: vec![KeyValue {
+                key: "scope_attr".to_string(),
+                value: Some(AnyValue {
+                    value: Some(
+                        opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                            "scope_value".to_string(),
+                        ),
+                    ),
+                }),
+            }],
+            dropped_attributes_count: 0,
+        };
+
         // Create scope spans
         let scope_spans = ScopeSpans {
-            scope: None,
+            scope: Some(scope),
             spans: vec![span],
-            schema_url: "".to_string(),
+            schema_url: "https://opentelemetry.io/schemas/1.0.0".to_string(),
         };
 
         // Create resource spans
         let resource_spans = ResourceSpans {
             resource: Some(resource),
             scope_spans: vec![scope_spans],
-            schema_url: "".to_string(),
+            schema_url: "https://opentelemetry.io/schemas/resource/1.0.0".to_string(),
         };
 
         // Create the OTLP request
@@ -845,22 +1004,28 @@ mod tests {
 
         // Verify the result
         assert_eq!(result.num_rows(), 1);
+        assert_eq!(result.num_columns(), 22); // 16 original + 6 new fields
 
-        // Get columns
-        let columns = result.columns();
-        let trace_id_array = columns[0].as_any().downcast_ref::<StringArray>().unwrap();
-        let span_id_array = columns[1].as_any().downcast_ref::<StringArray>().unwrap();
-        let parent_span_id_array = columns[2].as_any().downcast_ref::<StringArray>().unwrap();
-        let name_array = columns[3].as_any().downcast_ref::<StringArray>().unwrap();
-        let service_name_array = columns[4].as_any().downcast_ref::<StringArray>().unwrap();
-        let start_time_array = columns[5].as_any().downcast_ref::<UInt64Array>().unwrap();
-        let end_time_array = columns[6].as_any().downcast_ref::<UInt64Array>().unwrap();
-        let span_kind_array = columns[8].as_any().downcast_ref::<StringArray>().unwrap();
-        let status_code_array = columns[9].as_any().downcast_ref::<StringArray>().unwrap();
-        let status_message_array = columns[10].as_any().downcast_ref::<StringArray>().unwrap();
-        let is_root_array = columns[11].as_any().downcast_ref::<BooleanArray>().unwrap();
-        let attributes_json_array = columns[12].as_any().downcast_ref::<StringArray>().unwrap();
-        let resource_json_array = columns[13].as_any().downcast_ref::<StringArray>().unwrap();
+        // Get columns by name
+        let trace_id_array = get_string_column(&result, "trace_id").unwrap();
+        let span_id_array = get_string_column(&result, "span_id").unwrap();
+        let parent_span_id_array = get_string_column(&result, "parent_span_id").unwrap();
+        let name_array = get_string_column(&result, "name").unwrap();
+        let service_name_array = get_string_column(&result, "service_name").unwrap();
+        let start_time_array = get_uint64_column(&result, "start_time_unix_nano").unwrap();
+        let end_time_array = get_uint64_column(&result, "end_time_unix_nano").unwrap();
+        let span_kind_array = get_string_column(&result, "span_kind").unwrap();
+        let status_code_array = get_string_column(&result, "status_code").unwrap();
+        let status_message_array = get_string_column(&result, "status_message").unwrap();
+        let schema_ref = result.schema();
+        let is_root_col = schema_ref.column_with_name("is_root").unwrap();
+        let is_root_array = result
+            .column(is_root_col.0)
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        let attributes_json_array = get_string_column(&result, "attributes_json").unwrap();
+        let resource_json_array = get_string_column(&result, "resource_json").unwrap();
 
         // Verify values
         assert_eq!(trace_id_array.value(0), "0123456789abcdef0123456789abcdef");
@@ -883,59 +1048,40 @@ mod tests {
         let resource_json: serde_json::Value =
             serde_json::from_str(resource_json_array.value(0)).unwrap();
         assert_eq!(resource_json["service.name"], "test_service");
+
+        // Verify new scope/resource fields
+        let scope_name_array = get_string_column(&result, "scope_name").unwrap();
+        let scope_version_array = get_string_column(&result, "scope_version").unwrap();
+        let scope_schema_url_array = get_string_column(&result, "scope_schema_url").unwrap();
+        let scope_attributes_array = get_string_column(&result, "scope_attributes").unwrap();
+        let resource_schema_url_array = get_string_column(&result, "resource_schema_url").unwrap();
+
+        assert_eq!(scope_name_array.value(0), "test-library");
+        assert_eq!(scope_version_array.value(0), "1.0.0");
+        assert_eq!(
+            scope_schema_url_array.value(0),
+            "https://opentelemetry.io/schemas/1.0.0"
+        );
+        assert_eq!(
+            resource_schema_url_array.value(0),
+            "https://opentelemetry.io/schemas/resource/1.0.0"
+        );
+
+        // Verify scope attributes JSON
+        let scope_attrs: serde_json::Value =
+            serde_json::from_str(scope_attributes_array.value(0)).unwrap();
+        assert_eq!(scope_attrs["scope_attr"], "scope_value");
+
+        // trace_state should be null (empty string in proto => None)
+        let trace_state_array = get_string_column(&result, "trace_state").unwrap();
+        assert!(trace_state_array.is_null(0));
     }
 
     #[test]
     fn test_arrow_to_otlp_traces() {
-        // Create a simple trace in Arrow format
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("trace_id", DataType::Utf8, false),
-            Field::new("span_id", DataType::Utf8, false),
-            Field::new("parent_span_id", DataType::Utf8, true),
-            Field::new("name", DataType::Utf8, false),
-            Field::new("service_name", DataType::Utf8, false),
-            Field::new("start_time_unix_nano", DataType::UInt64, false),
-            Field::new("end_time_unix_nano", DataType::UInt64, false),
-            Field::new("duration_nano", DataType::UInt64, false),
-            Field::new("span_kind", DataType::Utf8, false),
-            Field::new("status_code", DataType::Utf8, false),
-            Field::new("status_message", DataType::Utf8, true),
-            Field::new("is_root", DataType::Boolean, false),
-            Field::new("attributes_json", DataType::Utf8, true),
-            Field::new("resource_json", DataType::Utf8, true),
-            Field::new(
-                "events",
-                DataType::List(Arc::new(Field::new(
-                    "item",
-                    DataType::Struct(
-                        vec![
-                            Field::new("name", DataType::Utf8, false),
-                            Field::new("timestamp_unix_nano", DataType::UInt64, false),
-                            Field::new("attributes_json", DataType::Utf8, true),
-                        ]
-                        .into(),
-                    ),
-                    true,
-                ))),
-                true,
-            ),
-            Field::new(
-                "links",
-                DataType::List(Arc::new(Field::new(
-                    "item",
-                    DataType::Struct(
-                        vec![
-                            Field::new("trace_id", DataType::Utf8, false),
-                            Field::new("span_id", DataType::Utf8, false),
-                            Field::new("attributes_json", DataType::Utf8, true),
-                        ]
-                        .into(),
-                    ),
-                    true,
-                ))),
-                true,
-            ),
-        ]));
+        // Use FlightSchemas to get the canonical schema
+        let schemas = FlightSchemas::new();
+        let schema = Arc::new(schemas.trace_schema);
 
         // Sample data for a trace
         let trace_id = "0123456789abcdef0123456789abcdef";
@@ -986,6 +1132,16 @@ mod tests {
         ));
         let links_array = Arc::new(ListArray::new_null(field_links, 1));
 
+        // New scope/resource fields
+        let trace_state_array = StringArray::from(vec![None as Option<&str>]);
+        let resource_schema_url_array =
+            StringArray::from(vec![Some("https://opentelemetry.io/schemas/1.0.0")]);
+        let scope_name_array = StringArray::from(vec![Some("my-library")]);
+        let scope_version_array = StringArray::from(vec![Some("2.0.0")]);
+        let scope_schema_url_array =
+            StringArray::from(vec![Some("https://opentelemetry.io/schemas/scope/1.0.0")]);
+        let scope_attributes_array = StringArray::from(vec![Some("{\"lib_key\":\"lib_val\"}")]);
+
         let batch = RecordBatch::try_new(
             schema,
             vec![
@@ -1005,6 +1161,12 @@ mod tests {
                 Arc::new(resource_json_array),
                 events_array,
                 links_array,
+                Arc::new(trace_state_array),
+                Arc::new(resource_schema_url_array),
+                Arc::new(scope_name_array),
+                Arc::new(scope_version_array),
+                Arc::new(scope_schema_url_array),
+                Arc::new(scope_attributes_array),
             ],
         )
         .unwrap();
@@ -1022,9 +1184,27 @@ mod tests {
         assert_eq!(resource.attributes.len(), 1);
         assert_eq!(resource.attributes[0].key, "service.name");
 
+        // Verify resource schema URL
+        assert_eq!(
+            resource_spans.schema_url,
+            "https://opentelemetry.io/schemas/1.0.0"
+        );
+
         // Verify scope spans
         assert_eq!(resource_spans.scope_spans.len(), 1);
         let scope_spans = &resource_spans.scope_spans[0];
+
+        // Verify scope metadata
+        assert!(scope_spans.scope.is_some());
+        let scope = scope_spans.scope.as_ref().unwrap();
+        assert_eq!(scope.name, "my-library");
+        assert_eq!(scope.version, "2.0.0");
+        assert_eq!(scope.attributes.len(), 1);
+        assert_eq!(scope.attributes[0].key, "lib_key");
+        assert_eq!(
+            scope_spans.schema_url,
+            "https://opentelemetry.io/schemas/scope/1.0.0"
+        );
 
         // Verify spans
         assert_eq!(scope_spans.spans.len(), 1);
@@ -1164,18 +1344,26 @@ mod tests {
             entity_refs: vec![],
         };
 
+        // Create scope with metadata
+        let scope = opentelemetry_proto::tonic::common::v1::InstrumentationScope {
+            name: "test-tracer".to_string(),
+            version: "0.1.0".to_string(),
+            attributes: vec![],
+            dropped_attributes_count: 0,
+        };
+
         // Create scope spans
         let scope_spans = ScopeSpans {
-            scope: None,
+            scope: Some(scope),
             spans: vec![span],
-            schema_url: "".to_string(),
+            schema_url: "https://opentelemetry.io/schemas/1.0.0".to_string(),
         };
 
         // Create resource spans
         let resource_spans = ResourceSpans {
             resource: Some(resource),
             scope_spans: vec![scope_spans],
-            schema_url: "".to_string(),
+            schema_url: "https://opentelemetry.io/schemas/resource/1.0.0".to_string(),
         };
 
         // Create the OTLP request
@@ -1199,9 +1387,25 @@ mod tests {
         assert_eq!(resource.attributes.len(), 1);
         assert_eq!(resource.attributes[0].key, "service.name");
 
+        // Verify resource schema URL roundtrips
+        assert_eq!(
+            resource_spans.schema_url,
+            "https://opentelemetry.io/schemas/resource/1.0.0"
+        );
+
         // Verify scope spans
         assert_eq!(resource_spans.scope_spans.len(), 1);
         let scope_spans = &resource_spans.scope_spans[0];
+
+        // Verify scope metadata roundtrips
+        assert!(scope_spans.scope.is_some());
+        let scope = scope_spans.scope.as_ref().unwrap();
+        assert_eq!(scope.name, "test-tracer");
+        assert_eq!(scope.version, "0.1.0");
+        assert_eq!(
+            scope_spans.schema_url,
+            "https://opentelemetry.io/schemas/1.0.0"
+        );
 
         // Verify spans
         assert_eq!(scope_spans.spans.len(), 1);
