@@ -1,11 +1,16 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use datafusion::arrow::{
-    array::{ArrayRef, BooleanArray, StringArray, UInt64Array},
+    array::{Array, ArrayRef, BooleanArray, StringArray, UInt64Array},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
 use serde::{Deserialize, Serialize};
+
+/// 16-character hex sentinel for root/absent parent span IDs in OTLP traces.
+/// OTLP span IDs are 8 bytes (16 hex characters); root spans encode the
+/// parent span ID as all zeroes to indicate they have no parent.
+pub const EMPTY_PARENT_SPAN_ID: &str = "0000000000000000";
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum SpanKind {
@@ -109,6 +114,8 @@ impl Span {
             Field::new("span_kind", DataType::Utf8, false),
             Field::new("start_time_unix_nano", DataType::UInt64, false),
             Field::new("duration_nano", DataType::UInt64, false),
+            Field::new("span_attributes", DataType::Utf8, true),
+            Field::new("resource_attributes", DataType::Utf8, true),
         ];
         Schema::new(fields)
     }
@@ -127,6 +134,12 @@ impl Span {
         let start_time_unix_nano: ArrayRef =
             Arc::new(UInt64Array::from(vec![self.start_time_unix_nano]));
         let duration_nano: ArrayRef = Arc::new(UInt64Array::from(vec![self.duration_nano]));
+        let span_attributes: ArrayRef = Arc::new(StringArray::from(vec![
+            serde_json::to_string(&self.attributes).unwrap_or_default(),
+        ]));
+        let resource_attributes: ArrayRef = Arc::new(StringArray::from(vec![
+            serde_json::to_string(&self.resource).unwrap_or_default(),
+        ]));
 
         RecordBatch::try_new(
             Arc::new(Self::to_schema()),
@@ -141,10 +154,73 @@ impl Span {
                 span_kind,
                 start_time_unix_nano,
                 duration_nano,
+                span_attributes,
+                resource_attributes,
             ],
         )
         .unwrap()
     }
+}
+
+/// Build a hierarchical span tree from a flat map of spans.
+///
+/// Links child spans to their parents and returns the root spans. A span is
+/// considered a root if any of the following is true:
+/// - `span.is_root` is set
+/// - its `parent_span_id` is empty or the zero sentinel ([`EMPTY_PARENT_SPAN_ID`])
+/// - its `parent_span_id` references a span not present in `span_map` (orphan)
+///
+/// The input `span_map` is consumed and mutated in place so that parent spans
+/// contain their children.
+pub fn build_span_hierarchy(mut span_map: HashMap<String, Span>) -> Vec<Span> {
+    use std::collections::HashSet;
+
+    // Collect parent-child relationships
+    let mut parent_child_pairs = Vec::new();
+    for span in span_map.values() {
+        if !is_root_parent_id(&span.parent_span_id) {
+            parent_child_pairs.push((span.parent_span_id.clone(), span.span_id.clone()));
+        }
+    }
+
+    // Group children by parent
+    let mut child_spans: HashMap<String, Vec<Span>> = HashMap::new();
+    for (parent_span_id, span_id) in parent_child_pairs {
+        if let Some(child_span) = span_map.get(&span_id) {
+            child_spans
+                .entry(parent_span_id)
+                .or_default()
+                .push(child_span.clone());
+        }
+    }
+
+    // Attach children to parents; track orphan span IDs whose parent is missing
+    let mut orphan_ids: HashSet<String> = HashSet::new();
+    for (parent_span_id, children) in child_spans {
+        if let Some(parent_span) = span_map.get_mut(&parent_span_id) {
+            parent_span.children.extend(children);
+        } else {
+            // Parent not in span_map — treat these children as roots
+            for child in &children {
+                orphan_ids.insert(child.span_id.clone());
+            }
+        }
+    }
+
+    // Collect root spans (explicitly marked, zero-parent, or orphaned)
+    span_map
+        .into_values()
+        .filter(|span| {
+            span.is_root
+                || is_root_parent_id(&span.parent_span_id)
+                || orphan_ids.contains(&span.span_id)
+        })
+        .collect()
+}
+
+/// Returns true if the parent span ID indicates a root span (empty or the zero sentinel).
+fn is_root_parent_id(parent_span_id: &str) -> bool {
+    parent_span_id.is_empty() || parent_span_id == EMPTY_PARENT_SPAN_ID
 }
 
 /// A batch of spans.
@@ -253,6 +329,31 @@ impl SpanBatch {
                 .downcast_ref::<UInt64Array>()
                 .unwrap();
 
+            // Read attributes columns gracefully (may not exist in older data)
+            let attributes: HashMap<String, serde_json::Value> = batch
+                .column_by_name("span_attributes")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .and_then(|arr| {
+                    if arr.is_null(i) {
+                        None
+                    } else {
+                        serde_json::from_str(arr.value(i)).ok()
+                    }
+                })
+                .unwrap_or_default();
+
+            let resource: HashMap<String, serde_json::Value> = batch
+                .column_by_name("resource_attributes")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .and_then(|arr| {
+                    if arr.is_null(i) {
+                        None
+                    } else {
+                        serde_json::from_str(arr.value(i)).ok()
+                    }
+                })
+                .unwrap_or_default();
+
             let span = Span {
                 trace_id: trace_id.value(i).to_string(),
                 span_id: span_id.value(i).to_string(),
@@ -264,8 +365,8 @@ impl SpanBatch {
                 span_kind: span_kind.value(i).parse().unwrap_or(SpanKind::Internal),
                 start_time_unix_nano: start_time_unix_nano.value(i),
                 duration_nano: duration_nano.value(i),
-                attributes: HashMap::new(),
-                resource: HashMap::new(),
+                attributes,
+                resource,
                 children: vec![],
             };
 
@@ -311,7 +412,7 @@ mod tests {
         };
 
         let record_batch = span.to_record_batch();
-        assert_eq!(record_batch.num_columns(), 10);
+        assert_eq!(record_batch.num_columns(), 12);
         assert_eq!(record_batch.num_rows(), 1);
     }
 
@@ -335,7 +436,7 @@ mod tests {
         });
 
         let record_batch = span_batch.to_record_batch();
-        assert_eq!(record_batch.num_columns(), 10);
+        assert_eq!(record_batch.num_columns(), 12);
         assert_eq!(record_batch.num_rows(), 1);
 
         let span_batch = SpanBatch::from_record_batch(&record_batch);
@@ -374,7 +475,7 @@ mod tests {
     #[test]
     fn test_span_schema() {
         let schema = Span::to_schema();
-        assert_eq!(schema.fields().len(), 10);
+        assert_eq!(schema.fields().len(), 12);
     }
 
     #[test]
@@ -408,5 +509,59 @@ mod tests {
         let record_batch = span.to_record_batch();
         let span_batch = SpanBatch::from_record_batch(&record_batch);
         assert_eq!(span_batch.spans.len(), 1);
+    }
+
+    #[test]
+    fn test_span_attributes_round_trip_via_record_batch() {
+        let mut attributes = HashMap::new();
+        attributes.insert(
+            "http.method".to_string(),
+            serde_json::Value::String("GET".to_string()),
+        );
+        attributes.insert(
+            "http.status_code".to_string(),
+            serde_json::Value::Number(200.into()),
+        );
+
+        let mut resource = HashMap::new();
+        resource.insert(
+            "service.name".to_string(),
+            serde_json::Value::String("test-service".to_string()),
+        );
+
+        let span = Span {
+            trace_id: "trace_id".to_string(),
+            span_id: "span_id".to_string(),
+            parent_span_id: "parent_span_id".to_string(),
+            status: SpanStatus::Ok,
+            is_root: true,
+            name: "test-op".to_string(),
+            service_name: "test-service".to_string(),
+            span_kind: SpanKind::Server,
+            start_time_unix_nano: 1_000_000_000,
+            duration_nano: 500_000_000,
+            attributes: attributes.clone(),
+            resource: resource.clone(),
+            children: vec![],
+        };
+
+        let record_batch = span.to_record_batch();
+        assert_eq!(record_batch.num_columns(), 12);
+        assert_eq!(record_batch.num_rows(), 1);
+
+        let span_batch = SpanBatch::from_record_batch(&record_batch);
+        assert_eq!(span_batch.spans.len(), 1);
+
+        let recovered = &span_batch.spans[0];
+        assert_eq!(recovered.attributes, attributes);
+        assert_eq!(recovered.resource, resource);
+        assert_eq!(
+            recovered.attributes.get("http.method"),
+            Some(&serde_json::Value::String("GET".to_string()))
+        );
+        assert_eq!(
+            recovered.resource.get("service.name"),
+            Some(&serde_json::Value::String("test-service".to_string()))
+        );
     }
 }

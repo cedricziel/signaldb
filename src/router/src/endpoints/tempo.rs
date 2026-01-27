@@ -8,7 +8,7 @@ use axum::{
 use common::auth::TenantContextExtractor;
 use common::flight::transport::ServiceCapability;
 use datafusion::arrow::{
-    array::{BooleanArray, StringArray, UInt64Array},
+    array::{Array, BooleanArray, StringArray, UInt64Array},
     record_batch::RecordBatch,
 };
 use futures::StreamExt;
@@ -86,114 +86,124 @@ fn record_batches_to_trace(
 
     // Process all batches and collect spans
     for batch in batches {
+        // Extract typed column references once per batch to avoid repeated lookups
+        let trace_id_col = batch
+            .column_by_name("trace_id")
+            .ok_or("Missing trace_id column")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("Invalid trace_id column type")?;
+        let span_id_col = batch
+            .column_by_name("span_id")
+            .ok_or("Missing span_id column")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("Invalid span_id column type")?;
+        let parent_span_id_col = batch
+            .column_by_name("parent_span_id")
+            .ok_or("Missing parent_span_id column")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("Invalid parent_span_id column type")?;
+        let span_name_col = batch
+            .column_by_name("span_name")
+            .ok_or("Missing span_name column")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("Invalid span_name column type")?;
+        let service_name_col = batch
+            .column_by_name("service_name")
+            .ok_or("Missing service_name column")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("Invalid service_name column type")?;
+        let span_kind_col = batch
+            .column_by_name("span_kind")
+            .ok_or("Missing span_kind column")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("Invalid span_kind column type")?;
+        let start_time_col = batch
+            .column_by_name("start_time_unix_nano")
+            .ok_or("Missing start_time_unix_nano column")?
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .ok_or("Invalid start_time_unix_nano column type")?;
+        let duration_col = batch
+            .column_by_name("duration_nano")
+            .ok_or("Missing duration_nano column")?
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .ok_or("Invalid duration_nano column type")?;
+        let status_col = batch
+            .column_by_name("status_code")
+            .ok_or("Missing status_code column")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("Invalid status_code column type")?;
+        let is_root_col = batch
+            .column_by_name("is_root")
+            .ok_or("Missing is_root column")?
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .ok_or("Invalid is_root column type")?;
+        // Optional attribute columns (may not exist in older data)
+        let span_attrs_col = batch
+            .column_by_name("span_attributes")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let resource_attrs_col = batch
+            .column_by_name("resource_attributes")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+
         for row_index in 0..batch.num_rows() {
-            let span_trace_id = batch
-                .column_by_name("trace_id")
-                .ok_or("Missing trace_id column")?
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or("Invalid trace_id column type")?
-                .value(row_index)
-                .to_string();
+            let span_trace_id = trace_id_col.value(row_index).to_string();
 
             // Only include spans that match the requested trace_id
             if span_trace_id != trace_id {
                 continue;
             }
 
-            let span_id = batch
-                .column_by_name("span_id")
-                .ok_or("Missing span_id column")?
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or("Invalid span_id column type")?
-                .value(row_index)
-                .to_string();
+            let span_id = span_id_col.value(row_index).to_string();
 
-            let parent_span_id = batch
-                .column_by_name("parent_span_id")
-                .ok_or("Missing parent_span_id column")?
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or("Invalid parent_span_id column type")?
-                .value(row_index)
-                .to_string();
+            let attributes = span_attrs_col
+                .and_then(|arr| {
+                    if arr.is_null(row_index) {
+                        None
+                    } else {
+                        serde_json::from_str(arr.value(row_index)).ok()
+                    }
+                })
+                .unwrap_or_default();
 
-            let name = batch
-                .column_by_name("span_name")
-                .ok_or("Missing span_name column")?
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or("Invalid span_name column type")?
-                .value(row_index)
-                .to_string();
-
-            let service_name = batch
-                .column_by_name("service_name")
-                .ok_or("Missing service_name column")?
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or("Invalid service_name column type")?
-                .value(row_index)
-                .to_string();
-
-            let span_kind_str = batch
-                .column_by_name("span_kind")
-                .ok_or("Missing span_kind column")?
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or("Invalid span_kind column type")?
-                .value(row_index);
-
-            let start_time_unix_nano = batch
-                .column_by_name("start_time_unix_nano")
-                .ok_or("Missing start_time_unix_nano column")?
-                .as_any()
-                .downcast_ref::<UInt64Array>()
-                .ok_or("Invalid start_time_unix_nano column type")?
-                .value(row_index);
-
-            let duration_nano = batch
-                .column_by_name("duration_nano")
-                .ok_or("Missing duration_nano column")?
-                .as_any()
-                .downcast_ref::<UInt64Array>()
-                .ok_or("Invalid duration_nano column type")?
-                .value(row_index);
-
-            let status_str = batch
-                .column_by_name("status_code")
-                .ok_or("Missing status_code column")?
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or("Invalid status_code column type")?
-                .value(row_index);
-
-            let is_root = batch
-                .column_by_name("is_root")
-                .ok_or("Missing is_root column")?
-                .as_any()
-                .downcast_ref::<BooleanArray>()
-                .ok_or("Invalid is_root column type")?
-                .value(row_index);
+            let resource = resource_attrs_col
+                .and_then(|arr| {
+                    if arr.is_null(row_index) {
+                        None
+                    } else {
+                        serde_json::from_str(arr.value(row_index)).ok()
+                    }
+                })
+                .unwrap_or_default();
 
             let span = common::model::span::Span {
                 trace_id: span_trace_id,
                 span_id: span_id.clone(),
-                parent_span_id,
-                status: status_str
+                parent_span_id: parent_span_id_col.value(row_index).to_string(),
+                status: status_col
+                    .value(row_index)
                     .parse()
                     .unwrap_or(common::model::span::SpanStatus::Unspecified),
-                is_root,
-                name,
-                service_name,
-                span_kind: span_kind_str
+                is_root: is_root_col.value(row_index),
+                name: span_name_col.value(row_index).to_string(),
+                service_name: service_name_col.value(row_index).to_string(),
+                span_kind: span_kind_col
+                    .value(row_index)
                     .parse()
                     .unwrap_or(common::model::span::SpanKind::Internal),
-                start_time_unix_nano,
-                duration_nano,
-                attributes: HashMap::new(), // TODO: Extract attributes if available
-                resource: HashMap::new(),   // TODO: Extract resource if available
+                start_time_unix_nano: start_time_col.value(row_index),
+                duration_nano: duration_col.value(row_index),
+                attributes,
+                resource,
                 children: Vec::new(),
             };
 
@@ -202,26 +212,7 @@ fn record_batches_to_trace(
     }
 
     // Build hierarchical structure
-    let mut root_spans = Vec::new();
-    let mut child_spans: HashMap<String, Vec<common::model::span::Span>> = HashMap::new();
-
-    for span in span_map.values() {
-        if span.is_root || span.parent_span_id == "00000000" || span.parent_span_id.is_empty() {
-            root_spans.push(span.clone());
-        } else {
-            child_spans
-                .entry(span.parent_span_id.clone())
-                .or_default()
-                .push(span.clone());
-        }
-    }
-
-    // Add children to parents
-    for (parent_id, children) in child_spans {
-        if let Some(parent) = span_map.get_mut(&parent_id) {
-            parent.children.extend(children);
-        }
-    }
+    let root_spans = common::model::span::build_span_hierarchy(span_map);
 
     Ok(common::model::trace::Trace {
         trace_id: trace_id.to_string(),
@@ -380,109 +371,118 @@ fn flight_data_to_search_results(
     let mut traces_map: HashMap<String, Vec<common::model::span::Span>> = HashMap::new();
 
     for batch in batches {
+        // Extract typed column references once per batch to avoid repeated lookups
+        let trace_id_col = batch
+            .column_by_name("trace_id")
+            .ok_or("Missing trace_id column")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("Invalid trace_id column type")?;
+        let span_id_col = batch
+            .column_by_name("span_id")
+            .ok_or("Missing span_id column")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("Invalid span_id column type")?;
+        let parent_span_id_col = batch
+            .column_by_name("parent_span_id")
+            .ok_or("Missing parent_span_id column")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("Invalid parent_span_id column type")?;
+        let span_name_col = batch
+            .column_by_name("span_name")
+            .ok_or("Missing span_name column")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("Invalid span_name column type")?;
+        let service_name_col = batch
+            .column_by_name("service_name")
+            .ok_or("Missing service_name column")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("Invalid service_name column type")?;
+        let span_kind_col = batch
+            .column_by_name("span_kind")
+            .ok_or("Missing span_kind column")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("Invalid span_kind column type")?;
+        let start_time_col = batch
+            .column_by_name("start_time_unix_nano")
+            .ok_or("Missing start_time_unix_nano column")?
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .ok_or("Invalid start_time_unix_nano column type")?;
+        let duration_col = batch
+            .column_by_name("duration_nano")
+            .ok_or("Missing duration_nano column")?
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .ok_or("Invalid duration_nano column type")?;
+        let status_col = batch
+            .column_by_name("status_code")
+            .ok_or("Missing status_code column")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("Invalid status_code column type")?;
+        let is_root_col = batch
+            .column_by_name("is_root")
+            .ok_or("Missing is_root column")?
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .ok_or("Invalid is_root column type")?;
+        // Optional attribute columns (may not exist in older data)
+        let span_attrs_col = batch
+            .column_by_name("span_attributes")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let resource_attrs_col = batch
+            .column_by_name("resource_attributes")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+
         for row_index in 0..batch.num_rows() {
-            let trace_id = batch
-                .column_by_name("trace_id")
-                .ok_or("Missing trace_id column")?
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or("Invalid trace_id column type")?
-                .value(row_index)
-                .to_string();
+            let trace_id = trace_id_col.value(row_index).to_string();
+            let span_id = span_id_col.value(row_index).to_string();
 
-            let span_id = batch
-                .column_by_name("span_id")
-                .ok_or("Missing span_id column")?
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or("Invalid span_id column type")?
-                .value(row_index)
-                .to_string();
+            let attributes = span_attrs_col
+                .and_then(|arr| {
+                    if arr.is_null(row_index) {
+                        None
+                    } else {
+                        serde_json::from_str(arr.value(row_index)).ok()
+                    }
+                })
+                .unwrap_or_default();
 
-            let parent_span_id = batch
-                .column_by_name("parent_span_id")
-                .ok_or("Missing parent_span_id column")?
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or("Invalid parent_span_id column type")?
-                .value(row_index)
-                .to_string();
-
-            let name = batch
-                .column_by_name("span_name")
-                .ok_or("Missing span_name column")?
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or("Invalid span_name column type")?
-                .value(row_index)
-                .to_string();
-
-            let service_name = batch
-                .column_by_name("service_name")
-                .ok_or("Missing service_name column")?
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or("Invalid service_name column type")?
-                .value(row_index)
-                .to_string();
-
-            let span_kind_str = batch
-                .column_by_name("span_kind")
-                .ok_or("Missing span_kind column")?
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or("Invalid span_kind column type")?
-                .value(row_index);
-
-            let start_time_unix_nano = batch
-                .column_by_name("start_time_unix_nano")
-                .ok_or("Missing start_time_unix_nano column")?
-                .as_any()
-                .downcast_ref::<UInt64Array>()
-                .ok_or("Invalid start_time_unix_nano column type")?
-                .value(row_index);
-
-            let duration_nano = batch
-                .column_by_name("duration_nano")
-                .ok_or("Missing duration_nano column")?
-                .as_any()
-                .downcast_ref::<UInt64Array>()
-                .ok_or("Invalid duration_nano column type")?
-                .value(row_index);
-
-            let status_str = batch
-                .column_by_name("status_code")
-                .ok_or("Missing status_code column")?
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or("Invalid status_code column type")?
-                .value(row_index);
-
-            let is_root = batch
-                .column_by_name("is_root")
-                .ok_or("Missing is_root column")?
-                .as_any()
-                .downcast_ref::<BooleanArray>()
-                .ok_or("Invalid is_root column type")?
-                .value(row_index);
+            let resource = resource_attrs_col
+                .and_then(|arr| {
+                    if arr.is_null(row_index) {
+                        None
+                    } else {
+                        serde_json::from_str(arr.value(row_index)).ok()
+                    }
+                })
+                .unwrap_or_default();
 
             let span = common::model::span::Span {
                 trace_id: trace_id.clone(),
                 span_id,
-                parent_span_id,
-                status: status_str
+                parent_span_id: parent_span_id_col.value(row_index).to_string(),
+                status: status_col
+                    .value(row_index)
                     .parse()
                     .unwrap_or(common::model::span::SpanStatus::Unspecified),
-                is_root,
-                name,
-                service_name,
-                span_kind: span_kind_str
+                is_root: is_root_col.value(row_index),
+                name: span_name_col.value(row_index).to_string(),
+                service_name: service_name_col.value(row_index).to_string(),
+                span_kind: span_kind_col
+                    .value(row_index)
                     .parse()
                     .unwrap_or(common::model::span::SpanKind::Internal),
-                start_time_unix_nano,
-                duration_nano,
-                attributes: HashMap::new(),
-                resource: HashMap::new(),
+                start_time_unix_nano: start_time_col.value(row_index),
+                duration_nano: duration_col.value(row_index),
+                attributes,
+                resource,
                 children: Vec::new(),
             };
 

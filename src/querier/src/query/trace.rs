@@ -7,7 +7,7 @@ use common::model::{
     span::{Span, SpanKind, SpanStatus},
 };
 use datafusion::{
-    arrow::array::{BooleanArray, Int64Array, StringArray},
+    arrow::array::{Array, BooleanArray, Int64Array, StringArray},
     common::TableReference,
     logical_expr::{col, lit},
     prelude::SessionContext,
@@ -191,7 +191,6 @@ impl TraceService {
 
         // Create a map to store all spans by their span_id for easy lookup
         let mut span_map: HashMap<String, Span> = HashMap::new();
-        let mut root_spans = Vec::new();
         let mut trace_id = String::new();
 
         for batch in results {
@@ -243,6 +242,30 @@ impl TraceService {
                     })?
                     .value(row_index)
                     .to_string();
+
+                let attributes = batch
+                    .column_by_name("span_attributes")
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                    .and_then(|arr| {
+                        if arr.is_null(row_index) {
+                            None
+                        } else {
+                            serde_json::from_str(arr.value(row_index)).ok()
+                        }
+                    })
+                    .unwrap_or_default();
+
+                let resource = batch
+                    .column_by_name("resource_attributes")
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                    .and_then(|arr| {
+                        if arr.is_null(row_index) {
+                            None
+                        } else {
+                            serde_json::from_str(arr.value(row_index)).ok()
+                        }
+                    })
+                    .unwrap_or_default();
 
                 let span = Span {
                     span_id: span_id.clone(),
@@ -362,46 +385,15 @@ impl TraceService {
                             )
                         })?
                         .value(row_index) as u64,
-                    attributes: HashMap::new(),
-                    resource: HashMap::new(),
+                    attributes,
+                    resource,
                 };
 
                 span_map.insert(span_id, span);
             }
         }
 
-        // Collect parent-child relationships first
-        let mut parent_child_pairs = Vec::new();
-        for span in span_map.values() {
-            if span.parent_span_id != "00000000" {
-                parent_child_pairs.push((span.parent_span_id.clone(), span.span_id.clone()));
-            }
-        }
-
-        // Collect child spans first
-        let mut child_spans: HashMap<String, Vec<Span>> = HashMap::new();
-        for (parent_span_id, span_id) in parent_child_pairs {
-            if let Some(child_span) = span_map.get(&span_id) {
-                child_spans
-                    .entry(parent_span_id)
-                    .or_default()
-                    .push(child_span.clone());
-            }
-        }
-
-        // Build the hierarchy by linking child spans to their parents
-        for (parent_span_id, children) in child_spans {
-            if let Some(parent_span) = span_map.get_mut(&parent_span_id) {
-                parent_span.children.extend(children);
-            }
-        }
-
-        // Collect root spans (those marked as root or with no parent)
-        for span in span_map.values() {
-            if span.is_root || span.parent_span_id == "00000000" {
-                root_spans.push(span.clone());
-            }
-        }
+        let root_spans = model::span::build_span_hierarchy(span_map);
 
         Ok(Some(model::trace::Trace {
             trace_id,
@@ -412,7 +404,7 @@ impl TraceService {
     /// Find traces with tenant isolation
     pub async fn find_traces_with_tenant(
         &self,
-        _query: SearchQueryParams,
+        query: SearchQueryParams,
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<model::trace::Trace>, QuerierError> {
@@ -426,13 +418,70 @@ impl TraceService {
         let table_ref = Self::build_table_ref(tenant_slug, dataset_slug, "traces")?;
 
         // Use DataFrame API (prevents SQL injection)
-        let df = self.session_context.table(table_ref).await.map_err(|e| {
+        let mut df = self.session_context.table(table_ref).await.map_err(|e| {
             log::error!(
                 "Failed to access table for tenant_slug={}, dataset_slug={}: {}",
                 tenant_slug,
                 dataset_slug,
                 e
             );
+            QuerierError::QueryFailed(e)
+        })?;
+
+        // Apply time range filters if provided
+        if let Some(start) = query.start {
+            let start_nanos = (start as i64) * 1_000_000_000;
+            df = df
+                .filter(col("start_time_unix_nano").gt_eq(lit(start_nanos)))
+                .map_err(|e| {
+                    log::error!("Failed to apply start time filter: {e}");
+                    QuerierError::QueryFailed(e)
+                })?;
+        }
+        if let Some(end) = query.end {
+            let end_nanos = (end as i64) * 1_000_000_000;
+            df = df
+                .filter(col("start_time_unix_nano").lt_eq(lit(end_nanos)))
+                .map_err(|e| {
+                    log::error!("Failed to apply end time filter: {e}");
+                    QuerierError::QueryFailed(e)
+                })?;
+        }
+
+        // Apply duration filters
+        if let Some(min_dur) = query.min_duration {
+            df = df
+                .filter(col("duration_nanos").gt_eq(lit(min_dur as i64)))
+                .map_err(|e| {
+                    log::error!("Failed to apply min duration filter: {e}");
+                    QuerierError::QueryFailed(e)
+                })?;
+        }
+        if let Some(max_dur) = query.max_duration {
+            df = df
+                .filter(col("duration_nanos").lt_eq(lit(max_dur as i64)))
+                .map_err(|e| {
+                    log::error!("Failed to apply max duration filter: {e}");
+                    QuerierError::QueryFailed(e)
+                })?;
+        }
+
+        // Apply limit — we query for more spans than the requested trace count because
+        // each trace typically contains many spans. This estimate avoids truncating traces.
+        const SPANS_PER_TRACE_ESTIMATE: usize = 50;
+        let raw_limit = query.limit.unwrap_or(20);
+        let limit: usize = usize::try_from(raw_limit).map_err(|_| {
+            QuerierError::InvalidInput(format!(
+                "Invalid limit '{raw_limit}': must be a non-negative integer"
+            ))
+        })?;
+        let span_limit = limit.checked_mul(SPANS_PER_TRACE_ESTIMATE).ok_or_else(|| {
+            QuerierError::InvalidInput(format!(
+                "Limit {limit} * {SPANS_PER_TRACE_ESTIMATE} overflows"
+            ))
+        })?;
+        df = df.limit(0, Some(span_limit)).map_err(|e| {
+            log::error!("Failed to apply limit: {e}");
             QuerierError::QueryFailed(e)
         })?;
 
@@ -447,16 +496,228 @@ impl TraceService {
         })?;
 
         log::info!(
-            "Query returned {} rows for tenant_slug={}, dataset_slug={}",
+            "Query returned {} batches for tenant_slug={}, dataset_slug={}",
             results.len(),
             tenant_slug,
             dataset_slug
         );
 
-        let traces = Vec::new();
+        // Group spans by trace_id
+        let mut traces_map: HashMap<String, HashMap<String, Span>> = HashMap::new();
 
-        // For now, just return empty traces
-        // Full implementation would group spans by trace_id and build trace hierarchy
+        for batch in results {
+            for row_index in 0..batch.num_rows() {
+                let current_trace_id = batch
+                    .column_by_name("trace_id")
+                    .ok_or_else(|| {
+                        QuerierError::InvalidInput("Missing required column 'trace_id'".to_string())
+                    })?
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .ok_or_else(|| {
+                        QuerierError::InvalidInput("Column 'trace_id' has wrong type".to_string())
+                    })?
+                    .value(row_index)
+                    .to_string();
+
+                let span_id = batch
+                    .column_by_name("span_id")
+                    .ok_or_else(|| {
+                        QuerierError::InvalidInput("Missing required column 'span_id'".to_string())
+                    })?
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .ok_or_else(|| {
+                        QuerierError::InvalidInput("Column 'span_id' has wrong type".to_string())
+                    })?
+                    .value(row_index)
+                    .to_string();
+
+                let parent_span_id = batch
+                    .column_by_name("parent_span_id")
+                    .ok_or_else(|| {
+                        QuerierError::InvalidInput(
+                            "Missing required column 'parent_span_id'".to_string(),
+                        )
+                    })?
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .ok_or_else(|| {
+                        QuerierError::InvalidInput(
+                            "Column 'parent_span_id' has wrong type".to_string(),
+                        )
+                    })?
+                    .value(row_index)
+                    .to_string();
+
+                let attributes = batch
+                    .column_by_name("span_attributes")
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                    .and_then(|arr| {
+                        if arr.is_null(row_index) {
+                            None
+                        } else {
+                            serde_json::from_str(arr.value(row_index)).ok()
+                        }
+                    })
+                    .unwrap_or_default();
+
+                let resource = batch
+                    .column_by_name("resource_attributes")
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                    .and_then(|arr| {
+                        if arr.is_null(row_index) {
+                            None
+                        } else {
+                            serde_json::from_str(arr.value(row_index)).ok()
+                        }
+                    })
+                    .unwrap_or_default();
+
+                let span = Span {
+                    span_id: span_id.clone(),
+                    parent_span_id: parent_span_id.clone(),
+                    children: Vec::new(),
+                    trace_id: current_trace_id.clone(),
+                    status: SpanStatus::from_str(
+                        batch
+                            .column_by_name("status_code")
+                            .ok_or_else(|| {
+                                QuerierError::InvalidInput(
+                                    "Missing required column 'status_code'".to_string(),
+                                )
+                            })?
+                            .as_any()
+                            .downcast_ref::<StringArray>()
+                            .ok_or_else(|| {
+                                QuerierError::InvalidInput(
+                                    "Column 'status_code' has wrong type".to_string(),
+                                )
+                            })?
+                            .value(row_index),
+                    )
+                    .unwrap_or(SpanStatus::Unspecified),
+                    is_root: batch
+                        .column_by_name("is_root")
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Missing required column 'is_root'".to_string(),
+                            )
+                        })?
+                        .as_any()
+                        .downcast_ref::<BooleanArray>()
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Column 'is_root' has wrong type".to_string(),
+                            )
+                        })?
+                        .value(row_index),
+                    name: batch
+                        .column_by_name("span_name")
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Missing required column 'span_name'".to_string(),
+                            )
+                        })?
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Column 'span_name' has wrong type".to_string(),
+                            )
+                        })?
+                        .value(row_index)
+                        .to_string(),
+                    service_name: batch
+                        .column_by_name("service_name")
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Missing required column 'service_name'".to_string(),
+                            )
+                        })?
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Column 'service_name' has wrong type".to_string(),
+                            )
+                        })?
+                        .value(row_index)
+                        .to_string(),
+                    span_kind: SpanKind::from_str(
+                        batch
+                            .column_by_name("span_kind")
+                            .ok_or_else(|| {
+                                QuerierError::InvalidInput(
+                                    "Missing required column 'span_kind'".to_string(),
+                                )
+                            })?
+                            .as_any()
+                            .downcast_ref::<StringArray>()
+                            .ok_or_else(|| {
+                                QuerierError::InvalidInput(
+                                    "Column 'span_kind' has wrong type".to_string(),
+                                )
+                            })?
+                            .value(row_index),
+                    )
+                    .unwrap_or(SpanKind::Internal),
+                    start_time_unix_nano: batch
+                        .column_by_name("start_time_unix_nano")
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Missing required column 'start_time_unix_nano'".to_string(),
+                            )
+                        })?
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Column 'start_time_unix_nano' has wrong type".to_string(),
+                            )
+                        })?
+                        .value(row_index) as u64,
+                    duration_nano: batch
+                        .column_by_name("duration_nanos")
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Missing required column 'duration_nanos'".to_string(),
+                            )
+                        })?
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .ok_or_else(|| {
+                            QuerierError::InvalidInput(
+                                "Column 'duration_nanos' has wrong type".to_string(),
+                            )
+                        })?
+                        .value(row_index) as u64,
+                    attributes,
+                    resource,
+                };
+
+                traces_map
+                    .entry(current_trace_id)
+                    .or_default()
+                    .insert(span_id, span);
+            }
+        }
+
+        // Build trace hierarchies, limited to requested count
+        let mut traces = Vec::new();
+        for (trace_id, span_map) in traces_map {
+            if traces.len() >= limit {
+                break;
+            }
+
+            let root_spans = model::span::build_span_hierarchy(span_map);
+
+            traces.push(model::trace::Trace {
+                trace_id,
+                spans: root_spans,
+            });
+        }
+
         Ok(traces)
     }
 }
@@ -466,9 +727,9 @@ impl TraceQuerier for TraceService {
     #[tracing::instrument]
     async fn find_shallow_by_id(
         &self,
-        _params: FindTraceByIdParams,
+        params: FindTraceByIdParams,
     ) -> Result<Option<model::trace::Trace>, QuerierError> {
-        unimplemented!()
+        self.find_by_id(params).await
     }
 
     #[tracing::instrument]
@@ -535,7 +796,6 @@ impl TraceQuerier for TraceService {
 
         // Create a map to store all spans by their span_id for easy lookup
         let mut span_map: HashMap<String, Span> = HashMap::new();
-        let mut root_spans = Vec::new();
         let mut trace_id = String::new();
 
         for batch in results {
@@ -584,6 +844,30 @@ impl TraceQuerier for TraceService {
                     })?
                     .value(row_index)
                     .to_string();
+
+                let attributes = batch
+                    .column_by_name("span_attributes")
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                    .and_then(|arr| {
+                        if arr.is_null(row_index) {
+                            None
+                        } else {
+                            serde_json::from_str(arr.value(row_index)).ok()
+                        }
+                    })
+                    .unwrap_or_default();
+
+                let resource = batch
+                    .column_by_name("resource_attributes")
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                    .and_then(|arr| {
+                        if arr.is_null(row_index) {
+                            None
+                        } else {
+                            serde_json::from_str(arr.value(row_index)).ok()
+                        }
+                    })
+                    .unwrap_or_default();
 
                 let span = Span {
                     span_id: span_id.clone(),
@@ -673,8 +957,8 @@ impl TraceQuerier for TraceService {
                             .value(row_index),
                     )
                     .unwrap_or(SpanKind::Internal),
-                    attributes: HashMap::new(),
-                    resource: HashMap::new(),
+                    attributes,
+                    resource,
                     start_time_unix_nano: batch
                         .column_by_name("start_time_unix_nano")
                         .ok_or_else(|| {
@@ -711,242 +995,21 @@ impl TraceQuerier for TraceService {
             }
         }
 
-        // Collect parent-child relationships first
-        let mut parent_child_pairs = Vec::new();
-        for span in span_map.values() {
-            if span.parent_span_id != "00000000" {
-                parent_child_pairs.push((span.parent_span_id.clone(), span.span_id.clone()));
-            } else {
-                root_spans.push(span.clone());
-            }
-        }
+        let root_spans = model::span::build_span_hierarchy(span_map);
 
-        // Collect child spans first
-        let mut child_spans: HashMap<String, Vec<Span>> = HashMap::new();
-        for (parent_span_id, span_id) in parent_child_pairs {
-            if let Some(child_span) = span_map.get(&span_id) {
-                child_spans
-                    .entry(parent_span_id)
-                    .or_default()
-                    .push(child_span.clone());
-            }
-        }
-
-        // Build the hierarchy by linking child spans to their parents
-        for (parent_span_id, children) in child_spans {
-            if let Some(parent_span) = span_map.get_mut(&parent_span_id) {
-                parent_span.children.extend(children);
-            }
-        }
-
-        // Create the final trace structure
-        let trace = model::trace::Trace {
+        Ok(Some(model::trace::Trace {
             spans: root_spans,
             trace_id,
-        };
-
-        Ok(Some(trace))
+        }))
     }
 
     #[tracing::instrument]
     async fn find_traces(
         &self,
-        _query: SearchQueryParams,
+        query: SearchQueryParams,
     ) -> Result<Vec<model::trace::Trace>, QuerierError> {
-        // Use default tenant and dataset for non-tenant-aware queries
-        let tenant_id = "default";
-        let dataset_id = "default";
-
-        log::info!(
-            "Searching all traces in tenant={}, dataset={}",
-            tenant_id,
-            dataset_id
-        );
-
-        // Build safe table reference with tenant and dataset isolation
-        let table_ref = Self::build_table_ref(tenant_id, dataset_id, "traces")?;
-
-        // Use DataFrame API (prevents SQL injection)
-        let df = self.session_context.table(table_ref).await.map_err(|e| {
-            log::error!(
-                "Failed to access table for tenant={}, dataset={}: {}",
-                tenant_id,
-                dataset_id,
-                e
-            );
-            QuerierError::QueryFailed(e)
-        })?;
-
-        let results = df.collect().await.map_err(|e| {
-            log::error!(
-                "Failed to collect query results for tenant={}, dataset={}: {}",
-                tenant_id,
-                dataset_id,
-                e
-            );
-            QuerierError::QueryFailed(e)
-        })?;
-
-        log::info!(
-            "Query returned {} rows for tenant={}, dataset={}",
-            results.len(),
-            tenant_id,
-            dataset_id
-        );
-
-        let traces = Vec::new();
-
-        for batch in results {
-            for row_index in 0..batch.num_rows() {
-                let trace_id = batch
-                    .column_by_name("trace_id")
-                    .ok_or_else(|| {
-                        QuerierError::InvalidInput("Missing required column 'trace_id'".to_string())
-                    })?
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .ok_or_else(|| {
-                        QuerierError::InvalidInput("Column 'trace_id' has wrong type".to_string())
-                    })?
-                    .value(row_index)
-                    .to_string();
-                let span_id = batch
-                    .column_by_name("span_id")
-                    .ok_or_else(|| {
-                        QuerierError::InvalidInput("Missing required column 'span_id'".to_string())
-                    })?
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .ok_or_else(|| {
-                        QuerierError::InvalidInput("Column 'span_id' has wrong type".to_string())
-                    })?
-                    .value(row_index)
-                    .to_string();
-                let parent_span_id = batch
-                    .column_by_name("parent_span_id")
-                    .ok_or_else(|| {
-                        QuerierError::InvalidInput(
-                            "Missing required column 'parent_span_id'".to_string(),
-                        )
-                    })?
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .ok_or_else(|| {
-                        QuerierError::InvalidInput(
-                            "Column 'parent_span_id' has wrong type".to_string(),
-                        )
-                    })?
-                    .value(row_index)
-                    .to_string();
-
-                let _span = Span {
-                    span_id: span_id.clone(),
-                    parent_span_id: parent_span_id.clone(),
-                    children: Vec::new(),
-                    trace_id: trace_id.clone(),
-                    status: SpanStatus::Unspecified,
-                    is_root: batch
-                        .column_by_name("is_root")
-                        .ok_or_else(|| {
-                            QuerierError::InvalidInput(
-                                "Missing required column 'is_root'".to_string(),
-                            )
-                        })?
-                        .as_any()
-                        .downcast_ref::<BooleanArray>()
-                        .ok_or_else(|| {
-                            QuerierError::InvalidInput(
-                                "Column 'is_root' has wrong type".to_string(),
-                            )
-                        })?
-                        .value(row_index),
-                    name: batch
-                        .column_by_name("span_name")
-                        .ok_or_else(|| {
-                            QuerierError::InvalidInput(
-                                "Missing required column 'span_name'".to_string(),
-                            )
-                        })?
-                        .as_any()
-                        .downcast_ref::<StringArray>()
-                        .ok_or_else(|| {
-                            QuerierError::InvalidInput(
-                                "Column 'span_name' has wrong type".to_string(),
-                            )
-                        })?
-                        .value(row_index)
-                        .to_string(),
-                    service_name: batch
-                        .column_by_name("service_name")
-                        .ok_or_else(|| {
-                            QuerierError::InvalidInput(
-                                "Missing required column 'service_name'".to_string(),
-                            )
-                        })?
-                        .as_any()
-                        .downcast_ref::<StringArray>()
-                        .ok_or_else(|| {
-                            QuerierError::InvalidInput(
-                                "Column 'service_name' has wrong type".to_string(),
-                            )
-                        })?
-                        .value(row_index)
-                        .to_string(),
-                    span_kind: SpanKind::from_str(
-                        batch
-                            .column_by_name("span_kind")
-                            .ok_or_else(|| {
-                                QuerierError::InvalidInput(
-                                    "Missing required column 'span_kind'".to_string(),
-                                )
-                            })?
-                            .as_any()
-                            .downcast_ref::<StringArray>()
-                            .ok_or_else(|| {
-                                QuerierError::InvalidInput(
-                                    "Column 'span_kind' has wrong type".to_string(),
-                                )
-                            })?
-                            .value(row_index),
-                    )
-                    .unwrap_or(SpanKind::Internal),
-                    start_time_unix_nano: batch
-                        .column_by_name("start_time_unix_nano")
-                        .ok_or_else(|| {
-                            QuerierError::InvalidInput(
-                                "Missing required column 'start_time_unix_nano'".to_string(),
-                            )
-                        })?
-                        .as_any()
-                        .downcast_ref::<Int64Array>()
-                        .ok_or_else(|| {
-                            QuerierError::InvalidInput(
-                                "Column 'start_time_unix_nano' has wrong type".to_string(),
-                            )
-                        })?
-                        .value(row_index) as u64,
-                    duration_nano: batch
-                        .column_by_name("duration_nanos")
-                        .ok_or_else(|| {
-                            QuerierError::InvalidInput(
-                                "Missing required column 'duration_nanos'".to_string(),
-                            )
-                        })?
-                        .as_any()
-                        .downcast_ref::<Int64Array>()
-                        .ok_or_else(|| {
-                            QuerierError::InvalidInput(
-                                "Column 'duration_nanos' has wrong type".to_string(),
-                            )
-                        })?
-                        .value(row_index) as u64,
-                    attributes: HashMap::new(),
-                    resource: HashMap::new(),
-                };
-            }
-        }
-
-        Ok(traces)
+        self.find_traces_with_tenant(query, "default", "default")
+            .await
     }
 }
 

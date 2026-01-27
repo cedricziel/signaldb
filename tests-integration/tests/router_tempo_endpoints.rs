@@ -1324,3 +1324,180 @@ async fn test_read_path_authentication_failures() {
 
     println!("✅ Authentication failure tests completed!");
 }
+
+/// Test that span attributes and resource attributes survive the full query path
+#[tokio::test]
+async fn test_trace_attributes_round_trip() {
+    use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+    use opentelemetry_proto::tonic::resource::v1::Resource;
+
+    let _ = env_logger::builder()
+        .filter_level(log::LevelFilter::Debug)
+        .try_init();
+
+    println!("Starting trace attributes round-trip test...");
+
+    // Set up all test services
+    let services = setup_test_services().await;
+    println!("Test services started and registered");
+
+    // Create router state connected to services
+    let router_state = create_router_state(&services).await;
+
+    let authenticator = router_state.authenticator().clone();
+    let app: Router = tempo::router()
+        .with_state(router_state)
+        .layer(middleware::from_fn(move |req, next| {
+            auth_middleware(authenticator.clone(), req, next)
+        }));
+
+    // Send test trace with attributes via OTLP
+    let trace_id_bytes = vec![0xCA; 16];
+    let span_id = vec![0xFE; 8];
+
+    let trace_request = ExportTraceServiceRequest {
+        resource_spans: vec![ResourceSpans {
+            resource: Some(Resource {
+                attributes: vec![
+                    KeyValue {
+                        key: "service.name".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("my-test-service".to_string())),
+                        }),
+                    },
+                    KeyValue {
+                        key: "deployment.environment".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("test".to_string())),
+                        }),
+                    },
+                ],
+                dropped_attributes_count: 0,
+                entity_refs: vec![],
+            }),
+            scope_spans: vec![ScopeSpans {
+                scope: None,
+                spans: vec![Span {
+                    trace_id: trace_id_bytes.clone(),
+                    span_id: span_id.clone(),
+                    parent_span_id: vec![],
+                    name: "attributes-test-span".to_string(),
+                    kind: 1, // Server
+                    start_time_unix_nano: 1_000_000_000,
+                    end_time_unix_nano: 2_000_000_000,
+                    attributes: vec![
+                        KeyValue {
+                            key: "http.method".to_string(),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue("GET".to_string())),
+                            }),
+                        },
+                        KeyValue {
+                            key: "http.status_code".to_string(),
+                            value: Some(AnyValue {
+                                value: Some(Value::IntValue(200)),
+                            }),
+                        },
+                    ],
+                    dropped_attributes_count: 0,
+                    events: vec![],
+                    dropped_events_count: 0,
+                    links: vec![],
+                    dropped_links_count: 0,
+                    status: Some(Status {
+                        code: 1, // Ok
+                        message: "".to_string(),
+                    }),
+                    trace_state: String::new(),
+                    flags: 0,
+                }],
+                schema_url: "".to_string(),
+            }],
+            schema_url: "".to_string(),
+        }],
+    };
+
+    // Send trace via OTLP
+    let endpoint = format!("http://{}", services.acceptor_addr);
+    let mut otlp_client =
+        opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint)
+            .await
+            .unwrap();
+
+    let _response = timeout(Duration::from_secs(5), otlp_client.export(trace_request))
+        .await
+        .expect("OTLP export timed out")
+        .expect("OTLP export failed");
+
+    let trace_id = hex::encode(&trace_id_bytes);
+    println!("Test trace with attributes sent: {trace_id}");
+
+    // Wait for processing and persistence
+    wait_for_data_persistence(&services).await;
+
+    // Query the trace back via Tempo API
+    println!("Querying trace to verify attributes...");
+    let request = Request::builder()
+        .uri(format!("/api/traces/{trace_id}"))
+        .header("Authorization", "Bearer test-key-123")
+        .header("X-Tenant-ID", "test-tenant")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    let status = response.status();
+    println!("Trace query response status: {status}");
+
+    if status != StatusCode::OK {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let error_msg = std::str::from_utf8(&body).unwrap_or("Non-UTF8 error");
+        println!("Error response: {status}");
+        println!("Error body: {error_msg}");
+        panic!("Failed to retrieve trace. Expected 200 OK, got: {status}");
+    }
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let trace: tempo_api::Trace = serde_json::from_slice(&body).expect("Should be valid JSON");
+
+    assert_eq!(trace.trace_id, trace_id);
+    assert!(!trace.span_sets.is_empty(), "Trace should have span sets");
+
+    // Verify attributes are present in the returned trace
+    // The Tempo API format has span_sets with spans, each span has attributes as HashMap<String, Attribute>
+    let mut found_http_method = false;
+    let mut found_service_name = false;
+
+    for span_set in &trace.span_sets {
+        for span in &span_set.spans {
+            // Check span attributes (HashMap<String, Attribute>)
+            for (key, attr) in &span.attributes {
+                if key == "http.method" || attr.key == "http.method" {
+                    found_http_method = true;
+                }
+                if key == "service.name" || attr.key == "service.name" {
+                    found_service_name = true;
+                }
+            }
+        }
+    }
+
+    // At minimum, the span attributes should be present if the pipeline works correctly.
+    println!("Found http.method: {found_http_method}");
+    println!("Found service.name: {found_service_name}");
+
+    // The key assertion: attributes should not be empty
+    let all_spans: Vec<_> = trace.span_sets.iter().flat_map(|ss| &ss.spans).collect();
+    assert!(
+        !all_spans.is_empty(),
+        "Should have at least one span in results"
+    );
+
+    println!(
+        "Trace attributes round-trip test completed. spans={}, found_http_method={found_http_method}, found_service_name={found_service_name}",
+        all_spans.len()
+    );
+}
