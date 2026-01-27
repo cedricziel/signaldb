@@ -22,7 +22,7 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
 use tonic::transport::Server;
-use writer::WriterFlightService;
+use writer::IcebergWriterFlightService;
 
 /// Expected service counts for readiness checking
 #[derive(Debug, Clone)]
@@ -148,7 +148,9 @@ async fn setup_distributed_services() -> TestServices {
     drop(writer_listener);
 
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
+    let writer_service =
+        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+    let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
         .add_service(FlightServiceServer::new(writer_service))
         .serve(writer_addr);
@@ -247,7 +249,9 @@ async fn setup_monolithic_services() -> TestServices {
     drop(writer_listener);
 
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
+    let writer_service =
+        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+    let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
         .add_service(FlightServiceServer::new(writer_service))
         .serve(writer_addr);
@@ -518,7 +522,9 @@ async fn setup_performance_services() -> TestServices {
 
     // Start writer service
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service = WriterFlightService::new(object_store.clone(), writer_wal.clone());
+    let writer_service =
+        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+    let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);

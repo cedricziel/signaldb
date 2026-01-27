@@ -91,7 +91,7 @@ All data-intensive communication between components uses Flight.
 Each component implements a Flight service:
 
 - **AcceptorFlightService**: Not exposed externally; forwards data to Writer via Flight client
-- **WriterFlightService**: Receives data from Acceptor and writes to storage
+- **IcebergWriterFlightService**: Receives data from Acceptor and writes to Iceberg tables
 - **QuerierFlightService**: Executes queries against storage and returns results
 - **RouterFlightService**: Exposes HTTP API and forwards requests to Querier via Flight
 

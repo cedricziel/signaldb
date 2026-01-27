@@ -7,7 +7,7 @@ use datafusion::arrow::array::{Int64Array, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
 use iceberg_rust::catalog::identifier::Identifier;
-use object_store::{ObjectStore, memory::InMemory};
+use object_store::memory::InMemory;
 use std::sync::Arc;
 use tempfile::tempdir;
 use writer::{IcebergWriterFlightService, WalProcessor, create_iceberg_writer};
@@ -114,37 +114,6 @@ async fn test_iceberg_flight_service_integration() -> Result<()> {
     // Verify service was created successfully
     // Note: Full Flight service testing would require actual gRPC integration,
     // which is beyond the scope of this integration test
-
-    Ok(())
-}
-
-/// Test that demonstrates the transition path from Parquet to Iceberg
-#[tokio::test]
-async fn test_parquet_to_iceberg_transition() -> Result<()> {
-    use writer::write_batch_to_object_store;
-
-    // Setup test environment
-    let object_store = Arc::new(InMemory::new());
-
-    // Create a test record batch
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "value",
-        DataType::Int64,
-        false,
-    )]));
-
-    let batch = RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1, 2, 3]))])?;
-
-    // Test that we can still write using the legacy Parquet method
-    write_batch_to_object_store(object_store.clone(), "test.parquet", batch.clone()).await?;
-
-    // Verify the file was written
-    let path = object_store::path::Path::from("test.parquet");
-    let metadata = object_store.head(&path).await?;
-    assert!(metadata.size > 0);
-
-    // In the future, this would be replaced with Iceberg table writes
-    // For now, we demonstrate that both approaches can coexist during transition
 
     Ok(())
 }

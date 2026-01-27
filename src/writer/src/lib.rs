@@ -1,14 +1,11 @@
 pub mod storage;
 pub use storage::{
     BatchOptimizationConfig, IcebergTableWriter, RetryConfig, create_iceberg_writer,
-    create_iceberg_writer_with_pool, write_batch_to_object_store,
+    create_iceberg_writer_with_pool,
 };
 
 pub mod processor;
 pub use processor::{ProcessorStats, WalProcessor};
-
-pub mod flight;
-pub use flight::WriterFlightService;
 
 pub mod flight_iceberg;
 pub use flight_iceberg::IcebergWriterFlightService;
