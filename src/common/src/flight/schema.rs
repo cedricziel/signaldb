@@ -79,6 +79,13 @@ impl FlightSchemas {
                 ))),
                 true,
             ),
+            // Scope and resource metadata
+            Field::new("trace_state", DataType::Utf8, true),
+            Field::new("resource_schema_url", DataType::Utf8, true),
+            Field::new("scope_name", DataType::Utf8, true),
+            Field::new("scope_version", DataType::Utf8, true),
+            Field::new("scope_schema_url", DataType::Utf8, true),
+            Field::new("scope_attributes", DataType::Utf8, true),
         ];
 
         Schema::new(Fields::from(fields))
@@ -179,6 +186,12 @@ mod tests {
         assert!(trace_schema.field_with_name("resource_json").is_ok());
         assert!(trace_schema.field_with_name("events").is_ok());
         assert!(trace_schema.field_with_name("links").is_ok());
+        assert!(trace_schema.field_with_name("trace_state").is_ok());
+        assert!(trace_schema.field_with_name("resource_schema_url").is_ok());
+        assert!(trace_schema.field_with_name("scope_name").is_ok());
+        assert!(trace_schema.field_with_name("scope_version").is_ok());
+        assert!(trace_schema.field_with_name("scope_schema_url").is_ok());
+        assert!(trace_schema.field_with_name("scope_attributes").is_ok());
 
         // Verify log schema
         let log_schema = schemas.log_schema;

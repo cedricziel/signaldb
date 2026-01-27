@@ -465,10 +465,13 @@ impl IcebergTableWriter {
             .map(|f| f.name().clone())
             .collect();
 
-        // v1 schema has 16 columns and contains "name" field (which becomes "span_name" in v2)
-        // v2 schema has 25 columns and contains "span_name" field
-        let is_v1_schema = num_columns == 16 && field_names.contains(&"name".to_string());
-        let is_v2_schema = num_columns == 25 && field_names.contains(&"span_name".to_string());
+        // Detect schema version by field names rather than column count for robustness.
+        // v1 schema uses "name" (renamed to "span_name" in v2) and lacks "timestamp" computed field.
+        // v2 schema uses "span_name" and has computed fields like "timestamp", "date_day", "hour".
+        let has_v1_name_field = field_names.contains(&"name".to_string());
+        let has_v2_span_name_field = field_names.contains(&"span_name".to_string());
+        let is_v1_schema = has_v1_name_field && !has_v2_span_name_field;
+        let is_v2_schema = has_v2_span_name_field;
 
         if is_v1_schema {
             log::debug!("Detected v1 schema batch, applying v1->v2 transformation");
