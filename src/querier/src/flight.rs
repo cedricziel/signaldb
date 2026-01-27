@@ -179,7 +179,7 @@ impl QuerierFlightService {
         &self,
         trace: &common::model::trace::Trace,
     ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error + Send + Sync>> {
-        use datafusion::arrow::array::{BooleanArray, Int64Array, StringArray};
+        use datafusion::arrow::array::{BooleanArray, StringArray, UInt64Array};
 
         // Create schema matching the span batch schema
         let schema = create_span_batch_schema();
@@ -201,29 +201,29 @@ impl QuerierFlightService {
             return Ok(vec![]);
         }
 
-        // Build arrays for each column
+        // Build arrays for each column (order must match create_span_batch_schema)
         let mut trace_ids = Vec::new();
         let mut span_ids = Vec::new();
         let mut parent_span_ids = Vec::new();
+        let mut statuses = Vec::new();
+        let mut is_roots = Vec::new();
         let mut names = Vec::new();
         let mut service_names = Vec::new();
         let mut span_kinds = Vec::new();
         let mut start_times = Vec::new();
         let mut duration_nanos = Vec::new();
-        let mut statuses = Vec::new();
-        let mut is_roots = Vec::new();
 
         for span in &all_spans {
             trace_ids.push(span.trace_id.clone());
             span_ids.push(span.span_id.clone());
             parent_span_ids.push(span.parent_span_id.clone());
+            statuses.push(format!("{:?}", span.status));
+            is_roots.push(span.is_root);
             names.push(span.name.clone());
             service_names.push(span.service_name.clone());
             span_kinds.push(format!("{:?}", span.span_kind));
-            start_times.push(span.start_time_unix_nano as i64);
-            duration_nanos.push(span.duration_nano as i64);
-            statuses.push(format!("{:?}", span.status));
-            is_roots.push(span.is_root);
+            start_times.push(span.start_time_unix_nano);
+            duration_nanos.push(span.duration_nano);
         }
 
         let batch = RecordBatch::try_new(
@@ -232,13 +232,13 @@ impl QuerierFlightService {
                 Arc::new(StringArray::from(trace_ids)),
                 Arc::new(StringArray::from(span_ids)),
                 Arc::new(StringArray::from(parent_span_ids)),
+                Arc::new(StringArray::from(statuses)),
+                Arc::new(BooleanArray::from(is_roots)),
                 Arc::new(StringArray::from(names)),
                 Arc::new(StringArray::from(service_names)),
                 Arc::new(StringArray::from(span_kinds)),
-                Arc::new(Int64Array::from(start_times)),
-                Arc::new(Int64Array::from(duration_nanos)),
-                Arc::new(StringArray::from(statuses)),
-                Arc::new(BooleanArray::from(is_roots)),
+                Arc::new(UInt64Array::from(start_times)),
+                Arc::new(UInt64Array::from(duration_nanos)),
             ],
         )?;
 

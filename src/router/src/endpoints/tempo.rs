@@ -1,5 +1,5 @@
 use crate::RouterState;
-use arrow_flight::{FlightData, Ticket};
+use arrow_flight::{FlightData, Ticket, utils::flight_data_to_batches};
 use axum::{
     Router,
     extract::{Path, Query, State},
@@ -63,16 +63,8 @@ fn flight_data_to_tempo_trace(
         return Ok(None);
     }
 
-    // Convert FlightData to RecordBatches
-    let mut cursor = std::io::Cursor::new(Vec::new());
-    for data in &flight_data {
-        cursor.write_all(&data.data_body)?;
-    }
-    cursor.set_position(0);
-
-    let reader = StreamReader::try_new(cursor, None)?;
-    let batches: Result<Vec<RecordBatch>, _> = reader.collect();
-    let batches = batches?;
+    // Convert FlightData to RecordBatches using Arrow Flight utilities
+    let batches = flight_data_to_batches(&flight_data)?;
 
     if batches.is_empty() {
         return Ok(None);
