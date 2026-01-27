@@ -599,17 +599,9 @@ pub async fn query_single_trace<S: RouterState>(
         }
     }
 
-    // Return empty trace if no data found
-    let trace = tempo_api::Trace {
-        trace_id,
-        root_service_name: "unknown".to_string(),
-        root_trace_name: "unknown".to_string(),
-        start_time_unix_nano: "0".to_string(),
-        duration_ms: 0u64,
-        span_sets: vec![],
-    };
-
-    Ok(axum::Json(trace))
+    // Return 404 when no trace data is found
+    log::info!("Trace {trace_id} not found");
+    Err(axum::http::StatusCode::NOT_FOUND)
 }
 
 /// GET https://grafana.com/docs/tempo/latest/api_docs/#search

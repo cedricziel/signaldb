@@ -102,7 +102,9 @@ impl LogHandler {
         // Add schema version metadata (v1 for OTLP conversion)
         let metadata = serde_json::json!({
             "schema_version": "v1",
-            "signal_type": "logs"
+            "signal_type": "logs",
+            "tenant_id": tenant_context.tenant_id,
+            "dataset_id": tenant_context.dataset_id,
         });
 
         // Step 1: Write to WAL first for durability

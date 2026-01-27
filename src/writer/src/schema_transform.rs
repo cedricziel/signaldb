@@ -18,6 +18,8 @@ pub struct FlightMetadata {
     pub schema_version: String,
     pub signal_type: Option<String>,
     pub target_table: Option<String>,
+    pub tenant_id: Option<String>,
+    pub dataset_id: Option<String>,
 }
 
 /// Extract schema version from Flight metadata
@@ -60,10 +62,22 @@ pub fn extract_flight_metadata(metadata: &[u8]) -> Result<FlightMetadata> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    let tenant_id = metadata_json
+        .get("tenant_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let dataset_id = metadata_json
+        .get("dataset_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     Ok(FlightMetadata {
         schema_version,
         signal_type,
         target_table,
+        tenant_id,
+        dataset_id,
     })
 }
 

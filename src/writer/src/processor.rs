@@ -65,8 +65,7 @@ impl WalProcessor {
                 continue;
             }
 
-            let (tenant_id, table_name) = self.determine_target_table(&entry)?;
-            let dataset_id = entry.dataset_id.clone();
+            let (tenant_id, dataset_id, table_name) = self.determine_target_table(&entry)?;
             let batch = self.deserialize_entry_data(&entry).await?;
 
             grouped_entries
@@ -142,11 +141,27 @@ impl WalProcessor {
         Ok(entry_ids)
     }
 
-    /// Determine which tenant and table an entry should go to
-    /// Extracts tenant_id and dataset_id from the WalEntry and maps operation type to table name
+    /// Determine which tenant, dataset, and table an entry should go to
+    /// Extracts tenant_id and dataset_id from the WalEntry, but prefers metadata-provided
+    /// values (from Flight metadata) when available for proper tenant isolation.
     /// For metrics, uses target_table from metadata if available, enabling routing to
     /// metrics_exponential_histogram, metrics_summary, etc.
-    fn determine_target_table(&self, entry: &WalEntry) -> Result<(String, String)> {
+    fn determine_target_table(&self, entry: &WalEntry) -> Result<(String, String, String)> {
+        let mut tenant_id = entry.tenant_id.clone();
+        let mut dataset_id = entry.dataset_id.clone();
+
+        // Override with metadata-provided tenant/dataset (from Flight metadata)
+        if let Some(ref metadata_str) = entry.metadata
+            && let Ok(metadata) = serde_json::from_str::<serde_json::Value>(metadata_str)
+        {
+            if let Some(tid) = metadata.get("tenant_id").and_then(|v| v.as_str()) {
+                tenant_id = tid.to_string();
+            }
+            if let Some(did) = metadata.get("dataset_id").and_then(|v| v.as_str()) {
+                dataset_id = did.to_string();
+            }
+        }
+
         // Map operation types to appropriate table
         let table_name = match entry.operation {
             common::wal::WalOperation::WriteTraces => "traces".to_string(),
@@ -189,8 +204,7 @@ impl WalProcessor {
             }
         };
 
-        // Extract tenant_id from the entry (already stored during WAL creation)
-        Ok((entry.tenant_id.clone(), table_name))
+        Ok((tenant_id, dataset_id, table_name))
     }
 
     /// Deserialize WAL entry data back to RecordBatch
@@ -219,8 +233,7 @@ impl WalProcessor {
             return Ok(());
         }
 
-        let (tenant_id, table_name) = self.determine_target_table(&entry)?;
-        let dataset_id = entry.dataset_id.clone();
+        let (tenant_id, dataset_id, table_name) = self.determine_target_table(&entry)?;
         let batch = self.deserialize_entry_data(&entry).await?;
 
         match self
@@ -342,8 +355,9 @@ mod tests {
             metadata: None,
         };
 
-        let (tenant, table) = processor.determine_target_table(&entry).unwrap();
+        let (tenant, dataset, table) = processor.determine_target_table(&entry).unwrap();
         assert_eq!(tenant, "acme");
+        assert_eq!(dataset, "production");
         assert_eq!(table, "traces");
 
         let entry = WalEntry {
@@ -361,8 +375,9 @@ mod tests {
             metadata: None,
         };
 
-        let (tenant, table) = processor.determine_target_table(&entry).unwrap();
+        let (tenant, dataset, table) = processor.determine_target_table(&entry).unwrap();
         assert_eq!(tenant, "globex");
+        assert_eq!(dataset, "staging");
         assert_eq!(table, "logs");
     }
 
