@@ -5981,6 +5981,7 @@ dependencies = [
  "acceptor",
  "anyhow",
  "arrow-flight",
+ "axum 0.8.8",
  "cargo-husky",
  "clap",
  "common",

@@ -73,7 +73,7 @@ impl RouterState for InMemoryStateImpl {
 }
 
 /// Create a new router instance with all routes configured
-pub fn create_router<S: RouterState>(state: S) -> Router<S> {
+pub fn create_router<S: RouterState>(state: S) -> Router {
     // Create auth middleware layer
     let authenticator = state.authenticator().clone();
     let auth_layer =

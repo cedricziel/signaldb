@@ -88,9 +88,10 @@ async fn main() -> Result<()> {
     let (_otlp_http_shutdown_tx, otlp_http_shutdown_rx) = oneshot::channel::<()>();
     let (otlp_http_stopped_tx, _otlp_http_stopped_rx) = oneshot::channel::<()>();
 
-    // Shutdown channels for Flight services
+    // Shutdown channels for Flight services and HTTP router
     let (router_flight_shutdown_tx, router_flight_shutdown_rx) = oneshot::channel::<()>();
     let (writer_flight_shutdown_tx, writer_flight_shutdown_rx) = oneshot::channel::<()>();
+    let (http_router_shutdown_tx, http_router_shutdown_rx) = oneshot::channel::<()>();
 
     // Initialize Writer components
     let object_store = common::storage::create_object_store(&config.storage)
@@ -143,17 +144,20 @@ async fn main() -> Result<()> {
     });
 
     // Start HTTP router
-    let _app = create_router(state.clone());
+    let app = create_router(state.clone());
     let http_router_addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     let http_router_handle = tokio::spawn(async move {
         log::info!("Starting HTTP router on {http_router_addr}");
-
-        // For now, we'll skip starting the HTTP server due to compatibility issues with axum 0.7.9
-        // This will be fixed in a future update
-        log::warn!("HTTP router is disabled due to compatibility issues with axum 0.7.9");
-
-        // To enable the HTTP router, you would need to update the axum dependency to a version
-        // that supports the current usage pattern
+        let listener = tokio::net::TcpListener::bind(http_router_addr)
+            .await
+            .expect("Failed to bind HTTP router");
+        axum::serve(listener, app.into_make_service())
+            .with_graceful_shutdown(async {
+                http_router_shutdown_rx.await.ok();
+                log::info!("HTTP router shutting down gracefully");
+            })
+            .await
+            .expect("HTTP router error");
     });
 
     // Start Router Flight service
@@ -220,7 +224,8 @@ async fn main() -> Result<()> {
         log::error!("Failed to shutdown router service bootstrap: {e}");
     }
 
-    // Signal Flight servers to shutdown gracefully
+    // Signal servers to shutdown gracefully
+    let _ = http_router_shutdown_tx.send(());
     let _ = router_flight_shutdown_tx.send(());
     let _ = writer_flight_shutdown_tx.send(());
 
