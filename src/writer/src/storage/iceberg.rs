@@ -1,4 +1,3 @@
-use crate::catalog::{CatalogPoolConfig, create_sql_catalog_with_pool};
 use crate::schema_transform::transform_trace_v1_to_v2;
 use anyhow::Result;
 use common::config::Configuration;
@@ -121,18 +120,8 @@ pub struct IcebergTableWriter {
     pending_operations: Vec<PendingOperation>,
     /// Retry configuration for failed operations
     retry_config: RetryConfig,
-    /// Connection pool configuration for catalog operations
-    pool_config: CatalogPoolConfig,
     /// Batch optimization configuration for performance tuning
     batch_config: BatchOptimizationConfig,
-    /// Cached catalog for optimized operations
-    cached_catalog: Option<(Arc<dyn IcebergRustCatalog>, Instant)>,
-    /// Catalog configuration from the system config
-    catalog_uri: String,
-    /// Catalog name for iceberg-rust operations
-    catalog_name: String,
-    /// Catalog type (sql or memory)
-    catalog_type: String,
 }
 
 impl IcebergTableWriter {
@@ -143,26 +132,6 @@ impl IcebergTableWriter {
         tenant_id: String,
         dataset_id: String,
         table_name: String,
-    ) -> Result<Self> {
-        Self::new_with_pool_config(
-            config,
-            object_store,
-            tenant_id,
-            dataset_id,
-            table_name,
-            None,
-        )
-        .await
-    }
-
-    /// Create a new IcebergTableWriter with custom connection pool configuration
-    pub async fn new_with_pool_config(
-        config: &Configuration,
-        object_store: Arc<dyn ObjectStore>,
-        tenant_id: String,
-        dataset_id: String,
-        table_name: String,
-        pool_config: Option<CatalogPoolConfig>,
     ) -> Result<Self> {
         let catalog = create_catalog_with_config(config).await?;
 
@@ -314,64 +283,8 @@ impl IcebergTableWriter {
             transaction_state: TransactionState::None,
             pending_operations: Vec::new(),
             retry_config: RetryConfig::default(),
-            pool_config: pool_config.unwrap_or_default(),
             batch_config: BatchOptimizationConfig::default(),
-            cached_catalog: None,
-            catalog_uri: config.schema.catalog_uri.clone(),
-            catalog_name: "signaldb".to_string(), // Use consistent catalog name
-            catalog_type: config.schema.catalog_type.clone(),
         })
-    }
-
-    /// Get or create a cached catalog for optimized operations
-    #[allow(dead_code)] // Reserved for future catalog optimization usage
-    async fn get_cached_catalog(
-        &mut self,
-        pool_config: &CatalogPoolConfig,
-    ) -> Result<Arc<dyn IcebergRustCatalog>> {
-        // Only create SQL catalog for SQL catalog types
-        if self.catalog_type != "sql" {
-            return Err(anyhow::anyhow!(
-                "Cached catalog operations not supported for catalog type: {}",
-                self.catalog_type
-            ));
-        }
-
-        if !self.batch_config.enable_catalog_caching {
-            // Caching disabled, create new catalog
-            return create_sql_catalog_with_pool(
-                &self.catalog_uri,
-                &self.catalog_name,
-                Some(pool_config.clone()),
-            )
-            .await;
-        }
-
-        // Check if cached catalog is still valid
-        if let Some((cached_catalog, timestamp)) = &self.cached_catalog {
-            let cache_age = timestamp.elapsed().as_secs();
-            if cache_age < self.batch_config.catalog_cache_ttl_seconds {
-                log::debug!("Using cached catalog (age: {cache_age}s)");
-                return Ok(cached_catalog.clone());
-            } else {
-                log::debug!("Cached catalog expired (age: {cache_age}s), creating new one");
-            }
-        }
-
-        // Create new catalog and cache it
-        log::debug!(
-            "Creating new catalog and caching for {} seconds",
-            self.batch_config.catalog_cache_ttl_seconds
-        );
-        let catalog = create_sql_catalog_with_pool(
-            &self.catalog_uri,
-            &self.catalog_name,
-            Some(pool_config.clone()),
-        )
-        .await?;
-
-        self.cached_catalog = Some((catalog.clone(), Instant::now()));
-        Ok(catalog)
     }
 
     /// Split a large batch into smaller optimized batches based on configuration
@@ -1156,45 +1069,14 @@ impl IcebergTableWriter {
         &self.retry_config
     }
 
-    /// Update connection pool configuration
-    pub fn set_pool_config(&mut self, pool_config: CatalogPoolConfig) {
-        self.pool_config = pool_config;
-    }
-
-    /// Get current connection pool configuration
-    pub fn pool_config(&self) -> &CatalogPoolConfig {
-        &self.pool_config
-    }
-
     /// Update batch optimization configuration
     pub fn set_batch_config(&mut self, batch_config: BatchOptimizationConfig) {
-        // Clear cached catalog if caching settings changed
-        if !batch_config.enable_catalog_caching {
-            self.cached_catalog = None;
-        }
         self.batch_config = batch_config;
     }
 
     /// Get current batch optimization configuration
     pub fn batch_config(&self) -> &BatchOptimizationConfig {
         &self.batch_config
-    }
-
-    /// Get statistics about cached catalog
-    pub fn catalog_cache_info(&self) -> Option<(u64, bool)> {
-        self.cached_catalog.as_ref().map(|(_, timestamp)| {
-            let age_seconds = timestamp.elapsed().as_secs();
-            let is_expired = age_seconds >= self.batch_config.catalog_cache_ttl_seconds;
-            (age_seconds, is_expired)
-        })
-    }
-
-    /// Clear the cached catalog (forces recreation on next use)
-    pub fn clear_catalog_cache(&mut self) {
-        if self.cached_catalog.is_some() {
-            log::debug!("Manually clearing cached catalog");
-            self.cached_catalog = None;
-        }
     }
 }
 
@@ -1212,26 +1094,6 @@ pub async fn create_iceberg_writer(
         tenant_id.into(),
         dataset_id.into(),
         table_name.into(),
-    )
-    .await
-}
-
-/// Factory function to create IcebergTableWriter instances with custom pool configuration
-pub async fn create_iceberg_writer_with_pool(
-    config: &Configuration,
-    object_store: Arc<dyn ObjectStore>,
-    tenant_id: impl Into<String>,
-    dataset_id: impl Into<String>,
-    table_name: impl Into<String>,
-    pool_config: CatalogPoolConfig,
-) -> Result<IcebergTableWriter> {
-    IcebergTableWriter::new_with_pool_config(
-        config,
-        object_store,
-        tenant_id.into(),
-        dataset_id.into(),
-        table_name.into(),
-        Some(pool_config),
     )
     .await
 }

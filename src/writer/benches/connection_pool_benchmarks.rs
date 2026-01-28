@@ -8,7 +8,7 @@ use object_store::memory::InMemory;
 use std::hint::black_box;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use writer::{CatalogPoolConfig, create_iceberg_writer, create_iceberg_writer_with_pool};
+use writer::create_iceberg_writer;
 
 /// Create test configuration for benchmarking
 fn create_benchmark_config() -> Configuration {
@@ -107,12 +107,12 @@ fn create_benchmark_data(num_rows: usize) -> RecordBatch {
     .expect("Failed to create benchmark data")
 }
 
-/// Benchmark writer creation without connection pooling
-fn bench_writer_creation_no_pool(c: &mut Criterion) {
+/// Benchmark writer creation
+fn bench_writer_creation(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let config = create_benchmark_config();
 
-    c.bench_function("writer_creation_no_pool", |b| {
+    c.bench_function("writer_creation", |b| {
         b.to_async(&rt).iter(|| async {
             let object_store = Arc::new(InMemory::new());
             black_box(
@@ -130,48 +130,6 @@ fn bench_writer_creation_no_pool(c: &mut Criterion) {
     });
 }
 
-/// Benchmark writer creation with connection pooling
-fn bench_writer_creation_with_pool(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
-    let config = create_benchmark_config();
-
-    let mut group = c.benchmark_group("writer_creation_with_pool");
-
-    // Test different pool configurations
-    for &max_connections in &[5, 10, 20] {
-        let pool_config = CatalogPoolConfig {
-            min_connections: 2,
-            max_connections,
-            connection_timeout_ms: 1000,
-            idle_timeout_seconds: 60,
-            max_lifetime_seconds: 300,
-        };
-
-        group.bench_with_input(
-            BenchmarkId::from_parameter(format!("max_conn_{max_connections}")),
-            &max_connections,
-            |b, &_max_connections| {
-                b.to_async(&rt).iter(|| async {
-                    let object_store = Arc::new(InMemory::new());
-                    black_box(
-                        create_iceberg_writer_with_pool(
-                            &config,
-                            object_store,
-                            &format!("tenant_{}", rand::random::<u32>()),
-                            "bench_dataset",
-                            "metrics_gauge",
-                            pool_config.clone(),
-                        )
-                        .await
-                        .expect("Failed to create writer"),
-                    );
-                });
-            },
-        );
-    }
-    group.finish();
-}
-
 /// Benchmark concurrent writer creation performance
 fn bench_concurrent_writer_creation(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
@@ -179,11 +137,9 @@ fn bench_concurrent_writer_creation(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("concurrent_writer_creation");
 
-    // Compare no pool vs pooled for concurrent creation
     for &num_writers in &[2, 4, 8] {
-        // No pool
         group.bench_with_input(
-            BenchmarkId::new("no_pool", num_writers),
+            BenchmarkId::from_parameter(num_writers),
             &num_writers,
             |b, &num_writers| {
                 b.to_async(&rt).iter(|| async {
@@ -204,48 +160,6 @@ fn bench_concurrent_writer_creation(c: &mut Criterion) {
                         handles.push(handle);
                     }
 
-                    // Wait for all to complete
-                    for handle in handles {
-                        let _ = black_box(handle.await.expect("Task failed"));
-                    }
-                });
-            },
-        );
-
-        // With pool
-        let pool_config = CatalogPoolConfig {
-            min_connections: 2,
-            max_connections: 10,
-            connection_timeout_ms: 1000,
-            idle_timeout_seconds: 60,
-            max_lifetime_seconds: 300,
-        };
-
-        group.bench_with_input(
-            BenchmarkId::new("with_pool", num_writers),
-            &num_writers,
-            |b, &num_writers| {
-                b.to_async(&rt).iter(|| async {
-                    let mut handles = Vec::new();
-                    for i in 0..num_writers {
-                        let config = config.clone();
-                        let pool_config = pool_config.clone();
-                        let handle = tokio::spawn(async move {
-                            let object_store = Arc::new(InMemory::new());
-                            create_iceberg_writer_with_pool(
-                                &config,
-                                object_store,
-                                &format!("tenant_{}_{}", i, rand::random::<u32>()),
-                                "bench_dataset",
-                                "metrics_gauge",
-                                pool_config,
-                            )
-                            .await
-                        });
-                        handles.push(handle);
-                    }
-
-                    // Wait for all to complete
                     for handle in handles {
                         let _ = black_box(handle.await.expect("Task failed"));
                     }
@@ -256,16 +170,13 @@ fn bench_concurrent_writer_creation(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark write operations with pooled vs non-pooled writers
-fn bench_write_performance_comparison(c: &mut Criterion) {
+/// Benchmark write performance
+fn bench_write_performance(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let config = create_benchmark_config();
     let batch = create_benchmark_data(1000);
 
-    let mut group = c.benchmark_group("write_performance_comparison");
-
-    // No pool write
-    group.bench_function("write_no_pool", |b| {
+    c.bench_function("write_batch", |b| {
         b.to_async(&rt).iter(|| async {
             let object_store = Arc::new(InMemory::new());
             let mut writer = create_iceberg_writer(
@@ -283,44 +194,12 @@ fn bench_write_performance_comparison(c: &mut Criterion) {
             black_box(());
         });
     });
-
-    // With pool write
-    group.bench_function("write_with_pool", |b| {
-        b.to_async(&rt).iter(|| async {
-            let object_store = Arc::new(InMemory::new());
-            let pool_config = CatalogPoolConfig {
-                min_connections: 2,
-                max_connections: 10,
-                connection_timeout_ms: 1000,
-                idle_timeout_seconds: 60,
-                max_lifetime_seconds: 300,
-            };
-
-            let mut writer = create_iceberg_writer_with_pool(
-                &config,
-                object_store,
-                &format!("tenant_{}", rand::random::<u32>()),
-                "bench_dataset",
-                "metrics_gauge",
-                pool_config,
-            )
-            .await
-            .expect("Failed to create writer");
-
-            let batch_clone = batch.clone();
-            writer.write_batch(batch_clone).await.expect("Write failed");
-            black_box(());
-        });
-    });
-
-    group.finish();
 }
 
 criterion_group!(
     benches,
-    bench_writer_creation_no_pool,
-    bench_writer_creation_with_pool,
+    bench_writer_creation,
     bench_concurrent_writer_creation,
-    bench_write_performance_comparison
+    bench_write_performance
 );
 criterion_main!(benches);

@@ -5,7 +5,7 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use object_store::memory::InMemory;
 use std::sync::Arc;
-use writer::{BatchOptimizationConfig, CatalogPoolConfig, create_iceberg_writer_with_pool};
+use writer::{BatchOptimizationConfig, create_iceberg_writer};
 
 /// Create test configuration for optimization tests
 fn create_test_config() -> Configuration {
@@ -115,17 +115,15 @@ async fn test_default_batch_config() {
 #[tokio::test]
 async fn test_custom_batch_config() {
     let config = create_test_config();
-    let pool_config = CatalogPoolConfig::default();
     let object_store = Arc::new(InMemory::new());
 
     // Create writer
-    let result = create_iceberg_writer_with_pool(
+    let result = create_iceberg_writer(
         &config,
         object_store,
         "test_tenant",
         "test_dataset",
         "metrics_gauge",
-        pool_config,
     )
     .await;
 
@@ -159,66 +157,18 @@ async fn test_custom_batch_config() {
     }
 }
 
-/// Test catalog caching functionality
-#[tokio::test]
-async fn test_catalog_caching() {
-    let config = create_test_config();
-    let pool_config = CatalogPoolConfig::default();
-    let object_store = Arc::new(InMemory::new());
-
-    let result = create_iceberg_writer_with_pool(
-        &config,
-        object_store,
-        "test_tenant",
-        "test_dataset",
-        "metrics_gauge",
-        pool_config,
-    )
-    .await;
-
-    if let Ok(mut writer) = result {
-        // Initially no cached catalog
-        assert!(writer.catalog_cache_info().is_none());
-
-        // Enable caching with short TTL for testing
-        let batch_config = BatchOptimizationConfig {
-            enable_catalog_caching: true,
-            catalog_cache_ttl_seconds: 2, // 2 second TTL for testing
-            ..Default::default()
-        };
-        writer.set_batch_config(batch_config);
-
-        // Cache should still be empty
-        assert!(writer.catalog_cache_info().is_none());
-
-        // Test manual cache clearing
-        writer.clear_catalog_cache();
-        assert!(writer.catalog_cache_info().is_none());
-
-        // Test disabling caching clears cache
-        let no_cache_config = BatchOptimizationConfig {
-            enable_catalog_caching: false,
-            ..Default::default()
-        };
-        writer.set_batch_config(no_cache_config);
-        assert!(writer.catalog_cache_info().is_none());
-    }
-}
-
 /// Test batch splitting functionality
 #[tokio::test]
 async fn test_batch_splitting_logic() {
     let config = create_test_config();
-    let pool_config = CatalogPoolConfig::default();
     let object_store = Arc::new(InMemory::new());
 
-    let result = create_iceberg_writer_with_pool(
+    let result = create_iceberg_writer(
         &config,
         object_store,
         "test_tenant",
         "test_dataset",
         "metrics_gauge",
-        pool_config,
     )
     .await;
 
@@ -253,16 +203,14 @@ async fn test_batch_splitting_logic() {
 #[tokio::test]
 async fn test_batch_size_optimization() {
     let config = create_test_config();
-    let pool_config = CatalogPoolConfig::default();
     let object_store = Arc::new(InMemory::new());
 
-    let result = create_iceberg_writer_with_pool(
+    let result = create_iceberg_writer(
         &config,
         object_store,
         "test_tenant",
         "test_dataset",
         "metrics_gauge",
-        pool_config,
     )
     .await;
 
@@ -295,16 +243,14 @@ async fn test_batch_size_optimization() {
 #[tokio::test]
 async fn test_memory_optimization() {
     let config = create_test_config();
-    let pool_config = CatalogPoolConfig::default();
     let object_store = Arc::new(InMemory::new());
 
-    let result = create_iceberg_writer_with_pool(
+    let result = create_iceberg_writer(
         &config,
         object_store,
         "test_tenant",
         "test_dataset",
         "metrics_gauge",
-        pool_config,
     )
     .await;
 
@@ -335,16 +281,14 @@ async fn test_memory_optimization() {
 #[tokio::test]
 async fn test_concurrent_batch_config() {
     let config = create_test_config();
-    let pool_config = CatalogPoolConfig::default();
     let object_store = Arc::new(InMemory::new());
 
-    let result = create_iceberg_writer_with_pool(
+    let result = create_iceberg_writer(
         &config,
         object_store,
         "test_tenant",
         "test_dataset",
         "metrics_gauge",
-        pool_config,
     )
     .await;
 

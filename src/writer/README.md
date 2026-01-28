@@ -13,14 +13,12 @@ The writer component of SignalDB is responsible for consuming messages from the 
 2. **High-Performance Data Storage**
    - Apache Iceberg table format for efficient metadata management
    - Intelligent batch processing with automatic splitting (50K rows, 128MB default)
-   - Connection pooling for optimal catalog operations
    - Memory-aware processing to prevent OOM issues
    - Configurable concurrent batch processing
 
 3. **Production Reliability**
    - Exponential backoff retry logic for transient failures
    - Comprehensive error handling and recovery mechanisms
-   - Catalog caching with configurable TTL (5 minutes default)
    - Performance monitoring and optimization metrics
    - Graceful degradation under high load
 
@@ -39,19 +37,16 @@ The writer consists of several key components:
 The core component that provides ACID transaction support:
 - **Transaction Management**: Begin, commit, and rollback operations
 - **Batch Optimization**: Intelligent splitting and memory management
-- **Connection Pooling**: Optimized catalog operations
 - **Retry Logic**: Configurable exponential backoff for reliability
 
 ### 2. SQL Catalog
 Manages Iceberg table metadata and catalog operations:
-- **Connection Pooling**: Optimized catalog access for production workloads
 - **Catalog Configuration**: SQLite and PostgreSQL backend support
 - **DataFusion Integration**: Seamless query engine integration
 
 ### 3. Performance Optimization
 Advanced features for production workloads:
 - **Batch Splitting**: Automatic division of large batches for optimal processing
-- **Catalog Caching**: Reduced overhead with configurable TTL
 - **Memory Management**: Memory-aware batch processing
 - **Concurrent Processing**: Configurable parallel batch execution
 
@@ -92,28 +87,14 @@ writer.write_batch(record_batch).await?;
 ### Advanced Configuration
 
 ```rust
-use writer::{
-    BatchOptimizationConfig, CatalogPoolConfig, RetryConfig,
-    create_iceberg_writer_with_pool
-};
+use writer::{BatchOptimizationConfig, RetryConfig, create_iceberg_writer};
 
-// Configure connection pooling
-let pool_config = CatalogPoolConfig {
-    min_connections: 5,
-    max_connections: 20,
-    connection_timeout_ms: 3000,
-    idle_timeout_seconds: 600,
-    max_lifetime_seconds: 3600,
-};
-
-// Create writer with custom pool
-let mut writer = create_iceberg_writer_with_pool(
+let mut writer = create_iceberg_writer(
     &config,
     object_store,
     "my_tenant",
     "my_dataset",
     "metrics_gauge",
-    pool_config
 ).await?;
 
 // Configure batch optimization
@@ -164,21 +145,10 @@ writer.write_batches(batches).await?; // Automatically wrapped in transaction
 ### Performance Monitoring
 
 ```rust
-// Check catalog cache status
-if let Some((age_seconds, is_expired)) = writer.catalog_cache_info() {
-    println!("Catalog cache age: {}s, expired: {}", age_seconds, is_expired);
-}
-
 // Get current configuration
 let batch_config = writer.batch_config();
 println!("Max rows per batch: {}", batch_config.max_rows_per_batch);
 println!("Catalog caching: {}", batch_config.enable_catalog_caching);
-
-let pool_config = writer.pool_config();
-println!("Max connections: {}", pool_config.max_connections);
-
-// Clear cache if needed
-writer.clear_catalog_cache();
 ```
 
 ## Configuration
@@ -195,11 +165,9 @@ The writer can be configured through environment variables:
 
 For production workloads, consider these optimizations:
 
-1. **Connection Pooling**: Increase pool size for high-concurrency workloads
-2. **Batch Size**: Adjust based on available memory and data characteristics  
-3. **Catalog Caching**: Enable for reduced overhead (enabled by default)
-4. **Retry Configuration**: Tune for your network and storage characteristics
-5. **Concurrent Batches**: Scale based on CPU cores and I/O capacity
+1. **Batch Size**: Adjust based on available memory and data characteristics
+2. **Retry Configuration**: Tune for your network and storage characteristics
+3. **Concurrent Batches**: Scale based on CPU cores and I/O capacity
 
 ### Production Deployment
 
@@ -226,7 +194,6 @@ cargo test -p writer --lib
 cargo test -p writer --test test_sql_insert
 cargo test -p writer --test test_transactions  
 cargo test -p writer --test test_retry_logic
-cargo test -p writer --test test_connection_pooling
 cargo test -p writer --test test_batch_optimization
 ```
 
@@ -237,7 +204,7 @@ cargo test -p writer --test test_e2e_simple
 
 # Performance benchmarks
 cargo bench -p writer --bench iceberg_benchmarks --features benchmarks
-cargo bench -p writer --bench connection_pool_benchmarks --features benchmarks
+cargo bench -p writer --bench connection_pool_benchmarks --features benchmarks  # Writer creation and write benchmarks
 ```
 
 ### Performance Testing
@@ -248,7 +215,7 @@ cargo bench -p writer --bench connection_pool_benchmarks --features benchmarks
 # Individual benchmark categories
 cargo bench --bench iceberg_benchmarks --features benchmarks -- "single_batch"
 cargo bench --bench iceberg_benchmarks --features benchmarks -- "transaction_overhead"
-cargo bench --bench connection_pool_benchmarks --features benchmarks -- "concurrent"
+cargo bench --bench connection_pool_benchmarks --features benchmarks -- "concurrent"  # Concurrent writer creation
 ```
 
 ## Monitoring & Observability
@@ -267,12 +234,7 @@ Monitor these aspects of writer performance:
    - Splitting frequency and patterns
    - Memory usage per batch
 
-3. **Connection Pooling**
-   - Pool utilization and contention
-   - Connection creation/destruction rates
-   - Pool timeout events
-
-4. **Retry Behavior**
+3. **Retry Behavior**
    - Retry attempt frequency
    - Success rates after retries
    - Backoff timing effectiveness
@@ -334,10 +296,9 @@ Iceberg integration provides several advantages over direct Parquet:
 
 ### Common Issues
 
-1. **Transaction Timeouts**: Increase connection pool timeouts
+1. **Transaction Timeouts**: Increase timeout configuration
 2. **Memory Usage**: Reduce batch sizes or enable auto-splitting
 3. **Catalog Connectivity**: Check catalog database availability
-4. **Performance**: Enable catalog caching and connection pooling
 
 ### Debug Information
 
