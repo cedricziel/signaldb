@@ -67,6 +67,7 @@ RUN rm -rf src/*/src && \
 
 # Copy actual source code and build assets
 COPY api/ api/
+COPY opentelemetry-proto/ opentelemetry-proto/
 COPY src/ src/
 
 # Build all service binaries in release mode
