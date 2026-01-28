@@ -49,7 +49,8 @@ RUN cargo build --release \
     --bin signaldb-acceptor \
     --bin signaldb-router \
     --bin signaldb-writer \
-    --bin signaldb-querier
+    --bin signaldb-querier \
+    --bin signaldb
 
 # Remove dummy files and build artifacts (keep cached dependencies)
 RUN rm -rf src/*/src && \
@@ -64,13 +65,15 @@ RUN cargo build --release \
     --bin signaldb-acceptor \
     --bin signaldb-router \
     --bin signaldb-writer \
-    --bin signaldb-querier
+    --bin signaldb-querier \
+    --bin signaldb
 
 # Strip debug symbols to reduce binary size
 RUN strip target/release/signaldb-acceptor && \
     strip target/release/signaldb-router && \
     strip target/release/signaldb-writer && \
-    strip target/release/signaldb-querier
+    strip target/release/signaldb-querier && \
+    strip target/release/signaldb
 
 # Runtime base image - minimal Alpine with required libraries
 FROM alpine:3.23 AS runtime-base
@@ -121,3 +124,12 @@ COPY --from=builder /build/target/release/signaldb-querier /usr/local/bin/signal
 USER signaldb
 EXPOSE 50054
 ENTRYPOINT ["/usr/local/bin/signaldb-querier"]
+
+# Monolithic service - all services in one binary
+FROM runtime-base AS monolithic
+
+COPY --from=builder /build/target/release/signaldb /usr/local/bin/signaldb
+
+USER signaldb
+EXPOSE 4317 4318 50051 50053 3000
+ENTRYPOINT ["/usr/local/bin/signaldb"]

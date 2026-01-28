@@ -4,6 +4,7 @@ use common::cli::{CommonArgs, CommonCommands, utils};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use router::{InMemoryStateImpl, RouterState, create_flight_service, create_router};
 use std::net::SocketAddr;
+use tokio::sync::oneshot;
 use tonic::transport::Server;
 
 #[derive(Parser)]
@@ -88,16 +89,20 @@ async fn main() -> Result<()> {
     log::info!("Router service registered with catalog");
 
     // Create HTTP router
-    let _app = create_router(state.clone());
+    let app = create_router(state.clone());
+    let (http_shutdown_tx, http_shutdown_rx) = oneshot::channel::<()>();
     let http_handle = tokio::spawn(async move {
         log::info!("Starting HTTP router on {http_addr}");
-
-        // For now, we'll skip starting the HTTP server due to compatibility issues with axum 0.7.9
-        // This will be fixed in a future update
-        log::warn!("HTTP router is disabled due to compatibility issues with axum 0.7.9");
-
-        // To enable the HTTP router, you would need to update the axum dependency to a version
-        // that supports the current usage pattern
+        let listener = tokio::net::TcpListener::bind(http_addr)
+            .await
+            .expect("Failed to bind HTTP router");
+        axum::serve(listener, app.into_make_service())
+            .with_graceful_shutdown(async {
+                http_shutdown_rx.await.ok();
+                log::info!("HTTP router shutting down gracefully");
+            })
+            .await
+            .expect("HTTP router error");
     });
 
     // Start Flight service
@@ -117,27 +122,30 @@ async fn main() -> Result<()> {
         }
     });
 
-    log::info!("✅ Router service started successfully");
-    log::info!("🛩️  Arrow Flight server listening on {flight_addr}");
-    log::info!("🌐 HTTP API server on {http_addr} (currently disabled)");
+    log::info!("Router service started successfully");
+    log::info!("Arrow Flight server listening on {flight_addr}");
+    log::info!("HTTP API server listening on {http_addr}");
 
     // Wait for ctrl+c
     tokio::signal::ctrl_c()
         .await
         .context("Failed to listen for ctrl+c signal")?;
 
-    log::info!("🛑 Shutting down router service...");
+    log::info!("Shutting down router service...");
 
     // Graceful deregistration using service bootstrap
     if let Err(e) = router_bootstrap.shutdown().await {
         log::error!("Failed to shutdown router service bootstrap: {e}");
     }
 
+    // Signal HTTP router to shutdown gracefully
+    let _ = http_shutdown_tx.send(());
+
     // Wait for servers to stop
     let _ = http_handle.await;
     let _ = flight_handle.await;
 
-    log::info!("✅ Router service stopped gracefully");
+    log::info!("Router service stopped gracefully");
 
     Ok(())
 }

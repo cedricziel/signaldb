@@ -152,38 +152,14 @@ jobs:
             type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag_name }}
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-please.outputs.tag_name }}
 
-      - name: Create Dockerfile
-        run: |
-          cat > Dockerfile.monolithic << 'EOF'
-          FROM rust:1.93 as builder
-
-          RUN apt-get update && apt-get install -y protobuf-compiler
-
-          WORKDIR /app
-          COPY . .
-
-          RUN cargo build --release --bin signaldb
-
-          FROM debian:bookworm-slim
-
-          RUN apt-get update && apt-get install -y \
-              ca-certificates \
-              && rm -rf /var/lib/apt/lists/*
-
-          COPY --from=builder /app/target/release/signaldb /usr/local/bin/signaldb
-
-          EXPOSE 4317 4318 50051 3000
-
-          CMD ["signaldb"]
-          EOF
-
       - name: Build and push monolithic image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.monolithic
+          file: Dockerfile
+          target: monolithic
           platforms: linux/amd64,linux/arm64
-          push: ${{ secrets.DOCKER_USERNAME && secrets.DOCKER_PASSWORD }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

@@ -18,6 +18,7 @@ writer = { path = "../writer" }
 
 # Essential external dependencies
 anyhow.workspace = true
+axum.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tonic.workspace = true
