@@ -1,6 +1,6 @@
 use clap::Subcommand;
-use signaldb_api::CreateDatasetRequest;
-use signaldb_sdk::SignalDbClient;
+use signaldb_sdk::Client;
+use signaldb_sdk::types::CreateDatasetRequest;
 
 #[derive(Subcommand)]
 pub enum DatasetAction {
@@ -27,23 +27,37 @@ pub enum DatasetAction {
 }
 
 impl DatasetAction {
-    pub async fn run(self, client: &SignalDbClient) -> anyhow::Result<()> {
+    pub async fn run(self, client: &Client) -> anyhow::Result<()> {
         match self {
             DatasetAction::List { tenant_id } => {
-                let resp = client.list_datasets(&tenant_id).await?;
+                let resp = client
+                    .list_datasets()
+                    .tenant_id(&tenant_id)
+                    .send()
+                    .await?
+                    .into_inner();
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             }
             DatasetAction::Create { tenant_id, name } => {
                 let resp = client
-                    .create_dataset(&tenant_id, CreateDatasetRequest { name })
-                    .await?;
+                    .create_dataset()
+                    .tenant_id(&tenant_id)
+                    .body(CreateDatasetRequest { name })
+                    .send()
+                    .await?
+                    .into_inner();
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             }
             DatasetAction::Delete {
                 tenant_id,
                 dataset_id,
             } => {
-                client.delete_dataset(&tenant_id, &dataset_id).await?;
+                client
+                    .delete_dataset()
+                    .tenant_id(&tenant_id)
+                    .dataset_id(&dataset_id)
+                    .send()
+                    .await?;
                 println!("Dataset '{dataset_id}' deleted.");
             }
         }

@@ -1,6 +1,5 @@
-pub mod types;
+mod extensions;
+#[allow(clippy::all)]
+mod generated;
 
-pub use types::api_keys::*;
-pub use types::datasets::*;
-pub use types::error::*;
-pub use types::tenants::*;
+pub use generated::*;

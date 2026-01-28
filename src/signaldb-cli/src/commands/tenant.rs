@@ -1,6 +1,6 @@
 use clap::Subcommand;
-use signaldb_api::{CreateTenantRequest, UpdateTenantRequest};
-use signaldb_sdk::SignalDbClient;
+use signaldb_sdk::Client;
+use signaldb_sdk::types::{CreateTenantRequest, UpdateTenantRequest};
 
 #[derive(Subcommand)]
 pub enum TenantAction {
@@ -41,10 +41,10 @@ pub enum TenantAction {
 }
 
 impl TenantAction {
-    pub async fn run(self, client: &SignalDbClient) -> anyhow::Result<()> {
+    pub async fn run(self, client: &Client) -> anyhow::Result<()> {
         match self {
             TenantAction::List => {
-                let resp = client.list_tenants().await?;
+                let resp = client.list_tenants().send().await?.into_inner();
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             }
             TenantAction::Create {
@@ -53,16 +53,24 @@ impl TenantAction {
                 default_dataset,
             } => {
                 let resp = client
-                    .create_tenant(CreateTenantRequest {
+                    .create_tenant()
+                    .body(CreateTenantRequest {
                         id,
                         name,
                         default_dataset,
                     })
-                    .await?;
+                    .send()
+                    .await?
+                    .into_inner();
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             }
             TenantAction::Get { id } => {
-                let resp = client.get_tenant(&id).await?;
+                let resp = client
+                    .get_tenant()
+                    .tenant_id(&id)
+                    .send()
+                    .await?
+                    .into_inner();
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             }
             TenantAction::Update {
@@ -71,18 +79,19 @@ impl TenantAction {
                 default_dataset,
             } => {
                 let resp = client
-                    .update_tenant(
-                        &id,
-                        UpdateTenantRequest {
-                            name,
-                            default_dataset,
-                        },
-                    )
-                    .await?;
+                    .update_tenant()
+                    .tenant_id(&id)
+                    .body(UpdateTenantRequest {
+                        name,
+                        default_dataset,
+                    })
+                    .send()
+                    .await?
+                    .into_inner();
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             }
             TenantAction::Delete { id } => {
-                client.delete_tenant(&id).await?;
+                client.delete_tenant().tenant_id(&id).send().await?;
                 println!("Tenant '{id}' deleted.");
             }
         }

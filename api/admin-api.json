@@ -1,0 +1,732 @@
+{
+  "components": {
+    "schemas": {
+      "ApiError": {
+        "description": "Standard API error response",
+        "properties": {
+          "error": {
+            "description": "Error category",
+            "type": "string"
+          },
+          "message": {
+            "description": "Human-readable error description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ApiKeyResponse": {
+        "description": "API key information (without the raw key)",
+        "properties": {
+          "created_at": {
+            "description": "ISO 8601 creation timestamp",
+            "type": "string"
+          },
+          "id": {
+            "description": "Unique key identifier",
+            "type": "string"
+          },
+          "name": {
+            "description": "Optional human-readable name",
+            "type": "string"
+          },
+          "revoked_at": {
+            "description": "ISO 8601 revocation timestamp (if revoked)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "CreateApiKeyRequest": {
+        "description": "Request body for creating a new API key",
+        "properties": {
+          "name": {
+            "description": "Optional human-readable name for the key",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CreateApiKeyResponse": {
+        "description": "Response returned when a new API key is created (includes the raw key)",
+        "properties": {
+          "created_at": {
+            "description": "ISO 8601 creation timestamp",
+            "type": "string"
+          },
+          "id": {
+            "description": "Unique key identifier",
+            "type": "string"
+          },
+          "key": {
+            "description": "The raw API key (only shown once at creation time)",
+            "type": "string"
+          },
+          "name": {
+            "description": "Optional human-readable name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "CreateDatasetRequest": {
+        "description": "Request body for creating a new dataset",
+        "properties": {
+          "name": {
+            "description": "Dataset name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "CreateTenantRequest": {
+        "description": "Request body for creating a new tenant",
+        "properties": {
+          "default_dataset": {
+            "description": "Default dataset name",
+            "type": "string"
+          },
+          "id": {
+            "description": "Unique tenant identifier",
+            "type": "string"
+          },
+          "name": {
+            "description": "Human-readable tenant name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "DatasetResponse": {
+        "description": "Dataset information returned by the API",
+        "properties": {
+          "created_at": {
+            "description": "ISO 8601 creation timestamp",
+            "type": "string"
+          },
+          "id": {
+            "description": "Unique dataset identifier",
+            "type": "string"
+          },
+          "name": {
+            "description": "Dataset name",
+            "type": "string"
+          },
+          "tenant_id": {
+            "description": "Tenant that owns this dataset",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "tenant_id",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "ListApiKeysResponse": {
+        "description": "Response containing a list of API keys",
+        "properties": {
+          "api_keys": {
+            "description": "List of API key records (without raw keys)",
+            "items": {
+              "$ref": "#/components/schemas/ApiKeyResponse"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "api_keys"
+        ],
+        "type": "object"
+      },
+      "ListDatasetsResponse": {
+        "description": "Response containing a list of datasets",
+        "properties": {
+          "datasets": {
+            "description": "List of dataset records",
+            "items": {
+              "$ref": "#/components/schemas/DatasetResponse"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "datasets"
+        ],
+        "type": "object"
+      },
+      "ListTenantsResponse": {
+        "description": "Response containing a list of tenants",
+        "properties": {
+          "tenants": {
+            "description": "List of tenant records",
+            "items": {
+              "$ref": "#/components/schemas/TenantResponse"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "tenants"
+        ],
+        "type": "object"
+      },
+      "TenantResponse": {
+        "description": "Tenant information returned by the API",
+        "properties": {
+          "created_at": {
+            "description": "ISO 8601 creation timestamp",
+            "type": "string"
+          },
+          "default_dataset": {
+            "description": "Default dataset name",
+            "type": "string"
+          },
+          "id": {
+            "description": "Unique tenant identifier",
+            "type": "string"
+          },
+          "name": {
+            "description": "Human-readable tenant name",
+            "type": "string"
+          },
+          "source": {
+            "description": "Source of the tenant record (config or database)",
+            "type": "string"
+          },
+          "updated_at": {
+            "description": "ISO 8601 last-updated timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "source",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "UpdateTenantRequest": {
+        "description": "Request body for updating an existing tenant",
+        "properties": {
+          "default_dataset": {
+            "description": "Updated default dataset",
+            "type": "string"
+          },
+          "name": {
+            "description": "Updated tenant name",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "description": "Admin API key passed as Bearer token",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "Tenant management API for SignalDB",
+    "title": "SignalDB Admin API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/tenants": {
+      "get": {
+        "operationId": "list_tenants",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListTenantsResponse"
+                }
+              }
+            },
+            "description": "List of tenants"
+          }
+        },
+        "summary": "List all tenants",
+        "tags": [
+          "tenants"
+        ]
+      },
+      "post": {
+        "operationId": "create_tenant",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTenantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantResponse"
+                }
+              }
+            },
+            "description": "Tenant created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Validation error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Tenant already exists"
+          }
+        },
+        "summary": "Create a new tenant",
+        "tags": [
+          "tenants"
+        ]
+      }
+    },
+    "/tenants/{tenant_id}": {
+      "delete": {
+        "operationId": "delete_tenant",
+        "responses": {
+          "204": {
+            "description": "Tenant deleted"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Config-sourced tenants cannot be deleted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Tenant not found"
+          }
+        },
+        "summary": "Delete a tenant",
+        "tags": [
+          "tenants"
+        ]
+      },
+      "get": {
+        "operationId": "get_tenant",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantResponse"
+                }
+              }
+            },
+            "description": "Tenant details"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Tenant not found"
+          }
+        },
+        "summary": "Get a tenant by ID",
+        "tags": [
+          "tenants"
+        ]
+      },
+      "parameters": [
+        {
+          "description": "Tenant identifier",
+          "in": "path",
+          "name": "tenant_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "update_tenant",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTenantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantResponse"
+                }
+              }
+            },
+            "description": "Tenant updated"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Config-sourced tenants cannot be modified"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Tenant not found"
+          }
+        },
+        "summary": "Update a tenant",
+        "tags": [
+          "tenants"
+        ]
+      }
+    },
+    "/tenants/{tenant_id}/api-keys": {
+      "get": {
+        "operationId": "list_api_keys",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListApiKeysResponse"
+                }
+              }
+            },
+            "description": "List of API keys"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Tenant not found"
+          }
+        },
+        "summary": "List API keys for a tenant",
+        "tags": [
+          "api-keys"
+        ]
+      },
+      "parameters": [
+        {
+          "description": "Tenant identifier",
+          "in": "path",
+          "name": "tenant_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "create_api_key",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApiKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateApiKeyResponse"
+                }
+              }
+            },
+            "description": "API key created (raw key shown once)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Tenant not found"
+          }
+        },
+        "summary": "Create a new API key for a tenant",
+        "tags": [
+          "api-keys"
+        ]
+      }
+    },
+    "/tenants/{tenant_id}/api-keys/{key_id}": {
+      "delete": {
+        "operationId": "revoke_api_key",
+        "responses": {
+          "204": {
+            "description": "API key revoked"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API key not found"
+          }
+        },
+        "summary": "Revoke an API key",
+        "tags": [
+          "api-keys"
+        ]
+      },
+      "parameters": [
+        {
+          "description": "Tenant identifier",
+          "in": "path",
+          "name": "tenant_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "API key identifier",
+          "in": "path",
+          "name": "key_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/tenants/{tenant_id}/datasets": {
+      "get": {
+        "operationId": "list_datasets",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListDatasetsResponse"
+                }
+              }
+            },
+            "description": "List of datasets"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Tenant not found"
+          }
+        },
+        "summary": "List datasets for a tenant",
+        "tags": [
+          "datasets"
+        ]
+      },
+      "parameters": [
+        {
+          "description": "Tenant identifier",
+          "in": "path",
+          "name": "tenant_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "create_dataset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDatasetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetResponse"
+                }
+              }
+            },
+            "description": "Dataset created"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Tenant not found"
+          }
+        },
+        "summary": "Create a new dataset for a tenant",
+        "tags": [
+          "datasets"
+        ]
+      }
+    },
+    "/tenants/{tenant_id}/datasets/{dataset_id}": {
+      "delete": {
+        "operationId": "delete_dataset",
+        "responses": {
+          "204": {
+            "description": "Dataset deleted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Dataset not found"
+          }
+        },
+        "summary": "Delete a dataset",
+        "tags": [
+          "datasets"
+        ]
+      },
+      "parameters": [
+        {
+          "description": "Tenant identifier",
+          "in": "path",
+          "name": "tenant_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Dataset identifier",
+          "in": "path",
+          "name": "dataset_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "servers": [
+    {
+      "description": "Admin API prefix",
+      "url": "/api/v1/admin"
+    }
+  ],
+  "tags": [
+    {
+      "description": "Tenant management",
+      "name": "tenants"
+    },
+    {
+      "description": "API key management",
+      "name": "api-keys"
+    },
+    {
+      "description": "Dataset management",
+      "name": "datasets"
+    }
+  ]
+}

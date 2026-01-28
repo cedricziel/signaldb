@@ -1,6 +1,6 @@
 use clap::Subcommand;
-use signaldb_api::CreateApiKeyRequest;
-use signaldb_sdk::SignalDbClient;
+use signaldb_sdk::Client;
+use signaldb_sdk::types::CreateApiKeyRequest;
 
 #[derive(Subcommand)]
 pub enum ApiKeyAction {
@@ -27,20 +27,34 @@ pub enum ApiKeyAction {
 }
 
 impl ApiKeyAction {
-    pub async fn run(self, client: &SignalDbClient) -> anyhow::Result<()> {
+    pub async fn run(self, client: &Client) -> anyhow::Result<()> {
         match self {
             ApiKeyAction::List { tenant_id } => {
-                let resp = client.list_api_keys(&tenant_id).await?;
+                let resp = client
+                    .list_api_keys()
+                    .tenant_id(&tenant_id)
+                    .send()
+                    .await?
+                    .into_inner();
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             }
             ApiKeyAction::Create { tenant_id, name } => {
                 let resp = client
-                    .create_api_key(&tenant_id, CreateApiKeyRequest { name })
-                    .await?;
+                    .create_api_key()
+                    .tenant_id(&tenant_id)
+                    .body(CreateApiKeyRequest { name })
+                    .send()
+                    .await?
+                    .into_inner();
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             }
             ApiKeyAction::Revoke { tenant_id, key_id } => {
-                client.revoke_api_key(&tenant_id, &key_id).await?;
+                client
+                    .revoke_api_key()
+                    .tenant_id(&tenant_id)
+                    .key_id(&key_id)
+                    .send()
+                    .await?;
                 println!("API key '{key_id}' revoked.");
             }
         }

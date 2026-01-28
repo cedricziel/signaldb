@@ -9,7 +9,6 @@ use common::auth::{Authenticator, admin_auth_middleware, auth_middleware};
 use common::catalog::Catalog;
 use common::config::Configuration;
 use std::sync::Arc;
-use utoipa::OpenApi;
 
 pub mod discovery;
 pub mod endpoints;
@@ -139,8 +138,8 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         )
         .layer(admin_auth_layer);
 
-    // Build OpenAPI spec
-    let openapi_spec = build_openapi_spec();
+    // Load OpenAPI spec from the generated JSON file
+    let openapi_spec = load_openapi_spec();
 
     Router::new()
         // Public health check endpoint (no authentication)
@@ -176,49 +175,8 @@ async fn health_check() -> impl IntoResponse {
     StatusCode::OK
 }
 
-/// Build the OpenAPI specification for the admin API
-fn build_openapi_spec() -> utoipa::openapi::OpenApi {
-    #[derive(OpenApi)]
-    #[openapi(
-        info(
-            title = "SignalDB Admin API",
-            version = "1.0.0",
-            description = "Tenant management API for SignalDB"
-        ),
-        paths(
-            endpoints::admin::list_tenants,
-            endpoints::admin::create_tenant,
-            endpoints::admin::get_tenant,
-            endpoints::admin::update_tenant,
-            endpoints::admin::delete_tenant,
-            endpoints::admin::list_api_keys,
-            endpoints::admin::create_api_key,
-            endpoints::admin::revoke_api_key,
-            endpoints::admin::list_datasets,
-            endpoints::admin::create_dataset,
-            endpoints::admin::delete_dataset,
-        ),
-        components(schemas(
-            signaldb_api::CreateTenantRequest,
-            signaldb_api::UpdateTenantRequest,
-            signaldb_api::TenantResponse,
-            signaldb_api::ListTenantsResponse,
-            signaldb_api::CreateApiKeyRequest,
-            signaldb_api::CreateApiKeyResponse,
-            signaldb_api::ApiKeyResponse,
-            signaldb_api::ListApiKeysResponse,
-            signaldb_api::CreateDatasetRequest,
-            signaldb_api::DatasetResponse,
-            signaldb_api::ListDatasetsResponse,
-            signaldb_api::ApiError,
-        )),
-        tags(
-            (name = "tenants", description = "Tenant management"),
-            (name = "api-keys", description = "API key management"),
-            (name = "datasets", description = "Dataset management"),
-        )
-    )]
-    struct AdminApiDoc;
-
-    AdminApiDoc::openapi()
+/// Load the OpenAPI specification from the generated JSON file
+fn load_openapi_spec() -> serde_json::Value {
+    serde_json::from_str(include_str!("../../../api/admin-api.json"))
+        .expect("api/admin-api.json must be valid JSON")
 }

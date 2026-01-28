@@ -1,9 +1,4 @@
-mod admin;
-mod client;
-mod error;
+#[allow(clippy::all)]
+mod generated;
 
-pub use client::SignalDbClient;
-pub use error::SdkError;
-
-// Re-export API types for convenience
-pub use signaldb_api;
+pub use generated::*;
