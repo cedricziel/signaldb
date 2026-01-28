@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 common.workspace = true
+signaldb-api.workspace = true
 tempo-api.workspace = true
 arrow-flight.workspace = true
 datafusion.workspace = true
@@ -25,6 +26,7 @@ anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+utoipa.workspace = true
 
 [[bin]]
 name = "signaldb-router"
@@ -32,6 +34,7 @@ path = "src/main.rs"
 
 [dev-dependencies]
 tokio-test.workspace = true
+tower.workspace = true
 
 [package.metadata.cargo-machete]
 ignored = ["tokio-test"]

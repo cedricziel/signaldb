@@ -103,6 +103,69 @@ pub async fn auth_middleware(
     next.run(request).await
 }
 
+/// Axum middleware function for admin API authentication
+///
+/// Validates the request carries a Bearer token matching the configured admin API key.
+/// Returns 401 if missing/invalid, 403 if admin key is not configured.
+pub async fn admin_auth_middleware(
+    admin_key_hash: Option<String>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(expected_hash) = admin_key_hash else {
+        return (
+            StatusCode::FORBIDDEN,
+            "Admin API is not configured".to_string(),
+        )
+            .into_response();
+    };
+
+    // Extract Authorization header
+    let auth_header = match request.headers().get("authorization") {
+        Some(value) => match value.to_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "Invalid Authorization header".to_string(),
+                )
+                    .into_response();
+            }
+        },
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                "Missing Authorization header".to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    // Parse Bearer token
+    let token = match auth_header.strip_prefix("Bearer ") {
+        Some(t) => t,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "Authorization header must use Bearer scheme".to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    // Compare hashes
+    let token_hash = Authenticator::hash_api_key(token);
+    if token_hash != expected_hash {
+        return (
+            StatusCode::UNAUTHORIZED,
+            "Invalid admin API key".to_string(),
+        )
+            .into_response();
+    }
+
+    next.run(request).await
+}
+
 /// Axum extractor for TenantContext from request extensions
 ///
 /// Use this in handler functions to extract the authenticated tenant context:
@@ -257,6 +320,7 @@ mod tests {
                 }],
                 schema_config: None,
             }],
+            admin_api_key: None,
         };
         let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 

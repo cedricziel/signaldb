@@ -11,6 +11,10 @@ dsn = "sqlite://.data/signaldb.db"
 # Controls API key validation and tenant isolation
 enabled = true  # Set to false to disable authentication (dev/testing only)
 
+# Admin API key for the /api/v1/admin/* management endpoints
+# Generate a strong random key for production use
+# admin_api_key = "sk-admin-your-secret-key-here"
+
 # Tenant definitions with API keys and datasets
 # Each tenant is isolated with separate WAL paths and Iceberg catalogs
 
