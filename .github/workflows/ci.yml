@@ -110,11 +110,11 @@ jobs:
           RUST_LOG: warn # Reduced log level for faster tests
           RUST_BACKTRACE: 1
 
-  # Build jobs - only run after tests pass
+  # Build jobs - run after check passes (parallel with tests)
   build-binaries:
     name: Build Binaries
     runs-on: ${{ matrix.os }}
-    needs: [check, test]
+    needs: check
     strategy:
       matrix:
         include:
@@ -197,7 +197,7 @@ jobs:
   docker-build:
     name: Build Docker Image
     runs-on: ubuntu-latest
-    needs: [check, test]
+    needs: check
     steps:
       - uses: actions/checkout@v6
 
