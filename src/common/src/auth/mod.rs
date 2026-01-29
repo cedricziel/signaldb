@@ -5,9 +5,11 @@
 
 mod authenticator;
 mod middleware;
+pub mod validation;
 
 pub use authenticator::Authenticator;
 pub use middleware::{TenantContextExtractor, admin_auth_middleware, auth_middleware};
+pub use validation::{ValidationError, validate_dataset_id, validate_id, validate_tenant_id};
 
 /// Tenant context extracted from authenticated request
 #[derive(Debug, Clone)]

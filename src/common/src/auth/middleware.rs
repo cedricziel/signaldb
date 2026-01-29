@@ -3,7 +3,7 @@
 //! This module provides Tower middleware for extracting and validating
 //! authentication headers on HTTP requests.
 
-use super::{AuthError, Authenticator, TenantContext};
+use super::{AuthError, Authenticator, TenantContext, validate_dataset_id, validate_tenant_id};
 use axum::{
     extract::Request,
     http::{HeaderMap, StatusCode},
@@ -29,19 +29,20 @@ fn extract_auth_headers(
         .ok_or_else(|| AuthError::bad_request("Authorization header must use Bearer scheme"))?
         .to_string();
 
-    // Extract X-Tenant-ID header
-    let tenant_id = headers
+    // Extract and validate X-Tenant-ID header
+    let tenant_id_raw = headers
         .get("x-tenant-id")
         .ok_or_else(|| AuthError::bad_request("Missing X-Tenant-ID header"))?
         .to_str()
-        .map_err(|_| AuthError::bad_request("Invalid X-Tenant-ID header"))?
-        .to_string();
+        .map_err(|_| AuthError::bad_request("Invalid X-Tenant-ID header"))?;
 
-    // Extract optional X-Dataset-ID header
-    let dataset_id = headers
-        .get("x-dataset-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+    let tenant_id = validate_tenant_id(tenant_id_raw)?;
+
+    // Extract and validate optional X-Dataset-ID header
+    let dataset_id = match headers.get("x-dataset-id").and_then(|v| v.to_str().ok()) {
+        Some(id) => Some(validate_dataset_id(id)?),
+        None => None,
+    };
 
     Ok((api_key, tenant_id, dataset_id))
 }
@@ -371,5 +372,72 @@ mod tests {
 
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_extract_auth_headers_validates_tenant_id() {
+        // Test empty tenant ID
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer test-api-key-123"),
+        );
+        headers.insert("x-tenant-id", HeaderValue::from_static("   "));
+
+        let result = extract_auth_headers(&headers);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("Invalid tenant ID"));
+
+        // Test path traversal in tenant ID
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer test-api-key-123"),
+        );
+        headers.insert("x-tenant-id", HeaderValue::from_static("../evil"));
+
+        let result = extract_auth_headers(&headers);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("path traversal"));
+    }
+
+    #[test]
+    fn test_extract_auth_headers_validates_dataset_id() {
+        // Test invalid characters in dataset ID
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer test-api-key-123"),
+        );
+        headers.insert("x-tenant-id", HeaderValue::from_static("acme"));
+        headers.insert("x-dataset-id", HeaderValue::from_static("prod@ction"));
+
+        let result = extract_auth_headers(&headers);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("Invalid dataset ID"));
+    }
+
+    #[test]
+    fn test_extract_auth_headers_trims_whitespace() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer test-api-key-123"),
+        );
+        headers.insert("x-tenant-id", HeaderValue::from_static("  acme  "));
+        headers.insert("x-dataset-id", HeaderValue::from_static("  production  "));
+
+        let result = extract_auth_headers(&headers);
+        assert!(result.is_ok());
+
+        let (_, tenant_id, dataset_id) = result.unwrap();
+        assert_eq!(tenant_id, "acme");
+        assert_eq!(dataset_id, Some("production".to_string()));
     }
 }

@@ -222,12 +222,13 @@ impl IcebergTableWriter {
 
             // Construct table location based on storage configuration
             // Extract the base path from the storage DSN (removing file:// scheme)
+            // Use slugs for consistent path naming that matches Iceberg namespace
             let storage_base_path = storage_dsn_to_path(&config.storage.dsn)?;
             let table_location = format!(
                 "{}/{}/{}/{}",
                 storage_base_path.trim_end_matches('/'),
-                tenant_id,
-                dataset_id,
+                tenant_slug,
+                dataset_slug,
                 table_name
             );
             log::debug!("Table location for {table_name}: {table_location}");
