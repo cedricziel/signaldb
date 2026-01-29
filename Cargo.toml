@@ -72,7 +72,7 @@ iceberg-sql-catalog = { git = "https://github.com/JanKaul/iceberg-rust", rev = "
 tonic = { version = "0.14.2", features = ["transport", "channel"] }
 tonic-build = "0.14.2"
 tonic-prost = "0.14.2"
-tonic-prost-build = "0.14.2"
+tonic-prost-build = "0.14.3"
 tonic-reflection = "0.14.2"
 
 opentelemetry = "0.31.0"
