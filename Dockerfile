@@ -18,7 +18,7 @@ WORKDIR /build
 
 # Copy dependency manifests for caching
 COPY Cargo.toml Cargo.lock ./
-COPY deny.toml rustfmt.toml ./
+COPY deny.toml rustfmt.toml schemas.toml ./
 
 # Copy all workspace Cargo.toml files
 COPY src/acceptor/Cargo.toml src/acceptor/
