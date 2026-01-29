@@ -1202,6 +1202,33 @@ impl Catalog {
             }
         }
     }
+
+    /// Delete a dataset by ID, enforcing tenant ownership.
+    /// Returns true if a row was deleted, false if not found or wrong tenant.
+    pub async fn delete_dataset_for_tenant(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let result = query("DELETE FROM datasets WHERE id = ? AND tenant_id = ?")
+                    .bind(dataset_id)
+                    .bind(tenant_id)
+                    .execute(pool)
+                    .await?;
+                Ok(result.rows_affected() > 0)
+            }
+            Catalog::Postgres(pool) => {
+                let result = query("DELETE FROM datasets WHERE id = $1 AND tenant_id = $2")
+                    .bind(dataset_id)
+                    .bind(tenant_id)
+                    .execute(pool)
+                    .await?;
+                Ok(result.rows_affected() > 0)
+            }
+        }
+    }
 }
 
 #[cfg(test)]

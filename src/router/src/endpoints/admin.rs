@@ -214,6 +214,21 @@ pub async fn update_tenant<S: RouterState>(
             .into_response();
     }
 
+    // Validate: reject explicit empty string for name
+    if request.name.as_deref() == Some("") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(
+                serde_json::to_value(ApiError::new(
+                    "validation_error",
+                    "Tenant name cannot be empty",
+                ))
+                .unwrap(),
+            ),
+        )
+            .into_response();
+    }
+
     // Merge updates
     let name = request.name.as_deref().unwrap_or(&existing.name);
     let default_dataset = match &request.default_dataset {
@@ -631,16 +646,20 @@ pub async fn create_dataset<S: RouterState>(
 /// Delete a dataset
 pub async fn delete_dataset<S: RouterState>(
     state: State<S>,
-    Path((_tenant_id, dataset_id)): Path<(String, String)>,
+    Path((tenant_id, dataset_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match state.catalog().delete_dataset(&dataset_id).await {
+    match state
+        .catalog()
+        .delete_dataset_for_tenant(&tenant_id, &dataset_id)
+        .await
+    {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => (
             StatusCode::NOT_FOUND,
             Json(
                 serde_json::to_value(ApiError::new(
                     "not_found",
-                    format!("Dataset '{dataset_id}' not found"),
+                    format!("Dataset '{dataset_id}' not found for tenant '{tenant_id}'"),
                 ))
                 .unwrap(),
             ),
