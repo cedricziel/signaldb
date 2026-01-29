@@ -4,6 +4,13 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row, SqlitePool, query};
 use uuid::Uuid;
 
+/// Helper to parse RFC3339 datetime strings (SQLite stores timestamps as text)
+fn parse_rfc3339(s: &str) -> Result<DateTime<Utc>, sqlx::Error> {
+    DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+}
+
 /// Catalog provides an interface to the catalog database (PostgreSQL or SQLite).
 #[derive(Clone)]
 pub enum Catalog {
@@ -766,18 +773,17 @@ impl Catalog {
                     .fetch_optional(pool)
                     .await?;
 
-                Ok(row.map(|r| TenantRecord {
-                    id: r.get("id"),
-                    name: r.get("name"),
-                    default_dataset: r.get("default_dataset"),
-                    created_at: DateTime::parse_from_rfc3339(r.get("created_at"))
-                        .unwrap()
-                        .with_timezone(&Utc),
-                    updated_at: DateTime::parse_from_rfc3339(r.get("updated_at"))
-                        .unwrap()
-                        .with_timezone(&Utc),
-                    source: r.get("source"),
-                }))
+                row.map(|r| {
+                    Ok(TenantRecord {
+                        id: r.get("id"),
+                        name: r.get("name"),
+                        default_dataset: r.get("default_dataset"),
+                        created_at: parse_rfc3339(r.get("created_at"))?,
+                        updated_at: parse_rfc3339(r.get("updated_at"))?,
+                        source: r.get("source"),
+                    })
+                })
+                .transpose()
             }
             Catalog::Postgres(pool) => {
                 let row = query("SELECT id, name, default_dataset, created_at, updated_at, source FROM tenants WHERE id = $1")
@@ -807,21 +813,18 @@ impl Catalog {
                 .fetch_all(pool)
                 .await?;
 
-                Ok(rows
-                    .iter()
-                    .map(|r| TenantRecord {
-                        id: r.get("id"),
-                        name: r.get("name"),
-                        default_dataset: r.get("default_dataset"),
-                        created_at: DateTime::parse_from_rfc3339(r.get("created_at"))
-                            .unwrap()
-                            .with_timezone(&Utc),
-                        updated_at: DateTime::parse_from_rfc3339(r.get("updated_at"))
-                            .unwrap()
-                            .with_timezone(&Utc),
-                        source: r.get("source"),
+                rows.iter()
+                    .map(|r| {
+                        Ok(TenantRecord {
+                            id: r.get("id"),
+                            name: r.get("name"),
+                            default_dataset: r.get("default_dataset"),
+                            created_at: parse_rfc3339(r.get("created_at"))?,
+                            updated_at: parse_rfc3339(r.get("updated_at"))?,
+                            source: r.get("source"),
+                        })
                     })
-                    .collect())
+                    .collect()
             }
             Catalog::Postgres(pool) => {
                 let rows = query(
@@ -1010,17 +1013,16 @@ impl Catalog {
                 .fetch_all(pool)
                 .await?;
 
-                Ok(rows
-                    .iter()
-                    .map(|r| DatasetRecord {
-                        id: r.get("id"),
-                        tenant_id: r.get("tenant_id"),
-                        name: r.get("name"),
-                        created_at: DateTime::parse_from_rfc3339(r.get("created_at"))
-                            .unwrap()
-                            .with_timezone(&Utc),
+                rows.iter()
+                    .map(|r| {
+                        Ok(DatasetRecord {
+                            id: r.get("id"),
+                            tenant_id: r.get("tenant_id"),
+                            name: r.get("name"),
+                            created_at: parse_rfc3339(r.get("created_at"))?,
+                        })
                     })
-                    .collect())
+                    .collect()
             }
             Catalog::Postgres(pool) => {
                 let rows = query(
@@ -1054,25 +1056,18 @@ impl Catalog {
                 .fetch_all(pool)
                 .await?;
 
-                Ok(rows
-                    .iter()
+                rows.iter()
                     .map(|r| {
                         let revoked_at: Option<String> = r.get("revoked_at");
-                        ApiKeyRecord {
+                        Ok(ApiKeyRecord {
                             id: r.get("id"),
                             tenant_id: r.get("tenant_id"),
                             name: r.get("name"),
-                            created_at: DateTime::parse_from_rfc3339(r.get("created_at"))
-                                .unwrap()
-                                .with_timezone(&Utc),
-                            revoked_at: revoked_at.map(|s| {
-                                DateTime::parse_from_rfc3339(&s)
-                                    .unwrap()
-                                    .with_timezone(&Utc)
-                            }),
-                        }
+                            created_at: parse_rfc3339(r.get("created_at"))?,
+                            revoked_at: revoked_at.map(|s| parse_rfc3339(&s)).transpose()?,
+                        })
                     })
-                    .collect())
+                    .collect()
             }
             Catalog::Postgres(pool) => {
                 let rows = query(
@@ -1107,22 +1102,17 @@ impl Catalog {
                 .fetch_optional(pool)
                 .await?;
 
-                Ok(row.map(|r| {
+                row.map(|r| {
                     let revoked_at: Option<String> = r.get("revoked_at");
-                    ApiKeyRecord {
+                    Ok(ApiKeyRecord {
                         id: r.get("id"),
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
-                        created_at: DateTime::parse_from_rfc3339(r.get("created_at"))
-                            .unwrap()
-                            .with_timezone(&Utc),
-                        revoked_at: revoked_at.map(|s| {
-                            DateTime::parse_from_rfc3339(&s)
-                                .unwrap()
-                                .with_timezone(&Utc)
-                        }),
-                    }
-                }))
+                        created_at: parse_rfc3339(r.get("created_at"))?,
+                        revoked_at: revoked_at.map(|s| parse_rfc3339(&s)).transpose()?,
+                    })
+                })
+                .transpose()
             }
             Catalog::Postgres(pool) => {
                 let row = query(
