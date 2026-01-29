@@ -1,0 +1,465 @@
+openapi: "3.0.3"
+info:
+  title: SignalDB Admin API
+  version: "1.0.0"
+  description: Tenant management API for SignalDB
+servers:
+  - url: /api/v1/admin
+    description: Admin API prefix
+security:
+  - bearerAuth: []
+tags:
+  - name: tenants
+    description: Tenant management
+  - name: api-keys
+    description: API key management
+  - name: datasets
+    description: Dataset management
+paths:
+  /tenants:
+    get:
+      operationId: list_tenants
+      summary: List all tenants
+      tags: [tenants]
+      responses:
+        "200":
+          description: List of tenants
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListTenantsResponse"
+    post:
+      operationId: create_tenant
+      summary: Create a new tenant
+      tags: [tenants]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTenantRequest"
+      responses:
+        "201":
+          description: Tenant created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "409":
+          description: Tenant already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /tenants/{tenant_id}:
+    parameters:
+      - name: tenant_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Tenant identifier
+    get:
+      operationId: get_tenant
+      summary: Get a tenant by ID
+      tags: [tenants]
+      responses:
+        "200":
+          description: Tenant details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantResponse"
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+    put:
+      operationId: update_tenant
+      summary: Update a tenant
+      tags: [tenants]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTenantRequest"
+      responses:
+        "200":
+          description: Tenant updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantResponse"
+        "403":
+          description: Config-sourced tenants cannot be modified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+    delete:
+      operationId: delete_tenant
+      summary: Delete a tenant
+      tags: [tenants]
+      responses:
+        "204":
+          description: Tenant deleted
+        "403":
+          description: Config-sourced tenants cannot be deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /tenants/{tenant_id}/api-keys:
+    parameters:
+      - name: tenant_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Tenant identifier
+    get:
+      operationId: list_api_keys
+      summary: List API keys for a tenant
+      tags: [api-keys]
+      responses:
+        "200":
+          description: List of API keys
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListApiKeysResponse"
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+    post:
+      operationId: create_api_key
+      summary: Create a new API key for a tenant
+      tags: [api-keys]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateApiKeyRequest"
+      responses:
+        "201":
+          description: API key created (raw key shown once)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateApiKeyResponse"
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /tenants/{tenant_id}/api-keys/{key_id}:
+    parameters:
+      - name: tenant_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Tenant identifier
+      - name: key_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: API key identifier
+    delete:
+      operationId: revoke_api_key
+      summary: Revoke an API key
+      tags: [api-keys]
+      responses:
+        "204":
+          description: API key revoked
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /tenants/{tenant_id}/datasets:
+    parameters:
+      - name: tenant_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Tenant identifier
+    get:
+      operationId: list_datasets
+      summary: List datasets for a tenant
+      tags: [datasets]
+      responses:
+        "200":
+          description: List of datasets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListDatasetsResponse"
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+    post:
+      operationId: create_dataset
+      summary: Create a new dataset for a tenant
+      tags: [datasets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDatasetRequest"
+      responses:
+        "201":
+          description: Dataset created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatasetResponse"
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /tenants/{tenant_id}/datasets/{dataset_id}:
+    parameters:
+      - name: tenant_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Tenant identifier
+      - name: dataset_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Dataset identifier
+    delete:
+      operationId: delete_dataset
+      summary: Delete a dataset
+      tags: [datasets]
+      responses:
+        "204":
+          description: Dataset deleted
+        "404":
+          description: Dataset not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Admin API key passed as Bearer token
+  schemas:
+    ApiError:
+      type: object
+      description: Standard API error response
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          description: Error category
+        message:
+          type: string
+          description: Human-readable error description
+    CreateTenantRequest:
+      type: object
+      description: Request body for creating a new tenant
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+          description: Unique tenant identifier
+        name:
+          type: string
+          description: Human-readable tenant name
+        default_dataset:
+          type: string
+          description: Default dataset name
+    UpdateTenantRequest:
+      type: object
+      description: Request body for updating an existing tenant
+      properties:
+        name:
+          type: string
+          description: Updated tenant name
+        default_dataset:
+          type: string
+          description: Updated default dataset
+    TenantResponse:
+      type: object
+      description: Tenant information returned by the API
+      required:
+        - id
+        - name
+        - source
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          description: Unique tenant identifier
+        name:
+          type: string
+          description: Human-readable tenant name
+        default_dataset:
+          type: string
+          description: Default dataset name
+        source:
+          type: string
+          description: Source of the tenant record (config or database)
+        created_at:
+          type: string
+          description: ISO 8601 creation timestamp
+        updated_at:
+          type: string
+          description: ISO 8601 last-updated timestamp
+    ListTenantsResponse:
+      type: object
+      description: Response containing a list of tenants
+      required:
+        - tenants
+      properties:
+        tenants:
+          type: array
+          description: List of tenant records
+          items:
+            $ref: "#/components/schemas/TenantResponse"
+    CreateApiKeyRequest:
+      type: object
+      description: Request body for creating a new API key
+      properties:
+        name:
+          type: string
+          description: Optional human-readable name for the key
+    CreateApiKeyResponse:
+      type: object
+      description: Response returned when a new API key is created (includes the raw key)
+      required:
+        - id
+        - key
+        - created_at
+      properties:
+        id:
+          type: string
+          description: Unique key identifier
+        key:
+          type: string
+          description: The raw API key (only shown once at creation time)
+        name:
+          type: string
+          description: Optional human-readable name
+        created_at:
+          type: string
+          description: ISO 8601 creation timestamp
+    ApiKeyResponse:
+      type: object
+      description: API key information (without the raw key)
+      required:
+        - id
+        - created_at
+      properties:
+        id:
+          type: string
+          description: Unique key identifier
+        name:
+          type: string
+          description: Optional human-readable name
+        created_at:
+          type: string
+          description: ISO 8601 creation timestamp
+        revoked_at:
+          type: string
+          description: ISO 8601 revocation timestamp (if revoked)
+    ListApiKeysResponse:
+      type: object
+      description: Response containing a list of API keys
+      required:
+        - api_keys
+      properties:
+        api_keys:
+          type: array
+          description: List of API key records (without raw keys)
+          items:
+            $ref: "#/components/schemas/ApiKeyResponse"
+    CreateDatasetRequest:
+      type: object
+      description: Request body for creating a new dataset
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Dataset name
+    DatasetResponse:
+      type: object
+      description: Dataset information returned by the API
+      required:
+        - id
+        - name
+        - tenant_id
+        - created_at
+      properties:
+        id:
+          type: string
+          description: Unique dataset identifier
+        name:
+          type: string
+          description: Dataset name
+        tenant_id:
+          type: string
+          description: Tenant that owns this dataset
+        created_at:
+          type: string
+          description: ISO 8601 creation timestamp
+    ListDatasetsResponse:
+      type: object
+      description: Response containing a list of datasets
+      required:
+        - datasets
+      properties:
+        datasets:
+          type: array
+          description: List of dataset records
+          items:
+            $ref: "#/components/schemas/DatasetResponse"

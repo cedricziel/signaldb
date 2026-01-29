@@ -1,0 +1,18 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+progenitor = "0.11.2"
+typify = "0.5.0"
+openapiv3 = "2.2.0"
+schemars = "0.8"
+serde_json.workspace = true
+serde_yaml = "0.9"
+prettyplease = "0.2"
+syn = "2"
+anyhow.workspace = true
+clap.workspace = true

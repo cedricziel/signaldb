@@ -1042,6 +1042,193 @@ impl Catalog {
             }
         }
     }
+
+    /// List API keys for a tenant
+    pub async fn list_api_keys(&self, tenant_id: &str) -> Result<Vec<ApiKeyRecord>, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let rows = query(
+                    "SELECT id, tenant_id, name, created_at, revoked_at FROM api_keys WHERE tenant_id = ?",
+                )
+                .bind(tenant_id)
+                .fetch_all(pool)
+                .await?;
+
+                Ok(rows
+                    .iter()
+                    .map(|r| {
+                        let revoked_at: Option<String> = r.get("revoked_at");
+                        ApiKeyRecord {
+                            id: r.get("id"),
+                            tenant_id: r.get("tenant_id"),
+                            name: r.get("name"),
+                            created_at: DateTime::parse_from_rfc3339(r.get("created_at"))
+                                .unwrap()
+                                .with_timezone(&Utc),
+                            revoked_at: revoked_at.map(|s| {
+                                DateTime::parse_from_rfc3339(&s)
+                                    .unwrap()
+                                    .with_timezone(&Utc)
+                            }),
+                        }
+                    })
+                    .collect())
+            }
+            Catalog::Postgres(pool) => {
+                let rows = query(
+                    "SELECT id, tenant_id, name, created_at, revoked_at FROM api_keys WHERE tenant_id = $1",
+                )
+                .bind(tenant_id)
+                .fetch_all(pool)
+                .await?;
+
+                Ok(rows
+                    .iter()
+                    .map(|r| ApiKeyRecord {
+                        id: r.get("id"),
+                        tenant_id: r.get("tenant_id"),
+                        name: r.get("name"),
+                        created_at: r.get("created_at"),
+                        revoked_at: r.get("revoked_at"),
+                    })
+                    .collect())
+            }
+        }
+    }
+
+    /// Get a single API key by ID
+    pub async fn get_api_key(&self, key_id: &str) -> Result<Option<ApiKeyRecord>, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let row = query(
+                    "SELECT id, tenant_id, name, created_at, revoked_at FROM api_keys WHERE id = ?",
+                )
+                .bind(key_id)
+                .fetch_optional(pool)
+                .await?;
+
+                Ok(row.map(|r| {
+                    let revoked_at: Option<String> = r.get("revoked_at");
+                    ApiKeyRecord {
+                        id: r.get("id"),
+                        tenant_id: r.get("tenant_id"),
+                        name: r.get("name"),
+                        created_at: DateTime::parse_from_rfc3339(r.get("created_at"))
+                            .unwrap()
+                            .with_timezone(&Utc),
+                        revoked_at: revoked_at.map(|s| {
+                            DateTime::parse_from_rfc3339(&s)
+                                .unwrap()
+                                .with_timezone(&Utc)
+                        }),
+                    }
+                }))
+            }
+            Catalog::Postgres(pool) => {
+                let row = query(
+                    "SELECT id, tenant_id, name, created_at, revoked_at FROM api_keys WHERE id = $1",
+                )
+                .bind(key_id)
+                .fetch_optional(pool)
+                .await?;
+
+                Ok(row.map(|r| ApiKeyRecord {
+                    id: r.get("id"),
+                    tenant_id: r.get("tenant_id"),
+                    name: r.get("name"),
+                    created_at: r.get("created_at"),
+                    revoked_at: r.get("revoked_at"),
+                }))
+            }
+        }
+    }
+
+    /// Delete a tenant (only database-sourced tenants can be deleted)
+    /// Returns true if a row was deleted, false if the tenant was not found
+    /// or is config-sourced.
+    pub async fn delete_tenant(&self, tenant_id: &str) -> Result<bool, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                // Delete associated api_keys and datasets first
+                query("DELETE FROM api_keys WHERE tenant_id = ?")
+                    .bind(tenant_id)
+                    .execute(pool)
+                    .await?;
+                query("DELETE FROM datasets WHERE tenant_id = ?")
+                    .bind(tenant_id)
+                    .execute(pool)
+                    .await?;
+                let result = query("DELETE FROM tenants WHERE id = ? AND source = 'database'")
+                    .bind(tenant_id)
+                    .execute(pool)
+                    .await?;
+                Ok(result.rows_affected() > 0)
+            }
+            Catalog::Postgres(pool) => {
+                query("DELETE FROM api_keys WHERE tenant_id = $1")
+                    .bind(tenant_id)
+                    .execute(pool)
+                    .await?;
+                query("DELETE FROM datasets WHERE tenant_id = $1")
+                    .bind(tenant_id)
+                    .execute(pool)
+                    .await?;
+                let result = query("DELETE FROM tenants WHERE id = $1 AND source = 'database'")
+                    .bind(tenant_id)
+                    .execute(pool)
+                    .await?;
+                Ok(result.rows_affected() > 0)
+            }
+        }
+    }
+
+    /// Delete a dataset by ID
+    /// Returns true if a row was deleted.
+    pub async fn delete_dataset(&self, dataset_id: &str) -> Result<bool, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let result = query("DELETE FROM datasets WHERE id = ?")
+                    .bind(dataset_id)
+                    .execute(pool)
+                    .await?;
+                Ok(result.rows_affected() > 0)
+            }
+            Catalog::Postgres(pool) => {
+                let result = query("DELETE FROM datasets WHERE id = $1")
+                    .bind(dataset_id)
+                    .execute(pool)
+                    .await?;
+                Ok(result.rows_affected() > 0)
+            }
+        }
+    }
+
+    /// Delete a dataset by ID, enforcing tenant ownership.
+    /// Returns true if a row was deleted, false if not found or wrong tenant.
+    pub async fn delete_dataset_for_tenant(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let result = query("DELETE FROM datasets WHERE id = ? AND tenant_id = ?")
+                    .bind(dataset_id)
+                    .bind(tenant_id)
+                    .execute(pool)
+                    .await?;
+                Ok(result.rows_affected() > 0)
+            }
+            Catalog::Postgres(pool) => {
+                let result = query("DELETE FROM datasets WHERE id = $1 AND tenant_id = $2")
+                    .bind(dataset_id)
+                    .bind(tenant_id)
+                    .execute(pool)
+                    .await?;
+                Ok(result.rows_affected() > 0)
+            }
+        }
+    }
 }
 
 #[cfg(test)]

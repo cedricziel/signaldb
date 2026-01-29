@@ -390,6 +390,7 @@ mod tests {
                 }],
                 schema_config: None,
             }],
+            admin_api_key: None,
         };
         let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 

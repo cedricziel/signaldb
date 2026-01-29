@@ -7,7 +7,7 @@ mod authenticator;
 mod middleware;
 
 pub use authenticator::Authenticator;
-pub use middleware::{TenantContextExtractor, auth_middleware};
+pub use middleware::{TenantContextExtractor, admin_auth_middleware, auth_middleware};
 
 /// Tenant context extracted from authenticated request
 #[derive(Debug, Clone)]

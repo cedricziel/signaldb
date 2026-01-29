@@ -4,6 +4,9 @@
 [build]
 target-dir = "target"
 
+[alias]
+xtask = "run --package xtask --"
+
 [env]
 RUST_BACKTRACE = { value = "1", condition = { env_not_set = "RUST_BACKTRACE" } }
 

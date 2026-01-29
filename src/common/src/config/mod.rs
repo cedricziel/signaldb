@@ -247,6 +247,9 @@ pub struct AuthConfig {
     /// List of configured tenants
     #[serde(default)]
     pub tenants: Vec<TenantConfig>,
+    /// Admin API key for management endpoints
+    #[serde(default)]
+    pub admin_api_key: Option<String>,
 }
 
 // Keep IcebergConfig for backward compatibility

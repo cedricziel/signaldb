@@ -18,7 +18,7 @@ WORKDIR /build
 
 # Copy dependency manifests for caching
 COPY Cargo.toml Cargo.lock ./
-COPY deny.toml rustfmt.toml ./
+COPY deny.toml rustfmt.toml schemas.toml ./
 
 # Copy all workspace Cargo.toml files
 COPY src/acceptor/Cargo.toml src/acceptor/
@@ -28,9 +28,13 @@ COPY src/querier/Cargo.toml src/querier/
 COPY src/common/Cargo.toml src/common/
 COPY src/tempo-api/Cargo.toml src/tempo-api/
 COPY src/signaldb-bin/Cargo.toml src/signaldb-bin/
+COPY src/signaldb-api/Cargo.toml src/signaldb-api/
+COPY src/signaldb-sdk/Cargo.toml src/signaldb-sdk/
+COPY src/signaldb-cli/Cargo.toml src/signaldb-cli/
 COPY src/signal-producer/Cargo.toml src/signal-producer/
 COPY src/grafana-plugin/backend/Cargo.toml src/grafana-plugin/backend/
 COPY tests-integration/Cargo.toml tests-integration/
+COPY xtask/Cargo.toml xtask/
 
 # Create dummy source files to build dependencies
 RUN mkdir -p src/acceptor/src && echo "fn main() {}" > src/acceptor/src/main.rs && \
@@ -40,9 +44,13 @@ RUN mkdir -p src/acceptor/src && echo "fn main() {}" > src/acceptor/src/main.rs 
     mkdir -p src/common/src && echo "pub fn dummy() {}" > src/common/src/lib.rs && \
     mkdir -p src/tempo-api/src && echo "pub fn dummy() {}" > src/tempo-api/src/lib.rs && \
     mkdir -p src/signaldb-bin/src && echo "fn main() {}" > src/signaldb-bin/src/main.rs && \
+    mkdir -p src/signaldb-api/src && echo "pub fn dummy() {}" > src/signaldb-api/src/lib.rs && \
+    mkdir -p src/signaldb-sdk/src && echo "pub fn dummy() {}" > src/signaldb-sdk/src/lib.rs && \
+    mkdir -p src/signaldb-cli/src && echo "fn main() {}" > src/signaldb-cli/src/main.rs && \
     mkdir -p src/signal-producer/src && echo "fn main() {}" > src/signal-producer/src/main.rs && \
     mkdir -p src/grafana-plugin/backend/src && echo "fn main() {}" > src/grafana-plugin/backend/src/main.rs && \
-    mkdir -p tests-integration/src && echo "pub fn dummy() {}" > tests-integration/src/lib.rs
+    mkdir -p tests-integration/src && echo "pub fn dummy() {}" > tests-integration/src/lib.rs && \
+    mkdir -p xtask/src && echo "fn main() {}" > xtask/src/main.rs
 
 # Build dependencies only (this layer will be cached)
 RUN cargo build --release \
@@ -57,7 +65,9 @@ RUN rm -rf src/*/src && \
     find target/release -type f -executable -delete && \
     rm -f target/release/deps/signaldb*
 
-# Copy actual source code
+# Copy actual source code and build assets
+COPY api/ api/
+COPY opentelemetry-proto/ opentelemetry-proto/
 COPY src/ src/
 
 # Build all service binaries in release mode

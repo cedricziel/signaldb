@@ -4,18 +4,16 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post, put},
+    routing::{get, post},
 };
-use common::tenant_api::{CreateTenantRequest, TenantApi, TenantInfo, UpdateTenantRequest};
+use common::tenant_api::TenantApi;
 use serde_json::json;
 
 /// Create tenant management routes
 pub fn router<S: RouterState>() -> Router<S> {
     Router::new()
         .route("/tenants", get(list_tenants::<S>))
-        .route("/tenants", post(create_tenant::<S>))
         .route("/tenants/{tenant_id}", get(get_tenant::<S>))
-        .route("/tenants/{tenant_id}", put(update_tenant::<S>))
         .route("/tenants/{tenant_id}/tables", get(list_tenant_tables::<S>))
         .route(
             "/tenants/{tenant_id}/tables/create",
@@ -38,42 +36,6 @@ pub async fn list_tenants<S: RouterState>(state: State<S>) -> impl IntoResponse 
     Json(response)
 }
 
-/// POST /tenants
-///
-/// Create a new tenant
-#[tracing::instrument]
-pub async fn create_tenant<S: RouterState>(
-    state: State<S>,
-    Json(request): Json<CreateTenantRequest>,
-) -> impl IntoResponse {
-    let api = TenantApi::new(state.config().clone());
-
-    // Validate the request
-    if let Err(e) = api.validate_create_tenant_request(&request) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": "Validation failed",
-                "message": e.to_string()
-            })),
-        );
-    }
-
-    // For now, just return the tenant info that would be created
-    // TODO: Actually persist the tenant configuration
-    let tenant_info = TenantInfo {
-        tenant_id: request.tenant_id,
-        schema: request.schema,
-        custom_schemas: request.custom_schemas,
-        enabled: request.enabled.unwrap_or(true),
-    };
-
-    (
-        StatusCode::CREATED,
-        Json(serde_json::to_value(tenant_info).unwrap()),
-    )
-}
-
 /// GET /tenants/:tenant_id
 ///
 /// Get information about a specific tenant
@@ -90,61 +52,6 @@ pub async fn get_tenant<S: RouterState>(
             Json(serde_json::to_value(tenant_info).unwrap()),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "error": "Tenant not found",
-                "message": e.to_string()
-            })),
-        )
-            .into_response(),
-    }
-}
-
-/// PUT /tenants/:tenant_id
-///
-/// Update an existing tenant
-#[tracing::instrument]
-pub async fn update_tenant<S: RouterState>(
-    state: State<S>,
-    Path(tenant_id): Path<String>,
-    Json(request): Json<UpdateTenantRequest>,
-) -> impl IntoResponse {
-    let api = TenantApi::new(state.config().clone());
-
-    // Validate the request
-    if let Err(e) = api.validate_update_tenant_request(&tenant_id, &request) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": "Validation failed",
-                "message": e.to_string()
-            })),
-        )
-            .into_response();
-    }
-
-    // Get existing tenant and update it
-    match api.get_tenant(&tenant_id) {
-        Ok(mut tenant_info) => {
-            // Update fields if provided
-            if let Some(schema) = request.schema {
-                tenant_info.schema = Some(schema);
-            }
-            if let Some(custom_schemas) = request.custom_schemas {
-                tenant_info.custom_schemas = Some(custom_schemas);
-            }
-            if let Some(enabled) = request.enabled {
-                tenant_info.enabled = enabled;
-            }
-
-            // TODO: Actually persist the updated tenant configuration
-            (
-                StatusCode::OK,
-                Json(serde_json::to_value(tenant_info).unwrap()),
-            )
-                .into_response()
-        }
         Err(e) => (
             StatusCode::NOT_FOUND,
             Json(json!({
@@ -259,7 +166,7 @@ mod tests {
     use common::config::{
         Configuration, DefaultSchemas, SchemaConfig, TenantSchemaConfig, TenantsConfig,
     };
-    use common::tenant_api::{CreateTenantRequest, TenantApi, UpdateTenantRequest};
+    use common::tenant_api::TenantApi;
     use std::collections::HashMap;
 
     async fn create_test_state() -> InMemoryStateImpl {
@@ -308,42 +215,6 @@ mod tests {
 
         // Test getting non-existent tenant
         assert!(api.get_tenant("unknown-tenant").is_err());
-
-        // Test validation for create request
-        let valid_request = CreateTenantRequest {
-            tenant_id: "new-tenant".to_string(),
-            schema: None,
-            custom_schemas: None,
-            enabled: Some(true),
-        };
-        assert!(api.validate_create_tenant_request(&valid_request).is_ok());
-
-        // Test validation failure for empty tenant ID
-        let invalid_request = CreateTenantRequest {
-            tenant_id: "".to_string(),
-            schema: None,
-            custom_schemas: None,
-            enabled: Some(true),
-        };
-        assert!(
-            api.validate_create_tenant_request(&invalid_request)
-                .is_err()
-        );
-
-        // Test validation for update request
-        let update_request = UpdateTenantRequest {
-            schema: Some(SchemaConfig {
-                catalog_type: "sql".to_string(),
-                catalog_uri: "sqlite:///test.db".to_string(),
-                default_schemas: DefaultSchemas::default(),
-            }),
-            custom_schemas: None,
-            enabled: Some(false),
-        };
-        assert!(
-            api.validate_update_tenant_request("test-tenant", &update_request)
-                .is_ok()
-        );
     }
 
     #[tokio::test]

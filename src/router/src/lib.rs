@@ -1,5 +1,11 @@
-use axum::{Router, http::StatusCode, middleware, response::IntoResponse, routing::get};
-use common::auth::{Authenticator, auth_middleware};
+use axum::{
+    Json, Router,
+    http::StatusCode,
+    middleware,
+    response::IntoResponse,
+    routing::{delete, get, post, put},
+};
+use common::auth::{Authenticator, admin_auth_middleware, auth_middleware};
 use common::catalog::Catalog;
 use common::config::Configuration;
 use std::sync::Arc;
@@ -79,14 +85,80 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
     let auth_layer =
         middleware::from_fn(move |req, next| auth_middleware(authenticator.clone(), req, next));
 
+    // Create admin auth middleware layer
+    let admin_key_hash = state
+        .config()
+        .auth
+        .admin_api_key
+        .as_ref()
+        .map(|key| Authenticator::hash_api_key(key));
+    let admin_auth_layer = middleware::from_fn(move |req, next| {
+        admin_auth_middleware(admin_key_hash.clone(), req, next)
+    });
+
+    // Build admin routes
+    let admin_router = Router::new()
+        .route("/tenants", get(endpoints::admin::list_tenants::<S>))
+        .route("/tenants", post(endpoints::admin::create_tenant::<S>))
+        .route(
+            "/tenants/{tenant_id}",
+            get(endpoints::admin::get_tenant::<S>),
+        )
+        .route(
+            "/tenants/{tenant_id}",
+            put(endpoints::admin::update_tenant::<S>),
+        )
+        .route(
+            "/tenants/{tenant_id}",
+            delete(endpoints::admin::delete_tenant::<S>),
+        )
+        .route(
+            "/tenants/{tenant_id}/api-keys",
+            get(endpoints::admin::list_api_keys::<S>),
+        )
+        .route(
+            "/tenants/{tenant_id}/api-keys",
+            post(endpoints::admin::create_api_key::<S>),
+        )
+        .route(
+            "/tenants/{tenant_id}/api-keys/{key_id}",
+            delete(endpoints::admin::revoke_api_key::<S>),
+        )
+        .route(
+            "/tenants/{tenant_id}/datasets",
+            get(endpoints::admin::list_datasets::<S>),
+        )
+        .route(
+            "/tenants/{tenant_id}/datasets",
+            post(endpoints::admin::create_dataset::<S>),
+        )
+        .route(
+            "/tenants/{tenant_id}/datasets/{dataset_id}",
+            delete(endpoints::admin::delete_dataset::<S>),
+        )
+        .layer(admin_auth_layer);
+
+    // Load OpenAPI spec from the generated JSON file
+    let openapi_spec = load_openapi_spec();
+
     Router::new()
         // Public health check endpoint (no authentication)
         .route("/health", get(health_check))
+        // OpenAPI spec endpoint (public)
+        .route(
+            "/api/v1/openapi.json",
+            get(move || {
+                let spec = openapi_spec.clone();
+                async move { Json(spec) }
+            }),
+        )
         // Protected routes with authentication
         .nest(
             "/tempo",
             endpoints::tempo::router().layer(auth_layer.clone()),
         )
+        // Admin routes with admin authentication
+        .nest("/api/v1/admin", admin_router)
         .nest("/api/v1", endpoints::tenant::router().layer(auth_layer))
         .with_state(state)
 }
@@ -101,4 +173,10 @@ pub fn create_flight_service<S: RouterState>(
 /// Basic health check endpoint
 async fn health_check() -> impl IntoResponse {
     StatusCode::OK
+}
+
+/// Load the OpenAPI specification from the generated JSON file
+fn load_openapi_spec() -> serde_json::Value {
+    serde_json::from_str(include_str!("../../../api/admin-api.json"))
+        .expect("api/admin-api.json must be valid JSON")
 }

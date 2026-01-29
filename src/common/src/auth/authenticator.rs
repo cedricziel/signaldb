@@ -211,7 +211,7 @@ impl Authenticator {
     }
 
     /// Hash an API key using SHA-256
-    fn hash_api_key(api_key: &str) -> String {
+    pub fn hash_api_key(api_key: &str) -> String {
         let mut hasher = Sha256::new();
         hasher.update(api_key.as_bytes());
         format!("{:x}", hasher.finalize())
@@ -270,6 +270,7 @@ mod tests {
                 }],
                 schema_config: None,
             }],
+            admin_api_key: None,
         };
 
         let authenticator = Authenticator::new(auth_config, catalog);
@@ -303,6 +304,7 @@ mod tests {
         let auth_config = AuthConfig {
             enabled: true,
             tenants: vec![],
+            admin_api_key: None,
         };
         let authenticator = Authenticator::new(auth_config, catalog);
 
@@ -335,6 +337,7 @@ mod tests {
                 }],
                 schema_config: None,
             }],
+            admin_api_key: None,
         };
         let authenticator = Authenticator::new(auth_config, catalog);
 
@@ -369,6 +372,7 @@ mod tests {
                 }],
                 schema_config: None,
             }],
+            admin_api_key: None,
         };
         let authenticator = Authenticator::new(auth_config, catalog);
 
@@ -398,6 +402,7 @@ mod tests {
                 }],
                 schema_config: None,
             }],
+            admin_api_key: None,
         };
         let authenticator = Authenticator::new(auth_config, catalog);
 
