@@ -207,6 +207,11 @@ panic!("Failed to initialize: {error}");
 
 Always use `cargo machete --with-metadata` for comprehensive unused dependency detection before committing.
 
+## Development Guidelines
+
+- @docs/ai/development.md
+- @docs/ai/rust.md
+
 ## Commit Guidelines
 
 Use semantic commits for all changes.
