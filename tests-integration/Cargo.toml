@@ -51,6 +51,10 @@ aws-credential-types.workspace = true
 name = "iceberg_integration"
 path = "tests/writer/iceberg_integration.rs"
 
+[[test]]
+name = "flight_rpc_tests"
+path = "tests/e2e/flight_rpc_tests.rs"
+
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory
 ignored = ["acceptor", "anyhow", "arrow-flight", "datafusion", "futures", "iceberg-rust", "log", "opentelemetry-proto", "querier", "router", "tokio", "tokio-stream", "tonic", "writer"]

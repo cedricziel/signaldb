@@ -102,6 +102,50 @@ The Router exposes Flight capabilities via HTTP endpoints, providing:
 - Trace retrieval and search functionality
 - Administrative operations
 
+### 4.4 Supported Flight RPC Methods
+
+The following table shows the Flight RPC methods supported by each service:
+
+| Method | Router | Querier | Writer | Description |
+|--------|--------|---------|--------|-------------|
+| `Handshake` | ✅ | ✅ | ✅ | Protocol version exchange |
+| `ListFlights` | ✅ | ✅ | ❌ | List available query types |
+| `GetFlightInfo` | ✅ | ❌ | ❌ | Get metadata for a query |
+| `GetSchema` | ✅ | ✅ | ❌ | Get schema for a query type |
+| `DoGet` | ✅ | ✅ | ❌ | Execute query and stream results |
+| `DoPut` | ❌ | ❌ | ✅ | Write data to storage |
+| `DoExchange` | ❌ | ❌ | ❌ | Not implemented |
+| `DoAction` | ❌ | ❌ | ❌ | Not implemented |
+
+**Note**: The Router is the primary client-facing Flight interface. Clients typically connect to the Router for all query operations. The Querier provides `GetSchema` for internal use but clients should use the Router's implementation.
+
+#### Supported Query Types (via FlightDescriptor command)
+
+The Router supports the following query types via the FlightDescriptor `cmd` field:
+
+| Query Type | Description | Required Parameters |
+|------------|-------------|---------------------|
+| `traces` | Query all trace/span data | None |
+| `trace_by_id` | Get a specific trace by ID | `id` (trace ID) |
+| `logs` | Query log data | None |
+| `metrics` | Query metric data | None |
+
+**Example Usage**:
+
+```rust
+// Get flight info for traces query
+let descriptor = FlightDescriptor::new_cmd("traces");
+let flight_info = client.get_flight_info(descriptor).await?;
+
+// Get schema for trace_by_id query
+let descriptor = FlightDescriptor::new_cmd("trace_by_id");
+let schema = client.get_schema(descriptor).await?;
+
+// Execute query with parameters
+let descriptor = FlightDescriptor::new_cmd("trace_by_id?id=abc123");
+let stream = client.do_get(Ticket::new(descriptor.cmd)).await?;
+```
+
 ## 5. Implementation Details
 
 ### 5.1 Current Data Flow ✅ **Working**
