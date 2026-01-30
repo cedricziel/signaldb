@@ -1,10 +1,13 @@
-use acceptor::{serve_otlp_grpc, serve_otlp_http};
+use acceptor::{
+    AcceptorResources, GrpcAcceptorConfig, HttpAcceptorConfig, init_acceptor_resources,
+    serve_otlp_grpc, serve_otlp_http,
+};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use common::cli::{CommonArgs, CommonCommands, utils};
-use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::oneshot;
 
 #[derive(Parser)]
@@ -75,16 +78,28 @@ async fn main() -> Result<()> {
     let grpc_addr = SocketAddr::new(bind_ip, cli.grpc_port);
     let http_addr = SocketAddr::new(bind_ip, cli.http_port);
 
-    // Initialize acceptor service bootstrap for catalog-based discovery
-    let acceptor_bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Acceptor,
-        grpc_addr.to_string(), // Register the main gRPC endpoint
-    )
-    .await
-    .context("Failed to initialize acceptor service bootstrap")?;
+    // Initialize shared resources for both gRPC and HTTP servers
+    let advertise_addr =
+        std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| grpc_addr.to_string());
 
-    log::info!("Acceptor service registered with catalog");
+    let resources = init_acceptor_resources(config.clone(), advertise_addr, cli.wal_dir.clone())
+        .await
+        .context("Failed to initialize acceptor resources")?;
+
+    log::info!("Acceptor resources initialized successfully");
+
+    // Clone resources for HTTP server (Arc refs are cheap to clone)
+    let grpc_resources = AcceptorResources {
+        flight_transport: Arc::clone(&resources.flight_transport),
+        wal_manager: Arc::clone(&resources.wal_manager),
+        authenticator: Arc::clone(&resources.authenticator),
+    };
+
+    let http_resources = AcceptorResources {
+        flight_transport: Arc::clone(&resources.flight_transport),
+        wal_manager: Arc::clone(&resources.wal_manager),
+        authenticator: Arc::clone(&resources.authenticator),
+    };
 
     // Channels for OTLP/gRPC server signals
     let (grpc_init_tx, grpc_init_rx) = oneshot::channel::<()>();
@@ -97,18 +112,29 @@ async fn main() -> Result<()> {
     let (http_stopped_tx, http_stopped_rx) = oneshot::channel::<()>();
 
     // Spawn OTLP/gRPC acceptor
-    let wal_dir = cli.wal_dir.clone();
+    let grpc_config = GrpcAcceptorConfig {
+        addr: grpc_addr,
+        resources: grpc_resources,
+    };
     let grpc_handle = tokio::spawn(async move {
         if let Err(e) =
-            serve_otlp_grpc(grpc_init_tx, grpc_shutdown_rx, grpc_stopped_tx, wal_dir).await
+            serve_otlp_grpc(grpc_config, grpc_init_tx, grpc_shutdown_rx, grpc_stopped_tx).await
         {
             log::error!("OTLP/gRPC server error: {e}");
         }
     });
 
-    // Spawn OTLP/HTTP acceptor
+    // Spawn OTLP/HTTP acceptor (with Prometheus remote_write support)
+    let http_config = HttpAcceptorConfig {
+        addr: http_addr,
+        flight_transport: http_resources.flight_transport,
+        wal_manager: http_resources.wal_manager,
+        authenticator: http_resources.authenticator,
+    };
     let http_handle = tokio::spawn(async move {
-        if let Err(e) = serve_otlp_http(http_init_tx, http_shutdown_rx, http_stopped_tx).await {
+        if let Err(e) =
+            serve_otlp_http(http_config, http_init_tx, http_shutdown_rx, http_stopped_tx).await
+        {
             log::error!("OTLP/HTTP server error: {e}");
         }
     });
@@ -121,21 +147,17 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to initialize OTLP/HTTP server")?;
 
-    log::info!("✅ Acceptor service started successfully");
-    log::info!("📡 OTLP gRPC server listening on {grpc_addr}");
-    log::info!("🌐 OTLP HTTP server listening on {http_addr}");
+    log::info!("Acceptor service started successfully");
+    log::info!("OTLP gRPC server listening on {grpc_addr}");
+    log::info!("OTLP HTTP server listening on {http_addr}");
+    log::info!("Prometheus remote_write available at http://{http_addr}/api/v1/write");
 
     // Wait for shutdown signal (Ctrl+C)
     tokio::signal::ctrl_c()
         .await
         .context("Failed to listen for shutdown signal")?;
 
-    log::info!("🛑 Shutting down acceptor service...");
-
-    // Graceful deregistration using service bootstrap
-    if let Err(e) = acceptor_bootstrap.shutdown().await {
-        log::error!("Failed to shutdown acceptor service bootstrap: {e}");
-    }
+    log::info!("Shutting down acceptor service...");
 
     // Trigger shutdown
     let _ = grpc_shutdown_tx.send(());
@@ -149,7 +171,7 @@ async fn main() -> Result<()> {
     let _ = grpc_handle.await;
     let _ = http_handle.await;
 
-    log::info!("✅ Acceptor service stopped gracefully");
+    log::info!("Acceptor service stopped gracefully");
 
     Ok(())
 }

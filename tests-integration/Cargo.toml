@@ -35,6 +35,9 @@ axum.workspace = true
 tower.workspace = true
 serde_json.workspace = true
 hex.workspace = true
+prost.workspace = true
+snap.workspace = true
+chrono.workspace = true
 
 # Iceberg catalog for integration tests
 iceberg-rust.workspace = true
@@ -54,6 +57,10 @@ path = "tests/writer/iceberg_integration.rs"
 [[test]]
 name = "flight_rpc_tests"
 path = "tests/e2e/flight_rpc_tests.rs"
+
+[[test]]
+name = "prometheus_remote_write_test"
+path = "tests/prometheus_remote_write_test.rs"
 
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory

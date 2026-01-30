@@ -21,6 +21,7 @@ async-trait.workspace = true
 
 clap.workspace = true
 figment.workspace = true
+tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 once_cell.workspace = true
 tokio.workspace = true
@@ -44,6 +45,10 @@ object_store.workspace = true
 url.workspace = true
 toml.workspace = true
 sha2 = "0.10"
+
+# Prometheus remote write support
+snap.workspace = true
+prost.workspace = true
 
 [dev-dependencies]
 testcontainers-modules.workspace = true
