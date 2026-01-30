@@ -138,8 +138,16 @@ fn generate_target_info_metric(
 ) -> Option<PrometheusTimeSeries> {
     let resource = resource?;
 
-    // Skip if resource has no attributes beyond job/instance
-    if resource.attributes.len() <= 2 {
+    // Count attributes excluding service.name and service.instance.id
+    // (these are already mapped to job/instance labels)
+    let meaningful_attributes_count = resource
+        .attributes
+        .iter()
+        .filter(|kv| kv.key != "service.name" && kv.key != "service.instance.id")
+        .count();
+
+    // Skip if no meaningful attributes beyond job/instance mapping
+    if meaningful_attributes_count == 0 {
         return None;
     }
 
