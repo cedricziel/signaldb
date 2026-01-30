@@ -138,6 +138,270 @@ struct DetectedMetricInfo {
     suffix: Option<String>,
 }
 
+// ============================================================================
+// Prometheus Remote Write Protobuf Types (Wire Format)
+// ============================================================================
+
+/// Module containing prost-derived types matching the Prometheus remote_write protobuf spec.
+/// These types are used for deserializing the wire format, then converted to our internal types.
+pub mod proto {
+    use prost::Message;
+
+    /// Prometheus WriteRequest - the top-level message in remote_write protocol
+    #[derive(Clone, PartialEq, Message)]
+    pub struct WriteRequest {
+        #[prost(message, repeated, tag = "1")]
+        pub timeseries: Vec<TimeSeries>,
+        // Field 2 is reserved (used by Cortex)
+        #[prost(message, repeated, tag = "3")]
+        pub metadata: Vec<MetricMetadata>,
+    }
+
+    /// A single time series with labels, samples, and optional histograms
+    #[derive(Clone, PartialEq, Message)]
+    pub struct TimeSeries {
+        #[prost(message, repeated, tag = "1")]
+        pub labels: Vec<Label>,
+        #[prost(message, repeated, tag = "2")]
+        pub samples: Vec<Sample>,
+        #[prost(message, repeated, tag = "3")]
+        pub exemplars: Vec<Exemplar>,
+        #[prost(message, repeated, tag = "4")]
+        pub histograms: Vec<Histogram>,
+    }
+
+    /// A label key-value pair
+    #[derive(Clone, PartialEq, Message)]
+    pub struct Label {
+        #[prost(string, tag = "1")]
+        pub name: String,
+        #[prost(string, tag = "2")]
+        pub value: String,
+    }
+
+    /// A sample value with timestamp
+    #[derive(Clone, PartialEq, Message)]
+    pub struct Sample {
+        #[prost(double, tag = "1")]
+        pub value: f64,
+        #[prost(int64, tag = "2")]
+        pub timestamp: i64,
+    }
+
+    /// Exemplar for trace correlation
+    #[derive(Clone, PartialEq, Message)]
+    pub struct Exemplar {
+        #[prost(message, repeated, tag = "1")]
+        pub labels: Vec<Label>,
+        #[prost(double, tag = "2")]
+        pub value: f64,
+        #[prost(int64, tag = "3")]
+        pub timestamp: i64,
+    }
+
+    /// Native histogram (remote_write v2)
+    #[derive(Clone, PartialEq, Message)]
+    pub struct Histogram {
+        #[prost(oneof = "histogram::Count", tags = "1, 2")]
+        pub count: Option<histogram::Count>,
+        #[prost(double, tag = "3")]
+        pub sum: f64,
+        #[prost(sint32, tag = "4")]
+        pub schema: i32,
+        #[prost(double, tag = "5")]
+        pub zero_threshold: f64,
+        #[prost(oneof = "histogram::ZeroCount", tags = "6, 7")]
+        pub zero_count: Option<histogram::ZeroCount>,
+        #[prost(message, repeated, tag = "8")]
+        pub negative_spans: Vec<BucketSpan>,
+        #[prost(sint64, repeated, tag = "9")]
+        pub negative_deltas: Vec<i64>,
+        #[prost(double, repeated, tag = "10")]
+        pub negative_counts: Vec<f64>,
+        #[prost(message, repeated, tag = "11")]
+        pub positive_spans: Vec<BucketSpan>,
+        #[prost(sint64, repeated, tag = "12")]
+        pub positive_deltas: Vec<i64>,
+        #[prost(double, repeated, tag = "13")]
+        pub positive_counts: Vec<f64>,
+        #[prost(enumeration = "histogram::ResetHint", tag = "14")]
+        pub reset_hint: i32,
+        #[prost(int64, tag = "15")]
+        pub timestamp: i64,
+    }
+
+    pub mod histogram {
+        #[derive(Clone, PartialEq, ::prost::Oneof)]
+        pub enum Count {
+            #[prost(uint64, tag = "1")]
+            CountInt(u64),
+            #[prost(double, tag = "2")]
+            CountFloat(f64),
+        }
+
+        #[derive(Clone, PartialEq, ::prost::Oneof)]
+        pub enum ZeroCount {
+            #[prost(uint64, tag = "6")]
+            ZeroCountInt(u64),
+            #[prost(double, tag = "7")]
+            ZeroCountFloat(f64),
+        }
+
+        #[derive(
+            Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration,
+        )]
+        #[repr(i32)]
+        pub enum ResetHint {
+            Unknown = 0,
+            Yes = 1,
+            No = 2,
+            Gauge = 3,
+        }
+    }
+
+    /// Bucket span for native histograms
+    #[derive(Clone, PartialEq, Message)]
+    pub struct BucketSpan {
+        #[prost(sint32, tag = "1")]
+        pub offset: i32,
+        #[prost(uint32, tag = "2")]
+        pub length: u32,
+    }
+
+    /// Metric metadata
+    #[derive(Clone, PartialEq, Message)]
+    pub struct MetricMetadata {
+        #[prost(enumeration = "MetricType", tag = "1")]
+        pub r#type: i32,
+        #[prost(string, tag = "2")]
+        pub metric_family_name: String,
+        #[prost(string, tag = "4")]
+        pub help: String,
+        #[prost(string, tag = "5")]
+        pub unit: String,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+    #[repr(i32)]
+    pub enum MetricType {
+        Unknown = 0,
+        Counter = 1,
+        Gauge = 2,
+        Summary = 3,
+        Histogram = 4,
+        GaugeHistogram = 5,
+        Info = 6,
+        Stateset = 7,
+    }
+}
+
+/// Decode a snappy-compressed protobuf WriteRequest from raw bytes.
+///
+/// This is the entry point for Prometheus remote_write ingestion:
+/// 1. Decompress snappy block format
+/// 2. Decode protobuf
+/// 3. Convert to internal PrometheusWriteRequest format
+pub fn decode_prometheus_remote_write(data: &[u8]) -> anyhow::Result<PrometheusWriteRequest> {
+    use prost::Message;
+
+    // Decompress snappy (block format, not framed)
+    let decompressed = snap::raw::Decoder::new()
+        .decompress_vec(data)
+        .map_err(|e| anyhow::anyhow!("Snappy decompression failed: {e}"))?;
+
+    // Decode protobuf
+    let proto_request = proto::WriteRequest::decode(decompressed.as_slice())
+        .map_err(|e| anyhow::anyhow!("Protobuf decode failed: {e}"))?;
+
+    // Convert to internal format
+    Ok(proto_to_internal(proto_request))
+}
+
+/// Convert protobuf WriteRequest to internal PrometheusWriteRequest
+fn proto_to_internal(proto: proto::WriteRequest) -> PrometheusWriteRequest {
+    PrometheusWriteRequest {
+        timeseries: proto
+            .timeseries
+            .into_iter()
+            .map(|ts| PrometheusTimeSeries {
+                labels: ts
+                    .labels
+                    .into_iter()
+                    .map(|l| PrometheusLabel {
+                        name: l.name,
+                        value: l.value,
+                    })
+                    .collect(),
+                samples: ts
+                    .samples
+                    .into_iter()
+                    .map(|s| PrometheusSample {
+                        value: s.value,
+                        timestamp: s.timestamp,
+                    })
+                    .collect(),
+                histograms: ts
+                    .histograms
+                    .into_iter()
+                    .map(|h| PrometheusHistogram {
+                        count: match h.count {
+                            Some(proto::histogram::Count::CountInt(c)) => c,
+                            Some(proto::histogram::Count::CountFloat(c)) => c as u64,
+                            None => 0,
+                        },
+                        sum: h.sum,
+                        schema: h.schema,
+                        zero_threshold: h.zero_threshold,
+                        zero_count: match h.zero_count {
+                            Some(proto::histogram::ZeroCount::ZeroCountInt(c)) => c,
+                            Some(proto::histogram::ZeroCount::ZeroCountFloat(c)) => c as u64,
+                            None => 0,
+                        },
+                        negative_spans: h
+                            .negative_spans
+                            .into_iter()
+                            .map(|s| BucketSpan {
+                                offset: s.offset,
+                                length: s.length,
+                            })
+                            .collect(),
+                        negative_deltas: h.negative_deltas,
+                        positive_spans: h
+                            .positive_spans
+                            .into_iter()
+                            .map(|s| BucketSpan {
+                                offset: s.offset,
+                                length: s.length,
+                            })
+                            .collect(),
+                        positive_deltas: h.positive_deltas,
+                        timestamp: h.timestamp,
+                    })
+                    .collect(),
+            })
+            .collect(),
+        metadata: proto
+            .metadata
+            .into_iter()
+            .map(|m| PrometheusMetricMetadata {
+                metric_family_name: m.metric_family_name,
+                metric_type: match m.r#type {
+                    1 => PrometheusMetricType::Counter,
+                    2 => PrometheusMetricType::Gauge,
+                    3 => PrometheusMetricType::Summary,
+                    4 => PrometheusMetricType::Histogram,
+                    5 => PrometheusMetricType::GaugeHistogram,
+                    6 => PrometheusMetricType::Info,
+                    7 => PrometheusMetricType::StateSet,
+                    _ => PrometheusMetricType::Unknown,
+                },
+                help: m.help,
+                unit: m.unit,
+            })
+            .collect(),
+    }
+}
+
 /// Convert Prometheus WriteRequest to OTEL ExportMetricsServiceRequest
 ///
 /// This function:
