@@ -5,7 +5,7 @@ pub mod services;
 use std::{net::SocketAddr, sync::Arc, time::SystemTime};
 
 use axum::{
-    Router,
+    Extension, Router,
     routing::{get, post},
 };
 use common::dataset::DataSet;
@@ -36,6 +36,8 @@ use crate::handler::WalManager;
 use crate::handler::otlp_grpc::TraceHandler;
 use crate::handler::otlp_log_handler::LogHandler;
 use crate::handler::otlp_metrics_handler::MetricsHandler;
+use crate::handler::{PrometheusHandler, PrometheusHandlerState};
+use crate::middleware::auth_middleware;
 use crate::middleware::grpc_auth::grpc_auth_interceptor;
 use crate::services::{
     otlp_log_service::LogAcceptorService, otlp_metric_service::MetricsAcceptorService,
@@ -210,6 +212,55 @@ pub fn acceptor_router() -> Router {
     Router::new()
         .route("/v1/traces", post(handle_traces))
         .route("/health", get(health))
+}
+
+/// Create a router for Prometheus remote_write endpoint with authentication
+///
+/// This router handles:
+/// - POST /api/v1/write - Prometheus remote_write ingestion
+///
+/// Authentication is handled by middleware that extracts tenant context from headers.
+///
+/// # Example
+///
+/// ```ignore
+/// let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
+/// let prometheus_handler = Arc::new(PrometheusHandler::new(flight_transport, wal_manager));
+/// let router = prometheus_router(authenticator, prometheus_handler);
+/// ```
+pub fn prometheus_router(
+    authenticator: Arc<Authenticator>,
+    prometheus_handler: Arc<PrometheusHandler>,
+) -> Router {
+    use axum::middleware;
+
+    let state = PrometheusHandlerState {
+        handler: prometheus_handler,
+    };
+
+    // Use Extension instead of State for simpler type handling
+    Router::new()
+        .route("/api/v1/write", post(handle_prometheus_write_with_ext))
+        .layer(Extension(state))
+        .layer(middleware::from_fn(move |req, next| {
+            let auth = authenticator.clone();
+            async move { auth_middleware(auth, req, next).await }
+        }))
+}
+
+/// Handler variant using Extension instead of State for simpler router composition
+async fn handle_prometheus_write_with_ext(
+    Extension(state): Extension<PrometheusHandlerState>,
+    headers: axum::http::HeaderMap,
+    crate::middleware::TenantContextExtractor(tenant_context): crate::middleware::TenantContextExtractor,
+    body: axum::body::Bytes,
+) -> Result<axum::http::StatusCode, crate::handler::prometheus_handler::PrometheusError> {
+    state
+        .handler
+        .handle_remote_write(&tenant_context, body, &headers)
+        .await?;
+
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 async fn health() -> &'static str {

@@ -46,6 +46,10 @@ url.workspace = true
 toml.workspace = true
 sha2 = "0.10"
 
+# Prometheus remote write support
+snap.workspace = true
+prost.workspace = true
+
 [dev-dependencies]
 testcontainers-modules.workspace = true
 testcontainers.workspace = true
