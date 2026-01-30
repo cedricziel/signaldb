@@ -241,7 +241,7 @@ jobs:
   # Docker build for arm64 (only on main branch, not PRs)
   docker-build-arm64:
     name: Build Docker Image (arm64)
-    runs-on: ubuntu-24.04-arm64
+    runs-on: ubuntu-24.04-arm
     needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
