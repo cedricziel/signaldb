@@ -3,9 +3,11 @@
 pub mod conversion_common;
 pub mod conversion_logs;
 pub mod conversion_metrics;
+pub mod conversion_prometheus;
 pub mod conversion_traces;
 
 pub use conversion_common::*;
 pub use conversion_logs::*;
 pub use conversion_metrics::*;
+pub use conversion_prometheus::*;
 pub use conversion_traces::*;
