@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use error::QuerierError;
 
 pub mod error;
+pub mod promql;
 pub mod trace;
 
 #[derive(Debug)]
