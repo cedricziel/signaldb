@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::auth::validation::validate_id;
 use crate::config::{Configuration, SchemaConfig};
 use crate::schema::{TenantSchemaRegistry, iceberg_schemas};
 
@@ -146,21 +147,18 @@ impl TenantApi {
 
     /// Validate a tenant creation request
     pub fn validate_create_tenant_request(&self, request: &CreateTenantRequest) -> Result<()> {
-        if request.tenant_id.is_empty() {
-            return Err(anyhow::anyhow!("Tenant ID cannot be empty"));
-        }
+        // Validate tenant ID format (empty check, allowed chars, path traversal, etc.)
+        let validated_id = validate_id(&request.tenant_id)
+            .map_err(|e| anyhow::anyhow!("Invalid tenant ID: {e}"))?;
 
         if self
             .registry
             .config
             .tenants
             .tenants
-            .contains_key(&request.tenant_id)
+            .contains_key(&validated_id)
         {
-            return Err(anyhow::anyhow!(
-                "Tenant '{}' already exists",
-                request.tenant_id
-            ));
+            return Err(anyhow::anyhow!("Tenant '{}' already exists", validated_id));
         }
 
         Ok(())
@@ -172,10 +170,19 @@ impl TenantApi {
         tenant_id: &str,
         _request: &UpdateTenantRequest,
     ) -> Result<()> {
-        if !self.registry.config.tenants.tenants.contains_key(tenant_id)
-            && tenant_id != self.registry.get_default_tenant()
+        // Validate tenant ID format
+        let validated_id =
+            validate_id(tenant_id).map_err(|e| anyhow::anyhow!("Invalid tenant ID: {e}"))?;
+
+        if !self
+            .registry
+            .config
+            .tenants
+            .tenants
+            .contains_key(&validated_id)
+            && validated_id != self.registry.get_default_tenant()
         {
-            return Err(anyhow::anyhow!("Tenant '{}' not found", tenant_id));
+            return Err(anyhow::anyhow!("Tenant '{}' not found", validated_id));
         }
 
         Ok(())
