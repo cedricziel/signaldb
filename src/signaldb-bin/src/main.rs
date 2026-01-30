@@ -1,4 +1,7 @@
-use acceptor::{serve_otlp_grpc, serve_otlp_http};
+use acceptor::{
+    AcceptorResources, GrpcAcceptorConfig, HttpAcceptorConfig, init_acceptor_resources,
+    serve_otlp_grpc, serve_otlp_http,
+};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use common::cli::{CommonArgs, CommonCommands, utils};
@@ -117,24 +120,58 @@ async fn main() -> Result<()> {
     // Start background WAL processing for Iceberg writes
     let writer_bg_handle = writer_flight_service.start_background_processing();
 
-    // Start OTLP/gRPC server
+    // Initialize shared acceptor resources for both gRPC and HTTP servers
     let wal_dir = std::env::var("ACCEPTOR_WAL_DIR")
         .unwrap_or_else(|_| ".wal/acceptor".to_string())
         .into();
+    let grpc_addr = SocketAddr::from(([0, 0, 0, 0], 4317));
+    let http_addr = SocketAddr::from(([0, 0, 0, 0], 4318));
+    let advertise_addr =
+        std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| grpc_addr.to_string());
+
+    let acceptor_resources = init_acceptor_resources(config.clone(), advertise_addr, wal_dir)
+        .await
+        .context("Failed to initialize acceptor resources")?;
+
+    // Clone resources for HTTP server
+    let grpc_resources = AcceptorResources {
+        flight_transport: Arc::clone(&acceptor_resources.flight_transport),
+        wal_manager: Arc::clone(&acceptor_resources.wal_manager),
+        authenticator: Arc::clone(&acceptor_resources.authenticator),
+    };
+
+    let http_resources = AcceptorResources {
+        flight_transport: Arc::clone(&acceptor_resources.flight_transport),
+        wal_manager: Arc::clone(&acceptor_resources.wal_manager),
+        authenticator: Arc::clone(&acceptor_resources.authenticator),
+    };
+
+    // Start OTLP/gRPC server
+    let grpc_config = GrpcAcceptorConfig {
+        addr: grpc_addr,
+        resources: grpc_resources,
+    };
     let grpc_handle = tokio::spawn(async move {
         serve_otlp_grpc(
+            grpc_config,
             otlp_grpc_init_tx,
             otlp_grpc_shutdown_rx,
             otlp_grpc_stopped_tx,
-            wal_dir,
         )
         .await
         .expect("Failed to start OTLP/gRPC server");
     });
 
-    // Start OTLP/HTTP server
+    // Start OTLP/HTTP server (with Prometheus remote_write support)
+    let http_config = HttpAcceptorConfig {
+        addr: http_addr,
+        flight_transport: http_resources.flight_transport,
+        wal_manager: http_resources.wal_manager,
+        authenticator: http_resources.authenticator,
+    };
     let http_handle = tokio::spawn(async move {
         serve_otlp_http(
+            http_config,
             otlp_http_init_tx,
             otlp_http_shutdown_rx,
             otlp_http_stopped_tx,

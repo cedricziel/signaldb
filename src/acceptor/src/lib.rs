@@ -91,29 +91,23 @@ pub async fn get_parquet_writer(
     .expect("Error creating parquet writer")
 }
 
-pub async fn serve_otlp_grpc(
-    init_tx: oneshot::Sender<()>,
-    shutdown_rx: oneshot::Receiver<()>,
-    stopped_tx: oneshot::Sender<()>,
+/// Shared resources for acceptor services (gRPC and HTTP)
+pub struct AcceptorResources {
+    pub flight_transport: Arc<InMemoryFlightTransport>,
+    pub wal_manager: Arc<WalManager>,
+    pub authenticator: Arc<Authenticator>,
+}
+
+/// Initialize shared resources for acceptor services
+pub async fn init_acceptor_resources(
+    config: Configuration,
+    advertise_addr: String,
     wal_dir: std::path::PathBuf,
-) -> Result<(), anyhow::Error> {
-    let addr: SocketAddr = "0.0.0.0:4317"
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse OTLP/gRPC address: {}", e))?;
-
-    // Load configuration
-    let config = Configuration::load()
-        .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
-
+) -> Result<AcceptorResources, anyhow::Error> {
     // Initialize service bootstrap for catalog-based discovery
-    let advertise_addr =
-        std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| addr.to_string());
-
     let service_bootstrap = ServiceBootstrap::new(config, ServiceType::Acceptor, advertise_addr)
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to initialize service bootstrap: {}", e))?;
-
-    log::info!("Starting OTLP/gRPC acceptor on {addr}");
+        .map_err(|e| anyhow::anyhow!("Failed to initialize service bootstrap: {e}"))?;
 
     // Extract catalog and auth config BEFORE moving service_bootstrap into InMemoryFlightTransport
     let catalog = Arc::new(service_bootstrap.catalog().clone());
@@ -126,7 +120,6 @@ pub async fn serve_otlp_grpc(
     flight_transport.start_connection_cleanup(std::time::Duration::from_secs(60));
 
     // Initialize WalManager with separate base configurations for each signal type
-    // The WalManager will create tenant/dataset-specific WALs on demand
 
     // Base WAL config for traces - baseline configuration
     let mut traces_wal_config = WalConfig::with_defaults(wal_dir.clone());
@@ -137,17 +130,15 @@ pub async fn serve_otlp_grpc(
     // Base WAL config for logs - higher volume, more frequent flushes
     let mut logs_wal_config = WalConfig::with_defaults(wal_dir.clone());
     logs_wal_config.max_segment_size = 64 * 1024 * 1024; // 64MB
-    logs_wal_config.max_buffer_entries = 2000; // Higher buffer for log volume
-    logs_wal_config.flush_interval_secs = 15; // Flush more frequently
+    logs_wal_config.max_buffer_entries = 2000;
+    logs_wal_config.flush_interval_secs = 15;
 
     // Base WAL config for metrics - highest volume, most aggressive flushing
     let mut metrics_wal_config = WalConfig::with_defaults(wal_dir.clone());
-    metrics_wal_config.max_segment_size = 128 * 1024 * 1024; // 128MB - larger segments for high volume
-    metrics_wal_config.max_buffer_entries = 5000; // Much higher buffer for metrics
-    metrics_wal_config.flush_interval_secs = 10; // Flush frequently for metrics
+    metrics_wal_config.max_segment_size = 128 * 1024 * 1024; // 128MB
+    metrics_wal_config.max_buffer_entries = 5000;
+    metrics_wal_config.flush_interval_secs = 10;
 
-    // Create WalManager with the three base configurations
-    // WAL paths will be: {wal_dir}/{tenant}/{dataset}/{signal}/
     let wal_manager = Arc::new(WalManager::new(
         traces_wal_config,
         logs_wal_config,
@@ -155,14 +146,41 @@ pub async fn serve_otlp_grpc(
     ));
 
     log::info!(
-        "✅ Initialized WalManager for multi-tenant WAL isolation (paths: {}/{{tenant}}/{{dataset}}/{{signal}})",
+        "Initialized WalManager for multi-tenant WAL isolation (paths: {}/{{tenant}}/{{dataset}}/{{signal}})",
         wal_dir.display()
     );
 
-    // Create Authenticator for multi-tenant authentication (using catalog/auth_config extracted earlier)
+    // Create Authenticator for multi-tenant authentication
     let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
-    log::info!("✅ Initialized Authenticator for multi-tenant gRPC authentication");
+    log::info!("Initialized Authenticator for multi-tenant authentication");
+
+    Ok(AcceptorResources {
+        flight_transport,
+        wal_manager,
+        authenticator,
+    })
+}
+
+/// Configuration for the gRPC acceptor server
+pub struct GrpcAcceptorConfig {
+    pub addr: SocketAddr,
+    pub resources: AcceptorResources,
+}
+
+pub async fn serve_otlp_grpc(
+    config: GrpcAcceptorConfig,
+    init_tx: oneshot::Sender<()>,
+    shutdown_rx: oneshot::Receiver<()>,
+    stopped_tx: oneshot::Sender<()>,
+) -> Result<(), anyhow::Error> {
+    log::info!("Starting OTLP/gRPC acceptor on {}", config.addr);
+
+    let AcceptorResources {
+        flight_transport,
+        wal_manager,
+        authenticator,
+    } = config.resources;
 
     // Set up OTLP/gRPC services with handler pattern, WAL Manager integration, and auth interceptor
     let log_handler = LogHandler::new(flight_transport.clone(), wal_manager.clone());
@@ -189,15 +207,14 @@ pub async fn serve_otlp_grpc(
     init_tx
         .send(())
         .expect("Unable to send init signal for OTLP/gRPC");
+
     tonic::transport::Server::builder()
         .add_service(log_server)
         .add_service(trace_server)
         .add_service(metric_server)
-        .serve_with_shutdown(addr, async {
+        .serve_with_shutdown(config.addr, async {
             shutdown_rx.await.ok();
-
-            log::info!("Shutting down OTLP acceptor");
-            // Service bootstrap shutdown is handled via InMemoryFlightTransport's drop impl
+            log::info!("Shutting down OTLP/gRPC acceptor");
         })
         .await
         .expect("Unable to start OTLP acceptor");
@@ -277,31 +294,45 @@ async fn handle_traces(
         .unwrap()
 }
 
+/// Configuration for the HTTP acceptor server
+pub struct HttpAcceptorConfig {
+    pub addr: SocketAddr,
+    pub flight_transport: Arc<InMemoryFlightTransport>,
+    pub wal_manager: Arc<WalManager>,
+    pub authenticator: Arc<Authenticator>,
+}
+
 pub async fn serve_otlp_http(
+    config: HttpAcceptorConfig,
     init_tx: oneshot::Sender<()>,
     shutdown_rx: oneshot::Receiver<()>,
     stopped_tx: oneshot::Sender<()>,
 ) -> Result<(), anyhow::Error> {
-    let addr: SocketAddr = "0.0.0.0:4318"
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse OTLP/HTTP address: {}", e))?;
+    log::info!("Starting OTLP/HTTP acceptor on {}", config.addr);
 
-    log::info!("Starting OTLP/HTTP acceptor on {addr}");
+    // Create Prometheus handler with shared resources
+    let prometheus_handler = Arc::new(PrometheusHandler::new(
+        config.flight_transport.clone(),
+        config.wal_manager.clone(),
+    ));
 
-    // Note: Service bootstrap is handled in the main function for the entire acceptor service
+    // Build combined router with health, traces, and Prometheus endpoints
+    let app = acceptor_router().merge(prometheus_router(
+        config.authenticator.clone(),
+        prometheus_handler,
+    ));
 
-    let app = acceptor_router();
+    log::info!("Prometheus remote_write endpoint enabled at POST /api/v1/write");
 
     init_tx
         .send(())
         .expect("Unable to send init signal for OTLP/HTTP");
 
-    let listener = TcpListener::bind(addr).await?;
+    let listener = TcpListener::bind(config.addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             shutdown_rx.await.ok();
             log::info!("Shutting down OTLP/HTTP acceptor");
-            // Service bootstrap shutdown is handled in the main function
         })
         .await?;
 
