@@ -386,6 +386,7 @@ mod tests {
                     id: "production".to_string(),
                     slug: "production".to_string(),
                     is_default: true,
+                    storage: None,
                 }],
                 api_keys: vec![ApiKeyConfig {
                     key: "test-key-123".to_string(),

@@ -8,12 +8,14 @@ use common::model::{
 };
 use datafusion::{
     arrow::array::{Array, BooleanArray, Int64Array, StringArray},
-    common::TableReference,
     logical_expr::{col, lit},
     prelude::SessionContext,
 };
 
-use super::{FindTraceByIdParams, SearchQueryParams, TraceQuerier, error::QuerierError};
+use super::{
+    FindTraceByIdParams, SearchQueryParams, TraceQuerier, error::QuerierError,
+    table_ref::build_table_reference,
+};
 
 #[allow(dead_code)]
 const SHALLOW_TRACE_BY_ID_QUERY: &str = "SELECT * FROM traces WHERE trace_id = '{trace_id}';";
@@ -75,55 +77,6 @@ impl TraceService {
         }
     }
 
-    /// Validate and construct a safe table reference for multi-tenant queries
-    ///
-    /// Uses slug-based namespace paths to match the Iceberg namespace structure.
-    /// Returns a DataFusion `TableReference::full()` to avoid string-parsing ambiguity
-    /// with dot-separated schema names.
-    ///
-    /// # Security
-    /// This function validates inputs to prevent SQL injection.
-    /// Only alphanumeric characters, underscores, and hyphens are allowed.
-    fn build_table_ref(
-        tenant_slug: &str,
-        dataset_slug: &str,
-        table_name: &str,
-    ) -> Result<TableReference, QuerierError> {
-        // Validate inputs contain only safe characters
-        let is_valid_identifier = |s: &str| {
-            !s.is_empty()
-                && s.chars()
-                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-        };
-
-        if !is_valid_identifier(tenant_slug) {
-            return Err(QuerierError::InvalidInput(format!(
-                "Invalid tenant_slug '{tenant_slug}': must contain only alphanumeric, underscore, or hyphen characters"
-            )));
-        }
-
-        if !is_valid_identifier(dataset_slug) {
-            return Err(QuerierError::InvalidInput(format!(
-                "Invalid dataset_slug '{dataset_slug}': must contain only alphanumeric, underscore, or hyphen characters"
-            )));
-        }
-
-        if !is_valid_identifier(table_name) {
-            return Err(QuerierError::InvalidInput(format!(
-                "Invalid table_name '{table_name}': must contain only alphanumeric, underscore, or hyphen characters"
-            )));
-        }
-
-        // Build fully qualified table reference: iceberg."{tenant_slug}.{dataset_slug}".{table_name}
-        // The schema name combines tenant and dataset slugs, matching the Iceberg namespace structure
-        let schema_name = format!("{tenant_slug}.{dataset_slug}");
-        Ok(TableReference::full(
-            "iceberg".to_string(),
-            schema_name,
-            table_name.to_string(),
-        ))
-    }
-
     /// Find a trace by ID with tenant isolation
     pub async fn find_by_id_with_tenant(
         &self,
@@ -139,7 +92,8 @@ impl TraceService {
         );
 
         // Build safe table reference with tenant and dataset isolation
-        let table_ref = Self::build_table_ref(tenant_slug, dataset_slug, "traces")?;
+        let table_ref = build_table_reference(tenant_slug, dataset_slug, "traces")
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
 
         // Use DataFrame API with parameterized filter (prevents SQL injection)
         let df = self
@@ -415,7 +369,8 @@ impl TraceService {
         );
 
         // Build safe table reference with tenant and dataset isolation
-        let table_ref = Self::build_table_ref(tenant_slug, dataset_slug, "traces")?;
+        let table_ref = build_table_reference(tenant_slug, dataset_slug, "traces")
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
 
         // Use DataFrame API (prevents SQL injection)
         let mut df = self.session_context.table(table_ref).await.map_err(|e| {
@@ -749,7 +704,8 @@ impl TraceQuerier for TraceService {
         );
 
         // Build safe table reference
-        let table_ref = Self::build_table_ref(tenant_id, dataset_id, "traces")?;
+        let table_ref = build_table_reference(tenant_id, dataset_id, "traces")
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
 
         // Use DataFrame API with parameterized filter (prevents SQL injection)
         let df = self

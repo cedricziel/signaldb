@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod catalog;
+pub mod catalog_manager;
 pub mod cli;
 pub mod config;
 pub mod dataset;
@@ -10,3 +11,5 @@ pub mod service_bootstrap;
 pub mod storage;
 pub mod tenant_api;
 pub mod wal;
+
+pub use catalog_manager::CatalogManager;

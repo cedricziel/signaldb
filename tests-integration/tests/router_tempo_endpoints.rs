@@ -96,6 +96,7 @@ async fn setup_test_services() -> TestServices {
                 id: "test-dataset".to_string(),
                 slug: "test-dataset".to_string(),
                 is_default: true,
+                storage: None,
             }],
             api_keys: vec![common::config::ApiKeyConfig {
                 key: "test-key-123".to_string(),
@@ -706,6 +707,7 @@ async fn test_tempo_v2_trace_endpoint() {
                 id: "test-dataset".to_string(),
                 slug: "test-dataset".to_string(),
                 is_default: true,
+                storage: None,
             }],
             api_keys: vec![common::config::ApiKeyConfig {
                 key: "test-key-123".to_string(),
@@ -797,6 +799,7 @@ async fn setup_multi_tenant_test_services() -> TestServices {
                     id: "production".to_string(),
                     slug: "production".to_string(),
                     is_default: true,
+                    storage: None,
                 }],
                 api_keys: vec![common::config::ApiKeyConfig {
                     key: "acme-key-123".to_string(),
@@ -813,6 +816,7 @@ async fn setup_multi_tenant_test_services() -> TestServices {
                     id: "production".to_string(),
                     slug: "production".to_string(),
                     is_default: true,
+                    storage: None,
                 }],
                 api_keys: vec![common::config::ApiKeyConfig {
                     key: "globex-key-456".to_string(),

@@ -5,6 +5,7 @@ use arrow_flight::{
     SchemaResult, Ticket,
 };
 use bytes::Bytes;
+use common::CatalogManager;
 use common::flight::schema::{FlightSchemas, create_span_batch_schema};
 use common::flight::transport::InMemoryFlightTransport;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -12,6 +13,7 @@ use datafusion::execution::context::SessionContext;
 use futures::StreamExt;
 use futures::stream::{self, BoxStream};
 use object_store::ObjectStore;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
@@ -104,6 +106,112 @@ impl QuerierFlightService {
         // Register the iceberg catalog with DataFusion
         session_ctx.register_catalog("iceberg", Arc::new(datafusion_catalog));
         log::info!("Registered Iceberg catalog with DataFusion");
+
+        // Create trace service for specialized trace queries
+        let trace_service = TraceService::new(session_ctx.as_ref().clone(), "traces".to_string());
+
+        Ok(Self {
+            object_store,
+            _flight_transport: flight_transport,
+            schemas: FlightSchemas::new(),
+            session_ctx,
+            trace_service,
+            iceberg_catalog: Some(iceberg_catalog),
+        })
+    }
+
+    /// Create a new QuerierFlightService with CatalogManager and per-tenant catalogs
+    ///
+    /// This constructor registers each enabled tenant as a separate DataFusion catalog,
+    /// allowing queries like `SELECT * FROM tenant.dataset.traces` to work correctly.
+    pub async fn new_with_catalog_manager(
+        object_store: Arc<dyn ObjectStore>,
+        flight_transport: Arc<InMemoryFlightTransport>,
+        catalog_manager: Arc<CatalogManager>,
+    ) -> anyhow::Result<Self> {
+        let config = catalog_manager.config();
+        let session_ctx = Arc::new(SessionContext::new());
+
+        // Track registered storage URLs to avoid duplicates
+        let mut registered_urls: HashSet<String> = HashSet::new();
+
+        // Register object stores for all configured storage backends
+        for tenant in &config.auth.tenants {
+            // Check if tenant is enabled via schema_config
+            if let Some(ref schema_config) = tenant.schema_config
+                && !schema_config.enabled
+            {
+                continue;
+            }
+
+            for dataset in &tenant.datasets {
+                let storage_config =
+                    catalog_manager.get_dataset_storage_config(&tenant.id, &dataset.id);
+                let url_str = &storage_config.dsn;
+
+                // Register each unique storage URL
+                if !registered_urls.contains(url_str)
+                    && let Ok(url) = url::Url::parse(url_str)
+                {
+                    // Create object store based on storage config scheme
+                    // For now, we assume the provided object_store handles the default case
+                    // Additional object stores would be created here for S3, etc.
+                    session_ctx
+                        .runtime_env()
+                        .register_object_store(&url, object_store.clone());
+                    registered_urls.insert(url_str.clone());
+                    log::info!("Registered object store: {url_str}");
+                }
+            }
+        }
+
+        // Also register the global storage if not already registered
+        let global_url_str = &config.storage.dsn;
+        if !registered_urls.contains(global_url_str)
+            && let Ok(url) = url::Url::parse(global_url_str)
+        {
+            session_ctx
+                .runtime_env()
+                .register_object_store(&url, object_store.clone());
+            log::info!("Registered global object store: {global_url_str}");
+        }
+
+        // Use the shared catalog from CatalogManager
+        let iceberg_catalog = catalog_manager.catalog();
+
+        // Register per-tenant DataFusion catalogs (each tenant slug as a catalog name)
+        for tenant in &config.auth.tenants {
+            // Check if tenant is enabled
+            if let Some(ref schema_config) = tenant.schema_config
+                && !schema_config.enabled
+            {
+                continue;
+            }
+
+            // Create DataFusion catalog wrapper for this tenant
+            // Note: All tenants share the same underlying Iceberg catalog
+            let datafusion_catalog = datafusion_iceberg::catalog::catalog::IcebergCatalog::new(
+                iceberg_catalog.clone(),
+                None, // No specific branch
+            )
+            .await?;
+
+            session_ctx.register_catalog(&tenant.slug, Arc::new(datafusion_catalog));
+            log::info!(
+                "Registered DataFusion catalog '{}' for tenant '{}'",
+                tenant.slug,
+                tenant.id
+            );
+        }
+
+        // Also register under the "iceberg" name for backward compatibility
+        let compat_catalog = datafusion_iceberg::catalog::catalog::IcebergCatalog::new(
+            iceberg_catalog.clone(),
+            None,
+        )
+        .await?;
+        session_ctx.register_catalog("iceberg", Arc::new(compat_catalog));
+        log::info!("Registered backward-compatible 'iceberg' catalog");
 
         // Create trace service for specialized trace queries
         let trace_service = TraceService::new(session_ctx.as_ref().clone(), "traces".to_string());
