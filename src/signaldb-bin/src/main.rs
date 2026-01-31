@@ -4,6 +4,7 @@ use acceptor::{
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use common::CatalogManager;
 use common::cli::{CommonArgs, CommonCommands, utils};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::{Wal, WalConfig};
@@ -96,6 +97,14 @@ async fn main() -> Result<()> {
     let (writer_flight_shutdown_tx, writer_flight_shutdown_rx) = oneshot::channel::<()>();
     let (http_router_shutdown_tx, http_router_shutdown_rx) = oneshot::channel::<()>();
 
+    // Create shared catalog manager for consistent metadata across services
+    let catalog_manager = Arc::new(
+        CatalogManager::new(config.clone())
+            .await
+            .context("Failed to create catalog manager")?,
+    );
+    log::info!("Created shared catalog manager");
+
     // Initialize Writer components
     let object_store = common::storage::create_object_store(&config.storage)
         .context("Failed to initialize object store")?;
@@ -113,9 +122,12 @@ async fn main() -> Result<()> {
     writer_wal.start_background_flush();
     let writer_wal = Arc::new(writer_wal);
 
-    // Create Iceberg-based Flight ingestion service with WAL
-    let writer_flight_service =
-        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+    // Create Iceberg-based Flight ingestion service with CatalogManager
+    let writer_flight_service = IcebergWriterFlightService::new_with_catalog_manager(
+        catalog_manager.clone(),
+        object_store.clone(),
+        writer_wal.clone(),
+    );
 
     // Start background WAL processing for Iceberg writes
     let writer_bg_handle = writer_flight_service.start_background_processing();

@@ -1257,7 +1257,6 @@ pub async fn create_iceberg_writer(
 ///
 /// This factory uses the shared catalog from CatalogManager, ensuring consistent
 /// metadata across all SignalDB components.
-#[allow(dead_code)] // Will be used when service entry points are updated
 pub async fn create_iceberg_writer_with_catalog_manager(
     catalog_manager: Arc<CatalogManager>,
     object_store: Arc<dyn ObjectStore>,
