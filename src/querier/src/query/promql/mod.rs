@@ -15,6 +15,7 @@
 //! # Modules
 //!
 //! - [`parser`] - PromQL parsing using the promql-parser crate
+//! - [`translator`] - PromQL AST to DataFusion query translation
 //! - [`types`] - PromQL-specific types for query parameters and results
 //! - [`error`] - Error types for PromQL operations
 //!
@@ -60,4 +61,5 @@
 
 pub mod error;
 pub mod parser;
+pub mod translator;
 pub mod types;
