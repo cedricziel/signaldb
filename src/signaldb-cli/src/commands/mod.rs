@@ -4,6 +4,7 @@ pub mod query;
 pub mod tenant;
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use signaldb_sdk::Client;
@@ -92,9 +93,21 @@ impl Cli {
             return action.run().await;
         }
 
-        if let Commands::Tui { .. } = self.command {
-            println!("TUI not yet implemented");
-            return Ok(());
+        if let Commands::Tui {
+            url,
+            flight_url,
+            api_key,
+            admin_key,
+            refresh_rate,
+            tenant_id,
+            dataset_id,
+        } = self.command
+        {
+            let refresh = parse_duration(&refresh_rate)?;
+            let mut app = crate::tui::app::App::new(
+                url, flight_url, api_key, admin_key, refresh, tenant_id, dataset_id,
+            );
+            return app.run().await;
         }
 
         let admin_key = self.resolve_admin_key()?;
@@ -138,4 +151,28 @@ impl Cli {
             "No admin key provided. Use --admin-key, SIGNALDB_ADMIN_KEY, or --config with [auth] admin_api_key"
         )
     }
+}
+
+/// Parse a human-readable duration string like "5s", "100ms", "2m".
+fn parse_duration(s: &str) -> anyhow::Result<Duration> {
+    let s = s.trim();
+    if let Some(ms) = s.strip_suffix("ms") {
+        let val: u64 = ms
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid duration: {s}"))?;
+        return Ok(Duration::from_millis(val));
+    }
+    if let Some(secs) = s.strip_suffix('s') {
+        let val: u64 = secs
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid duration: {s}"))?;
+        return Ok(Duration::from_secs(val));
+    }
+    if let Some(mins) = s.strip_suffix('m') {
+        let val: u64 = mins
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid duration: {s}"))?;
+        return Ok(Duration::from_secs(val * 60));
+    }
+    anyhow::bail!("unsupported duration format: {s} (expected e.g. '5s', '100ms', '2m')")
 }

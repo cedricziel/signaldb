@@ -20,6 +20,8 @@ futures.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 tui-tree-widget.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
 
 [[bin]]
 name = "signaldb-cli"
