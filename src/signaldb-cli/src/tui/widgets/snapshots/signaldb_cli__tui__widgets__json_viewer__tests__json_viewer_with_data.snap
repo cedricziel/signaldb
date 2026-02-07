@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/widgets/json_viewer.rs
+expression: content
+---
+┌ Span Attributes ─────────────────────────────────────────────────────────────┐│  http.method: "POST"                                                         ││  http.status_code: 201                                                       ││  http.url: "https://api.example.com/users"                                   ││  net.peer.name: "api.example.com"                                            ││                                                                              ││                                                                              ││                                                                              ││                                                                              ││                                                                              ││                                                                              │└──────────────────────────────────────────────────────────────────────────────┘

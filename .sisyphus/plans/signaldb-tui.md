@@ -1148,7 +1148,7 @@ Critical Path: Task 2 → Task 4 → Task 8 → Tasks 9-13 (scaffolding → even
 
 ---
 
-- [ ] 10. Traces Tab
+- [x] 10. Traces Tab
 
   **What to do**:
   - Implement `src/signaldb-cli/src/tui/components/traces/mod.rs`:

@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/components/traces/search_bar.rs
+expression: content
+---
+┌ Trace Search (Enter: search, /: focus) ──────────────────────────────────────┐│tags=key=val minDuration=100ms maxDuration=5s limit=20                        │└──────────────────────────────────────────────────────────────────────────────┘

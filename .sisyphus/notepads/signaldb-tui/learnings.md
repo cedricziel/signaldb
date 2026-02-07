@@ -177,3 +177,34 @@
 
 ### Test Count
 - `cargo test -p signaldb-cli`: 266 passed, 0 failed.
+
+## Task 10: Traces Tab with Waterfall Visualization
+
+### Patterns
+- Clone-for-render pattern: `TreeState` doesn't impl Clone, use `TreeState::default()` for render clones
+- Waterfall bar width must account for label + bar + duration label to avoid ratatui clipping
+- `tui-tree-widget` 0.24: `Tree::new(&items)` returns Result, identifiers must be unique among siblings
+- `json_to_tree_items` recursive conversion with unique `"{key}_{idx}"` identifiers to avoid collisions
+
+### Key Decisions
+- Unicode block chars (█) instead of Canvas widget for waterfall — simpler, no additional dependencies
+- Simple DSL parser for search params (`tags=x minDuration=y limit=z`) rather than full TraceQL
+- Three-focus model: SearchBar / TraceList / TraceDetail with `/` always accessible
+- Detail view uses clone approach like other tabs to work around `&self` render + `&mut self` state
+
+### Files Created
+- `src/signaldb-cli/src/tui/widgets/waterfall.rs` — WaterfallSpan, build_waterfall_spans, render_waterfall
+- `src/signaldb-cli/src/tui/widgets/json_viewer.rs` — json_to_tree_items, render_json_tree
+- `src/signaldb-cli/src/tui/components/traces/mod.rs` — TracesPanel with Component trait
+- `src/signaldb-cli/src/tui/components/traces/search_bar.rs` — TraceSearchBar with DSL parsing
+- `src/signaldb-cli/src/tui/components/traces/trace_list.rs` — TraceList with tri-state data model
+- `src/signaldb-cli/src/tui/components/traces/trace_detail.rs` — TraceDetailView with waterfall + JSON
+
+### Files Modified
+- `src/signaldb-cli/src/tui/components/mod.rs` — Added `pub mod traces`
+- `src/signaldb-cli/src/tui/app.rs` — Wired TracesPanel into App struct, handle_key, update, render, refresh
+
+### Test Count
+- 344 tests total (was 266 before traces, +78 new trace-related tests)
+- 15 snapshot tests created for traces components
+- Clippy clean with -D warnings

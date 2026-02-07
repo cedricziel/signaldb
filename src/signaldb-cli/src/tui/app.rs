@@ -5,8 +5,6 @@ use std::time::Duration;
 use crossterm::event::KeyEvent;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Style};
-use ratatui::widgets::Paragraph;
 
 use super::action::{Action, map_key_to_action};
 use super::client::admin::{AdminClient, AdminClientError};
@@ -19,6 +17,7 @@ use super::components::logs::LogsPanel;
 use super::components::metrics::MetricsPanel;
 use super::components::status_bar::StatusBar;
 use super::components::tabs::TabBar;
+use super::components::traces::TracesPanel;
 use super::event::{Event, EventHandler};
 use super::state::{AppState, ConnectionStatus, Permission, Tab};
 use super::terminal::Tui;
@@ -31,6 +30,7 @@ pub struct App {
     tab_bar: TabBar,
     status_bar: StatusBar,
     dashboard: Dashboard,
+    traces: TracesPanel,
     logs: LogsPanel,
     metrics: MetricsPanel,
     admin: AdminPanel,
@@ -87,6 +87,7 @@ impl App {
             tab_bar: TabBar::new(),
             status_bar: StatusBar::new(),
             dashboard: Dashboard::new(),
+            traces: TracesPanel::new(),
             logs: LogsPanel::new(),
             metrics: MetricsPanel::new(),
             admin: AdminPanel::new(),
@@ -143,7 +144,7 @@ impl App {
     fn active_component_handle_key(&mut self, key: KeyEvent) -> Option<Action> {
         match self.state.active_tab {
             Tab::Dashboard => self.dashboard.handle_key_event(key),
-            Tab::Traces => None,
+            Tab::Traces => self.traces.handle_key_event(key),
             Tab::Logs => self.logs.handle_key_event(key),
             Tab::Metrics => self.metrics.handle_key_event(key),
             Tab::Admin => self.admin.handle_key_event(key),
@@ -176,7 +177,7 @@ impl App {
     fn update_active_tab(&mut self, action: &Action) {
         match self.state.active_tab {
             Tab::Dashboard => self.dashboard.update(action, &mut self.state),
-            Tab::Traces => {}
+            Tab::Traces => self.traces.update(action, &mut self.state),
             Tab::Logs => self.logs.update(action, &mut self.state),
             Tab::Metrics => self.metrics.update(action, &mut self.state),
             Tab::Admin => self.admin.update(action, &mut self.state),
@@ -190,7 +191,7 @@ impl App {
 
         match self.state.active_tab {
             Tab::Dashboard => self.refresh_dashboard().await,
-            Tab::Traces => {}
+            Tab::Traces => self.refresh_traces().await,
             Tab::Logs => self.refresh_logs().await,
             Tab::Metrics => self.refresh_metrics().await,
             Tab::Admin => self.refresh_admin().await,
@@ -286,6 +287,37 @@ impl App {
                         .set_error("Authentication failed - check API key".to_string());
                     self.state
                         .set_error("Authentication failed - check API key");
+                }
+            }
+        }
+    }
+
+    async fn refresh_traces(&mut self) {
+        if let Some(trace_id) = self.traces.take_pending_trace_id() {
+            match self.flight_client.get_trace(&trace_id).await {
+                Ok(detail) => {
+                    self.traces.set_trace_detail(detail);
+                    self.mark_connected();
+                }
+                Err(err) => {
+                    let msg = self.flight_error_message(&err);
+                    self.traces.set_error(msg);
+                    self.handle_flight_error(err);
+                }
+            }
+            return;
+        }
+
+        if let Some(params) = self.traces.take_pending_search() {
+            match self.flight_client.search_traces(&params).await {
+                Ok(results) => {
+                    self.traces.set_search_results(results);
+                    self.mark_connected();
+                }
+                Err(err) => {
+                    let msg = self.flight_error_message(&err);
+                    self.traces.set_error(msg);
+                    self.handle_flight_error(err);
                 }
             }
         }
@@ -405,7 +437,7 @@ impl App {
                     .system_resources_mut()
                     .set_error(message.to_string());
             }
-            Tab::Traces => {}
+            Tab::Traces => self.traces.set_error(message.to_string()),
             Tab::Logs => self.logs.set_error(message.to_string()),
             Tab::Metrics => self.metrics.set_error(message.to_string()),
             Tab::Admin => self.admin.set_error(message.to_string()),
@@ -444,12 +476,7 @@ impl App {
 
         match self.state.active_tab {
             Tab::Dashboard => self.dashboard.render(frame, chunks[1], &self.state),
-            Tab::Traces => {
-                let placeholder = Paragraph::new("Traces tab coming soon")
-                    .style(Style::default().fg(Color::DarkGray))
-                    .centered();
-                frame.render_widget(placeholder, chunks[1]);
-            }
+            Tab::Traces => self.traces.render(frame, chunks[1], &self.state),
             Tab::Logs => self.logs.render(frame, chunks[1], &self.state),
             Tab::Metrics => self.metrics.render(frame, chunks[1], &self.state),
             Tab::Admin => self.admin.render(frame, chunks[1], &self.state),
