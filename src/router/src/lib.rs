@@ -41,11 +41,28 @@ impl std::fmt::Debug for InMemoryStateImpl {
 }
 
 impl InMemoryStateImpl {
-    /// Create a new InMemoryStateImpl with the given catalog and configuration
     pub fn new(catalog: Catalog, config: Configuration) -> Self {
         let service_registry = discovery::ServiceRegistry::new(catalog.clone());
+        let authenticator = Arc::new(Authenticator::new(
+            config.auth.clone(),
+            Arc::new(catalog.clone()),
+        ));
 
-        // Create authenticator from config
+        Self {
+            catalog,
+            service_registry,
+            config,
+            authenticator,
+        }
+    }
+
+    pub fn new_with_flight_transport(
+        catalog: Catalog,
+        config: Configuration,
+        flight_transport: common::flight::transport::InMemoryFlightTransport,
+    ) -> Self {
+        let service_registry =
+            discovery::ServiceRegistry::with_flight_transport(catalog.clone(), flight_transport);
         let authenticator = Arc::new(Authenticator::new(
             config.auth.clone(),
             Arc::new(catalog.clone()),
