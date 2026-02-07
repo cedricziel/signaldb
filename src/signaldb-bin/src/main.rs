@@ -6,8 +6,10 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use common::CatalogManager;
 use common::cli::{CommonArgs, CommonCommands, utils};
+use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::{Wal, WalConfig};
+use querier::QuerierFlightService;
 use router::{InMemoryStateImpl, RouterState, create_flight_service, create_router};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -95,6 +97,7 @@ async fn main() -> Result<()> {
     // Shutdown channels for Flight services and HTTP router
     let (router_flight_shutdown_tx, router_flight_shutdown_rx) = oneshot::channel::<()>();
     let (writer_flight_shutdown_tx, writer_flight_shutdown_rx) = oneshot::channel::<()>();
+    let (querier_flight_shutdown_tx, querier_flight_shutdown_rx) = oneshot::channel::<()>();
     let (http_router_shutdown_tx, http_router_shutdown_rx) = oneshot::channel::<()>();
 
     // Create shared catalog manager for consistent metadata across services
@@ -131,6 +134,37 @@ async fn main() -> Result<()> {
 
     // Start background WAL processing for Iceberg writes
     let writer_bg_handle = writer_flight_service.start_background_processing();
+
+    // Initialize Querier service bootstrap for catalog-based discovery
+    let querier_flight_addr = SocketAddr::from(([0, 0, 0, 0], 50054));
+    let querier_bootstrap = ServiceBootstrap::new(
+        config.clone(),
+        ServiceType::Querier,
+        querier_flight_addr.to_string(),
+    )
+    .await
+    .context("Failed to initialize querier service bootstrap")?;
+
+    // Create Flight transport and register querier with QueryExecution capability
+    let querier_flight_transport = Arc::new(InMemoryFlightTransport::new(querier_bootstrap));
+    let querier_service_id = querier_flight_transport
+        .register_flight_service(
+            ServiceType::Querier,
+            querier_flight_addr.ip().to_string(),
+            querier_flight_addr.port(),
+            vec![ServiceCapability::QueryExecution],
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to register querier Flight service: {e}"))?;
+    log::info!("Querier Flight service registered with ID: {querier_service_id}");
+
+    // Create QuerierFlightService with shared CatalogManager for per-tenant catalog support
+    let querier_flight_service = QuerierFlightService::new_with_catalog_manager(
+        querier_flight_transport.clone(),
+        catalog_manager.clone(),
+    )
+    .await
+    .context("Failed to create querier flight service")?;
 
     // Initialize shared acceptor resources for both gRPC and HTTP servers
     let wal_dir = std::env::var("ACCEPTOR_WAL_DIR")
@@ -252,6 +286,27 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Start Querier Flight service
+    let querier_flight_handle = tokio::spawn(async move {
+        log::info!("Starting Querier Flight service on {querier_flight_addr}");
+
+        match Server::builder()
+            .add_service(
+                arrow_flight::flight_service_server::FlightServiceServer::new(
+                    querier_flight_service,
+                ),
+            )
+            .serve_with_shutdown(querier_flight_addr, async {
+                querier_flight_shutdown_rx.await.ok();
+                log::info!("Querier Flight service shutting down gracefully");
+            })
+            .await
+        {
+            Ok(_) => log::info!("Querier Flight service stopped"),
+            Err(e) => log::error!("Querier Flight service error: {e}"),
+        }
+    });
+
     // Wait for OTLP servers to initialize
     otlp_grpc_init_rx
         .await
@@ -273,10 +328,19 @@ async fn main() -> Result<()> {
         log::error!("Failed to shutdown router service bootstrap: {e}");
     }
 
+    // Unregister querier Flight service and shutdown bootstrap
+    if let Err(e) = querier_flight_transport
+        .unregister_service(querier_service_id)
+        .await
+    {
+        log::error!("Failed to unregister querier Flight service: {e}");
+    }
+
     // Signal servers to shutdown gracefully
     let _ = http_router_shutdown_tx.send(());
     let _ = router_flight_shutdown_tx.send(());
     let _ = writer_flight_shutdown_tx.send(());
+    let _ = querier_flight_shutdown_tx.send(());
 
     // Wait for servers to stop
     let _ = grpc_handle.await;
@@ -284,6 +348,7 @@ async fn main() -> Result<()> {
     let _ = http_router_handle.await;
     let _ = flight_handle.await;
     let _ = writer_flight_handle.await;
+    let _ = querier_flight_handle.await;
 
     // Stop background WAL processing task to release Arc<Wal> reference
     log::info!("Stopping background WAL processing task");

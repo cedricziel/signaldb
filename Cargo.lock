@@ -6399,6 +6399,7 @@ dependencies = [
  "clap",
  "common",
  "log",
+ "querier",
  "router",
  "tokio",
  "tonic 0.14.2",
