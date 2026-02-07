@@ -32,6 +32,12 @@ updates:
       opentelemetry:
         patterns:
           - "opentelemetry*"
+      codegen-toolchain:
+        patterns:
+          - "progenitor*"
+          - "typify"
+          - "openapiv3"
+          - "schemars"
 
   - package-ecosystem: "npm"
     directory: "/"
