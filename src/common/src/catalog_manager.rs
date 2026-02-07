@@ -33,6 +33,24 @@ impl CatalogManager {
         Ok(Self { catalog, config })
     }
 
+    /// Create an in-memory catalog manager for fast tests.
+    ///
+    /// This uses `Configuration::default()` which provides:
+    /// - In-memory object storage (`memory://`)
+    /// - In-memory SQLite catalog (`sqlite::memory:`)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use common::CatalogManager;
+    ///
+    /// let manager = CatalogManager::new_in_memory().await?;
+    /// let catalog = manager.catalog();
+    /// ```
+    pub async fn new_in_memory() -> Result<Self> {
+        Self::new(Configuration::default()).await
+    }
+
     /// Get the shared Iceberg catalog.
     pub fn catalog(&self) -> Arc<dyn IcebergCatalog> {
         self.catalog.clone()

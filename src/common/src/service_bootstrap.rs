@@ -289,6 +289,86 @@ impl ServiceBootstrap {
         parts[0].to_string()
     }
 
+    /// Create a lightweight service bootstrap for tests.
+    ///
+    /// Unlike `new()`, this constructor:
+    /// - Uses in-memory SQLite (no filesystem dependencies)
+    /// - Skips the heartbeat task (avoids background timers in tests)
+    /// - Registers the service in the catalog for discovery
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use common::service_bootstrap::{ServiceBootstrap, ServiceType};
+    ///
+    /// let bootstrap = ServiceBootstrap::new_for_test(
+    ///     ServiceType::Writer,
+    ///     "127.0.0.1:0",
+    /// ).await.unwrap();
+    /// ```
+    pub async fn new_for_test(service_type: ServiceType, address: &str) -> Result<Self> {
+        let config = Configuration::default();
+        let catalog = Catalog::new_in_memory().await?;
+        let service_id = Uuid::new_v4();
+        let capabilities = Self::get_default_capabilities(&service_type);
+
+        catalog
+            .register_ingester(service_id, address, service_type.clone(), &capabilities)
+            .await?;
+
+        Ok(ServiceBootstrap {
+            catalog,
+            service_id,
+            service_type,
+            address: address.to_string(),
+            config,
+            heartbeat_handle: None, // No heartbeat in tests
+        })
+    }
+
+    /// Create a test bootstrap with a shared catalog for cross-service discovery.
+    ///
+    /// Multiple services created with the same `Catalog` instance can discover
+    /// each other, which is required for testing service-to-service communication.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use common::catalog::Catalog;
+    /// use common::service_bootstrap::{ServiceBootstrap, ServiceType};
+    ///
+    /// let catalog = Catalog::new_in_memory().await.unwrap();
+    /// let writer = ServiceBootstrap::new_for_test_with_catalog(
+    ///     catalog.clone(), ServiceType::Writer, "127.0.0.1:50051",
+    /// ).await.unwrap();
+    /// let querier = ServiceBootstrap::new_for_test_with_catalog(
+    ///     catalog.clone(), ServiceType::Querier, "127.0.0.1:50052",
+    /// ).await.unwrap();
+    /// // writer and querier can now discover each other
+    /// ```
+    pub async fn new_for_test_with_catalog(
+        catalog: Catalog,
+        service_type: ServiceType,
+        address: &str,
+    ) -> Result<Self> {
+        let config = Configuration::default();
+        let service_id = Uuid::new_v4();
+        let capabilities = Self::get_default_capabilities(&service_type);
+
+        catalog
+            .register_ingester(service_id, address, service_type.clone(), &capabilities)
+            .await?;
+
+        Ok(ServiceBootstrap {
+            catalog,
+            service_id,
+            service_type,
+            address: address.to_string(),
+            config,
+            heartbeat_handle: None,
+        })
+    }
+
     /// Gracefully shutdown the service and deregister from catalog
     pub async fn shutdown(mut self) -> Result<()> {
         log::info!(
@@ -522,6 +602,68 @@ mod tests {
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);
         let _ = std::fs::remove_file("./test_bootstrap.db");
+    }
+
+    #[tokio::test]
+    async fn test_new_for_test() {
+        let bootstrap = ServiceBootstrap::new_for_test(ServiceType::Writer, "127.0.0.1:50051")
+            .await
+            .unwrap();
+
+        assert_eq!(bootstrap.service_type, ServiceType::Writer);
+        assert_eq!(bootstrap.address, "127.0.0.1:50051");
+        // No heartbeat handle should be set
+        assert!(bootstrap.heartbeat_handle.is_none());
+
+        // Service should be discoverable via catalog
+        let ingesters = bootstrap.discover_ingesters().await.unwrap();
+        assert_eq!(ingesters.len(), 1);
+        assert_eq!(ingesters[0].id, bootstrap.service_id());
+    }
+
+    #[tokio::test]
+    async fn test_new_for_test_with_shared_catalog() {
+        use crate::flight::transport::ServiceCapability;
+
+        let catalog = Catalog::new_in_memory().await.unwrap();
+
+        let writer = ServiceBootstrap::new_for_test_with_catalog(
+            catalog.clone(),
+            ServiceType::Writer,
+            "127.0.0.1:50051",
+        )
+        .await
+        .unwrap();
+
+        let querier = ServiceBootstrap::new_for_test_with_catalog(
+            catalog.clone(),
+            ServiceType::Querier,
+            "127.0.0.1:50052",
+        )
+        .await
+        .unwrap();
+
+        // Both services should be discoverable from either bootstrap
+        let from_writer = writer.discover_ingesters().await.unwrap();
+        assert_eq!(from_writer.len(), 2);
+
+        let from_querier = querier.discover_ingesters().await.unwrap();
+        assert_eq!(from_querier.len(), 2);
+
+        // Capability-based discovery should work
+        let writers = writer
+            .discover_services_by_capability(ServiceCapability::Storage)
+            .await
+            .unwrap();
+        assert_eq!(writers.len(), 1);
+        assert_eq!(writers[0].id, writer.service_id());
+
+        let queriers = querier
+            .discover_services_by_capability(ServiceCapability::QueryExecution)
+            .await
+            .unwrap();
+        assert_eq!(queriers.len(), 1);
+        assert_eq!(queriers[0].id, querier.service_id());
     }
 
     #[tokio::test]

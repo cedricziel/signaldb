@@ -12,4 +12,7 @@ pub mod storage;
 pub mod tenant_api;
 pub mod wal;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use catalog_manager::CatalogManager;

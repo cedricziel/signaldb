@@ -19,6 +19,22 @@ pub enum Catalog {
 }
 
 impl Catalog {
+    /// Create an in-memory SQLite catalog for fast tests.
+    ///
+    /// This is equivalent to `Catalog::new("sqlite::memory:")` and provides
+    /// a quick way to create an isolated, ephemeral catalog for testing.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use common::catalog::Catalog;
+    ///
+    /// let catalog = Catalog::new_in_memory().await?;
+    /// ```
+    pub async fn new_in_memory() -> Result<Self, sqlx::Error> {
+        Self::new("sqlite::memory:").await
+    }
+
     /// Create a new Catalog client and initialize schema.
     pub async fn new(dsn: &str) -> Result<Self, sqlx::Error> {
         log::info!("Connecting to catalog database with DSN: {dsn}");
