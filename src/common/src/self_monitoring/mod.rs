@@ -174,7 +174,9 @@ mod tests {
         let result = init_telemetry(&config, "test-service").unwrap();
         assert!(result.is_some());
 
-        let telemetry = result.unwrap();
-        telemetry.shutdown();
+        // Drop without explicit shutdown — the providers will be dropped.
+        // We skip calling shutdown() because the periodic exporter blocks
+        // when the endpoint is unreachable.
+        drop(result);
     }
 }
