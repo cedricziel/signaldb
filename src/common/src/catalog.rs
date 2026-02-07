@@ -1,3 +1,5 @@
+use crate::auth::Authenticator;
+use crate::config::AuthConfig;
 use crate::flight::transport::ServiceCapability;
 use crate::service_bootstrap::ServiceType;
 use chrono::{DateTime, Utc};
@@ -1234,6 +1236,34 @@ impl Catalog {
                 Ok(result.rows_affected() > 0)
             }
         }
+    }
+
+    pub async fn sync_config_tenants(&self, auth_config: &AuthConfig) -> Result<(), sqlx::Error> {
+        for tenant in &auth_config.tenants {
+            self.upsert_tenant(
+                &tenant.id,
+                &tenant.name,
+                tenant.default_dataset.as_deref(),
+                "config",
+            )
+            .await?;
+
+            for api_key in &tenant.api_keys {
+                let key_hash = Authenticator::hash_api_key(&api_key.key);
+                self.upsert_api_key(&tenant.id, &key_hash, api_key.name.as_deref())
+                    .await?;
+            }
+
+            let existing_datasets = self.get_datasets(&tenant.id).await?;
+            for dataset in &tenant.datasets {
+                let already_exists = existing_datasets.iter().any(|d| d.name == dataset.id);
+                if !already_exists {
+                    self.create_dataset(&tenant.id, &dataset.id).await?;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

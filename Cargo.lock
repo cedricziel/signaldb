@@ -6447,11 +6447,16 @@ name = "signaldb-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrow",
+ "arrow-flight",
  "clap",
+ "common",
+ "futures",
  "reqwest 0.13.2",
  "serde_json",
  "signaldb-sdk",
  "tokio",
+ "tonic 0.14.2",
 ]
 
 [[package]]

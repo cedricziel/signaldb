@@ -7,11 +7,16 @@ rust-version.workspace = true
 
 [dependencies]
 signaldb-sdk.workspace = true
+common.workspace = true
 clap.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+arrow.workspace = true
+arrow-flight.workspace = true
+tonic.workspace = true
+futures.workspace = true
 
 [[bin]]
 name = "signaldb-cli"

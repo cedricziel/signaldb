@@ -29,6 +29,7 @@ target/
 /.data
 
 signaldb.toml
+signaldb.dev.toml
 
 # macOS
 .DS_Store

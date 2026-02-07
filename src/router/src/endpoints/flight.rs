@@ -151,14 +151,62 @@ impl<S: RouterState> SignalDBFlightService<S> {
             }
             "logs" => Ok(QueryResult::Empty(self.schemas.log_schema.clone())),
             "metrics" => Ok(QueryResult::Empty(self.schemas.metric_schema.clone())),
-            _ => Err(Status::invalid_argument(format!(
-                "Unknown query type: {}",
-                parsed.query_type
-            ))),
+            _ => {
+                // Forward unknown queries (including raw SQL) to querier
+                Err(Status::not_found(query.to_string()))
+            }
         }
     }
 
-    /// Create a Flight data stream from record batches
+    async fn proxy_to_querier(
+        &self,
+        query: &str,
+        incoming_metadata: &tonic::metadata::MetadataMap,
+    ) -> Result<Response<BoxStream<'static, Result<FlightData, Status>>>, Status> {
+        let mut client = self
+            .state
+            .service_registry()
+            .get_flight_client_for_capability(ServiceCapability::QueryExecution)
+            .await
+            .map_err(|e| {
+                log::error!("No querier service available: {e}");
+                Status::unavailable("No query execution service available")
+            })?;
+
+        let ticket = Ticket::new(query.as_bytes().to_vec());
+        let mut request = tonic::Request::new(ticket);
+
+        for key_and_value in incoming_metadata.iter() {
+            match key_and_value {
+                tonic::metadata::KeyAndValueRef::Ascii(key, value) => {
+                    request.metadata_mut().insert(key.clone(), value.clone());
+                }
+                tonic::metadata::KeyAndValueRef::Binary(key, value) => {
+                    request
+                        .metadata_mut()
+                        .insert_bin(key.clone(), value.clone());
+                }
+            }
+        }
+
+        let response = client.do_get(request).await.map_err(|e| {
+            log::error!("Querier query failed: {}", e.message());
+            Status::new(e.code(), e.message())
+        })?;
+
+        let upstream = response.into_inner();
+        let proxied: BoxStream<'static, Result<FlightData, Status>> = upstream
+            .map(|result| {
+                result.map_err(|e| {
+                    log::error!("Querier stream error: {}", e.message());
+                    Status::new(e.code(), e.message())
+                })
+            })
+            .boxed();
+
+        Ok(Response::new(proxied))
+    }
+
     async fn create_flight_data_stream(
         batches: Vec<RecordBatch>,
         schema: Schema,
@@ -321,25 +369,28 @@ impl<S: RouterState> FlightService for SignalDBFlightService<S> {
         &self,
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
+        let incoming_metadata = request.metadata().clone();
         let ticket = request.into_inner();
         let query = String::from_utf8(ticket.ticket.to_vec())
             .map_err(|e| Status::invalid_argument(format!("Invalid ticket: {e}")))?;
 
         log::info!("Executing Flight query: {query}");
 
-        // Parse the query to determine type and parameters
-        let query_result = self.execute_query(&query).await?;
-
-        match query_result {
-            QueryResult::Traces(batches, schema) => {
-                let stream = Self::create_flight_data_stream(batches, schema).await?;
-                Ok(Response::new(stream))
+        match self.execute_query(&query).await {
+            Ok(query_result) => match query_result {
+                QueryResult::Traces(batches, schema) => {
+                    let stream = Self::create_flight_data_stream(batches, schema).await?;
+                    Ok(Response::new(stream))
+                }
+                QueryResult::Empty(schema) => {
+                    let stream = Self::create_flight_data_stream(vec![], schema).await?;
+                    Ok(Response::new(stream))
+                }
+            },
+            Err(status) if status.code() == tonic::Code::NotFound => {
+                self.proxy_to_querier(&query, &incoming_metadata).await
             }
-            QueryResult::Empty(schema) => {
-                // Return empty stream with schema
-                let stream = Self::create_flight_data_stream(vec![], schema).await?;
-                Ok(Response::new(stream))
-            }
+            Err(status) => Err(status),
         }
     }
 

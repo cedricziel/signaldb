@@ -142,10 +142,32 @@ async fn create_sql_catalog_with_builder(
     object_store_builder: ObjectStoreBuilder,
 ) -> Result<Arc<dyn IcebergCatalog>> {
     let catalog = if catalog_uri.starts_with("sqlite://") && catalog_uri != "sqlite://" {
-        // SQLite with persistent database
-        let catalog = SqlCatalog::new(catalog_uri, catalog_name, object_store_builder)
+        let uri = if catalog_uri.contains('?') {
+            if catalog_uri.contains("mode=") {
+                catalog_uri.to_string()
+            } else {
+                format!("{catalog_uri}&mode=rwc")
+            }
+        } else {
+            format!("{catalog_uri}?mode=rwc")
+        };
+
+        if let Some(path) = uri
+            .split('?')
+            .next()
+            .and_then(|u| u.strip_prefix("sqlite:"))
+        {
+            let path = path.trim_start_matches('/');
+            if let Some(parent) = std::path::Path::new(path).parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent).ok();
+            }
+        }
+
+        let catalog = SqlCatalog::new(&uri, catalog_name, object_store_builder)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to create SQLite catalog: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to create SQLite catalog at '{}': {}", uri, e))?;
         Arc::new(catalog) as Arc<dyn IcebergCatalog>
     } else if catalog_uri == "sqlite://"
         || catalog_uri.contains(":memory:")
