@@ -49,6 +49,14 @@ impl FlightSqlClient {
         }
     }
 
+    pub fn set_tenant_id(&mut self, tenant_id: Option<String>) {
+        self.tenant_id = tenant_id;
+    }
+
+    pub fn set_dataset_id(&mut self, dataset_id: Option<String>) {
+        self.dataset_id = dataset_id;
+    }
+
     /// Execute a SQL query and return raw record batches.
     pub async fn query_sql(&self, sql: &str) -> Result<Vec<RecordBatch>, FlightClientError> {
         let endpoint = Endpoint::from_shared(self.flight_url.clone())
@@ -437,5 +445,25 @@ mod tests {
     fn format_timestamp_zero() {
         let s = format_nanos_timestamp(0);
         assert!(s.contains("1970-01-01"));
+    }
+
+    #[test]
+    fn set_tenant_id_updates_field() {
+        let mut client = FlightSqlClient::new("http://localhost:50053".into(), None, None, None);
+        assert!(client.tenant_id.is_none());
+        client.set_tenant_id(Some("acme".into()));
+        assert_eq!(client.tenant_id.as_deref(), Some("acme"));
+        client.set_tenant_id(None);
+        assert!(client.tenant_id.is_none());
+    }
+
+    #[test]
+    fn set_dataset_id_updates_field() {
+        let mut client = FlightSqlClient::new("http://localhost:50053".into(), None, None, None);
+        assert!(client.dataset_id.is_none());
+        client.set_dataset_id(Some("prod".into()));
+        assert_eq!(client.dataset_id.as_deref(), Some("prod"));
+        client.set_dataset_id(None);
+        assert!(client.dataset_id.is_none());
     }
 }

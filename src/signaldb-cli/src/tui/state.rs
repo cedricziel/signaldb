@@ -1,5 +1,6 @@
 //! Application state management
 
+use std::fmt;
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -76,6 +77,105 @@ pub enum ConnectionStatus {
     Connecting,
 }
 
+/// Time range for data filtering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TimeRange {
+    /// Relative time range from now (e.g. last 15 minutes).
+    Relative(Duration),
+    /// Absolute time range with fixed start and end.
+    Absolute {
+        start: chrono::DateTime<chrono::Utc>,
+        end: chrono::DateTime<chrono::Utc>,
+    },
+}
+
+impl Default for TimeRange {
+    fn default() -> Self {
+        TimeRange::Relative(Duration::from_secs(900)) // 15 minutes
+    }
+}
+
+impl TimeRange {
+    /// Human-readable label for the time range.
+    pub fn label(&self) -> String {
+        match self {
+            TimeRange::Relative(d) => {
+                let secs = d.as_secs();
+                if secs < 60 {
+                    format!("Last {secs}s")
+                } else if secs < 3600 {
+                    format!("Last {}m", secs / 60)
+                } else if secs <= 86400 {
+                    format!("Last {}h", secs / 3600)
+                } else {
+                    format!("Last {}d", secs / 86400)
+                }
+            }
+            TimeRange::Absolute { start, end } => {
+                format!(
+                    "{} – {}",
+                    start.format("%Y-%m-%d %H:%M"),
+                    end.format("%Y-%m-%d %H:%M")
+                )
+            }
+        }
+    }
+
+    /// Preset time range options.
+    pub fn presets() -> Vec<(String, TimeRange)> {
+        vec![
+            (
+                "Last 15m".into(),
+                TimeRange::Relative(Duration::from_secs(900)),
+            ),
+            (
+                "Last 1h".into(),
+                TimeRange::Relative(Duration::from_secs(3600)),
+            ),
+            (
+                "Last 6h".into(),
+                TimeRange::Relative(Duration::from_secs(21600)),
+            ),
+            (
+                "Last 24h".into(),
+                TimeRange::Relative(Duration::from_secs(86400)),
+            ),
+            (
+                "Last 7d".into(),
+                TimeRange::Relative(Duration::from_secs(604800)),
+            ),
+            (
+                "Last 30d".into(),
+                TimeRange::Relative(Duration::from_secs(2592000)),
+            ),
+        ]
+    }
+}
+
+impl fmt::Display for TimeRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.label())
+    }
+}
+
+/// Which overlay (modal popup) is currently active.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub enum ActiveOverlay {
+    /// No overlay shown.
+    #[default]
+    None,
+    /// Help panel.
+    Help,
+    /// Tenant selector popup.
+    TenantSelector,
+    /// Dataset selector popup.
+    DatasetSelector,
+    /// Vim-style command palette.
+    CommandPalette,
+    /// Time range selector popup.
+    TimeRangeSelector,
+}
+
 /// Main application state
 #[derive(Clone, Debug)]
 pub struct AppState {
@@ -101,6 +201,11 @@ pub struct AppState {
     pub loading: bool,
     /// Frame counter for spinner animation (advances on each render)
     pub spinner_frame: usize,
+    pub active_tenant: Option<String>,
+    pub active_dataset: Option<String>,
+    pub time_range: TimeRange,
+    pub active_overlay: ActiveOverlay,
+    pub pending_context_refresh: bool,
 }
 
 impl AppState {
@@ -118,6 +223,11 @@ impl AppState {
             flight_url,
             loading: false,
             spinner_frame: 0,
+            active_tenant: None,
+            active_dataset: None,
+            time_range: TimeRange::default(),
+            active_overlay: ActiveOverlay::default(),
+            pending_context_refresh: false,
         }
     }
 
@@ -146,6 +256,18 @@ impl AppState {
 
     /// Update permission and adjust available tabs accordingly
     pub fn set_permission(&mut self, permission: Permission) {
+        match &permission {
+            Permission::Tenant {
+                tenant_id,
+                dataset_id,
+                ..
+            } => {
+                self.active_tenant = Some(tenant_id.clone());
+                self.active_dataset = dataset_id.clone();
+            }
+            Permission::Admin { .. } | Permission::Unknown => {}
+        }
+
         self.permission = permission.clone();
         self.available_tabs = match permission {
             Permission::Admin { .. } => Tab::all(),
@@ -474,5 +596,90 @@ mod tests {
             assert_eq!(tenant_id, "acme");
             assert_eq!(dataset_id, None);
         }
+    }
+
+    #[test]
+    fn test_time_range_default_15m() {
+        let tr = TimeRange::default();
+        assert_eq!(tr, TimeRange::Relative(Duration::from_secs(900)));
+    }
+
+    #[test]
+    fn test_time_range_presets() {
+        let presets = TimeRange::presets();
+        assert!(presets.len() >= 6);
+        assert_eq!(presets[0].0, "Last 15m");
+        assert_eq!(presets[1].0, "Last 1h");
+    }
+
+    #[test]
+    fn test_time_range_label() {
+        assert_eq!(
+            TimeRange::Relative(Duration::from_secs(900)).label(),
+            "Last 15m"
+        );
+        assert_eq!(
+            TimeRange::Relative(Duration::from_secs(3600)).label(),
+            "Last 1h"
+        );
+        assert_eq!(
+            TimeRange::Relative(Duration::from_secs(86400)).label(),
+            "Last 24h"
+        );
+        assert_eq!(
+            TimeRange::Relative(Duration::from_secs(604800)).label(),
+            "Last 7d"
+        );
+        assert_eq!(
+            TimeRange::Relative(Duration::from_secs(30)).label(),
+            "Last 30s"
+        );
+    }
+
+    #[test]
+    fn test_active_overlay_default_none() {
+        assert_eq!(ActiveOverlay::default(), ActiveOverlay::None);
+    }
+
+    #[test]
+    fn test_app_state_initializes_tenant_from_permission() {
+        let mut state = AppState::new(
+            "http://localhost:3000".to_string(),
+            "http://localhost:50053".to_string(),
+            Duration::from_secs(5),
+        );
+        state.set_permission(Permission::Tenant {
+            api_key: "key".to_string(),
+            tenant_id: "acme".to_string(),
+            dataset_id: Some("production".to_string()),
+        });
+        assert_eq!(state.active_tenant, Some("acme".to_string()));
+        assert_eq!(state.active_dataset, Some("production".to_string()));
+    }
+
+    #[test]
+    fn test_app_state_initializes_no_tenant_for_admin() {
+        let mut state = AppState::new(
+            "http://localhost:3000".to_string(),
+            "http://localhost:50053".to_string(),
+            Duration::from_secs(5),
+        );
+        state.set_permission(Permission::Admin {
+            admin_key: "key".to_string(),
+        });
+        assert_eq!(state.active_tenant, None);
+        assert_eq!(state.active_dataset, None);
+    }
+
+    #[test]
+    fn test_app_state_new_has_default_time_range() {
+        let state = AppState::new(
+            "http://localhost:3000".to_string(),
+            "http://localhost:50053".to_string(),
+            Duration::from_secs(5),
+        );
+        assert_eq!(state.time_range, TimeRange::default());
+        assert_eq!(state.active_overlay, ActiveOverlay::None);
+        assert!(!state.pending_context_refresh);
     }
 }

@@ -2,6 +2,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use super::state::TimeRange;
+
 /// Actions that can be triggered by user input or internal events.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -15,10 +17,25 @@ pub enum Action {
     ScrollDown,
     Select,
     Back,
-    #[allow(dead_code)] // Will be used when search UI is implemented
+    #[allow(dead_code)]
     Search(String),
     Confirm,
     Cancel,
+    OpenTenantSelector,
+    OpenDatasetSelector,
+    OpenCommandPalette,
+    #[allow(dead_code)]
+    OpenTimeRangeSelector,
+    #[allow(dead_code)]
+    CloseOverlay,
+    #[allow(dead_code)]
+    SetTenant(String),
+    #[allow(dead_code)]
+    SetDataset(String),
+    #[allow(dead_code)]
+    SetTimeRange(TimeRange),
+    #[allow(dead_code)]
+    ExecuteCommand(String),
     None,
 }
 
@@ -27,6 +44,13 @@ pub fn map_key_to_action(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Char('q') => Action::Quit,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
+        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Action::OpenTenantSelector
+        }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Action::OpenDatasetSelector
+        }
+        KeyCode::Char(':') => Action::OpenCommandPalette,
         KeyCode::Char('1') => Action::SwitchTab(0),
         KeyCode::Char('2') => Action::SwitchTab(1),
         KeyCode::Char('3') => Action::SwitchTab(2),
@@ -72,6 +96,7 @@ mod tests {
 
     #[test]
     fn action_variants_exist() {
+        use crate::tui::state::TimeRange;
         let actions = vec![
             Action::Quit,
             Action::SwitchTab(0),
@@ -86,9 +111,18 @@ mod tests {
             Action::Search("test".to_string()),
             Action::Confirm,
             Action::Cancel,
+            Action::OpenTenantSelector,
+            Action::OpenDatasetSelector,
+            Action::OpenCommandPalette,
+            Action::OpenTimeRangeSelector,
+            Action::CloseOverlay,
+            Action::SetTenant("acme".to_string()),
+            Action::SetDataset("prod".to_string()),
+            Action::SetTimeRange(TimeRange::default()),
+            Action::ExecuteCommand("refresh".to_string()),
             Action::None,
         ];
-        assert_eq!(actions.len(), 14);
+        assert_eq!(actions.len(), 23);
     }
 
     #[test]
@@ -150,5 +184,29 @@ mod tests {
     #[test]
     fn unknown_key_maps_to_none() {
         assert_eq!(map_key_to_action(press(KeyCode::Char('z'))), Action::None);
+    }
+
+    #[test]
+    fn ctrl_t_maps_to_open_tenant_selector() {
+        assert_eq!(
+            map_key_to_action(press_with(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+            Action::OpenTenantSelector
+        );
+    }
+
+    #[test]
+    fn ctrl_d_maps_to_open_dataset_selector() {
+        assert_eq!(
+            map_key_to_action(press_with(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            Action::OpenDatasetSelector
+        );
+    }
+
+    #[test]
+    fn colon_maps_to_open_command_palette() {
+        assert_eq!(
+            map_key_to_action(press(KeyCode::Char(':'))),
+            Action::OpenCommandPalette
+        );
     }
 }

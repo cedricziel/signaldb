@@ -1,12 +1,16 @@
 //! Component trait and implementations
 
 pub mod admin;
+pub mod command_palette;
+pub mod context_bar;
 pub mod dashboard;
 pub mod help;
 pub mod logs;
 pub mod metrics;
+pub mod selector;
 pub mod status_bar;
 pub mod tabs;
+pub mod time_range;
 pub mod traces;
 
 use crossterm::event::KeyEvent;

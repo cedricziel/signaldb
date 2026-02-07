@@ -11,15 +11,19 @@ use super::client::admin::{AdminClient, AdminClientError};
 use super::client::flight::{FlightClientError, FlightSqlClient};
 use super::components::Component;
 use super::components::admin::AdminPanel;
+use super::components::command_palette::{CommandPalette, PaletteAction, PaletteCommand};
+use super::components::context_bar::ContextBar;
 use super::components::dashboard::Dashboard;
 use super::components::help::HelpOverlay;
 use super::components::logs::LogsPanel;
 use super::components::metrics::MetricsPanel;
+use super::components::selector::{SelectorAction, SelectorPopup};
 use super::components::status_bar::StatusBar;
 use super::components::tabs::TabBar;
+use super::components::time_range::{TimeRangeAction, TimeRangeSelector};
 use super::components::traces::TracesPanel;
 use super::event::{Event, EventHandler};
-use super::state::{AppState, ConnectionStatus, Permission, Tab};
+use super::state::{ActiveOverlay, AppState, ConnectionStatus, Permission, Tab, TimeRange};
 use super::terminal::Tui;
 
 /// Top-level TUI application.
@@ -35,7 +39,11 @@ pub struct App {
     metrics: MetricsPanel,
     admin: AdminPanel,
     help: HelpOverlay,
-    show_help: bool,
+    context_bar: ContextBar,
+    tenant_selector: SelectorPopup,
+    dataset_selector: SelectorPopup,
+    command_palette: CommandPalette,
+    time_range_selector: TimeRangeSelector,
     flight_client: FlightSqlClient,
     admin_client: Option<AdminClient>,
 }
@@ -92,7 +100,11 @@ impl App {
             metrics: MetricsPanel::new(),
             admin: AdminPanel::new(),
             help: HelpOverlay::new(),
-            show_help: false,
+            context_bar: ContextBar::new(),
+            tenant_selector: SelectorPopup::new("Select Tenant"),
+            dataset_selector: SelectorPopup::new("Select Dataset"),
+            command_palette: CommandPalette::new(),
+            time_range_selector: TimeRangeSelector::new(),
             flight_client,
             admin_client,
         }
@@ -128,8 +140,8 @@ impl App {
     }
 
     fn handle_key_event(&mut self, key: KeyEvent) {
-        if self.show_help {
-            if let Some(action) = self.help.handle_key_event(key) {
+        if self.state.active_overlay != ActiveOverlay::None {
+            if let Some(action) = self.handle_overlay_key(key) {
                 self.handle_action(action);
             }
             return;
@@ -142,6 +154,44 @@ impl App {
 
         let action = map_key_to_action(key);
         self.handle_action(action);
+    }
+
+    fn handle_overlay_key(&mut self, key: KeyEvent) -> Option<Action> {
+        match self.state.active_overlay {
+            ActiveOverlay::Help => self.help.handle_key_event(key),
+            ActiveOverlay::TenantSelector => match self.tenant_selector.handle_key(key) {
+                SelectorAction::Selected(id) => Some(Action::SetTenant(id)),
+                SelectorAction::Cancelled => Some(Action::CloseOverlay),
+                SelectorAction::None => None,
+            },
+            ActiveOverlay::DatasetSelector => match self.dataset_selector.handle_key(key) {
+                SelectorAction::Selected(id) => Some(Action::SetDataset(id)),
+                SelectorAction::Cancelled => Some(Action::CloseOverlay),
+                SelectorAction::None => None,
+            },
+            ActiveOverlay::CommandPalette => match self.command_palette.handle_key(key) {
+                PaletteAction::Execute(cmd) => match cmd {
+                    PaletteCommand::SetTenant(name) => Some(Action::SetTenant(name)),
+                    PaletteCommand::SetDataset(name) => Some(Action::SetDataset(name)),
+                    PaletteCommand::Refresh => {
+                        self.command_palette.reset();
+                        Some(Action::CloseOverlay)
+                    }
+                    PaletteCommand::Quit => Some(Action::Quit),
+                    PaletteCommand::SetTimeRange(label) => {
+                        Some(Action::ExecuteCommand(format!("time {label}")))
+                    }
+                },
+                PaletteAction::Cancelled => Some(Action::CloseOverlay),
+                PaletteAction::None => None,
+            },
+            ActiveOverlay::TimeRangeSelector => match self.time_range_selector.handle_key(key) {
+                TimeRangeAction::Selected(tr) => Some(Action::SetTimeRange(tr)),
+                TimeRangeAction::Cancelled => Some(Action::CloseOverlay),
+                TimeRangeAction::None => None,
+            },
+            ActiveOverlay::None => None,
+        }
     }
 
     fn active_component_handle_key(&mut self, key: KeyEvent) -> Option<Action> {
@@ -160,7 +210,68 @@ impl App {
             Action::SwitchTab(idx) => self.state.switch_tab(idx),
             Action::NextTab => self.state.next_tab(),
             Action::PrevTab => self.state.prev_tab(),
-            Action::ToggleHelp => self.show_help = !self.show_help,
+            Action::ToggleHelp => {
+                if self.state.active_overlay == ActiveOverlay::Help {
+                    self.state.active_overlay = ActiveOverlay::None;
+                } else {
+                    self.state.active_overlay = ActiveOverlay::Help;
+                }
+            }
+            Action::CloseOverlay => {
+                self.state.active_overlay = ActiveOverlay::None;
+            }
+            Action::OpenTenantSelector => {
+                if matches!(self.state.permission, Permission::Admin { .. }) {
+                    self.state.active_overlay = ActiveOverlay::TenantSelector;
+                }
+            }
+            Action::OpenDatasetSelector => {
+                self.state.active_overlay = ActiveOverlay::DatasetSelector;
+            }
+            Action::OpenCommandPalette => {
+                self.state.active_overlay = ActiveOverlay::CommandPalette;
+            }
+            Action::OpenTimeRangeSelector => {
+                self.state.active_overlay = ActiveOverlay::TimeRangeSelector;
+            }
+            Action::SetTenant(ref tenant) => {
+                self.state.active_tenant = Some(tenant.clone());
+                self.state.active_dataset = None;
+                self.flight_client.set_tenant_id(Some(tenant.clone()));
+                self.flight_client.set_dataset_id(None);
+                self.state.pending_context_refresh = true;
+                self.state.active_overlay = ActiveOverlay::None;
+                self.tenant_selector.reset();
+                self.command_palette.reset();
+            }
+            Action::SetDataset(ref dataset) => {
+                self.state.active_dataset = Some(dataset.clone());
+                self.flight_client.set_dataset_id(Some(dataset.clone()));
+                self.state.pending_context_refresh = true;
+                self.state.active_overlay = ActiveOverlay::None;
+                self.dataset_selector.reset();
+                self.command_palette.reset();
+            }
+            Action::SetTimeRange(ref tr) => {
+                self.state.time_range = tr.clone();
+                self.state.pending_context_refresh = true;
+                self.state.active_overlay = ActiveOverlay::None;
+                self.time_range_selector.reset();
+            }
+            Action::ExecuteCommand(ref cmd) => {
+                if let Some(label) = cmd.strip_prefix("time ") {
+                    let matched = TimeRange::presets()
+                        .into_iter()
+                        .find(|(name, _)| name.to_lowercase().contains(&label.to_lowercase()))
+                        .map(|(_, tr)| tr);
+                    if let Some(tr) = matched {
+                        self.state.time_range = tr;
+                        self.state.pending_context_refresh = true;
+                    }
+                }
+                self.state.active_overlay = ActiveOverlay::None;
+                self.command_palette.reset();
+            }
             Action::Refresh
             | Action::ScrollUp
             | Action::ScrollDown
@@ -172,7 +283,7 @@ impl App {
             | Action::None => {}
         }
 
-        if !self.show_help {
+        if self.state.active_overlay == ActiveOverlay::None {
             self.update_active_tab(&action);
         }
     }
@@ -188,9 +299,11 @@ impl App {
     }
 
     async fn refresh_active_tab(&mut self) {
-        if self.show_help {
+        if self.state.active_overlay != ActiveOverlay::None && !self.state.pending_context_refresh {
             return;
         }
+
+        self.state.pending_context_refresh = false;
 
         match self.state.active_tab {
             Tab::Dashboard => self.refresh_dashboard().await,
@@ -470,25 +583,34 @@ impl App {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
+                Constraint::Length(1),
                 Constraint::Min(0),
                 Constraint::Length(1),
             ])
             .split(frame.area());
 
         self.tab_bar.render(frame, chunks[0], &self.state);
+        self.context_bar.render(frame, chunks[1], &self.state);
 
         match self.state.active_tab {
-            Tab::Dashboard => self.dashboard.render(frame, chunks[1], &self.state),
-            Tab::Traces => self.traces.render(frame, chunks[1], &self.state),
-            Tab::Logs => self.logs.render(frame, chunks[1], &self.state),
-            Tab::Metrics => self.metrics.render(frame, chunks[1], &self.state),
-            Tab::Admin => self.admin.render(frame, chunks[1], &self.state),
+            Tab::Dashboard => self.dashboard.render(frame, chunks[2], &self.state),
+            Tab::Traces => self.traces.render(frame, chunks[2], &self.state),
+            Tab::Logs => self.logs.render(frame, chunks[2], &self.state),
+            Tab::Metrics => self.metrics.render(frame, chunks[2], &self.state),
+            Tab::Admin => self.admin.render(frame, chunks[2], &self.state),
         }
 
-        self.status_bar.render(frame, chunks[2], &self.state);
+        self.status_bar.render(frame, chunks[3], &self.state);
 
-        if self.show_help {
-            self.help.render(frame, frame.area(), &self.state);
+        match self.state.active_overlay {
+            ActiveOverlay::Help => self.help.render(frame, frame.area(), &self.state),
+            ActiveOverlay::TenantSelector => self.tenant_selector.render(frame, frame.area()),
+            ActiveOverlay::DatasetSelector => self.dataset_selector.render(frame, frame.area()),
+            ActiveOverlay::CommandPalette => self.command_palette.render(frame, chunks[2]),
+            ActiveOverlay::TimeRangeSelector => {
+                self.time_range_selector.render(frame, frame.area())
+            }
+            ActiveOverlay::None => {}
         }
     }
 }
@@ -499,7 +621,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
-    use crate::tui::state::{ConnectionStatus, Permission, Tab};
+    use crate::tui::state::{ActiveOverlay, ConnectionStatus, Permission, Tab};
     use crate::tui::test_helpers::assert_buffer_contains;
 
     fn make_app() -> App {
@@ -537,9 +659,51 @@ mod tests {
     #[test]
     fn toggle_help_action_opens_overlay() {
         let mut app = make_app();
-        assert!(!app.show_help);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::None);
         app.handle_action(Action::ToggleHelp);
-        assert!(app.show_help);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::Help);
+    }
+
+    #[test]
+    fn toggle_help_closes_when_already_open() {
+        let mut app = make_app();
+        app.handle_action(Action::ToggleHelp);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::Help);
+        app.handle_action(Action::ToggleHelp);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::None);
+    }
+
+    #[test]
+    fn overlay_exclusivity_replaces_previous() {
+        let mut app = make_app();
+        app.state.set_permission(Permission::Admin {
+            admin_key: "key".into(),
+        });
+        app.handle_action(Action::ToggleHelp);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::Help);
+        app.handle_action(Action::OpenTenantSelector);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::TenantSelector);
+    }
+
+    #[test]
+    fn close_overlay_action_clears_overlay() {
+        let mut app = make_app();
+        app.handle_action(Action::ToggleHelp);
+        app.handle_action(Action::CloseOverlay);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::None);
+    }
+
+    #[test]
+    fn open_tenant_selector_requires_admin() {
+        let mut app = make_app();
+        app.handle_action(Action::OpenTenantSelector);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::None);
+
+        app.state.set_permission(Permission::Admin {
+            admin_key: "key".into(),
+        });
+        app.handle_action(Action::OpenTenantSelector);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::TenantSelector);
     }
 
     #[test]
@@ -595,5 +759,80 @@ mod tests {
         let buffer = terminal.backend().buffer().clone();
         let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
         insta::assert_snapshot!("app_full_layout", content);
+    }
+
+    #[test]
+    fn set_tenant_updates_state_and_closes_overlay() {
+        let mut app = make_app();
+        app.state.active_overlay = ActiveOverlay::TenantSelector;
+        app.handle_action(Action::SetTenant("acme".into()));
+
+        assert_eq!(app.state.active_tenant, Some("acme".into()));
+        assert_eq!(app.state.active_dataset, None);
+        assert!(app.state.pending_context_refresh);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::None);
+    }
+
+    #[test]
+    fn set_dataset_updates_state_and_closes_overlay() {
+        let mut app = make_app();
+        app.state.active_overlay = ActiveOverlay::DatasetSelector;
+        app.handle_action(Action::SetDataset("prod".into()));
+
+        assert_eq!(app.state.active_dataset, Some("prod".into()));
+        assert!(app.state.pending_context_refresh);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::None);
+    }
+
+    #[test]
+    fn set_time_range_updates_state() {
+        let mut app = make_app();
+        let tr = TimeRange::Relative(Duration::from_secs(3600));
+        app.state.active_overlay = ActiveOverlay::TimeRangeSelector;
+        app.handle_action(Action::SetTimeRange(tr.clone()));
+
+        assert_eq!(app.state.time_range, tr);
+        assert!(app.state.pending_context_refresh);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::None);
+    }
+
+    #[test]
+    fn execute_command_time_matches_preset() {
+        let mut app = make_app();
+        app.state.active_overlay = ActiveOverlay::CommandPalette;
+        app.handle_action(Action::ExecuteCommand("time 1h".into()));
+
+        assert_eq!(
+            app.state.time_range,
+            TimeRange::Relative(Duration::from_secs(3600))
+        );
+        assert!(app.state.pending_context_refresh);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::None);
+    }
+
+    #[test]
+    fn execute_command_time_no_match_keeps_default() {
+        let mut app = make_app();
+        let default_tr = app.state.time_range.clone();
+        app.handle_action(Action::ExecuteCommand("time xyz".into()));
+
+        assert_eq!(app.state.time_range, default_tr);
+    }
+
+    #[test]
+    fn set_tenant_resets_dataset() {
+        let mut app = make_app();
+        app.state.active_dataset = Some("staging".into());
+
+        app.handle_action(Action::SetTenant("globex".into()));
+        assert_eq!(app.state.active_tenant, Some("globex".into()));
+        assert_eq!(app.state.active_dataset, None);
+    }
+
+    #[test]
+    fn open_time_range_selector_sets_overlay() {
+        let mut app = make_app();
+        app.handle_action(Action::OpenTimeRangeSelector);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::TimeRangeSelector);
     }
 }

@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/components/context_bar.rs
+expression: content
+---
+Tenant: (none) │ Dataset: (none) │ ⏱ Last 15m │ (not connected)

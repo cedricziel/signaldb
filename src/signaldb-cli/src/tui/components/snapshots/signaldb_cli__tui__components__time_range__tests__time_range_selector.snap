@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/components/time_range.rs
+expression: content
+---
+                                                                                                                                                                                                                                                     ┌ Time Range ────────────────────────────────────┐          │> Last 15m                                      │          │  Last 1h                                       │          │  Last 6h                                       │          │  Last 24h                                      │          │  Last 7d                                       │          │  Last 30d                                      │          │  Custom...                                     │          │                                                │          │                                                │          │                                                │          └────────────────────────────────────────────────┘
