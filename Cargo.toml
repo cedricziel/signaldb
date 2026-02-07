@@ -167,7 +167,7 @@ cargo-husky = { version = "1", default-features = false, features = [
 toml = "0.9"
 
 # AWS SDK dependencies
-aws-config = "1.5.10"
+aws-config = "1.8.13"
 aws-sdk-s3 = "1.121.0"
 aws-credential-types = "1.2.7"
 
