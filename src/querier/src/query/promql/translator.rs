@@ -224,7 +224,7 @@ impl PromQLTranslator {
     ///
     /// A vector selector like `http_requests_total{job="api"}` becomes:
     /// ```sql
-    /// SELECT * FROM iceberg."tenant.dataset".metrics_sum
+    /// SELECT * FROM tenant.dataset.metrics_sum
     /// WHERE metric_name = 'http_requests_total'
     ///   AND json_extract(attributes, '$.job') = 'api'
     ///   AND timestamp BETWEEN (eval_time - lookback) AND eval_time

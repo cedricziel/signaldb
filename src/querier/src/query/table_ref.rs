@@ -40,7 +40,7 @@ fn validate_slug(slug: &str) -> Result<(), TableRefError> {
     }
     if !slug
         .chars()
-        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     {
         return Err(TableRefError::InvalidSlug(slug.to_string()));
     }

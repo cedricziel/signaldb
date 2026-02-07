@@ -155,10 +155,10 @@ impl IcebergTableWriter {
             .unwrap_or_else(|| dataset_id.clone());
 
         // Create namespace and table using slug-based paths
-        let namespace = Namespace::try_new(&[tenant_slug.clone(), dataset_slug.clone()])?;
+        let _namespace = Namespace::try_new(&[tenant_slug.clone(), dataset_slug.clone()])?;
 
         // Namespace is implicitly created when tables are created via the SQL catalog
-        log::debug!("Using namespace: {namespace:?}");
+        log::debug!("Using namespace: {_namespace:?}");
 
         let table_ident =
             Identifier::new(&[tenant_slug.clone(), dataset_slug.clone()], &table_name);
@@ -281,7 +281,7 @@ impl IcebergTableWriter {
             tenant_id,
             dataset_id,
             session_ctx,
-            table_registered: false, // Table registration deferred
+            table_registered: true,
             transaction_state: TransactionState::None,
             pending_operations: Vec::new(),
             retry_config: RetryConfig::default(),
@@ -301,7 +301,6 @@ impl IcebergTableWriter {
         dataset_id: String,
         table_name: String,
     ) -> Result<Self> {
-        let _config = catalog_manager.config();
         let catalog = catalog_manager.catalog();
 
         // Resolve slugs using CatalogManager helper methods
@@ -312,10 +311,10 @@ impl IcebergTableWriter {
         let storage_config = catalog_manager.get_dataset_storage_config(&tenant_id, &dataset_id);
 
         // Create namespace and table using slug-based paths
-        let namespace = Namespace::try_new(&[tenant_slug.clone(), dataset_slug.clone()])?;
+        let _namespace = Namespace::try_new(&[tenant_slug.clone(), dataset_slug.clone()])?;
 
         // Namespace is implicitly created when tables are created via the SQL catalog
-        log::debug!("Using namespace: {namespace:?}");
+        log::debug!("Using namespace: {_namespace:?}");
 
         let table_ident =
             Identifier::new(&[tenant_slug.clone(), dataset_slug.clone()], &table_name);
@@ -434,7 +433,7 @@ impl IcebergTableWriter {
             tenant_id,
             dataset_id,
             session_ctx,
-            table_registered: false,
+            table_registered: true,
             transaction_state: TransactionState::None,
             pending_operations: Vec::new(),
             retry_config: RetryConfig::default(),

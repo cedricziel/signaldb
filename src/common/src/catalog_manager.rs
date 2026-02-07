@@ -63,46 +63,24 @@ impl CatalogManager {
 
     /// Get effective storage config for a dataset (dataset -> tenant -> global fallback).
     ///
-    /// This allows each dataset to optionally specify its own storage backend,
-    /// falling back to the global storage configuration if not specified.
+    /// Delegates to [`Configuration::get_dataset_storage_config`].
     pub fn get_dataset_storage_config(&self, tenant_id: &str, dataset_id: &str) -> &StorageConfig {
-        // Check dataset-level storage
-        if let Some(tenant) = self.config.auth.tenants.iter().find(|t| t.id == tenant_id)
-            && let Some(dataset) = tenant.datasets.iter().find(|d| d.id == dataset_id)
-            && let Some(ref storage) = dataset.storage
-        {
-            return storage;
-        }
-        // Future: Check tenant-level storage here if we add it
-        // Fall back to global storage
-        &self.config.storage
+        self.config
+            .get_dataset_storage_config(tenant_id, dataset_id)
     }
 
     /// Get the tenant slug for a given tenant ID.
     ///
-    /// Returns the tenant's slug if found, otherwise returns the tenant_id as-is.
+    /// Delegates to [`Configuration::get_tenant_slug`].
     pub fn get_tenant_slug(&self, tenant_id: &str) -> String {
-        self.config
-            .auth
-            .tenants
-            .iter()
-            .find(|t| t.id == tenant_id)
-            .map(|t| t.slug.clone())
-            .unwrap_or_else(|| tenant_id.to_string())
+        self.config.get_tenant_slug(tenant_id)
     }
 
     /// Get the dataset slug for a given tenant and dataset ID.
     ///
-    /// Returns the dataset's slug if found, otherwise returns the dataset_id as-is.
+    /// Delegates to [`Configuration::get_dataset_slug`].
     pub fn get_dataset_slug(&self, tenant_id: &str, dataset_id: &str) -> String {
-        self.config
-            .auth
-            .tenants
-            .iter()
-            .find(|t| t.id == tenant_id)
-            .and_then(|t| t.datasets.iter().find(|d| d.id == dataset_id))
-            .map(|d| d.slug.clone())
-            .unwrap_or_else(|| dataset_id.to_string())
+        self.config.get_dataset_slug(tenant_id, dataset_id)
     }
 
     /// Get all enabled tenants.
@@ -177,57 +155,60 @@ mod tests {
                 admin_api_key: None,
             },
             storage: StorageConfig {
-                dsn: "file://.data/storage".to_string(),
+                dsn: "memory://".to_string(),
             },
             ..Configuration::default()
         }
     }
 
-    #[test]
-    fn test_get_dataset_storage_config_with_global_fallback() {
+    async fn create_test_catalog_manager() -> CatalogManager {
         let config = create_test_config();
-
-        // acme/production should use global storage (no override)
-        let storage = config.get_dataset_storage_config("acme", "production");
-        assert_eq!(storage.dsn, "file://.data/storage");
+        CatalogManager::new(config).await.unwrap()
     }
 
-    #[test]
-    fn test_get_dataset_storage_config_with_dataset_override() {
-        let config = create_test_config();
+    #[tokio::test]
+    async fn test_get_dataset_storage_config_with_global_fallback() {
+        let manager = create_test_catalog_manager().await;
+
+        // acme/production should use global storage (no override)
+        let storage = manager.get_dataset_storage_config("acme", "production");
+        assert_eq!(storage.dsn, "memory://");
+    }
+
+    #[tokio::test]
+    async fn test_get_dataset_storage_config_with_dataset_override() {
+        let manager = create_test_catalog_manager().await;
 
         // acme/archive should use S3 storage
-        let storage = config.get_dataset_storage_config("acme", "archive");
+        let storage = manager.get_dataset_storage_config("acme", "archive");
         assert_eq!(storage.dsn, "s3://acme-archive/signals");
 
         // beta/staging should use local file storage
-        let storage = config.get_dataset_storage_config("beta", "staging");
+        let storage = manager.get_dataset_storage_config("beta", "staging");
         assert_eq!(storage.dsn, "file://.data/beta-staging");
     }
 
-    #[test]
-    fn test_get_dataset_storage_config_unknown_tenant() {
-        let config = create_test_config();
+    #[tokio::test]
+    async fn test_get_dataset_storage_config_unknown_tenant() {
+        let manager = create_test_catalog_manager().await;
 
         // Unknown tenant should fall back to global storage
-        let storage = config.get_dataset_storage_config("unknown", "dataset");
-        assert_eq!(storage.dsn, "file://.data/storage");
+        let storage = manager.get_dataset_storage_config("unknown", "dataset");
+        assert_eq!(storage.dsn, "memory://");
     }
 
-    #[test]
-    fn test_get_tenant_slug() {
-        // Uses Configuration::get_tenant_slug directly since it's now a method on Configuration
-        let config = create_test_config();
-        assert_eq!(config.get_tenant_slug("acme"), "acme");
-        assert_eq!(config.get_tenant_slug("unknown"), "unknown");
+    #[tokio::test]
+    async fn test_get_tenant_slug() {
+        let manager = create_test_catalog_manager().await;
+        assert_eq!(manager.get_tenant_slug("acme"), "acme");
+        assert_eq!(manager.get_tenant_slug("unknown"), "unknown");
     }
 
-    #[test]
-    fn test_get_dataset_slug() {
-        // Uses Configuration::get_dataset_slug directly since it's now a method on Configuration
-        let config = create_test_config();
-        assert_eq!(config.get_dataset_slug("acme", "production"), "prod");
-        assert_eq!(config.get_dataset_slug("acme", "archive"), "archive");
-        assert_eq!(config.get_dataset_slug("acme", "unknown"), "unknown");
+    #[tokio::test]
+    async fn test_get_dataset_slug() {
+        let manager = create_test_catalog_manager().await;
+        assert_eq!(manager.get_dataset_slug("acme", "production"), "prod");
+        assert_eq!(manager.get_dataset_slug("acme", "archive"), "archive");
+        assert_eq!(manager.get_dataset_slug("acme", "unknown"), "unknown");
     }
 }

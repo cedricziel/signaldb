@@ -130,39 +130,47 @@ impl QuerierFlightService {
         flight_transport: Arc<InMemoryFlightTransport>,
         catalog_manager: Arc<CatalogManager>,
     ) -> anyhow::Result<Self> {
-        let config = catalog_manager.config();
         let session_ctx = Arc::new(SessionContext::new());
 
         // Track registered storage URLs to avoid duplicates
         let mut registered_urls: HashSet<String> = HashSet::new();
 
-        // Register object stores for all configured storage backends
-        for tenant in &config.auth.tenants {
-            // Check if tenant is enabled via schema_config
-            if let Some(ref schema_config) = tenant.schema_config
-                && !schema_config.enabled
-            {
-                continue;
-            }
+        // Collect enabled tenants once to avoid duplicating the filter logic
+        let enabled_tenants = catalog_manager.get_enabled_tenants();
 
+        // Register object stores for all configured storage backends
+        for tenant in &enabled_tenants {
             for dataset in &tenant.datasets {
                 let storage_config =
                     catalog_manager.get_dataset_storage_config(&tenant.id, &dataset.id);
                 let url_str = &storage_config.dsn;
 
                 // Register each unique storage URL with a scheme-appropriate object store
-                if !registered_urls.contains(url_str)
-                    && let Ok(url) = url::Url::parse(url_str)
-                {
-                    let store = create_object_store_from_dsn(url_str).with_context(|| {
-                        format!("Failed to create object store for dataset DSN: {url_str}")
-                    })?;
-                    session_ctx.runtime_env().register_object_store(&url, store);
-                    registered_urls.insert(url_str.clone());
-                    log::info!(
-                        "Registered object store for scheme '{}': {url_str}",
-                        url.scheme()
-                    );
+                if !registered_urls.contains(url_str) {
+                    match url::Url::parse(url_str) {
+                        Ok(url) => {
+                            let store =
+                                create_object_store_from_dsn(url_str).with_context(|| {
+                                    format!(
+                                        "Failed to create object store for dataset DSN: {url_str}"
+                                    )
+                                })?;
+                            session_ctx.runtime_env().register_object_store(&url, store);
+                            registered_urls.insert(url_str.clone());
+                            log::info!(
+                                "Registered object store for scheme '{}': {url_str}",
+                                url.scheme()
+                            );
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "Skipping invalid storage DSN '{}' for tenant '{}' dataset '{}': {e}",
+                                url_str,
+                                tenant.id,
+                                dataset.id
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -175,14 +183,7 @@ impl QuerierFlightService {
         let iceberg_catalog = catalog_manager.catalog();
 
         // Register per-tenant DataFusion catalogs (each tenant slug as a catalog name)
-        for tenant in &config.auth.tenants {
-            // Check if tenant is enabled
-            if let Some(ref schema_config) = tenant.schema_config
-                && !schema_config.enabled
-            {
-                continue;
-            }
-
+        for tenant in &enabled_tenants {
             // Create DataFusion catalog wrapper for this tenant
             // Note: All tenants share the same underlying Iceberg catalog
             let datafusion_catalog = datafusion_iceberg::catalog::catalog::IcebergCatalog::new(

@@ -307,23 +307,8 @@ impl ServiceBootstrap {
     /// ).await.unwrap();
     /// ```
     pub async fn new_for_test(service_type: ServiceType, address: &str) -> Result<Self> {
-        let config = Configuration::default();
         let catalog = Catalog::new_in_memory().await?;
-        let service_id = Uuid::new_v4();
-        let capabilities = Self::get_default_capabilities(&service_type);
-
-        catalog
-            .register_ingester(service_id, address, service_type.clone(), &capabilities)
-            .await?;
-
-        Ok(ServiceBootstrap {
-            catalog,
-            service_id,
-            service_type,
-            address: address.to_string(),
-            config,
-            heartbeat_handle: None, // No heartbeat in tests
-        })
+        Self::new_for_test_with_catalog(catalog, service_type, address).await
     }
 
     /// Create a test bootstrap with a shared catalog for cross-service discovery.
