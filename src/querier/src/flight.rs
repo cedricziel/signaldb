@@ -24,20 +24,77 @@ use tonic::{Request, Response, Status};
 use crate::query::trace::TraceService;
 use crate::query::{FindTraceByIdParams, SearchQueryParams};
 
+/// Queries the Iceberg catalog directly, bypassing `datafusion_iceberg`'s
+/// stale `Mirror` cache so newly-created tables are immediately visible.
+struct LiveIcebergSchema {
+    namespace: iceberg_rust::catalog::namespace::Namespace,
+    catalog: Arc<dyn iceberg_rust::catalog::Catalog>,
+}
+
+impl std::fmt::Debug for LiveIcebergSchema {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiveIcebergSchema")
+            .field("namespace", &self.namespace)
+            .finish()
+    }
+}
+
+#[async_trait::async_trait]
+impl SchemaProvider for LiveIcebergSchema {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn table_names(&self) -> Vec<String> {
+        vec![]
+    }
+
+    async fn table(
+        &self,
+        name: &str,
+    ) -> datafusion::error::Result<Option<Arc<dyn datafusion::datasource::TableProvider>>> {
+        use iceberg_rust::catalog::identifier::Identifier;
+        use iceberg_rust::catalog::tabular::Tabular;
+        use std::ops::Deref;
+
+        let ident = Identifier::try_new(
+            &[self.namespace.deref(), &[name.to_string()]].concat(),
+            None,
+        )
+        .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+
+        match self.catalog.clone().load_tabular(&ident).await {
+            Ok(tabular) => {
+                let table = match tabular {
+                    Tabular::Table(t) => Arc::new(datafusion_iceberg::DataFusionTable::new(
+                        Tabular::Table(t),
+                        None,
+                        None,
+                        None,
+                    ))
+                        as Arc<dyn datafusion::datasource::TableProvider>,
+                    other => Arc::new(datafusion_iceberg::DataFusionTable::new(
+                        other, None, None, None,
+                    ))
+                        as Arc<dyn datafusion::datasource::TableProvider>,
+                };
+                Ok(Some(table))
+            }
+            Err(iceberg_rust::error::Error::CatalogNotFound) => Ok(None),
+            Err(e) => Err(datafusion::error::DataFusionError::External(Box::new(e))),
+        }
+    }
+
+    fn table_exist(&self, _name: &str) -> bool {
+        true
+    }
+}
+
 /// A DataFusion `CatalogProvider` scoped to a single tenant.
 ///
-/// Wraps a `datafusion_iceberg::IcebergCatalog` and translates dataset-slug
-/// schema lookups into the correct two-level Iceberg namespace.
-///
-/// DataFusion resolves `tenant.dataset.table` as:
-///   catalog = "tenant", schema = "dataset", table = "table"
-///
-/// But `datafusion_iceberg`'s Mirror stores namespaces under the key
-/// `"tenant.dataset"` (the full Iceberg namespace string).  This wrapper
-/// bridges the gap by prepending the tenant slug when looking up schemas.
 struct TenantCatalog {
     tenant_slug: String,
-    inner: Arc<datafusion_iceberg::catalog::catalog::IcebergCatalog>,
+    catalog: Arc<dyn iceberg_rust::catalog::Catalog>,
 }
 
 impl std::fmt::Debug for TenantCatalog {
@@ -54,42 +111,36 @@ impl CatalogProvider for TenantCatalog {
     }
 
     fn schema_names(&self) -> Vec<String> {
-        // Return only the dataset slug part for schemas belonging to this tenant
-        self.inner
-            .schema_names()
-            .into_iter()
-            .filter_map(|full_name| {
-                let prefix = format!("{}.", self.tenant_slug);
-                full_name.strip_prefix(&prefix).map(|rest| rest.to_string())
-            })
-            .collect()
+        vec![]
     }
 
     fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
-        // Translate dataset slug to two-level Iceberg namespace.
-        // DataFusion asks for schema "dataset" → we look up "tenant.dataset"
-        // in the inner IcebergCatalog and create an IcebergSchema with the
-        // correct two-level namespace.
-        let full_namespace = format!("{}.{}", self.tenant_slug, name);
-        self.inner.schema(&full_namespace)
+        let namespace = iceberg_rust::catalog::namespace::Namespace::try_new(&[
+            self.tenant_slug.clone(),
+            name.to_string(),
+        ])
+        .ok()?;
+
+        Some(Arc::new(LiveIcebergSchema {
+            namespace,
+            catalog: self.catalog.clone(),
+        }))
     }
 
     fn register_schema(
         &self,
-        name: &str,
-        schema: Arc<dyn SchemaProvider>,
+        _name: &str,
+        _schema: Arc<dyn SchemaProvider>,
     ) -> datafusion::error::Result<Option<Arc<dyn SchemaProvider>>> {
-        let full_namespace = format!("{}.{}", self.tenant_slug, name);
-        self.inner.register_schema(&full_namespace, schema)
+        Ok(None)
     }
 
     fn deregister_schema(
         &self,
-        name: &str,
-        cascade: bool,
+        _name: &str,
+        _cascade: bool,
     ) -> datafusion::error::Result<Option<Arc<dyn SchemaProvider>>> {
-        let full_namespace = format!("{}.{}", self.tenant_slug, name);
-        self.inner.deregister_schema(&full_namespace, cascade)
+        Ok(None)
     }
 }
 
@@ -209,23 +260,12 @@ impl QuerierFlightService {
         // are registered above). InMemory avoids coupling to any specific DSN.
         let object_store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
 
-        // Use the shared catalog from CatalogManager
         let iceberg_catalog = catalog_manager.catalog();
 
-        // Register per-tenant DataFusion catalogs (each tenant slug as a catalog name).
-        // We wrap each IcebergCatalog in a TenantCatalog so that schema lookups
-        // like `schema("dataset")` are translated to the full Iceberg namespace
-        // `"tenant.dataset"` that the Mirror cache expects.
         for tenant in &enabled_tenants {
-            let datafusion_catalog = datafusion_iceberg::catalog::catalog::IcebergCatalog::new(
-                iceberg_catalog.clone(),
-                None,
-            )
-            .await?;
-
             let tenant_catalog = TenantCatalog {
                 tenant_slug: tenant.slug.clone(),
-                inner: Arc::new(datafusion_catalog),
+                catalog: iceberg_catalog.clone(),
             };
 
             session_ctx.register_catalog(&tenant.slug, Arc::new(tenant_catalog));
@@ -235,15 +275,6 @@ impl QuerierFlightService {
                 tenant.id
             );
         }
-
-        // Also register under the "iceberg" name for backward compatibility
-        let compat_catalog = datafusion_iceberg::catalog::catalog::IcebergCatalog::new(
-            iceberg_catalog.clone(),
-            None,
-        )
-        .await?;
-        session_ctx.register_catalog("iceberg", Arc::new(compat_catalog));
-        log::info!("Registered backward-compatible 'iceberg' catalog");
 
         // Create trace service for specialized trace queries
         let trace_service = TraceService::new(session_ctx.as_ref().clone(), "traces".to_string());
@@ -519,6 +550,7 @@ impl FlightService for QuerierFlightService {
         &self,
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
+        let metadata = request.metadata().clone();
         let ticket = request.into_inner();
         let ticket_content = String::from_utf8(ticket.ticket.to_vec())
             .map_err(|e| Status::invalid_argument(format!("Invalid ticket: {e}")))?;
@@ -600,7 +632,41 @@ impl FlightService for QuerierFlightService {
                 }
             }
             TicketRequest::SqlQuery { sql } => {
-                log::info!("Executing SQL query: {sql}");
+                let tenant_slug = metadata
+                    .get("x-tenant-id")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                let dataset_slug = metadata
+                    .get("x-dataset-id")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+
+                log::info!(
+                    "Executing SQL query (tenant={:?}, dataset={:?}): {sql}",
+                    tenant_slug,
+                    dataset_slug
+                );
+
+                if let Some(tenant) = &tenant_slug {
+                    self.session_ctx
+                        .sql(&format!(
+                            "SET datafusion.catalog.default_catalog = '{tenant}'"
+                        ))
+                        .await
+                        .map_err(|e| {
+                            Status::internal(format!("Failed to set default catalog: {e}"))
+                        })?;
+
+                    let dataset = dataset_slug.as_deref().unwrap_or("default");
+                    self.session_ctx
+                        .sql(&format!(
+                            "SET datafusion.catalog.default_schema = '{dataset}'"
+                        ))
+                        .await
+                        .map_err(|e| {
+                            Status::internal(format!("Failed to set default schema: {e}"))
+                        })?;
+                }
 
                 self.execute_distributed_query(&sql)
                     .await
