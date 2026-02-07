@@ -22,6 +22,12 @@ pub struct QueryBar {
     cursor: usize,
     /// Whether the query bar currently has input focus.
     pub focused: bool,
+    /// Query history (max 50 entries).
+    history: Vec<String>,
+    /// Current position in history (None = editing current, Some(n) = viewing history[n]).
+    history_index: Option<usize>,
+    /// Saved draft text when browsing history.
+    draft: String,
 }
 
 #[allow(dead_code)]
@@ -34,6 +40,9 @@ impl QueryBar {
             text,
             cursor,
             focused: false,
+            history: Vec::new(),
+            history_index: None,
+            draft: String::new(),
         }
     }
 
@@ -42,7 +51,54 @@ impl QueryBar {
     /// Returns `true` if the key was consumed, `false` if it should bubble up.
     pub fn handle_key(&mut self, key: KeyEvent) -> QueryBarAction {
         match key.code {
-            KeyCode::Enter => QueryBarAction::Execute,
+            KeyCode::Enter => {
+                let query = self.text.trim();
+                if !query.is_empty()
+                    && (self.history.is_empty() || self.history.last() != Some(&self.text))
+                {
+                    self.history.push(self.text.clone());
+                    if self.history.len() > 50 {
+                        self.history.remove(0);
+                    }
+                }
+                self.history_index = None;
+                self.draft.clear();
+                QueryBarAction::Execute
+            }
+            KeyCode::Up => {
+                if !self.history.is_empty() {
+                    match self.history_index {
+                        None => {
+                            self.draft = self.text.clone();
+                            self.history_index = Some(self.history.len() - 1);
+                            self.text = self.history[self.history.len() - 1].clone();
+                            self.cursor = self.text.len();
+                        }
+                        Some(idx) if idx > 0 => {
+                            let new_idx = idx - 1;
+                            self.history_index = Some(new_idx);
+                            self.text = self.history[new_idx].clone();
+                            self.cursor = self.text.len();
+                        }
+                        _ => {}
+                    }
+                }
+                QueryBarAction::None
+            }
+            KeyCode::Down => {
+                if let Some(idx) = self.history_index {
+                    if idx < self.history.len() - 1 {
+                        self.history_index = Some(idx + 1);
+                        self.text = self.history[idx + 1].clone();
+                        self.cursor = self.text.len();
+                    } else {
+                        self.history_index = None;
+                        self.text = self.draft.clone();
+                        self.cursor = self.text.len();
+                    }
+                }
+                QueryBarAction::None
+            }
             KeyCode::Esc => QueryBarAction::Blur,
             KeyCode::Char(c) => {
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -52,21 +108,23 @@ impl QueryBar {
                         'u' => {
                             self.text.drain(..self.cursor);
                             self.cursor = 0;
+                            self.history_index = None;
                         }
                         'k' => {
                             self.text.truncate(self.cursor);
+                            self.history_index = None;
                         }
                         _ => {}
                     }
                 } else {
                     self.text.insert(self.cursor, c);
                     self.cursor += c.len_utf8();
+                    self.history_index = None;
                 }
                 QueryBarAction::None
             }
             KeyCode::Backspace => {
                 if self.cursor > 0 {
-                    // Find the previous char boundary.
                     let prev = self.text[..self.cursor]
                         .char_indices()
                         .next_back()
@@ -75,6 +133,7 @@ impl QueryBar {
                     self.text.drain(prev..self.cursor);
                     self.cursor = prev;
                 }
+                self.history_index = None;
                 QueryBarAction::None
             }
             KeyCode::Delete => {
@@ -86,6 +145,7 @@ impl QueryBar {
                         .unwrap_or(self.text.len());
                     self.text.drain(self.cursor..next);
                 }
+                self.history_index = None;
                 QueryBarAction::None
             }
             KeyCode::Left => {
@@ -359,5 +419,172 @@ mod tests {
         let buffer = terminal.backend().buffer().clone();
         let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
         assert!(content.contains(DEFAULT_QUERY));
+    }
+
+    #[test]
+    fn history_navigation_up_down() {
+        let mut bar = QueryBar::new();
+        bar.text.clear();
+        bar.cursor = 0;
+
+        bar.handle_key(press(KeyCode::Char('Q')));
+        bar.handle_key(press(KeyCode::Char('1')));
+        assert_eq!(
+            bar.handle_key(press(KeyCode::Enter)),
+            QueryBarAction::Execute
+        );
+        assert_eq!(bar.history.len(), 1);
+        assert_eq!(bar.history[0], "Q1");
+
+        bar.text.clear();
+        bar.cursor = 0;
+        bar.handle_key(press(KeyCode::Char('Q')));
+        bar.handle_key(press(KeyCode::Char('2')));
+        assert_eq!(
+            bar.handle_key(press(KeyCode::Enter)),
+            QueryBarAction::Execute
+        );
+        assert_eq!(bar.history.len(), 2);
+
+        bar.text.clear();
+        bar.cursor = 0;
+        bar.handle_key(press(KeyCode::Char('Q')));
+        bar.handle_key(press(KeyCode::Char('3')));
+        assert_eq!(
+            bar.handle_key(press(KeyCode::Enter)),
+            QueryBarAction::Execute
+        );
+        assert_eq!(bar.history.len(), 3);
+
+        bar.text = "current".to_string();
+        bar.cursor = 7;
+
+        bar.handle_key(press(KeyCode::Up));
+        assert_eq!(bar.text, "Q3");
+        assert_eq!(bar.history_index, Some(2));
+        assert_eq!(bar.draft, "current");
+
+        bar.handle_key(press(KeyCode::Up));
+        assert_eq!(bar.text, "Q2");
+        assert_eq!(bar.history_index, Some(1));
+
+        bar.handle_key(press(KeyCode::Up));
+        assert_eq!(bar.text, "Q1");
+        assert_eq!(bar.history_index, Some(0));
+
+        bar.handle_key(press(KeyCode::Down));
+        assert_eq!(bar.text, "Q2");
+        assert_eq!(bar.history_index, Some(1));
+
+        bar.handle_key(press(KeyCode::Down));
+        assert_eq!(bar.text, "Q3");
+        assert_eq!(bar.history_index, Some(2));
+
+        bar.handle_key(press(KeyCode::Down));
+        assert_eq!(bar.text, "current");
+        assert_eq!(bar.history_index, None);
+    }
+
+    #[test]
+    fn history_no_consecutive_duplicates() {
+        let mut bar = QueryBar::new();
+        bar.text.clear();
+        bar.cursor = 0;
+
+        bar.handle_key(press(KeyCode::Char('Q')));
+        assert_eq!(
+            bar.handle_key(press(KeyCode::Enter)),
+            QueryBarAction::Execute
+        );
+        assert_eq!(bar.history.len(), 1);
+
+        bar.text = "Q".to_string();
+        bar.cursor = 1;
+        assert_eq!(
+            bar.handle_key(press(KeyCode::Enter)),
+            QueryBarAction::Execute
+        );
+        assert_eq!(bar.history.len(), 1);
+
+        bar.text = "Q2".to_string();
+        bar.cursor = 2;
+        assert_eq!(
+            bar.handle_key(press(KeyCode::Enter)),
+            QueryBarAction::Execute
+        );
+        assert_eq!(bar.history.len(), 2);
+    }
+
+    #[test]
+    fn history_max_50_entries() {
+        let mut bar = QueryBar::new();
+        bar.text.clear();
+        bar.cursor = 0;
+
+        for i in 0..60 {
+            bar.text = format!("Q{i}");
+            bar.cursor = bar.text.len();
+            bar.handle_key(press(KeyCode::Enter));
+        }
+
+        assert_eq!(bar.history.len(), 50);
+        assert_eq!(bar.history[0], "Q10");
+        assert_eq!(bar.history[49], "Q59");
+    }
+
+    #[test]
+    fn history_reset_on_text_edit() {
+        let mut bar = QueryBar::new();
+        bar.text.clear();
+        bar.cursor = 0;
+
+        bar.handle_key(press(KeyCode::Char('Q')));
+        bar.handle_key(press(KeyCode::Char('1')));
+        bar.handle_key(press(KeyCode::Enter));
+
+        bar.text = "current".to_string();
+        bar.cursor = 7;
+        bar.handle_key(press(KeyCode::Up));
+        assert_eq!(bar.history_index, Some(0));
+
+        bar.handle_key(press(KeyCode::Char('X')));
+        assert_eq!(bar.history_index, None);
+        assert_eq!(bar.text, "Q1X");
+
+        bar.text = "Q1".to_string();
+        bar.cursor = 2;
+        bar.handle_key(press(KeyCode::Up));
+        assert_eq!(bar.history_index, Some(0));
+
+        bar.handle_key(press(KeyCode::Backspace));
+        assert_eq!(bar.history_index, None);
+
+        bar.text = "Q1".to_string();
+        bar.cursor = 2;
+        bar.handle_key(press(KeyCode::Up));
+        assert_eq!(bar.history_index, Some(0));
+
+        bar.handle_key(press(KeyCode::Delete));
+        assert_eq!(bar.history_index, None);
+    }
+
+    #[test]
+    fn history_empty_strings_not_added() {
+        let mut bar = QueryBar::new();
+        bar.text.clear();
+        bar.cursor = 0;
+
+        bar.handle_key(press(KeyCode::Enter));
+        assert_eq!(bar.history.len(), 0);
+
+        bar.text = "   ".to_string();
+        bar.cursor = 3;
+        bar.handle_key(press(KeyCode::Enter));
+        assert_eq!(bar.history.len(), 0);
+
+        bar.text = "Q1".to_string();
+        bar.cursor = 2;
+        bar.handle_key(press(KeyCode::Enter));
+        assert_eq!(bar.history.len(), 1);
     }
 }

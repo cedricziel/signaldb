@@ -41,6 +41,8 @@ pub struct WaterfallSpan {
     pub duration_ms: f64,
     /// Status code string.
     pub status: String,
+    /// Span kind (e.g. `Server`, `Client`, `Internal`).
+    pub kind: String,
 }
 
 /// Build waterfall spans from a list of `SpanInfo`, computing depth via parent relationships.
@@ -103,12 +105,23 @@ pub fn build_waterfall_spans(spans: &[SpanInfo]) -> Vec<WaterfallSpan> {
                 duration_fraction: duration_fraction.clamp(0.0, 1.0),
                 duration_ms: span.duration_ms,
                 status: span.status.clone(),
+                kind: span.kind.clone(),
             }
         })
         .collect()
 }
 
-/// Get a color for a service name by hashing it into the color palette.
+fn kind_label(kind: &str) -> &'static str {
+    match kind {
+        "Server" => "[S] ",
+        "Client" => "[C] ",
+        "Internal" => "[I] ",
+        "Producer" => "[P] ",
+        "Consumer" => "[N] ",
+        _ => "",
+    }
+}
+
 fn service_color(service: &str) -> Color {
     let hash: usize = service.bytes().map(|b| b as usize).sum();
     SERVICE_COLORS[hash % SERVICE_COLORS.len()]
@@ -161,16 +174,21 @@ pub fn render_waterfall(
         }
 
         let is_selected = selected == Some(i);
-        let color = service_color(&span.service);
+        let is_error = span.status.to_lowercase().contains("error");
+        let color = if is_error {
+            Color::Red
+        } else {
+            service_color(&span.service)
+        };
 
         // Build label with indentation
         let indent = "  ".repeat(span.depth.min(5));
-        let status_indicator = if span.status.contains("Error") || span.status.contains("ERROR") {
-            "! "
-        } else {
-            ""
-        };
-        let raw_label = format!("{indent}{status_indicator}{}", span.label);
+        let status_indicator = if is_error { "! " } else { "" };
+        let kind_prefix = kind_label(&span.kind);
+        let raw_label = format!(
+            "{indent}{status_indicator}{kind_prefix}{}: {}",
+            span.service, span.label
+        );
         let label: String = if raw_label.len() > label_width {
             format!("{}~", &raw_label[..label_width - 1])
         } else {
@@ -260,6 +278,7 @@ mod tests {
                 start_time_ms: 0.0,
                 duration_ms: 100.0,
                 status: "Ok".into(),
+                kind: "Server".into(),
                 attributes: serde_json::json!({}),
             },
             SpanInfo {
@@ -270,6 +289,7 @@ mod tests {
                 start_time_ms: 10.0,
                 duration_ms: 50.0,
                 status: "Ok".into(),
+                kind: "Client".into(),
                 attributes: serde_json::json!({}),
             },
             SpanInfo {
@@ -280,6 +300,7 @@ mod tests {
                 start_time_ms: 15.0,
                 duration_ms: 30.0,
                 status: "Error".into(),
+                kind: "Internal".into(),
                 attributes: serde_json::json!({"error": true}),
             },
         ]

@@ -137,6 +137,7 @@ mod tests {
                     start_time_ms: 0.0,
                     duration_ms: 100.0,
                     status: "Ok".into(),
+                    kind: "Server".into(),
                     attributes: serde_json::json!({"http.method": "GET", "http.status_code": 200}),
                 },
                 SpanInfo {
@@ -147,6 +148,7 @@ mod tests {
                     start_time_ms: 10.0,
                     duration_ms: 50.0,
                     status: "Ok".into(),
+                    kind: "Client".into(),
                     attributes: serde_json::json!({"db.system": "postgresql"}),
                 },
             ],

@@ -217,7 +217,7 @@ impl FlightSqlClient {
     pub async fn get_trace(&self, trace_id: &str) -> Result<TraceDetail, FlightClientError> {
         let sql = format!(
             "SELECT span_id, parent_span_id, span_name, service_name, \
-             start_time_unix_nano, duration_nanos, status_code, span_attributes \
+             start_time_unix_nano, duration_nanos, status_code, span_kind, span_attributes \
              FROM traces WHERE trace_id = '{trace_id}' \
              ORDER BY start_time_unix_nano ASC"
         );
@@ -252,6 +252,9 @@ impl FlightSqlClient {
             let durations = batch.column_by_name("duration_nanos");
             let statuses = batch
                 .column_by_name("status_code")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let kinds = batch
+                .column_by_name("span_kind")
                 .and_then(|c| c.as_any().downcast_ref::<StringArray>());
             let attributes = batch
                 .column_by_name("span_attributes")
@@ -290,6 +293,7 @@ impl FlightSqlClient {
                     .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
                 let status = statuses.map(|s| s.value(i).to_string()).unwrap_or_default();
+                let kind = kinds.map(|k| k.value(i).to_string()).unwrap_or_default();
 
                 spans.push(SpanInfo {
                     span_id: span_ids.value(i).to_string(),
@@ -299,6 +303,7 @@ impl FlightSqlClient {
                     start_time_ms: (start_nanos.saturating_sub(trace_start)) as f64 / 1_000_000.0,
                     duration_ms: dur_nanos as f64 / 1_000_000.0,
                     status,
+                    kind,
                     attributes: attrs,
                 });
             }

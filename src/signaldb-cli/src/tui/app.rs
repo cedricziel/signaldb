@@ -211,9 +211,30 @@ impl App {
     fn handle_action(&mut self, action: Action) {
         match action {
             Action::Quit => self.running = false,
-            Action::SwitchTab(idx) => self.state.switch_tab(idx),
-            Action::NextTab => self.state.next_tab(),
-            Action::PrevTab => self.state.prev_tab(),
+            Action::SwitchTab(idx) => {
+                let prev = self.state.active_tab.clone();
+                self.state.switch_tab(idx);
+                if self.state.active_tab != prev {
+                    self.state.pending_context_refresh = true;
+                    self.state.loading = true;
+                }
+            }
+            Action::NextTab => {
+                let prev = self.state.active_tab.clone();
+                self.state.next_tab();
+                if self.state.active_tab != prev {
+                    self.state.pending_context_refresh = true;
+                    self.state.loading = true;
+                }
+            }
+            Action::PrevTab => {
+                let prev = self.state.active_tab.clone();
+                self.state.prev_tab();
+                if self.state.active_tab != prev {
+                    self.state.pending_context_refresh = true;
+                    self.state.loading = true;
+                }
+            }
             Action::ToggleHelp => {
                 if self.state.active_overlay == ActiveOverlay::Help {
                     self.state.active_overlay = ActiveOverlay::None;
@@ -263,13 +284,15 @@ impl App {
             }
             Action::ExecuteCommand(ref cmd) => {
                 if let Some(label) = cmd.strip_prefix("time ") {
-                    let matched = TimeRange::presets()
+                    let tr = TimeRange::presets()
                         .into_iter()
                         .find(|(name, _)| name.to_lowercase().contains(&label.to_lowercase()))
-                        .map(|(_, tr)| tr);
-                    if let Some(tr) = matched {
+                        .map(|(_, tr)| tr)
+                        .or_else(|| TimeRange::parse_shorthand(label));
+                    if let Some(tr) = tr {
                         self.state.time_range = tr;
                         self.state.pending_context_refresh = true;
+                        self.state.loading = true;
                     }
                 }
                 self.state.active_overlay = ActiveOverlay::None;

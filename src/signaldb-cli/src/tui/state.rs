@@ -121,6 +121,21 @@ impl TimeRange {
         }
     }
 
+    /// Parse shorthand duration strings like "15m", "2h", "7d".
+    pub fn parse_shorthand(input: &str) -> Option<TimeRange> {
+        let input = input.trim().to_lowercase();
+        let (num_str, suffix) = input.split_at(input.len().saturating_sub(1));
+        let num: u64 = num_str.parse().ok()?;
+        let secs = match suffix {
+            "s" => num,
+            "m" => num * 60,
+            "h" => num * 3600,
+            "d" => num * 86400,
+            _ => return None,
+        };
+        (secs > 0).then(|| TimeRange::Relative(Duration::from_secs(secs)))
+    }
+
     /// Preset time range options.
     pub fn presets() -> Vec<(String, TimeRange)> {
         vec![

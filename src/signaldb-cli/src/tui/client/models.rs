@@ -51,6 +51,8 @@ pub struct SpanInfo {
     pub duration_ms: f64,
     /// Span status (e.g. `Ok`, `Error`)
     pub status: String,
+    /// Span kind (e.g. `Server`, `Client`, `Internal`)
+    pub kind: String,
     /// Span attributes as a JSON value
     pub attributes: serde_json::Value,
 }
