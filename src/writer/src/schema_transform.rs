@@ -374,22 +374,44 @@ pub fn transform_logs_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatch> {
     let num_rows = batch.num_rows();
     let mut new_columns: Vec<ArrayRef> = Vec::new();
 
+    // Pre-extract both timestamp columns so we can fall back from
+    // time_unix_nano to observed_time_unix_nano per the OTLP spec:
+    // "If time_unix_nano is 0, receivers SHOULD use observed_time_unix_nano."
+    let time_col = get_column_by_name(&batch, "time_unix_nano")?;
+    let time_array = time_col
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .ok_or_else(|| anyhow!("time_unix_nano is not UInt64Array"))?;
+    let observed_col = get_column_by_name(&batch, "observed_time_unix_nano")?;
+    let observed_array = observed_col
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .ok_or_else(|| anyhow!("observed_time_unix_nano is not UInt64Array"))?;
+
+    let effective_nanos: Vec<u64> = (0..time_array.len())
+        .map(|i| {
+            let t = if time_array.is_null(i) {
+                0
+            } else {
+                time_array.value(i)
+            };
+            if t != 0 {
+                return t;
+            }
+            if observed_array.is_null(i) {
+                0
+            } else {
+                observed_array.value(i)
+            }
+        })
+        .collect();
+
     for field in &v1_schema.fields {
         let column: ArrayRef = match field.name.as_str() {
             "timestamp" => {
-                let col = get_column_by_name(&batch, "time_unix_nano")?;
-                let uint_array = col
-                    .as_any()
-                    .downcast_ref::<UInt64Array>()
-                    .ok_or_else(|| anyhow!("time_unix_nano is not UInt64Array"))?;
-                let values: Vec<Option<i64>> = (0..uint_array.len())
-                    .map(|i| {
-                        if uint_array.is_null(i) {
-                            None
-                        } else {
-                            Some(uint_array.value(i) as i64)
-                        }
-                    })
+                let values: Vec<Option<i64>> = effective_nanos
+                    .iter()
+                    .map(|&nanos| Some(nanos as i64))
                     .collect();
                 Arc::new(TimestampNanosecondArray::from(values))
             }
@@ -603,30 +625,20 @@ pub fn transform_logs_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatch> {
             }
             "log_attributes" => get_column_by_name(&batch, "attributes_json")?,
             "date_day" => {
-                let col = get_column_by_name(&batch, "time_unix_nano")?;
-                let uint_array = col
-                    .as_any()
-                    .downcast_ref::<UInt64Array>()
-                    .ok_or_else(|| anyhow!("time_unix_nano is not UInt64Array"))?;
-                let dates: Vec<Option<i32>> = (0..uint_array.len())
-                    .map(|i| {
-                        let nanos = uint_array.value(i);
+                let dates: Vec<Option<i32>> = effective_nanos
+                    .iter()
+                    .map(|&nanos| {
                         let secs = (nanos / 1_000_000_000) as i64;
                         let dt = DateTime::from_timestamp(secs, 0)?;
-                        Some((dt.naive_utc().date().num_days_from_ce() - 719163) as i32)
+                        Some(dt.naive_utc().date().num_days_from_ce() - 719163)
                     })
                     .collect();
                 Arc::new(Date32Array::from(dates))
             }
             "hour" => {
-                let col = get_column_by_name(&batch, "time_unix_nano")?;
-                let uint_array = col
-                    .as_any()
-                    .downcast_ref::<UInt64Array>()
-                    .ok_or_else(|| anyhow!("time_unix_nano is not UInt64Array"))?;
-                let hours: Vec<Option<i32>> = (0..uint_array.len())
-                    .map(|i| {
-                        let nanos = uint_array.value(i);
+                let hours: Vec<Option<i32>> = effective_nanos
+                    .iter()
+                    .map(|&nanos| {
                         let secs = (nanos / 1_000_000_000) as i64;
                         let dt = DateTime::from_timestamp(secs, 0)?;
                         Some(dt.hour() as i32)
@@ -1692,5 +1704,143 @@ mod tests {
         let metadata = r#"{"signal_type": "traces"}"#;
         let result = extract_schema_version(metadata.as_bytes());
         assert!(result.is_err());
+    }
+
+    fn make_log_flight_batch(
+        time_unix_nanos: &[u64],
+        observed_time_unix_nanos: &[u64],
+    ) -> RecordBatch {
+        use datafusion::arrow::array::BinaryArray;
+        use datafusion::arrow::datatypes::Fields;
+
+        let n = time_unix_nanos.len();
+        let schema = Arc::new(Schema::new(Fields::from(vec![
+            Field::new("time_unix_nano", DataType::UInt64, false),
+            Field::new("observed_time_unix_nano", DataType::UInt64, false),
+            Field::new("severity_number", DataType::Int32, true),
+            Field::new("severity_text", DataType::Utf8, true),
+            Field::new("body", DataType::Utf8, true),
+            Field::new("trace_id", DataType::Binary, true),
+            Field::new("span_id", DataType::Binary, true),
+            Field::new("flags", DataType::UInt32, true),
+            Field::new("attributes_json", DataType::Utf8, true),
+            Field::new("resource_json", DataType::Utf8, true),
+            Field::new("scope_json", DataType::Utf8, true),
+            Field::new("dropped_attributes_count", DataType::UInt32, true),
+            Field::new("service_name", DataType::Utf8, true),
+            Field::new("event_name", DataType::Utf8, true),
+        ])));
+
+        let null_strings: Vec<Option<&str>> = vec![None; n];
+        let null_binaries: Vec<Option<&[u8]>> = vec![None; n];
+        let null_u32: Vec<Option<u32>> = vec![None; n];
+        let null_i32: Vec<Option<i32>> = vec![None; n];
+        let service_names: Vec<Option<&str>> = vec![Some("test-service"); n];
+
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt64Array::from(time_unix_nanos.to_vec())),
+                Arc::new(UInt64Array::from(observed_time_unix_nanos.to_vec())),
+                Arc::new(Int32Array::from(null_i32)),
+                Arc::new(StringArray::from(null_strings.clone())),
+                Arc::new(StringArray::from(vec![Some("test log"); n])),
+                Arc::new(BinaryArray::from(null_binaries.clone())),
+                Arc::new(BinaryArray::from(null_binaries)),
+                Arc::new(UInt32Array::from(null_u32.clone())),
+                Arc::new(StringArray::from(null_strings.clone())),
+                Arc::new(StringArray::from(null_strings.clone())),
+                Arc::new(StringArray::from(null_strings.clone())),
+                Arc::new(UInt32Array::from(null_u32)),
+                Arc::new(StringArray::from(service_names)),
+                Arc::new(StringArray::from(null_strings)),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn log_transform_uses_time_unix_nano_when_nonzero() {
+        let real_ts: u64 = 1_700_000_000_000_000_000;
+        let observed_ts: u64 = 1_700_000_001_000_000_000;
+        let batch = make_log_flight_batch(&[real_ts], &[observed_ts]);
+
+        let result = transform_logs_v1_to_iceberg(batch).unwrap();
+        let ts_col = result
+            .column_by_name("timestamp")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<TimestampNanosecondArray>()
+            .unwrap();
+
+        assert_eq!(ts_col.value(0), real_ts as i64);
+    }
+
+    #[test]
+    fn log_transform_falls_back_to_observed_when_time_is_zero() {
+        let observed_ts: u64 = 1_700_000_001_000_000_000;
+        let batch = make_log_flight_batch(&[0], &[observed_ts]);
+
+        let result = transform_logs_v1_to_iceberg(batch).unwrap();
+        let ts_col = result
+            .column_by_name("timestamp")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<TimestampNanosecondArray>()
+            .unwrap();
+
+        assert_eq!(
+            ts_col.value(0),
+            observed_ts as i64,
+            "should fall back to observed_time_unix_nano when time_unix_nano is 0"
+        );
+    }
+
+    #[test]
+    fn log_transform_date_day_uses_fallback_timestamp() {
+        let observed_ts: u64 = 1_700_000_001_000_000_000;
+        let batch = make_log_flight_batch(&[0], &[observed_ts]);
+
+        let result = transform_logs_v1_to_iceberg(batch).unwrap();
+        let date_col = result
+            .column_by_name("date_day")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Date32Array>()
+            .unwrap();
+
+        let epoch_1970 = 0_i32;
+        assert_ne!(
+            date_col.value(0),
+            epoch_1970,
+            "date_day should not be 1970-01-01 when observed_time_unix_nano is set"
+        );
+    }
+
+    #[test]
+    fn log_transform_mixed_timestamps() {
+        let real_ts: u64 = 1_700_000_000_000_000_000;
+        let observed_ts: u64 = 1_700_000_002_000_000_000;
+
+        let batch = make_log_flight_batch(
+            &[real_ts, 0, real_ts],
+            &[observed_ts, observed_ts, observed_ts],
+        );
+
+        let result = transform_logs_v1_to_iceberg(batch).unwrap();
+        let ts_col = result
+            .column_by_name("timestamp")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<TimestampNanosecondArray>()
+            .unwrap();
+
+        assert_eq!(ts_col.value(0), real_ts as i64, "row 0: use time_unix_nano");
+        assert_eq!(
+            ts_col.value(1),
+            observed_ts as i64,
+            "row 1: fall back to observed"
+        );
+        assert_eq!(ts_col.value(2), real_ts as i64, "row 2: use time_unix_nano");
     }
 }
