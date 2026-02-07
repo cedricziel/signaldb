@@ -30,10 +30,6 @@ target/
 
 signaldb.toml
 
-.clinefile
-
-.claude/
-
 # macOS
 .DS_Store
 
