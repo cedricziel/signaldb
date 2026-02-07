@@ -213,7 +213,7 @@ Critical Path: Task 2 → Task 4 → Task 8 → Tasks 9-13 (scaffolding → even
 
 ## TODOs
 
-- [ ] 1. Self-Monitoring Infrastructure via OTLP (Dogfooding)
+- [x] 1. Self-Monitoring Infrastructure via OTLP (Dogfooding)
 
   **What to do**:
   - Create a self-monitoring module in `src/common/src/self_monitoring/` that services use to instrument themselves via the OpenTelemetry SDK and export telemetry via OTLP
@@ -380,7 +380,7 @@ Critical Path: Task 2 → Task 4 → Task 8 → Tasks 9-13 (scaffolding → even
 
 ---
 
-- [ ] 2. TUI Dependencies & Project Scaffolding
+- [x] 2. TUI Dependencies & Project Scaffolding
 
   **What to do**:
   - Add ratatui and crossterm to workspace `Cargo.toml` dependencies
@@ -499,7 +499,7 @@ Critical Path: Task 2 → Task 4 → Task 8 → Tasks 9-13 (scaffolding → even
 
 ---
 
-- [ ] 3. Test Infrastructure Setup
+- [x] 3. Test Infrastructure Setup
 
   **What to do**:
   - Add dev-dependencies to `signaldb-cli/Cargo.toml`:
@@ -575,7 +575,7 @@ Critical Path: Task 2 → Task 4 → Task 8 → Tasks 9-13 (scaffolding → even
 
 ---
 
-- [ ] 4. TUI Event Loop & Terminal Management
+- [x] 4. TUI Event Loop & Terminal Management
 
   **What to do**:
   - Implement `src/signaldb-cli/src/tui/terminal.rs`:
@@ -670,7 +670,7 @@ Critical Path: Task 2 → Task 4 → Task 8 → Tasks 9-13 (scaffolding → even
 
 ---
 
-- [ ] 5. Flight SQL Client for TUI
+- [x] 5. Flight SQL Client for TUI
 
   **What to do**:
   - Implement `src/signaldb-cli/src/tui/client/flight.rs`:
@@ -766,7 +766,7 @@ Critical Path: Task 2 → Task 4 → Task 8 → Tasks 9-13 (scaffolding → even
 
 ---
 
-- [ ] 6. HTTP Admin API Client for TUI
+- [x] 6. HTTP Admin API Client for TUI
 
   **What to do**:
   - Implement `src/signaldb-cli/src/tui/client/admin.rs`:
@@ -856,7 +856,7 @@ Critical Path: Task 2 → Task 4 → Task 8 → Tasks 9-13 (scaffolding → even
 
 ---
 
-- [ ] 7. Permission Detection & App State
+- [x] 7. Permission Detection & App State
 
   **What to do**:
   - Implement `src/signaldb-cli/src/tui/state.rs`:
@@ -941,7 +941,7 @@ Critical Path: Task 2 → Task 4 → Task 8 → Tasks 9-13 (scaffolding → even
 
 ---
 
-- [ ] 8. Tab Navigation Shell & Status Bar
+- [x] 8. Tab Navigation Shell & Status Bar
 
   **What to do**:
   - Implement `src/signaldb-cli/src/tui/components/tabs.rs`:
@@ -1044,7 +1044,7 @@ Critical Path: Task 2 → Task 4 → Task 8 → Tasks 9-13 (scaffolding → even
 
 ---
 
-- [ ] 9. Dashboard Tab
+- [x] 9. Dashboard Tab
 
   **What to do**:
   - Implement `src/signaldb-cli/src/tui/components/dashboard/mod.rs`:
@@ -1278,7 +1278,7 @@ Critical Path: Task 2 → Task 4 → Task 8 → Tasks 9-13 (scaffolding → even
 
 ---
 
-- [ ] 11. Logs Tab
+- [x] 11. Logs Tab
 
   **What to do**:
   - Implement `src/signaldb-cli/src/tui/components/logs/mod.rs`:
@@ -1379,7 +1379,7 @@ Critical Path: Task 2 → Task 4 → Task 8 → Tasks 9-13 (scaffolding → even
 
 ---
 
-- [ ] 12. Metrics Tab
+- [x] 12. Metrics Tab
 
   **What to do**:
   - Implement `src/signaldb-cli/src/tui/components/metrics/mod.rs`:
@@ -1486,7 +1486,7 @@ Critical Path: Task 2 → Task 4 → Task 8 → Tasks 9-13 (scaffolding → even
 
 ---
 
-- [ ] 13. Admin Tab
+- [x] 13. Admin Tab
 
   **What to do**:
   - Implement `src/signaldb-cli/src/tui/components/admin/mod.rs`:
