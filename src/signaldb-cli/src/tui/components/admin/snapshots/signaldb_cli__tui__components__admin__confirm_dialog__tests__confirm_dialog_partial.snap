@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/components/admin/confirm_dialog.rs
+expression: content
+---
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          ┌ Confirm Deletion ────────────────────────────────────────┐                    │Type 'acme-tenant' to confirm deletion:                   │                    │                                                          │                    │┌ Confirm ───────────────────────────────────────────────┐│                    ││ac█                                                     ││                    │└────────────────────────────────────────────────────────┘│                    └──────────────────────────────────────────────────────────┘
