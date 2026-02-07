@@ -57,7 +57,19 @@ async fn main() -> anyhow::Result<()> {
         return Ok(()); // Command handled, exit early
     }
 
-    // Get Flight address for service registration
+    let _telemetry = match common::self_monitoring::init_telemetry(&config, "signaldb-querier") {
+        Ok(t) => {
+            if t.is_some() {
+                log::info!("Self-monitoring telemetry initialized");
+            }
+            t
+        }
+        Err(e) => {
+            log::warn!("Self-monitoring init failed, continuing without it: {e}");
+            None
+        }
+    };
+
     let bind_ip = cli
         .bind
         .parse::<std::net::IpAddr>()
@@ -124,7 +136,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Note: ServiceBootstrap shutdown is handled via drop impl when flight_transport is dropped
 
-    // Shutdown Flight server
+    if let Some(telemetry) = _telemetry {
+        telemetry.shutdown();
+    }
+
     flight_handle.abort();
 
     Ok(())

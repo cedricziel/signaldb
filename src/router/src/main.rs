@@ -57,6 +57,19 @@ async fn main() -> Result<()> {
         return Ok(()); // Command handled, exit early
     }
 
+    let _telemetry = match common::self_monitoring::init_telemetry(&config, "signaldb-router") {
+        Ok(t) => {
+            if t.is_some() {
+                log::info!("Self-monitoring telemetry initialized");
+            }
+            t
+        }
+        Err(e) => {
+            log::warn!("Self-monitoring init failed, continuing without it: {e}");
+            None
+        }
+    };
+
     log::info!("Starting SignalDB Router Service");
 
     // Use CLI-provided ports or defaults
@@ -154,6 +167,10 @@ async fn main() -> Result<()> {
     // Wait for servers to stop
     let _ = http_handle.await;
     let _ = flight_handle.await;
+
+    if let Some(telemetry) = _telemetry {
+        telemetry.shutdown();
+    }
 
     log::info!("Router service stopped gracefully");
 

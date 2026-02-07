@@ -68,6 +68,19 @@ async fn main() -> Result<()> {
         return Ok(()); // Command handled, exit early
     }
 
+    let _telemetry = match common::self_monitoring::init_telemetry(&config, "signaldb-acceptor") {
+        Ok(t) => {
+            if t.is_some() {
+                log::info!("Self-monitoring telemetry initialized");
+            }
+            t
+        }
+        Err(e) => {
+            log::warn!("Self-monitoring init failed, continuing without it: {e}");
+            None
+        }
+    };
+
     log::info!("Starting SignalDB Acceptor Service");
 
     // Use CLI-provided ports or defaults
@@ -170,6 +183,10 @@ async fn main() -> Result<()> {
     // Await spawned tasks
     let _ = grpc_handle.await;
     let _ = http_handle.await;
+
+    if let Some(telemetry) = _telemetry {
+        telemetry.shutdown();
+    }
 
     log::info!("Acceptor service stopped gracefully");
 

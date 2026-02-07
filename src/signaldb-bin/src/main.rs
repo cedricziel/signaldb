@@ -58,6 +58,19 @@ async fn main() -> Result<()> {
         return Ok(()); // Command handled, exit early
     }
 
+    let _telemetry = match common::self_monitoring::init_telemetry(&config, "signaldb") {
+        Ok(t) => {
+            if t.is_some() {
+                log::info!("Self-monitoring telemetry initialized");
+            }
+            t
+        }
+        Err(e) => {
+            log::warn!("Self-monitoring init failed, continuing without it: {e}");
+            None
+        }
+    };
+
     log::info!("Loaded configuration:");
     log::info!("  Database DSN: {}", config.database.dsn);
     if let Some(discovery) = &config.discovery {
@@ -385,13 +398,16 @@ async fn main() -> Result<()> {
     writer_bg_handle.abort();
     let _ = writer_bg_handle.await;
 
-    // Shutdown Writer WAL and flush any remaining data
     if let Ok(wal) = Arc::try_unwrap(writer_wal) {
         wal.shutdown()
             .await
             .context("Failed to shutdown Writer WAL")?;
     } else {
         log::warn!("Could not get exclusive access to Writer WAL for shutdown - forcing flush");
+    }
+
+    if let Some(telemetry) = _telemetry {
+        telemetry.shutdown();
     }
 
     Ok(())

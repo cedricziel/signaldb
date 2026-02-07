@@ -256,6 +256,48 @@ pub struct AuthConfig {
     pub admin_api_key: Option<String>,
 }
 
+fn default_self_monitoring_endpoint() -> String {
+    "http://localhost:4317".to_string()
+}
+
+fn default_self_monitoring_interval() -> Duration {
+    Duration::from_secs(60)
+}
+
+fn default_self_monitoring_tenant() -> String {
+    "_system".to_string()
+}
+
+fn default_self_monitoring_dataset() -> String {
+    "_monitoring".to_string()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SelfMonitoringConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_self_monitoring_endpoint")]
+    pub endpoint: String,
+    #[serde(default = "default_self_monitoring_interval", with = "humantime_serde")]
+    pub interval: Duration,
+    #[serde(default = "default_self_monitoring_tenant")]
+    pub tenant_id: String,
+    #[serde(default = "default_self_monitoring_dataset")]
+    pub dataset_id: String,
+}
+
+impl Default for SelfMonitoringConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: default_self_monitoring_endpoint(),
+            interval: default_self_monitoring_interval(),
+            tenant_id: default_self_monitoring_tenant(),
+            dataset_id: default_self_monitoring_dataset(),
+        }
+    }
+}
+
 // Keep IcebergConfig for backward compatibility
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IcebergConfig {
@@ -306,6 +348,8 @@ pub struct Configuration {
     /// Authentication and multi-tenancy configuration
     #[serde(default)]
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub self_monitoring: SelfMonitoringConfig,
 }
 
 impl Default for Configuration {
@@ -324,6 +368,7 @@ impl Default for Configuration {
             iceberg: None,
             // Auth disabled by default
             auth: AuthConfig::default(),
+            self_monitoring: SelfMonitoringConfig::default(),
         }
     }
 }

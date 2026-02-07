@@ -50,6 +50,12 @@ url.workspace = true
 toml.workspace = true
 sha2 = "0.10"
 
+# Self-monitoring (OTLP dogfooding)
+opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "logs"] }
+opentelemetry-otlp = { workspace = true, features = ["grpc-tonic", "trace", "metrics", "logs"] }
+opentelemetry-semantic-conventions.workspace = true
+sysinfo.workspace = true
+
 # Prometheus remote write support
 snap.workspace = true
 prost.workspace = true
@@ -63,4 +69,5 @@ sha2 = "0.10"
 
 [package.metadata.cargo-machete]
 # async-trait is used by discovery backends
-ignored = ["async-trait", "humantime-serde", "testcontainers"]
+# opentelemetry-semantic-conventions is used in self_monitoring module
+ignored = ["async-trait", "humantime-serde", "testcontainers", "opentelemetry-semantic-conventions"]

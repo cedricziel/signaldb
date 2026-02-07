@@ -50,12 +50,51 @@ enum Commands {
         #[command(subcommand)]
         action: query::QueryAction,
     },
+    /// Terminal User Interface for SignalDB
+    Tui {
+        /// SignalDB router base URL
+        #[arg(long, env = "SIGNALDB_URL", default_value = "http://localhost:3000")]
+        url: String,
+
+        /// SignalDB Flight endpoint URL
+        #[arg(
+            long,
+            env = "SIGNALDB_FLIGHT_URL",
+            default_value = "http://localhost:50053"
+        )]
+        flight_url: String,
+
+        /// API key for authentication
+        #[arg(long, env = "SIGNALDB_API_KEY")]
+        api_key: Option<String>,
+
+        /// Admin API key for authentication
+        #[arg(long, env = "SIGNALDB_ADMIN_KEY")]
+        admin_key: Option<String>,
+
+        /// Refresh rate for data updates
+        #[arg(long, env = "SIGNALDB_TUI_REFRESH_RATE", default_value = "5s")]
+        refresh_rate: String,
+
+        /// Tenant ID
+        #[arg(long, env = "SIGNALDB_TENANT_ID")]
+        tenant_id: Option<String>,
+
+        /// Dataset ID
+        #[arg(long, env = "SIGNALDB_DATASET_ID")]
+        dataset_id: Option<String>,
+    },
 }
 
 impl Cli {
     pub async fn run(self) -> anyhow::Result<()> {
         if let Commands::Query { action } = self.command {
             return action.run().await;
+        }
+
+        if let Commands::Tui { .. } = self.command {
+            println!("TUI not yet implemented");
+            return Ok(());
         }
 
         let admin_key = self.resolve_admin_key()?;
@@ -77,6 +116,7 @@ impl Cli {
             Commands::ApiKey { action } => action.run(&client).await,
             Commands::Dataset { action } => action.run(&client).await,
             Commands::Query { .. } => unreachable!(),
+            Commands::Tui { .. } => unreachable!(),
         }
     }
 
