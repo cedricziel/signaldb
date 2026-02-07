@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/components/status_bar.rs
+expression: content
+---
+Disconnected http://localhost:3000                       Unknown                          q: Quit  r: Refresh  /: Search

@@ -3,10 +3,9 @@
 pub mod action;
 pub mod app;
 pub mod client;
-#[allow(dead_code)] // Scaffolded for upcoming tab implementations
 pub mod components;
 pub mod event;
-#[allow(dead_code)] // Scaffolded for upcoming state management tasks
+#[allow(dead_code)] // Scaffolded items used by tests and upcoming tasks
 pub mod state;
 pub mod terminal;
 #[allow(dead_code)] // Scaffolded for upcoming widget implementations

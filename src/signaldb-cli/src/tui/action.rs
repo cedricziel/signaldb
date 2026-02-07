@@ -7,6 +7,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub enum Action {
     Quit,
     SwitchTab(usize),
+    NextTab,
+    PrevTab,
     Refresh,
     ScrollUp,
     ScrollDown,
@@ -29,6 +31,8 @@ pub fn map_key_to_action(key: KeyEvent) -> Action {
         KeyCode::Char('3') => Action::SwitchTab(2),
         KeyCode::Char('4') => Action::SwitchTab(3),
         KeyCode::Char('5') => Action::SwitchTab(4),
+        KeyCode::Tab => Action::NextTab,
+        KeyCode::BackTab => Action::PrevTab,
         KeyCode::Char('r') => Action::Refresh,
         KeyCode::Up | KeyCode::Char('k') => Action::ScrollUp,
         KeyCode::Down | KeyCode::Char('j') => Action::ScrollDown,
@@ -69,6 +73,8 @@ mod tests {
         let actions = vec![
             Action::Quit,
             Action::SwitchTab(0),
+            Action::NextTab,
+            Action::PrevTab,
             Action::Refresh,
             Action::ScrollUp,
             Action::ScrollDown,
@@ -79,7 +85,7 @@ mod tests {
             Action::Cancel,
             Action::None,
         ];
-        assert_eq!(actions.len(), 11);
+        assert_eq!(actions.len(), 13);
     }
 
     #[test]
@@ -119,6 +125,19 @@ mod tests {
         );
         assert_eq!(map_key_to_action(press(KeyCode::Enter)), Action::Select);
         assert_eq!(map_key_to_action(press(KeyCode::Esc)), Action::Back);
+    }
+
+    #[test]
+    fn tab_key_cycles_forward() {
+        assert_eq!(map_key_to_action(press(KeyCode::Tab)), Action::NextTab);
+    }
+
+    #[test]
+    fn backtab_key_cycles_backward() {
+        assert_eq!(
+            map_key_to_action(press_with(KeyCode::BackTab, KeyModifiers::SHIFT)),
+            Action::PrevTab
+        );
     }
 
     #[test]

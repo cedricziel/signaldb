@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/app.rs
+expression: content
+---
+┌SignalDB──────────────────────────────────────────────────────────────────────────────────────────┐│ [1] Dashboard | [2] Traces | [3] Logs | [4] Metrics | [5] Admin                                  │└──────────────────────────────────────────────────────────────────────────────────────────────────┘                                       Tab content coming soon                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          Connected http://localhost:3000                 Admin                 q: Quit  r: Refresh  /: Search
