@@ -111,7 +111,7 @@ impl Component for SystemResourcesPanel {
 
     fn update(&mut self, _action: &Action, _state: &mut AppState) {}
 
-    fn render(&self, frame: &mut Frame, area: Rect, _state: &AppState) {
+    fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
         let block = Block::default()
             .title(" System Resources ")
             .borders(Borders::ALL)
@@ -119,7 +119,8 @@ impl Component for SystemResourcesPanel {
 
         match &self.data {
             PanelData::Loading => {
-                let loading = Paragraph::new("Loading...")
+                let spinner = state.spinner_char();
+                let loading = Paragraph::new(format!("{spinner} Loading..."))
                     .style(Style::default().fg(Color::DarkGray))
                     .block(block);
                 frame.render_widget(loading, area);

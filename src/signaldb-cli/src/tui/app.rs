@@ -112,9 +112,12 @@ impl App {
                     self.handle_key_event(key);
                 }
                 Event::Tick => {
+                    self.state.loading = true;
                     self.refresh_active_tab().await;
+                    self.state.loading = false;
                 }
                 Event::Render => {
+                    self.state.tick_spinner();
                     tui.terminal.draw(|frame| self.render(frame))?;
                 }
             }

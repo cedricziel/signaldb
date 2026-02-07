@@ -36,9 +36,15 @@ impl Component for StatusBar {
         .split(area);
 
         let (indicator, color) = match &state.connection_status {
-            ConnectionStatus::Connected => ("Connected", Color::Green),
-            ConnectionStatus::Disconnected => ("Disconnected", Color::Red),
-            ConnectionStatus::Connecting => ("Connecting", Color::Yellow),
+            ConnectionStatus::Connected => ("Connected".to_string(), Color::Green),
+            ConnectionStatus::Disconnected => ("Disconnected".to_string(), Color::Red),
+            ConnectionStatus::Connecting => ("Connecting".to_string(), Color::Yellow),
+        };
+
+        let loading_prefix = if state.loading {
+            format!("{} ", state.spinner_char())
+        } else {
+            String::new()
         };
 
         let left_text = if let Some(ref err) = state.last_error {
@@ -50,9 +56,12 @@ impl Component for StatusBar {
                         .to_string()
                 })
                 .unwrap_or_else(|| "--:--:--".to_string());
-            format!("{indicator} {url} | [{when}] {err}", url = state.url)
+            format!(
+                "{loading_prefix}{indicator} {url} | [{when}] {err}",
+                url = state.url
+            )
         } else {
-            format!("{indicator} {url}", url = state.url)
+            format!("{loading_prefix}{indicator} {url}", url = state.url)
         };
 
         let left = Paragraph::new(Span::styled(left_text, Style::default().fg(color)));

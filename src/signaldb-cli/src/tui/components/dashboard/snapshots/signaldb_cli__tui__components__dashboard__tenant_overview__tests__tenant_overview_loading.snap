@@ -1,6 +1,5 @@
 ---
 source: src/signaldb-cli/src/tui/components/dashboard/tenant_overview.rs
-assertion_line: 242
 expression: content
 ---
-┌ Tenant Overview ─────────────────────┐│Loading...                            ││                                      ││                                      ││                                      ││                                      ││                                      │└──────────────────────────────────────┘
+┌ Tenant Overview ─────────────────────┐│⠋ Loading...                          ││                                      ││                                      ││                                      ││                                      ││                                      │└──────────────────────────────────────┘

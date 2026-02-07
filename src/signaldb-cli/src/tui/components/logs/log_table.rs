@@ -134,8 +134,18 @@ impl LogTable {
         }
     }
 
-    /// Render the log table.
+    #[cfg(test)]
     pub fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+        self.render_with_spinner(frame, area, focused, None);
+    }
+
+    pub fn render_with_spinner(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        focused: bool,
+        spinner: Option<char>,
+    ) {
         let border_color = if focused {
             Color::Cyan
         } else {
@@ -157,7 +167,12 @@ impl LogTable {
 
         match &self.data {
             LogData::Loading => {
-                let loading = Paragraph::new("Loading...")
+                let text = if let Some(s) = spinner {
+                    format!("{s} Loading...")
+                } else {
+                    "Loading...".to_string()
+                };
+                let loading = Paragraph::new(text)
                     .style(Style::default().fg(Color::DarkGray))
                     .block(block);
                 frame.render_widget(loading, area);

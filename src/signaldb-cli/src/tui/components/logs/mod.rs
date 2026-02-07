@@ -119,7 +119,7 @@ impl Component for LogsPanel {
         }
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect, _state: &AppState) {
+    fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
         let detail_height = if self.show_detail {
             Constraint::Length(10)
         } else {
@@ -138,7 +138,12 @@ impl Component for LogsPanel {
             table_state: self.log_table.table_state,
             severity_col_idx: self.log_table.severity_col_idx,
         };
-        table_clone.render(frame, chunks[1], self.focus == Focus::Table);
+        let spinner = if state.loading {
+            Some(state.spinner_char())
+        } else {
+            None
+        };
+        table_clone.render_with_spinner(frame, chunks[1], self.focus == Focus::Table, spinner);
 
         if self.show_detail {
             let selected = self.log_table.selected_row();

@@ -152,7 +152,7 @@ impl Component for TracesPanel {
         }
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect, _state: &AppState) {
+    fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
         if self.show_detail {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -182,7 +182,17 @@ impl Component for TracesPanel {
                 data: self.trace_list.data.clone(),
                 table_state: self.trace_list.table_state,
             };
-            list_clone.render(frame, chunks[1], self.focus == Focus::TraceList);
+            let spinner = if state.loading {
+                Some(state.spinner_char())
+            } else {
+                None
+            };
+            list_clone.render_with_spinner(
+                frame,
+                chunks[1],
+                self.focus == Focus::TraceList,
+                spinner,
+            );
         }
     }
 }

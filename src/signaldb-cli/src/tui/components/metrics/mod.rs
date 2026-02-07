@@ -165,7 +165,7 @@ impl Component for MetricsPanel {
         }
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect, _state: &AppState) {
+    fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
         let sparkline_height = if self.sparkline_data.is_empty() {
             Constraint::Length(3)
         } else {
@@ -186,7 +186,12 @@ impl Component for MetricsPanel {
             table_state: self.data_table.table_state,
             severity_col_idx: self.data_table.severity_col_idx,
         };
-        table_clone.render(frame, chunks[2], self.focus == Focus::Table);
+        let spinner = if state.loading {
+            Some(state.spinner_char())
+        } else {
+            None
+        };
+        table_clone.render_with_spinner(frame, chunks[2], self.focus == Focus::Table, spinner);
     }
 }
 

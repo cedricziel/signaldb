@@ -97,6 +97,10 @@ pub struct AppState {
     pub url: String,
     /// SignalDB Flight URL
     pub flight_url: String,
+    /// Whether data is currently being fetched
+    pub loading: bool,
+    /// Frame counter for spinner animation (advances on each render)
+    pub spinner_frame: usize,
 }
 
 impl AppState {
@@ -112,7 +116,20 @@ impl AppState {
             refresh_rate,
             url,
             flight_url,
+            loading: false,
+            spinner_frame: 0,
         }
+    }
+
+    /// Advance the spinner frame counter (call on each render tick).
+    pub fn tick_spinner(&mut self) {
+        self.spinner_frame = self.spinner_frame.wrapping_add(1);
+    }
+
+    /// Return the current spinner character.
+    pub fn spinner_char(&self) -> char {
+        const FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        FRAMES[self.spinner_frame % FRAMES.len()]
     }
 
     /// Set the latest user-visible error with timestamp.

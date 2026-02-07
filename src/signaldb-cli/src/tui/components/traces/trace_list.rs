@@ -88,7 +88,18 @@ impl TraceList {
         }
     }
 
+    #[cfg(test)]
     pub fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+        self.render_with_spinner(frame, area, focused, None);
+    }
+
+    pub fn render_with_spinner(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        focused: bool,
+        spinner: Option<char>,
+    ) {
         let border_color = if focused {
             Color::Cyan
         } else {
@@ -110,7 +121,12 @@ impl TraceList {
 
         match &self.data {
             TraceData::Loading => {
-                let loading = Paragraph::new("Searching traces...")
+                let text = if let Some(s) = spinner {
+                    format!("{s} Searching traces...")
+                } else {
+                    "Searching traces...".to_string()
+                };
+                let loading = Paragraph::new(text)
                     .style(Style::default().fg(Color::DarkGray))
                     .block(block);
                 frame.render_widget(loading, area);
