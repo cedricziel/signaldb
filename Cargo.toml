@@ -118,7 +118,7 @@ prost-build = "0.14"
 snap = "1.1"
 
 # PromQL parser for Prometheus query compatibility
-promql-parser = "0.4"
+promql-parser = "0.7"
 
 thiserror = "2.0.12"
 

@@ -5200,9 +5200,9 @@ dependencies = [
 
 [[package]]
 name = "promql-parser"
-version = "0.4.3"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fe99e6f80a79abccf1e8fb48dd63473a36057e600cc6ea36147c8318698ae6f"
+checksum = "49a8e235ce299e923f35b10de8a4801e0b9178cf513ceb412580238af36ad7c8"
 dependencies = [
  "cfgrammar",
  "chrono",
