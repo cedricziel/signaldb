@@ -4,6 +4,8 @@
 pub mod dashboard;
 #[allow(dead_code)] // Wired into App render once Logs tab integration lands
 pub mod logs;
+#[allow(dead_code)] // Wired into App render once Metrics tab integration lands
+pub mod metrics;
 pub mod status_bar;
 pub mod tabs;
 
