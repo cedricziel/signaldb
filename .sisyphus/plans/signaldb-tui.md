@@ -75,14 +75,14 @@ Enable interactive terminal-based monitoring, querying, and administration of Si
 - TDD test suite covering state management, rendering, and API client layer
 
 ### Definition of Done
-- [ ] `cargo build -p signaldb-cli` succeeds with TUI code included
-- [ ] `cargo test -p signaldb-cli` passes all TUI tests
-- [ ] `cargo clippy -p signaldb-cli --all-targets -- -D warnings` is clean
-- [ ] `cargo machete --with-metadata` shows no unused dependencies
-- [ ] `signaldb-cli tui --help` displays usage information
-- [ ] TUI launches, shows tab bar, connects to configured SignalDB instance
-- [ ] All 5 tabs render data from Flight SQL / admin API
-- [ ] Permission detection auto-hides admin tab for non-admin keys
+- [x] `cargo build -p signaldb-cli` succeeds with TUI code included
+- [x] `cargo test -p signaldb-cli` passes all TUI tests
+- [x] `cargo clippy -p signaldb-cli --all-targets -- -D warnings` is clean
+- [x] `cargo machete --with-metadata` shows no unused dependencies
+- [x] `signaldb-cli tui --help` displays usage information
+- [x] TUI launches, shows tab bar, connects to configured SignalDB instance
+- [x] All 5 tabs render data from Flight SQL / admin API
+- [x] Permission detection auto-hides admin tab for non-admin keys
 
 ### Must Have
 - Self-monitoring: services emit WAL/pool/health/resource metrics via OTLP to themselves (dogfooding), stored under `_system` tenant
@@ -1774,13 +1774,13 @@ cargo fmt --check
 ```
 
 ### Final Checklist
-- [ ] All 14 tasks completed with passing tests
-- [ ] All "Must Have" items present
-- [ ] All "Must NOT Have" items absent
-- [ ] All 5 tabs render correctly
-- [ ] Permission detection works (admin vs tenant)
-- [ ] Self-monitoring writes metrics to internal tables
-- [ ] TUI gracefully handles disconnected services
-- [ ] Destructive admin operations require confirmation
-- [ ] Terminal properly restored on exit (including panics)
-- [ ] All insta snapshots reviewed and accepted
+- [x] All 14 tasks completed with passing tests
+- [x] All "Must Have" items present
+- [x] All "Must NOT Have" items absent
+- [x] All 5 tabs render correctly
+- [x] Permission detection works (admin vs tenant)
+- [x] Self-monitoring writes metrics to internal tables
+- [x] TUI gracefully handles disconnected services
+- [x] Destructive admin operations require confirmation
+- [x] Terminal properly restored on exit (including panics)
+- [x] All insta snapshots reviewed and accepted
