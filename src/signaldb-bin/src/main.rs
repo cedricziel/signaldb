@@ -133,6 +133,21 @@ async fn main() -> Result<()> {
     // Start background WAL processing for Iceberg writes
     let writer_bg_handle = writer_flight_service.start_background_processing();
 
+    // Initialize Writer service bootstrap for catalog-based discovery
+    // This registers the Writer with Storage capability so the Acceptor can discover it
+    let writer_flight_addr = SocketAddr::from(([0, 0, 0, 0], 50051));
+    let writer_bootstrap = ServiceBootstrap::new(
+        config.clone(),
+        ServiceType::Writer,
+        writer_flight_addr.to_string(),
+    )
+    .await
+    .context("Failed to initialize writer service bootstrap")?;
+    log::info!(
+        "Writer service registered with ID: {}",
+        writer_bootstrap.service_id()
+    );
+
     // Initialize Querier service bootstrap for catalog-based discovery
     let querier_flight_addr = SocketAddr::from(([0, 0, 0, 0], 50054));
     let querier_bootstrap = ServiceBootstrap::new(
@@ -278,7 +293,6 @@ async fn main() -> Result<()> {
     });
 
     // Start Writer Flight service
-    let writer_flight_addr = SocketAddr::from(([0, 0, 0, 0], 50051));
     let writer_flight_handle = tokio::spawn(async move {
         log::info!("Starting Writer Flight service on {writer_flight_addr}");
 
@@ -339,6 +353,9 @@ async fn main() -> Result<()> {
     // Graceful deregistration using service bootstrap
     if let Err(e) = router_bootstrap.shutdown().await {
         log::error!("Failed to shutdown router service bootstrap: {e}");
+    }
+    if let Err(e) = writer_bootstrap.shutdown().await {
+        log::error!("Failed to shutdown writer service bootstrap: {e}");
     }
 
     // Unregister querier Flight service and shutdown bootstrap
