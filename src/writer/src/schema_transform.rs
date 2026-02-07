@@ -1323,6 +1323,332 @@ pub fn transform_metrics_histogram_v1_to_iceberg(batch: RecordBatch) -> Result<R
     })
 }
 
+fn create_metrics_exponential_histogram_arrow_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(
+            "start_timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            true,
+        ),
+        Field::new("service_name", DataType::Utf8, false),
+        Field::new("metric_name", DataType::Utf8, false),
+        Field::new("metric_description", DataType::Utf8, true),
+        Field::new("metric_unit", DataType::Utf8, true),
+        Field::new("count", DataType::Int64, false),
+        Field::new("sum", DataType::Float64, true),
+        Field::new("min", DataType::Float64, true),
+        Field::new("max", DataType::Float64, true),
+        Field::new("scale", DataType::Int32, true),
+        Field::new("zero_count", DataType::Int64, true),
+        Field::new("positive_offset", DataType::Int32, true),
+        Field::new("positive_bucket_counts", DataType::Utf8, true), // JSON array string
+        Field::new("negative_offset", DataType::Int32, true),
+        Field::new("negative_bucket_counts", DataType::Utf8, true), // JSON array string
+        Field::new("flags", DataType::Int32, true),
+        Field::new("aggregation_temporality", DataType::Int32, false),
+        Field::new("zero_threshold", DataType::Float64, true),
+        Field::new("resource_schema_url", DataType::Utf8, true),
+        Field::new("resource_attributes", DataType::Utf8, true),
+        Field::new("scope_name", DataType::Utf8, true),
+        Field::new("scope_version", DataType::Utf8, true),
+        Field::new("scope_schema_url", DataType::Utf8, true),
+        Field::new("scope_attributes", DataType::Utf8, true),
+        Field::new("scope_dropped_attr_count", DataType::Int32, true),
+        Field::new("attributes", DataType::Utf8, true),
+        Field::new("exemplars", DataType::Utf8, true),
+        Field::new("date_day", DataType::Date32, false),
+        Field::new("hour", DataType::Int32, false),
+    ]))
+}
+
+fn create_metrics_summary_arrow_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(
+            "start_timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            true,
+        ),
+        Field::new("service_name", DataType::Utf8, false),
+        Field::new("metric_name", DataType::Utf8, false),
+        Field::new("metric_description", DataType::Utf8, true),
+        Field::new("metric_unit", DataType::Utf8, true),
+        Field::new("count", DataType::Int64, false),
+        Field::new("sum", DataType::Float64, false),
+        Field::new("quantile_values", DataType::Utf8, true), // JSON array of {quantile, value}
+        Field::new("flags", DataType::Int32, true),
+        Field::new("resource_schema_url", DataType::Utf8, true),
+        Field::new("resource_attributes", DataType::Utf8, true),
+        Field::new("scope_name", DataType::Utf8, true),
+        Field::new("scope_version", DataType::Utf8, true),
+        Field::new("scope_schema_url", DataType::Utf8, true),
+        Field::new("scope_attributes", DataType::Utf8, true),
+        Field::new("scope_dropped_attr_count", DataType::Int32, true),
+        Field::new("attributes", DataType::Utf8, true),
+        Field::new("exemplars", DataType::Utf8, true),
+        Field::new("date_day", DataType::Date32, false),
+        Field::new("hour", DataType::Int32, false),
+    ]))
+}
+
+pub fn transform_metrics_exponential_histogram_v1_to_iceberg(
+    batch: RecordBatch,
+) -> Result<RecordBatch> {
+    let output_schema = create_metrics_exponential_histogram_arrow_schema();
+
+    let name_array = get_typed_column::<StringArray>(&batch, "name")?;
+    let description_array = get_typed_column::<StringArray>(&batch, "description")?;
+    let unit_array = get_typed_column::<StringArray>(&batch, "unit")?;
+    let resource_json_array = get_typed_column::<StringArray>(&batch, "resource_json")?;
+    let scope_json_array = get_typed_column::<StringArray>(&batch, "scope_json")?;
+    let data_json_array = get_typed_column::<StringArray>(&batch, "data_json")?;
+    let aggregation_temporality_array =
+        get_typed_column::<Int32Array>(&batch, "aggregation_temporality")?;
+
+    let mut timestamps: Vec<Option<i64>> = Vec::new();
+    let mut start_timestamps: Vec<Option<i64>> = Vec::new();
+    let mut service_names: Vec<Option<String>> = Vec::new();
+    let mut metric_names: Vec<Option<String>> = Vec::new();
+    let mut metric_descriptions: Vec<Option<String>> = Vec::new();
+    let mut metric_units: Vec<Option<String>> = Vec::new();
+    let mut counts: Vec<Option<i64>> = Vec::new();
+    let mut sums: Vec<Option<f64>> = Vec::new();
+    let mut mins: Vec<Option<f64>> = Vec::new();
+    let mut maxes: Vec<Option<f64>> = Vec::new();
+    let mut scales: Vec<Option<i32>> = Vec::new();
+    let mut zero_counts: Vec<Option<i64>> = Vec::new();
+    let mut positive_offsets: Vec<Option<i32>> = Vec::new();
+    let mut positive_bucket_counts: Vec<Option<String>> = Vec::new();
+    let mut negative_offsets: Vec<Option<i32>> = Vec::new();
+    let mut negative_bucket_counts: Vec<Option<String>> = Vec::new();
+    let mut flags: Vec<Option<i32>> = Vec::new();
+    let mut aggregation_temporalities: Vec<Option<i32>> = Vec::new();
+    let mut zero_thresholds: Vec<Option<f64>> = Vec::new();
+    let mut resource_schema_urls: Vec<Option<String>> = Vec::new();
+    let mut resource_attributes: Vec<Option<String>> = Vec::new();
+    let mut scope_names: Vec<Option<String>> = Vec::new();
+    let mut scope_versions: Vec<Option<String>> = Vec::new();
+    let mut scope_schema_urls: Vec<Option<String>> = Vec::new();
+    let mut scope_attributes: Vec<Option<String>> = Vec::new();
+    let mut scope_dropped_attr_counts: Vec<Option<i32>> = Vec::new();
+    let mut attributes: Vec<Option<String>> = Vec::new();
+    let mut exemplars: Vec<Option<String>> = Vec::new();
+    let mut date_days: Vec<Option<i32>> = Vec::new();
+    let mut hours: Vec<Option<i32>> = Vec::new();
+
+    for row in 0..batch.num_rows() {
+        let metric_name = string_value(name_array, row);
+        let metric_description = string_value(description_array, row);
+        let metric_unit = string_value(unit_array, row);
+        let aggregation_temporality = int32_value(aggregation_temporality_array, row);
+
+        let resource_context = extract_resource_context(string_value_ref(resource_json_array, row));
+        let scope_context = extract_scope_context(string_value_ref(scope_json_array, row));
+        let data_points = parse_data_points(string_value_ref(data_json_array, row));
+
+        for point in data_points {
+            let (timestamp, date_day, hour) =
+                temporal_from_nanos(json_to_u64(point.get("time_unix_nano")));
+            let (start_timestamp, _, _) =
+                temporal_from_nanos(json_to_u64(point.get("start_time_unix_nano")));
+
+            timestamps.push(timestamp);
+            start_timestamps.push(start_timestamp);
+            service_names.push(resource_context.service_name.clone());
+            metric_names.push(metric_name.clone());
+            metric_descriptions.push(metric_description.clone());
+            metric_units.push(metric_unit.clone());
+            counts.push(json_to_i64(point.get("count")));
+            sums.push(json_to_f64(point.get("sum")));
+            mins.push(json_to_f64(point.get("min")));
+            maxes.push(json_to_f64(point.get("max")));
+            scales.push(json_to_i32(point.get("scale")));
+            zero_counts.push(json_to_i64(point.get("zero_count")));
+
+            let positive = point.get("positive");
+            positive_offsets.push(positive.and_then(|p| json_to_i32(p.get("offset"))));
+            positive_bucket_counts
+                .push(positive.and_then(|p| serialize_json_array(p.get("bucket_counts"))));
+
+            let negative = point.get("negative");
+            negative_offsets.push(negative.and_then(|p| json_to_i32(p.get("offset"))));
+            negative_bucket_counts
+                .push(negative.and_then(|p| serialize_json_array(p.get("bucket_counts"))));
+
+            flags.push(json_to_i32(point.get("flags")));
+            aggregation_temporalities.push(aggregation_temporality);
+            zero_thresholds.push(json_to_f64(point.get("zero_threshold")));
+            resource_schema_urls.push(resource_context.resource_schema_url.clone());
+            resource_attributes.push(resource_context.resource_attributes.clone());
+            scope_names.push(scope_context.scope_name.clone());
+            scope_versions.push(scope_context.scope_version.clone());
+            scope_schema_urls.push(scope_context.scope_schema_url.clone());
+            scope_attributes.push(scope_context.scope_attributes.clone());
+            scope_dropped_attr_counts.push(Some(scope_context.scope_dropped_attr_count));
+            attributes.push(serialize_json(point.get("attributes")));
+            exemplars.push(serialize_json(point.get("exemplars")));
+            date_days.push(date_day);
+            hours.push(hour);
+        }
+    }
+
+    RecordBatch::try_new(
+        output_schema,
+        vec![
+            Arc::new(TimestampNanosecondArray::from(timestamps)),
+            Arc::new(TimestampNanosecondArray::from(start_timestamps)),
+            Arc::new(StringArray::from(service_names)),
+            Arc::new(StringArray::from(metric_names)),
+            Arc::new(StringArray::from(metric_descriptions)),
+            Arc::new(StringArray::from(metric_units)),
+            Arc::new(Int64Array::from(counts)),
+            Arc::new(Float64Array::from(sums)),
+            Arc::new(Float64Array::from(mins)),
+            Arc::new(Float64Array::from(maxes)),
+            Arc::new(Int32Array::from(scales)),
+            Arc::new(Int64Array::from(zero_counts)),
+            Arc::new(Int32Array::from(positive_offsets)),
+            Arc::new(StringArray::from(positive_bucket_counts)),
+            Arc::new(Int32Array::from(negative_offsets)),
+            Arc::new(StringArray::from(negative_bucket_counts)),
+            Arc::new(Int32Array::from(flags)),
+            Arc::new(Int32Array::from(aggregation_temporalities)),
+            Arc::new(Float64Array::from(zero_thresholds)),
+            Arc::new(StringArray::from(resource_schema_urls)),
+            Arc::new(StringArray::from(resource_attributes)),
+            Arc::new(StringArray::from(scope_names)),
+            Arc::new(StringArray::from(scope_versions)),
+            Arc::new(StringArray::from(scope_schema_urls)),
+            Arc::new(StringArray::from(scope_attributes)),
+            Arc::new(Int32Array::from(scope_dropped_attr_counts)),
+            Arc::new(StringArray::from(attributes)),
+            Arc::new(StringArray::from(exemplars)),
+            Arc::new(Date32Array::from(date_days)),
+            Arc::new(Int32Array::from(hours)),
+        ],
+    )
+    .map_err(|e| {
+        anyhow!(
+            "Failed to create transformed metrics_exponential_histogram RecordBatch: {}",
+            e
+        )
+    })
+}
+
+pub fn transform_metrics_summary_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatch> {
+    let output_schema = create_metrics_summary_arrow_schema();
+
+    let name_array = get_typed_column::<StringArray>(&batch, "name")?;
+    let description_array = get_typed_column::<StringArray>(&batch, "description")?;
+    let unit_array = get_typed_column::<StringArray>(&batch, "unit")?;
+    let resource_json_array = get_typed_column::<StringArray>(&batch, "resource_json")?;
+    let scope_json_array = get_typed_column::<StringArray>(&batch, "scope_json")?;
+    let data_json_array = get_typed_column::<StringArray>(&batch, "data_json")?;
+
+    let mut timestamps: Vec<Option<i64>> = Vec::new();
+    let mut start_timestamps: Vec<Option<i64>> = Vec::new();
+    let mut service_names: Vec<Option<String>> = Vec::new();
+    let mut metric_names: Vec<Option<String>> = Vec::new();
+    let mut metric_descriptions: Vec<Option<String>> = Vec::new();
+    let mut metric_units: Vec<Option<String>> = Vec::new();
+    let mut counts: Vec<Option<i64>> = Vec::new();
+    let mut sums: Vec<Option<f64>> = Vec::new();
+    let mut quantile_values: Vec<Option<String>> = Vec::new();
+    let mut flags: Vec<Option<i32>> = Vec::new();
+    let mut resource_schema_urls: Vec<Option<String>> = Vec::new();
+    let mut resource_attributes: Vec<Option<String>> = Vec::new();
+    let mut scope_names: Vec<Option<String>> = Vec::new();
+    let mut scope_versions: Vec<Option<String>> = Vec::new();
+    let mut scope_schema_urls: Vec<Option<String>> = Vec::new();
+    let mut scope_attributes: Vec<Option<String>> = Vec::new();
+    let mut scope_dropped_attr_counts: Vec<Option<i32>> = Vec::new();
+    let mut attributes: Vec<Option<String>> = Vec::new();
+    let mut exemplars: Vec<Option<String>> = Vec::new();
+    let mut date_days: Vec<Option<i32>> = Vec::new();
+    let mut hours: Vec<Option<i32>> = Vec::new();
+
+    for row in 0..batch.num_rows() {
+        let metric_name = string_value(name_array, row);
+        let metric_description = string_value(description_array, row);
+        let metric_unit = string_value(unit_array, row);
+
+        let resource_context = extract_resource_context(string_value_ref(resource_json_array, row));
+        let scope_context = extract_scope_context(string_value_ref(scope_json_array, row));
+        let data_points = parse_data_points(string_value_ref(data_json_array, row));
+
+        for point in data_points {
+            let (timestamp, date_day, hour) =
+                temporal_from_nanos(json_to_u64(point.get("time_unix_nano")));
+            let (start_timestamp, _, _) =
+                temporal_from_nanos(json_to_u64(point.get("start_time_unix_nano")));
+
+            timestamps.push(timestamp);
+            start_timestamps.push(start_timestamp);
+            service_names.push(resource_context.service_name.clone());
+            metric_names.push(metric_name.clone());
+            metric_descriptions.push(metric_description.clone());
+            metric_units.push(metric_unit.clone());
+            counts.push(json_to_i64(point.get("count")));
+            sums.push(json_to_f64(point.get("sum")));
+            quantile_values.push(serialize_json_array(point.get("quantile_values")));
+            flags.push(json_to_i32(point.get("flags")));
+            resource_schema_urls.push(resource_context.resource_schema_url.clone());
+            resource_attributes.push(resource_context.resource_attributes.clone());
+            scope_names.push(scope_context.scope_name.clone());
+            scope_versions.push(scope_context.scope_version.clone());
+            scope_schema_urls.push(scope_context.scope_schema_url.clone());
+            scope_attributes.push(scope_context.scope_attributes.clone());
+            scope_dropped_attr_counts.push(Some(scope_context.scope_dropped_attr_count));
+            attributes.push(serialize_json(point.get("attributes")));
+            exemplars.push(serialize_json(point.get("exemplars")));
+            date_days.push(date_day);
+            hours.push(hour);
+        }
+    }
+
+    RecordBatch::try_new(
+        output_schema,
+        vec![
+            Arc::new(TimestampNanosecondArray::from(timestamps)),
+            Arc::new(TimestampNanosecondArray::from(start_timestamps)),
+            Arc::new(StringArray::from(service_names)),
+            Arc::new(StringArray::from(metric_names)),
+            Arc::new(StringArray::from(metric_descriptions)),
+            Arc::new(StringArray::from(metric_units)),
+            Arc::new(Int64Array::from(counts)),
+            Arc::new(Float64Array::from(sums)),
+            Arc::new(StringArray::from(quantile_values)),
+            Arc::new(Int32Array::from(flags)),
+            Arc::new(StringArray::from(resource_schema_urls)),
+            Arc::new(StringArray::from(resource_attributes)),
+            Arc::new(StringArray::from(scope_names)),
+            Arc::new(StringArray::from(scope_versions)),
+            Arc::new(StringArray::from(scope_schema_urls)),
+            Arc::new(StringArray::from(scope_attributes)),
+            Arc::new(Int32Array::from(scope_dropped_attr_counts)),
+            Arc::new(StringArray::from(attributes)),
+            Arc::new(StringArray::from(exemplars)),
+            Arc::new(Date32Array::from(date_days)),
+            Arc::new(Int32Array::from(hours)),
+        ],
+    )
+    .map_err(|e| {
+        anyhow!(
+            "Failed to create transformed metrics_summary RecordBatch: {}",
+            e
+        )
+    })
+}
+
 pub fn transform_for_signal(
     signal_type: Option<&str>,
     target_table: Option<&str>,
@@ -1335,6 +1661,12 @@ pub fn transform_for_signal(
         (Some("metrics"), Some("metrics_sum")) => transform_metrics_sum_v1_to_iceberg(batch),
         (Some("metrics"), Some("metrics_histogram")) => {
             transform_metrics_histogram_v1_to_iceberg(batch)
+        }
+        (Some("metrics"), Some("metrics_exponential_histogram")) => {
+            transform_metrics_exponential_histogram_v1_to_iceberg(batch)
+        }
+        (Some("metrics"), Some("metrics_summary")) => {
+            transform_metrics_summary_v1_to_iceberg(batch)
         }
         (Some("metrics"), Some(other)) => {
             log::warn!("No transform for metrics target_table={other}, passing through");
