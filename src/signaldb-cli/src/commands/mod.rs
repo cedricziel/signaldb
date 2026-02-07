@@ -53,6 +53,10 @@ enum Commands {
     },
     /// Terminal User Interface for SignalDB
     Tui {
+        /// Path to SignalDB configuration file (reads admin_api_key from [auth])
+        #[arg(long)]
+        config: Option<PathBuf>,
+
         /// SignalDB router base URL
         #[arg(long, env = "SIGNALDB_URL", default_value = "http://localhost:3000")]
         url: String,
@@ -93,7 +97,10 @@ impl Cli {
             return action.run().await;
         }
 
+        let config_admin_key = self.try_resolve_admin_key();
+
         if let Commands::Tui {
+            config: tui_config,
             url,
             flight_url,
             api_key,
@@ -103,9 +110,20 @@ impl Cli {
             dataset_id,
         } = self.command
         {
+            let tui_config_admin_key = tui_config.and_then(|path| {
+                let cfg = common::config::Configuration::load_from_path(&path).ok()?;
+                cfg.auth.admin_api_key
+            });
+            let effective_admin_key = admin_key.or(tui_config_admin_key).or(config_admin_key);
             let refresh = parse_duration(&refresh_rate)?;
             let mut app = crate::tui::app::App::new(
-                url, flight_url, api_key, admin_key, refresh, tenant_id, dataset_id,
+                url,
+                flight_url,
+                api_key,
+                effective_admin_key,
+                refresh,
+                tenant_id,
+                dataset_id,
             );
             return app.run().await;
         }
@@ -150,6 +168,15 @@ impl Cli {
         anyhow::bail!(
             "No admin key provided. Use --admin-key, SIGNALDB_ADMIN_KEY, or --config with [auth] admin_api_key"
         )
+    }
+
+    fn try_resolve_admin_key(&self) -> Option<String> {
+        if let Some(key) = &self.admin_key {
+            return Some(key.clone());
+        }
+        let config_path = self.config.as_ref()?;
+        let config = common::config::Configuration::load_from_path(config_path).ok()?;
+        config.auth.admin_api_key
     }
 }
 
