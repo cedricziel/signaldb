@@ -59,6 +59,10 @@ pub struct SpanInfo {
     pub attributes: serde_json::Value,
     /// Resource attributes as a JSON value (e.g. service.name, deployment.environment)
     pub resource_attributes: serde_json::Value,
+    /// Span events (e.g., exceptions, annotations) as a JSON value
+    pub events: serde_json::Value,
+    /// Span links (cross-trace references) as a JSON value
+    pub links: serde_json::Value,
 }
 
 /// Full detail for a single trace, including all spans.

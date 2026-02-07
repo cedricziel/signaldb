@@ -227,7 +227,7 @@ impl FlightSqlClient {
         let sql = format!(
             "SELECT span_id, parent_span_id, span_name, service_name, \
              start_time_unix_nano, duration_nanos, status_code, span_kind, \
-             span_attributes, resource_attributes \
+             span_attributes, resource_attributes, events, links \
              FROM traces WHERE trace_id = '{trace_id}' \
              ORDER BY start_time_unix_nano ASC"
         );
@@ -271,6 +271,12 @@ impl FlightSqlClient {
                 .and_then(|c| c.as_any().downcast_ref::<StringArray>());
             let resource_attrs = batch
                 .column_by_name("resource_attributes")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let events_col = batch
+                .column_by_name("events")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let links_col = batch
+                .column_by_name("links")
                 .and_then(|c| c.as_any().downcast_ref::<StringArray>());
 
             let (span_ids, operations, services) = match (span_ids, operations, services) {
@@ -318,6 +324,26 @@ impl FlightSqlClient {
                     })
                     .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
+                let events = events_col
+                    .and_then(|a| {
+                        if a.is_null(i) {
+                            None
+                        } else {
+                            serde_json::from_str(a.value(i)).ok()
+                        }
+                    })
+                    .unwrap_or(serde_json::Value::Array(Vec::new()));
+
+                let links = links_col
+                    .and_then(|a| {
+                        if a.is_null(i) {
+                            None
+                        } else {
+                            serde_json::from_str(a.value(i)).ok()
+                        }
+                    })
+                    .unwrap_or(serde_json::Value::Array(Vec::new()));
+
                 spans.push(SpanInfo {
                     span_id: span_ids.value(i).to_string(),
                     parent_span_id: parent,
@@ -329,6 +355,8 @@ impl FlightSqlClient {
                     kind,
                     attributes: attrs,
                     resource_attributes: res_attrs,
+                    events,
+                    links,
                 });
             }
         }

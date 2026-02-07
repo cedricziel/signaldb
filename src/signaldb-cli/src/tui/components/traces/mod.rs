@@ -12,8 +12,9 @@ use tui_tree_widget::TreeState;
 
 use self::search_bar::{SearchBarAction, TraceSearchBar};
 use self::trace_detail::TraceDetailView;
-use self::trace_list::TraceList;
+use self::trace_list::{GroupBy, TraceList, TraceViewMode};
 use super::Component;
+use super::selector::{SelectorAction, SelectorItem, SelectorPopup};
 use crate::tui::action::Action;
 use crate::tui::client::models::{TraceResult, TraceSearchParams};
 use crate::tui::state::{AppState, TimeRange};
@@ -37,6 +38,9 @@ pub struct TracesPanel {
     /// Pending trace ID to fetch detail for.
     pub pending_trace_id: Option<String>,
     show_detail: bool,
+    /// Whether the group-by selector overlay is open.
+    show_group_selector: bool,
+    group_selector: SelectorPopup,
 }
 
 impl TracesPanel {
@@ -49,6 +53,8 @@ impl TracesPanel {
             pending_search: Some(TraceSearchParams::default()),
             pending_trace_id: None,
             show_detail: false,
+            show_group_selector: false,
+            group_selector: build_group_selector(),
         }
     }
 
@@ -64,6 +70,10 @@ impl TracesPanel {
 
     pub fn set_error(&mut self, msg: String) {
         self.trace_list.set_error(msg);
+    }
+
+    pub fn set_group_by(&mut self, group_by: GroupBy) {
+        self.trace_list.set_group_by(group_by);
     }
 
     pub fn has_pending(&self) -> bool {
@@ -103,6 +113,23 @@ impl TracesPanel {
 
 impl Component for TracesPanel {
     fn handle_key_event(&mut self, key: KeyEvent) -> Option<Action> {
+        if self.show_group_selector {
+            match self.group_selector.handle_key(key) {
+                SelectorAction::Selected { id, .. } => {
+                    self.trace_list.set_group_by(group_by_from_selector(&id));
+                    self.show_group_selector = false;
+                    self.group_selector.reset();
+                    return Some(Action::None);
+                }
+                SelectorAction::Cancelled => {
+                    self.show_group_selector = false;
+                    self.group_selector.reset();
+                    return Some(Action::None);
+                }
+                SelectorAction::None => return Some(Action::None),
+            }
+        }
+
         match self.focus {
             Focus::SearchBar => {
                 match self.search_bar.handle_key(key) {
@@ -132,14 +159,27 @@ impl Component for TracesPanel {
                     Some(Action::None)
                 }
                 KeyCode::Enter => {
-                    if let Some(trace) = self.trace_list.selected_trace() {
+                    if self.trace_list.view_mode == TraceViewMode::GroupSummary {
+                        self.trace_list.enter_selected_group();
+                    } else if let Some(trace) = self.trace_list.selected_trace() {
                         self.pending_trace_id = Some(trace.trace_id.clone());
                     }
                     Some(Action::None)
                 }
                 KeyCode::Char('g') => {
-                    self.trace_list.cycle_group_by();
+                    self.show_group_selector = true;
+                    self.group_selector.reset();
                     Some(Action::None)
+                }
+                KeyCode::Esc => {
+                    if self.trace_list.exit_drill_in() {
+                        return Some(Action::None);
+                    }
+                    if self.trace_list.view_mode == TraceViewMode::GroupSummary {
+                        self.trace_list.set_group_by(GroupBy::None);
+                        return Some(Action::None);
+                    }
+                    None
                 }
                 _ => None,
             },
@@ -216,6 +256,9 @@ impl Component for TracesPanel {
                 data: self.trace_list.data.clone(),
                 table_state: self.trace_list.table_state,
                 group_by: self.trace_list.group_by.clone(),
+                view_mode: self.trace_list.view_mode.clone(),
+                group_summaries: self.trace_list.group_summaries.clone(),
+                group_table_state: self.trace_list.group_table_state,
             };
             let spinner = if state.loading {
                 Some(state.spinner_char())
@@ -228,7 +271,50 @@ impl Component for TracesPanel {
                 self.focus == Focus::TraceList,
                 spinner,
             );
+            if self.show_group_selector {
+                self.group_selector.render(frame, chunks[1]);
+            }
         }
+    }
+}
+
+fn build_group_selector() -> SelectorPopup {
+    let mut selector = SelectorPopup::new("Group Traces By");
+    selector.set_items(vec![
+        SelectorItem {
+            id: "none".to_string(),
+            label: "None".to_string(),
+            depth: 0,
+            parent_id: None,
+        },
+        SelectorItem {
+            id: "service".to_string(),
+            label: "Service".to_string(),
+            depth: 0,
+            parent_id: None,
+        },
+        SelectorItem {
+            id: "operation".to_string(),
+            label: "Operation".to_string(),
+            depth: 0,
+            parent_id: None,
+        },
+        SelectorItem {
+            id: "span_kind".to_string(),
+            label: "Span Kind".to_string(),
+            depth: 0,
+            parent_id: None,
+        },
+    ]);
+    selector
+}
+
+fn group_by_from_selector(id: &str) -> GroupBy {
+    match id {
+        "service" => GroupBy::Service,
+        "operation" => GroupBy::Operation,
+        "kind" | "span_kind" => GroupBy::SpanKind,
+        _ => GroupBy::None,
     }
 }
 
@@ -298,6 +384,8 @@ mod tests {
                     kind: "Server".into(),
                     attributes: serde_json::json!({"http.method": "GET"}),
                     resource_attributes: serde_json::json!({"service.name": "frontend"}),
+                    events: serde_json::Value::Array(vec![]),
+                    links: serde_json::Value::Array(vec![]),
                 },
                 SpanInfo {
                     span_id: "span-2".into(),
@@ -310,6 +398,8 @@ mod tests {
                     kind: "Client".into(),
                     attributes: serde_json::json!({"db.system": "postgresql"}),
                     resource_attributes: serde_json::json!({"service.name": "backend"}),
+                    events: serde_json::Value::Array(vec![]),
+                    links: serde_json::Value::Array(vec![]),
                 },
             ],
         }
@@ -405,14 +495,42 @@ mod tests {
     }
 
     #[test]
-    fn g_key_cycles_group_by_in_list() {
+    fn g_key_opens_group_selector_and_selects_group() {
         let mut panel = TracesPanel::new();
         panel.set_search_results(make_results());
         assert_eq!(panel.trace_list.group_by, trace_list::GroupBy::None);
+
         panel.handle_key_event(press(KeyCode::Char('g')));
-        assert_eq!(panel.trace_list.group_by, trace_list::GroupBy::Service);
-        panel.handle_key_event(press(KeyCode::Char('g')));
+        assert!(panel.show_group_selector);
+
+        panel.handle_key_event(press(KeyCode::Down));
+        panel.handle_key_event(press(KeyCode::Down));
+        panel.handle_key_event(press(KeyCode::Enter));
         assert_eq!(panel.trace_list.group_by, trace_list::GroupBy::Operation);
+        assert!(!panel.show_group_selector);
+    }
+
+    #[test]
+    fn enter_on_group_summary_drills_and_esc_returns() {
+        let mut panel = TracesPanel::new();
+        panel.set_search_results(make_results());
+        panel.trace_list.set_group_by(trace_list::GroupBy::Service);
+        assert_eq!(
+            panel.trace_list.view_mode,
+            trace_list::TraceViewMode::GroupSummary
+        );
+
+        panel.handle_key_event(press(KeyCode::Enter));
+        assert!(matches!(
+            panel.trace_list.view_mode,
+            trace_list::TraceViewMode::DrillIn { .. }
+        ));
+
+        panel.handle_key_event(press(KeyCode::Esc));
+        assert_eq!(
+            panel.trace_list.view_mode,
+            trace_list::TraceViewMode::GroupSummary
+        );
     }
 
     #[test]
@@ -427,6 +545,16 @@ mod tests {
         assert_eq!(
             panel.trace_detail.attribute_tab,
             trace_detail::AttributeTab::ResourceAttributes
+        );
+        panel.handle_key_event(press(KeyCode::Char('r')));
+        assert_eq!(
+            panel.trace_detail.attribute_tab,
+            trace_detail::AttributeTab::Events
+        );
+        panel.handle_key_event(press(KeyCode::Char('r')));
+        assert_eq!(
+            panel.trace_detail.attribute_tab,
+            trace_detail::AttributeTab::Links
         );
         panel.handle_key_event(press(KeyCode::Char('r')));
         assert_eq!(

@@ -2,4 +2,4 @@
 source: src/signaldb-cli/src/tui/components/logs/log_detail.rs
 expression: content
 ---
-┌ Log Detail ──────────────────────────────────────────────┐│Select a log entry to view details                        ││                                                          ││                                                          ││                                                          │└──────────────────────────────────────────────────────────┘
+┌ Log Detail ──────────────────────────────────────────────┐│No attributes                                             ││                                                          ││                                                          ││                                                          │└──────────────────────────────────────────────────────────┘

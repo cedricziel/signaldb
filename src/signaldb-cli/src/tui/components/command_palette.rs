@@ -18,6 +18,7 @@ pub enum PaletteCommand {
     Refresh,
     Quit,
     SetTimeRange(String),
+    SetGroupBy(String),
 }
 
 /// Actions produced by the command palette.
@@ -232,6 +233,13 @@ impl CommandPalette {
                     None
                 }
             }
+            "group" => {
+                if parts.len() > 1 {
+                    Some(PaletteCommand::SetGroupBy(parts[1..].join(" ")))
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -277,12 +285,19 @@ impl CommandPalette {
                         .map(|d| format!("{} {}", cmd, d))
                         .collect();
                 }
+                "group" => {
+                    return ["none", "service", "operation", "kind", "span_kind"]
+                        .into_iter()
+                        .filter(|value| value.starts_with(arg_prefix))
+                        .map(|value| format!("group {value}"))
+                        .collect();
+                }
                 _ => return Vec::new(),
             }
         }
 
         // Complete command names
-        let base_commands = vec!["tenant", "dataset", "refresh", "quit", "time"];
+        let base_commands = vec!["tenant", "dataset", "refresh", "quit", "time", "group"];
         base_commands
             .into_iter()
             .filter(|cmd| cmd.starts_with(input))
@@ -360,6 +375,15 @@ mod tests {
     }
 
     #[test]
+    fn test_palette_parse_group_command() {
+        let cmd = CommandPalette::parse_command("group service");
+        assert_eq!(cmd, Some(PaletteCommand::SetGroupBy("service".to_string())));
+
+        let cmd = CommandPalette::parse_command("group kind");
+        assert_eq!(cmd, Some(PaletteCommand::SetGroupBy("kind".to_string())));
+    }
+
+    #[test]
     fn test_palette_esc_cancels() {
         let mut palette = CommandPalette::new();
         let action = palette.handle_key(press(KeyCode::Esc));
@@ -377,10 +401,22 @@ mod tests {
     #[test]
     fn test_palette_completions_for_prefix() {
         let palette = CommandPalette::new();
+        let completions = palette.compute_completions("g");
+        assert!(completions.contains(&"group".to_string()));
+
         let completions = palette.compute_completions("t");
         assert!(completions.contains(&"tenant".to_string()));
         assert!(completions.contains(&"time".to_string()));
         assert!(!completions.contains(&"refresh".to_string()));
+    }
+
+    #[test]
+    fn test_palette_group_argument_completion() {
+        let palette = CommandPalette::new();
+        let completions = palette.compute_completions("group s");
+        assert!(completions.contains(&"group service".to_string()));
+        assert!(completions.contains(&"group span_kind".to_string()));
+        assert!(!completions.contains(&"group operation".to_string()));
     }
 
     #[test]

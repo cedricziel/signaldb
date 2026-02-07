@@ -28,7 +28,7 @@ impl HelpOverlay {
 
         Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
-            .constraints([Constraint::Length(23)])
+            .constraints([Constraint::Length(28)])
             .flex(Flex::Center)
             .split(horizontal[0])[0]
     }
@@ -74,6 +74,16 @@ impl Component for HelpOverlay {
             Line::from("  T / K / D       : Admin sub-tabs"),
             Line::from("  c / e / d       : Admin CRUD actions"),
             Line::from("  y / n           : Confirm / cancel"),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "Traces",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::from("  g               : Group by attribute"),
+            Line::from("  r (detail)      : Toggle Span/Resource attrs"),
+            Line::from("  :group <attr>   : Group via command palette"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "Global",

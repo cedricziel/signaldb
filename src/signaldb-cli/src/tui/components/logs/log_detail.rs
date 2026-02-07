@@ -1,15 +1,14 @@
 //! Log detail viewer showing the full record of a selected log row.
 //!
-//! Renders column name/value pairs for the currently selected log entry.
-//! Will integrate with the JSON viewer widget when available.
+//! Renders log records as a collapsible JSON tree using the json_viewer widget.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use tui_tree_widget::TreeState;
 
-/// Log detail panel showing the selected log row as key-value pairs.
+use crate::tui::widgets::json_viewer::render_json_tree;
+
+/// Log detail panel showing the selected log row as a JSON tree.
 pub struct LogDetail;
 
 impl LogDetail {
@@ -20,41 +19,29 @@ impl LogDetail {
     /// Render the detail view for the currently selected log row.
     ///
     /// `selected` is a tuple of (column_names, cell_values). If `None`,
-    /// a placeholder is shown.
+    /// a placeholder is shown. The columns and values are converted to a
+    /// JSON object and rendered as a collapsible tree.
     pub fn render(&self, frame: &mut Frame, area: Rect, selected: Option<(&[String], &[String])>) {
-        let block = Block::default()
-            .title(" Log Detail ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
-
+        let mut tree_state = TreeState::default();
         match selected {
             None => {
-                let placeholder = Paragraph::new("Select a log entry to view details")
-                    .style(Style::default().fg(Color::DarkGray))
-                    .block(block);
-                frame.render_widget(placeholder, area);
+                // render_json_tree handles the placeholder case for null/empty objects
+                render_json_tree(
+                    frame,
+                    area,
+                    &serde_json::Value::Null,
+                    &mut tree_state,
+                    "Log Detail",
+                );
             }
             Some((columns, values)) => {
-                let lines: Vec<Line> = columns
-                    .iter()
-                    .zip(values.iter())
-                    .map(|(col, val)| {
-                        Line::from(vec![
-                            Span::styled(
-                                format!("{col}: "),
-                                Style::default()
-                                    .fg(Color::Cyan)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(val.clone(), Style::default().fg(Color::White)),
-                        ])
-                    })
-                    .collect();
-
-                let paragraph = Paragraph::new(lines)
-                    .block(block)
-                    .wrap(Wrap { trim: false });
-                frame.render_widget(paragraph, area);
+                // Convert column/value pairs to a JSON object
+                let mut obj = serde_json::Map::new();
+                for (col, val) in columns.iter().zip(values.iter()) {
+                    obj.insert(col.clone(), serde_json::Value::String(val.clone()));
+                }
+                let json_value = serde_json::Value::Object(obj);
+                render_json_tree(frame, area, &json_value, &mut tree_state, "Log Detail");
             }
         }
     }
@@ -75,7 +62,7 @@ mod tests {
         terminal
             .draw(|frame| detail.render(frame, frame.area(), None))
             .unwrap();
-        assert_buffer_contains(&terminal, "Select a log entry to view details");
+        assert_buffer_contains(&terminal, "No attributes");
         assert_buffer_contains(&terminal, "Log Detail");
     }
 

@@ -22,6 +22,7 @@ use super::components::status_bar::StatusBar;
 use super::components::tabs::TabBar;
 use super::components::time_range::{TimeRangeAction, TimeRangeSelector};
 use super::components::traces::TracesPanel;
+use super::components::traces::trace_list::GroupBy;
 use super::event::{Event, EventHandler};
 use super::state::{ActiveOverlay, AppState, ConnectionStatus, Permission, Tab, TimeRange};
 use super::terminal::Tui;
@@ -184,6 +185,15 @@ impl App {
                     PaletteCommand::Quit => Some(Action::Quit),
                     PaletteCommand::SetTimeRange(label) => {
                         Some(Action::ExecuteCommand(format!("time {label}")))
+                    }
+                    PaletteCommand::SetGroupBy(attr) => {
+                        if self.state.active_tab == Tab::Traces
+                            && let Some(group_by) = Self::parse_group_by_attr(&attr)
+                        {
+                            self.traces.set_group_by(group_by);
+                        }
+                        self.command_palette.reset();
+                        Some(Action::CloseOverlay)
                     }
                 },
                 PaletteAction::Cancelled => Some(Action::CloseOverlay),
@@ -751,6 +761,16 @@ impl App {
             ActiveOverlay::None => {}
         }
     }
+
+    fn parse_group_by_attr(attr: &str) -> Option<GroupBy> {
+        match attr.trim().to_lowercase().as_str() {
+            "none" => Some(GroupBy::None),
+            "service" => Some(GroupBy::Service),
+            "operation" => Some(GroupBy::Operation),
+            "kind" | "span_kind" => Some(GroupBy::SpanKind),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -972,5 +992,21 @@ mod tests {
         let mut app = make_app();
         app.handle_action(Action::OpenTimeRangeSelector);
         assert_eq!(app.state.active_overlay, ActiveOverlay::TimeRangeSelector);
+    }
+
+    #[test]
+    fn parse_group_by_attr_supports_aliases() {
+        assert_eq!(App::parse_group_by_attr("service"), Some(GroupBy::Service));
+        assert_eq!(
+            App::parse_group_by_attr("operation"),
+            Some(GroupBy::Operation)
+        );
+        assert_eq!(App::parse_group_by_attr("kind"), Some(GroupBy::SpanKind));
+        assert_eq!(
+            App::parse_group_by_attr("span_kind"),
+            Some(GroupBy::SpanKind)
+        );
+        assert_eq!(App::parse_group_by_attr("none"), Some(GroupBy::None));
+        assert_eq!(App::parse_group_by_attr("unknown"), None);
     }
 }

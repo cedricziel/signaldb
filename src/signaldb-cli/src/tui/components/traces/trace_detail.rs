@@ -20,6 +20,8 @@ pub enum DetailFocus {
 pub enum AttributeTab {
     SpanAttributes,
     ResourceAttributes,
+    Events,
+    Links,
 }
 
 /// Two-section trace detail: waterfall (top) + JSON attributes (bottom).
@@ -94,7 +96,9 @@ impl TraceDetailView {
     pub fn cycle_attribute_tab(&mut self) {
         self.attribute_tab = match self.attribute_tab {
             AttributeTab::SpanAttributes => AttributeTab::ResourceAttributes,
-            AttributeTab::ResourceAttributes => AttributeTab::SpanAttributes,
+            AttributeTab::ResourceAttributes => AttributeTab::Events,
+            AttributeTab::Events => AttributeTab::Links,
+            AttributeTab::Links => AttributeTab::SpanAttributes,
         };
         self.json_state = TreeState::default();
     }
@@ -134,6 +138,20 @@ impl TraceDetailView {
                     .unwrap_or(serde_json::Value::Null);
                 (a, "Resource Attributes")
             }
+            AttributeTab::Events => {
+                let a = self
+                    .selected_span_info()
+                    .map(|s| s.events.clone())
+                    .unwrap_or(serde_json::Value::Array(Vec::new()));
+                (a, "Events")
+            }
+            AttributeTab::Links => {
+                let a = self
+                    .selected_span_info()
+                    .map(|s| s.links.clone())
+                    .unwrap_or(serde_json::Value::Array(Vec::new()));
+                (a, "Links")
+            }
         };
 
         let span_label = self
@@ -142,8 +160,10 @@ impl TraceDetailView {
             .unwrap_or_default();
 
         let active_indicator = match self.attribute_tab {
-            AttributeTab::SpanAttributes => "[Span ● | Resource ○] ",
-            AttributeTab::ResourceAttributes => "[Span ○ | Resource ●] ",
+            AttributeTab::SpanAttributes => "[Span ● | Resource ○ | Events ○ | Links ○] ",
+            AttributeTab::ResourceAttributes => "[Span ○ | Resource ● | Events ○ | Links ○] ",
+            AttributeTab::Events => "[Span ○ | Resource ○ | Events ● | Links ○] ",
+            AttributeTab::Links => "[Span ○ | Resource ○ | Events ○ | Links ●] ",
         };
 
         let title = format!("{span_label}{active_indicator}{tab_label} (r to switch)");
@@ -176,6 +196,8 @@ mod tests {
                     kind: "Server".into(),
                     attributes: serde_json::json!({"http.method": "GET", "http.status_code": 200}),
                     resource_attributes: serde_json::json!({"service.name": "frontend", "deployment.environment": "production"}),
+                    events: serde_json::Value::Array(vec![]),
+                    links: serde_json::Value::Array(vec![]),
                 },
                 SpanInfo {
                     span_id: "span-2".into(),
@@ -188,6 +210,14 @@ mod tests {
                     kind: "Client".into(),
                     attributes: serde_json::json!({"db.system": "postgresql"}),
                     resource_attributes: serde_json::json!({"service.name": "backend"}),
+                    events: serde_json::json!([
+                        {
+                            "name": "exception",
+                            "timestamp_unix_nano": 123,
+                            "attributes_json": "{\"exception.message\": \"timeout\"}"
+                        }
+                    ]),
+                    links: serde_json::Value::Array(vec![]),
                 },
             ],
         }
@@ -253,6 +283,10 @@ mod tests {
         view.cycle_attribute_tab();
         assert_eq!(view.attribute_tab, AttributeTab::ResourceAttributes);
         view.cycle_attribute_tab();
+        assert_eq!(view.attribute_tab, AttributeTab::Events);
+        view.cycle_attribute_tab();
+        assert_eq!(view.attribute_tab, AttributeTab::Links);
+        view.cycle_attribute_tab();
         assert_eq!(view.attribute_tab, AttributeTab::SpanAttributes);
     }
 
@@ -267,6 +301,22 @@ mod tests {
             .unwrap();
         assert_buffer_contains(&terminal, "Resource");
         assert_buffer_contains(&terminal, "service.name");
+    }
+
+    #[test]
+    fn render_events_attributes() {
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        let mut view = TraceDetailView::new();
+        view.set_detail(make_detail());
+        view.select_next_span(10);
+        view.cycle_attribute_tab();
+        view.cycle_attribute_tab();
+        terminal
+            .draw(|frame| view.render(frame, frame.area()))
+            .unwrap();
+        assert_buffer_contains(&terminal, "Events");
+        // Events are nested objects, so only the collapsed summary is visible
+        assert_buffer_contains(&terminal, "[0]:");
     }
 
     #[test]
