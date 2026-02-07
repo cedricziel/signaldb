@@ -6448,6 +6448,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "common",
  "reqwest 0.13.2",
  "serde_json",
  "signaldb-sdk",
