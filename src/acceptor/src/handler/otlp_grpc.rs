@@ -102,15 +102,14 @@ impl TraceHandler {
         // Convert OTLP traces to Arrow RecordBatch
         let record_batch = otlp_traces_to_arrow(&request);
 
-        // Add schema version metadata (v1 for OTLP conversion)
         let metadata = serde_json::json!({
             "schema_version": "v1",
             "signal_type": "traces",
             "tenant_id": tenant_context.tenant_id,
             "dataset_id": tenant_context.dataset_id,
         });
+        let metadata_str = serde_json::to_string(&metadata).ok();
 
-        // Step 1: Write to WAL first for durability
         let batch_bytes = match record_batch_to_bytes(&record_batch) {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -120,7 +119,7 @@ impl TraceHandler {
         };
 
         let wal_entry_id = match wal
-            .append(WalOperation::WriteTraces, batch_bytes.clone(), None)
+            .append(WalOperation::WriteTraces, batch_bytes.clone(), metadata_str)
             .await
         {
             Ok(id) => id,
