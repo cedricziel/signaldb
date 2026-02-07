@@ -1,6 +1,7 @@
 //! Application state management
 
 use std::time::Duration;
+use std::time::SystemTime;
 
 /// Permission level detected from authentication
 #[derive(Clone, Debug, PartialEq)]
@@ -88,6 +89,8 @@ pub struct AppState {
     pub connection_status: ConnectionStatus,
     /// Last error message (if any)
     pub last_error: Option<String>,
+    /// Timestamp of last error
+    pub last_error_at: Option<SystemTime>,
     /// Refresh rate for data updates
     pub refresh_rate: Duration,
     /// SignalDB HTTP URL
@@ -105,10 +108,23 @@ impl AppState {
             available_tabs: Tab::non_admin(),
             connection_status: ConnectionStatus::Disconnected,
             last_error: None,
+            last_error_at: None,
             refresh_rate,
             url,
             flight_url,
         }
+    }
+
+    /// Set the latest user-visible error with timestamp.
+    pub fn set_error(&mut self, message: impl Into<String>) {
+        self.last_error = Some(message.into());
+        self.last_error_at = Some(SystemTime::now());
+    }
+
+    /// Clear the last recorded error.
+    pub fn clear_error(&mut self) {
+        self.last_error = None;
+        self.last_error_at = None;
     }
 
     /// Update permission and adjust available tabs accordingly
@@ -234,6 +250,7 @@ mod tests {
         assert_eq!(state.available_tabs, Tab::non_admin());
         assert_eq!(state.connection_status, ConnectionStatus::Disconnected);
         assert_eq!(state.last_error, None);
+        assert_eq!(state.last_error_at, None);
         assert_eq!(state.refresh_rate, Duration::from_secs(5));
         assert_eq!(state.url, "http://localhost:3000");
         assert_eq!(state.flight_url, "http://localhost:50053");
@@ -368,6 +385,23 @@ mod tests {
         assert_eq!(Tab::Logs.shortcut(), '3');
         assert_eq!(Tab::Metrics.shortcut(), '4');
         assert_eq!(Tab::Admin.shortcut(), '5');
+    }
+
+    #[test]
+    fn test_set_and_clear_error() {
+        let mut state = AppState::new(
+            "http://localhost:3000".to_string(),
+            "http://localhost:50053".to_string(),
+            Duration::from_secs(5),
+        );
+
+        state.set_error("network timeout");
+        assert_eq!(state.last_error.as_deref(), Some("network timeout"));
+        assert!(state.last_error_at.is_some());
+
+        state.clear_error();
+        assert!(state.last_error.is_none());
+        assert!(state.last_error_at.is_none());
     }
 
     #[tokio::test]

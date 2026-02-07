@@ -28,7 +28,6 @@ pub enum DatasetAction {
         tenant_id: String,
         dataset_id: String,
     },
-    Refresh,
 }
 
 impl DatasetsPanel {

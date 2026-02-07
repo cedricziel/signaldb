@@ -42,7 +42,15 @@ impl Component for StatusBar {
         };
 
         let left_text = if let Some(ref err) = state.last_error {
-            format!("{indicator} {url} | {err}", url = state.url)
+            let when = state
+                .last_error_at
+                .map(|ts| {
+                    chrono::DateTime::<chrono::Local>::from(ts)
+                        .format("%H:%M:%S")
+                        .to_string()
+                })
+                .unwrap_or_else(|| "--:--:--".to_string());
+            format!("{indicator} {url} | [{when}] {err}", url = state.url)
         } else {
             format!("{indicator} {url}", url = state.url)
         };
@@ -60,7 +68,7 @@ impl Component for StatusBar {
             .centered();
         frame.render_widget(center, chunks[1]);
 
-        let right = Paragraph::new("q: Quit  r: Refresh  /: Search")
+        let right = Paragraph::new("q: Quit  r: Refresh  /: Search  ?: Help")
             .style(Style::default().fg(Color::DarkGray))
             .right_aligned();
         frame.render_widget(right, chunks[2]);
@@ -79,7 +87,7 @@ mod tests {
     use crate::tui::test_helpers::assert_buffer_contains;
 
     fn render_status_bar(state: &AppState) -> Terminal<TestBackend> {
-        let mut terminal = Terminal::new(TestBackend::new(120, 1)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(140, 1)).unwrap();
         let bar = StatusBar::new();
         terminal
             .draw(|frame| {

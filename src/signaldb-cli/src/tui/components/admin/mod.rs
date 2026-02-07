@@ -10,7 +10,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Tabs};
+use ratatui::widgets::{Block, Borders, Paragraph, Tabs};
 
 use self::api_keys::ApiKeysPanel;
 use self::confirm_dialog::{ConfirmDialog, ConfirmResult};
@@ -18,6 +18,7 @@ use self::datasets::DatasetsPanel;
 use self::tenants::TenantsPanel;
 use super::Component;
 use crate::tui::action::Action;
+use crate::tui::client::admin::{AdminClient, AdminClientError};
 use crate::tui::state::{AppState, Permission};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +46,7 @@ pub struct AdminPanel {
     datasets: DatasetsPanel,
     confirm_dialog: ConfirmDialog,
     pending_delete_context: Option<DeleteContext>,
+    error_message: Option<String>,
 }
 
 enum DeleteContext {
@@ -62,6 +64,7 @@ impl AdminPanel {
             datasets: DatasetsPanel::new(),
             confirm_dialog: ConfirmDialog::new(),
             pending_delete_context: None,
+            error_message: None,
         }
     }
 
@@ -75,6 +78,81 @@ impl AdminPanel {
 
     pub fn set_datasets(&mut self, datasets: Vec<serde_json::Value>) {
         self.datasets.set_data(datasets);
+    }
+
+    pub fn set_error(&mut self, message: String) {
+        self.error_message = Some(message);
+    }
+
+    pub fn clear_error(&mut self) {
+        self.error_message = None;
+    }
+
+    pub async fn refresh(&mut self, client: &AdminClient) -> Result<(), AdminClientError> {
+        self.process_pending_action(client).await?;
+
+        let tenants = client.list_tenants().await?;
+        self.set_tenants(tenants);
+        self.sync_selected_tenant();
+
+        if let Some(tenant_id) = self.tenants.selected_tenant_id() {
+            let keys = client.list_api_keys(&tenant_id).await?;
+            self.set_api_keys(keys);
+
+            let datasets = client.list_datasets(&tenant_id).await?;
+            self.set_datasets(datasets);
+        } else {
+            self.set_api_keys(Vec::new());
+            self.set_datasets(Vec::new());
+        }
+
+        Ok(())
+    }
+
+    async fn process_pending_action(
+        &mut self,
+        client: &AdminClient,
+    ) -> Result<(), AdminClientError> {
+        if let Some(action) = self.tenants.pending_action.take() {
+            match action {
+                self::tenants::TenantAction::Create { id, name } => {
+                    let _ = client.create_tenant(&id, &name).await?;
+                }
+                self::tenants::TenantAction::Update { id, name } => {
+                    let _ = client.update_tenant(&id, &name).await?;
+                }
+                self::tenants::TenantAction::Delete { id } => {
+                    client.delete_tenant(&id).await?;
+                }
+            }
+        }
+
+        if let Some(action) = self.api_keys.pending_action.take() {
+            match action {
+                self::api_keys::ApiKeyAction::Create { tenant_id, name } => {
+                    let _ = client.create_api_key(&tenant_id, &name).await?;
+                }
+                self::api_keys::ApiKeyAction::Revoke { tenant_id, key_id } => {
+                    client.revoke_api_key(&tenant_id, &key_id).await?;
+                }
+            }
+        }
+
+        if let Some(action) = self.datasets.pending_action.take() {
+            match action {
+                self::datasets::DatasetAction::Create { tenant_id, id } => {
+                    let _ = client.create_dataset(&tenant_id, &id).await?;
+                }
+                self::datasets::DatasetAction::Delete {
+                    tenant_id,
+                    dataset_id,
+                } => {
+                    client.delete_dataset(&tenant_id, &dataset_id).await?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn sync_selected_tenant(&mut self) {
@@ -184,15 +262,24 @@ impl Component for AdminPanel {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(if self.error_message.is_some() { 1 } else { 0 }),
+                Constraint::Min(0),
+            ])
             .split(area);
 
         self.render_sub_tabs(frame, chunks[0]);
 
+        if let Some(message) = &self.error_message {
+            let error = Paragraph::new(message.as_str()).style(Style::default().fg(Color::Red));
+            frame.render_widget(error, chunks[1]);
+        }
+
         match self.sub_tab {
-            AdminSubTab::Tenants => self.tenants.render(frame, chunks[1]),
-            AdminSubTab::Keys => self.api_keys.render(frame, chunks[1]),
-            AdminSubTab::Datasets => self.datasets.render(frame, chunks[1]),
+            AdminSubTab::Tenants => self.tenants.render(frame, chunks[2]),
+            AdminSubTab::Keys => self.api_keys.render(frame, chunks[2]),
+            AdminSubTab::Datasets => self.datasets.render(frame, chunks[2]),
         }
 
         if self.confirm_dialog.is_visible() {

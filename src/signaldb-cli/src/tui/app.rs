@@ -2,33 +2,42 @@
 
 use std::time::Duration;
 
+use crossterm::event::KeyEvent;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Paragraph;
 
 use super::action::{Action, map_key_to_action};
+use super::client::admin::{AdminClient, AdminClientError};
+use super::client::flight::{FlightClientError, FlightSqlClient};
 use super::components::Component;
+use super::components::admin::AdminPanel;
+use super::components::dashboard::Dashboard;
+use super::components::help::HelpOverlay;
+use super::components::logs::LogsPanel;
+use super::components::metrics::MetricsPanel;
 use super::components::status_bar::StatusBar;
 use super::components::tabs::TabBar;
 use super::event::{Event, EventHandler};
-use super::state::AppState;
+use super::state::{AppState, ConnectionStatus, Permission, Tab};
 use super::terminal::Tui;
 
 /// Top-level TUI application.
-#[allow(dead_code)] // Fields used in future tab/data-fetching tasks
 pub struct App {
-    pub url: String,
-    pub flight_url: String,
-    pub api_key: Option<String>,
-    pub admin_key: Option<String>,
     pub refresh_rate: Duration,
-    pub tenant_id: Option<String>,
-    pub dataset_id: Option<String>,
     running: bool,
     pub state: AppState,
     tab_bar: TabBar,
     status_bar: StatusBar,
+    dashboard: Dashboard,
+    logs: LogsPanel,
+    metrics: MetricsPanel,
+    admin: AdminPanel,
+    help: HelpOverlay,
+    show_help: bool,
+    flight_client: FlightSqlClient,
+    admin_client: Option<AdminClient>,
 }
 
 impl App {
@@ -42,19 +51,49 @@ impl App {
         tenant_id: Option<String>,
         dataset_id: Option<String>,
     ) -> Self {
-        let state = AppState::new(url.clone(), flight_url.clone(), refresh_rate);
+        let mut state = AppState::new(url.clone(), flight_url.clone(), refresh_rate);
+        let permission = if let Some(admin_key_value) = admin_key.clone() {
+            Permission::Admin {
+                admin_key: admin_key_value,
+            }
+        } else if let (Some(api_key_value), Some(tenant_id_value)) =
+            (api_key.clone(), tenant_id.clone())
+        {
+            Permission::Tenant {
+                api_key: api_key_value,
+                tenant_id: tenant_id_value,
+                dataset_id: dataset_id.clone(),
+            }
+        } else {
+            Permission::Unknown
+        };
+        state.set_permission(permission);
+
+        let admin_client = admin_key
+            .as_deref()
+            .and_then(|key| AdminClient::new(&url, key).ok());
+
+        let flight_client = FlightSqlClient::new(
+            flight_url.clone(),
+            api_key.clone(),
+            tenant_id.clone(),
+            dataset_id.clone(),
+        );
+
         Self {
-            url,
-            flight_url,
-            api_key,
-            admin_key,
             refresh_rate,
-            tenant_id,
-            dataset_id,
             running: true,
             state,
             tab_bar: TabBar::new(),
             status_bar: StatusBar::new(),
+            dashboard: Dashboard::new(),
+            logs: LogsPanel::new(),
+            metrics: MetricsPanel::new(),
+            admin: AdminPanel::new(),
+            help: HelpOverlay::new(),
+            show_help: false,
+            flight_client,
+            admin_client,
         }
     }
 
@@ -69,10 +108,11 @@ impl App {
             let event = events.next().await?;
             match event {
                 Event::Key(key) => {
-                    let action = map_key_to_action(key);
-                    self.handle_action(action);
+                    self.handle_key_event(key);
                 }
-                Event::Tick => {}
+                Event::Tick => {
+                    self.refresh_active_tab().await;
+                }
                 Event::Render => {
                     tui.terminal.draw(|frame| self.render(frame))?;
                 }
@@ -83,12 +123,40 @@ impl App {
         Ok(())
     }
 
+    fn handle_key_event(&mut self, key: KeyEvent) {
+        if self.show_help {
+            if let Some(action) = self.help.handle_key_event(key) {
+                self.handle_action(action);
+            }
+            return;
+        }
+
+        if let Some(action) = self.active_component_handle_key(key) {
+            self.handle_action(action);
+            return;
+        }
+
+        let action = map_key_to_action(key);
+        self.handle_action(action);
+    }
+
+    fn active_component_handle_key(&mut self, key: KeyEvent) -> Option<Action> {
+        match self.state.active_tab {
+            Tab::Dashboard => self.dashboard.handle_key_event(key),
+            Tab::Traces => None,
+            Tab::Logs => self.logs.handle_key_event(key),
+            Tab::Metrics => self.metrics.handle_key_event(key),
+            Tab::Admin => self.admin.handle_key_event(key),
+        }
+    }
+
     fn handle_action(&mut self, action: Action) {
         match action {
             Action::Quit => self.running = false,
             Action::SwitchTab(idx) => self.state.switch_tab(idx),
             Action::NextTab => self.state.next_tab(),
             Action::PrevTab => self.state.prev_tab(),
+            Action::ToggleHelp => self.show_help = !self.show_help,
             Action::Refresh
             | Action::ScrollUp
             | Action::ScrollDown
@@ -98,6 +166,267 @@ impl App {
             | Action::Confirm
             | Action::Cancel
             | Action::None => {}
+        }
+
+        if !self.show_help {
+            self.update_active_tab(&action);
+        }
+    }
+
+    fn update_active_tab(&mut self, action: &Action) {
+        match self.state.active_tab {
+            Tab::Dashboard => self.dashboard.update(action, &mut self.state),
+            Tab::Traces => {}
+            Tab::Logs => self.logs.update(action, &mut self.state),
+            Tab::Metrics => self.metrics.update(action, &mut self.state),
+            Tab::Admin => self.admin.update(action, &mut self.state),
+        }
+    }
+
+    async fn refresh_active_tab(&mut self) {
+        if self.show_help {
+            return;
+        }
+
+        match self.state.active_tab {
+            Tab::Dashboard => self.refresh_dashboard().await,
+            Tab::Traces => {}
+            Tab::Logs => self.refresh_logs().await,
+            Tab::Metrics => self.refresh_metrics().await,
+            Tab::Admin => self.refresh_admin().await,
+        }
+    }
+
+    async fn refresh_dashboard(&mut self) {
+        match self
+            .flight_client
+            .query_system_metrics(
+                super::components::dashboard::service_health::ServiceHealthPanel::query(),
+            )
+            .await
+        {
+            Ok(batches) => {
+                self.dashboard.service_health_mut().set_data(&batches);
+                self.mark_connected();
+            }
+            Err(err) => {
+                let msg = self.flight_error_message(&err);
+                self.dashboard.service_health_mut().set_error(msg);
+                self.handle_flight_error(err);
+                return;
+            }
+        }
+
+        match self
+            .flight_client
+            .query_system_metrics(super::components::dashboard::wal_status::WalStatusPanel::query())
+            .await
+        {
+            Ok(batches) => {
+                self.dashboard.wal_status_mut().set_data(&batches);
+                self.mark_connected();
+            }
+            Err(err) => {
+                let msg = self.flight_error_message(&err);
+                self.dashboard.wal_status_mut().set_error(msg);
+                self.handle_flight_error(err);
+            }
+        }
+
+        match self
+            .flight_client
+            .query_system_metrics(super::components::dashboard::pool_stats::PoolStatsPanel::query())
+            .await
+        {
+            Ok(batches) => {
+                self.dashboard.pool_stats_mut().set_data(&batches);
+                self.mark_connected();
+            }
+            Err(err) => {
+                let msg = self.flight_error_message(&err);
+                self.dashboard.pool_stats_mut().set_error(msg);
+                self.handle_flight_error(err);
+            }
+        }
+
+        match self
+            .flight_client
+            .query_system_metrics(
+                super::components::dashboard::system_resources::SystemResourcesPanel::query(),
+            )
+            .await
+        {
+            Ok(batches) => {
+                self.dashboard.system_resources_mut().set_data(&batches);
+                self.mark_connected();
+            }
+            Err(err) => {
+                let msg = self.flight_error_message(&err);
+                self.dashboard.system_resources_mut().set_error(msg);
+                self.handle_flight_error(err);
+            }
+        }
+
+        if matches!(self.state.permission, Permission::Admin { .. }) {
+            match &self.admin_client {
+                Some(client) => match client.list_tenants().await {
+                    Ok(tenants) => {
+                        self.dashboard.tenant_overview_mut().set_data(&tenants);
+                        self.mark_connected();
+                    }
+                    Err(err) => {
+                        let msg = self.admin_error_message(&err);
+                        self.dashboard.tenant_overview_mut().set_error(msg);
+                        self.handle_admin_error(err);
+                    }
+                },
+                None => {
+                    self.dashboard
+                        .tenant_overview_mut()
+                        .set_error("Authentication failed - check API key".to_string());
+                    self.state
+                        .set_error("Authentication failed - check API key");
+                }
+            }
+        }
+    }
+
+    async fn refresh_logs(&mut self) {
+        self.logs.refresh();
+        if let Some(query) = self.logs.take_pending_query() {
+            match self.flight_client.query_sql(&query).await {
+                Ok(batches) => {
+                    self.logs.set_data(&batches);
+                    self.mark_connected();
+                }
+                Err(err) => {
+                    let msg = self.flight_error_message(&err);
+                    self.logs.set_error(msg);
+                    self.handle_flight_error(err);
+                }
+            }
+        }
+    }
+
+    async fn refresh_metrics(&mut self) {
+        self.metrics.refresh();
+        if let Some(query) = self.metrics.take_pending_query() {
+            match self.flight_client.query_sql(&query).await {
+                Ok(batches) => {
+                    self.metrics.set_data(&batches);
+                    self.mark_connected();
+                }
+                Err(err) => {
+                    let msg = self.flight_error_message(&err);
+                    self.metrics.set_error(msg);
+                    self.handle_flight_error(err);
+                }
+            }
+        }
+    }
+
+    async fn refresh_admin(&mut self) {
+        let Some(client) = &self.admin_client else {
+            self.admin
+                .set_error("Authentication failed - check API key".to_string());
+            self.state
+                .set_error("Authentication failed - check API key");
+            return;
+        };
+
+        match self.admin.refresh(client).await {
+            Ok(()) => {
+                self.admin.clear_error();
+                self.mark_connected();
+            }
+            Err(err) => {
+                self.admin.set_error(self.admin_error_message(&err));
+                self.handle_admin_error(err);
+            }
+        }
+    }
+
+    fn mark_connected(&mut self) {
+        self.state.connection_status = ConnectionStatus::Connected;
+        self.state.clear_error();
+    }
+
+    fn handle_flight_error(&mut self, err: FlightClientError) {
+        match err {
+            FlightClientError::Auth(_) => {
+                self.state
+                    .set_error("Authentication failed - check API key");
+            }
+            FlightClientError::Connection(_) => {
+                self.state.connection_status = ConnectionStatus::Disconnected;
+                self.state.set_error("Disconnected - retrying on next tick");
+                self.set_active_tab_error("Disconnected - retrying on next tick");
+            }
+            FlightClientError::Query(msg) => {
+                self.state.set_error(msg);
+            }
+        }
+    }
+
+    fn handle_admin_error(&mut self, err: AdminClientError) {
+        match err {
+            AdminClientError::Unauthorized => {
+                self.state
+                    .set_error("Authentication failed - check API key");
+            }
+            AdminClientError::ConnectionError(msg) => {
+                self.state.connection_status = ConnectionStatus::Disconnected;
+                self.state
+                    .set_error(format!("Disconnected - retrying on next tick ({msg})"));
+                self.set_active_tab_error("Disconnected - retrying on next tick");
+            }
+            other => {
+                self.state.set_error(other.to_string());
+            }
+        }
+    }
+
+    fn set_active_tab_error(&mut self, message: &str) {
+        match self.state.active_tab {
+            Tab::Dashboard => {
+                self.dashboard
+                    .service_health_mut()
+                    .set_error(message.to_string());
+                self.dashboard
+                    .wal_status_mut()
+                    .set_error(message.to_string());
+                self.dashboard
+                    .pool_stats_mut()
+                    .set_error(message.to_string());
+                self.dashboard
+                    .tenant_overview_mut()
+                    .set_error(message.to_string());
+                self.dashboard
+                    .system_resources_mut()
+                    .set_error(message.to_string());
+            }
+            Tab::Traces => {}
+            Tab::Logs => self.logs.set_error(message.to_string()),
+            Tab::Metrics => self.metrics.set_error(message.to_string()),
+            Tab::Admin => self.admin.set_error(message.to_string()),
+        }
+    }
+
+    fn flight_error_message(&self, err: &FlightClientError) -> String {
+        match err {
+            FlightClientError::Auth(_) => "Authentication failed - check API key".to_string(),
+            FlightClientError::Connection(_) => "Disconnected - retrying on next tick".to_string(),
+            FlightClientError::Query(msg) => msg.clone(),
+        }
+    }
+
+    fn admin_error_message(&self, err: &AdminClientError) -> String {
+        match err {
+            AdminClientError::Unauthorized => "Authentication failed - check API key".to_string(),
+            AdminClientError::ConnectionError(_) => {
+                "Disconnected - retrying on next tick".to_string()
+            }
+            other => other.to_string(),
         }
     }
 
@@ -113,12 +442,24 @@ impl App {
 
         self.tab_bar.render(frame, chunks[0], &self.state);
 
-        let placeholder = Paragraph::new("Tab content coming soon")
-            .style(Style::default().fg(Color::DarkGray))
-            .centered();
-        frame.render_widget(placeholder, chunks[1]);
+        match self.state.active_tab {
+            Tab::Dashboard => self.dashboard.render(frame, chunks[1], &self.state),
+            Tab::Traces => {
+                let placeholder = Paragraph::new("Traces tab coming soon")
+                    .style(Style::default().fg(Color::DarkGray))
+                    .centered();
+                frame.render_widget(placeholder, chunks[1]);
+            }
+            Tab::Logs => self.logs.render(frame, chunks[1], &self.state),
+            Tab::Metrics => self.metrics.render(frame, chunks[1], &self.state),
+            Tab::Admin => self.admin.render(frame, chunks[1], &self.state),
+        }
 
         self.status_bar.render(frame, chunks[2], &self.state);
+
+        if self.show_help {
+            self.help.render(frame, frame.area(), &self.state);
+        }
     }
 }
 
@@ -164,6 +505,14 @@ mod tests {
     }
 
     #[test]
+    fn toggle_help_action_opens_overlay() {
+        let mut app = make_app();
+        assert!(!app.show_help);
+        app.handle_action(Action::ToggleHelp);
+        assert!(app.show_help);
+    }
+
+    #[test]
     fn next_tab_cycles_forward() {
         let mut app = make_app();
         assert_eq!(app.state.active_tab, Tab::Dashboard);
@@ -185,7 +534,7 @@ mod tests {
         let app = make_app();
         terminal.draw(|frame| app.render(frame)).unwrap();
         assert_buffer_contains(&terminal, "[1] Dashboard");
-        assert_buffer_contains(&terminal, "Tab content coming soon");
+        assert_buffer_contains(&terminal, "Service Health");
         assert_buffer_contains(&terminal, "q: Quit");
     }
 

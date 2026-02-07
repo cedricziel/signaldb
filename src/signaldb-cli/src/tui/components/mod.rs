@@ -1,12 +1,9 @@
 //! Component trait and implementations
 
-#[allow(dead_code)] // Wired into App render once Admin tab integration lands
 pub mod admin;
-#[allow(dead_code)] // Panels used once Dashboard tab is wired into App render
 pub mod dashboard;
-#[allow(dead_code)] // Wired into App render once Logs tab integration lands
+pub mod help;
 pub mod logs;
-#[allow(dead_code)] // Wired into App render once Metrics tab integration lands
 pub mod metrics;
 pub mod status_bar;
 pub mod tabs;

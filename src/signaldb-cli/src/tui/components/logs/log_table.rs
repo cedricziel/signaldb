@@ -107,6 +107,7 @@ impl LogTable {
         }
     }
 
+    #[allow(dead_code)] // Used by table-focused unit tests
     /// Return the selected row index, if any.
     pub fn selected_index(&self) -> Option<usize> {
         self.table_state.selected()
@@ -124,6 +125,7 @@ impl LogTable {
         }
     }
 
+    #[allow(dead_code)] // Used by table-focused unit tests
     /// Total row count.
     pub fn row_count(&self) -> usize {
         match &self.data {

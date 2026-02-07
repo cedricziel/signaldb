@@ -53,6 +53,7 @@ impl TenantOverviewPanel {
     }
 
     /// Whether this panel should be visible for the given permission.
+    #[allow(dead_code)] // Used by targeted panel tests and future app-level gating
     pub fn is_visible(state: &AppState) -> bool {
         matches!(state.permission, Permission::Admin { .. })
     }

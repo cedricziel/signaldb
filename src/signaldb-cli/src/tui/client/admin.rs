@@ -292,9 +292,7 @@ impl AdminClient {
     fn map_error<T: std::fmt::Debug>(&self, error: &signaldb_sdk::Error<T>) -> AdminClientError {
         let err_str = format!("{:?}", error);
 
-        if err_str.contains("401") {
-            AdminClientError::Unauthorized
-        } else if err_str.contains("403") {
+        if err_str.contains("401") || err_str.contains("403") {
             AdminClientError::Unauthorized
         } else if err_str.contains("404") {
             AdminClientError::NotFound(err_str)

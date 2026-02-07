@@ -2,4 +2,4 @@
 source: src/signaldb-cli/src/tui/components/status_bar.rs
 expression: content
 ---
-Connected http://localhost:3000                           Admin                           q: Quit  r: Refresh  /: Search
+Connected http://localhost:3000                                     Admin                            q: Quit  r: Refresh  /: Search  ?: Help

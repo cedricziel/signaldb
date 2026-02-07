@@ -9,6 +9,7 @@ pub enum Action {
     SwitchTab(usize),
     NextTab,
     PrevTab,
+    ToggleHelp,
     Refresh,
     ScrollUp,
     ScrollDown,
@@ -33,6 +34,7 @@ pub fn map_key_to_action(key: KeyEvent) -> Action {
         KeyCode::Char('5') => Action::SwitchTab(4),
         KeyCode::Tab => Action::NextTab,
         KeyCode::BackTab => Action::PrevTab,
+        KeyCode::Char('?') => Action::ToggleHelp,
         KeyCode::Char('r') => Action::Refresh,
         KeyCode::Up | KeyCode::Char('k') => Action::ScrollUp,
         KeyCode::Down | KeyCode::Char('j') => Action::ScrollDown,
@@ -75,6 +77,7 @@ mod tests {
             Action::SwitchTab(0),
             Action::NextTab,
             Action::PrevTab,
+            Action::ToggleHelp,
             Action::Refresh,
             Action::ScrollUp,
             Action::ScrollDown,
@@ -85,7 +88,7 @@ mod tests {
             Action::Cancel,
             Action::None,
         ];
-        assert_eq!(actions.len(), 13);
+        assert_eq!(actions.len(), 14);
     }
 
     #[test]
@@ -125,6 +128,10 @@ mod tests {
         );
         assert_eq!(map_key_to_action(press(KeyCode::Enter)), Action::Select);
         assert_eq!(map_key_to_action(press(KeyCode::Esc)), Action::Back);
+        assert_eq!(
+            map_key_to_action(press(KeyCode::Char('?'))),
+            Action::ToggleHelp
+        );
     }
 
     #[test]

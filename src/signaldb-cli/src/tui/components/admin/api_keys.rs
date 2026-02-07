@@ -32,7 +32,6 @@ pub struct ApiKeysPanel {
 pub enum ApiKeyAction {
     Create { tenant_id: String, name: String },
     Revoke { tenant_id: String, key_id: String },
-    Refresh,
 }
 
 impl ApiKeysPanel {

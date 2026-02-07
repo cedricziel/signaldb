@@ -38,7 +38,6 @@ pub enum TenantAction {
     Create { id: String, name: String },
     Update { id: String, name: String },
     Delete { id: String },
-    Refresh,
 }
 
 impl TenantsPanel {

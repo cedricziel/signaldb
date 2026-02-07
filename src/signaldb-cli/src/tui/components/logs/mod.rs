@@ -45,6 +45,7 @@ impl LogsPanel {
         }
     }
 
+    #[allow(dead_code)] // Used by focused tests and upcoming integration paths
     /// Return the current SQL query text.
     pub fn current_query(&self) -> &str {
         self.query_bar.query()
