@@ -280,6 +280,7 @@ mod tests {
                 status: "Ok".into(),
                 kind: "Server".into(),
                 attributes: serde_json::json!({}),
+                resource_attributes: serde_json::json!({"service.name": "frontend"}),
             },
             SpanInfo {
                 span_id: "span-2".into(),
@@ -291,6 +292,7 @@ mod tests {
                 status: "Ok".into(),
                 kind: "Client".into(),
                 attributes: serde_json::json!({}),
+                resource_attributes: serde_json::json!({"service.name": "backend"}),
             },
             SpanInfo {
                 span_id: "span-3".into(),
@@ -302,6 +304,7 @@ mod tests {
                 status: "Error".into(),
                 kind: "Internal".into(),
                 attributes: serde_json::json!({"error": true}),
+                resource_attributes: serde_json::json!({"service.name": "database"}),
             },
         ]
     }

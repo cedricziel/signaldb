@@ -137,6 +137,10 @@ impl Component for TracesPanel {
                     }
                     Some(Action::None)
                 }
+                KeyCode::Char('g') => {
+                    self.trace_list.cycle_group_by();
+                    Some(Action::None)
+                }
                 _ => None,
             },
             Focus::TraceDetail => match key.code {
@@ -156,6 +160,10 @@ impl Component for TracesPanel {
                 }
                 KeyCode::Tab => {
                     self.trace_detail.toggle_focus();
+                    Some(Action::None)
+                }
+                KeyCode::Char('r') => {
+                    self.trace_detail.cycle_attribute_tab();
                     Some(Action::None)
                 }
                 KeyCode::Char('/') => {
@@ -192,6 +200,7 @@ impl Component for TracesPanel {
                 selected_span: self.trace_detail.selected_span,
                 scroll_offset: self.trace_detail.scroll_offset,
                 focus: self.trace_detail.focus.clone(),
+                attribute_tab: self.trace_detail.attribute_tab.clone(),
                 json_state: TreeState::default(),
             };
             detail_clone.render(frame, chunks[1]);
@@ -206,6 +215,7 @@ impl Component for TracesPanel {
             let mut list_clone = TraceList {
                 data: self.trace_list.data.clone(),
                 table_state: self.trace_list.table_state,
+                group_by: self.trace_list.group_by.clone(),
             };
             let spinner = if state.loading {
                 Some(state.spinner_char())
@@ -259,6 +269,7 @@ mod tests {
                 duration_ms: 150.0,
                 span_count: 5,
                 start_time: "2025-01-15 10:30:00 UTC".into(),
+                root_span_kind: "Server".into(),
             },
             TraceResult {
                 trace_id: "def456".into(),
@@ -267,6 +278,7 @@ mod tests {
                 duration_ms: 2500.0,
                 span_count: 12,
                 start_time: "2025-01-15 10:30:01 UTC".into(),
+                root_span_kind: "Server".into(),
             },
         ]
     }
@@ -285,6 +297,7 @@ mod tests {
                     status: "Ok".into(),
                     kind: "Server".into(),
                     attributes: serde_json::json!({"http.method": "GET"}),
+                    resource_attributes: serde_json::json!({"service.name": "frontend"}),
                 },
                 SpanInfo {
                     span_id: "span-2".into(),
@@ -296,6 +309,7 @@ mod tests {
                     status: "Ok".into(),
                     kind: "Client".into(),
                     attributes: serde_json::json!({"db.system": "postgresql"}),
+                    resource_attributes: serde_json::json!({"service.name": "backend"}),
                 },
             ],
         }
@@ -387,6 +401,37 @@ mod tests {
         assert_eq!(
             panel.trace_detail.focus,
             trace_detail::DetailFocus::JsonViewer
+        );
+    }
+
+    #[test]
+    fn g_key_cycles_group_by_in_list() {
+        let mut panel = TracesPanel::new();
+        panel.set_search_results(make_results());
+        assert_eq!(panel.trace_list.group_by, trace_list::GroupBy::None);
+        panel.handle_key_event(press(KeyCode::Char('g')));
+        assert_eq!(panel.trace_list.group_by, trace_list::GroupBy::Service);
+        panel.handle_key_event(press(KeyCode::Char('g')));
+        assert_eq!(panel.trace_list.group_by, trace_list::GroupBy::Operation);
+    }
+
+    #[test]
+    fn r_key_cycles_attribute_tab_in_detail() {
+        let mut panel = TracesPanel::new();
+        panel.set_trace_detail(make_detail());
+        assert_eq!(
+            panel.trace_detail.attribute_tab,
+            trace_detail::AttributeTab::SpanAttributes
+        );
+        panel.handle_key_event(press(KeyCode::Char('r')));
+        assert_eq!(
+            panel.trace_detail.attribute_tab,
+            trace_detail::AttributeTab::ResourceAttributes
+        );
+        panel.handle_key_event(press(KeyCode::Char('r')));
+        assert_eq!(
+            panel.trace_detail.attribute_tab,
+            trace_detail::AttributeTab::SpanAttributes
         );
     }
 

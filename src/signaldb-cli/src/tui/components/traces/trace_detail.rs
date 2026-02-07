@@ -15,6 +15,13 @@ pub enum DetailFocus {
     JsonViewer,
 }
 
+/// Which attribute set is shown in the JSON viewer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttributeTab {
+    SpanAttributes,
+    ResourceAttributes,
+}
+
 /// Two-section trace detail: waterfall (top) + JSON attributes (bottom).
 pub struct TraceDetailView {
     pub detail: Option<TraceDetail>,
@@ -22,6 +29,7 @@ pub struct TraceDetailView {
     pub selected_span: usize,
     pub scroll_offset: usize,
     pub focus: DetailFocus,
+    pub attribute_tab: AttributeTab,
     pub json_state: TreeState<String>,
 }
 
@@ -33,6 +41,7 @@ impl TraceDetailView {
             selected_span: 0,
             scroll_offset: 0,
             focus: DetailFocus::Waterfall,
+            attribute_tab: AttributeTab::SpanAttributes,
             json_state: TreeState::default(),
         }
     }
@@ -82,6 +91,14 @@ impl TraceDetailView {
         };
     }
 
+    pub fn cycle_attribute_tab(&mut self) {
+        self.attribute_tab = match self.attribute_tab {
+            AttributeTab::SpanAttributes => AttributeTab::ResourceAttributes,
+            AttributeTab::ResourceAttributes => AttributeTab::SpanAttributes,
+        };
+        self.json_state = TreeState::default();
+    }
+
     fn selected_span_info(&self) -> Option<&SpanInfo> {
         self.detail
             .as_ref()
@@ -102,15 +119,34 @@ impl TraceDetailView {
             self.scroll_offset,
         );
 
-        let attrs = self
-            .selected_span_info()
-            .map(|s| s.attributes.clone())
-            .unwrap_or(serde_json::Value::Null);
+        let (attrs, tab_label) = match self.attribute_tab {
+            AttributeTab::SpanAttributes => {
+                let a = self
+                    .selected_span_info()
+                    .map(|s| s.attributes.clone())
+                    .unwrap_or(serde_json::Value::Null);
+                (a, "Span Attributes")
+            }
+            AttributeTab::ResourceAttributes => {
+                let a = self
+                    .selected_span_info()
+                    .map(|s| s.resource_attributes.clone())
+                    .unwrap_or(serde_json::Value::Null);
+                (a, "Resource Attributes")
+            }
+        };
 
-        let title = self
+        let span_label = self
             .selected_span_info()
-            .map(|s| format!("Span: {} ({})", s.operation, s.service))
-            .unwrap_or_else(|| "Span Attributes".to_string());
+            .map(|s| format!("{}: {} ", s.service, s.operation))
+            .unwrap_or_default();
+
+        let active_indicator = match self.attribute_tab {
+            AttributeTab::SpanAttributes => "[Span ● | Resource ○] ",
+            AttributeTab::ResourceAttributes => "[Span ○ | Resource ●] ",
+        };
+
+        let title = format!("{span_label}{active_indicator}{tab_label} (r to switch)");
 
         render_json_tree(frame, chunks[1], &attrs, &mut self.json_state, &title);
     }
@@ -139,6 +175,7 @@ mod tests {
                     status: "Ok".into(),
                     kind: "Server".into(),
                     attributes: serde_json::json!({"http.method": "GET", "http.status_code": 200}),
+                    resource_attributes: serde_json::json!({"service.name": "frontend", "deployment.environment": "production"}),
                 },
                 SpanInfo {
                     span_id: "span-2".into(),
@@ -150,6 +187,7 @@ mod tests {
                     status: "Ok".into(),
                     kind: "Client".into(),
                     attributes: serde_json::json!({"db.system": "postgresql"}),
+                    resource_attributes: serde_json::json!({"service.name": "backend"}),
                 },
             ],
         }
@@ -206,6 +244,29 @@ mod tests {
         assert_eq!(view.focus, DetailFocus::JsonViewer);
         view.toggle_focus();
         assert_eq!(view.focus, DetailFocus::Waterfall);
+    }
+
+    #[test]
+    fn cycle_attribute_tab() {
+        let mut view = TraceDetailView::new();
+        assert_eq!(view.attribute_tab, AttributeTab::SpanAttributes);
+        view.cycle_attribute_tab();
+        assert_eq!(view.attribute_tab, AttributeTab::ResourceAttributes);
+        view.cycle_attribute_tab();
+        assert_eq!(view.attribute_tab, AttributeTab::SpanAttributes);
+    }
+
+    #[test]
+    fn render_resource_attributes() {
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        let mut view = TraceDetailView::new();
+        view.set_detail(make_detail());
+        view.cycle_attribute_tab();
+        terminal
+            .draw(|frame| view.render(frame, frame.area()))
+            .unwrap();
+        assert_buffer_contains(&terminal, "Resource");
+        assert_buffer_contains(&terminal, "service.name");
     }
 
     #[test]

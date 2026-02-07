@@ -32,6 +32,8 @@ pub struct TraceResult {
     pub span_count: u32,
     /// Human-readable start time
     pub start_time: String,
+    /// Span kind of the root span (e.g. `Server`, `Client`)
+    pub root_span_kind: String,
 }
 
 /// Information about a single span within a trace.
@@ -55,6 +57,8 @@ pub struct SpanInfo {
     pub kind: String,
     /// Span attributes as a JSON value
     pub attributes: serde_json::Value,
+    /// Resource attributes as a JSON value (e.g. service.name, deployment.environment)
+    pub resource_attributes: serde_json::Value,
 }
 
 /// Full detail for a single trace, including all spans.

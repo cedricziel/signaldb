@@ -165,6 +165,7 @@ impl FlightSqlClient {
              MAX(CASE WHEN is_root THEN service_name ELSE NULL END) AS root_service, \
              MAX(CASE WHEN is_root THEN span_name ELSE NULL END) AS root_operation, \
              MAX(CASE WHEN is_root THEN duration_nanos ELSE NULL END) AS root_duration_nanos, \
+             MAX(CASE WHEN is_root THEN span_kind ELSE NULL END) AS root_span_kind, \
              MIN(start_time_unix_nano) AS start_time_unix_nano, \
              COUNT(*) AS span_count \
              FROM traces {where_clause} \
@@ -186,6 +187,9 @@ impl FlightSqlClient {
                 .column_by_name("root_operation")
                 .and_then(|c| c.as_any().downcast_ref::<StringArray>());
             let durations = batch.column_by_name("root_duration_nanos");
+            let root_kinds = batch
+                .column_by_name("root_span_kind")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
             let start_times = batch.column_by_name("start_time_unix_nano");
             let span_counts = batch.column_by_name("span_count");
 
@@ -199,6 +203,10 @@ impl FlightSqlClient {
                 let start_nanos = extract_numeric_value(start_times, i).unwrap_or(0);
                 let count = extract_numeric_value(span_counts, i).unwrap_or(0);
 
+                let root_kind = root_kinds
+                    .map(|k| k.value(i).to_string())
+                    .unwrap_or_default();
+
                 results.push(TraceResult {
                     trace_id: trace_ids.value(i).to_string(),
                     root_service: services.value(i).to_string(),
@@ -206,6 +214,7 @@ impl FlightSqlClient {
                     duration_ms: duration_nanos as f64 / 1_000_000.0,
                     span_count: count as u32,
                     start_time: format_nanos_timestamp(start_nanos),
+                    root_span_kind: root_kind,
                 });
             }
         }
@@ -217,7 +226,8 @@ impl FlightSqlClient {
     pub async fn get_trace(&self, trace_id: &str) -> Result<TraceDetail, FlightClientError> {
         let sql = format!(
             "SELECT span_id, parent_span_id, span_name, service_name, \
-             start_time_unix_nano, duration_nanos, status_code, span_kind, span_attributes \
+             start_time_unix_nano, duration_nanos, status_code, span_kind, \
+             span_attributes, resource_attributes \
              FROM traces WHERE trace_id = '{trace_id}' \
              ORDER BY start_time_unix_nano ASC"
         );
@@ -259,6 +269,9 @@ impl FlightSqlClient {
             let attributes = batch
                 .column_by_name("span_attributes")
                 .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let resource_attrs = batch
+                .column_by_name("resource_attributes")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
 
             let (span_ids, operations, services) = match (span_ids, operations, services) {
                 (Some(s), Some(o), Some(sv)) => (s, o, sv),
@@ -295,6 +308,16 @@ impl FlightSqlClient {
                 let status = statuses.map(|s| s.value(i).to_string()).unwrap_or_default();
                 let kind = kinds.map(|k| k.value(i).to_string()).unwrap_or_default();
 
+                let res_attrs = resource_attrs
+                    .and_then(|a| {
+                        if a.is_null(i) {
+                            None
+                        } else {
+                            serde_json::from_str(a.value(i)).ok()
+                        }
+                    })
+                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
                 spans.push(SpanInfo {
                     span_id: span_ids.value(i).to_string(),
                     parent_span_id: parent,
@@ -305,6 +328,7 @@ impl FlightSqlClient {
                     status,
                     kind,
                     attributes: attrs,
+                    resource_attributes: res_attrs,
                 });
             }
         }

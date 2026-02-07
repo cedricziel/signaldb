@@ -3,6 +3,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, TableState};
 
 use crate::tui::client::models::TraceResult;
@@ -15,10 +16,48 @@ pub enum TraceData {
     Error(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupBy {
+    None,
+    Service,
+    Operation,
+    SpanKind,
+}
+
+impl GroupBy {
+    pub fn cycle(&self) -> Self {
+        match self {
+            Self::None => Self::Service,
+            Self::Service => Self::Operation,
+            Self::Operation => Self::SpanKind,
+            Self::SpanKind => Self::None,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Service => "Service",
+            Self::Operation => "Operation",
+            Self::SpanKind => "Span Kind",
+        }
+    }
+
+    fn key(&self, trace: &TraceResult) -> String {
+        match self {
+            Self::None => String::new(),
+            Self::Service => trace.root_service.clone(),
+            Self::Operation => trace.root_operation.clone(),
+            Self::SpanKind => trace.root_span_kind.clone(),
+        }
+    }
+}
+
 /// Trace search results table with scrollable selection.
 pub struct TraceList {
     pub data: TraceData,
     pub table_state: TableState,
+    pub group_by: GroupBy,
 }
 
 impl TraceList {
@@ -26,7 +65,12 @@ impl TraceList {
         Self {
             data: TraceData::Loading,
             table_state: TableState::default(),
+            group_by: GroupBy::None,
         }
+    }
+
+    pub fn cycle_group_by(&mut self) {
+        self.group_by = self.group_by.cycle();
     }
 
     pub fn set_data(&mut self, results: Vec<TraceResult>) {
@@ -109,7 +153,11 @@ impl TraceList {
         let row_info = match &self.data {
             TraceData::Loaded(results) => {
                 let sel = self.table_state.selected().map(|s| s + 1).unwrap_or(0);
-                format!(" Traces [{sel}/{}] ", results.len())
+                let group_label = match &self.group_by {
+                    GroupBy::None => String::new(),
+                    g => format!(" (g: {}) ", g.label()),
+                };
+                format!(" Traces [{sel}/{}]{group_label}", results.len())
             }
             _ => " Traces ".to_string(),
         };
@@ -161,25 +209,64 @@ impl TraceList {
                 )
                 .bottom_margin(1);
 
-                let rows: Vec<Row> = results
-                    .iter()
-                    .map(|t| {
-                        let duration = if t.duration_ms < 1.0 {
-                            format!("{:.0}us", t.duration_ms * 1000.0)
-                        } else if t.duration_ms < 1000.0 {
-                            format!("{:.1}ms", t.duration_ms)
-                        } else {
-                            format!("{:.2}s", t.duration_ms / 1000.0)
-                        };
+                let sorted_results: Vec<&TraceResult> = if self.group_by != GroupBy::None {
+                    let mut sorted: Vec<&TraceResult> = results.iter().collect();
+                    sorted.sort_by(|a, b| {
+                        self.group_by
+                            .key(a)
+                            .cmp(&self.group_by.key(b))
+                            .then(b.start_time.cmp(&a.start_time))
+                    });
+                    sorted
+                } else {
+                    results.iter().collect()
+                };
 
-                        let style = if t.duration_ms > 1000.0 {
-                            Style::default().fg(Color::Red)
-                        } else if t.duration_ms > 500.0 {
-                            Style::default().fg(Color::Yellow)
-                        } else {
-                            Style::default()
-                        };
+                let mut rows: Vec<Row> = Vec::new();
+                let mut last_group: Option<String> = std::option::Option::None;
 
+                for t in &sorted_results {
+                    if self.group_by != GroupBy::None {
+                        let group_key = self.group_by.key(t);
+                        if last_group.as_ref() != Some(&group_key) {
+                            let header_text = format!(
+                                "── {} ──",
+                                if group_key.is_empty() {
+                                    "(unknown)"
+                                } else {
+                                    &group_key
+                                }
+                            );
+                            rows.push(
+                                Row::new(vec![Line::from(vec![Span::styled(
+                                    header_text,
+                                    Style::default()
+                                        .fg(Color::Cyan)
+                                        .add_modifier(Modifier::BOLD),
+                                )])])
+                                .height(1),
+                            );
+                            last_group = Some(group_key);
+                        }
+                    }
+
+                    let duration = if t.duration_ms < 1.0 {
+                        format!("{:.0}us", t.duration_ms * 1000.0)
+                    } else if t.duration_ms < 1000.0 {
+                        format!("{:.1}ms", t.duration_ms)
+                    } else {
+                        format!("{:.2}s", t.duration_ms / 1000.0)
+                    };
+
+                    let style = if t.duration_ms > 1000.0 {
+                        Style::default().fg(Color::Red)
+                    } else if t.duration_ms > 500.0 {
+                        Style::default().fg(Color::Yellow)
+                    } else {
+                        Style::default()
+                    };
+
+                    rows.push(
                         Row::new(vec![
                             truncate_trace_id(&t.trace_id),
                             t.root_service.clone(),
@@ -188,9 +275,9 @@ impl TraceList {
                             t.span_count.to_string(),
                             t.start_time.clone(),
                         ])
-                        .style(style)
-                    })
-                    .collect();
+                        .style(style),
+                    );
+                }
 
                 let widths = [
                     Constraint::Length(18),
@@ -241,6 +328,7 @@ mod tests {
                 duration_ms: 150.0,
                 span_count: 5,
                 start_time: "2025-01-15 10:30:00 UTC".into(),
+                root_span_kind: "Server".into(),
             },
             TraceResult {
                 trace_id: "def456abc789012345678901".into(),
@@ -249,6 +337,7 @@ mod tests {
                 duration_ms: 2500.0,
                 span_count: 12,
                 start_time: "2025-01-15 10:30:01 UTC".into(),
+                root_span_kind: "Client".into(),
             },
         ]
     }
@@ -331,6 +420,47 @@ mod tests {
     #[test]
     fn truncate_trace_id_short() {
         assert_eq!(truncate_trace_id("abc123"), "abc123");
+    }
+
+    #[test]
+    fn cycle_group_by() {
+        let mut list = TraceList::new();
+        assert_eq!(list.group_by, GroupBy::None);
+        list.cycle_group_by();
+        assert_eq!(list.group_by, GroupBy::Service);
+        list.cycle_group_by();
+        assert_eq!(list.group_by, GroupBy::Operation);
+        list.cycle_group_by();
+        assert_eq!(list.group_by, GroupBy::SpanKind);
+        list.cycle_group_by();
+        assert_eq!(list.group_by, GroupBy::None);
+    }
+
+    #[test]
+    fn renders_grouped_by_service() {
+        let mut terminal = Terminal::new(TestBackend::new(120, 15)).unwrap();
+        let mut list = TraceList::new();
+        list.set_data(make_results());
+        list.group_by = GroupBy::Service;
+        terminal
+            .draw(|frame| list.render(frame, frame.area(), true))
+            .unwrap();
+        assert_buffer_contains(&terminal, "── backend ──");
+        assert_buffer_contains(&terminal, "── frontend ──");
+        assert_buffer_contains(&terminal, "(g: Service)");
+    }
+
+    #[test]
+    fn renders_grouped_by_span_kind() {
+        let mut terminal = Terminal::new(TestBackend::new(120, 15)).unwrap();
+        let mut list = TraceList::new();
+        list.set_data(make_results());
+        list.group_by = GroupBy::SpanKind;
+        terminal
+            .draw(|frame| list.render(frame, frame.area(), true))
+            .unwrap();
+        assert_buffer_contains(&terminal, "── Server ──");
+        assert_buffer_contains(&terminal, "── Client ──");
     }
 
     #[test]
