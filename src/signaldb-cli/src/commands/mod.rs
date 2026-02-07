@@ -1,5 +1,6 @@
 pub mod api_key;
 pub mod dataset;
+pub mod query;
 pub mod tenant;
 
 use std::path::PathBuf;
@@ -44,10 +45,19 @@ enum Commands {
         #[command(subcommand)]
         action: dataset::DatasetAction,
     },
+    /// Query SignalDB via SQL
+    Query {
+        #[command(subcommand)]
+        action: query::QueryAction,
+    },
 }
 
 impl Cli {
     pub async fn run(self) -> anyhow::Result<()> {
+        if let Commands::Query { action } = self.command {
+            return action.run().await;
+        }
+
         let admin_key = self.resolve_admin_key()?;
         let base_url = format!("{}/api/v1/admin", self.url.trim_end_matches('/'));
 
@@ -66,6 +76,7 @@ impl Cli {
             Commands::Tenant { action } => action.run(&client).await,
             Commands::ApiKey { action } => action.run(&client).await,
             Commands::Dataset { action } => action.run(&client).await,
+            Commands::Query { .. } => unreachable!(),
         }
     }
 
