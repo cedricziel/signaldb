@@ -17,13 +17,18 @@ use crate::tui::widgets::text_input::{TextInput, TextInputAction};
 pub struct SelectorItem {
     pub id: String,
     pub label: String,
+    pub depth: u8,
+    pub parent_id: Option<String>,
 }
 
 /// Actions returned by the selector popup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SelectorAction {
-    /// User selected an item (returns the item's ID).
-    Selected(String),
+    /// User selected an item (returns ID and optional parent ID).
+    Selected {
+        id: String,
+        parent_id: Option<String>,
+    },
     /// User cancelled the selection (Esc).
     Cancelled,
     /// No action taken.
@@ -131,7 +136,10 @@ impl SelectorPopup {
                     && let Some(&item_idx) = self.filtered_indices.get(selected_idx)
                     && let Some(item) = self.items.get(item_idx)
                 {
-                    return SelectorAction::Selected(item.id.clone());
+                    return SelectorAction::Selected {
+                        id: item.id.clone(),
+                        parent_id: item.parent_id.clone(),
+                    };
                 }
                 SelectorAction::None
             }
@@ -147,7 +155,10 @@ impl SelectorPopup {
                         if let Some(&item_idx) = self.filtered_indices.first()
                             && let Some(item) = self.items.get(item_idx)
                         {
-                            return SelectorAction::Selected(item.id.clone());
+                            return SelectorAction::Selected {
+                                id: item.id.clone(),
+                                parent_id: item.parent_id.clone(),
+                            };
                         }
                         SelectorAction::None
                     }
@@ -202,7 +213,10 @@ impl SelectorPopup {
             .filtered_indices
             .iter()
             .filter_map(|&idx| self.items.get(idx))
-            .map(|item| ListItem::new(item.label.clone()))
+            .map(|item| {
+                let indent = "  ".repeat(usize::from(item.depth));
+                ListItem::new(format!("{indent}{}", item.label))
+            })
             .collect();
 
         let list = List::new(items)
@@ -252,14 +266,37 @@ mod tests {
             SelectorItem {
                 id: "acme".to_string(),
                 label: "Acme Corporation".to_string(),
+                depth: 0,
+                parent_id: None,
             },
             SelectorItem {
                 id: "globex".to_string(),
                 label: "Globex Industries".to_string(),
+                depth: 0,
+                parent_id: None,
             },
             SelectorItem {
                 id: "initech".to_string(),
                 label: "Initech LLC".to_string(),
+                depth: 0,
+                parent_id: None,
+            },
+        ]
+    }
+
+    fn make_hierarchy_items() -> Vec<SelectorItem> {
+        vec![
+            SelectorItem {
+                id: "acme".to_string(),
+                label: "Acme Corporation (acme)".to_string(),
+                depth: 0,
+                parent_id: None,
+            },
+            SelectorItem {
+                id: "production".to_string(),
+                label: "production".to_string(),
+                depth: 1,
+                parent_id: Some("acme".to_string()),
             },
         ]
     }
@@ -310,7 +347,29 @@ mod tests {
         selector.set_items(make_items());
 
         let action = selector.handle_key(press(KeyCode::Enter));
-        assert_eq!(action, SelectorAction::Selected("acme".to_string()));
+        assert_eq!(
+            action,
+            SelectorAction::Selected {
+                id: "acme".to_string(),
+                parent_id: None
+            }
+        );
+    }
+
+    #[test]
+    fn test_selector_enter_selects_dataset_with_parent() {
+        let mut selector = SelectorPopup::new("Select Context");
+        selector.set_items(make_hierarchy_items());
+        selector.handle_key(press(KeyCode::Down));
+
+        let action = selector.handle_key(press(KeyCode::Enter));
+        assert_eq!(
+            action,
+            SelectorAction::Selected {
+                id: "production".to_string(),
+                parent_id: Some("acme".to_string())
+            }
+        );
     }
 
     #[test]

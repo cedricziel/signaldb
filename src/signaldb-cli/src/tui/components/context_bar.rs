@@ -67,8 +67,9 @@ impl ContextBar {
 
         // Key hints segment
         let hints = match &state.permission {
-            Permission::Admin { .. } => "Ctrl+T Ctrl+D : Cmd".to_string(),
-            Permission::Tenant { .. } => "Ctrl+D : Cmd".to_string(),
+            Permission::Admin { .. } | Permission::Tenant { .. } => {
+                "Ctrl+T: Switch : Cmd".to_string()
+            }
             Permission::Unknown => "(not connected)".to_string(),
         };
         spans.push(Span::styled(hints, Style::default().fg(Color::Gray)));
@@ -147,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn test_context_bar_no_selector_hint_for_tenant_user() {
+    fn test_context_bar_tenant_shows_context_switch_hint() {
         let mut state = AppState::new(
             "http://localhost:3000".into(),
             "http://localhost:50053".into(),
@@ -163,17 +164,17 @@ mod tests {
         let buffer = terminal.backend().buffer().clone();
         let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
         assert!(
-            !content.contains("Ctrl+T"),
-            "Tenant user should not see Ctrl+T hint"
+            content.contains("Ctrl+T"),
+            "Tenant user should see Ctrl+T hint"
         );
         assert!(
-            content.contains("Ctrl+D"),
-            "Tenant user should see Ctrl+D hint"
+            !content.contains("Ctrl+D"),
+            "Tenant user should not see Ctrl+D hint"
         );
     }
 
     #[test]
-    fn test_context_bar_admin_shows_all_hints() {
+    fn test_context_bar_admin_shows_context_switch_hint() {
         let mut state = AppState::new(
             "http://localhost:3000".into(),
             "http://localhost:50053".into(),
@@ -185,7 +186,6 @@ mod tests {
 
         let terminal = render_context_bar(&state);
         assert_buffer_contains(&terminal, "Ctrl+T");
-        assert_buffer_contains(&terminal, "Ctrl+D");
     }
 
     #[test]

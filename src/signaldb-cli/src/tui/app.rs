@@ -40,8 +40,7 @@ pub struct App {
     admin: AdminPanel,
     help: HelpOverlay,
     context_bar: ContextBar,
-    tenant_selector: SelectorPopup,
-    dataset_selector: SelectorPopup,
+    context_selector: SelectorPopup,
     command_palette: CommandPalette,
     time_range_selector: TimeRangeSelector,
     flight_client: FlightSqlClient,
@@ -101,8 +100,7 @@ impl App {
             admin: AdminPanel::new(),
             help: HelpOverlay::new(),
             context_bar: ContextBar::new(),
-            tenant_selector: SelectorPopup::new("Select Tenant"),
-            dataset_selector: SelectorPopup::new("Select Dataset"),
+            context_selector: SelectorPopup::new("Select Context"),
             command_palette: CommandPalette::new(),
             time_range_selector: TimeRangeSelector::new(),
             flight_client,
@@ -160,13 +158,18 @@ impl App {
     fn handle_overlay_key(&mut self, key: KeyEvent) -> Option<Action> {
         match self.state.active_overlay {
             ActiveOverlay::Help => self.help.handle_key_event(key),
-            ActiveOverlay::TenantSelector => match self.tenant_selector.handle_key(key) {
-                SelectorAction::Selected(id) => Some(Action::SetTenant(id)),
-                SelectorAction::Cancelled => Some(Action::CloseOverlay),
-                SelectorAction::None => None,
-            },
-            ActiveOverlay::DatasetSelector => match self.dataset_selector.handle_key(key) {
-                SelectorAction::Selected(id) => Some(Action::SetDataset(id)),
+            ActiveOverlay::ContextSelector => match self.context_selector.handle_key(key) {
+                SelectorAction::Selected {
+                    id,
+                    parent_id: None,
+                } => Some(Action::SetTenant(id)),
+                SelectorAction::Selected {
+                    id,
+                    parent_id: Some(tenant),
+                } => {
+                    self.handle_action(Action::SetTenant(tenant));
+                    Some(Action::SetDataset(id))
+                }
                 SelectorAction::Cancelled => Some(Action::CloseOverlay),
                 SelectorAction::None => None,
             },
@@ -221,15 +224,9 @@ impl App {
             Action::CloseOverlay => {
                 self.state.active_overlay = ActiveOverlay::None;
             }
-            Action::OpenTenantSelector => {
-                if matches!(self.state.permission, Permission::Admin { .. }) {
-                    self.tenant_selector.set_loading(true);
-                    self.state.active_overlay = ActiveOverlay::TenantSelector;
-                }
-            }
-            Action::OpenDatasetSelector => {
-                self.dataset_selector.set_loading(true);
-                self.state.active_overlay = ActiveOverlay::DatasetSelector;
+            Action::OpenContextSelector => {
+                self.context_selector.set_loading(true);
+                self.state.active_overlay = ActiveOverlay::ContextSelector;
             }
             Action::OpenCommandPalette => {
                 self.state.active_overlay = ActiveOverlay::CommandPalette;
@@ -243,21 +240,24 @@ impl App {
                 self.flight_client.set_tenant_id(Some(tenant.clone()));
                 self.flight_client.set_dataset_id(None);
                 self.state.pending_context_refresh = true;
+                self.state.loading = true;
                 self.state.active_overlay = ActiveOverlay::None;
-                self.tenant_selector.reset();
+                self.context_selector.reset();
                 self.command_palette.reset();
             }
             Action::SetDataset(ref dataset) => {
                 self.state.active_dataset = Some(dataset.clone());
                 self.flight_client.set_dataset_id(Some(dataset.clone()));
                 self.state.pending_context_refresh = true;
+                self.state.loading = true;
                 self.state.active_overlay = ActiveOverlay::None;
-                self.dataset_selector.reset();
+                self.context_selector.reset();
                 self.command_palette.reset();
             }
             Action::SetTimeRange(ref tr) => {
                 self.state.time_range = tr.clone();
                 self.state.pending_context_refresh = true;
+                self.state.loading = true;
                 self.state.active_overlay = ActiveOverlay::None;
                 self.time_range_selector.reset();
             }
@@ -275,8 +275,11 @@ impl App {
                 self.state.active_overlay = ActiveOverlay::None;
                 self.command_palette.reset();
             }
-            Action::Refresh
-            | Action::ScrollUp
+            Action::Refresh => {
+                self.state.pending_context_refresh = true;
+                self.state.loading = true;
+            }
+            Action::ScrollUp
             | Action::ScrollDown
             | Action::Select
             | Action::Back
@@ -288,6 +291,16 @@ impl App {
 
         if self.state.active_overlay == ActiveOverlay::None {
             self.update_active_tab(&action);
+            self.sync_loading_state();
+        }
+    }
+
+    /// Set `loading` whenever any panel has a pending data operation.
+    fn sync_loading_state(&mut self) {
+        let has_pending =
+            self.traces.has_pending() || self.logs.has_pending() || self.metrics.has_pending();
+        if has_pending {
+            self.state.loading = true;
         }
     }
 
@@ -305,70 +318,96 @@ impl App {
         use super::components::selector::SelectorItem;
 
         match self.state.active_overlay {
-            ActiveOverlay::TenantSelector if self.tenant_selector.is_loading() => {
+            ActiveOverlay::ContextSelector if self.context_selector.is_loading() => {
+                let mut selector_items = Vec::new();
+                let mut tenant_names = Vec::new();
+                let mut dataset_names = Vec::new();
+
                 if let Some(client) = &self.admin_client {
                     match client.list_tenants().await {
                         Ok(tenants) => {
-                            let items: Vec<SelectorItem> = tenants
-                                .iter()
-                                .filter_map(|t| {
-                                    let id = t.get("id")?.as_str()?.to_string();
-                                    let name =
-                                        t.get("name").and_then(|n| n.as_str()).unwrap_or(&id);
-                                    let label = if name == id {
-                                        id.clone()
-                                    } else {
-                                        format!("{name} ({id})")
-                                    };
-                                    Some(SelectorItem { id, label })
-                                })
-                                .collect();
-                            self.tenant_selector.set_items(items);
+                            for tenant in &tenants {
+                                let Some(tenant_id) = tenant
+                                    .get("id")
+                                    .and_then(|value| value.as_str())
+                                    .map(ToString::to_string)
+                                else {
+                                    continue;
+                                };
 
-                            let tenant_names: Vec<String> = tenants
-                                .iter()
-                                .filter_map(|t| t.get("id")?.as_str().map(String::from))
-                                .collect();
+                                let tenant_name = tenant
+                                    .get("name")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or(&tenant_id);
+                                let tenant_label = if tenant_name == tenant_id {
+                                    tenant_id.clone()
+                                } else {
+                                    format!("{tenant_name} ({tenant_id})")
+                                };
+                                selector_items.push(SelectorItem {
+                                    id: tenant_id.clone(),
+                                    label: tenant_label,
+                                    depth: 0,
+                                    parent_id: None,
+                                });
+                                tenant_names.push(tenant_id.clone());
+
+                                if let Ok(datasets) = client.list_datasets(&tenant_id).await {
+                                    for dataset in datasets {
+                                        if let Some(dataset_name) = dataset
+                                            .get("name")
+                                            .and_then(|value| value.as_str())
+                                            .map(ToString::to_string)
+                                        {
+                                            selector_items.push(SelectorItem {
+                                                id: dataset_name.clone(),
+                                                label: dataset_name.clone(),
+                                                depth: 1,
+                                                parent_id: Some(tenant_id.clone()),
+                                            });
+                                            dataset_names.push(dataset_name);
+                                        }
+                                    }
+                                }
+                            }
+
+                            self.context_selector.set_items(selector_items);
                             self.command_palette.set_available_tenants(tenant_names);
-                        }
-                        Err(_) => {
-                            self.tenant_selector.set_items(vec![]);
-                        }
-                    }
-                }
-            }
-            ActiveOverlay::DatasetSelector if self.dataset_selector.is_loading() => {
-                let tenant_id = self.state.active_tenant.clone().unwrap_or_default();
-                if tenant_id.is_empty() {
-                    // No tenant selected — show empty list instead of loading forever
-                    self.dataset_selector.set_items(vec![]);
-                } else if let Some(client) = &self.admin_client {
-                    match client.list_datasets(&tenant_id).await {
-                        Ok(datasets) => {
-                            let items: Vec<SelectorItem> = datasets
-                                .iter()
-                                .filter_map(|d| {
-                                    let slug = d.get("name")?.as_str()?.to_string();
-                                    Some(SelectorItem {
-                                        id: slug.clone(),
-                                        label: slug,
-                                    })
-                                })
-                                .collect();
-                            self.dataset_selector.set_items(items);
-
-                            let dataset_names: Vec<String> = datasets
-                                .iter()
-                                .filter_map(|d| d.get("name")?.as_str().map(String::from))
-                                .collect();
                             self.command_palette.set_available_datasets(dataset_names);
                         }
                         Err(_) => {
-                            self.dataset_selector.set_items(vec![]);
+                            self.context_selector.set_items(vec![]);
                         }
                     }
+                } else if let Permission::Tenant {
+                    tenant_id,
+                    dataset_id,
+                    ..
+                } = &self.state.permission
+                {
+                    selector_items.push(SelectorItem {
+                        id: tenant_id.clone(),
+                        label: tenant_id.clone(),
+                        depth: 0,
+                        parent_id: None,
+                    });
+                    tenant_names.push(tenant_id.clone());
+
+                    if let Some(dataset) = dataset_id {
+                        selector_items.push(SelectorItem {
+                            id: dataset.clone(),
+                            label: dataset.clone(),
+                            depth: 1,
+                            parent_id: Some(tenant_id.clone()),
+                        });
+                        dataset_names.push(dataset.clone());
+                    }
+
+                    self.context_selector.set_items(selector_items);
+                    self.command_palette.set_available_tenants(tenant_names);
+                    self.command_palette.set_available_datasets(dataset_names);
                 } else {
-                    self.dataset_selector.set_items(vec![]);
+                    self.context_selector.set_items(vec![]);
                 }
             }
             _ => {}
@@ -681,8 +720,7 @@ impl App {
 
         match self.state.active_overlay {
             ActiveOverlay::Help => self.help.render(frame, frame.area(), &self.state),
-            ActiveOverlay::TenantSelector => self.tenant_selector.render(frame, frame.area()),
-            ActiveOverlay::DatasetSelector => self.dataset_selector.render(frame, frame.area()),
+            ActiveOverlay::ContextSelector => self.context_selector.render(frame, frame.area()),
             ActiveOverlay::CommandPalette => self.command_palette.render(frame, chunks[2]),
             ActiveOverlay::TimeRangeSelector => {
                 self.time_range_selector.render(frame, frame.area())
@@ -758,8 +796,8 @@ mod tests {
         });
         app.handle_action(Action::ToggleHelp);
         assert_eq!(app.state.active_overlay, ActiveOverlay::Help);
-        app.handle_action(Action::OpenTenantSelector);
-        assert_eq!(app.state.active_overlay, ActiveOverlay::TenantSelector);
+        app.handle_action(Action::OpenContextSelector);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::ContextSelector);
     }
 
     #[test]
@@ -771,16 +809,16 @@ mod tests {
     }
 
     #[test]
-    fn open_tenant_selector_requires_admin() {
+    fn open_context_selector_available_for_all_users() {
         let mut app = make_app();
-        app.handle_action(Action::OpenTenantSelector);
-        assert_eq!(app.state.active_overlay, ActiveOverlay::None);
+        app.handle_action(Action::OpenContextSelector);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::ContextSelector);
 
         app.state.set_permission(Permission::Admin {
             admin_key: "key".into(),
         });
-        app.handle_action(Action::OpenTenantSelector);
-        assert_eq!(app.state.active_overlay, ActiveOverlay::TenantSelector);
+        app.handle_action(Action::OpenContextSelector);
+        assert_eq!(app.state.active_overlay, ActiveOverlay::ContextSelector);
     }
 
     #[test]
@@ -841,7 +879,7 @@ mod tests {
     #[test]
     fn set_tenant_updates_state_and_closes_overlay() {
         let mut app = make_app();
-        app.state.active_overlay = ActiveOverlay::TenantSelector;
+        app.state.active_overlay = ActiveOverlay::ContextSelector;
         app.handle_action(Action::SetTenant("acme".into()));
 
         assert_eq!(app.state.active_tenant, Some("acme".into()));
@@ -853,7 +891,7 @@ mod tests {
     #[test]
     fn set_dataset_updates_state_and_closes_overlay() {
         let mut app = make_app();
-        app.state.active_overlay = ActiveOverlay::DatasetSelector;
+        app.state.active_overlay = ActiveOverlay::ContextSelector;
         app.handle_action(Action::SetDataset("prod".into()));
 
         assert_eq!(app.state.active_dataset, Some("prod".into()));

@@ -61,12 +61,14 @@ impl LogsPanel {
         self.log_table.set_error(msg);
     }
 
-    /// Take the pending query (if any), clearing it.
+    pub fn has_pending(&self) -> bool {
+        self.pending_query.is_some()
+    }
+
     pub fn take_pending_query(&mut self) -> Option<String> {
         self.pending_query.take()
     }
 
-    /// Re-queue the current query for execution (used by tick-based refresh).
     pub fn refresh(&mut self) {
         self.pending_query = Some(self.query_bar.query().to_string());
     }

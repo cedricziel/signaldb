@@ -66,6 +66,10 @@ impl TracesPanel {
         self.trace_list.set_error(msg);
     }
 
+    pub fn has_pending(&self) -> bool {
+        self.pending_search.is_some() || self.pending_trace_id.is_some()
+    }
+
     pub fn take_pending_search(&mut self) -> Option<TraceSearchParams> {
         self.pending_search.take()
     }

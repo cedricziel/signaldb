@@ -166,10 +166,8 @@ pub enum ActiveOverlay {
     None,
     /// Help panel.
     Help,
-    /// Tenant selector popup.
-    TenantSelector,
-    /// Dataset selector popup.
-    DatasetSelector,
+    /// Context selector popup (tenant + dataset hierarchy).
+    ContextSelector,
     /// Vim-style command palette.
     CommandPalette,
     /// Time range selector popup.

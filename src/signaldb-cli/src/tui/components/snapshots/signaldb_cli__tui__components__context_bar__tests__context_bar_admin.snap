@@ -2,4 +2,4 @@
 source: src/signaldb-cli/src/tui/components/context_bar.rs
 expression: content
 ---
-Tenant: acme │ Dataset: production │ ⏱ Last 15m │ Ctrl+T Ctrl+D : Cmd
+Tenant: acme │ Dataset: production │ ⏱ Last 15m │ Ctrl+T: Switch : Cmd

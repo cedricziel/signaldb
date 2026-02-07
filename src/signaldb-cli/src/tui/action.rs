@@ -21,8 +21,7 @@ pub enum Action {
     Search(String),
     Confirm,
     Cancel,
-    OpenTenantSelector,
-    OpenDatasetSelector,
+    OpenContextSelector,
     OpenCommandPalette,
     #[allow(dead_code)]
     OpenTimeRangeSelector,
@@ -45,10 +44,7 @@ pub fn map_key_to_action(key: KeyEvent) -> Action {
         KeyCode::Char('q') => Action::Quit,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
         KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Action::OpenTenantSelector
-        }
-        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Action::OpenDatasetSelector
+            Action::OpenContextSelector
         }
         KeyCode::Char(':') => Action::OpenCommandPalette,
         KeyCode::Char('1') => Action::SwitchTab(0),
@@ -111,8 +107,7 @@ mod tests {
             Action::Search("test".to_string()),
             Action::Confirm,
             Action::Cancel,
-            Action::OpenTenantSelector,
-            Action::OpenDatasetSelector,
+            Action::OpenContextSelector,
             Action::OpenCommandPalette,
             Action::OpenTimeRangeSelector,
             Action::CloseOverlay,
@@ -122,7 +117,7 @@ mod tests {
             Action::ExecuteCommand("refresh".to_string()),
             Action::None,
         ];
-        assert_eq!(actions.len(), 23);
+        assert_eq!(actions.len(), 22);
     }
 
     #[test]
@@ -187,18 +182,10 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_t_maps_to_open_tenant_selector() {
+    fn ctrl_t_maps_to_open_context_selector() {
         assert_eq!(
             map_key_to_action(press_with(KeyCode::Char('t'), KeyModifiers::CONTROL)),
-            Action::OpenTenantSelector
-        );
-    }
-
-    #[test]
-    fn ctrl_d_maps_to_open_dataset_selector() {
-        assert_eq!(
-            map_key_to_action(press_with(KeyCode::Char('d'), KeyModifiers::CONTROL)),
-            Action::OpenDatasetSelector
+            Action::OpenContextSelector
         );
     }
 
