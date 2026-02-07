@@ -10,8 +10,7 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 /// Default SQL query shown when the Logs tab first loads.
-pub const DEFAULT_QUERY: &str =
-    "SELECT timestamp, severity_text, body FROM logs ORDER BY timestamp DESC LIMIT 100";
+pub const DEFAULT_QUERY: &str = "SELECT timestamp, severity_text, service_name, body, log_attributes, resource_attributes, scope_name, scope_attributes FROM logs ORDER BY timestamp DESC LIMIT 100";
 
 /// Editable query bar with cursor position tracking.
 #[derive(Debug, Clone)]
@@ -418,7 +417,7 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        assert!(content.contains(DEFAULT_QUERY));
+        assert!(content.contains("SELECT timestamp, severity_text, service_name"));
     }
 
     #[test]

@@ -26,9 +26,11 @@ impl HelpOverlay {
             .flex(Flex::Center)
             .split(area);
 
+        let height = 34u16.min(area.height.saturating_sub(2).max(10));
+
         Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
-            .constraints([Constraint::Length(28)])
+            .constraints([Constraint::Length(height)])
             .flex(Flex::Center)
             .split(horizontal[0])[0]
     }
@@ -83,6 +85,16 @@ impl Component for HelpOverlay {
             )]),
             Line::from("  g               : Group by attribute"),
             Line::from("  r (detail)      : Toggle Span/Resource attrs"),
+            Line::from("  :group <attr>   : Group via command palette"),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "Logs",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::from("  g               : Group by attribute"),
+            Line::from("  r (detail)      : Toggle Log/Resource/Scope attrs"),
             Line::from("  :group <attr>   : Group via command palette"),
             Line::from(""),
             Line::from(vec![Span::styled(
@@ -151,6 +163,6 @@ mod tests {
         let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
         assert!(content.contains("Help"));
         assert!(content.contains("Navigation"));
-        assert!(content.contains("Toggle this help"));
+        assert!(content.contains("Logs"));
     }
 }

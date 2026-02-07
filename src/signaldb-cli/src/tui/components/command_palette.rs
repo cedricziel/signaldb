@@ -286,11 +286,20 @@ impl CommandPalette {
                         .collect();
                 }
                 "group" => {
-                    return ["none", "service", "operation", "kind", "span_kind"]
-                        .into_iter()
-                        .filter(|value| value.starts_with(arg_prefix))
-                        .map(|value| format!("group {value}"))
-                        .collect();
+                    return [
+                        "none",
+                        "service",
+                        "operation",
+                        "kind",
+                        "span_kind",
+                        "severity",
+                        "scope",
+                        "scope_name",
+                    ]
+                    .into_iter()
+                    .filter(|value| value.starts_with(arg_prefix))
+                    .map(|value| format!("group {value}"))
+                    .collect();
                 }
                 _ => return Vec::new(),
             }
@@ -416,6 +425,9 @@ mod tests {
         let completions = palette.compute_completions("group s");
         assert!(completions.contains(&"group service".to_string()));
         assert!(completions.contains(&"group span_kind".to_string()));
+        assert!(completions.contains(&"group severity".to_string()));
+        assert!(completions.contains(&"group scope".to_string()));
+        assert!(completions.contains(&"group scope_name".to_string()));
         assert!(!completions.contains(&"group operation".to_string()));
     }
 

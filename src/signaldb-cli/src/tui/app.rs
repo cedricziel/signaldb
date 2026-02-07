@@ -16,6 +16,7 @@ use super::components::context_bar::ContextBar;
 use super::components::dashboard::Dashboard;
 use super::components::help::HelpOverlay;
 use super::components::logs::LogsPanel;
+use super::components::logs::log_table::LogGroupBy;
 use super::components::metrics::MetricsPanel;
 use super::components::selector::{SelectorAction, SelectorPopup};
 use super::components::status_bar::StatusBar;
@@ -187,10 +188,14 @@ impl App {
                         Some(Action::ExecuteCommand(format!("time {label}")))
                     }
                     PaletteCommand::SetGroupBy(attr) => {
-                        if self.state.active_tab == Tab::Traces
-                            && let Some(group_by) = Self::parse_group_by_attr(&attr)
+                        if self.state.active_tab == Tab::Traces {
+                            if let Some(group_by) = Self::parse_group_by_attr(&attr) {
+                                self.traces.set_group_by(group_by);
+                            }
+                        } else if self.state.active_tab == Tab::Logs
+                            && let Some(group_by) = Self::parse_log_group_by_attr(&attr)
                         {
-                            self.traces.set_group_by(group_by);
+                            self.logs.set_group_by(group_by);
                         }
                         self.command_palette.reset();
                         Some(Action::CloseOverlay)
@@ -771,6 +776,16 @@ impl App {
             _ => None,
         }
     }
+
+    fn parse_log_group_by_attr(attr: &str) -> Option<LogGroupBy> {
+        match attr.trim().to_lowercase().as_str() {
+            "none" => Some(LogGroupBy::None),
+            "service" => Some(LogGroupBy::Service),
+            "severity" => Some(LogGroupBy::Severity),
+            "scope" | "scope_name" => Some(LogGroupBy::ScopeName),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1008,5 +1023,27 @@ mod tests {
         );
         assert_eq!(App::parse_group_by_attr("none"), Some(GroupBy::None));
         assert_eq!(App::parse_group_by_attr("unknown"), None);
+    }
+
+    #[test]
+    fn parse_log_group_by_attr_supports_aliases() {
+        assert_eq!(
+            App::parse_log_group_by_attr("service"),
+            Some(LogGroupBy::Service)
+        );
+        assert_eq!(
+            App::parse_log_group_by_attr("severity"),
+            Some(LogGroupBy::Severity)
+        );
+        assert_eq!(
+            App::parse_log_group_by_attr("scope"),
+            Some(LogGroupBy::ScopeName)
+        );
+        assert_eq!(
+            App::parse_log_group_by_attr("scope_name"),
+            Some(LogGroupBy::ScopeName)
+        );
+        assert_eq!(App::parse_log_group_by_attr("none"), Some(LogGroupBy::None));
+        assert_eq!(App::parse_log_group_by_attr("unknown"), None);
     }
 }

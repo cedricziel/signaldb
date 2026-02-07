@@ -188,6 +188,10 @@ impl Component for MetricsPanel {
             data: self.data_table.data.clone(),
             table_state: self.data_table.table_state,
             severity_col_idx: self.data_table.severity_col_idx,
+            group_by: self.data_table.group_by.clone(),
+            view_mode: self.data_table.view_mode.clone(),
+            group_summaries: self.data_table.group_summaries.clone(),
+            group_table_state: self.data_table.group_table_state,
         };
         let spinner = if state.loading {
             Some(state.spinner_char())
