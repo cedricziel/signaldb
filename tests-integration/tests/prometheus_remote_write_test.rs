@@ -122,6 +122,7 @@ async fn setup_prometheus_test() -> (axum::Router, TempDir) {
                 id: "metrics".to_string(),
                 slug: "metrics".to_string(),
                 is_default: true,
+                storage: None,
             }],
             api_keys: vec![common::config::ApiKeyConfig {
                 key: "test-api-key".to_string(),

@@ -1,5 +1,8 @@
-use crate::storage::{IcebergTableWriter, create_iceberg_writer};
+use crate::storage::{
+    IcebergTableWriter, create_iceberg_writer, create_iceberg_writer_with_catalog_manager,
+};
 use anyhow::Result;
+use common::CatalogManager;
 use common::config::Configuration;
 use common::wal::{Wal, WalEntry, bytes_to_record_batch};
 use datafusion::arrow::array::RecordBatch;
@@ -9,22 +12,51 @@ use std::sync::Arc;
 use tokio::time::{Duration, interval};
 use uuid::Uuid;
 
+/// How table writers are created
+enum WriterFactory {
+    /// Use Configuration directly (legacy approach)
+    WithConfig { config: Box<Configuration> },
+    /// Use shared CatalogManager (recommended)
+    WithCatalogManager {
+        catalog_manager: Arc<CatalogManager>,
+    },
+}
+
 /// WAL processor that reads entries and writes them to Iceberg tables
 /// Replaces the direct Parquet writing approach with transaction-based Iceberg writes
 pub struct WalProcessor {
     wal: Arc<Wal>,
-    config: Configuration,
+    writer_factory: WriterFactory,
     object_store: Arc<dyn ObjectStore>,
     // Cache of table writers per tenant/table combination
     table_writers: HashMap<String, IcebergTableWriter>,
 }
 
 impl WalProcessor {
-    /// Create a new WAL processor
+    /// Create a new WAL processor with Configuration (legacy approach)
     pub fn new(wal: Arc<Wal>, config: Configuration, object_store: Arc<dyn ObjectStore>) -> Self {
         Self {
             wal,
-            config,
+            writer_factory: WriterFactory::WithConfig {
+                config: Box::new(config),
+            },
+            object_store,
+            table_writers: HashMap::new(),
+        }
+    }
+
+    /// Create a new WAL processor with CatalogManager (recommended)
+    ///
+    /// Uses the shared Iceberg catalog from CatalogManager, ensuring consistent
+    /// metadata across all SignalDB components.
+    pub fn new_with_catalog_manager(
+        wal: Arc<Wal>,
+        catalog_manager: Arc<CatalogManager>,
+        object_store: Arc<dyn ObjectStore>,
+    ) -> Self {
+        Self {
+            wal,
+            writer_factory: WriterFactory::WithCatalogManager { catalog_manager },
             object_store,
             table_writers: HashMap::new(),
         }
@@ -107,16 +139,30 @@ impl WalProcessor {
     ) -> Result<Vec<Uuid>> {
         let writer_key = format!("{tenant_id}:{dataset_id}:{table_name}");
 
-        // Get or create table writer
+        // Get or create table writer based on the writer factory
         if !self.table_writers.contains_key(&writer_key) {
-            let writer = create_iceberg_writer(
-                &self.config,
-                self.object_store.clone(),
-                tenant_id,
-                dataset_id,
-                table_name,
-            )
-            .await?;
+            let writer = match &self.writer_factory {
+                WriterFactory::WithConfig { config } => {
+                    create_iceberg_writer(
+                        config,
+                        self.object_store.clone(),
+                        tenant_id,
+                        dataset_id,
+                        table_name,
+                    )
+                    .await?
+                }
+                WriterFactory::WithCatalogManager { catalog_manager } => {
+                    create_iceberg_writer_with_catalog_manager(
+                        catalog_manager.clone(),
+                        self.object_store.clone(),
+                        tenant_id,
+                        dataset_id,
+                        table_name,
+                    )
+                    .await?
+                }
+            };
             self.table_writers.insert(writer_key.clone(), writer);
         }
 

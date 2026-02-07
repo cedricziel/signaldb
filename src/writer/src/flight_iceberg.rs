@@ -8,6 +8,7 @@ use arrow_flight::{
     FlightData, FlightDescriptor, HandshakeRequest, HandshakeResponse, PutResult, SchemaResult,
 };
 use bytes::Bytes;
+use common::CatalogManager;
 use common::config::Configuration;
 use common::flight::schema::FlightSchemas;
 use common::wal::{Wal, WalOperation, record_batch_to_bytes};
@@ -32,6 +33,25 @@ impl IcebergWriterFlightService {
     /// Create a new IcebergWriterFlightService with Iceberg-based processing
     pub fn new(config: Configuration, object_store: Arc<dyn ObjectStore>, wal: Arc<Wal>) -> Self {
         let processor = WalProcessor::new(wal.clone(), config, object_store);
+
+        Self {
+            processor: Arc::new(Mutex::new(processor)),
+            wal,
+            schemas: FlightSchemas::new(),
+        }
+    }
+
+    /// Create a new IcebergWriterFlightService with CatalogManager
+    ///
+    /// Uses the shared Iceberg catalog from CatalogManager, ensuring consistent
+    /// metadata across all SignalDB components.
+    pub fn new_with_catalog_manager(
+        catalog_manager: Arc<CatalogManager>,
+        object_store: Arc<dyn ObjectStore>,
+        wal: Arc<Wal>,
+    ) -> Self {
+        let processor =
+            WalProcessor::new_with_catalog_manager(wal.clone(), catalog_manager, object_store);
 
         Self {
             processor: Arc::new(Mutex::new(processor)),

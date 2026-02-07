@@ -28,7 +28,6 @@
 
 use std::sync::Arc;
 
-use datafusion::common::TableReference;
 use datafusion::logical_expr::{col, lit};
 use datafusion::prelude::{DataFrame, SessionContext};
 use promql_parser::label::{MatchOp, Matchers};
@@ -36,6 +35,7 @@ use promql_parser::parser::{Expr as PromExpr, VectorSelector};
 
 use super::error::PromQLError;
 use super::types::{InstantQueryParams, RangeQueryParams};
+use crate::query::table_ref::build_table_reference;
 
 /// Default lookback delta for instant queries (5 minutes in milliseconds)
 const DEFAULT_LOOKBACK_DELTA_MS: i64 = 5 * 60 * 1000;
@@ -224,7 +224,7 @@ impl PromQLTranslator {
     ///
     /// A vector selector like `http_requests_total{job="api"}` becomes:
     /// ```sql
-    /// SELECT * FROM iceberg."tenant.dataset".metrics_sum
+    /// SELECT * FROM tenant.dataset.metrics_sum
     /// WHERE metric_name = 'http_requests_total'
     ///   AND json_extract(attributes, '$.job') = 'api'
     ///   AND timestamp BETWEEN (eval_time - lookback) AND eval_time
@@ -241,7 +241,8 @@ impl PromQLTranslator {
 
         // 2. Build table reference
         let table_ref =
-            build_table_ref(&ctx.tenant_slug, &ctx.dataset_slug, table_type.table_name())?;
+            build_table_reference(&ctx.tenant_slug, &ctx.dataset_slug, table_type.table_name())
+                .map_err(|e| PromQLError::InvalidMatcher(e.to_string()))?;
 
         // 3. Get the DataFrame for the table
         let df =
@@ -288,57 +289,6 @@ pub fn infer_table_type(metric_name: Option<&str>) -> MetricsTableType {
         Some(name) if name.ends_with("_count") => MetricsTableType::Histogram,
         _ => MetricsTableType::Gauge, // Default to gauge
     }
-}
-
-/// Build a fully qualified table reference for multi-tenant queries
-///
-/// Creates a DataFusion TableReference with:
-/// - Catalog: `{tenant_slug}` (tenant isolation)
-/// - Schema: `{dataset_slug}` (dataset isolation)
-/// - Table: The metrics table name
-///
-/// # Security
-/// Validates inputs to prevent SQL injection - only alphanumeric characters,
-/// underscores, and hyphens are allowed.
-fn build_table_ref(
-    tenant_slug: &str,
-    dataset_slug: &str,
-    table_name: &str,
-) -> Result<TableReference, PromQLError> {
-    // Validate inputs contain only safe characters
-    let is_valid_identifier = |s: &str| {
-        !s.is_empty()
-            && s.chars()
-                .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-    };
-
-    if !is_valid_identifier(tenant_slug) {
-        return Err(PromQLError::InvalidMatcher(format!(
-            "Invalid tenant_slug '{tenant_slug}': must contain only alphanumeric, underscore, or hyphen characters"
-        )));
-    }
-
-    if !is_valid_identifier(dataset_slug) {
-        return Err(PromQLError::InvalidMatcher(format!(
-            "Invalid dataset_slug '{dataset_slug}': must contain only alphanumeric, underscore, or hyphen characters"
-        )));
-    }
-
-    if !is_valid_identifier(table_name) {
-        return Err(PromQLError::InvalidMatcher(format!(
-            "Invalid table_name '{table_name}': must contain only alphanumeric, underscore, or hyphen characters"
-        )));
-    }
-
-    // Build fully qualified table reference: {tenant_slug}.{dataset_slug}.{table_name}
-    // - Catalog = tenant_slug (tenant isolation)
-    // - Schema = dataset_slug (dataset isolation)
-    // - Table = table_name
-    Ok(TableReference::full(
-        tenant_slug.to_string(),
-        dataset_slug.to_string(),
-        table_name.to_string(),
-    ))
 }
 
 /// Determine which column to query for a given PromQL label name
@@ -565,46 +515,7 @@ mod tests {
         assert_eq!(label_to_column("handler"), ("attributes", "handler"));
     }
 
-    #[test]
-    fn test_build_table_ref_valid() {
-        let result = build_table_ref("tenant1", "production", "metrics_gauge");
-        assert!(result.is_ok());
-        let table_ref = result.unwrap();
-        // TableReference::full creates: {catalog}.{schema}.{table}
-        // = {tenant}.{dataset}.{table}
-        assert_eq!(table_ref.to_string(), "tenant1.production.metrics_gauge");
-    }
-
-    #[test]
-    fn test_build_table_ref_with_underscores() {
-        let result = build_table_ref("my_tenant", "my_dataset", "metrics_sum");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_build_table_ref_with_hyphens() {
-        let result = build_table_ref("tenant-1", "prod-us-west", "metrics_histogram");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_build_table_ref_invalid_tenant() {
-        let result = build_table_ref("tenant;DROP TABLE", "production", "metrics_gauge");
-        assert!(result.is_err());
-        assert!(matches!(result, Err(PromQLError::InvalidMatcher(_))));
-    }
-
-    #[test]
-    fn test_build_table_ref_empty_tenant() {
-        let result = build_table_ref("", "production", "metrics_gauge");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_build_table_ref_invalid_dataset() {
-        let result = build_table_ref("tenant", "../../../etc/passwd", "metrics_gauge");
-        assert!(result.is_err());
-    }
+    // Note: Table reference validation tests are in crate::query::table_ref::tests
 
     #[test]
     fn test_metrics_table_type_names() {

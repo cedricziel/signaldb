@@ -214,6 +214,10 @@ pub struct DatasetConfig {
     /// Whether this dataset is the default for the tenant
     #[serde(default)]
     pub is_default: bool,
+    /// Optional storage configuration for this dataset.
+    /// If not specified, uses tenant or global storage config.
+    #[serde(default)]
+    pub storage: Option<StorageConfig>,
 }
 
 /// Tenant configuration for multi-tenancy authentication
@@ -385,6 +389,48 @@ impl Configuration {
             .tenants
             .get(tenant_id)
             .and_then(|config| config.custom_schemas.as_ref())
+    }
+
+    /// Get effective storage config for a dataset (dataset -> tenant -> global fallback).
+    ///
+    /// This allows each dataset to optionally specify its own storage backend,
+    /// falling back to the global storage configuration if not specified.
+    pub fn get_dataset_storage_config(&self, tenant_id: &str, dataset_id: &str) -> &StorageConfig {
+        // Check dataset-level storage
+        if let Some(tenant) = self.auth.tenants.iter().find(|t| t.id == tenant_id)
+            && let Some(dataset) = tenant.datasets.iter().find(|d| d.id == dataset_id)
+            && let Some(ref storage) = dataset.storage
+        {
+            return storage;
+        }
+        // Future: Check tenant-level storage here if we add it
+        // Fall back to global storage
+        &self.storage
+    }
+
+    /// Get the tenant slug for a given tenant ID.
+    ///
+    /// Returns the tenant's slug if found, otherwise returns the tenant_id as-is.
+    pub fn get_tenant_slug(&self, tenant_id: &str) -> String {
+        self.auth
+            .tenants
+            .iter()
+            .find(|t| t.id == tenant_id)
+            .map(|t| t.slug.clone())
+            .unwrap_or_else(|| tenant_id.to_string())
+    }
+
+    /// Get the dataset slug for a given tenant and dataset ID.
+    ///
+    /// Returns the dataset's slug if found, otherwise returns the dataset_id as-is.
+    pub fn get_dataset_slug(&self, tenant_id: &str, dataset_id: &str) -> String {
+        self.auth
+            .tenants
+            .iter()
+            .find(|t| t.id == tenant_id)
+            .and_then(|t| t.datasets.iter().find(|d| d.id == dataset_id))
+            .map(|d| d.slug.clone())
+            .unwrap_or_else(|| dataset_id.to_string())
     }
 }
 
