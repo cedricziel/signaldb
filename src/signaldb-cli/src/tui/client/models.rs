@@ -11,6 +11,10 @@ pub struct TraceSearchParams {
     pub max_duration: Option<String>,
     /// Maximum number of traces to return
     pub limit: Option<u32>,
+    /// Start of time range as nanoseconds since epoch.
+    pub start_time_nanos: Option<u64>,
+    /// End of time range as nanoseconds since epoch.
+    pub end_time_nanos: Option<u64>,
 }
 
 /// A single trace result from a search query.

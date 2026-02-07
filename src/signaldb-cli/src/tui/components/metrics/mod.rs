@@ -178,7 +178,8 @@ impl Component for MetricsPanel {
             .constraints([Constraint::Length(3), sparkline_height, Constraint::Min(0)])
             .split(area);
 
-        self.query_bar.render(frame, chunks[0]);
+        self.query_bar
+            .render_with_title(frame, chunks[0], Some(&state.time_range.label()));
         render_sparkline_panel(frame, chunks[1], &self.sparkline_data);
 
         let mut table_clone = LogTable {

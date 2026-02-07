@@ -146,6 +146,12 @@ impl FlightSqlClient {
         {
             conditions.push(format!("duration_nanos <= {nanos}"));
         }
+        if let Some(start_nanos) = params.start_time_nanos {
+            conditions.push(format!("start_time_unix_nano >= {start_nanos}"));
+        }
+        if let Some(end_nanos) = params.end_time_nanos {
+            conditions.push(format!("start_time_unix_nano <= {end_nanos}"));
+        }
 
         let where_clause = if conditions.is_empty() {
             String::new()
@@ -155,9 +161,14 @@ impl FlightSqlClient {
 
         let limit = params.limit.unwrap_or(20);
         let sql = format!(
-            "SELECT trace_id, service_name, span_name, duration_nanos, \
-             start_time_unix_nano, is_root \
+            "SELECT trace_id, \
+             MAX(CASE WHEN is_root THEN service_name ELSE NULL END) AS root_service, \
+             MAX(CASE WHEN is_root THEN span_name ELSE NULL END) AS root_operation, \
+             MAX(CASE WHEN is_root THEN duration_nanos ELSE NULL END) AS root_duration_nanos, \
+             MIN(start_time_unix_nano) AS start_time_unix_nano, \
+             COUNT(*) AS span_count \
              FROM traces {where_clause} \
+             GROUP BY trace_id \
              ORDER BY start_time_unix_nano DESC LIMIT {limit}"
         );
 
@@ -169,13 +180,14 @@ impl FlightSqlClient {
                 .column_by_name("trace_id")
                 .and_then(|c| c.as_any().downcast_ref::<StringArray>());
             let services = batch
-                .column_by_name("service_name")
+                .column_by_name("root_service")
                 .and_then(|c| c.as_any().downcast_ref::<StringArray>());
             let operations = batch
-                .column_by_name("span_name")
+                .column_by_name("root_operation")
                 .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-            let durations = batch.column_by_name("duration_nanos");
+            let durations = batch.column_by_name("root_duration_nanos");
             let start_times = batch.column_by_name("start_time_unix_nano");
+            let span_counts = batch.column_by_name("span_count");
 
             let (trace_ids, services, operations) = match (trace_ids, services, operations) {
                 (Some(t), Some(s), Some(o)) => (t, s, o),
@@ -185,13 +197,14 @@ impl FlightSqlClient {
             for i in 0..batch.num_rows() {
                 let duration_nanos = extract_numeric_value(durations, i).unwrap_or(0);
                 let start_nanos = extract_numeric_value(start_times, i).unwrap_or(0);
+                let count = extract_numeric_value(span_counts, i).unwrap_or(0);
 
                 results.push(TraceResult {
                     trace_id: trace_ids.value(i).to_string(),
                     root_service: services.value(i).to_string(),
                     root_operation: operations.value(i).to_string(),
                     duration_ms: duration_nanos as f64 / 1_000_000.0,
-                    span_count: 0,
+                    span_count: count as u32,
                     start_time: format_nanos_timestamp(start_nanos),
                 });
             }

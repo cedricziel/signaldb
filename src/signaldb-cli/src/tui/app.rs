@@ -125,6 +125,7 @@ impl App {
                 }
                 Event::Tick => {
                     self.state.loading = true;
+                    self.populate_selectors().await;
                     self.refresh_active_tab().await;
                     self.state.loading = false;
                 }
@@ -222,10 +223,12 @@ impl App {
             }
             Action::OpenTenantSelector => {
                 if matches!(self.state.permission, Permission::Admin { .. }) {
+                    self.tenant_selector.set_loading(true);
                     self.state.active_overlay = ActiveOverlay::TenantSelector;
                 }
             }
             Action::OpenDatasetSelector => {
+                self.dataset_selector.set_loading(true);
                 self.state.active_overlay = ActiveOverlay::DatasetSelector;
             }
             Action::OpenCommandPalette => {
@@ -295,6 +298,80 @@ impl App {
             Tab::Logs => self.logs.update(action, &mut self.state),
             Tab::Metrics => self.metrics.update(action, &mut self.state),
             Tab::Admin => self.admin.update(action, &mut self.state),
+        }
+    }
+
+    async fn populate_selectors(&mut self) {
+        use super::components::selector::SelectorItem;
+
+        match self.state.active_overlay {
+            ActiveOverlay::TenantSelector if self.tenant_selector.is_loading() => {
+                if let Some(client) = &self.admin_client {
+                    match client.list_tenants().await {
+                        Ok(tenants) => {
+                            let items: Vec<SelectorItem> = tenants
+                                .iter()
+                                .filter_map(|t| {
+                                    let id = t.get("id")?.as_str()?.to_string();
+                                    let name =
+                                        t.get("name").and_then(|n| n.as_str()).unwrap_or(&id);
+                                    let label = if name == id {
+                                        id.clone()
+                                    } else {
+                                        format!("{name} ({id})")
+                                    };
+                                    Some(SelectorItem { id, label })
+                                })
+                                .collect();
+                            self.tenant_selector.set_items(items);
+
+                            let tenant_names: Vec<String> = tenants
+                                .iter()
+                                .filter_map(|t| t.get("id")?.as_str().map(String::from))
+                                .collect();
+                            self.command_palette.set_available_tenants(tenant_names);
+                        }
+                        Err(_) => {
+                            self.tenant_selector.set_items(vec![]);
+                        }
+                    }
+                }
+            }
+            ActiveOverlay::DatasetSelector if self.dataset_selector.is_loading() => {
+                let tenant_id = self.state.active_tenant.clone().unwrap_or_default();
+                if tenant_id.is_empty() {
+                    // No tenant selected — show empty list instead of loading forever
+                    self.dataset_selector.set_items(vec![]);
+                } else if let Some(client) = &self.admin_client {
+                    match client.list_datasets(&tenant_id).await {
+                        Ok(datasets) => {
+                            let items: Vec<SelectorItem> = datasets
+                                .iter()
+                                .filter_map(|d| {
+                                    let slug = d.get("name")?.as_str()?.to_string();
+                                    Some(SelectorItem {
+                                        id: slug.clone(),
+                                        label: slug,
+                                    })
+                                })
+                                .collect();
+                            self.dataset_selector.set_items(items);
+
+                            let dataset_names: Vec<String> = datasets
+                                .iter()
+                                .filter_map(|d| d.get("name")?.as_str().map(String::from))
+                                .collect();
+                            self.command_palette.set_available_datasets(dataset_names);
+                        }
+                        Err(_) => {
+                            self.dataset_selector.set_items(vec![]);
+                        }
+                    }
+                } else {
+                    self.dataset_selector.set_items(vec![]);
+                }
+            }
+            _ => {}
         }
     }
 

@@ -16,7 +16,7 @@ use self::trace_list::TraceList;
 use super::Component;
 use crate::tui::action::Action;
 use crate::tui::client::models::{TraceResult, TraceSearchParams};
-use crate::tui::state::AppState;
+use crate::tui::state::{AppState, TimeRange};
 
 /// Focus state within the Traces tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +76,24 @@ impl TracesPanel {
 
     pub fn refresh(&mut self) {
         self.pending_search = Some(self.search_bar.parse_params());
+    }
+
+    fn apply_time_range(params: &mut TraceSearchParams, time_range: &TimeRange) {
+        match time_range {
+            TimeRange::Relative(duration) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                let end_nanos = now.as_nanos() as u64;
+                let start_nanos = end_nanos.saturating_sub(duration.as_nanos() as u64);
+                params.start_time_nanos = Some(start_nanos);
+                params.end_time_nanos = Some(end_nanos);
+            }
+            TimeRange::Absolute { start, end } => {
+                params.start_time_nanos = Some(start.timestamp_nanos_opt().unwrap_or(0) as u64);
+                params.end_time_nanos = Some(end.timestamp_nanos_opt().unwrap_or(0) as u64);
+            }
+        }
     }
 }
 
@@ -146,9 +164,12 @@ impl Component for TracesPanel {
         }
     }
 
-    fn update(&mut self, action: &Action, _state: &mut AppState) {
+    fn update(&mut self, action: &Action, state: &mut AppState) {
         if matches!(action, Action::Refresh) {
             self.refresh();
+        }
+        if let Some(params) = &mut self.pending_search {
+            Self::apply_time_range(params, &state.time_range);
         }
     }
 

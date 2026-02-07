@@ -28,7 +28,7 @@ impl HelpOverlay {
 
         Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
-            .constraints([Constraint::Length(20)])
+            .constraints([Constraint::Length(23)])
             .flex(Flex::Center)
             .split(horizontal[0])[0]
     }
@@ -69,6 +69,9 @@ impl Component for HelpOverlay {
             Line::from("  Up/Down, j/k    : Move selection"),
             Line::from("  Esc             : Back / close dialog"),
             Line::from("  F1/F2/F3        : Metrics query shortcuts"),
+            Line::from("  Ctrl+T          : Select tenant (admin)"),
+            Line::from("  Ctrl+D          : Select dataset"),
+            Line::from("  :               : Command palette"),
             Line::from("  T / K / D       : Admin sub-tabs"),
             Line::from("  c / e / d       : Admin CRUD actions"),
             Line::from("  y / n           : Confirm / cancel"),

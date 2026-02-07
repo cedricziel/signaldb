@@ -24,6 +24,7 @@ pub struct QueryBar {
     pub focused: bool,
 }
 
+#[allow(dead_code)]
 impl QueryBar {
     /// Create a new query bar pre-filled with the default query.
     pub fn new() -> Self {
@@ -121,14 +122,23 @@ impl QueryBar {
 
     /// Render the query bar into the given area.
     pub fn render(&self, frame: &mut Frame, area: Rect) {
+        self.render_with_title(frame, area, None);
+    }
+
+    pub fn render_with_title(&self, frame: &mut Frame, area: Rect, time_hint: Option<&str>) {
         let border_color = if self.focused {
             Color::Yellow
         } else {
             Color::DarkGray
         };
 
+        let title = match time_hint {
+            Some(hint) => format!(" SQL Query (Enter: run, /: focus) [{hint}] "),
+            None => " SQL Query (Enter: run, /: focus) ".to_string(),
+        };
+
         let block = Block::default()
-            .title(" SQL Query (Enter: run, /: focus) ")
+            .title(title)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
 

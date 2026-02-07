@@ -131,7 +131,8 @@ impl Component for LogsPanel {
             .constraints([Constraint::Length(3), Constraint::Min(0), detail_height])
             .split(area);
 
-        self.query_bar.render(frame, chunks[0]);
+        self.query_bar
+            .render_with_title(frame, chunks[0], Some(&state.time_range.label()));
 
         let mut table_clone = LogTable {
             data: self.log_table.data.clone(),

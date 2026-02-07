@@ -57,6 +57,7 @@ impl SelectorPopup {
     /// Set the items to display and reset the filter.
     pub fn set_items(&mut self, items: Vec<SelectorItem>) {
         self.items = items;
+        self.loading = false;
         self.filter_input.clear();
         self.update_filter();
     }
@@ -64,6 +65,10 @@ impl SelectorPopup {
     /// Set the loading state.
     pub fn set_loading(&mut self, loading: bool) {
         self.loading = loading;
+    }
+
+    pub fn is_loading(&self) -> bool {
+        self.loading
     }
 
     /// Reset the selector (clear filter and selection).
@@ -218,7 +223,7 @@ impl SelectorPopup {
 
         let horizontal = Layout::default()
             .direction(ratatui::layout::Direction::Horizontal)
-            .constraints([Constraint::Length(50)])
+            .constraints([Constraint::Length(60)])
             .flex(Flex::Center)
             .split(area);
 
