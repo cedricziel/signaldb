@@ -105,6 +105,7 @@ allow = [
     "CDLA-Permissive-2.0",
     "bzip2-1.0.6",  # Permissive license from libbz2-rs-sys (bzip2 compression)
     "MPL-2.0",  # Mozilla Public License 2.0 (progenitor codegen toolchain from Oxide)
+    "OpenSSL",  # OpenSSL License (permissive, FSF Free/Libre) - used by aws-lc-sys via rustls
 ] # List of explicitly allowed licenses
 # See https://spdx.org/licenses/ for list of possible licenses
 # [possible values: any SPDX 3.11 short identifier (+ optional exception)].
