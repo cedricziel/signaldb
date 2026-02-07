@@ -1,3 +1,4 @@
+use anyhow::Context;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::utils::batches_to_flight_data;
 use arrow_flight::{
@@ -8,6 +9,7 @@ use bytes::Bytes;
 use common::CatalogManager;
 use common::flight::schema::{FlightSchemas, create_span_batch_schema};
 use common::flight::transport::InMemoryFlightTransport;
+use common::storage::create_object_store_from_dsn;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::context::SessionContext;
 use futures::StreamExt;
@@ -125,7 +127,6 @@ impl QuerierFlightService {
     /// This constructor registers each enabled tenant as a separate DataFusion catalog,
     /// allowing queries like `SELECT * FROM tenant.dataset.traces` to work correctly.
     pub async fn new_with_catalog_manager(
-        object_store: Arc<dyn ObjectStore>,
         flight_transport: Arc<InMemoryFlightTransport>,
         catalog_manager: Arc<CatalogManager>,
     ) -> anyhow::Result<Self> {
@@ -149,32 +150,26 @@ impl QuerierFlightService {
                     catalog_manager.get_dataset_storage_config(&tenant.id, &dataset.id);
                 let url_str = &storage_config.dsn;
 
-                // Register each unique storage URL
+                // Register each unique storage URL with a scheme-appropriate object store
                 if !registered_urls.contains(url_str)
                     && let Ok(url) = url::Url::parse(url_str)
                 {
-                    // Create object store based on storage config scheme
-                    // For now, we assume the provided object_store handles the default case
-                    // Additional object stores would be created here for S3, etc.
-                    session_ctx
-                        .runtime_env()
-                        .register_object_store(&url, object_store.clone());
+                    let store = create_object_store_from_dsn(url_str).with_context(|| {
+                        format!("Failed to create object store for dataset DSN: {url_str}")
+                    })?;
+                    session_ctx.runtime_env().register_object_store(&url, store);
                     registered_urls.insert(url_str.clone());
-                    log::info!("Registered object store: {url_str}");
+                    log::info!(
+                        "Registered object store for scheme '{}': {url_str}",
+                        url.scheme()
+                    );
                 }
             }
         }
 
-        // Also register the global storage if not already registered
-        let global_url_str = &config.storage.dsn;
-        if !registered_urls.contains(global_url_str)
-            && let Ok(url) = url::Url::parse(global_url_str)
-        {
-            session_ctx
-                .runtime_env()
-                .register_object_store(&url, object_store.clone());
-            log::info!("Registered global object store: {global_url_str}");
-        }
+        // Struct field placeholder — not used at runtime (all per-dataset stores
+        // are registered above). InMemory avoids coupling to any specific DSN.
+        let object_store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
 
         // Use the shared catalog from CatalogManager
         let iceberg_catalog = catalog_manager.catalog();
