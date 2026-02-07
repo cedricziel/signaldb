@@ -122,8 +122,8 @@ promql-parser = "0.7"
 
 thiserror = "2.0.12"
 
-reqwest = { version = "0.12", features = ["json"] }
-progenitor-client = "0.11.2"
+reqwest = { version = "0.13", features = ["json"] }
+progenitor-client = "0.12.0"
 
 figment = { version = "0.10.19", features = ["toml", "env"] }
 once_cell = "1.21.1"
