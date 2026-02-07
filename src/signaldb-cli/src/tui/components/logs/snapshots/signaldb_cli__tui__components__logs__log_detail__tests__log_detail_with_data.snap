@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/components/logs/log_detail.rs
+expression: content
+---
+┌ Log Detail ──────────────────────────────────────────────────────────────────┐│timestamp: 2025-01-15 10:30:00                                                ││severity_text: WARN                                                           ││body: connection pool nearly exhausted                                        ││                                                                              ││                                                                              ││                                                                              │└──────────────────────────────────────────────────────────────────────────────┘

@@ -2,6 +2,8 @@
 
 #[allow(dead_code)] // Panels used once Dashboard tab is wired into App render
 pub mod dashboard;
+#[allow(dead_code)] // Wired into App render once Logs tab integration lands
+pub mod logs;
 pub mod status_bar;
 pub mod tabs;
 

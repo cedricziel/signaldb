@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/components/logs/log_table.rs
+expression: content
+---
+┌ Logs ────────────────────────────────────────────────────┐│Loading...                                                ││                                                          ││                                                          ││                                                          │└──────────────────────────────────────────────────────────┘

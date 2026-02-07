@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/components/logs/log_table.rs
+expression: content
+---
+┌ Logs [1/4] ──────────────────────────────────────────────────────────────────┐│timestamp                 severity_text              body                     ││                                                                              ││0                         ERROR                      disk full                ││1                         WARN                       high latency             ││2                         INFO                       request ok               ││3                         DEBUG                      parsing input            ││                                                                              ││                                                                              │└──────────────────────────────────────────────────────────────────────────────┘
