@@ -1,0 +1,6 @@
+---
+source: src/signaldb-cli/src/tui/components/dashboard/service_health.rs
+assertion_line: 281
+expression: content
+---
+┌ Service Health ────────────────────────────────┐│Service                      Status             ││                                                ││writer-1                     Healthy            ││querier-1                    Unhealthy          ││                                                ││                                                │└────────────────────────────────────────────────┘

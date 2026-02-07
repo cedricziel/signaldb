@@ -1,0 +1,6 @@
+---
+source: src/signaldb-cli/src/tui/components/dashboard/tenant_overview.rs
+assertion_line: 256
+expression: content
+---
+┌ Tenant Overview ───────────────────────────────┐│ID                  Name                        ││                                                ││acme                Acme Corp                   ││                                                ││                                                ││                                                │└────────────────────────────────────────────────┘

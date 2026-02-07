@@ -1,0 +1,6 @@
+---
+source: src/signaldb-cli/src/tui/components/dashboard/wal_status.rs
+assertion_line: 280
+expression: content
+---
+┌ WAL Status ──────────────────────────────────────────────┐│Service             Metric               Value            ││                                                          ││writer-1            pending_entries      42               ││                                                          ││                                                          ││                                                          │└──────────────────────────────────────────────────────────┘

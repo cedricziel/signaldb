@@ -1,0 +1,6 @@
+---
+source: src/signaldb-cli/src/tui/components/dashboard/pool_stats.rs
+assertion_line: 268
+expression: content
+---
+┌ Connection Pool ─────────────────────────────────────────┐│Service             Metric               Value            ││                                                          ││router-1            pool_active          5                ││                                                          ││                                                          ││                                                          │└──────────────────────────────────────────────────────────┘

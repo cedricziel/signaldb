@@ -1,5 +1,7 @@
 //! Component trait and implementations
 
+#[allow(dead_code)] // Panels used once Dashboard tab is wired into App render
+pub mod dashboard;
 pub mod status_bar;
 pub mod tabs;
 
