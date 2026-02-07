@@ -1,6 +1,6 @@
 use crate::processor::WalProcessor;
 use crate::schema_transform::{
-    FlightMetadata, determine_wal_operation, extract_flight_metadata, transform_trace_v1_to_v2,
+    FlightMetadata, determine_wal_operation, extract_flight_metadata, transform_for_signal,
 };
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::utils::flight_data_to_batches;
@@ -184,14 +184,15 @@ impl FlightService for IcebergWriterFlightService {
 
         log::debug!("Using WAL operation: {wal_operation:?}");
 
-        // Transform batches if needed based on schema version
         let transformed_batches = if let Some(ref metadata) = flight_metadata {
-            if metadata.schema_version == "v1" && metadata.signal_type.as_deref() == Some("traces")
-            {
-                // Transform v1 to v2 for traces only
+            if metadata.schema_version == "v1" {
                 let mut transformed = Vec::new();
                 for batch in batches {
-                    match transform_trace_v1_to_v2(batch) {
+                    match transform_for_signal(
+                        metadata.signal_type.as_deref(),
+                        metadata.target_table.as_deref(),
+                        batch,
+                    ) {
                         Ok(transformed_batch) => {
                             if schema_ref.is_none() {
                                 schema_ref = Some(transformed_batch.schema());
