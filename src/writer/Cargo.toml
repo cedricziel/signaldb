@@ -36,6 +36,7 @@ bytes.workspace = true
 tonic.workspace = true
 tempfile.workspace = true
 chrono.workspace = true
+hex.workspace = true
 serde_json.workspace = true
 
 # Optional dependencies for benchmarks

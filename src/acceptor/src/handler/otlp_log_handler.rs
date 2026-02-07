@@ -107,6 +107,9 @@ impl LogHandler {
             "dataset_id": tenant_context.dataset_id,
         });
 
+        // Serialize metadata for WAL storage (enables background processor routing)
+        let metadata_str = serde_json::to_string(&metadata).ok();
+
         // Step 1: Write to WAL first for durability
         let batch_bytes = match record_batch_to_bytes(&record_batch) {
             Ok(bytes) => bytes,
@@ -117,7 +120,7 @@ impl LogHandler {
         };
 
         let wal_entry_id = match wal
-            .append(WalOperation::WriteLogs, batch_bytes.clone(), None)
+            .append(WalOperation::WriteLogs, batch_bytes.clone(), metadata_str)
             .await
         {
             Ok(id) => id,

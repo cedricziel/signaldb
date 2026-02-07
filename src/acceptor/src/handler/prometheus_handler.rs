@@ -166,21 +166,33 @@ impl PrometheusHandler {
             // Convert OTLP metrics to Arrow RecordBatch
             let record_batch = otlp_metrics_to_arrow(&partitioned_request);
 
-            // Write to WAL first for durability
             let batch_bytes = record_batch_to_bytes(&record_batch).map_err(|e| {
                 tracing::error!(error = ?e, "Failed to serialize record batch");
                 PrometheusError::SerializationError(e.to_string())
             })?;
 
+            let wal_metadata = serde_json::json!({
+                "schema_version": "v1",
+                "signal_type": "metrics",
+                "metric_type": metric_type,
+                "target_table": target_table,
+                "tenant_id": tenant_context.tenant_id,
+                "dataset_id": tenant_context.dataset_id,
+            });
+            let wal_metadata_str = serde_json::to_string(&wal_metadata).ok();
+
             let wal_entry_id = wal
-                .append(WalOperation::WriteMetrics, batch_bytes.clone(), None)
+                .append(
+                    WalOperation::WriteMetrics,
+                    batch_bytes.clone(),
+                    wal_metadata_str,
+                )
                 .await
                 .map_err(|e| {
                     tracing::error!(error = ?e, "Failed to write to WAL");
                     PrometheusError::WalError(e.to_string())
                 })?;
 
-            // Flush WAL to ensure durability
             wal.flush().await.map_err(|e| {
                 tracing::error!(error = ?e, "Failed to flush WAL");
                 PrometheusError::WalError(e.to_string())
@@ -192,7 +204,6 @@ impl PrometheusHandler {
                 "Written to WAL"
             );
 
-            // Build metadata for routing
             let metadata = serde_json::json!({
                 "schema_version": "v1",
                 "signal_type": "metrics",

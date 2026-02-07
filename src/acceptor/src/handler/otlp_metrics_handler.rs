@@ -294,17 +294,30 @@ impl MetricsHandler {
             // Convert OTLP metrics to Arrow RecordBatch
             let record_batch = otlp_metrics_to_arrow(&partitioned_request);
 
-            // Step 1: Write to WAL first for durability
             let batch_bytes = match record_batch_to_bytes(&record_batch) {
                 Ok(bytes) => bytes,
                 Err(e) => {
                     log::error!("Failed to serialize record batch for {metric_type}: {e}");
-                    continue; // Skip this partition but continue with others
+                    continue;
                 }
             };
 
+            let wal_metadata = serde_json::json!({
+                "schema_version": "v1",
+                "signal_type": "metrics",
+                "metric_type": metric_type,
+                "target_table": target_table,
+                "tenant_id": tenant_context.tenant_id,
+                "dataset_id": tenant_context.dataset_id,
+            });
+            let wal_metadata_str = serde_json::to_string(&wal_metadata).ok();
+
             let wal_entry_id = match wal
-                .append(WalOperation::WriteMetrics, batch_bytes.clone(), None)
+                .append(
+                    WalOperation::WriteMetrics,
+                    batch_bytes.clone(),
+                    wal_metadata_str,
+                )
                 .await
             {
                 Ok(id) => id,
@@ -314,7 +327,6 @@ impl MetricsHandler {
                 }
             };
 
-            // Flush WAL to ensure durability
             if let Err(e) = wal.flush().await {
                 log::error!("Failed to flush WAL for {metric_type}: {e}");
                 continue;
@@ -325,8 +337,6 @@ impl MetricsHandler {
                 metric_type
             );
 
-            // Build metadata after WAL append to include wal_entry_id, tenant_id, and dataset_id
-            // This enables writer routing and idempotency checks
             let metadata = serde_json::json!({
                 "schema_version": "v1",
                 "signal_type": "metrics",

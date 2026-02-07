@@ -226,14 +226,11 @@ if [ "$MODE" = "monolithic" ]; then
     sleep 5
 
     # Start signal producer for continuous test data generation
-    echo -e "${GREEN}Starting signal producer (generates test traces every 10s)...${NC}"
+    echo -e "${GREEN}Starting signal producer (generates all signal types every 10s)...${NC}"
     (
         export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
         export OTEL_EXPORTER_OTLP_HEADERS="x-tenant-id=dev,authorization=Bearer dev-key-123"
-        while true; do
-            cargo run --bin signal-producer 2>&1 | sed 's/^/[signal-producer] /'
-            sleep 10
-        done
+        "$SIGNAL_PRODUCER_BIN" --endpoint http://localhost:4317 --signals all --interval 10 2>&1 | sed 's/^/[signal-producer] /'
     ) &
     SIGNAL_PRODUCER_PID=$!
     PIDS="$PIDS $SIGNAL_PRODUCER_PID"
@@ -290,15 +287,8 @@ else
     sleep 5
 
     # Start signal producer for continuous test data generation
-    echo -e "${GREEN}Starting signal producer (generates test traces every 10s)...${NC}"
-    (
-        export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
-        export OTEL_EXPORTER_OTLP_HEADERS="x-tenant-id=dev,authorization=Bearer dev-key-123"
-        while true; do
-            cargo run --bin signal-producer >> "${LOG_DIR}/signal-producer.log" 2>&1
-            sleep 10
-        done
-    ) &
+    echo -e "${GREEN}Starting signal producer (generates all signal types every 10s)...${NC}"
+    "$SIGNAL_PRODUCER_BIN" --endpoint http://localhost:4317 --signals all --interval 10 >> "${LOG_DIR}/signal-producer.log" 2>&1 &
     SIGNAL_PRODUCER_PID=$!
     PIDS="$PIDS $SIGNAL_PRODUCER_PID"
     echo "  • Logs: ${LOG_DIR}/signal-producer.log"
