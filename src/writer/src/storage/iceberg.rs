@@ -3,7 +3,7 @@ use anyhow::Result;
 use common::CatalogManager;
 use common::config::Configuration;
 use common::schema::{create_catalog_with_config, iceberg_schemas};
-use common::storage::storage_dsn_to_path;
+
 use datafusion::arrow::array::RecordBatch;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -221,17 +221,11 @@ impl IcebergTableWriter {
             // Create the table using the catalog
             log::info!("Creating new Iceberg table: {table_ident}");
 
-            // Construct table location based on storage configuration
-            // Extract the base path from the storage DSN (removing file:// scheme)
-            // Use slugs for consistent path naming that matches Iceberg namespace
-            let storage_base_path = storage_dsn_to_path(&config.storage.dsn)?;
-            let table_location = format!(
-                "{}/{}/{}/{}",
-                storage_base_path.trim_end_matches('/'),
-                tenant_slug,
-                dataset_slug,
-                table_name
-            );
+            // Table location must be relative to the object store root.
+            // The ObjectStoreBuilder in the Iceberg catalog is already rooted
+            // at the storage DSN path, so we only provide the relative path
+            // (tenant/dataset/table) to avoid path duplication.
+            let table_location = format!("{}/{}/{}", tenant_slug, dataset_slug, table_name);
             log::debug!("Table location for {table_name}: {table_location}");
 
             let table_creation = CreateTableBuilder::default()
@@ -307,9 +301,6 @@ impl IcebergTableWriter {
         let tenant_slug = catalog_manager.get_tenant_slug(&tenant_id);
         let dataset_slug = catalog_manager.get_dataset_slug(&tenant_id, &dataset_id);
 
-        // Get dataset-specific storage configuration
-        let storage_config = catalog_manager.get_dataset_storage_config(&tenant_id, &dataset_id);
-
         // Create namespace and table using slug-based paths
         let _namespace = Namespace::try_new(&[tenant_slug.clone(), dataset_slug.clone()])?;
 
@@ -376,15 +367,8 @@ impl IcebergTableWriter {
             // Create the table using the catalog
             log::info!("Creating new Iceberg table: {table_ident}");
 
-            // Construct table location based on dataset-specific storage configuration
-            let storage_base_path = storage_dsn_to_path(&storage_config.dsn)?;
-            let table_location = format!(
-                "{}/{}/{}/{}",
-                storage_base_path.trim_end_matches('/'),
-                tenant_slug,
-                dataset_slug,
-                table_name
-            );
+            // Table location is relative to the object store root (see new() for details)
+            let table_location = format!("{}/{}/{}", tenant_slug, dataset_slug, table_name);
             log::debug!("Table location for {table_name}: {table_location}");
 
             let table_creation = CreateTableBuilder::default()
