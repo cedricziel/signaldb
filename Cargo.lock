@@ -5080,9 +5080,9 @@ dependencies = [
 
 [[package]]
 name = "progenitor"
-version = "0.11.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2326f73d5326257514712436680ef8da4543ee47c0e9e0d501545c8909ee12e4"
+checksum = "bdc8cf6196a0139ab7b833b500f7f1acd005c91be0fe27a9e20112bf83dc9535"
 dependencies = [
  "progenitor-client",
  "progenitor-impl",
@@ -5091,14 +5091,14 @@ dependencies = [
 
 [[package]]
 name = "progenitor-client"
-version = "0.11.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71a0beb939758f229cbae70a4889c7c76a4ac0e90f0b1e7ae9b4636a927d1018"
+checksum = "ffab7b358944dba033a7b324e7558e66e6bcb1fb4705cf57f26fd5092bcae630"
 dependencies = [
  "bytes",
  "futures-core",
  "percent-encoding",
- "reqwest 0.12.28",
+ "reqwest 0.13.1",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -5106,9 +5106,9 @@ dependencies = [
 
 [[package]]
 name = "progenitor-impl"
-version = "0.11.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90f6d9109b04e005bbdec84cacec7e81cc15533f2b5dc505f0defc212d270c15"
+checksum = "ea21f106f8345d4417f3a39c90e4ff826ea777cb51579d72165d380a4d6f685d"
 dependencies = [
  "heck",
  "http 1.4.0",
@@ -5122,15 +5122,15 @@ dependencies = [
  "serde_json",
  "syn 2.0.114",
  "thiserror 2.0.18",
- "typify 0.4.3",
+ "typify 0.6.0",
  "unicode-ident",
 ]
 
 [[package]]
 name = "progenitor-macro"
-version = "0.11.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46596c574831739c661f22923fe587399c61f5e3e79b73cc9a93644c72248d84"
+checksum = "c16f9cab95e07c5e6995db8d69d86e7472688b3deedb23e52631e398fddc2470"
 dependencies = [
  "openapiv3",
  "proc-macro2",
@@ -5680,6 +5680,7 @@ dependencies = [
  "bytes",
  "encoding_rs",
  "futures-core",
+ "futures-util",
  "h2 0.4.13",
  "http 1.4.0",
  "http-body 1.0.1",
@@ -5698,15 +5699,18 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls 0.26.4",
+ "tokio-util",
  "tower 0.5.3",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
 ]
 
@@ -7643,16 +7647,6 @@ checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 
 [[package]]
 name = "typify"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7144144e97e987c94758a3017c920a027feac0799df325d6df4fc8f08d02068e"
-dependencies = [
- "typify-impl 0.4.3",
- "typify-macro 0.4.3",
-]
-
-[[package]]
-name = "typify"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6d5bcc6f62eb1fa8aa4098f39b29f93dcb914e17158b76c50360911257aa629"
@@ -7662,23 +7656,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "typify-impl"
-version = "0.4.3"
+name = "typify"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "062879d46aa4c9dfe0d33b035bbaf512da192131645d05deacb7033ec8581a09"
+checksum = "1c1dac028e66a2f46bca342cc50d8b4a8cae7faa22bb1827d0edff2ba541137e"
 dependencies = [
- "heck",
- "log",
- "proc-macro2",
- "quote",
- "regress",
- "schemars 0.8.22",
- "semver",
- "serde",
- "serde_json",
- "syn 2.0.114",
- "thiserror 2.0.18",
- "unicode-ident",
+ "typify-impl 0.6.0",
+ "typify-macro 0.6.0",
 ]
 
 [[package]]
@@ -7702,20 +7686,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "typify-macro"
-version = "0.4.3"
+name = "typify-impl"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9708a3ceb6660ba3f8d2b8f0567e7d4b8b198e2b94d093b8a6077a751425de9e"
+checksum = "2581b9356461e1c4de1fa56b8cf3867521c0f77e42a2d1d94bb18b4b73a318ef"
 dependencies = [
+ "heck",
+ "log",
  "proc-macro2",
  "quote",
+ "regress",
  "schemars 0.8.22",
  "semver",
  "serde",
  "serde_json",
- "serde_tokenstream",
  "syn 2.0.114",
- "typify-impl 0.4.3",
+ "thiserror 2.0.18",
+ "unicode-ident",
 ]
 
 [[package]]
@@ -7733,6 +7720,23 @@ dependencies = [
  "serde_tokenstream",
  "syn 2.0.114",
  "typify-impl 0.5.0",
+]
+
+[[package]]
+name = "typify-macro"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e11d93420ad3953f85e71a8662726a5fc20f2745d1c971a0102806f144157e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "schemars 0.8.22",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_tokenstream",
+ "syn 2.0.114",
+ "typify-impl 0.6.0",
 ]
 
 [[package]]
