@@ -8,6 +8,7 @@ use axum::{
     http::{Request, StatusCode},
     middleware,
 };
+use common::CatalogManager;
 use common::auth::auth_middleware;
 use common::catalog::Catalog;
 use common::config::Configuration;
@@ -96,6 +97,7 @@ async fn setup_test_services() -> TestServices {
                 id: "test-dataset".to_string(),
                 slug: "test-dataset".to_string(),
                 is_default: true,
+                storage: None,
             }],
             api_keys: vec![common::config::ApiKeyConfig {
                 key: "test-key-123".to_string(),
@@ -152,6 +154,13 @@ async fn setup_test_services() -> TestServices {
             .unwrap();
     let _writer_id = writer_bootstrap.service_id();
 
+    // Create CatalogManager for shared Iceberg catalog
+    let catalog_manager = Arc::new(
+        CatalogManager::new(config.clone())
+            .await
+            .expect("Failed to create CatalogManager"),
+    );
+
     // Pre-create Iceberg namespace so the querier's Mirror cache includes it.
     // The Mirror (in datafusion_iceberg) caches namespaces at construction time
     // and schema_exists() only checks the cache. Without this, the querier
@@ -160,9 +169,7 @@ async fn setup_test_services() -> TestServices {
     {
         use iceberg_rust::catalog::namespace::Namespace;
 
-        let iceberg_catalog = common::schema::create_catalog_with_config(&config)
-            .await
-            .expect("Failed to create Iceberg catalog for namespace pre-creation");
+        let iceberg_catalog = catalog_manager.catalog();
         let namespace =
             Namespace::try_new(&["test-tenant".to_string(), "test-dataset".to_string()]).unwrap();
         iceberg_catalog
@@ -172,15 +179,12 @@ async fn setup_test_services() -> TestServices {
         println!("Pre-created Iceberg namespace: test-tenant.test-dataset");
     }
 
-    // Start querier service with Iceberg support
-    let querier_service = QuerierFlightService::new_with_iceberg(
-        object_store.clone(),
-        flight_transport.clone(),
-        &config,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to create querier service: {}", e))
-    .unwrap();
+    // Start querier service with per-tenant catalog registration
+    let querier_service =
+        QuerierFlightService::new_with_catalog_manager(flight_transport.clone(), catalog_manager)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create querier service: {}", e))
+            .unwrap();
     let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let querier_addr = querier_listener.local_addr().unwrap();
     drop(querier_listener);
@@ -706,6 +710,7 @@ async fn test_tempo_v2_trace_endpoint() {
                 id: "test-dataset".to_string(),
                 slug: "test-dataset".to_string(),
                 is_default: true,
+                storage: None,
             }],
             api_keys: vec![common::config::ApiKeyConfig {
                 key: "test-key-123".to_string(),
@@ -797,6 +802,7 @@ async fn setup_multi_tenant_test_services() -> TestServices {
                     id: "production".to_string(),
                     slug: "production".to_string(),
                     is_default: true,
+                    storage: None,
                 }],
                 api_keys: vec![common::config::ApiKeyConfig {
                     key: "acme-key-123".to_string(),
@@ -813,6 +819,7 @@ async fn setup_multi_tenant_test_services() -> TestServices {
                     id: "production".to_string(),
                     slug: "production".to_string(),
                     is_default: true,
+                    storage: None,
                 }],
                 api_keys: vec![common::config::ApiKeyConfig {
                     key: "globex-key-456".to_string(),
@@ -886,13 +893,18 @@ async fn setup_multi_tenant_test_services() -> TestServices {
             .unwrap();
     let _writer_id = writer_bootstrap.service_id();
 
+    // Create CatalogManager for shared Iceberg catalog
+    let catalog_manager = Arc::new(
+        CatalogManager::new(config.clone())
+            .await
+            .expect("Failed to create CatalogManager"),
+    );
+
     // Pre-create Iceberg namespaces so the querier's Mirror cache includes them.
     {
         use iceberg_rust::catalog::namespace::Namespace;
 
-        let iceberg_catalog = common::schema::create_catalog_with_config(&config)
-            .await
-            .expect("Failed to create Iceberg catalog for namespace pre-creation");
+        let iceberg_catalog = catalog_manager.catalog();
         for (tenant, dataset) in &[("acme", "production"), ("globex", "production")] {
             let namespace = Namespace::try_new(&[tenant.to_string(), dataset.to_string()]).unwrap();
             iceberg_catalog
@@ -905,15 +917,12 @@ async fn setup_multi_tenant_test_services() -> TestServices {
         }
     }
 
-    // Start querier service with Iceberg support
-    let querier_service = QuerierFlightService::new_with_iceberg(
-        object_store.clone(),
-        flight_transport.clone(),
-        &config,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to create querier service: {}", e))
-    .unwrap();
+    // Start querier service with per-tenant catalog registration
+    let querier_service =
+        QuerierFlightService::new_with_catalog_manager(flight_transport.clone(), catalog_manager)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create querier service: {}", e))
+            .unwrap();
     let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let querier_addr = querier_listener.local_addr().unwrap();
     drop(querier_listener);

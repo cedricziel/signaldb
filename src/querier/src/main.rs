@@ -1,6 +1,7 @@
 use anyhow::Context;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::{Parser, Subcommand};
+use common::CatalogManager;
 use common::cli::{CommonArgs, CommonCommands, utils};
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
@@ -88,18 +89,18 @@ async fn main() -> anyhow::Result<()> {
 
     log::info!("Querier Flight service registered with ID: {service_id}");
 
-    // Initialize object store from configuration for reading historical data
-    let object_store = common::storage::create_object_store(&config.storage)
-        .context("Failed to initialize object store")?;
+    // Create shared catalog manager
+    let catalog_manager = Arc::new(
+        CatalogManager::new(config.clone())
+            .await
+            .context("Failed to create catalog manager")?,
+    );
 
-    // Create Flight query service with Iceberg support
-    let flight_service = QuerierFlightService::new_with_iceberg(
-        object_store.clone(),
-        flight_transport.clone(),
-        &config,
-    )
-    .await
-    .context("Failed to create querier flight service with Iceberg")?;
+    // Create Flight query service with CatalogManager for per-tenant catalog support
+    let flight_service =
+        QuerierFlightService::new_with_catalog_manager(flight_transport.clone(), catalog_manager)
+            .await
+            .context("Failed to create querier flight service with CatalogManager")?;
     log::info!("Starting Flight query service on {flight_addr}");
     let flight_handle = tokio::spawn(async move {
         Server::builder()

@@ -1,6 +1,7 @@
 use anyhow::Context;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::{Parser, Subcommand};
+use common::CatalogManager;
 use common::cli::{CommonArgs, CommonCommands, utils};
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
@@ -101,6 +102,13 @@ async fn main() -> anyhow::Result<()> {
 
     log::info!("Writer Flight service registered with ID: {service_id}");
 
+    // Create shared catalog manager
+    let catalog_manager = Arc::new(
+        CatalogManager::new(config.clone())
+            .await
+            .context("Failed to create catalog manager")?,
+    );
+
     // Initialize object store from configuration
     let object_store = common::storage::create_object_store(&config.storage)
         .context("Failed to initialize object store")?;
@@ -119,9 +127,12 @@ async fn main() -> anyhow::Result<()> {
     wal.start_background_flush();
     let wal = Arc::new(wal);
 
-    // Create Iceberg-based Flight ingestion service with WAL
-    let flight_service =
-        IcebergWriterFlightService::new(config.clone(), object_store.clone(), wal.clone());
+    // Create Iceberg-based Flight ingestion service with CatalogManager
+    let flight_service = IcebergWriterFlightService::new_with_catalog_manager(
+        catalog_manager,
+        object_store,
+        wal.clone(),
+    );
 
     // Start background WAL processing for Iceberg writes
     let writer_bg_handle = flight_service.start_background_processing();

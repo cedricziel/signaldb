@@ -1,3 +1,4 @@
+use anyhow::Context;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::utils::batches_to_flight_data;
 use arrow_flight::{
@@ -5,18 +6,92 @@ use arrow_flight::{
     SchemaResult, Ticket,
 };
 use bytes::Bytes;
+use common::CatalogManager;
 use common::flight::schema::{FlightSchemas, create_span_batch_schema};
 use common::flight::transport::InMemoryFlightTransport;
+use common::storage::create_object_store_from_dsn;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::catalog::{CatalogProvider, SchemaProvider};
 use datafusion::execution::context::SessionContext;
 use futures::StreamExt;
 use futures::stream::{self, BoxStream};
 use object_store::ObjectStore;
+use std::any::Any;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use crate::query::trace::TraceService;
 use crate::query::{FindTraceByIdParams, SearchQueryParams};
+
+/// A DataFusion `CatalogProvider` scoped to a single tenant.
+///
+/// Wraps a `datafusion_iceberg::IcebergCatalog` and translates dataset-slug
+/// schema lookups into the correct two-level Iceberg namespace.
+///
+/// DataFusion resolves `tenant.dataset.table` as:
+///   catalog = "tenant", schema = "dataset", table = "table"
+///
+/// But `datafusion_iceberg`'s Mirror stores namespaces under the key
+/// `"tenant.dataset"` (the full Iceberg namespace string).  This wrapper
+/// bridges the gap by prepending the tenant slug when looking up schemas.
+struct TenantCatalog {
+    tenant_slug: String,
+    inner: Arc<datafusion_iceberg::catalog::catalog::IcebergCatalog>,
+}
+
+impl std::fmt::Debug for TenantCatalog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TenantCatalog")
+            .field("tenant_slug", &self.tenant_slug)
+            .finish()
+    }
+}
+
+impl CatalogProvider for TenantCatalog {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema_names(&self) -> Vec<String> {
+        // Return only the dataset slug part for schemas belonging to this tenant
+        self.inner
+            .schema_names()
+            .into_iter()
+            .filter_map(|full_name| {
+                let prefix = format!("{}.", self.tenant_slug);
+                full_name.strip_prefix(&prefix).map(|rest| rest.to_string())
+            })
+            .collect()
+    }
+
+    fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
+        // Translate dataset slug to two-level Iceberg namespace.
+        // DataFusion asks for schema "dataset" → we look up "tenant.dataset"
+        // in the inner IcebergCatalog and create an IcebergSchema with the
+        // correct two-level namespace.
+        let full_namespace = format!("{}.{}", self.tenant_slug, name);
+        self.inner.schema(&full_namespace)
+    }
+
+    fn register_schema(
+        &self,
+        name: &str,
+        schema: Arc<dyn SchemaProvider>,
+    ) -> datafusion::error::Result<Option<Arc<dyn SchemaProvider>>> {
+        let full_namespace = format!("{}.{}", self.tenant_slug, name);
+        self.inner.register_schema(&full_namespace, schema)
+    }
+
+    fn deregister_schema(
+        &self,
+        name: &str,
+        cascade: bool,
+    ) -> datafusion::error::Result<Option<Arc<dyn SchemaProvider>>> {
+        let full_namespace = format!("{}.{}", self.tenant_slug, name);
+        self.inner.deregister_schema(&full_namespace, cascade)
+    }
+}
 
 /// Represents different types of ticket requests
 #[derive(Debug)]
@@ -77,33 +152,98 @@ impl QuerierFlightService {
         }
     }
 
-    /// Create a new QuerierFlightService with Iceberg catalog
-    pub async fn new_with_iceberg(
-        object_store: Arc<dyn ObjectStore>,
+    /// Create a new QuerierFlightService with CatalogManager and per-tenant catalogs
+    ///
+    /// This constructor registers each enabled tenant as a separate DataFusion catalog,
+    /// allowing queries like `SELECT * FROM tenant.dataset.traces` to work correctly.
+    pub async fn new_with_catalog_manager(
         flight_transport: Arc<InMemoryFlightTransport>,
-        config: &common::config::Configuration,
+        catalog_manager: Arc<CatalogManager>,
     ) -> anyhow::Result<Self> {
         let session_ctx = Arc::new(SessionContext::new());
 
-        // Register object store with DataFusion for querying Parquet files
-        let url = url::Url::parse("file://").unwrap();
-        session_ctx
-            .runtime_env()
-            .register_object_store(&url, object_store.clone());
+        // Track registered storage URLs to avoid duplicates
+        let mut registered_urls: HashSet<String> = HashSet::new();
 
-        // Create Iceberg SQL catalog using common module to ensure proper storage configuration
-        let iceberg_catalog = common::schema::create_catalog_with_config(config).await?;
+        // Collect enabled tenants once to avoid duplicating the filter logic
+        let enabled_tenants = catalog_manager.get_enabled_tenants();
 
-        // Create datafusion_iceberg catalog wrapper
-        let datafusion_catalog = datafusion_iceberg::catalog::catalog::IcebergCatalog::new(
+        // Register object stores for all configured storage backends
+        for tenant in &enabled_tenants {
+            for dataset in &tenant.datasets {
+                let storage_config =
+                    catalog_manager.get_dataset_storage_config(&tenant.id, &dataset.id);
+                let url_str = &storage_config.dsn;
+
+                // Register each unique storage URL with a scheme-appropriate object store
+                if !registered_urls.contains(url_str) {
+                    match url::Url::parse(url_str) {
+                        Ok(url) => {
+                            let store =
+                                create_object_store_from_dsn(url_str).with_context(|| {
+                                    format!(
+                                        "Failed to create object store for dataset DSN: {url_str}"
+                                    )
+                                })?;
+                            session_ctx.runtime_env().register_object_store(&url, store);
+                            registered_urls.insert(url_str.clone());
+                            log::info!(
+                                "Registered object store for scheme '{}': {url_str}",
+                                url.scheme()
+                            );
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "Skipping invalid storage DSN '{}' for tenant '{}' dataset '{}': {e}",
+                                url_str,
+                                tenant.id,
+                                dataset.id
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Struct field placeholder — not used at runtime (all per-dataset stores
+        // are registered above). InMemory avoids coupling to any specific DSN.
+        let object_store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+
+        // Use the shared catalog from CatalogManager
+        let iceberg_catalog = catalog_manager.catalog();
+
+        // Register per-tenant DataFusion catalogs (each tenant slug as a catalog name).
+        // We wrap each IcebergCatalog in a TenantCatalog so that schema lookups
+        // like `schema("dataset")` are translated to the full Iceberg namespace
+        // `"tenant.dataset"` that the Mirror cache expects.
+        for tenant in &enabled_tenants {
+            let datafusion_catalog = datafusion_iceberg::catalog::catalog::IcebergCatalog::new(
+                iceberg_catalog.clone(),
+                None,
+            )
+            .await?;
+
+            let tenant_catalog = TenantCatalog {
+                tenant_slug: tenant.slug.clone(),
+                inner: Arc::new(datafusion_catalog),
+            };
+
+            session_ctx.register_catalog(&tenant.slug, Arc::new(tenant_catalog));
+            log::info!(
+                "Registered DataFusion catalog '{}' for tenant '{}'",
+                tenant.slug,
+                tenant.id
+            );
+        }
+
+        // Also register under the "iceberg" name for backward compatibility
+        let compat_catalog = datafusion_iceberg::catalog::catalog::IcebergCatalog::new(
             iceberg_catalog.clone(),
-            None, // No specific branch
+            None,
         )
         .await?;
-
-        // Register the iceberg catalog with DataFusion
-        session_ctx.register_catalog("iceberg", Arc::new(datafusion_catalog));
-        log::info!("Registered Iceberg catalog with DataFusion");
+        session_ctx.register_catalog("iceberg", Arc::new(compat_catalog));
+        log::info!("Registered backward-compatible 'iceberg' catalog");
 
         // Create trace service for specialized trace queries
         let trace_service = TraceService::new(session_ctx.as_ref().clone(), "traces".to_string());

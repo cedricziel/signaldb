@@ -5,6 +5,7 @@ use error::QuerierError;
 
 pub mod error;
 pub mod promql;
+pub mod table_ref;
 pub mod trace;
 
 #[derive(Debug)]
