@@ -73,6 +73,16 @@ async fn main() -> Result<()> {
             .await
             .context("Failed to initialize router service bootstrap")?;
 
+    router_bootstrap
+        .catalog()
+        .sync_config_tenants(&config.auth)
+        .await
+        .context("Failed to sync config tenants to catalog")?;
+    log::info!(
+        "Synced {} config tenant(s) to catalog",
+        config.auth.tenants.len()
+    );
+
     // Create router state with catalog access and configuration
     let state = InMemoryStateImpl::new(router_bootstrap.catalog().clone(), config.clone());
 

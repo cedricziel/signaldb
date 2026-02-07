@@ -73,18 +73,16 @@ async fn main() -> Result<()> {
             .await
             .context("Failed to initialize router service bootstrap")?;
 
-    // Create router state with catalog access and configuration
-    let state = InMemoryStateImpl::new(router_bootstrap.catalog().clone(), config.clone());
-
-    // Start background service discovery polling
-    if let Some(discovery) = &config.discovery {
-        let poll_interval = discovery.poll_interval;
-        state
-            .service_registry()
-            .start_background_polling(poll_interval)
-            .await;
-        log::info!("Started service registry background polling with interval: {poll_interval:?}");
-    }
+    // Sync config-defined tenants, API keys, and datasets into the catalog
+    router_bootstrap
+        .catalog()
+        .sync_config_tenants(&config.auth)
+        .await
+        .context("Failed to sync config tenants to catalog")?;
+    log::info!(
+        "Synced {} config tenant(s) to catalog",
+        config.auth.tenants.len()
+    );
 
     let (otlp_grpc_init_tx, otlp_grpc_init_rx) = oneshot::channel::<()>();
     let (_otlp_grpc_shutdown_tx, otlp_grpc_shutdown_rx) = oneshot::channel::<()>();
@@ -157,6 +155,21 @@ async fn main() -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to register querier Flight service: {e}"))?;
     log::info!("Querier Flight service registered with ID: {querier_service_id}");
+
+    let state = InMemoryStateImpl::new_with_flight_transport(
+        router_bootstrap.catalog().clone(),
+        config.clone(),
+        (*querier_flight_transport).clone(),
+    );
+
+    if let Some(discovery) = &config.discovery {
+        let poll_interval = discovery.poll_interval;
+        state
+            .service_registry()
+            .start_background_polling(poll_interval)
+            .await;
+        log::info!("Started service registry background polling with interval: {poll_interval:?}");
+    }
 
     // Create QuerierFlightService with shared CatalogManager for per-tenant catalog support
     let querier_flight_service = QuerierFlightService::new_with_catalog_manager(
