@@ -94,14 +94,19 @@ key = "sk-acme-prod-key-123"
 name = "Production Key"
 ```
 
-### Queue
+### Compactor
 ```toml
-[queue]
-dsn = "memory://"
-max_batch_size = 1000
-max_batch_wait = "10s"
+[compactor]
+enabled = false                        # Default disabled
+tick_interval = "5m"                  # Planning cycle interval
+target_file_size_mb = 128             # Target size after compaction
+file_count_threshold = 10             # Min files to trigger compaction
+min_input_file_size_kb = 1024         # Min file size to consider (1MB)
+max_files_per_job = 50                # Max files per compaction job
 ```
-Env: `SIGNALDB_QUEUE_DSN`, `SIGNALDB_QUEUE_MAX_BATCH_SIZE`, `SIGNALDB_QUEUE_MAX_BATCH_WAIT`
+Env: `SIGNALDB__COMPACTOR__ENABLED`, `SIGNALDB__COMPACTOR__TICK_INTERVAL`, `SIGNALDB__COMPACTOR__TARGET_FILE_SIZE_MB`, `SIGNALDB__COMPACTOR__FILE_COUNT_THRESHOLD`, `SIGNALDB__COMPACTOR__MIN_INPUT_FILE_SIZE_KB`, `SIGNALDB__COMPACTOR__MAX_FILES_PER_JOB`
+
+**Note**: Environment variables for compactor use double-underscore (`__`) separator to support field names with underscores.
 
 ## Service Ports (Defaults)
 
@@ -113,6 +118,7 @@ Env: `SIGNALDB_QUEUE_DSN`, `SIGNALDB_QUEUE_MAX_BATCH_SIZE`, `SIGNALDB_QUEUE_MAX_
 | Router | HTTP | 3000 |
 | Router | Flight | 50053 |
 | Querier | Flight | 50054 |
+| Compactor | None | (background task, no network endpoint) |
 
 ## Key File
 

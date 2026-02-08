@@ -1816,10 +1816,16 @@ dependencies = [
  "anyhow",
  "clap",
  "common",
+ "datafusion",
+ "datafusion_iceberg",
  "env_logger",
  "iceberg-rust",
  "log",
+ "object_store",
+ "serde",
  "tokio",
+ "uuid",
+ "writer",
 ]
 
 [[package]]
@@ -7783,6 +7789,7 @@ dependencies = [
  "axum 0.8.8",
  "chrono",
  "common",
+ "compactor",
  "datafusion",
  "env_logger",
  "futures",
