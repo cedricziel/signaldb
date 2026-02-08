@@ -25,6 +25,7 @@ COPY src/acceptor/Cargo.toml src/acceptor/
 COPY src/router/Cargo.toml src/router/
 COPY src/writer/Cargo.toml src/writer/
 COPY src/querier/Cargo.toml src/querier/
+COPY src/compactor/Cargo.toml src/compactor/
 COPY src/common/Cargo.toml src/common/
 COPY src/tempo-api/Cargo.toml src/tempo-api/
 COPY src/signaldb-bin/Cargo.toml src/signaldb-bin/
@@ -43,6 +44,8 @@ RUN mkdir -p src/acceptor/src && echo "fn main() {}" > src/acceptor/src/main.rs 
     mkdir -p src/writer/benches && echo "fn main() {}" > src/writer/benches/iceberg_benchmarks.rs && \
     echo "fn main() {}" > src/writer/benches/connection_pool_benchmarks.rs && \
     mkdir -p src/querier/src && echo "fn main() {}" > src/querier/src/main.rs && \
+    mkdir -p src/compactor/src && echo "fn main() {}" > src/compactor/src/main.rs && \
+    echo "pub fn dummy() {}" > src/compactor/src/lib.rs && \
     mkdir -p src/common/src && echo "pub fn dummy() {}" > src/common/src/lib.rs && \
     mkdir -p src/tempo-api/src && echo "pub fn dummy() {}" > src/tempo-api/src/lib.rs && \
     mkdir -p src/signaldb-bin/src && echo "fn main() {}" > src/signaldb-bin/src/main.rs && \
@@ -60,6 +63,7 @@ RUN cargo build --release \
     --bin signaldb-router \
     --bin signaldb-writer \
     --bin signaldb-querier \
+    --bin signaldb-compactor \
     --bin signaldb
 
 # Remove dummy files and build artifacts (keep cached dependencies)
@@ -78,6 +82,7 @@ RUN cargo build --release \
     --bin signaldb-router \
     --bin signaldb-writer \
     --bin signaldb-querier \
+    --bin signaldb-compactor \
     --bin signaldb
 
 # Strip debug symbols to reduce binary size
@@ -85,6 +90,7 @@ RUN strip target/release/signaldb-acceptor && \
     strip target/release/signaldb-router && \
     strip target/release/signaldb-writer && \
     strip target/release/signaldb-querier && \
+    strip target/release/signaldb-compactor && \
     strip target/release/signaldb
 
 # Runtime base image - minimal Alpine with required libraries
@@ -136,6 +142,14 @@ COPY --from=builder /build/target/release/signaldb-querier /usr/local/bin/signal
 USER signaldb
 EXPOSE 50054
 ENTRYPOINT ["/usr/local/bin/signaldb-querier"]
+
+# Compactor service - Table compaction and maintenance
+FROM runtime-base AS compactor
+
+COPY --from=builder /build/target/release/signaldb-compactor /usr/local/bin/signaldb-compactor
+
+USER signaldb
+ENTRYPOINT ["/usr/local/bin/signaldb-compactor"]
 
 # Monolithic service - all services in one binary
 FROM runtime-base AS monolithic

@@ -103,6 +103,48 @@ impl Default for WalConfig {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompactorConfig {
+    /// Enable compactor service
+    /// Env: SIGNALDB__COMPACTOR__ENABLED
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Interval between compaction planning cycles
+    /// Env: SIGNALDB__COMPACTOR__TICK_INTERVAL
+    #[serde(with = "humantime_serde")]
+    pub tick_interval: Duration,
+
+    /// Target file size in MB after compaction
+    /// Env: SIGNALDB__COMPACTOR__TARGET_FILE_SIZE_MB
+    pub target_file_size_mb: u64,
+
+    /// Minimum number of files to trigger compaction for a partition
+    /// Env: SIGNALDB__COMPACTOR__FILE_COUNT_THRESHOLD
+    pub file_count_threshold: usize,
+
+    /// Minimum input file size in KB to consider for compaction
+    /// Env: SIGNALDB__COMPACTOR__MIN_INPUT_FILE_SIZE_KB
+    pub min_input_file_size_kb: u64,
+
+    /// Maximum files to include in a single compaction job
+    /// Env: SIGNALDB__COMPACTOR__MAX_FILES_PER_JOB
+    pub max_files_per_job: usize,
+}
+
+impl Default for CompactorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tick_interval: Duration::from_secs(300), // 5 minutes
+            target_file_size_mb: 128,
+            file_count_threshold: 10,
+            min_input_file_size_kb: 1024, // 1MB
+            max_files_per_job: 50,
+        }
+    }
+}
+
 /// Default schemas configuration for OpenTelemetry signal types
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DefaultSchemas {
@@ -350,6 +392,9 @@ pub struct Configuration {
     pub auth: AuthConfig,
     #[serde(default)]
     pub self_monitoring: SelfMonitoringConfig,
+    /// Compactor configuration
+    #[serde(default)]
+    pub compactor: CompactorConfig,
 }
 
 impl Default for Configuration {
@@ -369,6 +414,7 @@ impl Default for Configuration {
             // Auth disabled by default
             auth: AuthConfig::default(),
             self_monitoring: SelfMonitoringConfig::default(),
+            compactor: CompactorConfig::default(),
         }
     }
 }
@@ -385,7 +431,11 @@ impl Configuration {
     pub fn load() -> Result<Self, Box<figment::Error>> {
         let config = Figment::from(Serialized::defaults(Configuration::default()))
             .merge(Toml::file("signaldb.toml"))
+            // Support both single-underscore (legacy) and double-underscore (new) env vars
+            // Single underscore for simple configs: SIGNALDB_DATABASE_DSN
             .merge(Env::prefixed("SIGNALDB_").split("_"))
+            // Double underscore for fields with underscores: SIGNALDB__COMPACTOR__TICK_INTERVAL
+            .merge(Env::prefixed("SIGNALDB__").split("__"))
             .extract()
             .map_err(Box::new)?;
 
@@ -395,7 +445,11 @@ impl Configuration {
     pub fn load_from_path(path: &std::path::Path) -> Result<Self, Box<figment::Error>> {
         let config = Figment::from(Serialized::defaults(Configuration::default()))
             .merge(Toml::file(path))
+            // Support both single-underscore (legacy) and double-underscore (new) env vars
+            // Single underscore for simple configs: SIGNALDB_DATABASE_DSN
             .merge(Env::prefixed("SIGNALDB_").split("_"))
+            // Double underscore for fields with underscores: SIGNALDB__COMPACTOR__TICK_INTERVAL
+            .merge(Env::prefixed("SIGNALDB__").split("__"))
             .extract()
             .map_err(Box::new)?;
 
@@ -567,6 +621,35 @@ mod tests {
                 .unwrap();
 
             assert_eq!(config.storage.dsn, "file:///tmp/test");
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_compactor_config_env_vars() {
+        // Test compactor configuration via environment variables
+        // Uses double-underscore separator to support field names with underscores
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB__COMPACTOR__ENABLED", "true");
+            jail.set_env("SIGNALDB__COMPACTOR__TICK_INTERVAL", "10m");
+            jail.set_env("SIGNALDB__COMPACTOR__TARGET_FILE_SIZE_MB", "256");
+            jail.set_env("SIGNALDB__COMPACTOR__FILE_COUNT_THRESHOLD", "20");
+            jail.set_env("SIGNALDB__COMPACTOR__MIN_INPUT_FILE_SIZE_KB", "2048");
+            jail.set_env("SIGNALDB__COMPACTOR__MAX_FILES_PER_JOB", "100");
+
+            let config = Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                .merge(Env::prefixed("SIGNALDB__").split("__"))
+                .extract::<Configuration>()
+                .unwrap();
+
+            assert!(config.compactor.enabled);
+            assert_eq!(config.compactor.tick_interval, Duration::from_secs(600)); // 10 minutes
+            assert_eq!(config.compactor.target_file_size_mb, 256);
+            assert_eq!(config.compactor.file_count_threshold, 20);
+            assert_eq!(config.compactor.min_input_file_size_kb, 2048);
+            assert_eq!(config.compactor.max_files_per_job, 100);
 
             Ok(())
         });

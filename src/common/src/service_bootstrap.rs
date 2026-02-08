@@ -15,6 +15,7 @@ pub enum ServiceType {
     Writer,
     Router,
     Querier,
+    Compactor,
 }
 
 impl std::fmt::Display for ServiceType {
@@ -24,6 +25,7 @@ impl std::fmt::Display for ServiceType {
             ServiceType::Writer => "writer",
             ServiceType::Router => "router",
             ServiceType::Querier => "querier",
+            ServiceType::Compactor => "compactor",
         };
         write!(f, "{s}")
     }
@@ -251,6 +253,7 @@ impl ServiceBootstrap {
             ],
             ServiceType::Router => vec![ServiceCapability::Routing],
             ServiceType::Querier => vec![ServiceCapability::QueryExecution],
+            ServiceType::Compactor => vec![ServiceCapability::StorageMaintenance],
         }
     }
 

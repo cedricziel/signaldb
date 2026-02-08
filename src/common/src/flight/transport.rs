@@ -18,6 +18,8 @@ pub enum ServiceCapability {
     Storage,
     /// Service provides Kafka-compatible ingestion
     KafkaIngestion,
+    /// Service provides storage maintenance (compaction, cleanup)
+    StorageMaintenance,
 }
 
 /// Metadata about a registered Flight service

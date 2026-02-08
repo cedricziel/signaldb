@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "src/acceptor",
     "src/common",
+    "src/compactor",
     "src/grafana-plugin/backend",
     "src/querier",
     "src/router",
@@ -21,6 +22,7 @@ members = [
 default-members = [
     "src/acceptor",
     "src/common",
+    "src/compactor",
     "src/querier",
     "src/router",
     "src/signal-producer",
@@ -42,6 +44,7 @@ rust-version = "1.88.0"
 [workspace.dependencies]
 acceptor = { path = "src/acceptor", features = ["testing"] }
 common = { path = "src/common" }
+compactor = { path = "src/compactor" }
 signaldb-api = { path = "src/signaldb-api" }
 signaldb-sdk = { path = "src/signaldb-sdk" }
 tempo-api = { path = "src/tempo-api" }

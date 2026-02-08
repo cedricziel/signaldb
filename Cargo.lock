@@ -1810,6 +1810,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "compactor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "common",
+ "env_logger",
+ "iceberg-rust",
+ "log",
+ "tokio",
+]
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
