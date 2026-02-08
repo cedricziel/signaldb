@@ -144,12 +144,13 @@ services:
     environment:
       SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
       SIGNALDB_DISCOVERY_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
-      SIGNALDB_COMPACTOR_ENABLED: "true"
-      SIGNALDB_COMPACTOR_TICK_INTERVAL: "5m"
-      SIGNALDB_COMPACTOR_TARGET_FILE_SIZE_MB: "128"
-      SIGNALDB_COMPACTOR_FILE_COUNT_THRESHOLD: "10"
-      SIGNALDB_COMPACTOR_MIN_INPUT_FILE_SIZE_KB: "1024"
-      SIGNALDB_COMPACTOR_MAX_FILES_PER_JOB: "50"
+      # Compactor config uses double-underscore separator for fields with underscores
+      SIGNALDB__COMPACTOR__ENABLED: "true"
+      SIGNALDB__COMPACTOR__TICK_INTERVAL: "5m"
+      SIGNALDB__COMPACTOR__TARGET_FILE_SIZE_MB: "128"
+      SIGNALDB__COMPACTOR__FILE_COUNT_THRESHOLD: "10"
+      SIGNALDB__COMPACTOR__MIN_INPUT_FILE_SIZE_KB: "1024"
+      SIGNALDB__COMPACTOR__MAX_FILES_PER_JOB: "50"
       # S3/MinIO storage configuration
       SIGNALDB_STORAGE_DSN: "s3://signaldb/data"
       AWS_ENDPOINT_URL: "http://minio:9000"
