@@ -71,6 +71,14 @@ path = "tests/compactor/basic_compaction.rs"
 name = "concurrent_writes"
 path = "tests/compactor/concurrent_writes.rs"
 
+[[test]]
+name = "logs_compaction"
+path = "tests/compactor/logs_compaction.rs"
+
+[[test]]
+name = "metrics_compaction"
+path = "tests/compactor/metrics_compaction.rs"
+
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory
 ignored = ["acceptor", "anyhow", "arrow-flight", "compactor", "datafusion", "futures", "iceberg-rust", "log", "opentelemetry-proto", "querier", "router", "tokio", "tokio-stream", "tonic", "writer"]
