@@ -109,6 +109,35 @@ impl ParquetRewriter {
         Ok((output_files, input_size, output_size))
     }
 
+    /// Get sort columns for a given table type
+    ///
+    /// Returns a list of (column_name, ascending, nulls_first) tuples
+    /// for sorting compacted data. Returns empty vector for unknown tables.
+    fn get_sort_columns(table_name: &str) -> Vec<(&str, bool, bool)> {
+        match table_name {
+            "traces" => vec![("timestamp", true, true), ("trace_id", true, true)],
+            "logs" => vec![
+                ("timestamp", true, true),
+                ("service_name", true, true),
+                ("severity_text", true, true),
+            ],
+            // All 5 metrics types use the same sort pattern
+            "metrics_gauge"
+            | "metrics_sum"
+            | "metrics_histogram"
+            | "metrics_exponential_histogram"
+            | "metrics_summary" => vec![
+                ("timestamp", true, true),
+                ("metric_name", true, true),
+                ("service_name", true, true),
+            ],
+            _ => {
+                log::warn!("No sort configuration for table {table_name}, data will not be sorted");
+                vec![]
+            }
+        }
+    }
+
     /// Read and merge data from a partition
     async fn read_and_merge_partition(
         &self,
@@ -138,15 +167,17 @@ impl ParquetRewriter {
             .context("Failed to read table")?;
 
         // Sort the data for optimal query performance
-        // For traces table: sort by timestamp, trace_id
-        let sorted_df = if table_name == "traces" {
-            df.sort(vec![
-                col("timestamp").sort(true, true), // ascending, nulls first
-                col("trace_id").sort(true, true),
-            ])
-            .context("Failed to sort data by timestamp and trace_id")?
+        let sort_cols = Self::get_sort_columns(table_name);
+        let sorted_df = if !sort_cols.is_empty() {
+            let sort_exprs: Vec<_> = sort_cols
+                .into_iter()
+                .map(|(col_name, asc, nulls_first)| col(col_name).sort(asc, nulls_first))
+                .collect();
+
+            df.sort(sort_exprs)
+                .with_context(|| format!("Failed to sort {table_name} table"))?
         } else {
-            df // No sorting for other tables yet
+            df
         };
 
         // Collect the data into RecordBatches
