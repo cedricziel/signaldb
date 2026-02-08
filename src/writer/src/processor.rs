@@ -1,9 +1,6 @@
-use crate::storage::{
-    IcebergTableWriter, create_iceberg_writer, create_iceberg_writer_with_catalog_manager,
-};
+use crate::storage::IcebergTableWriter;
 use anyhow::Result;
 use common::CatalogManager;
-use common::config::Configuration;
 use common::wal::{Wal, WalEntry, bytes_to_record_batch};
 use datafusion::arrow::array::RecordBatch;
 use object_store::ObjectStore;
@@ -12,51 +9,26 @@ use std::sync::Arc;
 use tokio::time::{Duration, interval};
 use uuid::Uuid;
 
-/// How table writers are created
-enum WriterFactory {
-    /// Use Configuration directly (legacy approach)
-    WithConfig { config: Box<Configuration> },
-    /// Use shared CatalogManager (recommended)
-    WithCatalogManager {
-        catalog_manager: Arc<CatalogManager>,
-    },
-}
-
 /// WAL processor that reads entries and writes them to Iceberg tables
 /// Replaces the direct Parquet writing approach with transaction-based Iceberg writes
 pub struct WalProcessor {
     wal: Arc<Wal>,
-    writer_factory: WriterFactory,
+    catalog_manager: Arc<CatalogManager>,
     object_store: Arc<dyn ObjectStore>,
     // Cache of table writers per tenant/table combination
     table_writers: HashMap<String, IcebergTableWriter>,
 }
 
 impl WalProcessor {
-    /// Create a new WAL processor with Configuration (legacy approach)
-    pub fn new(wal: Arc<Wal>, config: Configuration, object_store: Arc<dyn ObjectStore>) -> Self {
-        Self {
-            wal,
-            writer_factory: WriterFactory::WithConfig {
-                config: Box::new(config),
-            },
-            object_store,
-            table_writers: HashMap::new(),
-        }
-    }
-
-    /// Create a new WAL processor with CatalogManager (recommended)
-    ///
-    /// Uses the shared Iceberg catalog from CatalogManager, ensuring consistent
-    /// metadata across all SignalDB components.
-    pub fn new_with_catalog_manager(
+    /// Create a new WAL processor with shared CatalogManager.
+    pub fn new(
         wal: Arc<Wal>,
         catalog_manager: Arc<CatalogManager>,
         object_store: Arc<dyn ObjectStore>,
     ) -> Self {
         Self {
             wal,
-            writer_factory: WriterFactory::WithCatalogManager { catalog_manager },
+            catalog_manager,
             object_store,
             table_writers: HashMap::new(),
         }
@@ -139,30 +111,16 @@ impl WalProcessor {
     ) -> Result<Vec<Uuid>> {
         let writer_key = format!("{tenant_id}:{dataset_id}:{table_name}");
 
-        // Get or create table writer based on the writer factory
+        // Get or create table writer
         if !self.table_writers.contains_key(&writer_key) {
-            let writer = match &self.writer_factory {
-                WriterFactory::WithConfig { config } => {
-                    create_iceberg_writer(
-                        config,
-                        self.object_store.clone(),
-                        tenant_id,
-                        dataset_id,
-                        table_name,
-                    )
-                    .await?
-                }
-                WriterFactory::WithCatalogManager { catalog_manager } => {
-                    create_iceberg_writer_with_catalog_manager(
-                        catalog_manager.clone(),
-                        self.object_store.clone(),
-                        tenant_id,
-                        dataset_id,
-                        table_name,
-                    )
-                    .await?
-                }
-            };
+            let writer = IcebergTableWriter::new(
+                &self.catalog_manager,
+                self.object_store.clone(),
+                tenant_id.to_string(),
+                dataset_id.to_string(),
+                table_name.to_string(),
+            )
+            .await?;
             self.table_writers.insert(writer_key.clone(), writer);
         }
 
@@ -332,7 +290,6 @@ pub struct ProcessorStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common::config::Configuration;
     use common::wal::{Wal, WalConfig, WalOperation};
     use object_store::memory::InMemory;
     use tempfile::tempdir;
@@ -352,10 +309,10 @@ mod tests {
             compaction_threshold: 0.5,
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
-        let config = Configuration::default();
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
 
-        let processor = WalProcessor::new(wal, config, object_store);
+        let processor = WalProcessor::new(wal, catalog_manager, object_store);
         assert_eq!(processor.table_writers.len(), 0);
 
         let stats = processor.get_stats();
@@ -377,10 +334,10 @@ mod tests {
             compaction_threshold: 0.5,
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
-        let config = Configuration::default();
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
 
-        let processor = WalProcessor::new(wal, config, object_store);
+        let processor = WalProcessor::new(wal, catalog_manager, object_store);
 
         // Test different operation types
         let entry = WalEntry {
@@ -439,10 +396,10 @@ mod tests {
             compaction_threshold: 0.5,
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
-        let config = Configuration::default();
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
 
-        let mut processor = WalProcessor::new(wal, config, object_store);
+        let mut processor = WalProcessor::new(wal, catalog_manager, object_store);
 
         // Should handle empty entries gracefully
         let result = processor.process_pending_entries().await;

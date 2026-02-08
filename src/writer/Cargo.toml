@@ -18,7 +18,6 @@ object_store.workspace = true
 
 # Iceberg table format support
 iceberg-rust.workspace = true
-iceberg-sql-catalog.workspace = true
 datafusion_iceberg.workspace = true
 
 tokio.workspace = true

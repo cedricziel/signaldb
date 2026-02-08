@@ -1,4 +1,5 @@
 use anyhow::Result;
+use common::CatalogManager;
 use common::config::{Configuration, DefaultSchemas, SchemaConfig, StorageConfig};
 use datafusion::arrow::array::{
     Date32Array, Float64Array, Int32Array, RecordBatch, StringArray, TimestampNanosecondArray,
@@ -6,7 +7,20 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use object_store::memory::InMemory;
 use std::sync::Arc;
-use writer::create_iceberg_writer;
+use writer::IcebergTableWriter;
+
+async fn create_writer(config: Configuration) -> Result<IcebergTableWriter> {
+    let catalog_manager = CatalogManager::new(config).await?;
+    let object_store = Arc::new(InMemory::new());
+    IcebergTableWriter::new(
+        &catalog_manager,
+        object_store,
+        "test_tenant".to_string(),
+        "test_dataset".to_string(),
+        "metrics_gauge".to_string(),
+    )
+    .await
+}
 
 #[tokio::test]
 async fn test_transaction_basic_flow() -> Result<()> {
@@ -28,16 +42,9 @@ async fn test_transaction_basic_flow() -> Result<()> {
         ..Default::default()
     };
 
-    let object_store = Arc::new(InMemory::new());
-    let mut writer = create_iceberg_writer(
-        &config,
-        object_store,
-        "test_tenant",
-        "test_dataset",
-        "metrics_gauge",
-    )
-    .await
-    .expect("Failed to create Iceberg writer");
+    let mut writer = create_writer(config)
+        .await
+        .expect("Failed to create Iceberg writer");
 
     // Test 1: Begin transaction
     assert!(!writer.has_active_transaction());
@@ -131,15 +138,7 @@ async fn test_transaction_rollback() -> Result<()> {
         ..Default::default()
     };
 
-    let object_store = Arc::new(InMemory::new());
-    let mut writer = create_iceberg_writer(
-        &config,
-        object_store,
-        "test_tenant",
-        "test_dataset",
-        "metrics_gauge",
-    )
-    .await?;
+    let mut writer = create_writer(config).await?;
 
     // Begin transaction
     let txn_id = writer.begin_transaction().await?;
@@ -234,15 +233,7 @@ async fn test_transaction_errors() -> Result<()> {
         ..Default::default()
     };
 
-    let object_store = Arc::new(InMemory::new());
-    let mut writer = create_iceberg_writer(
-        &config,
-        object_store,
-        "test_tenant",
-        "test_dataset",
-        "metrics_gauge",
-    )
-    .await?;
+    let mut writer = create_writer(config).await?;
 
     // Test 1: Cannot begin transaction while one is active
     let txn_id1 = writer.begin_transaction().await?;
@@ -287,15 +278,7 @@ async fn test_write_batches_creates_transaction() -> Result<()> {
         ..Default::default()
     };
 
-    let object_store = Arc::new(InMemory::new());
-    let mut writer = create_iceberg_writer(
-        &config,
-        object_store,
-        "test_tenant",
-        "test_dataset",
-        "metrics_gauge",
-    )
-    .await?;
+    let mut writer = create_writer(config).await?;
 
     // Create test batches
     let schema = Arc::new(Schema::new(vec![

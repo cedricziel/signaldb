@@ -1,5 +1,5 @@
 use common::config::SchemaConfig;
-use common::schema::create_catalog;
+use common::iceberg::create_catalog;
 
 #[tokio::test]
 async fn test_iceberg_sql_catalog_basic_operations() {

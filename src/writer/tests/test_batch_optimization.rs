@@ -1,3 +1,4 @@
+use common::CatalogManager;
 use common::config::{Configuration, DefaultSchemas, SchemaConfig, StorageConfig};
 use datafusion::arrow::array::{
     Date32Array, Float64Array, Int32Array, RecordBatch, StringArray, TimestampNanosecondArray,
@@ -5,7 +6,7 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use object_store::memory::InMemory;
 use std::sync::Arc;
-use writer::{BatchOptimizationConfig, create_iceberg_writer};
+use writer::{BatchOptimizationConfig, IcebergTableWriter};
 
 /// Create test configuration for optimization tests
 fn create_test_config() -> Configuration {
@@ -25,6 +26,19 @@ fn create_test_config() -> Configuration {
         },
         ..Default::default()
     }
+}
+
+async fn create_test_writer(config: Configuration) -> anyhow::Result<IcebergTableWriter> {
+    let catalog_manager = CatalogManager::new(config).await?;
+    let object_store = Arc::new(InMemory::new());
+    IcebergTableWriter::new(
+        &catalog_manager,
+        object_store,
+        "test_tenant".to_string(),
+        "test_dataset".to_string(),
+        "metrics_gauge".to_string(),
+    )
+    .await
 }
 
 /// Create test data with specified number of rows
@@ -115,17 +129,7 @@ async fn test_default_batch_config() {
 #[tokio::test]
 async fn test_custom_batch_config() {
     let config = create_test_config();
-    let object_store = Arc::new(InMemory::new());
-
-    // Create writer
-    let result = create_iceberg_writer(
-        &config,
-        object_store,
-        "test_tenant",
-        "test_dataset",
-        "metrics_gauge",
-    )
-    .await;
+    let result = create_test_writer(config).await;
 
     if let Ok(mut writer) = result {
         // Test initial default config
@@ -161,16 +165,7 @@ async fn test_custom_batch_config() {
 #[tokio::test]
 async fn test_batch_splitting_logic() {
     let config = create_test_config();
-    let object_store = Arc::new(InMemory::new());
-
-    let result = create_iceberg_writer(
-        &config,
-        object_store,
-        "test_tenant",
-        "test_dataset",
-        "metrics_gauge",
-    )
-    .await;
+    let result = create_test_writer(config).await;
 
     if let Ok(mut writer) = result {
         // Configure for small batches to force splitting
@@ -203,16 +198,7 @@ async fn test_batch_splitting_logic() {
 #[tokio::test]
 async fn test_batch_size_optimization() {
     let config = create_test_config();
-    let object_store = Arc::new(InMemory::new());
-
-    let result = create_iceberg_writer(
-        &config,
-        object_store,
-        "test_tenant",
-        "test_dataset",
-        "metrics_gauge",
-    )
-    .await;
+    let result = create_test_writer(config).await;
 
     if let Ok(mut writer) = result {
         // Test different batch size configurations
@@ -243,16 +229,7 @@ async fn test_batch_size_optimization() {
 #[tokio::test]
 async fn test_memory_optimization() {
     let config = create_test_config();
-    let object_store = Arc::new(InMemory::new());
-
-    let result = create_iceberg_writer(
-        &config,
-        object_store,
-        "test_tenant",
-        "test_dataset",
-        "metrics_gauge",
-    )
-    .await;
+    let result = create_test_writer(config).await;
 
     if let Ok(mut writer) = result {
         // Configure for memory-based optimization
@@ -281,16 +258,7 @@ async fn test_memory_optimization() {
 #[tokio::test]
 async fn test_concurrent_batch_config() {
     let config = create_test_config();
-    let object_store = Arc::new(InMemory::new());
-
-    let result = create_iceberg_writer(
-        &config,
-        object_store,
-        "test_tenant",
-        "test_dataset",
-        "metrics_gauge",
-    )
-    .await;
+    let result = create_test_writer(config).await;
 
     if let Ok(mut writer) = result {
         // Test different concurrency levels

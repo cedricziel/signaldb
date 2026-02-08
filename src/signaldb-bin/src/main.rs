@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
     let writer_wal = Arc::new(writer_wal);
 
     // Create Iceberg-based Flight ingestion service with CatalogManager
-    let writer_flight_service = IcebergWriterFlightService::new_with_catalog_manager(
+    let writer_flight_service = IcebergWriterFlightService::new(
         catalog_manager.clone(),
         object_store.clone(),
         writer_wal.clone(),

@@ -1,8 +1,6 @@
 use crate::schema_transform::transform_trace_v1_to_v2;
 use anyhow::Result;
 use common::CatalogManager;
-use common::config::Configuration;
-use common::schema::{create_catalog_with_config, iceberg_schemas};
 
 use datafusion::arrow::array::RecordBatch;
 use datafusion::execution::context::SessionContext;
@@ -10,9 +8,7 @@ use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::SessionConfig;
 use datafusion_iceberg::DataFusionTable;
 use iceberg_rust::catalog::Catalog as IcebergRustCatalog;
-use iceberg_rust::catalog::create::CreateTableBuilder;
 use iceberg_rust::catalog::identifier::Identifier;
-use iceberg_rust::catalog::namespace::Namespace;
 use iceberg_rust::table::Table;
 use object_store::ObjectStore;
 use std::sync::Arc;
@@ -128,265 +124,16 @@ pub struct IcebergTableWriter {
 impl IcebergTableWriter {
     /// Create a new IcebergTableWriter for a specific table
     pub async fn new(
-        config: &Configuration,
+        catalog_manager: &CatalogManager,
         object_store: Arc<dyn ObjectStore>,
         tenant_id: String,
         dataset_id: String,
         table_name: String,
     ) -> Result<Self> {
-        let catalog = create_catalog_with_config(config).await?;
-
-        // Resolve slugs from config for Iceberg namespace paths
-        let tenant_slug = config
-            .auth
-            .tenants
-            .iter()
-            .find(|t| t.id == tenant_id)
-            .map(|t| t.slug.clone())
-            .unwrap_or_else(|| tenant_id.clone());
-
-        let dataset_slug = config
-            .auth
-            .tenants
-            .iter()
-            .find(|t| t.id == tenant_id)
-            .and_then(|t| t.datasets.iter().find(|d| d.id == dataset_id))
-            .map(|d| d.slug.clone())
-            .unwrap_or_else(|| dataset_id.clone());
-
-        // Create namespace and table using slug-based paths
-        let _namespace = Namespace::try_new(&[tenant_slug.clone(), dataset_slug.clone()])?;
-
-        // Namespace is implicitly created when tables are created via the SQL catalog
-        log::debug!("Using namespace: {_namespace:?}");
-
-        let table_ident =
-            Identifier::new(&[tenant_slug.clone(), dataset_slug.clone()], &table_name);
-
-        // Check if table exists, create if not
-        let table = if catalog.tabular_exists(&table_ident).await? {
-            match catalog.clone().load_tabular(&table_ident).await? {
-                iceberg_rust::catalog::tabular::Tabular::Table(table) => table,
-                _ => {
-                    return Err(anyhow::anyhow!(
-                        "Expected table but found different tabular type"
-                    ));
-                }
-            }
-        } else {
-            // Create table with appropriate schema based on table name
-            // Schema functions return iceberg-rust types directly
-            let schema = match table_name.as_str() {
-                "traces" => {
-                    let s = iceberg_schemas::create_traces_schema()?;
-                    log::debug!(
-                        "Creating traces table with {} fields: {:?}",
-                        s.fields().len(),
-                        s.fields()
-                            .iter()
-                            .map(|f| f.name.as_str())
-                            .collect::<Vec<_>>()
-                    );
-                    s
-                }
-                "logs" => iceberg_schemas::create_logs_schema()?,
-                "metrics_gauge" => iceberg_schemas::create_metrics_gauge_schema()?,
-                "metrics_sum" => iceberg_schemas::create_metrics_sum_schema()?,
-                "metrics_histogram" => iceberg_schemas::create_metrics_histogram_schema()?,
-                _ => {
-                    return Err(anyhow::anyhow!("Unknown table name: {}", table_name));
-                }
-            };
-
-            let partition_spec = match table_name.as_str() {
-                "traces" => iceberg_schemas::create_traces_partition_spec()?,
-                "logs" => iceberg_schemas::create_logs_partition_spec()?,
-                "metrics_gauge" | "metrics_sum" | "metrics_histogram" => {
-                    iceberg_schemas::create_metrics_partition_spec()?
-                }
-                _ => {
-                    return Err(anyhow::anyhow!(
-                        "Unknown table name for partition spec: {}",
-                        table_name
-                    ));
-                }
-            };
-
-            log::debug!(
-                "Partition spec for {}: {} fields",
-                table_name,
-                partition_spec.fields().len()
-            );
-
-            // Create the table using the catalog
-            log::info!("Creating new Iceberg table: {table_ident}");
-
-            // Table location must be relative to the object store root.
-            // The ObjectStoreBuilder in the Iceberg catalog is already rooted
-            // at the storage DSN path, so we only provide the relative path
-            // (tenant/dataset/table) to avoid path duplication.
-            let table_location = format!("{}/{}/{}", tenant_slug, dataset_slug, table_name);
-            log::debug!("Table location for {table_name}: {table_location}");
-
-            let table_creation = CreateTableBuilder::default()
-                .with_name(table_name.clone())
-                .with_schema(schema)
-                .with_partition_spec(partition_spec)
-                .with_location(table_location)
-                .create()
-                .map_err(|e| anyhow::anyhow!("Failed to build CreateTable: {}", e))?;
-
-            catalog
-                .clone()
-                .create_table(table_ident.clone(), table_creation)
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!("Failed to create Iceberg table {}: {}", table_ident, e)
-                })?
-        };
-
-        // Create DataFusion session context
-        let runtime_env = Arc::new(RuntimeEnv::default());
-        let session_ctx = SessionContext::new_with_config_rt(SessionConfig::default(), runtime_env);
-
-        // The table is already in the correct format for use with datafusion_iceberg
-        log::info!(
-            "Successfully created/loaded Iceberg table: {} for tenant '{tenant_id}' dataset '{dataset_id}'",
-            table.identifier()
-        );
-
-        let table_metadata = table.metadata();
-        let current_schema = table.current_schema(None)?;
-        log::debug!("Table location: {}", table_metadata.location);
-        log::debug!("Schema has {} fields", current_schema.fields().len());
-
-        // Register the Iceberg table with DataFusion
-        let datafusion_table = Arc::new(DataFusionTable::from(table.clone()));
-        session_ctx.register_table(&table_name, datafusion_table)?;
-
-        log::info!(
-            "Registered Iceberg table '{table_name}' for tenant '{tenant_id}' dataset '{dataset_id}' with DataFusion"
-        );
-
-        Ok(Self {
-            catalog,
-            table,
-            object_store,
-            tenant_id,
-            dataset_id,
-            session_ctx,
-            table_registered: true,
-            transaction_state: TransactionState::None,
-            pending_operations: Vec::new(),
-            retry_config: RetryConfig::default(),
-            batch_config: BatchOptimizationConfig::default(),
-        })
-    }
-
-    /// Create a new IcebergTableWriter using a shared CatalogManager
-    ///
-    /// This constructor uses the global shared Iceberg catalog from CatalogManager,
-    /// ensuring all SignalDB components use the same catalog for consistent metadata.
-    /// It also supports per-dataset storage configuration.
-    pub async fn new_with_catalog_manager(
-        catalog_manager: Arc<CatalogManager>,
-        object_store: Arc<dyn ObjectStore>,
-        tenant_id: String,
-        dataset_id: String,
-        table_name: String,
-    ) -> Result<Self> {
+        let table = catalog_manager
+            .ensure_table(&tenant_id, &dataset_id, &table_name)
+            .await?;
         let catalog = catalog_manager.catalog();
-
-        // Resolve slugs using CatalogManager helper methods
-        let tenant_slug = catalog_manager.get_tenant_slug(&tenant_id);
-        let dataset_slug = catalog_manager.get_dataset_slug(&tenant_id, &dataset_id);
-
-        // Create namespace and table using slug-based paths
-        let _namespace = Namespace::try_new(&[tenant_slug.clone(), dataset_slug.clone()])?;
-
-        // Namespace is implicitly created when tables are created via the SQL catalog
-        log::debug!("Using namespace: {_namespace:?}");
-
-        let table_ident =
-            Identifier::new(&[tenant_slug.clone(), dataset_slug.clone()], &table_name);
-
-        // Check if table exists, create if not
-        let table = if catalog.tabular_exists(&table_ident).await? {
-            match catalog.clone().load_tabular(&table_ident).await? {
-                iceberg_rust::catalog::tabular::Tabular::Table(table) => table,
-                _ => {
-                    return Err(anyhow::anyhow!(
-                        "Expected table but found different tabular type"
-                    ));
-                }
-            }
-        } else {
-            // Create table with appropriate schema based on table name
-            let schema = match table_name.as_str() {
-                "traces" => {
-                    let s = iceberg_schemas::create_traces_schema()?;
-                    log::debug!(
-                        "Creating traces table with {} fields: {:?}",
-                        s.fields().len(),
-                        s.fields()
-                            .iter()
-                            .map(|f| f.name.as_str())
-                            .collect::<Vec<_>>()
-                    );
-                    s
-                }
-                "logs" => iceberg_schemas::create_logs_schema()?,
-                "metrics_gauge" => iceberg_schemas::create_metrics_gauge_schema()?,
-                "metrics_sum" => iceberg_schemas::create_metrics_sum_schema()?,
-                "metrics_histogram" => iceberg_schemas::create_metrics_histogram_schema()?,
-                _ => {
-                    return Err(anyhow::anyhow!("Unknown table name: {}", table_name));
-                }
-            };
-
-            let partition_spec = match table_name.as_str() {
-                "traces" => iceberg_schemas::create_traces_partition_spec()?,
-                "logs" => iceberg_schemas::create_logs_partition_spec()?,
-                "metrics_gauge" | "metrics_sum" | "metrics_histogram" => {
-                    iceberg_schemas::create_metrics_partition_spec()?
-                }
-                _ => {
-                    return Err(anyhow::anyhow!(
-                        "Unknown table name for partition spec: {}",
-                        table_name
-                    ));
-                }
-            };
-
-            log::debug!(
-                "Partition spec for {}: {} fields",
-                table_name,
-                partition_spec.fields().len()
-            );
-
-            // Create the table using the catalog
-            log::info!("Creating new Iceberg table: {table_ident}");
-
-            // Table location is relative to the object store root (see new() for details)
-            let table_location = format!("{}/{}/{}", tenant_slug, dataset_slug, table_name);
-            log::debug!("Table location for {table_name}: {table_location}");
-
-            let table_creation = CreateTableBuilder::default()
-                .with_name(table_name.clone())
-                .with_schema(schema)
-                .with_partition_spec(partition_spec)
-                .with_location(table_location)
-                .create()
-                .map_err(|e| anyhow::anyhow!("Failed to build CreateTable: {}", e))?;
-
-            catalog
-                .clone()
-                .create_table(table_ident.clone(), table_creation)
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!("Failed to create Iceberg table {}: {}", table_ident, e)
-                })?
-        };
 
         // Create DataFusion session context
         let runtime_env = Arc::new(RuntimeEnv::default());
@@ -574,7 +321,9 @@ impl IcebergTableWriter {
                     batch.num_rows()
                 );
 
-                // TODO: Get table metadata for SQL operations when datafusion_iceberg is integrated
+                // Note: DataFusion integration is functional. Future optimization: consider using
+                // DataFusion's catalog metadata API for more efficient metadata access instead of
+                // direct Iceberg table.metadata() calls
 
                 // Create temp table name
                 let temp_table_name = format!("txn_{}_{}", id, uuid::Uuid::new_v4().simple());
@@ -672,7 +421,9 @@ impl IcebergTableWriter {
 
     /// Execute an immediate write operation (outside of a transaction)
     async fn execute_immediate_write(&mut self, batch: RecordBatch) -> Result<()> {
-        // TODO: Get table metadata for SQL operations when datafusion_iceberg is integrated
+        // Note: DataFusion integration is functional. Future optimization: consider using
+        // DataFusion's catalog metadata API for more efficient metadata access instead of
+        // direct Iceberg table.metadata() calls
 
         let table_name = self.table.identifier().name();
         let table_location = self.table.metadata().location.clone();
@@ -1218,60 +969,42 @@ impl IcebergTableWriter {
     }
 }
 
-/// Factory function to create IcebergTableWriter instances
-pub async fn create_iceberg_writer(
-    config: &Configuration,
-    object_store: Arc<dyn ObjectStore>,
-    tenant_id: impl Into<String>,
-    dataset_id: impl Into<String>,
-    table_name: impl Into<String>,
-) -> Result<IcebergTableWriter> {
-    IcebergTableWriter::new(
-        config,
-        object_store,
-        tenant_id.into(),
-        dataset_id.into(),
-        table_name.into(),
-    )
-    .await
-}
-
-/// Factory function to create IcebergTableWriter instances using CatalogManager
-///
-/// This factory uses the shared catalog from CatalogManager, ensuring consistent
-/// metadata across all SignalDB components.
-pub async fn create_iceberg_writer_with_catalog_manager(
-    catalog_manager: Arc<CatalogManager>,
-    object_store: Arc<dyn ObjectStore>,
-    tenant_id: impl Into<String>,
-    dataset_id: impl Into<String>,
-    table_name: impl Into<String>,
-) -> Result<IcebergTableWriter> {
-    IcebergTableWriter::new_with_catalog_manager(
-        catalog_manager,
-        object_store,
-        tenant_id.into(),
-        dataset_id.into(),
-        table_name.into(),
-    )
-    .await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use common::config::{Configuration, SchemaConfig, StorageConfig};
     use object_store::memory::InMemory;
 
+    async fn create_test_catalog_manager() -> CatalogManager {
+        let config = Configuration {
+            schema: SchemaConfig {
+                catalog_type: "memory".to_string(),
+                catalog_uri: "memory://".to_string(),
+                default_schemas: Default::default(),
+            },
+            storage: StorageConfig {
+                dsn: "memory://".to_string(),
+            },
+            ..Default::default()
+        };
+
+        CatalogManager::new(config).await.unwrap()
+    }
+
     #[tokio::test]
     async fn test_iceberg_writer_creation() {
-        // Use default configuration with in-memory storage
-        let config = Configuration::default();
+        let catalog_manager = CatalogManager::new_in_memory().await.unwrap();
         let object_store = Arc::new(InMemory::new());
 
         // Try to create a writer for the traces table
-        let result =
-            create_iceberg_writer(&config, object_store, "default", "default", "traces").await;
+        let result = IcebergTableWriter::new(
+            &catalog_manager,
+            object_store,
+            "default".to_string(),
+            "default".to_string(),
+            "traces".to_string(),
+        )
+        .await;
 
         // This should work now that table creation is implemented
         // It might fail due to catalog setup issues in tests, but not due to "not implemented"
@@ -1285,23 +1018,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_iceberg_writer_with_memory_catalog() {
-        let config = Configuration {
-            schema: SchemaConfig {
-                catalog_type: "memory".to_string(),
-                catalog_uri: "memory://".to_string(),
-                default_schemas: Default::default(),
-            },
-            storage: StorageConfig {
-                dsn: "memory://".to_string(),
-            },
-            ..Default::default()
-        };
+        let catalog_manager = create_test_catalog_manager().await;
 
         let object_store = Arc::new(InMemory::new());
 
         // Try to create a writer
-        let result =
-            create_iceberg_writer(&config, object_store, "test-tenant", "local", "traces").await;
+        let result = IcebergTableWriter::new(
+            &catalog_manager,
+            object_store,
+            "test-tenant".to_string(),
+            "local".to_string(),
+            "traces".to_string(),
+        )
+        .await;
 
         // This might work or fail due to test environment setup, but not due to "not implemented"
         if let Err(e) = result {
@@ -1312,27 +1041,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_transaction_management() {
-        let config = Configuration {
-            schema: SchemaConfig {
-                catalog_type: "memory".to_string(),
-                catalog_uri: "memory://".to_string(),
-                default_schemas: Default::default(),
-            },
-            storage: StorageConfig {
-                dsn: "memory://".to_string(),
-            },
-            ..Default::default()
-        };
+        let catalog_manager = create_test_catalog_manager().await;
 
         let object_store = Arc::new(InMemory::new());
 
         // Create a writer
-        let result = create_iceberg_writer(
-            &config,
+        let result = IcebergTableWriter::new(
+            &catalog_manager,
             object_store,
-            "test_tenant",
-            "test_dataset",
-            "test_table",
+            "test_tenant".to_string(),
+            "test_dataset".to_string(),
+            "test_table".to_string(),
         )
         .await;
         if let Ok(mut writer) = result {
@@ -1360,27 +1079,17 @@ mod tests {
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
         use std::sync::Arc;
 
-        let config = Configuration {
-            schema: SchemaConfig {
-                catalog_type: "memory".to_string(),
-                catalog_uri: "memory://".to_string(),
-                default_schemas: Default::default(),
-            },
-            storage: StorageConfig {
-                dsn: "memory://".to_string(),
-            },
-            ..Default::default()
-        };
+        let catalog_manager = create_test_catalog_manager().await;
 
         let object_store = Arc::new(InMemory::new());
 
         // Create a writer
-        let result = create_iceberg_writer(
-            &config,
+        let result = IcebergTableWriter::new(
+            &catalog_manager,
             object_store,
-            "test_tenant",
-            "test_dataset",
-            "test_table",
+            "test_tenant".to_string(),
+            "test_dataset".to_string(),
+            "test_table".to_string(),
         )
         .await;
         if let Ok(mut writer) = result {

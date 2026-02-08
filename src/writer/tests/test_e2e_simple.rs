@@ -1,4 +1,5 @@
 use anyhow::Result;
+use common::CatalogManager;
 use common::config::{Configuration, DefaultSchemas, SchemaConfig, StorageConfig};
 use datafusion::arrow::array::{
     Date32Array, Float64Array, Int32Array, RecordBatch, StringArray, TimestampNanosecondArray,
@@ -6,7 +7,20 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use object_store::memory::InMemory;
 use std::sync::Arc;
-use writer::create_iceberg_writer;
+use writer::IcebergTableWriter;
+
+async fn create_writer(config: Configuration, tenant_id: &str) -> Result<IcebergTableWriter> {
+    let catalog_manager = CatalogManager::new(config).await?;
+    let object_store = Arc::new(InMemory::new());
+    IcebergTableWriter::new(
+        &catalog_manager,
+        object_store,
+        tenant_id.to_string(),
+        "test_dataset".to_string(),
+        "metrics_gauge".to_string(),
+    )
+    .await
+}
 
 /// Simple E2E test configuration
 fn create_simple_test_config() -> Configuration {
@@ -105,17 +119,7 @@ fn create_simple_test_data(num_rows: usize) -> Result<RecordBatch> {
 #[tokio::test]
 async fn test_simple_e2e_write() -> Result<()> {
     let config = create_simple_test_config();
-    let object_store = Arc::new(InMemory::new());
-
-    // Create writer
-    let mut writer = create_iceberg_writer(
-        &config,
-        object_store.clone(),
-        "simple_tenant",
-        "test_dataset",
-        "metrics_gauge",
-    )
-    .await?;
+    let mut writer = create_writer(config, "simple_tenant").await?;
 
     // Create simple test data
     let test_data = create_simple_test_data(10)?;
@@ -134,16 +138,7 @@ async fn test_simple_e2e_write() -> Result<()> {
 #[tokio::test]
 async fn test_simple_e2e_multi_batch() -> Result<()> {
     let config = create_simple_test_config();
-    let object_store = Arc::new(InMemory::new());
-
-    let mut writer = create_iceberg_writer(
-        &config,
-        object_store.clone(),
-        "simple_tenant",
-        "test_dataset",
-        "metrics_gauge",
-    )
-    .await?;
+    let mut writer = create_writer(config, "simple_tenant").await?;
 
     // Create multiple small batches
     let batch1 = create_simple_test_data(5)?;
@@ -165,16 +160,7 @@ async fn test_simple_e2e_multi_batch() -> Result<()> {
 #[tokio::test]
 async fn test_simple_e2e_transaction() -> Result<()> {
     let config = create_simple_test_config();
-    let object_store = Arc::new(InMemory::new());
-
-    let mut writer = create_iceberg_writer(
-        &config,
-        object_store.clone(),
-        "simple_tenant",
-        "test_dataset",
-        "metrics_gauge",
-    )
-    .await?;
+    let mut writer = create_writer(config, "simple_tenant").await?;
 
     // Test basic transaction flow
     let txn_id = writer.begin_transaction().await?;
@@ -195,16 +181,7 @@ async fn test_simple_e2e_transaction() -> Result<()> {
 #[tokio::test]
 async fn test_simple_e2e_rollback() -> Result<()> {
     let config = create_simple_test_config();
-    let object_store = Arc::new(InMemory::new());
-
-    let mut writer = create_iceberg_writer(
-        &config,
-        object_store.clone(),
-        "simple_tenant",
-        "test_dataset",
-        "metrics_gauge",
-    )
-    .await?;
+    let mut writer = create_writer(config, "simple_tenant").await?;
 
     // Test rollback
     let txn_id = writer.begin_transaction().await?;

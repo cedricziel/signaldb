@@ -1,5 +1,5 @@
 use common::config::SchemaConfig;
-use common::schema::{create_catalog, create_default_catalog};
+use common::iceberg::{create_catalog, create_default_catalog};
 
 // Note: The published version of iceberg-sql-catalog (0.8.0) does not implement
 // create_namespace, drop_namespace, or other namespace manipulation methods.

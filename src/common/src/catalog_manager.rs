@@ -13,7 +13,7 @@ use anyhow::Result;
 use iceberg_rust::catalog::Catalog as IcebergCatalog;
 
 use crate::config::{Configuration, StorageConfig};
-use crate::schema::create_catalog_with_config;
+use crate::iceberg::{self, create_catalog_with_config};
 
 /// Global catalog manager holding the shared Iceberg catalog instance.
 ///
@@ -24,13 +24,20 @@ use crate::schema::create_catalog_with_config;
 pub struct CatalogManager {
     catalog: Arc<dyn IcebergCatalog>,
     config: Configuration,
+    table_manager: crate::iceberg::table_manager::IcebergTableManager,
 }
 
 impl CatalogManager {
     /// Create a new catalog manager with the shared Iceberg catalog.
     pub async fn new(config: Configuration) -> Result<Self> {
         let catalog = create_catalog_with_config(&config).await?;
-        Ok(Self { catalog, config })
+        let table_manager =
+            crate::iceberg::table_manager::IcebergTableManager::new(catalog.clone());
+        Ok(Self {
+            catalog,
+            config,
+            table_manager,
+        })
     }
 
     /// Create an in-memory catalog manager for fast tests.
@@ -81,6 +88,56 @@ impl CatalogManager {
     /// Delegates to [`Configuration::get_dataset_slug`].
     pub fn get_dataset_slug(&self, tenant_id: &str, dataset_id: &str) -> String {
         self.config.get_dataset_slug(tenant_id, dataset_id)
+    }
+
+    /// Build an Iceberg namespace for a tenant and dataset.
+    pub fn build_namespace(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+    ) -> Result<iceberg_rust::catalog::namespace::Namespace> {
+        let tenant_slug = self.get_tenant_slug(tenant_id);
+        let dataset_slug = self.get_dataset_slug(tenant_id, dataset_id);
+        iceberg::names::build_namespace(&tenant_slug, &dataset_slug)
+    }
+
+    /// Build an Iceberg table identifier for a tenant, dataset, and table.
+    pub fn build_table_identifier(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+    ) -> iceberg_rust::catalog::identifier::Identifier {
+        let tenant_slug = self.get_tenant_slug(tenant_id);
+        let dataset_slug = self.get_dataset_slug(tenant_id, dataset_id);
+        iceberg::names::build_table_identifier(&tenant_slug, &dataset_slug, table_name)
+    }
+
+    /// Build an object-store table location for a tenant, dataset, and table.
+    pub fn build_table_location(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+    ) -> String {
+        let tenant_slug = self.get_tenant_slug(tenant_id);
+        let dataset_slug = self.get_dataset_slug(tenant_id, dataset_id);
+        iceberg::names::build_table_location(&tenant_slug, &dataset_slug, table_name)
+    }
+
+    /// Ensure an Iceberg table exists for the given tenant, dataset, and table name.
+    /// Creates the table if it doesn't exist. Returns the loaded Table.
+    pub async fn ensure_table(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+    ) -> Result<iceberg_rust::table::Table> {
+        let tenant_slug = self.get_tenant_slug(tenant_id);
+        let dataset_slug = self.get_dataset_slug(tenant_id, dataset_id);
+        self.table_manager
+            .ensure_table(&tenant_slug, &dataset_slug, table_name)
+            .await
     }
 
     /// Get all enabled tenants.

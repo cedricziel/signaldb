@@ -136,8 +136,19 @@ async fn setup_test_services() -> TestServices {
     drop(writer_listener);
 
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service =
-        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+
+    // Create CatalogManager for shared Iceberg catalog
+    let catalog_manager = Arc::new(
+        CatalogManager::new(config.clone())
+            .await
+            .expect("Failed to create CatalogManager"),
+    );
+
+    let writer_service = IcebergWriterFlightService::new(
+        catalog_manager.clone(),
+        object_store.clone(),
+        writer_wal.clone(),
+    );
 
     // Start background WAL processing
     let _writer_bg_handle = writer_service.start_background_processing();
@@ -153,13 +164,6 @@ async fn setup_test_services() -> TestServices {
             .await
             .unwrap();
     let _writer_id = writer_bootstrap.service_id();
-
-    // Create CatalogManager for shared Iceberg catalog
-    let catalog_manager = Arc::new(
-        CatalogManager::new(config.clone())
-            .await
-            .expect("Failed to create CatalogManager"),
-    );
 
     // Pre-create Iceberg namespace so the querier's Mirror cache includes it.
     // The Mirror (in datafusion_iceberg) caches namespaces at construction time
@@ -877,8 +881,17 @@ async fn setup_multi_tenant_test_services() -> TestServices {
 
     // Create WAL for writer (we'll use acme's config as default, but writer should handle both)
     let writer_wal = Arc::new(Wal::new(acme_wal_config.clone()).await.unwrap());
-    let writer_service =
-        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+    let catalog_manager = Arc::new(
+        CatalogManager::new(config.clone())
+            .await
+            .expect("Failed to create CatalogManager"),
+    );
+
+    let writer_service = IcebergWriterFlightService::new(
+        catalog_manager.clone(),
+        object_store.clone(),
+        writer_wal.clone(),
+    );
 
     let _writer_bg_handle = writer_service.start_background_processing();
 
@@ -892,13 +905,6 @@ async fn setup_multi_tenant_test_services() -> TestServices {
             .await
             .unwrap();
     let _writer_id = writer_bootstrap.service_id();
-
-    // Create CatalogManager for shared Iceberg catalog
-    let catalog_manager = Arc::new(
-        CatalogManager::new(config.clone())
-            .await
-            .expect("Failed to create CatalogManager"),
-    );
 
     // Pre-create Iceberg namespaces so the querier's Mirror cache includes them.
     {

@@ -1,14 +1,14 @@
+use common::CatalogManager;
 use common::config::{Configuration, DefaultSchemas, SchemaConfig, StorageConfig};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use datafusion::arrow::array::{
     Date32Array, Float64Array, Int32Array, RecordBatch, StringArray, TimestampNanosecondArray,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-use object_store::memory::InMemory;
 use std::hint::black_box;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use writer::create_iceberg_writer;
+use writer::IcebergTableWriter;
 
 /// Create test configuration for benchmarking
 fn create_benchmark_config() -> Configuration {
@@ -28,6 +28,22 @@ fn create_benchmark_config() -> Configuration {
         },
         ..Default::default()
     }
+}
+
+async fn create_writer(config: &Configuration, tenant_id: String) -> IcebergTableWriter {
+    let catalog_manager = CatalogManager::new(config.clone())
+        .await
+        .expect("Failed to create catalog manager");
+    let object_store = Arc::new(object_store::memory::InMemory::new());
+    IcebergTableWriter::new(
+        &catalog_manager,
+        object_store,
+        tenant_id,
+        "bench_dataset".to_string(),
+        "metrics_gauge".to_string(),
+    )
+    .await
+    .expect("Failed to create writer")
 }
 
 /// Create test data for benchmarking with specified number of rows
@@ -135,16 +151,9 @@ fn bench_single_batch_writes(c: &mut Criterion) {
             size,
             |b, &_size| {
                 b.to_async(&rt).iter(|| async {
-                    let object_store = Arc::new(InMemory::new());
-                    let mut writer = create_iceberg_writer(
-                        &config,
-                        object_store,
-                        &format!("bench_tenant_{}", rand::random::<u32>()),
-                        "bench_dataset",
-                        "metrics_gauge",
-                    )
-                    .await
-                    .expect("Failed to create writer");
+                    let mut writer =
+                        create_writer(&config, format!("bench_tenant_{}", rand::random::<u32>()))
+                            .await;
 
                     let batch_clone = batch.clone();
                     writer.write_batch(batch_clone).await.expect("Write failed");
@@ -176,16 +185,9 @@ fn bench_multi_batch_writes(c: &mut Criterion) {
             num_batches,
             |b, &_num_batches| {
                 b.to_async(&rt).iter(|| async {
-                    let object_store = Arc::new(InMemory::new());
-                    let mut writer = create_iceberg_writer(
-                        &config,
-                        object_store,
-                        &format!("bench_tenant_{}", rand::random::<u32>()),
-                        "bench_dataset",
-                        "metrics_gauge",
-                    )
-                    .await
-                    .expect("Failed to create writer");
+                    let mut writer =
+                        create_writer(&config, format!("bench_tenant_{}", rand::random::<u32>()))
+                            .await;
 
                     let batches_clone = batches.clone();
                     writer
@@ -211,16 +213,8 @@ fn bench_transaction_overhead(c: &mut Criterion) {
     // Benchmark immediate writes (no transaction)
     group.bench_function("immediate_write", |b| {
         b.to_async(&rt).iter(|| async {
-            let object_store = Arc::new(InMemory::new());
-            let mut writer = create_iceberg_writer(
-                &config,
-                object_store,
-                &format!("bench_tenant_{}", rand::random::<u32>()),
-                "bench_dataset",
-                "metrics_gauge",
-            )
-            .await
-            .expect("Failed to create writer");
+            let mut writer =
+                create_writer(&config, format!("bench_tenant_{}", rand::random::<u32>())).await;
 
             let batch_clone = batch.clone();
             writer.write_batch(batch_clone).await.expect("Write failed");
@@ -231,16 +225,8 @@ fn bench_transaction_overhead(c: &mut Criterion) {
     // Benchmark transactional writes
     group.bench_function("transactional_write", |b| {
         b.to_async(&rt).iter(|| async {
-            let object_store = Arc::new(InMemory::new());
-            let mut writer = create_iceberg_writer(
-                &config,
-                object_store,
-                &format!("bench_tenant_{}", rand::random::<u32>()),
-                "bench_dataset",
-                "metrics_gauge",
-            )
-            .await
-            .expect("Failed to create writer");
+            let mut writer =
+                create_writer(&config, format!("bench_tenant_{}", rand::random::<u32>())).await;
 
             let txn_id = writer.begin_transaction().await.expect("Begin failed");
             let batch_clone = batch.clone();
@@ -263,17 +249,8 @@ fn bench_writer_creation(c: &mut Criterion) {
 
     c.bench_function("writer_creation", |b| {
         b.to_async(&rt).iter(|| async {
-            let object_store = Arc::new(InMemory::new());
             black_box(
-                create_iceberg_writer(
-                    &config,
-                    object_store,
-                    &format!("bench_tenant_{}", rand::random::<u32>()),
-                    "bench_dataset",
-                    "metrics_gauge",
-                )
-                .await
-                .expect("Failed to create writer"),
+                create_writer(&config, format!("bench_tenant_{}", rand::random::<u32>())).await,
             );
         });
     });
@@ -300,16 +277,11 @@ fn bench_concurrent_writes(c: &mut Criterion) {
                         let config = config.clone();
                         let batch = batch.clone();
                         let handle = tokio::spawn(async move {
-                            let object_store = Arc::new(InMemory::new());
-                            let mut writer = create_iceberg_writer(
+                            let mut writer = create_writer(
                                 &config,
-                                object_store,
-                                &format!("bench_tenant_{}_{}", i, rand::random::<u32>()),
-                                "bench_dataset",
-                                "metrics_gauge",
+                                format!("bench_tenant_{}_{}", i, rand::random::<u32>()),
                             )
-                            .await
-                            .expect("Failed to create writer");
+                            .await;
 
                             writer.write_batch(batch).await.expect("Write failed");
                         });
@@ -345,16 +317,9 @@ fn bench_memory_patterns(c: &mut Criterion) {
             batch_size,
             |b, &_batch_size| {
                 b.to_async(&rt).iter(|| async {
-                    let object_store = Arc::new(InMemory::new());
-                    let mut writer = create_iceberg_writer(
-                        &config,
-                        object_store,
-                        &format!("bench_tenant_{}", rand::random::<u32>()),
-                        "bench_dataset",
-                        "metrics_gauge",
-                    )
-                    .await
-                    .expect("Failed to create writer");
+                    let mut writer =
+                        create_writer(&config, format!("bench_tenant_{}", rand::random::<u32>()))
+                            .await;
 
                     let batch_clone = batch.clone();
                     writer.write_batch(batch_clone).await.expect("Write failed");

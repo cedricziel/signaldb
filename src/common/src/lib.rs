@@ -5,6 +5,7 @@ pub mod cli;
 pub mod config;
 pub mod dataset;
 pub mod flight;
+pub mod iceberg;
 pub mod model;
 pub mod schema;
 pub mod self_monitoring;
