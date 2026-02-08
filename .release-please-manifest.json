@@ -1,4 +1,15 @@
 {
   ".": "0.1.0",
-  "src/grafana-plugin": "1.0.0"
+  "src/grafana-plugin": "1.1.0",
+  "src/acceptor": "0.1.0",
+  "src/common": "0.1.0",
+  "src/compactor": "0.1.0",
+  "src/querier": "0.1.0",
+  "src/router": "0.1.0",
+  "src/signal-producer": "0.1.0",
+  "src/signaldb-bin": "0.1.0",
+  "src/tempo-api": "0.1.0",
+  "src/writer": "0.1.0",
+  "src/signaldb-cli": "0.1.1",
+  "tests-integration": "0.1.1"
 }
