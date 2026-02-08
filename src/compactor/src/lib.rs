@@ -23,6 +23,7 @@ pub mod commit;
 pub mod executor;
 pub mod iceberg;
 pub mod metrics;
+pub mod orphan;
 pub mod planner;
 pub mod retention;
 pub mod rewriter;
@@ -38,6 +39,10 @@ pub use iceberg::{
     SnapshotManager,
 };
 pub use metrics::{CompactionMetrics, MetricsSummary};
+pub use orphan::{
+    DeletionResult, ObjectStoreFile, OrphanCandidate, OrphanCleaner, OrphanCleanupConfig,
+    OrphanDetector,
+};
 pub use planner::{
     CompactionCandidate, CompactionPlanner, FileInfo, PartitionStats, PlannerConfig,
 };

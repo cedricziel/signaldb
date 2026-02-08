@@ -9,6 +9,7 @@ rust-version.workspace = true
 common.workspace = true
 iceberg-rust.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
 log.workspace = true
 anyhow.workspace = true
 clap.workspace = true
@@ -37,7 +38,6 @@ path = "src/main.rs"
 [package.metadata.cargo-machete]
 ignored = [
     # iceberg-rust pulls in these as transitive dependencies
-    "async-trait",
     "serde",
     # humantime-serde used in serde attributes
     "humantime-serde"
