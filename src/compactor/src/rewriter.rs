@@ -128,12 +128,10 @@ impl ParquetRewriter {
 
         // For Phase 2, we'll read all data from the table
         // A full implementation would filter by partition values
-        let query = format!("SELECT * FROM {}", table_name);
-
         let df = ctx
-            .sql(&query)
+            .table(table_name)
             .await
-            .context("Failed to execute SQL query")?;
+            .context("Failed to read table")?;
 
         // Sort the data for optimal query performance
         // For traces table: sort by timestamp, trace_id
@@ -206,7 +204,7 @@ impl ParquetRewriter {
         );
 
         // Split batches if they exceed target file size
-        let split_batches = self.split_batches_by_size(batches, target_file_size_bytes);
+        let split_batches = self.split_batches_by_size(batches, target_file_size_bytes)?;
 
         log::debug!(
             "Split batches into {} groups for target size {} bytes",
@@ -257,7 +255,7 @@ impl ParquetRewriter {
         &self,
         batches: Vec<RecordBatch>,
         target_size_bytes: u64,
-    ) -> Vec<RecordBatch> {
+    ) -> Result<Vec<RecordBatch>> {
         let mut result = vec![];
         let mut current_batch_rows = vec![];
         let mut current_size = 0u64;
@@ -269,16 +267,17 @@ impl ParquetRewriter {
             if batch_size > target_size_bytes && batch.num_rows() > 1 {
                 // Flush current accumulated rows first
                 if !current_batch_rows.is_empty() {
-                    if let Ok(merged) = self.merge_batches(&current_batch_rows) {
-                        result.push(merged);
-                    }
+                    let merged = self.merge_batches(&current_batch_rows)?;
+                    result.push(merged);
                     current_batch_rows.clear();
                     current_size = 0;
                 }
 
                 // Split large batch into smaller chunks
-                let rows_per_chunk =
-                    (batch.num_rows() * target_size_bytes as usize) / batch_size as usize;
+                // Use u128 to avoid overflow in multiplication
+                let rows_per_chunk = ((batch.num_rows() as u128 * target_size_bytes as u128)
+                    / batch_size as u128)
+                    .min(usize::MAX as u128) as usize;
                 let rows_per_chunk = rows_per_chunk.max(1);
 
                 let mut offset = 0;
@@ -292,9 +291,8 @@ impl ParquetRewriter {
                 && !current_batch_rows.is_empty()
             {
                 // Current accumulation would exceed target, flush it
-                if let Ok(merged) = self.merge_batches(&current_batch_rows) {
-                    result.push(merged);
-                }
+                let merged = self.merge_batches(&current_batch_rows)?;
+                result.push(merged);
                 current_batch_rows.clear();
                 current_batch_rows.push(batch);
                 current_size = batch_size;
@@ -306,13 +304,12 @@ impl ParquetRewriter {
         }
 
         // Flush remaining batches
-        if !current_batch_rows.is_empty()
-            && let Ok(merged) = self.merge_batches(&current_batch_rows)
-        {
+        if !current_batch_rows.is_empty() {
+            let merged = self.merge_batches(&current_batch_rows)?;
             result.push(merged);
         }
 
-        result
+        Ok(result)
     }
 
     /// Merge multiple batches with the same schema into one
@@ -398,7 +395,9 @@ mod tests {
 
         // Split with target size smaller than batch
         let target_size = batch_size / 3;
-        let split = rewriter.split_batches_by_size(vec![batch], target_size);
+        let split = rewriter
+            .split_batches_by_size(vec![batch], target_size)
+            .expect("Split should succeed");
 
         // Should be split into multiple batches
         assert!(split.len() > 1);
