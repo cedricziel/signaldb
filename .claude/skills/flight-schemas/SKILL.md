@@ -76,7 +76,7 @@ Key fields: `timestamp` (partition), `trace_id`, `span_id`, `severity_text`, `se
 
 ## Metrics Schemas
 
-Defined in `src/common/src/schema/iceberg_schemas.rs` (hardcoded, not in schemas.toml):
+Defined in `src/common/src/iceberg/schemas.rs` (hardcoded, not in schemas.toml):
 - `metrics_gauge`: timestamp, service_name, metric_name, value, attributes
 - `metrics_sum`: extends gauge with `aggregation_temporality`, `is_monotonic`
 - `metrics_histogram`: count, sum, min, max, bucket_counts, explicit_bounds

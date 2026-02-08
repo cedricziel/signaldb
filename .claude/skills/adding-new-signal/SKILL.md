@@ -15,7 +15,7 @@ For **traces/logs** (TOML-based schemas):
 - Update `[metadata]` to set `current_{signal}_version`
 
 For **metrics** (hardcoded schemas):
-- Edit `src/common/src/schema/iceberg_schemas.rs`
+- Edit `src/common/src/iceberg/schemas.rs`
 - Add a new schema function returning `iceberg_rust::spec::Schema`
 - Add an entry to the `TableSchema` enum
 - Add partition spec (always `Hour(timestamp)`)

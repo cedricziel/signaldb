@@ -129,9 +129,12 @@ All tables partitioned by `Hour(timestamp)` as `timestamp_hour`.
 | File | Purpose |
 |------|---------|
 | `schemas.toml` | Schema definitions with versioning |
-| `src/common/src/schema/mod.rs` | Iceberg catalog creation |
+| `src/common/src/iceberg/mod.rs` | Iceberg catalog creation, object store builders |
+| `src/common/src/iceberg/schemas.rs` | Schema creation functions for traces/logs/metrics, partition specs |
+| `src/common/src/iceberg/names.rs` | Naming utilities for table identifiers, namespaces, locations |
+| `src/common/src/iceberg/table_manager.rs` | IcebergTableManager for table operations |
+| `src/common/src/schema/mod.rs` | Schema registry, re-exports iceberg modules |
 | `src/common/src/schema/schema_parser.rs` | TOML schema parser |
-| `src/common/src/schema/iceberg_schemas.rs` | Metric schemas, partition specs |
 | `src/common/src/catalog_manager.rs` | CatalogManager singleton |
 | `src/common/src/storage.rs` | Object store creation from DSN |
 | `src/common/src/wal/mod.rs` | WAL implementation |
