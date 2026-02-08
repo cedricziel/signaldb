@@ -73,11 +73,14 @@ async fn main() -> Result<()> {
     log::info!("Starting SignalDB Compactor Service (Phase 1: Dry-run planning)");
     log::info!("Running in dry-run mode: compaction plans will be logged only");
 
-    // Initialize service bootstrap (compactor doesn't need a Flight endpoint)
+    // Initialize service bootstrap with sentinel address
+    // The compactor is a background worker that doesn't expose any Flight endpoints,
+    // so it uses "compactor:none" as a sentinel address to indicate it's not
+    // connectable. This ensures discovery logic won't treat it as a valid endpoint.
     let bootstrap = ServiceBootstrap::new(
         config.clone(),
         ServiceType::Compactor,
-        "compactor:0".to_string(),
+        "compactor:none".to_string(),
     )
     .await
     .context("Failed to initialize compactor service bootstrap")?;
