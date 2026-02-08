@@ -360,10 +360,28 @@ impl CompactionExecutor {
             })
             .collect();
 
-        // For Phase 2, we don't explicitly track old files to remove
-        // because the IcebergTableWriter pattern handles this through
-        // DataFusion's INSERT operations which create new snapshots
+        // Phase 2 limitation: We don't populate old_files because we lack manifest reading
+        //
+        // WARNING: This means old files are NOT removed from the Iceberg snapshot,
+        // which has data correctness implications:
+        // - Query engines will continue to read the old (uncompacted) files
+        // - Storage is not reclaimed
+        // - Compaction provides no benefit
+        //
+        // TODO(Phase 3): Implement manifest reading in planner to:
+        // 1. Get actual list of files in the partition being compacted
+        // 2. Track which files were read during compaction
+        // 3. Pass those file paths here as old_files to be removed
+        // 4. This enables proper file replacement: add new, remove old
+        //
+        // For Phase 2 testing, this limitation is acceptable to validate the
+        // overall execution flow, but Phase 3 must address this for production use.
         let old_files = vec![];
+
+        log::warn!(
+            "Phase 2 limitation: old_files not populated - compacted files will not be removed from snapshot. \
+             This is expected for Phase 2 testing but must be fixed in Phase 3."
+        );
 
         self.committer
             .commit_compaction(
