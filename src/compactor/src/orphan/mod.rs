@@ -21,10 +21,16 @@
 //! ## Usage
 //!
 //! ```no_run
+//! # use std::sync::Arc;
+//! # use object_store::memory::InMemory;
+//! # use common::catalog_manager::CatalogManager;
+//! # async fn example() -> anyhow::Result<()> {
 //! use compactor::orphan::{OrphanCleanupConfig, OrphanDetector, OrphanCleaner};
 //!
+//! # let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
+//! # let object_store = Arc::new(InMemory::new());
 //! let config = OrphanCleanupConfig::default();
-//! let detector = OrphanDetector::new(config.clone(), catalog_manager, object_store);
+//! let detector = OrphanDetector::new(config.clone(), catalog_manager, object_store.clone());
 //!
 //! // Identify orphan candidates
 //! let candidates = detector.identify_orphan_candidates(
@@ -36,7 +42,8 @@
 //! // Delete orphans (respects dry_run mode)
 //! let cleaner = OrphanCleaner::new(config, object_store);
 //! let result = cleaner.delete_orphans_batch(candidates).await?;
-//! # Ok::<(), anyhow::Error>(())
+//! # Ok(())
+//! # }
 //! ```
 
 pub mod cleaner;
