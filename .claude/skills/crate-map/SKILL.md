@@ -15,6 +15,7 @@ user-invocable: false
 | **writer** | `src/writer/` | Binary + Library | Iceberg-based data persistence (the "Ingester") |
 | **router** | `src/router/` | Binary + Library | HTTP API gateway + Flight routing layer |
 | **querier** | `src/querier/` | Binary + Library | DataFusion query execution engine |
+| **compactor** | `src/compactor/` | Library | Compaction planner and executor for Parquet file optimization with rewrites and atomic commits (Phase 2) |
 | **tempo-api** | `src/tempo-api/` | Library | Grafana Tempo API types and protobuf definitions |
 | **signaldb-bin** | `src/signaldb-bin/` | Binary | Monolithic mode runner (all services in one process) |
 | **signaldb-api** | `src/signaldb-api/` | Library | OpenAPI-generated admin API types |

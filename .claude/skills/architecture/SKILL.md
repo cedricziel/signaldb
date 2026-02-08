@@ -67,12 +67,15 @@ Key details:
 | **Writer** | Flight:50061 (standalone), 50051 (mono) | `TraceIngestion`, `Storage` | `src/writer/` |
 | **Router** | HTTP:3000, Flight:50053 | `Routing` | `src/router/` |
 | **Querier** | Flight:50054 | `QueryExecution` | `src/querier/` |
+| **Compactor** | None (background task) | `Compaction` | `src/compactor/` |
 
 ## Deployment Models
 
-- **Monolithic** (`cargo run --bin signaldb`): All services in one process, shared SQLite catalog
+- **Monolithic** (`cargo run --bin signaldb`): All services in one process, shared SQLite catalog. Compactor included if enabled in config.
 - **Microservices**: Independent binaries, shared catalog (PostgreSQL or SQLite)
 - **Hybrid**: Mix of co-located and distributed services
+
+**Note**: Monolithic mode integrates the Compactor service (Phase 2 - full execution) when `[compactor].enabled = true`. The compactor runs a background planning loop that identifies compaction candidates based on file count and size thresholds, and executes compaction by rewriting Parquet files and committing changes atomically to Iceberg tables.
 
 ## Dual Catalog System
 

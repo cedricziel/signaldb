@@ -14,6 +14,7 @@ path = "src/lib.rs"
 # Workspace crates
 acceptor = { path = "../src/acceptor" }
 common = { path = "../src/common" }
+compactor = { path = "../src/compactor" }
 querier = { path = "../src/querier" }
 router = { path = "../src/router" }
 writer = { path = "../src/writer" }
@@ -62,6 +63,14 @@ path = "tests/e2e/flight_rpc_tests.rs"
 name = "prometheus_remote_write_test"
 path = "tests/prometheus_remote_write_test.rs"
 
+[[test]]
+name = "basic_compaction"
+path = "tests/compactor/basic_compaction.rs"
+
+[[test]]
+name = "concurrent_writes"
+path = "tests/compactor/concurrent_writes.rs"
+
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory
-ignored = ["acceptor", "anyhow", "arrow-flight", "datafusion", "futures", "iceberg-rust", "log", "opentelemetry-proto", "querier", "router", "tokio", "tokio-stream", "tonic", "writer"]
+ignored = ["acceptor", "anyhow", "arrow-flight", "compactor", "datafusion", "futures", "iceberg-rust", "log", "opentelemetry-proto", "querier", "router", "tokio", "tokio-stream", "tonic", "writer"]
