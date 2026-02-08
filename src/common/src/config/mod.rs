@@ -103,6 +103,42 @@ impl Default for WalConfig {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompactorConfig {
+    /// Enable compactor service
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Interval between compaction planning cycles
+    #[serde(with = "humantime_serde")]
+    pub tick_interval: Duration,
+
+    /// Target file size in MB after compaction
+    pub target_file_size_mb: u64,
+
+    /// Minimum number of files to trigger compaction for a partition
+    pub file_count_threshold: usize,
+
+    /// Minimum input file size in KB to consider for compaction
+    pub min_input_file_size_kb: u64,
+
+    /// Maximum files to include in a single compaction job
+    pub max_files_per_job: usize,
+}
+
+impl Default for CompactorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tick_interval: Duration::from_secs(300), // 5 minutes
+            target_file_size_mb: 128,
+            file_count_threshold: 10,
+            min_input_file_size_kb: 1024, // 1MB
+            max_files_per_job: 50,
+        }
+    }
+}
+
 /// Default schemas configuration for OpenTelemetry signal types
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DefaultSchemas {
@@ -350,6 +386,9 @@ pub struct Configuration {
     pub auth: AuthConfig,
     #[serde(default)]
     pub self_monitoring: SelfMonitoringConfig,
+    /// Compactor configuration
+    #[serde(default)]
+    pub compactor: CompactorConfig,
 }
 
 impl Default for Configuration {
@@ -369,6 +408,7 @@ impl Default for Configuration {
             // Auth disabled by default
             auth: AuthConfig::default(),
             self_monitoring: SelfMonitoringConfig::default(),
+            compactor: CompactorConfig::default(),
         }
     }
 }
