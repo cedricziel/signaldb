@@ -380,4 +380,128 @@ mod tests {
         let result = planner.evaluate_partition(&files);
         assert!(result.is_none());
     }
+
+    #[tokio::test]
+    async fn test_evaluate_partition_above_threshold() {
+        let config = PlannerConfig {
+            file_count_threshold: 10,
+            min_input_file_size_bytes: 1024 * 1024, // 1MB
+            max_files_per_job: 50,
+            target_file_size_bytes: 128 * 1024 * 1024, // 128MB
+        };
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let planner = CompactionPlanner::new(catalog_manager, config);
+
+        // Create 15 files (above threshold of 10)
+        let files: Vec<FileInfo> = (0..15)
+            .map(|i| FileInfo {
+                path: format!("file_{i}.parquet"),
+                size_bytes: 2 * 1024 * 1024, // 2MB each
+            })
+            .collect();
+
+        // Should trigger compaction (above file count threshold)
+        let result = planner.evaluate_partition(&files);
+        assert!(result.is_some());
+
+        let stats = result.unwrap();
+        assert_eq!(stats.file_count, 15);
+        assert_eq!(stats.total_size_bytes, 15 * 2 * 1024 * 1024); // 30MB total
+        assert_eq!(stats.avg_file_size_bytes, 2 * 1024 * 1024); // 2MB average
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_partition_filters_small_files() {
+        let config = PlannerConfig {
+            file_count_threshold: 10,
+            min_input_file_size_bytes: 1024 * 1024, // 1MB minimum
+            max_files_per_job: 50,
+            target_file_size_bytes: 128 * 1024 * 1024, // 128MB
+        };
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let planner = CompactionPlanner::new(catalog_manager, config);
+
+        // Create 15 files, but only 8 are above minimum size
+        let mut files = Vec::new();
+        for i in 0..8 {
+            files.push(FileInfo {
+                path: format!("large_file_{i}.parquet"),
+                size_bytes: 2 * 1024 * 1024, // 2MB each (above minimum)
+            });
+        }
+        for i in 0..7 {
+            files.push(FileInfo {
+                path: format!("small_file_{i}.parquet"),
+                size_bytes: 512 * 1024, // 512KB each (below minimum)
+            });
+        }
+
+        // Should not trigger compaction (only 8 eligible files, need 10)
+        let result = planner.evaluate_partition(&files);
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_partition_skips_optimal_size() {
+        let config = PlannerConfig {
+            file_count_threshold: 10,
+            min_input_file_size_bytes: 1024 * 1024, // 1MB
+            max_files_per_job: 50,
+            target_file_size_bytes: 128 * 1024 * 1024, // 128MB target
+        };
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let planner = CompactionPlanner::new(catalog_manager, config);
+
+        // Create 15 files averaging 128MB (within 20% tolerance of target)
+        let files: Vec<FileInfo> = (0..15)
+            .map(|i| FileInfo {
+                path: format!("file_{i}.parquet"),
+                size_bytes: 128 * 1024 * 1024, // 128MB each (at target)
+            })
+            .collect();
+
+        // Should not trigger compaction (files are already optimal size)
+        let result = planner.evaluate_partition(&files);
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_partition_slightly_below_target() {
+        let config = PlannerConfig {
+            file_count_threshold: 10,
+            min_input_file_size_bytes: 1024 * 1024, // 1MB
+            max_files_per_job: 50,
+            target_file_size_bytes: 128 * 1024 * 1024, // 128MB target
+        };
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let planner = CompactionPlanner::new(catalog_manager, config);
+
+        // Create 15 files averaging 110MB (within 20% tolerance: 102.4MB - 153.6MB)
+        let files: Vec<FileInfo> = (0..15)
+            .map(|i| FileInfo {
+                path: format!("file_{i}.parquet"),
+                size_bytes: 110 * 1024 * 1024, // 110MB each (within tolerance)
+            })
+            .collect();
+
+        // Should not trigger compaction (within tolerance)
+        let result = planner.evaluate_partition(&files);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_compactor_config_defaults() {
+        let config = CompactorConfig::default();
+
+        assert!(!config.enabled); // Disabled by default
+        assert_eq!(config.tick_interval, std::time::Duration::from_secs(300)); // 5 minutes
+        assert_eq!(config.target_file_size_mb, 128);
+        assert_eq!(config.file_count_threshold, 10);
+        assert_eq!(config.min_input_file_size_kb, 1024); // 1MB
+        assert_eq!(config.max_files_per_job, 50);
+    }
 }
