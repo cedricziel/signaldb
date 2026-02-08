@@ -1,14 +1,14 @@
+use common::CatalogManager;
 use common::config::{Configuration, DefaultSchemas, SchemaConfig, StorageConfig};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use datafusion::arrow::array::{
     Date32Array, Float64Array, Int32Array, RecordBatch, StringArray, TimestampNanosecondArray,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-use object_store::memory::InMemory;
 use std::hint::black_box;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use writer::create_iceberg_writer;
+use writer::IcebergTableWriter;
 
 /// Create test configuration for benchmarking
 fn create_benchmark_config() -> Configuration {
@@ -28,6 +28,22 @@ fn create_benchmark_config() -> Configuration {
         },
         ..Default::default()
     }
+}
+
+async fn create_writer(config: &Configuration, tenant_id: String) -> IcebergTableWriter {
+    let catalog_manager = CatalogManager::new(config.clone())
+        .await
+        .expect("Failed to create catalog manager");
+    let object_store = Arc::new(object_store::memory::InMemory::new());
+    IcebergTableWriter::new(
+        &catalog_manager,
+        object_store,
+        tenant_id,
+        "bench_dataset".to_string(),
+        "metrics_gauge".to_string(),
+    )
+    .await
+    .expect("Failed to create writer")
 }
 
 /// Create test data for benchmarking
@@ -114,18 +130,7 @@ fn bench_writer_creation(c: &mut Criterion) {
 
     c.bench_function("writer_creation", |b| {
         b.to_async(&rt).iter(|| async {
-            let object_store = Arc::new(InMemory::new());
-            black_box(
-                create_iceberg_writer(
-                    &config,
-                    object_store,
-                    &format!("tenant_{}", rand::random::<u32>()),
-                    "bench_dataset",
-                    "metrics_gauge",
-                )
-                .await
-                .expect("Failed to create writer"),
-            );
+            black_box(create_writer(&config, format!("tenant_{}", rand::random::<u32>())).await);
         });
     });
 }
@@ -147,13 +152,9 @@ fn bench_concurrent_writer_creation(c: &mut Criterion) {
                     for i in 0..num_writers {
                         let config = config.clone();
                         let handle = tokio::spawn(async move {
-                            let object_store = Arc::new(InMemory::new());
-                            create_iceberg_writer(
+                            create_writer(
                                 &config,
-                                object_store,
-                                &format!("tenant_{}_{}", i, rand::random::<u32>()),
-                                "bench_dataset",
-                                "metrics_gauge",
+                                format!("tenant_{}_{}", i, rand::random::<u32>()),
                             )
                             .await
                         });
@@ -178,16 +179,8 @@ fn bench_write_performance(c: &mut Criterion) {
 
     c.bench_function("write_batch", |b| {
         b.to_async(&rt).iter(|| async {
-            let object_store = Arc::new(InMemory::new());
-            let mut writer = create_iceberg_writer(
-                &config,
-                object_store,
-                &format!("tenant_{}", rand::random::<u32>()),
-                "bench_dataset",
-                "metrics_gauge",
-            )
-            .await
-            .expect("Failed to create writer");
+            let mut writer =
+                create_writer(&config, format!("tenant_{}", rand::random::<u32>())).await;
 
             let batch_clone = batch.clone();
             writer.write_batch(batch_clone).await.expect("Write failed");

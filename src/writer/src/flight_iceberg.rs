@@ -9,7 +9,6 @@ use arrow_flight::{
 };
 use bytes::Bytes;
 use common::CatalogManager;
-use common::config::Configuration;
 use common::flight::schema::FlightSchemas;
 use common::wal::{Wal, WalOperation, record_batch_to_bytes};
 use datafusion::arrow::datatypes::SchemaRef;
@@ -30,28 +29,16 @@ pub struct IcebergWriterFlightService {
 }
 
 impl IcebergWriterFlightService {
-    /// Create a new IcebergWriterFlightService with Iceberg-based processing
-    pub fn new(config: Configuration, object_store: Arc<dyn ObjectStore>, wal: Arc<Wal>) -> Self {
-        let processor = WalProcessor::new(wal.clone(), config, object_store);
-
-        Self {
-            processor: Arc::new(Mutex::new(processor)),
-            wal,
-            schemas: FlightSchemas::new(),
-        }
-    }
-
     /// Create a new IcebergWriterFlightService with CatalogManager
     ///
     /// Uses the shared Iceberg catalog from CatalogManager, ensuring consistent
     /// metadata across all SignalDB components.
-    pub fn new_with_catalog_manager(
+    pub fn new(
         catalog_manager: Arc<CatalogManager>,
         object_store: Arc<dyn ObjectStore>,
         wal: Arc<Wal>,
     ) -> Self {
-        let processor =
-            WalProcessor::new_with_catalog_manager(wal.clone(), catalog_manager, object_store);
+        let processor = WalProcessor::new(wal.clone(), catalog_manager, object_store);
 
         Self {
             processor: Arc::new(Mutex::new(processor)),
@@ -315,7 +302,6 @@ impl FlightService for IcebergWriterFlightService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common::config::Configuration;
     use common::wal::WalConfig;
     use object_store::memory::InMemory;
     use tempfile::tempdir;
@@ -323,7 +309,7 @@ mod tests {
     #[tokio::test]
     async fn test_iceberg_flight_service_creation() {
         let temp_dir = tempdir().unwrap();
-        let config = Configuration::default();
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
         let wal_config = WalConfig {
             wal_dir: temp_dir.path().to_path_buf(),
@@ -338,7 +324,7 @@ mod tests {
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
 
-        let service = IcebergWriterFlightService::new(config, object_store, wal);
+        let service = IcebergWriterFlightService::new(catalog_manager, object_store, wal);
 
         // Verify service was created successfully
         assert!(service.processor.lock().await.get_stats().active_writers == 0);

@@ -2,6 +2,7 @@ use acceptor::handler::otlp_log_handler::LogHandler;
 use acceptor::handler::otlp_metrics_handler::MetricsHandler;
 use acceptor::handler::WalManager;
 use arrow_flight::flight_service_server::FlightServiceServer;
+use common::CatalogManager;
 use common::auth::{TenantContext, TenantSource};
 use common::config::Configuration;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
@@ -119,8 +120,13 @@ async fn setup_logs_metrics_services() -> TestServices {
     drop(writer_listener);
 
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
+    let writer_catalog_manager = Arc::new(
+        CatalogManager::new(config.clone())
+            .await
+            .expect("Failed to create CatalogManager for writer"),
+    );
     let writer_service =
-        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal);
+        IcebergWriterFlightService::new(writer_catalog_manager, object_store.clone(), writer_wal);
     let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
         .add_service(FlightServiceServer::new(writer_service))

@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use crate::auth::validation::validate_id;
 use crate::config::{Configuration, SchemaConfig};
-use crate::schema::{TenantSchemaRegistry, iceberg_schemas};
+use crate::iceberg::schemas as iceberg_schemas;
+use crate::schema::TenantSchemaRegistry;
 
 /// API request to create or update a tenant
 #[derive(Debug, Serialize, Deserialize)]

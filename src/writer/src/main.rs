@@ -140,11 +140,8 @@ async fn main() -> anyhow::Result<()> {
     let wal = Arc::new(wal);
 
     // Create Iceberg-based Flight ingestion service with CatalogManager
-    let flight_service = IcebergWriterFlightService::new_with_catalog_manager(
-        catalog_manager,
-        object_store,
-        wal.clone(),
-    );
+    let flight_service =
+        IcebergWriterFlightService::new(catalog_manager, object_store, wal.clone());
 
     // Start background WAL processing for Iceberg writes
     let writer_bg_handle = flight_service.start_background_processing();

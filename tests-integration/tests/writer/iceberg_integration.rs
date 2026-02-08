@@ -1,4 +1,5 @@
 use anyhow::Result;
+use common::CatalogManager;
 use common::config::{
     AuthConfig, Configuration, DatasetConfig, SchemaConfig, StorageConfig, TenantConfig,
 };
@@ -10,23 +11,23 @@ use iceberg_rust::catalog::identifier::Identifier;
 use object_store::memory::InMemory;
 use std::sync::Arc;
 use tempfile::tempdir;
-use writer::{IcebergWriterFlightService, WalProcessor, create_iceberg_writer};
+use writer::{IcebergTableWriter, IcebergWriterFlightService, WalProcessor};
 
 /// Integration test demonstrating the Iceberg table writer functionality
 #[tokio::test]
 async fn test_iceberg_writer_integration() -> Result<()> {
     // Setup test environment
     let _temp_dir = tempdir()?;
-    let config = Configuration::default();
+    let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
     let object_store = Arc::new(InMemory::new());
 
     // Test that we can create an Iceberg writer (should work now with table creation)
-    let result = create_iceberg_writer(
-        &config,
+    let result = IcebergTableWriter::new(
+        &catalog_manager,
         object_store.clone(),
-        "default",
-        "default",
-        "traces",
+        "default".to_string(),
+        "default".to_string(),
+        "traces".to_string(),
     )
     .await;
 
@@ -49,11 +50,11 @@ async fn test_wal_processor_integration() -> Result<()> {
     let temp_dir = tempdir()?;
     let wal_config = WalConfig::with_defaults(temp_dir.path().to_path_buf());
     let wal = Arc::new(Wal::new(wal_config).await?);
-    let config = Configuration::default();
+    let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
     let object_store = Arc::new(InMemory::new());
 
     // Create WAL processor
-    let mut processor = WalProcessor::new(wal.clone(), config, object_store);
+    let mut processor = WalProcessor::new(wal.clone(), catalog_manager, object_store);
 
     // Create a test record batch
     let schema = Arc::new(Schema::new(vec![
@@ -103,13 +104,13 @@ async fn test_wal_processor_integration() -> Result<()> {
 async fn test_iceberg_flight_service_integration() -> Result<()> {
     // Setup test environment
     let temp_dir = tempdir()?;
-    let config = Configuration::default();
+    let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
     let object_store = Arc::new(InMemory::new());
     let wal_config = WalConfig::with_defaults(temp_dir.path().to_path_buf());
     let wal = Arc::new(Wal::new(wal_config).await?);
 
     // Create Iceberg Flight service
-    let _service = IcebergWriterFlightService::new(config, object_store, wal);
+    let _service = IcebergWriterFlightService::new(catalog_manager, object_store, wal);
 
     // Verify service was created successfully
     // Note: Full Flight service testing would require actual gRPC integration,
@@ -153,14 +154,15 @@ async fn test_iceberg_namespace_slug_based() -> Result<()> {
     };
 
     let object_store = Arc::new(InMemory::new());
+    let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
     // Create writer with tenant_id/dataset_id that map to slugs "mycorp"/"prod"
-    let writer = create_iceberg_writer(
-        &config,
+    let writer = IcebergTableWriter::new(
+        &catalog_manager,
         object_store.clone(),
-        "tenant-1",
-        "dataset-1",
-        "traces",
+        "tenant-1".to_string(),
+        "dataset-1".to_string(),
+        "traces".to_string(),
     )
     .await?;
 
@@ -202,14 +204,15 @@ async fn test_partition_spec_roundtrip() -> Result<()> {
     };
 
     let object_store = Arc::new(InMemory::new());
+    let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
     // Create a writer for the traces table (which creates the table with partitioning)
-    let writer = create_iceberg_writer(
-        &config,
+    let writer = IcebergTableWriter::new(
+        &catalog_manager,
         object_store.clone(),
-        "default",
-        "default",
-        "traces",
+        "default".to_string(),
+        "default".to_string(),
+        "traces".to_string(),
     )
     .await?;
 
@@ -235,8 +238,14 @@ async fn test_partition_spec_roundtrip() -> Result<()> {
     );
 
     // Also test logs table
-    let logs_writer =
-        create_iceberg_writer(&config, object_store.clone(), "default", "default", "logs").await?;
+    let logs_writer = IcebergTableWriter::new(
+        &catalog_manager,
+        object_store.clone(),
+        "default".to_string(),
+        "default".to_string(),
+        "logs".to_string(),
+    )
+    .await?;
     let logs_metadata = logs_writer.table_metadata();
     let logs_spec = logs_metadata
         .default_partition_spec()
@@ -244,12 +253,12 @@ async fn test_partition_spec_roundtrip() -> Result<()> {
     assert!(!logs_spec.fields().is_empty());
 
     // Also test metrics_gauge table
-    let metrics_writer = create_iceberg_writer(
-        &config,
+    let metrics_writer = IcebergTableWriter::new(
+        &catalog_manager,
         object_store.clone(),
-        "default",
-        "default",
-        "metrics_gauge",
+        "default".to_string(),
+        "default".to_string(),
+        "metrics_gauge".to_string(),
     )
     .await?;
     let metrics_metadata = metrics_writer.table_metadata();
@@ -305,14 +314,15 @@ async fn test_write_and_query_with_slugs() -> Result<()> {
     };
 
     let object_store = Arc::new(InMemory::new());
+    let catalog_manager = Arc::new(CatalogManager::new(config.clone()).await?);
 
     // Step 1: Writer creates the traces table under slug-based namespace [testco, staging]
-    let writer = create_iceberg_writer(
-        &config,
+    let writer = IcebergTableWriter::new(
+        &catalog_manager,
         object_store.clone(),
-        "test-tenant",
-        "test-dataset",
-        "traces",
+        "test-tenant".to_string(),
+        "test-dataset".to_string(),
+        "traces".to_string(),
     )
     .await?;
 
@@ -326,7 +336,7 @@ async fn test_write_and_query_with_slugs() -> Result<()> {
 
     // Step 2: Create a fresh catalog (simulating what the querier does)
     // and verify the table is discoverable
-    let querier_catalog = common::schema::create_catalog_with_config(&config).await?;
+    let querier_catalog = common::iceberg::create_catalog_with_config(&config).await?;
 
     // Step 3: Verify the table exists under the correct slug-based namespace
     let slug_ident = Identifier::new(&["testco".to_string(), "staging".to_string()], "traces");
