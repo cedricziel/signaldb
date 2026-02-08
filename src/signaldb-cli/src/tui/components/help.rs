@@ -26,7 +26,7 @@ impl HelpOverlay {
             .flex(Flex::Center)
             .split(area);
 
-        let height = 34u16.min(area.height.saturating_sub(2).max(10));
+        let height = 42u16.min(area.height.saturating_sub(2).max(10));
 
         Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
@@ -70,7 +70,7 @@ impl Component for HelpOverlay {
             Line::from("  Enter           : Execute or select"),
             Line::from("  Up/Down, j/k    : Move selection"),
             Line::from("  Esc             : Back / close dialog"),
-            Line::from("  F1/F2/F3        : Metrics query shortcuts"),
+            Line::from("  Backspace       : Filter metric list"),
             Line::from("  Ctrl+T          : Switch Tenant/Dataset"),
             Line::from("  :               : Command palette"),
             Line::from("  T / K / D       : Admin sub-tabs"),
@@ -95,6 +95,19 @@ impl Component for HelpOverlay {
             )]),
             Line::from("  g               : Group by attribute"),
             Line::from("  r (detail)      : Toggle Log/Resource/Scope attrs"),
+            Line::from("  :group <attr>   : Group via command palette"),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "Metrics",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::from("  Enter           : Select metric / toggle detail"),
+            Line::from("  g               : Group by attribute"),
+            Line::from("  r (detail)      : Toggle Attrs/Resource/Scope"),
+            Line::from("  /               : Raw SQL query mode"),
+            Line::from("  Esc             : Back / close detail / exit group"),
             Line::from("  :group <attr>   : Group via command palette"),
             Line::from(""),
             Line::from(vec![Span::styled(
@@ -153,7 +166,7 @@ mod tests {
 
     #[test]
     fn renders_modal_with_keybinds() {
-        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 46)).unwrap();
         let help = HelpOverlay::new();
         let state = make_state();
         terminal
@@ -164,5 +177,6 @@ mod tests {
         assert!(content.contains("Help"));
         assert!(content.contains("Navigation"));
         assert!(content.contains("Logs"));
+        assert!(content.contains("Metrics"));
     }
 }

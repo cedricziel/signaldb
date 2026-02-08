@@ -9,6 +9,7 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use super::action::{Action, map_key_to_action};
 use super::client::admin::{AdminClient, AdminClientError};
 use super::client::flight::{FlightClientError, FlightSqlClient};
+use super::client::models::MetricGroupBy;
 use super::components::Component;
 use super::components::admin::AdminPanel;
 use super::components::command_palette::{CommandPalette, PaletteAction, PaletteCommand};
@@ -188,14 +189,18 @@ impl App {
                         Some(Action::ExecuteCommand(format!("time {label}")))
                     }
                     PaletteCommand::SetGroupBy(attr) => {
-                        if self.state.active_tab == Tab::Traces {
-                            if let Some(group_by) = Self::parse_group_by_attr(&attr) {
-                                self.traces.set_group_by(group_by);
-                            }
+                        if self.state.active_tab == Tab::Traces
+                            && let Some(group_by) = Self::parse_group_by_attr(&attr)
+                        {
+                            self.traces.set_group_by(group_by);
                         } else if self.state.active_tab == Tab::Logs
                             && let Some(group_by) = Self::parse_log_group_by_attr(&attr)
                         {
                             self.logs.set_group_by(group_by);
+                        } else if self.state.active_tab == Tab::Metrics
+                            && let Some(group_by) = Self::parse_metric_group_by_attr(&attr)
+                        {
+                            self.metrics.set_group_by(group_by);
                         }
                         self.command_palette.reset();
                         Some(Action::CloseOverlay)
@@ -612,6 +617,40 @@ impl App {
 
     async fn refresh_metrics(&mut self) {
         self.metrics.refresh();
+        if self.metrics.take_pending_discovery() {
+            match self.flight_client.discover_metric_names().await {
+                Ok(names) => {
+                    self.metrics.set_metric_names(names);
+                    self.mark_connected();
+                }
+                Err(err) => {
+                    let msg = self.flight_error_message(&err);
+                    self.metrics.set_error(msg);
+                    self.handle_flight_error(err);
+                }
+            }
+            return;
+        }
+
+        if let Some((name, metric_type, filters)) = self.metrics.take_pending_metric_query() {
+            match self
+                .flight_client
+                .query_metric(&name, &metric_type, &filters)
+                .await
+            {
+                Ok(batches) => {
+                    self.metrics.set_data(&batches);
+                    self.mark_connected();
+                }
+                Err(err) => {
+                    let msg = self.flight_error_message(&err);
+                    self.metrics.set_error(msg);
+                    self.handle_flight_error(err);
+                }
+            }
+            return;
+        }
+
         if let Some(query) = self.metrics.take_pending_query() {
             match self.flight_client.query_sql(&query).await {
                 Ok(batches) => {
@@ -783,6 +822,16 @@ impl App {
             "service" => Some(LogGroupBy::Service),
             "severity" => Some(LogGroupBy::Severity),
             "scope" | "scope_name" => Some(LogGroupBy::ScopeName),
+            _ => None,
+        }
+    }
+
+    fn parse_metric_group_by_attr(attr: &str) -> Option<MetricGroupBy> {
+        match attr.trim().to_lowercase().as_str() {
+            "none" => Some(MetricGroupBy::None),
+            "service" => Some(MetricGroupBy::Service),
+            "type" | "metric_type" => Some(MetricGroupBy::MetricType),
+            "scope" | "scope_name" => Some(MetricGroupBy::ScopeName),
             _ => None,
         }
     }
@@ -1045,5 +1094,34 @@ mod tests {
         );
         assert_eq!(App::parse_log_group_by_attr("none"), Some(LogGroupBy::None));
         assert_eq!(App::parse_log_group_by_attr("unknown"), None);
+    }
+
+    #[test]
+    fn parse_metric_group_by_attr_supports_aliases() {
+        assert_eq!(
+            App::parse_metric_group_by_attr("service"),
+            Some(MetricGroupBy::Service)
+        );
+        assert_eq!(
+            App::parse_metric_group_by_attr("type"),
+            Some(MetricGroupBy::MetricType)
+        );
+        assert_eq!(
+            App::parse_metric_group_by_attr("metric_type"),
+            Some(MetricGroupBy::MetricType)
+        );
+        assert_eq!(
+            App::parse_metric_group_by_attr("scope"),
+            Some(MetricGroupBy::ScopeName)
+        );
+        assert_eq!(
+            App::parse_metric_group_by_attr("scope_name"),
+            Some(MetricGroupBy::ScopeName)
+        );
+        assert_eq!(
+            App::parse_metric_group_by_attr("none"),
+            Some(MetricGroupBy::None)
+        );
+        assert_eq!(App::parse_metric_group_by_attr("unknown"), None);
     }
 }

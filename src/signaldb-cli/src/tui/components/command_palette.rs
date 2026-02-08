@@ -295,6 +295,8 @@ impl CommandPalette {
                         "severity",
                         "scope",
                         "scope_name",
+                        "type",
+                        "metric_type",
                     ]
                     .into_iter()
                     .filter(|value| value.starts_with(arg_prefix))

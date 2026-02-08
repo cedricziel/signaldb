@@ -127,3 +127,214 @@ pub struct PoolStats {
     /// Total connections created since startup
     pub total_connections: u64,
 }
+
+/// Metric type enumeration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetricType {
+    Gauge,
+    Sum,
+    Histogram,
+    ExponentialHistogram,
+    Summary,
+}
+
+impl MetricType {
+    /// Get the Iceberg table name for this metric type.
+    pub fn table_name(&self) -> &str {
+        match self {
+            Self::Gauge => "metrics_gauge",
+            Self::Sum => "metrics_sum",
+            Self::Histogram => "metrics_histogram",
+            Self::ExponentialHistogram => "metrics_exponential_histogram",
+            Self::Summary => "metrics_summary",
+        }
+    }
+
+    /// Get the human-readable label for this metric type.
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Gauge => "Gauge",
+            Self::Sum => "Sum",
+            Self::Histogram => "Histogram",
+            Self::ExponentialHistogram => "Exp. Histogram",
+            Self::Summary => "Summary",
+        }
+    }
+
+    /// Get the single-character badge for this metric type.
+    pub fn badge(&self) -> &str {
+        match self {
+            Self::Gauge => "G",
+            Self::Sum => "S",
+            Self::Histogram => "H",
+            Self::ExponentialHistogram => "E",
+            Self::Summary => "Q",
+        }
+    }
+
+    /// All metric types in discovery order.
+    pub fn all() -> &'static [MetricType] {
+        &[
+            MetricType::Gauge,
+            MetricType::Sum,
+            MetricType::Histogram,
+            MetricType::ExponentialHistogram,
+            MetricType::Summary,
+        ]
+    }
+}
+
+/// Information about a metric name.
+#[derive(Debug, Clone)]
+pub struct MetricNameInfo {
+    /// Metric name
+    pub name: String,
+    /// Metric description
+    pub description: String,
+    /// Unit of measurement
+    pub unit: String,
+    /// Metric type
+    pub metric_type: MetricType,
+}
+
+/// Filters for metric queries.
+#[derive(Debug, Clone)]
+pub struct MetricFilters {
+    /// Filter by service name
+    pub service_name: Option<String>,
+    /// Maximum number of results
+    pub limit: u32,
+}
+
+impl Default for MetricFilters {
+    fn default() -> Self {
+        Self {
+            service_name: None,
+            limit: 500,
+        }
+    }
+}
+
+/// Grouping strategy for metric results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetricGroupBy {
+    None,
+    Service,
+    MetricType,
+    ScopeName,
+}
+
+impl MetricGroupBy {
+    /// Get the human-readable label for this grouping strategy.
+    pub fn label(&self) -> &str {
+        match self {
+            Self::None => "None",
+            Self::Service => "Service",
+            Self::MetricType => "Metric Type",
+            Self::ScopeName => "Scope Name",
+        }
+    }
+
+    /// Extract grouping key from a row.
+    /// `columns` is the list of column names, `row` is the list of cell values as strings.
+    pub fn key(&self, columns: &[String], row: &[String]) -> String {
+        match self {
+            Self::None => String::new(),
+            Self::Service => {
+                let idx = columns.iter().position(|c| c == "service_name");
+                idx.and_then(|i| row.get(i))
+                    .cloned()
+                    .unwrap_or_else(|| "(unknown)".to_string())
+            }
+            Self::MetricType => {
+                let idx = columns.iter().position(|c| c == "metric_type");
+                idx.and_then(|i| row.get(i))
+                    .cloned()
+                    .unwrap_or_else(|| "(unknown)".to_string())
+            }
+            Self::ScopeName => {
+                let idx = columns.iter().position(|c| c == "scope_name");
+                idx.and_then(|i| row.get(i))
+                    .cloned()
+                    .unwrap_or_else(|| "(unknown)".to_string())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metric_type_table_names() {
+        assert_eq!(MetricType::Gauge.table_name(), "metrics_gauge");
+        assert_eq!(MetricType::Sum.table_name(), "metrics_sum");
+        assert_eq!(MetricType::Histogram.table_name(), "metrics_histogram");
+        assert_eq!(
+            MetricType::ExponentialHistogram.table_name(),
+            "metrics_exponential_histogram"
+        );
+        assert_eq!(MetricType::Summary.table_name(), "metrics_summary");
+    }
+
+    #[test]
+    fn metric_type_labels() {
+        assert_eq!(MetricType::Gauge.label(), "Gauge");
+        assert_eq!(MetricType::Sum.label(), "Sum");
+        assert_eq!(MetricType::Histogram.label(), "Histogram");
+        assert_eq!(MetricType::ExponentialHistogram.label(), "Exp. Histogram");
+        assert_eq!(MetricType::Summary.label(), "Summary");
+    }
+
+    #[test]
+    fn metric_type_badges() {
+        assert_eq!(MetricType::Gauge.badge(), "G");
+        assert_eq!(MetricType::Sum.badge(), "S");
+        assert_eq!(MetricType::Histogram.badge(), "H");
+        assert_eq!(MetricType::ExponentialHistogram.badge(), "E");
+        assert_eq!(MetricType::Summary.badge(), "Q");
+    }
+
+    #[test]
+    fn metric_type_all() {
+        let all = MetricType::all();
+        assert_eq!(all.len(), 5);
+        assert_eq!(all[0], MetricType::Gauge);
+        assert_eq!(all[1], MetricType::Sum);
+        assert_eq!(all[2], MetricType::Histogram);
+        assert_eq!(all[3], MetricType::ExponentialHistogram);
+        assert_eq!(all[4], MetricType::Summary);
+    }
+
+    #[test]
+    fn metric_filters_default() {
+        let filters = MetricFilters::default();
+        assert_eq!(filters.limit, 500);
+        assert_eq!(filters.service_name, None);
+    }
+
+    #[test]
+    fn metric_group_by_labels() {
+        assert_eq!(MetricGroupBy::None.label(), "None");
+        assert_eq!(MetricGroupBy::Service.label(), "Service");
+        assert_eq!(MetricGroupBy::MetricType.label(), "Metric Type");
+        assert_eq!(MetricGroupBy::ScopeName.label(), "Scope Name");
+    }
+
+    #[test]
+    fn metric_group_by_key_service() {
+        let columns = vec!["service_name".to_string(), "value".to_string()];
+        let row = vec!["my-svc".to_string(), "42".to_string()];
+        let key = MetricGroupBy::Service.key(&columns, &row);
+        assert_eq!(key, "my-svc");
+    }
+
+    #[test]
+    fn metric_group_by_key_missing_column() {
+        let columns = vec!["value".to_string()];
+        let row = vec!["42".to_string()];
+        let key = MetricGroupBy::Service.key(&columns, &row);
+        assert_eq!(key, "(unknown)");
+    }
+}

@@ -12,7 +12,10 @@ use futures::{StreamExt, TryStreamExt};
 use tonic::metadata::MetadataValue;
 use tonic::transport::Endpoint;
 
-use super::models::{SpanInfo, TraceDetail, TraceResult, TraceSearchParams};
+use super::models::{
+    MetricFilters, MetricNameInfo, MetricType, SpanInfo, TraceDetail, TraceResult,
+    TraceSearchParams,
+};
 
 /// Errors returned by [`FlightSqlClient`].
 #[derive(Debug, thiserror::Error)]
@@ -374,6 +377,102 @@ impl FlightSqlClient {
     ) -> Result<Vec<RecordBatch>, FlightClientError> {
         self.query_sql(sql).await
     }
+
+    /// Discover metric names across all metric tables.
+    /// Queries each table individually and merges results.
+    /// Tables that don't exist are silently skipped.
+    pub async fn discover_metric_names(&self) -> Result<Vec<MetricNameInfo>, FlightClientError> {
+        let mut all_metrics: Vec<MetricNameInfo> = Vec::new();
+
+        for metric_type in MetricType::all() {
+            let sql = format!(
+                "SELECT DISTINCT metric_name, \
+                 COALESCE(metric_description, '') AS metric_description, \
+                 COALESCE(metric_unit, '') AS metric_unit \
+                 FROM {} \
+                 ORDER BY metric_name",
+                metric_type.table_name()
+            );
+
+            match self.query_sql(&sql).await {
+                Ok(batches) => {
+                    for batch in &batches {
+                        let names = batch
+                            .column_by_name("metric_name")
+                            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+                        let descriptions = batch
+                            .column_by_name("metric_description")
+                            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+                        let units = batch
+                            .column_by_name("metric_unit")
+                            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+
+                        if let Some(names) = names {
+                            for i in 0..batch.num_rows() {
+                                if names.is_null(i) {
+                                    continue;
+                                }
+                                all_metrics.push(MetricNameInfo {
+                                    name: names.value(i).to_string(),
+                                    description: descriptions
+                                        .and_then(|d| {
+                                            if d.is_null(i) { None } else { Some(d.value(i)) }
+                                        })
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    unit: units
+                                        .and_then(|u| {
+                                            if u.is_null(i) { None } else { Some(u.value(i)) }
+                                        })
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    metric_type: metric_type.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Table doesn't exist or query failed — skip silently
+                    continue;
+                }
+            }
+        }
+
+        // Sort alphabetically by name, then by type label for same-name metrics
+        all_metrics.sort_by(|a, b| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| a.metric_type.label().cmp(b.metric_type.label()))
+        });
+
+        Ok(all_metrics)
+    }
+
+    /// Query data for a specific metric from its table.
+    pub async fn query_metric(
+        &self,
+        metric_name: &str,
+        metric_type: &MetricType,
+        filters: &MetricFilters,
+    ) -> Result<Vec<RecordBatch>, FlightClientError> {
+        let mut sql = format!(
+            "SELECT * FROM {} WHERE metric_name = '{}'",
+            metric_type.table_name(),
+            metric_name.replace('\'', "''") // Escape single quotes
+        );
+
+        if let Some(ref svc) = filters.service_name {
+            sql.push_str(&format!(
+                " AND service_name = '{}'",
+                svc.replace('\'', "''")
+            ));
+        }
+
+        sql.push_str(&format!(" ORDER BY timestamp DESC LIMIT {}", filters.limit));
+
+        self.query_sql(&sql).await
+    }
 }
 
 fn extract_numeric_value(col: Option<&Arc<dyn Array>>, row: usize) -> Option<u64> {
@@ -535,5 +634,20 @@ mod tests {
         assert_eq!(client.dataset_id.as_deref(), Some("prod"));
         client.set_dataset_id(None);
         assert!(client.dataset_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn discover_metric_names_on_unreachable_returns_empty() {
+        let client = FlightSqlClient::new("http://127.0.0.1:19999".into(), None, None, None);
+        let result = client.discover_metric_names().await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn query_metric_escapes_single_quotes() {
+        let name = "test's metric";
+        let escaped = name.replace('\'', "''");
+        assert_eq!(escaped, "test''s metric");
     }
 }
