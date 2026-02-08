@@ -1816,10 +1816,16 @@ dependencies = [
  "anyhow",
  "clap",
  "common",
+ "datafusion",
+ "datafusion_iceberg",
  "env_logger",
  "iceberg-rust",
  "log",
+ "object_store",
+ "serde",
  "tokio",
+ "uuid",
+ "writer",
 ]
 
 [[package]]

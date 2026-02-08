@@ -14,15 +14,13 @@ anyhow.workspace = true
 clap.workspace = true
 env_logger.workspace = true
 
-# Phase 2 dependencies (commented out for Phase 1)
-# datafusion.workspace = true
-# arrow-flight.workspace = true
-# object_store.workspace = true
-# futures.workspace = true
-# chrono.workspace = true
-# serde.workspace = true
-# serde_json.workspace = true
-# uuid.workspace = true
+# Phase 2 dependencies
+datafusion.workspace = true
+datafusion_iceberg.workspace = true
+object_store.workspace = true
+serde.workspace = true
+uuid.workspace = true
+writer.workspace = true
 
 [[bin]]
 name = "signaldb-compactor"
