@@ -1814,16 +1814,22 @@ name = "compactor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "chrono-tz",
  "clap",
  "common",
  "datafusion",
  "datafusion_iceberg",
  "env_logger",
+ "humantime",
+ "humantime-serde",
  "iceberg-rust",
  "log",
  "object_store",
  "serde",
+ "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "uuid",
  "writer",
 ]

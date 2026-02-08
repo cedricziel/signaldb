@@ -146,6 +146,40 @@ max_buffer_entries = 1000
 flush_interval = "30s"
 max_buffer_size_bytes = 134217728     # 128MB
 
+[compactor]
+# Compactor service configuration (Phase 2: Compaction + Phase 3: Retention)
+enabled = false                       # Enable compactor service
+tick_interval = "5m"                  # Interval between compaction planning cycles
+target_file_size_mb = 128             # Target file size after compaction (MB)
+file_count_threshold = 5              # Minimum files to trigger compaction
+min_input_file_size_kb = 1024         # Minimum input file size (KB)
+max_files_per_job = 20                # Maximum files per compaction job
+
+# Phase 3: Retention enforcement configuration
+[compactor.retention]
+enabled = false                       # Enable retention enforcement (opt-in)
+retention_check_interval = "1h"       # Interval between retention checks
+grace_period = "1h"                   # Safety margin before dropping expired data
+timezone = "UTC"                      # Timezone for retention calculations
+
+# Default retention periods per signal type
+traces = "7d"                         # Keep traces for 7 days
+logs = "30d"                          # Keep logs for 30 days
+metrics = "90d"                       # Keep metrics for 90 days
+
+# Tenant-specific retention overrides
+# [compactor.retention.tenant_overrides.acme]
+# traces = "14d"                      # Override: Keep Acme traces for 14 days
+# logs = "60d"                        # Override: Keep Acme logs for 60 days
+#
+# # Dataset-specific retention overrides
+# [compactor.retention.tenant_overrides.acme.dataset_overrides.production]
+# traces = "30d"                      # Override: Keep production traces for 30 days
+# logs = "90d"                        # Override: Keep production logs for 90 days
+#
+# [compactor.retention.tenant_overrides.acme.dataset_overrides.staging]
+# traces = "2d"                       # Override: Keep staging traces for only 2 days
+
 [tenants]
 # Multi-tenant configuration (always active)
 default_tenant = "default"
