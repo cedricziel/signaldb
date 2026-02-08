@@ -23,6 +23,10 @@ impl ParquetRewriter {
     /// Compact a partition by reading, merging, and rewriting files
     ///
     /// Returns: (output_file_paths, input_size_bytes, output_size_bytes)
+    ///
+    /// Note: Size measurements are estimates based on in-memory RecordBatch sizes.
+    /// Phase 3 will use actual Parquet file sizes from Iceberg manifests for
+    /// accurate compression metrics.
     pub async fn compact_partition(
         &self,
         tenant_id: &str,
@@ -68,21 +72,23 @@ impl ParquetRewriter {
             return Ok((vec![], 0, 0));
         }
 
-        // Calculate input size (estimate from batches)
+        // Calculate input size (estimate from in-memory batches)
+        // TODO(Phase 3): Read actual Parquet file sizes from Iceberg manifests
+        // for accurate input size measurement and compression ratio calculation
         let input_size: u64 = merged_batches
             .iter()
             .map(|b| b.get_array_memory_size() as u64)
             .sum();
 
         log::debug!(
-            "Read and merged {} batches from partition {} ({} bytes)",
+            "Read and merged {} batches from partition {} (estimated {} bytes)",
             merged_batches.len(),
             partition_id,
             input_size
         );
 
         // Step 3: Write merged batches to new files
-        let output_files = self
+        let (output_files, output_size) = self
             .write_merged_batches(
                 tenant_id,
                 dataset_id,
@@ -93,13 +99,11 @@ impl ParquetRewriter {
             .await
             .context("Failed to write merged batches")?;
 
-        // Estimate output size (will be more accurate after actual write)
-        let output_size = input_size; // For Phase 2, assume similar size
-
         log::info!(
-            "Compacted partition {} into {} output files",
+            "Compacted partition {} into {} output files (estimated {} bytes)",
             partition_id,
-            output_files.len()
+            output_files.len(),
+            output_size
         );
 
         Ok((output_files, input_size, output_size))
@@ -161,6 +165,8 @@ impl ParquetRewriter {
     }
 
     /// Write merged batches to new files
+    ///
+    /// Returns: (output_file_paths, estimated_output_size_bytes)
     async fn write_merged_batches(
         &self,
         tenant_id: &str,
@@ -168,7 +174,7 @@ impl ParquetRewriter {
         table_name: &str,
         batches: Vec<RecordBatch>,
         target_file_size_bytes: u64,
-    ) -> Result<Vec<String>> {
+    ) -> Result<(Vec<String>, u64)> {
         log::debug!(
             "Writing {} merged batches to table {}/{}/{}",
             batches.len(),
@@ -212,6 +218,20 @@ impl ParquetRewriter {
             target_file_size_bytes
         );
 
+        // Calculate estimated output size from split batches
+        // This is more accurate than the input estimate since it reflects
+        // the actual data that will be written to Parquet files
+        let estimated_output_size: u64 = split_batches
+            .iter()
+            .map(|b| b.get_array_memory_size() as u64)
+            .sum();
+
+        log::debug!(
+            "Estimated output size: {} bytes ({} MB)",
+            estimated_output_size,
+            estimated_output_size / 1_048_576
+        );
+
         // Write each batch group
         for (i, batch) in split_batches.iter().enumerate() {
             log::debug!(
@@ -247,7 +267,7 @@ impl ParquetRewriter {
             .map(|i| format!("compacted-{}.parquet", i))
             .collect();
 
-        Ok(output_files)
+        Ok((output_files, estimated_output_size))
     }
 
     /// Split batches to target file size
