@@ -119,15 +119,17 @@ impl CompactionPlanner {
                 let dataset_id = &dataset_config.id;
                 log::debug!("  Analyzing dataset: {dataset_id}");
 
-                // Analyze this dataset
-                let dataset_candidates = self
-                    .analyze_dataset(tenant_id, dataset_id)
-                    .await
-                    .with_context(|| {
-                        format!("Failed to analyze dataset {tenant_id}/{dataset_id}")
-                    })?;
-
-                candidates.extend(dataset_candidates);
+                // Analyze this dataset (non-fatal: log errors and continue)
+                match self.analyze_dataset(tenant_id, dataset_id).await {
+                    Ok(dataset_candidates) => {
+                        candidates.extend(dataset_candidates);
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to analyze dataset {tenant_id}/{dataset_id}: {e:?}. Continuing with other datasets."
+                        );
+                    }
+                }
             }
         }
 
@@ -174,15 +176,17 @@ impl CompactionPlanner {
             let table_name = identifier.name();
             log::debug!("      Analyzing table: {table_name}");
 
-            // Analyze this table
-            let table_candidates = self
-                .analyze_table(tenant_id, dataset_id, table_name)
-                .await
-                .with_context(|| {
-                    format!("Failed to analyze table {tenant_id}/{dataset_id}/{table_name}")
-                })?;
-
-            candidates.extend(table_candidates);
+            // Analyze this table (non-fatal: log errors and continue)
+            match self.analyze_table(tenant_id, dataset_id, table_name).await {
+                Ok(table_candidates) => {
+                    candidates.extend(table_candidates);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Failed to analyze table {tenant_id}/{dataset_id}/{table_name}: {e:?}. Continuing with other tables."
+                    );
+                }
+            }
         }
 
         Ok(candidates)

@@ -7,22 +7,22 @@ rust-version.workspace = true
 
 [dependencies]
 common.workspace = true
-datafusion.workspace = true
-arrow-flight.workspace = true
-object_store.workspace = true
 iceberg-rust.workspace = true
 tokio.workspace = true
-futures.workspace = true
 log.workspace = true
 anyhow.workspace = true
-async-trait.workspace = true
-tracing.workspace = true
 clap.workspace = true
-uuid.workspace = true
-chrono.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 env_logger.workspace = true
+
+# Phase 2 dependencies (commented out for Phase 1)
+# datafusion.workspace = true
+# arrow-flight.workspace = true
+# object_store.workspace = true
+# futures.workspace = true
+# chrono.workspace = true
+# serde.workspace = true
+# serde_json.workspace = true
+# uuid.workspace = true
 
 [[bin]]
 name = "signaldb-compactor"
@@ -30,14 +30,7 @@ path = "src/main.rs"
 
 [package.metadata.cargo-machete]
 ignored = [
+    # iceberg-rust pulls in these as transitive dependencies
     "async-trait",
-    "tracing",
-    "arrow-flight",
-    "chrono",
-    "datafusion",
-    "futures",
-    "object_store",
-    "serde",
-    "serde_json",
-    "uuid"
+    "serde"
 ]
