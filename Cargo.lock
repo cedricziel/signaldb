@@ -7056,6 +7056,7 @@ dependencies = [
  "cargo-husky",
  "clap",
  "common",
+ "compactor",
  "log",
  "querier",
  "router",

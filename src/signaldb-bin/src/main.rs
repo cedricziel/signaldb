@@ -9,6 +9,7 @@ use common::cli::{CommonArgs, CommonCommands, utils};
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::{Wal, WalConfig};
+use compactor::planner::{CompactionPlanner, PlannerConfig};
 use querier::QuerierFlightService;
 use router::{InMemoryStateImpl, RouterState, create_flight_service, create_router};
 use std::net::SocketAddr;
@@ -207,6 +208,72 @@ async fn main() -> Result<()> {
     .await
     .context("Failed to create querier flight service")?;
 
+    // Initialize compactor service (optional, controlled by config)
+    let compactor_handle = if config.compactor.enabled {
+        log::info!("Compactor enabled, initializing service");
+
+        // Initialize compactor service bootstrap
+        let compactor_bootstrap = ServiceBootstrap::new(
+            config.clone(),
+            ServiceType::Compactor,
+            "compactor:none".to_string(), // Sentinel address (no endpoint)
+        )
+        .await
+        .context("Failed to initialize compactor service bootstrap")?;
+
+        log::info!(
+            "Compactor service registered with ID: {}",
+            compactor_bootstrap.service_id()
+        );
+
+        // Create compaction planner with shared catalog manager
+        let planner_config = PlannerConfig::from(&config.compactor);
+        let planner = Arc::new(CompactionPlanner::new(
+            catalog_manager.clone(),
+            planner_config,
+        ));
+
+        log::info!(
+            "Compaction planner initialized with tick interval: {:?}",
+            config.compactor.tick_interval
+        );
+
+        // Start planning loop in background task
+        let tick_interval = config.compactor.tick_interval;
+        let planning_handle = tokio::spawn(async move {
+            use tokio::time::interval;
+            let mut ticker = interval(tick_interval);
+
+            loop {
+                ticker.tick().await;
+
+                log::debug!("Running compaction planning cycle");
+
+                match planner.plan().await {
+                    Ok(candidates) => {
+                        if candidates.is_empty() {
+                            log::info!("No compaction candidates found in this cycle");
+                        } else {
+                            log::info!("Found {} compaction candidates:", candidates.len());
+                            for candidate in candidates {
+                                candidate.log();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Compaction planning cycle failed: {e:?}");
+                    }
+                }
+            }
+        });
+
+        // Return handle and bootstrap for cleanup
+        Some((planning_handle, compactor_bootstrap))
+    } else {
+        log::info!("Compactor disabled in configuration");
+        None
+    };
+
     // Initialize shared acceptor resources for both gRPC and HTTP servers
     let wal_dir = std::env::var("ACCEPTOR_WAL_DIR")
         .unwrap_or_else(|_| ".wal/acceptor".to_string())
@@ -362,6 +429,17 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to listen for ctrl+c signal")?;
     log::info!("Shutting down service discovery and other services");
+
+    // Shutdown compactor first (if it was running)
+    if let Some((planning_handle, compactor_bootstrap)) = compactor_handle {
+        log::info!("Stopping compactor planning task");
+        planning_handle.abort();
+        let _ = planning_handle.await;
+
+        if let Err(e) = compactor_bootstrap.shutdown().await {
+            log::error!("Failed to shutdown compactor service bootstrap: {e}");
+        }
+    }
 
     // Graceful deregistration using service bootstrap
     if let Err(e) = router_bootstrap.shutdown().await {
