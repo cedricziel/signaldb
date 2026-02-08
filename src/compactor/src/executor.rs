@@ -31,6 +31,7 @@ pub struct CompactionJob {
     pub table_name: String,
     pub partition_id: String,
     pub input_files: Vec<DataFileInfo>,
+    pub input_files_count: usize, // Expected count from candidate stats
     pub target_file_size_bytes: u64,
     pub created_at: Instant,
 }
@@ -61,6 +62,7 @@ pub enum CompactionStatus {
 pub struct ExecutorConfig {
     pub max_retries: u32,
     pub base_delay_ms: u64,
+    pub target_file_size_bytes: u64,
 }
 
 impl Default for ExecutorConfig {
@@ -68,14 +70,18 @@ impl Default for ExecutorConfig {
         Self {
             max_retries: 3,
             base_delay_ms: 100,
+            target_file_size_bytes: 128 * 1024 * 1024, // 128MB default
         }
     }
 }
 
 impl From<&PlannerConfig> for ExecutorConfig {
-    fn from(_config: &PlannerConfig) -> Self {
-        // Use defaults for now, could be extended with config options
-        Self::default()
+    fn from(config: &PlannerConfig) -> Self {
+        Self {
+            max_retries: 3,
+            base_delay_ms: 100,
+            target_file_size_bytes: config.target_file_size_bytes,
+        }
     }
 }
 
@@ -139,12 +145,13 @@ impl CompactionExecutor {
 
         let job = CompactionJob {
             job_id,
-            tenant_id: candidate.tenant_id,
-            dataset_id: candidate.dataset_id,
-            table_name: candidate.table_name,
-            partition_id: candidate.partition_id,
+            tenant_id: candidate.tenant_id.clone(),
+            dataset_id: candidate.dataset_id.clone(),
+            table_name: candidate.table_name.clone(),
+            partition_id: candidate.partition_id.clone(),
             input_files,
-            target_file_size_bytes: 128 * 1024 * 1024, // 128 MB default
+            input_files_count: candidate.stats.file_count,
+            target_file_size_bytes: self.config.target_file_size_bytes,
             created_at: Instant::now(),
         };
 
@@ -226,7 +233,7 @@ impl CompactionExecutor {
                             return Ok(CompactionResult {
                                 job_id,
                                 status: CompactionStatus::Conflict,
-                                input_files_count: 0,
+                                input_files_count: job.input_files_count,
                                 output_files_count: 0,
                                 bytes_before: 0,
                                 bytes_after: 0,
@@ -243,7 +250,7 @@ impl CompactionExecutor {
                         return Ok(CompactionResult {
                             job_id,
                             status: CompactionStatus::Failed,
-                            input_files_count: 0,
+                            input_files_count: job.input_files_count,
                             output_files_count: 0,
                             bytes_before: 0,
                             bytes_after: 0,
@@ -260,7 +267,7 @@ impl CompactionExecutor {
         Ok(CompactionResult {
             job_id,
             status: CompactionStatus::Failed,
-            input_files_count: 0,
+            input_files_count: job.input_files_count,
             output_files_count: 0,
             bytes_before: 0,
             bytes_after: 0,
@@ -384,7 +391,7 @@ impl CompactionExecutor {
         Ok(CompactionResult {
             job_id: job.job_id.clone(),
             status: CompactionStatus::Success,
-            input_files_count: 0, // Will be populated in full implementation
+            input_files_count: job.input_files_count,
             output_files_count: output_files.len(),
             bytes_before: input_size,
             bytes_after: output_size,
