@@ -40,6 +40,8 @@ COPY xtask/Cargo.toml xtask/
 RUN mkdir -p src/acceptor/src && echo "fn main() {}" > src/acceptor/src/main.rs && \
     mkdir -p src/router/src && echo "fn main() {}" > src/router/src/main.rs && \
     mkdir -p src/writer/src && echo "fn main() {}" > src/writer/src/main.rs && \
+    mkdir -p src/writer/benches && echo "fn main() {}" > src/writer/benches/iceberg_benchmarks.rs && \
+    echo "fn main() {}" > src/writer/benches/connection_pool_benchmarks.rs && \
     mkdir -p src/querier/src && echo "fn main() {}" > src/querier/src/main.rs && \
     mkdir -p src/common/src && echo "pub fn dummy() {}" > src/common/src/lib.rs && \
     mkdir -p src/tempo-api/src && echo "pub fn dummy() {}" > src/tempo-api/src/lib.rs && \
@@ -61,7 +63,7 @@ RUN cargo build --release \
     --bin signaldb
 
 # Remove dummy files and build artifacts (keep cached dependencies)
-RUN rm -rf src/*/src && \
+RUN rm -rf src/*/src src/*/benches && \
     find target/release -type f -executable -delete && \
     rm -f target/release/deps/signaldb*
 
