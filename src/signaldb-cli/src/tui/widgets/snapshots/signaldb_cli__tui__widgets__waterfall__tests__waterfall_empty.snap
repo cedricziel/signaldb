@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/widgets/waterfall.rs
+expression: content
+---
+┌ Waterfall ───────────────────────────────────────────────┐│No spans to display                                       ││                                                          ││                                                          ││                                                          │└──────────────────────────────────────────────────────────┘

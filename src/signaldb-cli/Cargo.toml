@@ -17,7 +17,20 @@ arrow.workspace = true
 arrow-flight.workspace = true
 tonic.workspace = true
 futures.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+tui-tree-widget.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
 
 [[bin]]
 name = "signaldb-cli"
 path = "src/main.rs"
+
+[dev-dependencies]
+insta = "1.46"
+mockito = "1.7"
+tokio = { workspace = true, features = ["test-util"] }
+
+[package.metadata.cargo-machete]
+ignored = ["ratatui", "crossterm", "tui-tree-widget", "insta", "mockito"]

@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/components/dashboard/pool_stats.rs
+expression: content
+---
+┌ Connection Pool ─────────────────────┐│⠋ Loading...                          ││                                      ││                                      ││                                      ││                                      ││                                      │└──────────────────────────────────────┘

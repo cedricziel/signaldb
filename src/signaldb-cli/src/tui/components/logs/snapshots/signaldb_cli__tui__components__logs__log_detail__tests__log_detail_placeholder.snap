@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/components/logs/log_detail.rs
+expression: content
+---
+┌ [Log ● | Resource ○ | Scope ○] Log Attributes (r to switc┐│No attributes                                             ││                                                          ││                                                          ││                                                          │└──────────────────────────────────────────────────────────┘

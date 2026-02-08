@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/widgets/text_input.rs
+expression: content
+---
+┌ Tenant ID ───────────────────────────┐│acme-corp█                            │└──────────────────────────────────────┘

@@ -47,6 +47,16 @@ rand = { workspace = true, optional = true }
 name = "signaldb-writer"
 path = "src/main.rs"
 
+[[bench]]
+name = "iceberg_benchmarks"
+harness = false
+required-features = ["benchmarks"]
+
+[[bench]]
+name = "connection_pool_benchmarks"
+harness = false
+required-features = ["benchmarks"]
+
 [dev-dependencies]
 tokio-stream.workspace = true
 

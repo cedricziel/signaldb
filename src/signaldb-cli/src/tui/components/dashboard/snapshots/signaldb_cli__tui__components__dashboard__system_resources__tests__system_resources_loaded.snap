@@ -1,0 +1,6 @@
+---
+source: src/signaldb-cli/src/tui/components/dashboard/system_resources.rs
+assertion_line: 326
+expression: content
+---
+┌ System Resources ────────────────────────────────────────────────────────────┐│CPU % [writer-1]                       Memory (MB) [writer-1]                 ││    █                                  ▆▇█                                    ││   ██                                  ███                                    ││  ███                                  ███                                    ││ ████                                  ███                                    ││█████                                  ███                                    │└──────────────────────────────────────────────────────────────────────────────┘

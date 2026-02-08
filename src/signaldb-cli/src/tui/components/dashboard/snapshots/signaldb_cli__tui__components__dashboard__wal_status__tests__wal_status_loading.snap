@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/components/dashboard/wal_status.rs
+expression: content
+---
+┌ WAL Status ──────────────────────────┐│⠋ Loading...                          ││                                      ││                                      ││                                      ││                                      ││                                      │└──────────────────────────────────────┘

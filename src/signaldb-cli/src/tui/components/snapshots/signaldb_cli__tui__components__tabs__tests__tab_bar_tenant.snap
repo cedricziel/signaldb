@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/components/tabs.rs
+expression: content
+---
+┌SignalDB──────────────────────────────────────────────────────────────────────┐│ [1] Dashboard | [2] Traces | [3] Logs | [4] Metrics                          │└──────────────────────────────────────────────────────────────────────────────┘

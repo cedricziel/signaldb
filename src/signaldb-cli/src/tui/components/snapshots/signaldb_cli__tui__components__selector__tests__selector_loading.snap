@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/components/selector.rs
+expression: content
+---
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                ┌ Select Tenant ───────────────────────────────────────────┐│Loading...                                                ││                                                          │└──────────────────────────────────────────────────────────┘

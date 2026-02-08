@@ -1,0 +1,5 @@
+---
+source: src/signaldb-cli/src/tui/components/dashboard/system_resources.rs
+expression: content
+---
+┌ System Resources ────────────────────────────────────────────────────────────┐│⠋ Loading...                                                                  ││                                                                              ││                                                                              ││                                                                              ││                                                                              ││                                                                              │└──────────────────────────────────────────────────────────────────────────────┘
