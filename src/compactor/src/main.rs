@@ -1,7 +1,7 @@
 //! SignalDB Compactor Service
 //!
-//! Phase 1: Dry-run planning service that identifies compaction candidates
-//! without executing actual compaction. Logs what would be compacted.
+//! Phase 2: Full execution service that identifies compaction candidates,
+//! executes compaction with Parquet rewriting, and commits changes atomically.
 
 use anyhow::{Context, Result};
 use clap::Parser;

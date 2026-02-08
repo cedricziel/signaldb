@@ -75,7 +75,7 @@ Key details:
 - **Microservices**: Independent binaries, shared catalog (PostgreSQL or SQLite)
 - **Hybrid**: Mix of co-located and distributed services
 
-**Note**: Monolithic mode integrates the Compactor service (Phase 1 - dry-run planning) when `[compactor].enabled = true`. The compactor runs a background planning loop that identifies compaction candidates based on file count and size thresholds.
+**Note**: Monolithic mode integrates the Compactor service (Phase 2 - full execution) when `[compactor].enabled = true`. The compactor runs a background planning loop that identifies compaction candidates based on file count and size thresholds, and executes compaction by rewriting Parquet files and committing changes atomically to Iceberg tables.
 
 ## Dual Catalog System
 
