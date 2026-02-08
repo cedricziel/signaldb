@@ -14,11 +14,10 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use datafusion::prelude::SessionContext;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-use signaldb_common::schema::catalog::CatalogManager;
+use common::CatalogManager;
 
 use crate::iceberg::{ManifestReader, PartitionInfo, PartitionManager, SnapshotManager};
 use crate::retention::config::RetentionConfig;
@@ -65,6 +64,7 @@ pub struct RetentionEnforcer {
     policy_resolver: RetentionPolicyResolver,
     partition_manager: PartitionManager,
     snapshot_manager: SnapshotManager,
+    #[allow(dead_code)] // Will be used in orphan cleanup phase
     manifest_reader: ManifestReader,
     metrics: Arc<RetentionMetrics>,
     config: RetentionConfig,
@@ -77,7 +77,7 @@ impl RetentionEnforcer {
         config: RetentionConfig,
         metrics: Arc<RetentionMetrics>,
     ) -> Result<Self> {
-        let policy_resolver = RetentionPolicyResolver::new(&config)
+        let policy_resolver = RetentionPolicyResolver::new(config.clone())
             .context("Failed to create retention policy resolver")?;
 
         Ok(Self {
@@ -134,7 +134,8 @@ impl RetentionEnforcer {
                     table_results.push(result);
                 }
                 Err(e) => {
-                    let error_msg = format!("Failed to enforce retention on table {}: {}", table_name, e);
+                    let error_msg =
+                        format!("Failed to enforce retention on table {}: {}", table_name, e);
                     warn!(
                         tenant_id = %tenant_id,
                         dataset_id = %dataset_id,
@@ -214,17 +215,25 @@ impl RetentionEnforcer {
             "Retention cutoff computed"
         );
 
-        self.metrics
-            .retention_cutoffs_computed
-            .with_label_values(&[tenant_id, dataset_id, &signal_type.to_string()])
-            .inc();
+        self.metrics.record_cutoff_computed();
 
         // Get table from catalog
-        let table = self
+        let table_identifier = self
             .catalog_manager
-            .get_table(tenant_id, dataset_id, table_name)
+            .build_table_identifier(tenant_id, dataset_id, table_name);
+
+        let catalog = self.catalog_manager.catalog();
+        let tabular = catalog
+            .load_tabular(&table_identifier)
             .await
-            .with_context(|| format!("Failed to get table {}", table_name))?;
+            .with_context(|| format!("Failed to load table {}", table_name))?;
+
+        let table = match tabular {
+            iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
+            _ => {
+                anyhow::bail!("Expected table but got view for {table_name}");
+            }
+        };
 
         // Step 1: Drop expired partitions
         let (partitions_dropped, bytes_reclaimed) = self
@@ -242,10 +251,10 @@ impl RetentionEnforcer {
         let duration_ms = (completed_at - started_at).num_milliseconds() as u64;
 
         // Update metrics
-        self.metrics
-            .retention_enforcement_duration_seconds
-            .with_label_values(&[tenant_id, dataset_id, &signal_type.to_string()])
-            .observe(duration_ms as f64 / 1000.0);
+        self.metrics.record_duration_ms(duration_ms);
+        if bytes_reclaimed > 0 {
+            self.metrics.record_bytes_reclaimed(bytes_reclaimed);
+        }
 
         Ok(TableRetentionResult {
             tenant_id: tenant_id.to_string(),
@@ -294,14 +303,12 @@ impl RetentionEnforcer {
         );
 
         self.metrics
-            .partitions_evaluated_total
-            .with_label_values(&[tenant_id, dataset_id, &cutoff.signal_type.to_string()])
-            .inc_by(all_partitions.len() as u64);
+            .record_partitions_evaluated(all_partitions.len());
 
         // Filter partitions older than cutoff
         let expired_partitions = self
             .partition_manager
-            .filter_partitions_older_than(&all_partitions, cutoff.cutoff_timestamp);
+            .filter_partitions_older_than(all_partitions, &cutoff.cutoff_timestamp);
 
         if expired_partitions.is_empty() {
             info!(
@@ -324,7 +331,7 @@ impl RetentionEnforcer {
         // Calculate bytes to reclaim
         let bytes_to_reclaim: u64 = expired_partitions
             .iter()
-            .map(|p| p.total_size_bytes)
+            .filter_map(|p| p.total_size_bytes)
             .sum();
 
         if self.config.dry_run {
@@ -353,7 +360,9 @@ impl RetentionEnforcer {
         }
 
         // Actually drop partitions
-        let ctx = self.create_datafusion_context(tenant_id, dataset_id).await?;
+        let ctx = self
+            .create_datafusion_context(tenant_id, dataset_id)
+            .await?;
 
         let mut dropped_count = 0;
         for partition in &expired_partitions {
@@ -361,10 +370,7 @@ impl RetentionEnforcer {
                 .drop_partition(&ctx, table_name, partition)
                 .await
                 .with_context(|| {
-                    format!(
-                        "Failed to drop partition {:?}",
-                        partition.get_hour_value()
-                    )
+                    format!("Failed to drop partition {:?}", partition.get_hour_value())
                 }) {
                 Ok(_) => {
                     info!(
@@ -379,10 +385,7 @@ impl RetentionEnforcer {
 
                     dropped_count += 1;
 
-                    self.metrics
-                        .partitions_dropped_total
-                        .with_label_values(&[tenant_id, dataset_id, &cutoff.signal_type.to_string()])
-                        .inc();
+                    self.metrics.record_partitions_dropped(1);
                 }
                 Err(e) => {
                     warn!(
@@ -407,9 +410,13 @@ impl RetentionEnforcer {
         table_name: &str,
         partition: &PartitionInfo,
     ) -> Result<()> {
+        let hour_value = partition
+            .get_hour_value()
+            .ok_or_else(|| anyhow::anyhow!("Partition has no hour value"))?;
+
         let sql = self
             .partition_manager
-            .generate_partition_drop_sql(table_name, partition)?;
+            .generate_partition_drop_sql(table_name, hour_value)?;
 
         info!(
             table_name = %table_name,
@@ -449,7 +456,6 @@ impl RetentionEnforcer {
         let snapshots_to_expire = self
             .snapshot_manager
             .get_snapshots_to_expire(table, snapshots_to_keep)
-            .await
             .context("Failed to get snapshots to expire")?;
 
         if snapshots_to_expire.is_empty() {
@@ -505,18 +511,18 @@ impl RetentionEnforcer {
         );
 
         // Update metrics for what would have been expired
-        for _snapshot in &snapshots_to_expire {
-            self.metrics
-                .snapshots_expired_total
-                .with_label_values(&[tenant_id, dataset_id])
-                .inc();
-        }
+        self.metrics
+            .record_snapshots_expired(snapshots_to_expire.len());
 
         Ok(snapshots_to_expire.len())
     }
 
     /// Get all tables for a tenant/dataset with their signal types
-    async fn get_tables(&self, tenant_id: &str, dataset_id: &str) -> Result<Vec<(String, SignalType)>> {
+    async fn get_tables(
+        &self,
+        _tenant_id: &str,
+        _dataset_id: &str,
+    ) -> Result<Vec<(String, SignalType)>> {
         // In a real implementation, we would list tables from the catalog
         // For now, we return the standard signal tables
         let tables = vec![
@@ -533,8 +539,8 @@ impl RetentionEnforcer {
     /// Create a DataFusion context for executing SQL
     async fn create_datafusion_context(
         &self,
-        tenant_id: &str,
-        dataset_id: &str,
+        _tenant_id: &str,
+        _dataset_id: &str,
     ) -> Result<SessionContext> {
         // Create a new DataFusion session context
         // In a real implementation, we would configure it with the catalog
@@ -556,7 +562,7 @@ impl RetentionEnforcer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::retention::config::{RetentionConfig, TenantRetentionConfig};
+    use crate::retention::config::RetentionConfig;
     use std::collections::HashMap;
 
     fn create_test_config() -> RetentionConfig {
@@ -574,41 +580,42 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_enforcer_creation() {
+    #[tokio::test]
+    async fn test_enforcer_creation() {
         let config = create_test_config();
-        let catalog_manager = Arc::new(CatalogManager::new_mock());
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let metrics = Arc::new(RetentionMetrics::new_mock());
 
         let enforcer = RetentionEnforcer::new(catalog_manager, config, metrics);
         assert!(enforcer.is_ok());
     }
 
-    #[test]
-    fn test_dry_run_mode() {
+    #[tokio::test]
+    async fn test_dry_run_mode() {
         let mut config = create_test_config();
         config.dry_run = true;
 
-        let catalog_manager = Arc::new(CatalogManager::new_mock());
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let metrics = Arc::new(RetentionMetrics::new_mock());
 
         let enforcer = RetentionEnforcer::new(catalog_manager, config, metrics).unwrap();
         assert!(enforcer.config.dry_run);
     }
 
-    #[test]
-    fn test_get_tables() {
+    #[tokio::test]
+    async fn test_get_tables() {
         let config = create_test_config();
-        let catalog_manager = Arc::new(CatalogManager::new_mock());
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let metrics = Arc::new(RetentionMetrics::new_mock());
 
         let enforcer = RetentionEnforcer::new(catalog_manager, config, metrics).unwrap();
 
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let tables = enforcer.get_tables("test_tenant", "test_dataset").await.unwrap();
-            assert_eq!(tables.len(), 5);
-            assert!(tables.iter().any(|(name, _)| name == "traces"));
-            assert!(tables.iter().any(|(name, _)| name == "logs"));
-        });
+        let tables = enforcer
+            .get_tables("test_tenant", "test_dataset")
+            .await
+            .unwrap();
+        assert_eq!(tables.len(), 5);
+        assert!(tables.iter().any(|(name, _)| name == "traces"));
+        assert!(tables.iter().any(|(name, _)| name == "logs"));
     }
 }

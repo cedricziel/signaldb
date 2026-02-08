@@ -29,6 +29,8 @@
 //! ```
 
 pub mod config;
+pub mod enforcer;
+pub mod metrics;
 pub mod policy;
 
 // Re-export commonly used types
@@ -36,4 +38,6 @@ pub use config::{
     DatasetRetentionConfig, RetentionConfig, RetentionPolicySource, SignalType,
     TenantRetentionConfig,
 };
+pub use enforcer::{RetentionEnforcer, RetentionRunResult, TableRetentionResult};
+pub use metrics::RetentionMetrics;
 pub use policy::{RetentionCutoff, RetentionPolicyResolver};

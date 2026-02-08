@@ -54,6 +54,18 @@ pub struct RetentionConfig {
     /// Env: SIGNALDB__COMPACTOR__RETENTION__TIMEZONE
     #[serde(default = "default_timezone")]
     pub timezone: String,
+
+    /// Dry-run mode: log actions without executing them.
+    ///
+    /// Env: SIGNALDB__COMPACTOR__RETENTION__DRY_RUN
+    #[serde(default = "default_dry_run")]
+    pub dry_run: bool,
+
+    /// Number of snapshots to keep before expiring older ones.
+    ///
+    /// Env: SIGNALDB__COMPACTOR__RETENTION__SNAPSHOTS_TO_KEEP
+    #[serde(default)]
+    pub snapshots_to_keep: Option<usize>,
 }
 
 fn default_grace_period() -> Duration {
@@ -62,6 +74,10 @@ fn default_grace_period() -> Duration {
 
 fn default_timezone() -> String {
     "UTC".to_string()
+}
+
+fn default_dry_run() -> bool {
+    true // Dry-run enabled by default for safety
 }
 
 impl Default for RetentionConfig {
@@ -75,6 +91,8 @@ impl Default for RetentionConfig {
             tenant_overrides: HashMap::new(),
             grace_period: default_grace_period(),
             timezone: default_timezone(),
+            dry_run: default_dry_run(),
+            snapshots_to_keep: Some(10), // Keep 10 snapshots by default
         }
     }
 }
