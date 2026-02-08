@@ -36,6 +36,11 @@ pub struct CompactionCandidate {
     pub stats: PartitionStats,
 }
 
+/// Format bytes as MB with 2 decimal places
+fn format_mb(bytes: u64) -> String {
+    format!("{:.2}", bytes as f64 / (1024.0 * 1024.0))
+}
+
 impl CompactionCandidate {
     /// Log this compaction candidate
     pub fn log(&self) {
@@ -46,8 +51,8 @@ impl CompactionCandidate {
             self.table_name,
             self.partition_id,
             self.stats.file_count,
-            self.stats.total_size_bytes / (1024 * 1024),
-            self.stats.avg_file_size_bytes / (1024 * 1024)
+            format_mb(self.stats.total_size_bytes),
+            format_mb(self.stats.avg_file_size_bytes)
         );
     }
 }
@@ -98,7 +103,7 @@ impl CompactionPlanner {
     pub async fn plan(&self) -> Result<Vec<CompactionCandidate>> {
         log::debug!("Starting compaction planning cycle (Phase 1: dry-run)");
 
-        let mut candidates = Vec::new();
+        let mut candidates = vec![];
 
         // Get enabled tenants from configuration
         let tenants = self.catalog_manager.get_enabled_tenants();
@@ -143,7 +148,7 @@ impl CompactionPlanner {
         tenant_id: &str,
         dataset_id: &str,
     ) -> Result<Vec<CompactionCandidate>> {
-        let mut candidates = Vec::new();
+        let mut candidates = vec![];
 
         // Build namespace for this tenant/dataset
         let namespace = self
@@ -210,7 +215,7 @@ impl CompactionPlanner {
         // In Phase 2, we'll read actual manifest files and group by partitions
         let partitions = self.group_files_by_partition(&table).await?;
 
-        let mut candidates = Vec::new();
+        let mut candidates = vec![];
 
         for (partition_id, files) in partitions {
             log::debug!("        Partition {partition_id}: {} files", files.len());
@@ -274,15 +279,25 @@ impl CompactionPlanner {
 
     /// Evaluate if a partition needs compaction based on file statistics
     fn evaluate_partition(&self, files: &[FileInfo]) -> Option<PartitionStats> {
-        let file_count = files.len();
+        // Filter out files that are too small to compact first
+        let eligible_files: Vec<_> = files
+            .iter()
+            .filter(|f| f.size_bytes >= self.config.min_input_file_size_bytes)
+            .collect();
 
-        // Not enough files to trigger compaction
+        let file_count = eligible_files.len();
+
+        // Not enough eligible files to trigger compaction
         if file_count < self.config.file_count_threshold {
+            log::debug!(
+                "Not enough eligible files ({}) after size filtering",
+                file_count
+            );
             return None;
         }
 
-        // Calculate statistics
-        let total_size_bytes: u64 = files.iter().map(|f| f.size_bytes).sum();
+        // Calculate statistics from eligible files only
+        let total_size_bytes: u64 = eligible_files.iter().map(|f| f.size_bytes).sum();
         let avg_file_size_bytes = if file_count > 0 {
             total_size_bytes / file_count as u64
         } else {
@@ -298,21 +313,7 @@ impl CompactionPlanner {
         {
             log::debug!(
                 "Partition has good average file size ({} MB), skipping",
-                avg_file_size_bytes / (1024 * 1024)
-            );
-            return None;
-        }
-
-        // Filter out files that are too small to compact
-        let eligible_files: Vec<_> = files
-            .iter()
-            .filter(|f| f.size_bytes >= self.config.min_input_file_size_bytes)
-            .collect();
-
-        if eligible_files.len() < self.config.file_count_threshold {
-            log::debug!(
-                "Not enough eligible files ({}) after size filtering",
-                eligible_files.len()
+                format_mb(avg_file_size_bytes)
             );
             return None;
         }
@@ -424,7 +425,7 @@ mod tests {
         let planner = CompactionPlanner::new(catalog_manager, config);
 
         // Create 15 files, but only 8 are above minimum size
-        let mut files = Vec::new();
+        let mut files = vec![];
         for i in 0..8 {
             files.push(FileInfo {
                 path: format!("large_file_{i}.parquet"),

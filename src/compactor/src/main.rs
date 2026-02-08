@@ -10,7 +10,6 @@ use common::config::Configuration;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use compactor::planner::{CompactionPlanner, PlannerConfig};
 use std::sync::Arc;
-use tokio::signal;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -18,6 +17,34 @@ struct Args {
     /// Path to configuration file
     #[arg(short, long, default_value = "signaldb.toml")]
     config: String,
+}
+
+/// Waits for a shutdown signal (SIGINT or SIGTERM)
+async fn wait_for_shutdown_signal() -> Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut sigint =
+            signal(SignalKind::interrupt()).context("Failed to install SIGINT handler")?;
+        let mut sigterm =
+            signal(SignalKind::terminate()).context("Failed to install SIGTERM handler")?;
+
+        tokio::select! {
+            _ = sigint.recv() => log::info!("Received SIGINT"),
+            _ = sigterm.recv() => log::info!("Received SIGTERM"),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .context("Failed to listen for shutdown signal")?;
+        log::info!("Received Ctrl+C");
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -111,11 +138,9 @@ async fn main() -> Result<()> {
         })
     };
 
-    // Wait for shutdown signal
+    // Wait for shutdown signal (SIGINT or SIGTERM)
     log::info!("Compactor service running, waiting for shutdown signal");
-    signal::ctrl_c()
-        .await
-        .context("Failed to listen for shutdown signal")?;
+    wait_for_shutdown_signal().await?;
 
     log::info!("Received shutdown signal, stopping compactor service");
 
