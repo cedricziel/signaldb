@@ -39,9 +39,13 @@ This is the shared foundation. Key modules:
 | `flight` | `src/common/src/flight/` | Flight schemas, conversions, transport |
 | `flight/schema.rs` | `src/common/src/flight/schema.rs` | Arrow schema definitions for OTLP data |
 | `flight/transport.rs` | `src/common/src/flight/transport.rs` | InMemoryFlightTransport, connection pooling |
-| `schema` | `src/common/src/schema/` | Iceberg schema management |
+| `iceberg` | `src/common/src/iceberg/` | Consolidated Iceberg integration |
+| `iceberg/mod.rs` | | Catalog creation, object store builders |
+| `iceberg/schemas.rs` | | Schema creation functions for traces/logs/metrics, partition specs |
+| `iceberg/names.rs` | | Naming utilities: `build_table_identifier`, `build_namespace`, `build_table_location` |
+| `iceberg/table_manager.rs` | | IcebergTableManager with catalog caching |
+| `schema` | `src/common/src/schema/` | Schema definitions and parsing |
 | `schema/schema_parser.rs` | | TOML schema parser with inheritance |
-| `schema/iceberg_schemas.rs` | | Hardcoded metric schemas, TableSchema enum |
 | `storage` | `src/common/src/storage.rs` | Object store creation from DSN |
 | `service_bootstrap` | `src/common/src/service_bootstrap.rs` | Service registration + heartbeat |
 
@@ -52,14 +56,19 @@ This is the shared foundation. Key modules:
 | `processor.rs` | `src/writer/src/processor.rs` | WalProcessor -- background WAL->Iceberg |
 | `schema_transform.rs` | `src/writer/src/schema_transform.rs` | Flight v1 -> Iceberg v2 transform |
 | `storage/iceberg.rs` | `src/writer/src/storage/iceberg.rs` | IcebergTableWriter -- table creation + writes |
-| `flight.rs` | `src/writer/src/flight.rs` | IcebergWriterFlightService |
+| `flight_iceberg.rs` | `src/writer/src/flight_iceberg.rs` | IcebergWriterFlightService |
 
 ## The `querier` Crate
 
 | Module | Path | Purpose |
 |--------|------|---------|
 | `flight.rs` | `src/querier/src/flight.rs` | QuerierFlightService, TenantCatalog |
+| `query` | `src/querier/src/query/` | Query execution modules |
 | `query/table_ref.rs` | `src/querier/src/query/table_ref.rs` | Safe table reference with slug validation |
+| `query/trace.rs` | `src/querier/src/query/trace.rs` | Trace query handlers |
+| `query/error.rs` | `src/querier/src/query/error.rs` | Query error types |
+| `query/promql` | `src/querier/src/query/promql/` | PromQL query support |
+| `services` | `src/querier/src/services/` | Service implementations |
 
 ## The `router` Crate
 

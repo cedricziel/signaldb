@@ -70,9 +70,9 @@ Key details:
 
 ## Deployment Models
 
-- **Monolithic** (`cargo run --bin signaldb`): All services in one process, shared SQLite. Known issue: doesn't start Querier.
-- **Microservices**: Independent binaries, shared catalog (PostgreSQL or SQLite).
-- **Hybrid**: Mix of co-located and distributed services.
+- **Monolithic** (`cargo run --bin signaldb`): All services in one process, shared SQLite catalog
+- **Microservices**: Independent binaries, shared catalog (PostgreSQL or SQLite)
+- **Hybrid**: Mix of co-located and distributed services
 
 ## Dual Catalog System
 
