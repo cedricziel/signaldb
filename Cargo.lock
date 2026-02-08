@@ -7789,6 +7789,7 @@ dependencies = [
  "axum 0.8.8",
  "chrono",
  "common",
+ "compactor",
  "datafusion",
  "env_logger",
  "futures",
