@@ -679,7 +679,7 @@ struct ScopeContext {
     scope_dropped_attr_count: i32,
 }
 
-fn create_metrics_gauge_arrow_schema() -> Arc<Schema> {
+pub fn create_metrics_gauge_arrow_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new(
             "timestamp",

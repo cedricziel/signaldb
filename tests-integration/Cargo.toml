@@ -84,6 +84,18 @@ path = "tests/compactor/metrics_compaction.rs"
 name = "retention_cutoff"
 path = "tests/compactor/retention_cutoff.rs"
 
+[[test]]
+name = "partition_drop"
+path = "tests/compactor/partition_drop.rs"
+
+[[test]]
+name = "snapshot_expiration"
+path = "tests/compactor/snapshot_expiration.rs"
+
+[[test]]
+name = "orphan_cleanup"
+path = "tests/compactor/orphan_cleanup.rs"
+
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory
 ignored = ["acceptor", "anyhow", "arrow-flight", "compactor", "datafusion", "futures", "iceberg-rust", "log", "opentelemetry-proto", "querier", "router", "tokio", "tokio-stream", "tonic", "writer"]
