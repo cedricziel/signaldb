@@ -46,7 +46,6 @@ use tests_integration::generators;
 /// and verifies that orphan detection correctly identifies orphans while
 /// not flagging live files.
 #[tokio::test]
-#[ignore = "Schema mismatch: DataGenerator schemas don't match Iceberg table schemas"]
 async fn test_orphan_detection_finds_unreferenced_files() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
 
@@ -137,7 +136,6 @@ async fn test_orphan_detection_finds_unreferenced_files() -> Result<()> {
 /// Verifies that files newer than the grace period are not flagged as orphans,
 /// while older files are correctly identified.
 #[tokio::test]
-#[ignore = "Schema mismatch: DataGenerator schemas don't match Iceberg table schemas"]
 async fn test_orphan_cleanup_respects_grace_period() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
 
@@ -254,7 +252,6 @@ async fn test_orphan_cleanup_respects_grace_period() -> Result<()> {
 /// Creates 100 orphan files and verifies they are deleted in batches
 /// with correct metrics tracking.
 #[tokio::test]
-#[ignore = "Schema mismatch: DataGenerator schemas don't match Iceberg table schemas"]
 async fn test_orphan_cleanup_batch_deletion() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
 
@@ -354,7 +351,6 @@ async fn test_orphan_cleanup_batch_deletion() -> Result<()> {
 /// Verifies that dry-run mode identifies orphans but does not actually
 /// delete them, while still reporting metrics.
 #[tokio::test]
-#[ignore = "Schema mismatch: DataGenerator schemas don't match Iceberg table schemas"]
 async fn test_orphan_cleanup_dry_run_mode() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
 
@@ -462,7 +458,6 @@ async fn test_orphan_cleanup_dry_run_mode() -> Result<()> {
 /// Creates a table with active data files and verifies that orphan cleanup
 /// does not flag or delete any live files, and the table remains queryable.
 #[tokio::test]
-#[ignore = "Schema mismatch: DataGenerator schemas don't match Iceberg table schemas"]
 async fn test_orphan_cleanup_preserves_live_files() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
 

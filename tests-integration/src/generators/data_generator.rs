@@ -136,10 +136,34 @@ fn create_trace_batch(
     partition_idx: usize,
     file_idx: usize,
 ) -> Result<RecordBatch> {
-    use datafusion::arrow::array::{BooleanArray, UInt64Array};
+    use datafusion::arrow::array::{BooleanArray, ListArray, StructArray, UInt64Array};
+    use datafusion::arrow::buffer::OffsetBuffer;
 
     // Create v1 schema matching what the acceptor produces
     // Based on schemas.toml traces.v1
+    // Note: events and links are simplified as empty ListArrays for tests
+    let events_struct_fields: Vec<Arc<Field>> = vec![]; // Empty struct for simplicity
+    let events_field = Field::new(
+        "events",
+        DataType::List(Arc::new(Field::new(
+            "item",
+            DataType::Struct(events_struct_fields.into()),
+            true,
+        ))),
+        true,
+    );
+
+    let links_struct_fields: Vec<Arc<Field>> = vec![]; // Empty struct for simplicity
+    let links_field = Field::new(
+        "links",
+        DataType::List(Arc::new(Field::new(
+            "item",
+            DataType::Struct(links_struct_fields.into()),
+            true,
+        ))),
+        true,
+    );
+
     let schema = Arc::new(Schema::new(vec![
         Field::new("trace_id", DataType::Utf8, false),
         Field::new("span_id", DataType::Utf8, false),
@@ -155,8 +179,8 @@ fn create_trace_batch(
         Field::new("is_root", DataType::Boolean, false),
         Field::new("attributes_json", DataType::Utf8, true),
         Field::new("resource_json", DataType::Utf8, true),
-        Field::new("events", DataType::Utf8, true), // Simplified as string for tests
-        Field::new("links", DataType::Utf8, true),  // Simplified as string for tests
+        events_field,
+        links_field,
         Field::new("trace_state", DataType::Utf8, true),
         Field::new("resource_schema_url", DataType::Utf8, true),
         Field::new("scope_name", DataType::Utf8, true),
@@ -182,8 +206,6 @@ fn create_trace_batch(
     let mut is_roots: Vec<Option<bool>> = Vec::with_capacity(num_rows);
     let mut attributes_jsons: Vec<Option<String>> = Vec::with_capacity(num_rows);
     let mut resource_jsons: Vec<Option<String>> = Vec::with_capacity(num_rows);
-    let mut events: Vec<Option<String>> = Vec::with_capacity(num_rows);
-    let mut links: Vec<Option<String>> = Vec::with_capacity(num_rows);
     let mut trace_states: Vec<Option<String>> = Vec::with_capacity(num_rows);
     let mut resource_schema_urls: Vec<Option<String>> = Vec::with_capacity(num_rows);
     let mut scope_names: Vec<Option<String>> = Vec::with_capacity(num_rows);
@@ -214,8 +236,6 @@ fn create_trace_batch(
         is_roots.push(Some(i == 0));
         attributes_jsons.push(Some("{}".to_string()));
         resource_jsons.push(Some(r#"{"service.name":"test-service"}"#.to_string()));
-        events.push(Some("[]".to_string())); // Empty events array as JSON
-        links.push(Some("[]".to_string())); // Empty links array as JSON
         trace_states.push(None);
         resource_schema_urls.push(None);
         scope_names.push(Some("test-scope".to_string()));
@@ -223,6 +243,32 @@ fn create_trace_batch(
         scope_schema_urls.push(None);
         scope_attributes.push(Some("{}".to_string()));
     }
+
+    // Create empty ListArrays for events and links
+    // Each row has an empty list
+    let empty_fields: Vec<Arc<Field>> = vec![];
+    let empty_struct = StructArray::new_empty_fields(0, None);
+    let offsets = OffsetBuffer::from_lengths(vec![0; num_rows]);
+    let empty_events = ListArray::new(
+        Arc::new(Field::new(
+            "item",
+            DataType::Struct(empty_fields.clone().into()),
+            true,
+        )),
+        offsets.clone(),
+        Arc::new(empty_struct.clone()),
+        None,
+    );
+    let empty_links = ListArray::new(
+        Arc::new(Field::new(
+            "item",
+            DataType::Struct(empty_fields.into()),
+            true,
+        )),
+        offsets,
+        Arc::new(empty_struct),
+        None,
+    );
 
     let batch = RecordBatch::try_new(
         schema,
@@ -241,8 +287,8 @@ fn create_trace_batch(
             Arc::new(BooleanArray::from(is_roots)),
             Arc::new(StringArray::from(attributes_jsons)),
             Arc::new(StringArray::from(resource_jsons)),
-            Arc::new(StringArray::from(events)),
-            Arc::new(StringArray::from(links)),
+            Arc::new(empty_events),
+            Arc::new(empty_links),
             Arc::new(StringArray::from(trace_states)),
             Arc::new(StringArray::from(resource_schema_urls)),
             Arc::new(StringArray::from(scope_names)),

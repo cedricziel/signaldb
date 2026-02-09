@@ -39,7 +39,6 @@ use tests_integration::generators;
 /// Creates a table with 10 snapshots and verifies that when snapshots_to_keep = 3,
 /// only the 3 most recent snapshots are retained and 7 are expired.
 #[tokio::test]
-#[ignore = "Schema mismatch: DataGenerator schemas don't match Iceberg table schemas"]
 async fn test_snapshot_expiration_keeps_minimum_snapshots() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
 
@@ -128,7 +127,6 @@ async fn test_snapshot_expiration_keeps_minimum_snapshots() -> Result<()> {
 /// Creates snapshots at different timestamps and verifies that time-based
 /// retention correctly identifies old snapshots while keeping recent ones.
 #[tokio::test]
-#[ignore = "Schema mismatch: DataGenerator schemas don't match Iceberg table schemas"]
 async fn test_snapshot_expiration_respects_time_based_retention() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
 
@@ -214,7 +212,6 @@ async fn test_snapshot_expiration_respects_time_based_retention() -> Result<()> 
 /// Verifies that running snapshot expiration on an empty table
 /// (with no snapshots) does not produce errors.
 #[tokio::test]
-#[ignore = "Schema mismatch: DataGenerator schemas don't match Iceberg table schemas"]
 async fn test_snapshot_expiration_handles_no_snapshots() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
 
@@ -282,7 +279,6 @@ async fn test_snapshot_expiration_handles_no_snapshots() -> Result<()> {
 /// Verifies that the current snapshot is never expired, even if it would
 /// normally be expired by the retention policy.
 #[tokio::test]
-#[ignore = "Schema mismatch: DataGenerator schemas don't match Iceberg table schemas"]
 async fn test_snapshot_expiration_preserves_current_snapshot() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
 

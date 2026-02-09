@@ -75,7 +75,6 @@ use tests_integration::generators;
 /// partitions older than the retention cutoff are dropped while recent
 /// partitions remain.
 #[tokio::test]
-#[ignore = "Blocked on schema mismatch between DataGenerator and IcebergTableWriter"]
 async fn test_partition_drop_removes_old_partitions() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
 
@@ -182,7 +181,6 @@ async fn test_partition_drop_removes_old_partitions() -> Result<()> {
 /// prevents premature deletion. Data that would normally be expired is kept
 /// during the grace period.
 #[tokio::test]
-#[ignore = "Blocked on schema mismatch between DataGenerator and IcebergTableWriter"]
 async fn test_partition_drop_respects_grace_period() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
 
@@ -267,7 +265,6 @@ async fn test_partition_drop_respects_grace_period() -> Result<()> {
 /// per signal type. Verifies that each table has the correct partitions dropped
 /// according to its specific retention policy.
 #[tokio::test]
-#[ignore = "Blocked on schema mismatch between DataGenerator and IcebergTableWriter"]
 async fn test_partition_drop_handles_mixed_signal_types() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
 
@@ -394,7 +391,6 @@ async fn test_partition_drop_handles_mixed_signal_types() -> Result<()> {
 /// - Manifest lists are updated correctly
 /// - Table statistics reflect the partition drop
 #[tokio::test]
-#[ignore = "Blocked on schema mismatch between DataGenerator and IcebergTableWriter"]
 async fn test_partition_drop_preserves_partition_metadata() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
 
@@ -507,7 +503,6 @@ async fn test_partition_drop_preserves_partition_metadata() -> Result<()> {
 /// - Metrics show what WOULD be dropped
 /// - No actual changes are made to the table
 #[tokio::test]
-#[ignore = "Blocked on schema mismatch between DataGenerator and IcebergTableWriter"]
 async fn test_partition_drop_dry_run_mode() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
 
