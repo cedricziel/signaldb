@@ -96,6 +96,10 @@ path = "tests/compactor/snapshot_expiration.rs"
 name = "orphan_cleanup"
 path = "tests/compactor/orphan_cleanup.rs"
 
+[[test]]
+name = "retention_failure_scenarios"
+path = "tests/compactor/retention_failure_scenarios.rs"
+
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory
 ignored = ["acceptor", "anyhow", "arrow-flight", "compactor", "datafusion", "futures", "iceberg-rust", "log", "opentelemetry-proto", "querier", "router", "tokio", "tokio-stream", "tonic", "writer"]

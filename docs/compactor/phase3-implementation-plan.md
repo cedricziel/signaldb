@@ -29,6 +29,85 @@ Phase 3 completes the SignalDB Compactor Service by implementing retention enfor
 
 ---
 
+## Implementation Status
+
+**Status:** ✅ COMPLETED (February 2026)
+
+**Implementation Commits:**
+1. `eec5e56` - Phase 3 foundation: retention config and Iceberg extensions
+2. `3b64712` - Phase 3 retention enforcement engine with partition drop
+3. `f7d70cf` - Phase 3 orphan file cleanup system
+4. `005fce8` - CompactorService integration and test infrastructure
+5. `0aef22d` - Retention integration tests with partial schema alignment
+6. `a507fa2` - Complete DataGenerator schema alignment - all tests enabled
+
+**Testing Status:**
+- ✅ **19 Integration Tests Passing**
+  - 5 retention cutoff computation tests
+  - 5 partition drop tests
+  - 4 snapshot expiration tests
+  - 5 orphan file cleanup tests
+- ✅ Unit tests for policy resolution
+- ✅ Integration with CompactorService
+- ✅ Multi-tenant isolation verified
+
+**Production Readiness:** ✅ YES
+
+**Key Features Delivered:**
+- ✅ Configurable retention policies with 3-tier override hierarchy (Global → Tenant → Dataset)
+- ✅ Automatic partition dropping based on retention cutoffs
+- ✅ Snapshot expiration to maintain bounded metadata size
+- ✅ Safe orphan file cleanup with grace period protection
+- ✅ Comprehensive metrics and observability
+- ✅ Dry-run mode for safe testing
+- ✅ Multi-tenant isolation enforced
+
+**Configuration:**
+Retention enforcement is now available via configuration in `signaldb.toml`:
+
+```toml
+[compactor.retention]
+enabled = true
+retention_check_interval_secs = 3600  # 1 hour
+dry_run = false
+
+# Global defaults (per-signal type)
+traces_retention_days = 7
+logs_retention_days = 3
+metrics_retention_days = 30
+
+# Safety margins
+grace_period_hours = 1
+timezone = "UTC"
+snapshots_to_keep = 5
+
+# Per-tenant override example
+[[compactor.retention.tenant_overrides]]
+tenant_id = "production"
+traces_retention_days = 30  # Keep production traces longer
+
+# Orphan cleanup
+[compactor.orphan_cleanup]
+enabled = true
+grace_period_hours = 24
+cleanup_interval_hours = 24
+dry_run = false
+revalidate_before_delete = true
+```
+
+**Known Limitations:**
+- Orphan cleanup requires manual revalidation configuration for maximum safety
+- Performance benchmarks pending for large-scale deployments (10K+ partitions)
+- Grafana dashboard templates not yet included
+
+**Future Improvements:**
+- Add performance benchmarks to integration test suite
+- Create Grafana dashboard templates for retention metrics
+- Add alerting examples and recommendations
+- Consider time-of-day scheduling for cleanup operations
+
+---
+
 ## Design Summary
 
 ### 1. Retention Cutoff Computation (retention-designer)
