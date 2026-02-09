@@ -108,6 +108,49 @@ Env: `SIGNALDB__COMPACTOR__ENABLED`, `SIGNALDB__COMPACTOR__TICK_INTERVAL`, `SIGN
 
 **Note**: Environment variables for compactor use double-underscore (`__`) separator to support field names with underscores.
 
+#### Retention Enforcement (Phase 3)
+```toml
+[compactor.retention]
+enabled = false                       # Enable retention enforcement (opt-in)
+dry_run = true                        # Log actions without executing (safe default)
+retention_check_interval = "1h"       # Interval between retention checks
+grace_period = "1h"                   # Safety margin before cutoff
+timezone = "UTC"                      # Timezone for logging
+snapshots_to_keep = 5                 # Keep last N snapshots per table
+
+# Global defaults (per signal type)
+traces = "7d"
+logs = "30d"
+metrics = "90d"
+
+# Tenant overrides (optional)
+[[compactor.retention.tenant_overrides]]
+tenant_id = "production"
+traces = "30d"
+logs = "7d"
+metrics = "90d"
+
+# Dataset overrides (highest priority)
+[[compactor.retention.tenant_overrides.dataset_overrides]]
+dataset_id = "critical"
+traces = "90d"
+```
+Env: `SIGNALDB__COMPACTOR__RETENTION__ENABLED`, `SIGNALDB__COMPACTOR__RETENTION__DRY_RUN`, `SIGNALDB__COMPACTOR__RETENTION__RETENTION_CHECK_INTERVAL`, `SIGNALDB__COMPACTOR__RETENTION__TRACES`, `SIGNALDB__COMPACTOR__RETENTION__LOGS`, `SIGNALDB__COMPACTOR__RETENTION__METRICS`, `SIGNALDB__COMPACTOR__RETENTION__GRACE_PERIOD`, `SIGNALDB__COMPACTOR__RETENTION__TIMEZONE`, `SIGNALDB__COMPACTOR__RETENTION__SNAPSHOTS_TO_KEEP`
+
+#### Orphan Cleanup (Phase 3)
+```toml
+[compactor.orphan_cleanup]
+enabled = false                       # Enable orphan cleanup (opt-in)
+dry_run = true                        # Log orphans without deleting (safe default)
+cleanup_interval_hours = 24           # Run cleanup every N hours
+grace_period_hours = 24               # Don't delete files younger than this
+revalidate_before_delete = true       # Re-check file status before deletion
+max_snapshot_age_hours = 720          # Consider snapshots within last N hours
+batch_size = 1000                     # Process N files per batch
+rate_limit_delay_ms = 0               # Delay between batches in milliseconds
+```
+Env: `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__ENABLED`, `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__DRY_RUN`, `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__CLEANUP_INTERVAL_HOURS`, `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__GRACE_PERIOD_HOURS`, `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__REVALIDATE_BEFORE_DELETE`, `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__MAX_SNAPSHOT_AGE_HOURS`, `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__BATCH_SIZE`, `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__RATE_LIMIT_DELAY_MS`
+
 ## Service Ports (Defaults)
 
 | Service | Protocol | Port |
