@@ -10,7 +10,6 @@ use compactor::retention::config::{
 use compactor::retention::enforcer::RetentionEnforcer;
 use compactor::retention::metrics::RetentionMetrics;
 use std::collections::HashMap;
-use std::sync::Arc;
 use tests_integration::fixtures::{
     DataGeneratorConfig, PartitionGranularity, RetentionTestContext,
 };
@@ -149,7 +148,7 @@ async fn test_retention_per_tenant_override() -> Result<()> {
     let result_a = enforcer.enforce_retention("tenant-a", "production").await?;
 
     log::info!(
-        "Tenant A retention: {} evaluated, {} to drop",
+        "Tenant A retention: {} to drop",
         result_a.total_partitions_dropped
     );
 
@@ -157,7 +156,7 @@ async fn test_retention_per_tenant_override() -> Result<()> {
     let result_b = enforcer.enforce_retention("tenant-b", "production").await?;
 
     log::info!(
-        "Tenant B retention: {} evaluated, {} to drop",
+        "Tenant B retention: {} to drop",
         result_b.total_partitions_dropped
     );
 
@@ -285,7 +284,7 @@ async fn test_retention_per_dataset_override() -> Result<()> {
     let result_prod = enforcer.enforce_retention("tenant-a", "production").await?;
 
     log::info!(
-        "Production retention: {} evaluated, {} to drop",
+        "Production retention: {} to drop",
         result_prod.total_partitions_dropped
     );
 
@@ -293,7 +292,7 @@ async fn test_retention_per_dataset_override() -> Result<()> {
     let result_staging = enforcer.enforce_retention("tenant-a", "staging").await?;
 
     log::info!(
-        "Staging retention: {} evaluated, {} to drop",
+        "Staging retention: {} to drop",
         result_staging.total_partitions_dropped
     );
 

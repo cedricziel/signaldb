@@ -15,7 +15,6 @@ use compactor::retention::config::RetentionConfig;
 use compactor::retention::enforcer::RetentionEnforcer;
 use compactor::retention::metrics::RetentionMetrics;
 use std::collections::HashMap;
-use std::sync::Arc;
 use tests_integration::fixtures::{
     DataGeneratorConfig, PartitionGranularity, RetentionTestContext,
 };

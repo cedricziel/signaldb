@@ -8,13 +8,11 @@
 //! - Dry-run mode validation
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
-use compactor::iceberg::PartitionInfo;
+use chrono::Utc;
 use compactor::retention::config::RetentionConfig;
 use compactor::retention::enforcer::RetentionEnforcer;
 use compactor::retention::metrics::RetentionMetrics;
 use std::collections::HashMap;
-use std::sync::Arc;
 use tests_integration::fixtures::{
     DataGeneratorConfig, PartitionGranularity, RetentionTestContext,
 };
@@ -71,12 +69,9 @@ async fn test_partition_drop_removes_old_partitions() -> Result<()> {
         snapshots_to_keep: Some(10),
     };
 
-    let metrics = Arc::new(RetentionMetrics::new());
-    let enforcer = RetentionEnforcer::new(
-        ctx.catalog_manager().clone(),
-        retention_config,
-        metrics.clone(),
-    )?;
+    let metrics = RetentionMetrics::new();
+    let enforcer =
+        RetentionEnforcer::new(ctx.catalog_manager().clone(), retention_config, metrics)?;
 
     // Act: Enforce retention
     let result = enforcer
@@ -211,12 +206,9 @@ async fn test_partition_drop_respects_grace_period() -> Result<()> {
         snapshots_to_keep: Some(10),
     };
 
-    let metrics = Arc::new(RetentionMetrics::new());
-    let enforcer = RetentionEnforcer::new(
-        ctx.catalog_manager().clone(),
-        retention_config,
-        metrics.clone(),
-    )?;
+    let metrics = RetentionMetrics::new();
+    let enforcer =
+        RetentionEnforcer::new(ctx.catalog_manager().clone(), retention_config, metrics)?;
 
     // Act & Assert: Enforce retention with grace period
     let result = enforcer
@@ -308,11 +300,11 @@ async fn test_partition_drop_handles_mixed_signal_types() -> Result<()> {
         snapshots_to_keep: Some(10),
     };
 
-    let metrics_tracker = Arc::new(RetentionMetrics::new());
+    let metrics_tracker = RetentionMetrics::new();
     let enforcer = RetentionEnforcer::new(
         ctx.catalog_manager().clone(),
         retention_config,
-        metrics_tracker.clone(),
+        metrics_tracker,
     )?;
 
     // Act: Enforce retention
@@ -441,12 +433,9 @@ async fn test_partition_drop_preserves_partition_metadata() -> Result<()> {
         snapshots_to_keep: Some(10),
     };
 
-    let metrics = Arc::new(RetentionMetrics::new());
-    let enforcer = RetentionEnforcer::new(
-        ctx.catalog_manager().clone(),
-        retention_config,
-        metrics.clone(),
-    )?;
+    let metrics = RetentionMetrics::new();
+    let enforcer =
+        RetentionEnforcer::new(ctx.catalog_manager().clone(), retention_config, metrics)?;
 
     // Act: Enforce retention
     let result = enforcer
@@ -555,12 +544,9 @@ async fn test_partition_drop_dry_run_mode() -> Result<()> {
         snapshots_to_keep: Some(10),
     };
 
-    let metrics = Arc::new(RetentionMetrics::new());
-    let enforcer = RetentionEnforcer::new(
-        ctx.catalog_manager().clone(),
-        retention_config,
-        metrics.clone(),
-    )?;
+    let metrics = RetentionMetrics::new();
+    let enforcer =
+        RetentionEnforcer::new(ctx.catalog_manager().clone(), retention_config, metrics)?;
 
     // Act: Enforce retention in dry-run mode
     let result = enforcer
