@@ -131,7 +131,7 @@ async fn test_retention_per_tenant_override() -> Result<()> {
         logs: std::time::Duration::from_secs(7 * 24 * 3600),
         metrics: std::time::Duration::from_secs(30 * 24 * 3600),
         tenant_overrides,
-        grace_period: std::time::Duration::from_secs(0),
+        grace_period: std::time::Duration::from_secs(1), // Minimum 1 second for validation
         timezone: "UTC".to_string(),
         dry_run: true,
         snapshots_to_keep: Some(10),
@@ -267,7 +267,7 @@ async fn test_retention_per_dataset_override() -> Result<()> {
         logs: std::time::Duration::from_secs(7 * 24 * 3600),
         metrics: std::time::Duration::from_secs(30 * 24 * 3600),
         tenant_overrides,
-        grace_period: std::time::Duration::from_secs(0),
+        grace_period: std::time::Duration::from_secs(1), // Minimum 1 second for validation
         timezone: "UTC".to_string(),
         dry_run: true,
         snapshots_to_keep: Some(10),
@@ -375,7 +375,7 @@ async fn test_retention_zero_days() -> Result<()> {
         logs: std::time::Duration::from_secs(7 * 24 * 3600),
         metrics: std::time::Duration::from_secs(30 * 24 * 3600),
         tenant_overrides: HashMap::new(),
-        grace_period: std::time::Duration::from_secs(0),
+        grace_period: std::time::Duration::from_secs(1), // Minimum 1 second for validation
         timezone: "UTC".to_string(),
         dry_run: true,
         snapshots_to_keep: Some(10),
@@ -460,7 +460,7 @@ async fn test_retention_with_clock_skew() -> Result<()> {
         logs: std::time::Duration::from_secs(7 * 24 * 3600),
         metrics: std::time::Duration::from_secs(30 * 24 * 3600),
         tenant_overrides: HashMap::new(),
-        grace_period: std::time::Duration::from_secs(0),
+        grace_period: std::time::Duration::from_secs(1), // Minimum 1 second for validation
         timezone: "UTC".to_string(),
         dry_run: true,
         snapshots_to_keep: Some(10),
