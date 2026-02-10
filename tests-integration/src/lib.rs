@@ -3,6 +3,8 @@ use common::config::Configuration;
 use std::sync::Arc;
 use tempfile::TempDir;
 
+pub mod fixtures;
+pub mod generators;
 pub mod test_helpers;
 
 /// Create a test configuration with temporary directories

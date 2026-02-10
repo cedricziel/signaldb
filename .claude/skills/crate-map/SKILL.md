@@ -15,7 +15,7 @@ user-invocable: false
 | **writer** | `src/writer/` | Binary + Library | Iceberg-based data persistence (the "Ingester") |
 | **router** | `src/router/` | Binary + Library | HTTP API gateway + Flight routing layer |
 | **querier** | `src/querier/` | Binary + Library | DataFusion query execution engine |
-| **compactor** | `src/compactor/` | Library | Compaction planner and executor for Parquet file optimization with rewrites and atomic commits (Phase 2) |
+| **compactor** | `src/compactor/` | Library | Complete data lifecycle: compaction planning/execution (Phase 1-2), retention enforcement, snapshot expiration, orphan cleanup (Phase 3) |
 | **tempo-api** | `src/tempo-api/` | Library | Grafana Tempo API types and protobuf definitions |
 | **signaldb-bin** | `src/signaldb-bin/` | Binary | Monolithic mode runner (all services in one process) |
 | **signaldb-api** | `src/signaldb-api/` | Library | OpenAPI-generated admin API types |
@@ -78,6 +78,26 @@ This is the shared foundation. Key modules:
 | `tempo.rs` | `src/router/src/tempo.rs` | Tempo-compatible API handlers |
 | `admin.rs` | `src/router/src/admin.rs` | Admin API for tenant/key/dataset CRUD |
 | `service_registry.rs` | `src/router/src/service_registry.rs` | Cached service discovery |
+
+## The `compactor` Crate
+
+| Module | Path | Purpose |
+|--------|------|---------|
+| `planner.rs` | `src/compactor/src/planner.rs` | Compaction planning -- identifies candidates |
+| `executor.rs` | `src/compactor/src/executor.rs` | Compaction execution -- rewrites Parquet files |
+| `rewriter.rs` | `src/compactor/src/rewriter.rs` | Parquet file rewriting logic |
+| `commit.rs` | `src/compactor/src/commit.rs` | Atomic commit to Iceberg tables |
+| `metrics.rs` | `src/compactor/src/metrics.rs` | Prometheus metrics for compactor operations |
+| `retention/` | `src/compactor/src/retention/` | Phase 3: Retention enforcement |
+| `retention/config.rs` | | Retention policy configuration with 3-tier overrides |
+| `retention/enforcer.rs` | | Retention enforcement engine, partition dropping |
+| `orphan/` | `src/compactor/src/orphan/` | Phase 3: Orphan file cleanup |
+| `orphan/config.rs` | | Orphan cleanup configuration |
+| `orphan/detector.rs` | | 4-phase orphan detection algorithm |
+| `iceberg/` | `src/compactor/src/iceberg/` | Iceberg extensions for compactor |
+| `iceberg/partition.rs` | | Partition operations: list, parse, drop |
+| `iceberg/snapshot.rs` | | Snapshot operations: list, expire |
+| `iceberg/manifest.rs` | | Manifest parsing, file reference extraction |
 
 ## Key Root Files
 

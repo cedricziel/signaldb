@@ -13,6 +13,144 @@ use once_cell::sync::OnceCell;
 
 pub static CONFIG: OnceCell<Configuration> = OnceCell::new();
 
+/// Retention policy configuration for compactor (Phase 3).
+/// This is a lightweight config-only version that matches the full RetentionConfig
+/// in the compactor crate but lives in common for TOML/env deserialization.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RetentionConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(with = "humantime_serde", default = "default_retention_check_interval")]
+    pub retention_check_interval: Duration,
+    #[serde(with = "humantime_serde", default = "default_traces_retention")]
+    pub traces: Duration,
+    #[serde(with = "humantime_serde", default = "default_logs_retention")]
+    pub logs: Duration,
+    #[serde(with = "humantime_serde", default = "default_metrics_retention")]
+    pub metrics: Duration,
+    #[serde(with = "humantime_serde", default = "default_grace_period")]
+    pub grace_period: Duration,
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+    #[serde(default = "default_dry_run")]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub snapshots_to_keep: Option<usize>,
+    #[serde(default)]
+    pub tenant_overrides: HashMap<String, serde_json::Value>,
+}
+
+fn default_retention_check_interval() -> Duration {
+    Duration::from_secs(3600) // 1 hour
+}
+
+fn default_traces_retention() -> Duration {
+    Duration::from_secs(7 * 24 * 3600) // 7 days
+}
+
+fn default_logs_retention() -> Duration {
+    Duration::from_secs(30 * 24 * 3600) // 30 days
+}
+
+fn default_metrics_retention() -> Duration {
+    Duration::from_secs(90 * 24 * 3600) // 90 days
+}
+
+fn default_grace_period() -> Duration {
+    Duration::from_secs(3600) // 1 hour
+}
+
+fn default_timezone() -> String {
+    "UTC".to_string()
+}
+
+fn default_dry_run() -> bool {
+    true
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            retention_check_interval: default_retention_check_interval(),
+            traces: default_traces_retention(),
+            logs: default_logs_retention(),
+            metrics: default_metrics_retention(),
+            grace_period: default_grace_period(),
+            timezone: default_timezone(),
+            dry_run: default_dry_run(),
+            snapshots_to_keep: Some(10),
+            tenant_overrides: HashMap::new(),
+        }
+    }
+}
+
+/// Orphan file cleanup configuration for compactor (Phase 3).
+/// This is a lightweight config-only version that matches the full OrphanCleanupConfig
+/// in the compactor crate but lives in common for TOML/env deserialization.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OrphanCleanupConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_grace_period_hours")]
+    pub grace_period_hours: u64,
+    #[serde(default = "default_cleanup_interval_hours")]
+    pub cleanup_interval_hours: u64,
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+    #[serde(default = "default_orphan_dry_run")]
+    pub dry_run: bool,
+    #[serde(default = "default_revalidate_before_delete")]
+    pub revalidate_before_delete: bool,
+    #[serde(default = "default_max_snapshot_age_hours")]
+    pub max_snapshot_age_hours: u64,
+}
+
+fn default_grace_period_hours() -> u64 {
+    24
+}
+
+fn default_cleanup_interval_hours() -> u64 {
+    24
+}
+
+fn default_batch_size() -> usize {
+    1000
+}
+
+fn default_orphan_dry_run() -> bool {
+    true
+}
+
+fn default_revalidate_before_delete() -> bool {
+    true
+}
+
+fn default_max_snapshot_age_hours() -> u64 {
+    720 // 30 days
+}
+
+impl Default for OrphanCleanupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            grace_period_hours: default_grace_period_hours(),
+            cleanup_interval_hours: default_cleanup_interval_hours(),
+            batch_size: default_batch_size(),
+            dry_run: default_orphan_dry_run(),
+            revalidate_before_delete: default_revalidate_before_delete(),
+            max_snapshot_age_hours: default_max_snapshot_age_hours(),
+        }
+    }
+}
+
+impl OrphanCleanupConfig {
+    /// Get the cleanup interval as a Duration.
+    pub fn cleanup_interval(&self) -> Duration {
+        Duration::from_secs(self.cleanup_interval_hours * 3600)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StorageConfig {
     /// DSN for the storage backend (e.g., file:///path/to/storage, memory://, s3://bucket/prefix)
@@ -130,6 +268,16 @@ pub struct CompactorConfig {
     /// Maximum files to include in a single compaction job
     /// Env: SIGNALDB__COMPACTOR__MAX_FILES_PER_JOB
     pub max_files_per_job: usize,
+
+    /// Retention enforcement configuration (Phase 3)
+    /// Env: SIGNALDB__COMPACTOR__RETENTION__*
+    #[serde(default)]
+    pub retention: RetentionConfig,
+
+    /// Orphan file cleanup configuration (Phase 3)
+    /// Env: SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__*
+    #[serde(default)]
+    pub orphan_cleanup: OrphanCleanupConfig,
 }
 
 impl Default for CompactorConfig {
@@ -141,6 +289,8 @@ impl Default for CompactorConfig {
             file_count_threshold: 10,
             min_input_file_size_kb: 1024, // 1MB
             max_files_per_job: 50,
+            retention: RetentionConfig::default(),
+            orphan_cleanup: OrphanCleanupConfig::default(),
         }
     }
 }

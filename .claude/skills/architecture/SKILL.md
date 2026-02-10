@@ -75,7 +75,12 @@ Key details:
 - **Microservices**: Independent binaries, shared catalog (PostgreSQL or SQLite)
 - **Hybrid**: Mix of co-located and distributed services
 
-**Note**: Monolithic mode integrates the Compactor service (Phase 2 - full execution) when `[compactor].enabled = true`. The compactor runs a background planning loop that identifies compaction candidates based on file count and size thresholds, and executes compaction by rewriting Parquet files and committing changes atomically to Iceberg tables.
+**Note**: Monolithic mode integrates the Compactor service (Phases 1-3 complete) when `[compactor].enabled = true`. The compactor provides:
+- **Phase 1**: Dry-run compaction planning
+- **Phase 2**: Active Parquet file compaction for storage efficiency
+- **Phase 3**: Retention enforcement, snapshot expiration, and orphan file cleanup
+
+The compactor runs concurrent background loops for compaction, retention enforcement, and orphan cleanup, all using tokio::select! for non-blocking execution.
 
 ## Dual Catalog System
 

@@ -146,6 +146,108 @@ max_buffer_entries = 1000
 flush_interval = "30s"
 max_buffer_size_bytes = 134217728     # 128MB
 
+[compactor]
+# Compactor Service Configuration
+# The compactor manages the complete data lifecycle with three phases:
+#   Phase 1: Dry-run compaction planning
+#   Phase 2: Active Parquet file compaction for storage efficiency
+#   Phase 3: Retention enforcement and lifecycle management (NEW)
+#
+# Phase 2: Compaction Settings
+enabled = false                       # Enable compactor service (opt-in)
+tick_interval = "5m"                  # Interval between compaction planning cycles
+target_file_size_mb = 128             # Target file size after compaction (MB)
+file_count_threshold = 5              # Minimum files to trigger compaction
+min_input_file_size_kb = 1024         # Minimum input file size for compaction (KB)
+max_files_per_job = 20                # Maximum files per compaction job
+
+# Phase 3: Retention Enforcement Configuration
+# Automatically drops expired partitions based on configurable retention policies.
+# Uses a 3-tier hierarchy: Global defaults → Tenant overrides → Dataset overrides.
+#
+# IMPORTANT: Always test with dry_run = true first!
+[compactor.retention]
+enabled = false                       # Enable retention enforcement (opt-in, default: false)
+dry_run = true                        # Log actions without executing (safe default: true)
+retention_check_interval = "1h"       # Interval between retention checks (default: 1h)
+grace_period = "1h"                   # Safety margin before cutoff (prevents clock skew issues)
+timezone = "UTC"                      # Timezone for logging (internal storage uses UTC)
+snapshots_to_keep = 5                 # Keep last N snapshots per table (minimum: 1)
+
+# Global Default Retention Periods (per signal type)
+# These apply to all tenants/datasets unless overridden below.
+traces = "7d"                         # Trace data retention (default: 7 days)
+logs = "30d"                          # Log data retention (default: 30 days)
+metrics = "90d"                       # Metric data retention (default: 90 days)
+
+# Tenant-Specific Retention Overrides (optional)
+# Override global defaults for specific tenants.
+# Use array-of-tables syntax: [[compactor.retention.tenant_overrides]]
+#
+# Example: Production tenant with custom retention (mixed overrides)
+# [[compactor.retention.tenant_overrides]]
+# tenant_id = "production"
+# traces = "30d"                      # Override: Keep production traces for 30 days
+# logs = "7d"                         # Override: Keep production logs for 7 days
+# metrics = "90d"                     # Override: Keep production metrics for 90 days
+#
+# # Dataset-Specific Retention Overrides (highest priority)
+# # Override tenant defaults for specific datasets within a tenant.
+# [[compactor.retention.tenant_overrides.dataset_overrides]]
+# dataset_id = "critical"
+# traces = "90d"                      # Override: Keep critical traces for 90 days
+# logs = "14d"                        # Override: Keep critical logs for 14 days
+#
+# [[compactor.retention.tenant_overrides.dataset_overrides]]
+# dataset_id = "staging"
+# traces = "1d"                       # Override: Keep staging traces for only 1 day
+# logs = "1d"                         # Override: Keep staging logs for only 1 day
+#
+# Resolution Example:
+#   Global:    traces = 7 days
+#   Tenant:    traces = 30 days (overrides global)
+#   Dataset:   traces = 90 days (overrides tenant)
+# Result:
+#   - production/critical → 90 days (dataset override)
+#   - production/staging  → 1 day (dataset override)
+#   - production/default  → 30 days (tenant override)
+#   - other/any          → 7 days (global default)
+
+# Phase 3: Orphan File Cleanup Configuration
+# Automatically detects and deletes unreferenced Parquet files to reclaim storage.
+# Uses a 4-phase detection algorithm with safety-first design.
+#
+# IMPORTANT: Always test with dry_run = true first!
+[compactor.orphan_cleanup]
+enabled = false                       # Enable orphan cleanup (opt-in, default: false)
+dry_run = true                        # Log orphans without deleting (safe default: true)
+cleanup_interval_hours = 24           # Run cleanup every N hours (default: 24, once per day)
+
+# Safety Settings (conservative defaults)
+grace_period_hours = 24               # Don't delete files younger than this (default: 24h)
+                                      # Protects against in-flight writes and race conditions
+revalidate_before_delete = true       # Re-check file status before deletion (recommended: true)
+                                      # Adds ~10% overhead but prevents accidental deletion
+max_snapshot_age_hours = 720          # Consider snapshots within last N hours (default: 720 = 30 days)
+                                      # Files referenced by older snapshots may be incorrectly flagged
+
+# Performance Settings
+batch_size = 1000                     # Process N files per batch (default: 1000)
+                                      # Smaller = more checkpoints, larger = faster processing
+rate_limit_delay_ms = 0               # Delay between batches in milliseconds (default: 0)
+                                      # Use if hitting object store rate limits (S3 throttling)
+
+# Orphan Cleanup Safety Explained:
+# 1. Grace Period: Files younger than grace_period_hours are NEVER deleted
+# 2. Revalidation: Before deletion, re-check if file is still orphaned (catches races)
+# 3. Snapshot Window: Only scan recent snapshots to reduce memory usage
+# 4. Batch Processing: Process in batches with progress tracking for resumability
+#
+# Tuning Guidance:
+# - High-volume systems: increase batch_size (2000-5000), add rate_limit_delay_ms
+# - Low-memory systems: decrease batch_size (250-500), reduce max_snapshot_age_hours
+# - Aggressive cleanup: reduce grace_period_hours (12h), reduce cleanup_interval_hours (12h for more frequent runs)
+
 [tenants]
 # Multi-tenant configuration (always active)
 default_tenant = "default"

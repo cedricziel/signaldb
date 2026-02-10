@@ -9,6 +9,7 @@ rust-version.workspace = true
 common.workspace = true
 iceberg-rust.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
 log.workspace = true
 anyhow.workspace = true
 clap.workspace = true
@@ -22,6 +23,14 @@ serde.workspace = true
 uuid.workspace = true
 writer.workspace = true
 
+# Phase 3 dependencies (retention management)
+chrono.workspace = true
+chrono-tz = "0.10"
+humantime = "2.1"
+humantime-serde = "1.1"
+thiserror.workspace = true
+tracing.workspace = true
+
 [[bin]]
 name = "signaldb-compactor"
 path = "src/main.rs"
@@ -29,6 +38,7 @@ path = "src/main.rs"
 [package.metadata.cargo-machete]
 ignored = [
     # iceberg-rust pulls in these as transitive dependencies
-    "async-trait",
-    "serde"
+    "serde",
+    # humantime-serde used in serde attributes
+    "humantime-serde"
 ]
