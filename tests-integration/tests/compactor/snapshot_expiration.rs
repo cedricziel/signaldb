@@ -108,8 +108,11 @@ async fn test_snapshot_expiration_keeps_minimum_snapshots() -> Result<()> {
 
 /// Test: Snapshot expiration respects time-based retention
 ///
-/// Creates snapshots at different timestamps and verifies that time-based
+/// Creates snapshots with distinct timestamps and verifies that time-based
 /// retention correctly identifies old snapshots while keeping recent ones.
+///
+/// Note: Iceberg snapshots use wall-clock commit time (not data timestamp).
+/// This test adds delays between snapshot creation to ensure distinct timestamps.
 #[tokio::test]
 async fn test_snapshot_expiration_respects_time_based_retention() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
@@ -124,8 +127,9 @@ async fn test_snapshot_expiration_respects_time_based_retention() -> Result<()> 
     let now = chrono::Utc::now().timestamp_millis();
     let thirty_days_ago = now - (30 * 24 * 60 * 60 * 1000);
 
-    // Create snapshots spanning 30 days (one per 3 days = 10 snapshots)
-    log::info!("Creating snapshots spanning 30 days");
+    // Create 10 snapshots with small delays to ensure distinct timestamps
+    // (snapshot timestamp = wall-clock commit time, not data time)
+    log::info!("Creating 10 snapshots with delays for distinct timestamps");
     for i in 0..10 {
         let config = DataGeneratorConfig {
             partition_count: 1,
@@ -135,6 +139,11 @@ async fn test_snapshot_expiration_respects_time_based_retention() -> Result<()> 
             partition_granularity: PartitionGranularity::Day,
         };
         generators::generate_logs(&mut writer, &config).await?;
+
+        // Small delay to ensure snapshot timestamps are distinct
+        if i < 9 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
     }
 
     // Load table
@@ -154,30 +163,41 @@ async fn test_snapshot_expiration_respects_time_based_retention() -> Result<()> 
         _ => anyhow::bail!("Expected table"),
     };
 
-    // Apply time-based retention: keep snapshots from last 15 days
     let snapshot_manager = SnapshotManager::new();
-    let cutoff_secs = (now - (15 * 24 * 60 * 60 * 1000)) / 1000;
+    let all_snapshots = snapshot_manager.list_snapshots(&table)?;
+    log::info!("Total snapshots: {}", all_snapshots.len());
+
+    // With delays, snapshots will span ~1 second
+    // Use a cutoff that's halfway through this period
+    let oldest_snapshot_time = all_snapshots
+        .iter()
+        .map(|s| s.timestamp_secs())
+        .min()
+        .unwrap();
+    let newest_snapshot_time = all_snapshots
+        .iter()
+        .map(|s| s.timestamp_secs())
+        .max()
+        .unwrap();
+
+    // Cutoff halfway through the snapshot creation period
+    let cutoff_secs = (oldest_snapshot_time + newest_snapshot_time) / 2;
 
     let old_snapshots = snapshot_manager.list_snapshots_older_than(&table, cutoff_secs)?;
-    log::info!("Old snapshots (> 15 days): {}", old_snapshots.len());
 
-    let all_snapshots = snapshot_manager.list_snapshots(&table)?;
-    let recent_snapshots: Vec<_> = all_snapshots
-        .iter()
-        .filter(|s| !s.is_older_than_secs(cutoff_secs))
-        .collect();
-    log::info!("Recent snapshots (< 15 days): {}", recent_snapshots.len());
-
-    // With 10 snapshots spanning 30 days (one every 3 days):
-    // - Snapshots 0-4 are older than 15 days (at days 0, 3, 6, 9, 12)
-    // - Snapshots 5-9 are within 15 days (at days 15, 18, 21, 24, 27)
-    assert!(
-        old_snapshots.len() >= 4,
-        "Expected at least 4 old snapshots (older than 15 days)"
+    log::info!(
+        "Cutoff: {} | Old snapshots: {} | All snapshots: {}",
+        cutoff_secs,
+        old_snapshots.len(),
+        all_snapshots.len()
     );
+
+    // With 10 snapshots over ~1 second and cutoff at midpoint,
+    // expect roughly half to be "old"
     assert!(
-        recent_snapshots.len() >= 4,
-        "Expected at least 4 recent snapshots (within 15 days)"
+        old_snapshots.len() >= 3 && old_snapshots.len() <= 7,
+        "Expected 3-7 old snapshots, got {}",
+        old_snapshots.len()
     );
 
     // Verify all old snapshots are indeed older than cutoff

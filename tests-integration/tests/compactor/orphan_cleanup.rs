@@ -108,12 +108,14 @@ async fn test_orphan_detection_finds_unreferenced_files() -> Result<()> {
     Ok(())
 }
 
-/// Test: Orphan cleanup respects grace period
+/// Test: Orphan cleanup grace period configuration
 ///
-/// Verifies that files newer than the grace period are not flagged as orphans,
-/// while older files are correctly identified.
+/// Note: This test cannot fully validate time-based grace period filtering because
+/// the in-memory object store doesn't maintain real file timestamps. It verifies that
+/// the grace period configuration is respected and the detection logic completes successfully.
+/// For time-based validation, see unit tests in src/compactor/src/orphan/detector.rs
 #[tokio::test]
-async fn test_orphan_cleanup_respects_grace_period() -> Result<()> {
+async fn test_orphan_cleanup_grace_period_configuration() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
 
     let ctx = RetentionTestContext::new_in_memory().await?;

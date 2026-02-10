@@ -1,6 +1,7 @@
 //! Retention configuration structures for SignalDB Compactor Phase 3.
 
 use serde::{Deserialize, Serialize};
+use serde_json;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
@@ -110,9 +111,23 @@ impl From<common::config::RetentionConfig> for RetentionConfig {
             dry_run: config.dry_run,
             snapshots_to_keep: config.snapshots_to_keep,
             // Convert tenant_overrides from serde_json::Value to proper types
-            // For now, we'll use empty HashMap since the full conversion would need
-            // proper deserialization of the Value objects
-            tenant_overrides: HashMap::new(),
+            tenant_overrides: config
+                .tenant_overrides
+                .into_iter()
+                .filter_map(|(tenant_id, value)| {
+                    match serde_json::from_value::<TenantRetentionConfig>(value) {
+                        Ok(tenant_config) => Some((tenant_id, tenant_config)),
+                        Err(e) => {
+                            tracing::warn!(
+                                tenant_id = %tenant_id,
+                                error = %e,
+                                "Failed to parse tenant retention override, skipping"
+                            );
+                            None
+                        }
+                    }
+                })
+                .collect(),
         }
     }
 }
@@ -314,11 +329,17 @@ pub enum SignalType {
 
 impl SignalType {
     /// Parse signal type from table name.
+    ///
+    /// Supports both exact matches ("traces", "logs", "metrics") and
+    /// metric subtypes ("metrics_gauge", "metrics_counter", "metrics_histogram").
     pub fn from_table_name(table_name: &str) -> Result<Self, RetentionConfigError> {
-        match table_name.to_lowercase().as_str() {
+        let lower = table_name.to_lowercase();
+        match lower.as_str() {
             "traces" => Ok(SignalType::Traces),
             "logs" => Ok(SignalType::Logs),
             "metrics" => Ok(SignalType::Metrics),
+            // Handle metric subtypes (metrics_gauge, metrics_counter, metrics_histogram)
+            s if s.starts_with("metrics_") => Ok(SignalType::Metrics),
             _ => Err(RetentionConfigError::UnknownSignalType(
                 table_name.to_string(),
             )),
@@ -461,6 +482,33 @@ mod tests {
             SignalType::Metrics
         );
         assert!(SignalType::from_table_name("invalid").is_err());
+    }
+
+    #[test]
+    fn test_signal_type_from_metrics_subtypes() {
+        // Test that metrics subtypes are recognized
+        assert_eq!(
+            SignalType::from_table_name("metrics_gauge").unwrap(),
+            SignalType::Metrics
+        );
+        assert_eq!(
+            SignalType::from_table_name("metrics_counter").unwrap(),
+            SignalType::Metrics
+        );
+        assert_eq!(
+            SignalType::from_table_name("metrics_histogram").unwrap(),
+            SignalType::Metrics
+        );
+        assert_eq!(
+            SignalType::from_table_name("metrics_summary").unwrap(),
+            SignalType::Metrics
+        );
+
+        // Case insensitive
+        assert_eq!(
+            SignalType::from_table_name("METRICS_GAUGE").unwrap(),
+            SignalType::Metrics
+        );
     }
 
     #[test]
