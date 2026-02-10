@@ -336,86 +336,54 @@ async fn test_retention_per_dataset_override() -> Result<()> {
     Ok(())
 }
 
-/// Test 1.4: Zero retention policy
+/// Test 1.4: Zero retention policy (validation test)
 ///
-/// Verifies that zero-day retention is handled gracefully.
+/// Verifies that zero-day retention is correctly rejected by validation.
+/// This is a safety test ensuring invalid configurations cannot be created.
 #[tokio::test]
 async fn test_retention_zero_days() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
 
     let ctx = RetentionTestContext::new_in_memory().await?;
 
-    // Create table with data
-    let mut writer = ctx
-        .create_table("test-tenant", "test-dataset", "traces")
-        .await?;
-
-    let now = chrono::Utc::now().timestamp_millis();
-    let ten_days_ago = now - (10 * 24 * 60 * 60 * 1000);
-
-    let config = DataGeneratorConfig {
-        partition_count: 10,
-        files_per_partition: 1,
-        rows_per_file: 50,
-        base_timestamp: ten_days_ago,
-        partition_granularity: PartitionGranularity::Day,
-    };
-
-    let partitions = generators::generate_traces(&mut writer, &config).await?;
-    log::info!(
-        "Generated {} partitions for zero retention test",
-        partitions.len()
-    );
-
-    // Create retention config with zero retention
+    // Create retention config with zero retention (invalid)
     let retention_config = RetentionConfig {
         enabled: true,
         retention_check_interval: std::time::Duration::from_secs(3600),
-        traces: std::time::Duration::from_secs(0), // Zero retention
+        traces: std::time::Duration::from_secs(0), // Zero retention - INVALID
         logs: std::time::Duration::from_secs(7 * 24 * 3600),
         metrics: std::time::Duration::from_secs(30 * 24 * 3600),
         tenant_overrides: HashMap::new(),
-        grace_period: std::time::Duration::from_secs(1), // Minimum 1 second for validation
+        grace_period: std::time::Duration::from_secs(1),
         timezone: "UTC".to_string(),
         dry_run: true,
         snapshots_to_keep: Some(10),
     };
 
     let metrics = RetentionMetrics::new();
-    let enforcer = RetentionEnforcer::new(
-        ctx.catalog_manager().clone(),
-        retention_config,
-        metrics.clone(),
-    )?;
 
-    // Run retention enforcement
-    let result = enforcer
-        .enforce_retention("test-tenant", "test-dataset")
-        .await?;
+    // Attempt to create enforcer with invalid config
+    let result = RetentionEnforcer::new(ctx.catalog_manager().clone(), retention_config, metrics);
 
-    log::info!(
-        "Zero retention result: {} partitions would be dropped",
-        result.total_partitions_dropped
-    );
+    // Verify that creation fails with validation error
+    match result {
+        Err(err) => {
+            let err_msg = format!("{:?}", err); // Use Debug format to see full error chain
+            log::info!("Validation correctly rejected zero retention: {}", err_msg);
 
-    // Verify manually: zero retention means all data is expired
-    let retention_cutoff_ms = now; // Current time = everything is old
-    let expired_partitions: Vec<_> = partitions
-        .iter()
-        .filter(|p| p.timestamp_range.1 < retention_cutoff_ms)
-        .collect();
-
-    log::info!(
-        "All {} partitions would be expired",
-        expired_partitions.len()
-    );
-
-    // All partitions should be marked for deletion
-    assert_eq!(
-        expired_partitions.len(),
-        partitions.len(),
-        "All partitions should be expired with zero retention"
-    );
+            // Check that error chain contains validation message
+            assert!(
+                err_msg.contains("Invalid retention period")
+                    || err_msg.contains("must be positive")
+                    || err_msg.contains("Configuration validation failed"),
+                "Error message should indicate invalid retention period: {}",
+                err_msg
+            );
+        }
+        Ok(_) => {
+            panic!("RetentionEnforcer should reject zero retention period");
+        }
+    }
 
     Ok(())
 }
