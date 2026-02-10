@@ -67,7 +67,8 @@ pub struct OrphanCleanupConfig {
     pub revalidate_before_delete: bool,
 
     /// Maximum age in hours for considering snapshots (default: 720 = 30 days)
-    /// Files referenced by snapshots older than this are still protected
+    /// Only files referenced by snapshots newer than this are protected.
+    /// Files referenced exclusively by snapshots older than this may be considered orphaned.
     pub max_snapshot_age_hours: u64,
 }
 

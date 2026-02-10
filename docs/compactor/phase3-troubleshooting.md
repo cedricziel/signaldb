@@ -820,4 +820,4 @@ If you encounter issues not covered in this guide:
 2. **Collect Logs:** Last 500 lines of compactor logs
 3. **Gather Metrics:** `curl localhost:9091/metrics | grep compactor > metrics.txt`
 4. **Configuration:** Share `signaldb.toml` (redact sensitive values)
-5. **Open Issue:** https://github.com/yourorg/signaldb/issues with above information
+5. **Open Issue:** https://github.com/cedricziel/signaldb/issues with above information

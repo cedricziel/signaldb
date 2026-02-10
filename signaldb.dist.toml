@@ -184,7 +184,7 @@ metrics = "90d"                       # Metric data retention (default: 90 days)
 # Override global defaults for specific tenants.
 # Use array-of-tables syntax: [[compactor.retention.tenant_overrides]]
 #
-# Example: Production tenant with longer retention
+# Example: Production tenant with custom retention (mixed overrides)
 # [[compactor.retention.tenant_overrides]]
 # tenant_id = "production"
 # traces = "30d"                      # Override: Keep production traces for 30 days
@@ -246,7 +246,7 @@ rate_limit_delay_ms = 0               # Delay between batches in milliseconds (d
 # Tuning Guidance:
 # - High-volume systems: increase batch_size (2000-5000), add rate_limit_delay_ms
 # - Low-memory systems: decrease batch_size (250-500), reduce max_snapshot_age_hours
-# - Aggressive cleanup: reduce grace_period_hours (12h), increase cleanup_interval_hours (12h)
+# - Aggressive cleanup: reduce grace_period_hours (12h), reduce cleanup_interval_hours (12h for more frequent runs)
 
 [tenants]
 # Multi-tenant configuration (always active)

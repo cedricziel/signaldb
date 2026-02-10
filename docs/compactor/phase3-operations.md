@@ -48,15 +48,15 @@ Edit `signaldb.toml`:
 [compactor.retention]
 enabled = true
 dry_run = true  # Start with dry-run mode
-retention_check_interval_secs = 3600  # Check every hour
+retention_check_interval = "1h"  # Check every hour
 
 # Global defaults
-traces_retention_days = 7
-logs_retention_days = 3
-metrics_retention_days = 30
+traces = "7d"
+logs = "3d"
+metrics = "30d"
 
 # Safety settings
-grace_period_hours = 1   # Safety margin
+grace_period = "1h"      # Safety margin
 timezone = "UTC"         # For logging
 snapshots_to_keep = 5    # Keep last 5 snapshots
 ```
@@ -78,10 +78,10 @@ tail -f .data/logs/compactor.log | grep "DRY-RUN"
 
 Look for log entries like:
 
-```
+```text
 [2026-02-09T10:00:00Z INFO compactor::retention] [DRY-RUN] Would drop partition: tenant=acme dataset=prod table=traces hour=2026-01-25-10
 [2026-02-09T10:00:00Z INFO compactor::retention] [DRY-RUN] Retention run complete: partitions_evaluated=720 partitions_to_drop=48
-```
+```text
 
 **Validate:**
 - Partitions identified for deletion are expected
@@ -184,12 +184,12 @@ tail -f .data/logs/compactor.log | grep -E "(orphan|cleanup)"
 
 Look for:
 
-```
+```text
 [2026-02-09T10:00:00Z INFO compactor::orphan] Starting orphan cleanup scan: tenant=acme dataset=prod table=traces
 [2026-02-09T10:00:15Z INFO compactor::orphan] [DRY-RUN] Identified 42 orphan files (total size: 2.1 GB)
 [2026-02-09T10:00:15Z INFO compactor::orphan] [DRY-RUN] Would delete: data/acme/prod/traces/hour=2026-01-01-10/orphan-001.parquet (age=5d)
 [2026-02-09T10:00:15Z INFO compactor::orphan] [DRY-RUN] Cleanup scan complete: files_scanned=1024 orphans_found=42
-```
+```text
 
 **Validate:**
 - Orphan count seems reasonable (expect 0-5% of total files)

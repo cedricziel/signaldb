@@ -120,7 +120,7 @@ The Compactor Service manages the complete data lifecycle for observability sign
 
 SignalDB uses a **3-tier override hierarchy** for flexible retention management:
 
-```
+```text
 Global Defaults → Tenant Overrides → Dataset Overrides
 ```
 

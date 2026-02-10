@@ -90,7 +90,7 @@ snapshots_to_keep = 10     # Keep last 10 snapshots
 
 The grace period prevents premature deletion due to clock skew or timing issues.
 
-```
+```text
 Computed Cutoff = NOW - retention_days - grace_period_hours
 
 Example:
@@ -192,7 +192,7 @@ traces_retention_days = 14  # Tenant override
 [[compactor.retention.tenant_overrides.dataset_overrides]]
 dataset_id = "critical"
 traces_retention_days = 90  # Dataset override
-```
+```text
 
 Results:
 - `acme/critical` → **90 days** (dataset override)
