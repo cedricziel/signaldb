@@ -40,44 +40,15 @@ impl ManifestReader {
     /// A HashSet of absolute file paths that are currently referenced
     pub async fn build_live_file_set(
         &self,
-        table: &Table,
-        snapshot_ids: Option<&[i64]>,
+        _table: &Table,
+        _snapshot_ids: Option<&[i64]>,
     ) -> Result<HashSet<String>> {
-        let metadata = table.metadata();
-        let snapshots = &metadata.snapshots;
-
-        let live_files = HashSet::new();
-
-        for snapshot in snapshots.values() {
-            // Filter by snapshot IDs if provided
-            if let Some(ids) = snapshot_ids
-                && !ids.contains(snapshot.snapshot_id())
-            {
-                continue;
-            }
-
-            // Extract manifest list path
-            let manifest_list_path = snapshot.manifest_list();
-
-            // Read manifest list to get manifest file paths
-            // Note: In a full implementation, we would use iceberg-rust's
-            // manifest reading APIs. For Phase 3, we'll use a simplified approach
-            // where we track files from DataFusion's perspective.
-
-            // For now, we log that we would process this manifest
-            tracing::debug!(
-                snapshot_id = *snapshot.snapshot_id(),
-                manifest_list = %manifest_list_path,
-                "Would process manifest list for live file set"
-            );
-
-            // TODO: Implement actual manifest reading once iceberg-rust
-            // provides stable APIs for manifest file iteration.
-            // For Phase 3 MVP, we can use DataFusion's table scan to
-            // enumerate files as an alternative approach.
-        }
-
-        Ok(live_files)
+        // SAFETY: Fail-safe design - explicitly error instead of returning empty set.
+        // An empty live file set would incorrectly mark ALL files as orphans,
+        // potentially causing catastrophic data loss during orphan cleanup.
+        Err(anyhow::anyhow!(
+            "build_live_file_set: manifest reading not implemented; cannot produce live file set"
+        ))
     }
 
     /// Extract data file paths from a snapshot

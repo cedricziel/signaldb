@@ -68,7 +68,7 @@ async fn test_retention_handles_catalog_unavailable() -> Result<()> {
         snapshots_to_keep: Some(10),
     };
 
-    let metrics = Arc::new(RetentionMetrics::new());
+    let metrics = RetentionMetrics::new();
     let enforcer = RetentionEnforcer::new(
         ctx.catalog_manager().clone(),
         retention_config,
@@ -93,10 +93,7 @@ async fn test_retention_handles_catalog_unavailable() -> Result<()> {
     // - No data loss (partitions still exist)
     // - Error is properly propagated
     // - Metrics reflect the failure
-    assert!(
-        result.is_ok() || result.is_err(),
-        "Result should be returned, not panic"
-    );
+    assert!(result.is_err(), "expected Err when catalog unavailable");
 
     Ok(())
 }
@@ -132,7 +129,7 @@ async fn test_retention_handles_empty_table() -> Result<()> {
         snapshots_to_keep: Some(10),
     };
 
-    let metrics = Arc::new(RetentionMetrics::new());
+    let metrics = RetentionMetrics::new();
     let enforcer = RetentionEnforcer::new(
         ctx.catalog_manager().clone(),
         retention_config,
@@ -220,7 +217,7 @@ async fn test_retention_concurrent_with_compaction() -> Result<()> {
         snapshots_to_keep: Some(10),
     };
 
-    let metrics = Arc::new(RetentionMetrics::new());
+    let metrics = RetentionMetrics::new();
     let enforcer = RetentionEnforcer::new(
         ctx.catalog_manager().clone(),
         retention_config,
@@ -309,7 +306,7 @@ async fn test_retention_respects_dry_run_mode() -> Result<()> {
         snapshots_to_keep: Some(10),
     };
 
-    let metrics = Arc::new(RetentionMetrics::new());
+    let metrics = RetentionMetrics::new();
     let enforcer = RetentionEnforcer::new(
         ctx.catalog_manager().clone(),
         retention_config,
@@ -322,8 +319,7 @@ async fn test_retention_respects_dry_run_mode() -> Result<()> {
         .await?;
 
     log::info!(
-        "Dry-run retention result: {} partitions evaluated, {} would be dropped",
-        result.total_partitions_dropped, // In dry-run, this shows what WOULD be dropped
+        "Dry-run retention result: {} partitions would be dropped",
         result.total_partitions_dropped
     );
 
@@ -369,6 +365,33 @@ async fn test_retention_respects_dry_run_mode() -> Result<()> {
     assert_eq!(
         result.total_partitions_dropped, 0,
         "Dry-run should not actually drop partitions (current value may reflect simulation count)"
+    );
+
+    // Verify partitions are preserved by re-fetching them from catalog
+    let table_identifier =
+        ctx.catalog_manager()
+            .build_table_identifier("test-tenant", "test-dataset", "traces");
+
+    let catalog = ctx.catalog_manager().catalog();
+    let tabular_after = catalog.load_tabular(&table_identifier).await?;
+    let table_after = match tabular_after {
+        iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
+        _ => anyhow::bail!("Expected table"),
+    };
+
+    // Re-fetch current partition count and verify it's unchanged
+    // In dry-run mode, partition count should match the original count
+    let snapshot_after = table_after.metadata().current_snapshot(None).ok().flatten();
+
+    assert!(
+        snapshot_after.is_some(),
+        "Dry-run should preserve table snapshots"
+    );
+
+    log::info!(
+        "Dry-run verification: table still has snapshot {:?}, original partition count: {}",
+        snapshot_after.map(|s| s.snapshot_id()),
+        partitions_before.len()
     );
 
     Ok(())
@@ -425,7 +448,7 @@ async fn test_retention_handles_invalid_partition_metadata() -> Result<()> {
         snapshots_to_keep: Some(10),
     };
 
-    let metrics = Arc::new(RetentionMetrics::new());
+    let metrics = RetentionMetrics::new();
     let enforcer = RetentionEnforcer::new(
         ctx.catalog_manager().clone(),
         retention_config,

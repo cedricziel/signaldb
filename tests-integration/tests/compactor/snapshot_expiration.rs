@@ -3,28 +3,12 @@
 //! Tests the snapshot retention system that keeps N most recent snapshots
 //! and expires older snapshots to save catalog space.
 //!
-//! # Status: Temporarily Disabled
+//! ## DataGenerator Schema Overview
 //!
-//! These tests are currently marked as `#[ignore]` due to a schema mismatch
-//! between the test data generator and Iceberg table schemas.
-//!
-//! ## Issue
-//!
-//! The DataGenerator creates simplified schemas:
-//! - Traces: 5 fields (trace_id, span_id, span_name, timestamp, duration_ns)
-//! - Logs: 4 fields (timestamp, severity, message, service_name)
-//! - Metrics: 4 fields (timestamp, metric_name, value, labels)
-//!
-//! But IcebergTableWriter expects full TOML-defined schemas with 30+ fields.
-//!
-//! ## Resolution
-//!
-//! To enable these tests:
-//! 1. Update DataGenerator to use `create_traces_schema()`, `create_logs_schema()`
-//! 2. Generate record batches with all required fields (with defaults for optional fields)
-//! 3. Remove `#[ignore]` attributes from test functions
-//!
-//! The test logic itself is correct and ready to run once schema alignment is fixed.
+//! The DataGenerator creates schemas matching the production v1 schemas:
+//! - Traces: 22 columns (full OTLP trace data with attributes, events, links)
+//! - Logs: 18 columns (complete OTLP log records with resource and scope attributes)
+//! - Metrics: 19 columns (metrics_gauge schema with exemplars and partitioning fields)
 
 use anyhow::{Context, Result};
 use compactor::iceberg::snapshot::SnapshotManager;

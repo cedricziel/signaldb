@@ -166,7 +166,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 1. Deploy with Phase 3 disabled (default)
 2. Enable with `dry_run = true` and monitor logs
 3. Enable for test tenant first
-4. Gradually rollout to production tenants
+4. Gradually roll out to production tenants
 5. Enable orphan cleanup after retention is stable
 
 **New Metrics:**

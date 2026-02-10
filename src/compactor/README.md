@@ -193,7 +193,7 @@ SIGNALDB_COMPACTOR_ORPHAN_CLEANUP_GRACE_PERIOD_HOURS=48
 
 ### Data Flow
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                     Compactor Service                        │
 │                                                              │
@@ -213,7 +213,7 @@ SIGNALDB_COMPACTOR_ORPHAN_CLEANUP_GRACE_PERIOD_HOURS=48
 
 ### Retention Enforcement Flow
 
-```
+```text
 1. Compute Retention Cutoff
    ├─ Resolve policy (global → tenant → dataset)
    ├─ Apply grace period
@@ -291,7 +291,7 @@ RUST_LOG=info,compactor=debug cargo run --bin compactor
 
 Look for log entries like:
 
-```
+```text
 [DRY-RUN] Would drop partition: tenant=acme dataset=prod table=traces hour=2026-01-15-10
 [DRY-RUN] Would expire snapshot: snapshot_id=123456 age=8days
 [DRY-RUN] Would delete orphan file: data/acme/prod/traces/hour=2026-01-15-10/data-001.parquet
@@ -336,7 +336,7 @@ grace_period_hours = 24
 
 Monitor logs for orphan candidates:
 
-```
+```text
 [DRY-RUN] Identified 42 orphan files for tenant=acme dataset=prod table=traces
 [DRY-RUN] Would delete: data/acme/prod/traces/hour=2026-01-01-10/orphan-001.parquet (age=5days)
 ```
@@ -573,8 +573,10 @@ The compactor has comprehensive integration tests in `tests-integration/tests/co
 - **`partition_drop.rs`** - Partition dropping with isolation (5 tests)
 - **`snapshot_expiration.rs`** - Snapshot expiration logic (4 tests)
 - **`orphan_cleanup.rs`** - Orphan detection and deletion (5 tests)
+- **`retention_enforcer.rs`** - End-to-end retention enforcement (6 tests)
+- **`compactor_service.rs`** - Service integration (8 tests)
 
-**Total: 19 integration tests**
+**Total: 33 integration tests**
 
 ### Adding New Retention Policies
 

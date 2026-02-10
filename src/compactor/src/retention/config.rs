@@ -97,6 +97,26 @@ impl Default for RetentionConfig {
     }
 }
 
+impl From<common::config::RetentionConfig> for RetentionConfig {
+    fn from(config: common::config::RetentionConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            retention_check_interval: config.retention_check_interval,
+            traces: config.traces,
+            logs: config.logs,
+            metrics: config.metrics,
+            grace_period: config.grace_period,
+            timezone: config.timezone,
+            dry_run: config.dry_run,
+            snapshots_to_keep: config.snapshots_to_keep,
+            // Convert tenant_overrides from serde_json::Value to proper types
+            // For now, we'll use empty HashMap since the full conversion would need
+            // proper deserialization of the Value objects
+            tenant_overrides: HashMap::new(),
+        }
+    }
+}
+
 impl RetentionConfig {
     /// Validate the retention configuration.
     ///
@@ -148,15 +168,24 @@ impl RetentionConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TenantRetentionConfig {
     /// Override default retention for traces.
-    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        with = "humantime_serde::option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub traces: Option<Duration>,
 
     /// Override default retention for logs.
-    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        with = "humantime_serde::option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub logs: Option<Duration>,
 
     /// Override default retention for metrics.
-    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        with = "humantime_serde::option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub metrics: Option<Duration>,
 
     /// Dataset-specific retention overrides.
@@ -214,15 +243,24 @@ impl TenantRetentionConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DatasetRetentionConfig {
     /// Override retention for traces in this dataset.
-    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        with = "humantime_serde::option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub traces: Option<Duration>,
 
     /// Override retention for logs in this dataset.
-    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        with = "humantime_serde::option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub logs: Option<Duration>,
 
     /// Override retention for metrics in this dataset.
-    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        with = "humantime_serde::option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub metrics: Option<Duration>,
 }
 

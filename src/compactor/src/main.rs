@@ -124,13 +124,13 @@ async fn main() -> Result<()> {
     );
 
     // Initialize retention enforcement (Phase 3)
-    let retention_config = RetentionConfig::default();
-    let retention_metrics = Arc::new(RetentionMetrics::new());
+    let retention_config = RetentionConfig::from(config.compactor.retention.clone());
+    let retention_metrics = RetentionMetrics::new();
     let retention_enforcer = Arc::new(
         RetentionEnforcer::new(
             catalog_manager.clone(),
             retention_config.clone(),
-            retention_metrics.clone(),
+            retention_metrics,
         )
         .context("Failed to initialize retention enforcer")?,
     );
@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
     );
 
     // Initialize orphan cleanup (Phase 3)
-    let orphan_cleanup_config = OrphanCleanupConfig::default();
+    let orphan_cleanup_config = OrphanCleanupConfig::from(config.compactor.orphan_cleanup.clone());
 
     log::info!(
         "Orphan cleanup configured (enabled: {}, cleanup_interval: {:?}, dry_run: {})",
@@ -238,6 +238,7 @@ async fn main() -> Result<()> {
 
                             // TODO: Get list of all tenants/datasets from catalog
                             // For now, we'll use a placeholder list
+                            log::warn!("Using placeholder tenant list - catalog enumeration not implemented. Retention will not run on real tenants.");
                             let tenant_dataset_pairs = vec![
                                 ("default".to_string(), "default".to_string()),
                             ];
@@ -348,7 +349,7 @@ mod tests {
     async fn test_retention_enforcer_initialization() {
         let config = RetentionConfig::default();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let metrics = Arc::new(RetentionMetrics::new());
+        let metrics = RetentionMetrics::new();
 
         let enforcer = RetentionEnforcer::new(catalog_manager, config, metrics);
         assert!(

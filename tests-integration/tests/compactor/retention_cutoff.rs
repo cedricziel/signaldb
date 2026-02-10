@@ -4,6 +4,13 @@
 //! retention policies including global, per-tenant, and per-dataset configurations.
 
 use anyhow::Result;
+use compactor::retention::config::{
+    DatasetRetentionConfig, RetentionConfig, TenantRetentionConfig,
+};
+use compactor::retention::enforcer::RetentionEnforcer;
+use compactor::retention::metrics::RetentionMetrics;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tests_integration::fixtures::{
     DataGeneratorConfig, PartitionGranularity, RetentionTestContext,
 };
@@ -105,14 +112,62 @@ async fn test_retention_per_tenant_override() -> Result<()> {
 
     log::info!("Generated data for both tenants");
 
-    // Tenant A: 30 days retention
+    // Create tenant override for tenant-a with 30-day retention
+    let mut tenant_overrides = HashMap::new();
+    tenant_overrides.insert(
+        "tenant-a".to_string(),
+        TenantRetentionConfig {
+            traces: Some(std::time::Duration::from_secs(30 * 24 * 3600)), // 30 days
+            logs: None,
+            metrics: None,
+            dataset_overrides: HashMap::new(),
+        },
+    );
+
+    // Tenant B uses global defaults (7 days)
+    let retention_config = RetentionConfig {
+        enabled: true,
+        retention_check_interval: std::time::Duration::from_secs(3600),
+        traces: std::time::Duration::from_secs(7 * 24 * 3600), // 7 days (global default)
+        logs: std::time::Duration::from_secs(7 * 24 * 3600),
+        metrics: std::time::Duration::from_secs(30 * 24 * 3600),
+        tenant_overrides,
+        grace_period: std::time::Duration::from_secs(0),
+        timezone: "UTC".to_string(),
+        dry_run: true,
+        snapshots_to_keep: Some(10),
+    };
+
+    let metrics = RetentionMetrics::new();
+    let enforcer = RetentionEnforcer::new(
+        ctx.catalog_manager().clone(),
+        retention_config,
+        metrics.clone(),
+    )?;
+
+    // Enforce retention for tenant-a (30 days)
+    let result_a = enforcer.enforce_retention("tenant-a", "production").await?;
+
+    log::info!(
+        "Tenant A retention: {} evaluated, {} to drop",
+        result_a.total_partitions_dropped
+    );
+
+    // Enforce retention for tenant-b (7 days global)
+    let result_b = enforcer.enforce_retention("tenant-b", "production").await?;
+
+    log::info!(
+        "Tenant B retention: {} evaluated, {} to drop",
+        result_b.total_partitions_dropped
+    );
+
+    // Verify manually calculated cutoffs
     let retention_a_ms = now - (30 * 24 * 60 * 60 * 1000);
     let old_a: Vec<_> = partitions_a
         .iter()
         .filter(|p| p.timestamp_range.1 < retention_a_ms)
         .collect();
 
-    // Tenant B: 7 days retention (global default)
     let retention_b_ms = now - (7 * 24 * 60 * 60 * 1000);
     let old_b: Vec<_> = partitions_b
         .iter()
@@ -176,14 +231,79 @@ async fn test_retention_per_dataset_override() -> Result<()> {
 
     log::info!("Generated data for production and staging");
 
-    // Production: 90 days retention
+    // Create dataset-specific overrides
+    let mut dataset_overrides = HashMap::new();
+    dataset_overrides.insert(
+        "production".to_string(),
+        DatasetRetentionConfig {
+            traces: Some(std::time::Duration::from_secs(90 * 24 * 3600)), // 90 days
+            logs: None,
+            metrics: None,
+        },
+    );
+    dataset_overrides.insert(
+        "staging".to_string(),
+        DatasetRetentionConfig {
+            traces: Some(std::time::Duration::from_secs(3 * 24 * 3600)), // 3 days
+            logs: None,
+            metrics: None,
+        },
+    );
+
+    let mut tenant_overrides = HashMap::new();
+    tenant_overrides.insert(
+        "tenant-a".to_string(),
+        TenantRetentionConfig {
+            traces: None, // Use global default
+            logs: None,
+            metrics: None,
+            dataset_overrides,
+        },
+    );
+
+    let retention_config = RetentionConfig {
+        enabled: true,
+        retention_check_interval: std::time::Duration::from_secs(3600),
+        traces: std::time::Duration::from_secs(30 * 24 * 3600), // 30 days (global default)
+        logs: std::time::Duration::from_secs(7 * 24 * 3600),
+        metrics: std::time::Duration::from_secs(30 * 24 * 3600),
+        tenant_overrides,
+        grace_period: std::time::Duration::from_secs(0),
+        timezone: "UTC".to_string(),
+        dry_run: true,
+        snapshots_to_keep: Some(10),
+    };
+
+    let metrics = RetentionMetrics::new();
+    let enforcer = RetentionEnforcer::new(
+        ctx.catalog_manager().clone(),
+        retention_config,
+        metrics.clone(),
+    )?;
+
+    // Enforce retention for production (90 days)
+    let result_prod = enforcer.enforce_retention("tenant-a", "production").await?;
+
+    log::info!(
+        "Production retention: {} evaluated, {} to drop",
+        result_prod.total_partitions_dropped
+    );
+
+    // Enforce retention for staging (3 days)
+    let result_staging = enforcer.enforce_retention("tenant-a", "staging").await?;
+
+    log::info!(
+        "Staging retention: {} evaluated, {} to drop",
+        result_staging.total_partitions_dropped
+    );
+
+    // Verify manually calculated cutoffs
     let retention_prod_ms = now - (90 * 24 * 60 * 60 * 1000);
     let old_prod: Vec<_> = partitions_prod
         .iter()
         .filter(|p| p.timestamp_range.1 < retention_prod_ms)
         .collect();
 
-    // Staging: 3 days retention
     let retention_staging_ms = now - (3 * 24 * 60 * 60 * 1000);
     let old_staging: Vec<_> = partitions_staging
         .iter()
@@ -248,10 +368,39 @@ async fn test_retention_zero_days() -> Result<()> {
         partitions.len()
     );
 
-    // Zero retention means all data is expired
-    // In practice, this would delete all partitions
-    let retention_cutoff_ms = now; // Current time = everything is old
+    // Create retention config with zero retention
+    let retention_config = RetentionConfig {
+        enabled: true,
+        retention_check_interval: std::time::Duration::from_secs(3600),
+        traces: std::time::Duration::from_secs(0), // Zero retention
+        logs: std::time::Duration::from_secs(7 * 24 * 3600),
+        metrics: std::time::Duration::from_secs(30 * 24 * 3600),
+        tenant_overrides: HashMap::new(),
+        grace_period: std::time::Duration::from_secs(0),
+        timezone: "UTC".to_string(),
+        dry_run: true,
+        snapshots_to_keep: Some(10),
+    };
 
+    let metrics = RetentionMetrics::new();
+    let enforcer = RetentionEnforcer::new(
+        ctx.catalog_manager().clone(),
+        retention_config,
+        metrics.clone(),
+    )?;
+
+    // Run retention enforcement
+    let result = enforcer
+        .enforce_retention("test-tenant", "test-dataset")
+        .await?;
+
+    log::info!(
+        "Zero retention result: {} partitions would be dropped",
+        result.total_partitions_dropped
+    );
+
+    // Verify manually: zero retention means all data is expired
+    let retention_cutoff_ms = now; // Current time = everything is old
     let expired_partitions: Vec<_> = partitions
         .iter()
         .filter(|p| p.timestamp_range.1 < retention_cutoff_ms)
@@ -304,7 +453,38 @@ async fn test_retention_with_clock_skew() -> Result<()> {
         partitions.len()
     );
 
-    // With 3-day retention, only data older than 3 days should be dropped
+    // Create retention config with 3-day retention
+    let retention_config = RetentionConfig {
+        enabled: true,
+        retention_check_interval: std::time::Duration::from_secs(3600),
+        traces: std::time::Duration::from_secs(3 * 24 * 3600), // 3 days
+        logs: std::time::Duration::from_secs(7 * 24 * 3600),
+        metrics: std::time::Duration::from_secs(30 * 24 * 3600),
+        tenant_overrides: HashMap::new(),
+        grace_period: std::time::Duration::from_secs(0),
+        timezone: "UTC".to_string(),
+        dry_run: true,
+        snapshots_to_keep: Some(10),
+    };
+
+    let metrics = RetentionMetrics::new();
+    let enforcer = RetentionEnforcer::new(
+        ctx.catalog_manager().clone(),
+        retention_config,
+        metrics.clone(),
+    )?;
+
+    // Run retention enforcement
+    let result = enforcer
+        .enforce_retention("test-tenant", "test-dataset")
+        .await?;
+
+    log::info!(
+        "Clock skew test result: {} partitions would be dropped",
+        result.total_partitions_dropped
+    );
+
+    // Verify manually: with 3-day retention, only data older than 3 days should be dropped
     let retention_cutoff_ms = now - (3 * 24 * 60 * 60 * 1000);
 
     let expired: Vec<_> = partitions

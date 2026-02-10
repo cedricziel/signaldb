@@ -19,7 +19,7 @@ The orphan cleanup system is safety-critical and MUST NEVER delete files that ar
 
 ### Component Structure
 
-```
+```text
 OrphanCleanupService
 ├── OrphanDetector          // Identifies orphan candidates
 │   ├── ManifestScanner     // Reads snapshot manifests

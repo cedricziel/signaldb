@@ -127,11 +127,10 @@ impl SnapshotManager {
         all_snapshots.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
 
         // Keep the first N, expire the rest
-        let to_expire: Vec<SnapshotInfo> = all_snapshots.into_iter().skip(keep_count).collect();
+        let mut to_expire: Vec<SnapshotInfo> = all_snapshots.into_iter().skip(keep_count).collect();
 
         // Return sorted oldest first for consistent processing
-        let mut to_expire = to_expire;
-        to_expire.sort_by(|a, b| a.timestamp_ms.cmp(&b.timestamp_ms));
+        to_expire.reverse();
 
         Ok(to_expire)
     }

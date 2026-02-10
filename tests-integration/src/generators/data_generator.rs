@@ -189,7 +189,11 @@ fn create_trace_batch(
         Field::new("scope_attributes", DataType::Utf8, true),
     ]));
 
-    let time_step = (end_ts - start_ts) / num_rows as i64;
+    let time_step = if num_rows == 0 {
+        0
+    } else {
+        (end_ts - start_ts) / num_rows as i64
+    };
     let base_trace_id = format!("trace-p{}-f{}", partition_idx, file_idx);
 
     let mut trace_ids: Vec<Option<String>> = Vec::with_capacity(num_rows);
@@ -342,7 +346,11 @@ fn create_log_batch(
         Field::new("hour", DataType::Int32, false),
     ]));
 
-    let time_step = (end_ts - start_ts) / num_rows as i64;
+    let time_step = if num_rows == 0 {
+        0
+    } else {
+        (end_ts - start_ts) / num_rows as i64
+    };
     let severities = ["INFO", "WARN", "ERROR", "DEBUG"];
 
     let mut timestamps: Vec<Option<i64>> = Vec::with_capacity(num_rows);
@@ -442,7 +450,11 @@ fn create_metric_batch(
     // Use the writer's schema
     let schema = writer::schema_transform::create_metrics_gauge_arrow_schema();
 
-    let time_step = (end_ts - start_ts) / num_rows as i64;
+    let time_step = if num_rows == 0 {
+        0
+    } else {
+        (end_ts - start_ts) / num_rows as i64
+    };
     let metric_names = ["cpu_usage", "memory_usage", "request_count", "error_rate"];
 
     // Build arrays for all 19 fields

@@ -80,11 +80,11 @@ pub struct OrphanCleanupConfig {
     #[serde(default = "default_revalidate_before_delete")]
     pub revalidate_before_delete: bool,
 
-    /// Maximum age in hours for considering snapshots.
+    /// Maximum age in hours for snapshots to include in orphan detection.
     ///
-    /// Only snapshots within this time window are scanned when building
-    /// the live file reference set. Files referenced by older snapshots
-    /// are still protected (not deleted).
+    /// The detector only scans snapshots within this age window. Files
+    /// referenced exclusively by snapshots older than this age will NOT
+    /// be included in the live file set and may be considered orphaned.
     ///
     /// Default: 720 hours (30 days)
     ///
@@ -128,6 +128,20 @@ impl Default for OrphanCleanupConfig {
             dry_run: default_dry_run(),
             revalidate_before_delete: default_revalidate_before_delete(),
             max_snapshot_age_hours: default_max_snapshot_age_hours(),
+        }
+    }
+}
+
+impl From<common::config::OrphanCleanupConfig> for OrphanCleanupConfig {
+    fn from(config: common::config::OrphanCleanupConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            grace_period_hours: config.grace_period_hours,
+            cleanup_interval_hours: config.cleanup_interval_hours,
+            batch_size: config.batch_size,
+            dry_run: config.dry_run,
+            revalidate_before_delete: config.revalidate_before_delete,
+            max_snapshot_age_hours: config.max_snapshot_age_hours,
         }
     }
 }

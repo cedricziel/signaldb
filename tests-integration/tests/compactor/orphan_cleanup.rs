@@ -2,29 +2,6 @@
 //!
 //! Tests the orphan detection and cleanup system that identifies and removes
 //! data files no longer referenced by any live snapshot.
-//!
-//! # Status: Temporarily Disabled
-//!
-//! These tests are currently marked as `#[ignore]` due to a schema mismatch
-//! between the test data generator and Iceberg table schemas.
-//!
-//! ## Issue
-//!
-//! The DataGenerator creates simplified schemas:
-//! - Traces: 5 fields (trace_id, span_id, span_name, timestamp, duration_ns)
-//! - Logs: 4 fields (timestamp, severity, message, service_name)
-//! - Metrics: 4 fields (timestamp, metric_name, value, labels)
-//!
-//! But IcebergTableWriter expects full TOML-defined schemas with 30+ fields.
-//!
-//! ## Resolution
-//!
-//! To enable these tests:
-//! 1. Update DataGenerator to use `create_traces_schema()`, `create_logs_schema()`
-//! 2. Generate record batches with all required fields (with defaults for optional fields)
-//! 3. Remove `#[ignore]` attributes from test functions
-//!
-//! The test logic itself is correct and ready to run once schema alignment is fixed.
 
 use anyhow::{Context, Result};
 use chrono::Utc;

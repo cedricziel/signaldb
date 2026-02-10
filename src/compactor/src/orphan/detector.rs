@@ -134,7 +134,7 @@ impl OrphanDetector {
 
         // Phase 3: Identify orphan candidates
         let candidates =
-            self.identify_candidates(&live_files, &all_files, tenant_id, dataset_id, table_name);
+            self.identify_candidates(&live_files, &all_files, tenant_id, dataset_id, table_name)?;
 
         tracing::info!(
             tenant_id = %tenant_id,
@@ -247,7 +247,7 @@ impl OrphanDetector {
             "Scanning object store"
         );
 
-        let mut all_files = Vec::new();
+        let mut all_files = vec![];
 
         // List all objects under data/ path
         let mut list_stream = self.object_store.list(Some(&path));
@@ -290,12 +290,13 @@ impl OrphanDetector {
         tenant_id: &str,
         dataset_id: &str,
         table_name: &str,
-    ) -> Vec<OrphanCandidate> {
-        let grace_period = chrono::Duration::from_std(self.config.grace_period()).unwrap();
+    ) -> Result<Vec<OrphanCandidate>> {
+        let grace_period = chrono::Duration::from_std(self.config.grace_period())
+            .context("Failed to convert grace period duration")?;
         let cutoff_time = Utc::now() - grace_period;
-        let table_identifier = format!("{}/{}/{}", tenant_id, dataset_id, table_name);
+        let table_identifier = format!("{tenant_id}/{dataset_id}/{table_name}");
 
-        let mut candidates = Vec::new();
+        let mut candidates = vec![];
 
         for file in all_files {
             // Safety check 1: Is file referenced by any snapshot?
@@ -335,7 +336,7 @@ impl OrphanDetector {
             });
         }
 
-        candidates
+        Ok(candidates)
     }
 
     /// Validate that a file is still an orphan immediately before deletion.

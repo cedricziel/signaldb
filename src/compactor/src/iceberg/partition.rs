@@ -119,12 +119,12 @@ impl PartitionManager {
     /// Note: This is a placeholder. Full implementation would require
     /// scanning table metadata or using DataFusion to query partition info.
     pub async fn list_partitions(&self, _table: &Table) -> Result<Vec<PartitionInfo>> {
-        // Placeholder: Real implementation would scan manifests
-        // to extract unique partition values.
-
-        tracing::debug!("Listing partitions - requires manifest scanning");
-
-        Ok(vec![])
+        // SAFETY: Explicitly error instead of returning empty list.
+        // An empty partition list would cause retention enforcement to silently no-op,
+        // potentially leaving old data indefinitely and violating retention policies.
+        Err(anyhow::anyhow!(
+            "list_partitions not implemented — manifest scanning required"
+        ))
     }
 
     /// Generate SQL to drop a partition
@@ -141,6 +141,18 @@ impl PartitionManager {
     ) -> Result<String> {
         // Validate the hour format first
         self.validate_partition_hour(hour_value)?;
+
+        // SAFETY: Validate table_name to prevent SQL injection
+        // Only allow alphanumeric characters, underscores, and dots for qualified names
+        if !table_name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+        {
+            return Err(anyhow::anyhow!(
+                "Invalid table name '{}': must contain only alphanumeric characters, underscores, and dots",
+                table_name
+            ));
+        }
 
         // Generate the DROP PARTITION statement
         // Note: Syntax may vary by query engine (DataFusion, Spark, etc.)

@@ -6,54 +6,6 @@
 //! - Handling mixed signal types
 //! - Preserving Iceberg metadata
 //! - Dry-run mode validation
-//!
-//! ## Current Status: IGNORED
-//!
-//! These tests are currently marked with `#[ignore]` due to a schema mismatch
-//! between the test data generator and production table schemas.
-//!
-//! ### Schema Mismatch Issue
-//!
-//! **Problem**: The `DataGenerator` in `tests-integration/src/generators/data_generator.rs`
-//! creates simplified test schemas:
-//! - Traces: 5 columns (trace_id, span_id, span_name, timestamp, duration_ns)
-//! - Logs: 4 columns (timestamp, severity, message, service_name)
-//! - Metrics: 4 columns (timestamp, metric_name, value, labels)
-//!
-//! However, `IcebergTableWriter` expects full OTLP-compliant production schemas
-//! with many more columns (resource attributes, scope attributes, nested structures, etc.).
-//!
-//! **Error**: "Column count doesn't match insert query!" when attempting to write test data.
-//!
-//! ### Resolution Required
-//!
-//! To enable these tests, one of the following approaches is needed:
-//!
-//! 1. **Update DataGenerator schemas** (recommended):
-//!    - Modify `data_generator.rs` to generate full OTLP-compliant data
-//!    - Ensures realistic testing with production-like schemas
-//!    - Maintains compatibility with `IcebergTableWriter`
-//!
-//! 2. **Create test-specific table initialization**:
-//!    - Add a method to `IcebergTableWriter` or test fixtures to create tables
-//!      with simplified schemas matching the test data
-//!    - Trade-off: Tests won't use production schemas
-//!
-//! 3. **Schema registry integration**:
-//!    - Expose schema definitions from `common` crate
-//!    - Use shared schemas in both production code and test generators
-//!
-//! ### Test Implementation Status
-//!
-//! All 5 tests are fully implemented and compile successfully:
-//! - ✅ Test logic is correct
-//! - ✅ Retention enforcement flow is properly tested
-//! - ✅ Assertions are comprehensive
-//! - ✅ Error handling follows best practices
-//! - ⏸️ Blocked on schema compatibility issue
-//!
-//! Once the schema mismatch is resolved, simply remove the `#[ignore]` attributes
-//! and the tests will be ready to run.
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -132,14 +84,19 @@ async fn test_partition_drop_removes_old_partitions() -> Result<()> {
         .await?;
 
     log::info!(
-        "Retention enforcement completed: {} partitions evaluated, {} dropped",
-        result.total_partitions_dropped, // Note: This field doesn't exist in the current implementation
+        "Retention enforcement completed: {} partitions dropped",
         result.total_partitions_dropped
     );
 
-    // Assert: Verify old partitions were identified for dropping
-    // Note: Since list_partitions() is a placeholder that returns empty vec,
-    // we verify the logic by checking the partitions we generated
+    // Verify the expected metrics
+    assert_eq!(
+        result.total_partitions_dropped,
+        partitions_before.len(),
+        "Expected to drop {} partitions",
+        partitions_before.len()
+    );
+
+    // Calculate expected partitions to drop
     let cutoff_timestamp = now - (3 * 60 * 60 * 1000); // 3 hours ago
 
     let old_partitions: Vec<_> = partitions_before
@@ -170,6 +127,39 @@ async fn test_partition_drop_removes_old_partitions() -> Result<()> {
         recent_partitions.len() >= 3,
         "Expected at least 3 recent partitions, got {}",
         recent_partitions.len()
+    );
+
+    // Verify post-enforcement state by querying catalog
+    let table_identifier =
+        ctx.catalog_manager()
+            .build_table_identifier("test-tenant", "test-dataset", "traces");
+
+    let catalog = ctx.catalog_manager().catalog();
+    let tabular_after = catalog.load_tabular(&table_identifier).await?;
+    let table_after = match tabular_after {
+        iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
+        _ => anyhow::bail!("Expected table"),
+    };
+
+    // Verify table is still accessible after enforcement
+    assert!(
+        table_after
+            .metadata()
+            .current_snapshot(None)
+            .ok()
+            .flatten()
+            .is_some(),
+        "Table should have a current snapshot after enforcement"
+    );
+
+    log::info!(
+        "Post-enforcement verification: table accessible with snapshot {:?}",
+        table_after
+            .metadata()
+            .current_snapshot(None)
+            .ok()
+            .flatten()
+            .map(|s| s.snapshot_id())
     );
 
     Ok(())
@@ -634,27 +624,4 @@ async fn test_partition_drop_dry_run_mode() -> Result<()> {
     );
 
     Ok(())
-}
-
-/// Helper function to create mock partition info for testing
-#[allow(dead_code)]
-fn create_mock_partition(hour_value: &str, timestamp: DateTime<Utc>) -> PartitionInfo {
-    let mut partition_values = HashMap::new();
-    partition_values.insert("hour".to_string(), hour_value.to_string());
-
-    PartitionInfo {
-        partition_values,
-        timestamp,
-        file_count: Some(5),
-        total_size_bytes: Some(1024 * 1024),
-    }
-}
-
-/// Helper function to verify partition timestamps
-#[allow(dead_code)]
-fn verify_partition_age(
-    partition: &tests_integration::fixtures::PartitionInfo,
-    cutoff_ms: i64,
-) -> bool {
-    partition.timestamp_range.1 < cutoff_ms
 }

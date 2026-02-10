@@ -66,7 +66,7 @@ pub struct RetentionEnforcer {
     snapshot_manager: SnapshotManager,
     #[allow(dead_code)] // Will be used in orphan cleanup phase
     manifest_reader: ManifestReader,
-    metrics: Arc<RetentionMetrics>,
+    metrics: RetentionMetrics,
     config: RetentionConfig,
 }
 
@@ -75,7 +75,7 @@ impl RetentionEnforcer {
     pub fn new(
         catalog_manager: Arc<CatalogManager>,
         config: RetentionConfig,
-        metrics: Arc<RetentionMetrics>,
+        metrics: RetentionMetrics,
     ) -> Result<Self> {
         let policy_resolver = RetentionPolicyResolver::new(config.clone())
             .context("Failed to create retention policy resolver")?;
@@ -108,8 +108,8 @@ impl RetentionEnforcer {
             "Starting retention enforcement run"
         );
 
-        let mut table_results = Vec::new();
-        let mut errors = Vec::new();
+        let mut table_results = vec![];
+        let mut errors = vec![];
 
         // Get all tables for this tenant/dataset
         let tables = self
@@ -236,7 +236,7 @@ impl RetentionEnforcer {
         };
 
         // Step 1: Drop expired partitions
-        let (partitions_dropped, bytes_reclaimed) = self
+        let (partitions_evaluated, partitions_dropped, bytes_reclaimed) = self
             .drop_expired_partitions(tenant_id, dataset_id, table_name, &table, &cutoff)
             .await
             .context("Failed to drop expired partitions")?;
@@ -261,16 +261,18 @@ impl RetentionEnforcer {
             dataset_id: dataset_id.to_string(),
             table_name: table_name.to_string(),
             signal_type,
-            partitions_evaluated: 0, // Will be set by drop_expired_partitions
+            partitions_evaluated,
             partitions_dropped,
             snapshots_expired,
             bytes_reclaimed,
             duration_ms,
-            errors: Vec::new(),
+            errors: vec![],
         })
     }
 
     /// Drop expired partitions based on retention cutoff
+    ///
+    /// Returns (partitions_evaluated, partitions_dropped, bytes_reclaimed)
     async fn drop_expired_partitions(
         &self,
         tenant_id: &str,
@@ -278,7 +280,7 @@ impl RetentionEnforcer {
         table_name: &str,
         table: &iceberg_rust::table::Table,
         cutoff: &super::policy::RetentionCutoff,
-    ) -> Result<(usize, u64)> {
+    ) -> Result<(usize, usize, u64)> {
         info!(
             tenant_id = %tenant_id,
             dataset_id = %dataset_id,
@@ -294,21 +296,22 @@ impl RetentionEnforcer {
             .await
             .context("Failed to list partitions")?;
 
+        let total_partitions = all_partitions.len();
+
         info!(
             tenant_id = %tenant_id,
             dataset_id = %dataset_id,
             table_name = %table_name,
-            total_partitions = all_partitions.len(),
+            total_partitions,
             "Listed all partitions"
         );
 
-        self.metrics
-            .record_partitions_evaluated(all_partitions.len());
+        self.metrics.record_partitions_evaluated(total_partitions);
 
         // Filter partitions older than cutoff
         let expired_partitions = self
             .partition_manager
-            .filter_partitions_older_than(all_partitions, &cutoff.cutoff_timestamp);
+            .filter_partitions_older_than(all_partitions.clone(), &cutoff.cutoff_timestamp);
 
         if expired_partitions.is_empty() {
             info!(
@@ -317,7 +320,7 @@ impl RetentionEnforcer {
                 table_name = %table_name,
                 "No expired partitions found"
             );
-            return Ok((0, 0));
+            return Ok((total_partitions, 0, 0));
         }
 
         info!(
@@ -328,13 +331,14 @@ impl RetentionEnforcer {
             "Found expired partitions"
         );
 
-        // Calculate bytes to reclaim
-        let bytes_to_reclaim: u64 = expired_partitions
-            .iter()
-            .filter_map(|p| p.total_size_bytes)
-            .sum();
-
         if self.config.dry_run {
+            // Calculate bytes that would be reclaimed in dry-run
+            // Compute this for all expired partitions since none will fail in dry-run
+            let bytes_to_reclaim: u64 = expired_partitions
+                .iter()
+                .filter_map(|p| p.total_size_bytes)
+                .sum();
+
             info!(
                 tenant_id = %tenant_id,
                 dataset_id = %dataset_id,
@@ -356,7 +360,11 @@ impl RetentionEnforcer {
                 );
             }
 
-            return Ok((expired_partitions.len(), bytes_to_reclaim));
+            return Ok((
+                all_partitions.len(),
+                expired_partitions.len(),
+                bytes_to_reclaim,
+            ));
         }
 
         // Actually drop partitions
@@ -365,6 +373,8 @@ impl RetentionEnforcer {
             .await?;
 
         let mut dropped_count = 0;
+        let mut bytes_reclaimed = 0u64;
+
         for partition in &expired_partitions {
             match self
                 .drop_partition(&ctx, table_name, partition)
@@ -385,6 +395,11 @@ impl RetentionEnforcer {
 
                     dropped_count += 1;
 
+                    // Only accumulate bytes after successful drop
+                    if let Some(size) = partition.total_size_bytes {
+                        bytes_reclaimed += size;
+                    }
+
                     self.metrics.record_partitions_dropped(1);
                 }
                 Err(e) => {
@@ -400,7 +415,7 @@ impl RetentionEnforcer {
             }
         }
 
-        Ok((dropped_count, bytes_to_reclaim))
+        Ok((all_partitions.len(), dropped_count, bytes_reclaimed))
     }
 
     /// Drop a single partition using DataFusion
@@ -510,11 +525,10 @@ impl RetentionEnforcer {
             "Snapshot expiration not yet implemented in iceberg-rust"
         );
 
-        // Update metrics for what would have been expired
-        self.metrics
-            .record_snapshots_expired(snapshots_to_expire.len());
+        // Do not record metrics for unimplemented functionality
+        // self.metrics.record_snapshots_expired(...) will be called once implemented
 
-        Ok(snapshots_to_expire.len())
+        Ok(0) // Return 0 until actually implemented
     }
 
     /// Get all tables for a tenant/dataset with their signal types
@@ -544,12 +558,12 @@ impl RetentionEnforcer {
     ) -> Result<SessionContext> {
         // Create a new DataFusion session context
         // In a real implementation, we would configure it with the catalog
-        let ctx = SessionContext::new();
+        let _ctx = SessionContext::new();
 
         // TODO: Register tables with the catalog
-        // For now, we create a basic context
-
-        Ok(ctx)
+        anyhow::bail!(
+            "SQL execution not available until tables are registered in DataFusion context"
+        )
     }
 
     /// Get the policy resolver for testing
@@ -584,7 +598,7 @@ mod tests {
     async fn test_enforcer_creation() {
         let config = create_test_config();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let metrics = Arc::new(RetentionMetrics::new_mock());
+        let metrics = RetentionMetrics::new_mock();
 
         let enforcer = RetentionEnforcer::new(catalog_manager, config, metrics);
         assert!(enforcer.is_ok());
@@ -596,7 +610,7 @@ mod tests {
         config.dry_run = true;
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let metrics = Arc::new(RetentionMetrics::new_mock());
+        let metrics = RetentionMetrics::new_mock();
 
         let enforcer = RetentionEnforcer::new(catalog_manager, config, metrics).unwrap();
         assert!(enforcer.config.dry_run);
@@ -606,7 +620,7 @@ mod tests {
     async fn test_get_tables() {
         let config = create_test_config();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let metrics = Arc::new(RetentionMetrics::new_mock());
+        let metrics = RetentionMetrics::new_mock();
 
         let enforcer = RetentionEnforcer::new(catalog_manager, config, metrics).unwrap();
 

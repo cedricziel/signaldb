@@ -17,12 +17,16 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 /// Result of a deletion operation.
 #[derive(Debug, Clone)]
 pub struct DeletionResult {
-    /// Number of files successfully deleted.
+    /// Number of files successfully deleted (0 in dry-run mode).
     pub deleted_count: usize,
     /// Number of files that failed to delete.
     pub failed_count: usize,
-    /// Total bytes freed by deletion.
+    /// Total bytes freed by deletion (0 in dry-run mode).
     pub total_bytes_freed: u64,
+    /// Number of files that would be deleted in dry-run mode (0 in actual deletion).
+    pub would_delete_count: usize,
+    /// Total bytes that would be freed in dry-run mode (0 in actual deletion).
+    pub would_free_bytes: u64,
     /// List of files that failed to delete with error messages.
     pub failed_deletions: Vec<(String, String)>,
 }
@@ -85,7 +89,9 @@ impl OrphanCleaner {
                 deleted_count: 0,
                 failed_count: 0,
                 total_bytes_freed: 0,
-                failed_deletions: Vec::new(),
+                would_delete_count: 0,
+                would_free_bytes: 0,
+                failed_deletions: vec![],
             });
         }
 
@@ -98,7 +104,9 @@ impl OrphanCleaner {
 
         let deleted_count = AtomicUsize::new(0);
         let total_bytes_freed = AtomicU64::new(0);
-        let mut failed_deletions = Vec::new();
+        let would_delete_count = AtomicUsize::new(0);
+        let would_free_bytes = AtomicU64::new(0);
+        let mut failed_deletions = vec![];
 
         // Process in batches
         let total_batches = candidates.len().div_ceil(self.config.batch_size);
@@ -136,8 +144,9 @@ impl OrphanCleaner {
                         "[DRY-RUN] Would delete orphan file"
                     );
 
-                    deleted_count.fetch_add(1, Ordering::Relaxed);
-                    total_bytes_freed.fetch_add(candidate.size_bytes as u64, Ordering::Relaxed);
+                    // Track dry-run metrics separately
+                    would_delete_count.fetch_add(1, Ordering::Relaxed);
+                    would_free_bytes.fetch_add(candidate.size_bytes as u64, Ordering::Relaxed);
                 } else {
                     // Actually delete the file
                     match self.delete_file(&candidate.path).await {
@@ -178,16 +187,28 @@ impl OrphanCleaner {
             deleted_count: deleted_count.load(Ordering::Relaxed),
             failed_count: failed_deletions.len(),
             total_bytes_freed: total_bytes_freed.load(Ordering::Relaxed),
+            would_delete_count: would_delete_count.load(Ordering::Relaxed),
+            would_free_bytes: would_free_bytes.load(Ordering::Relaxed),
             failed_deletions,
         };
 
-        tracing::info!(
-            deleted = result.deleted_count,
-            failed = result.failed_count,
-            bytes_freed = result.total_bytes_freed,
-            dry_run = self.config.dry_run,
-            "Batch deletion complete"
-        );
+        if self.config.dry_run {
+            tracing::info!(
+                would_delete = result.would_delete_count,
+                would_free_bytes = result.would_free_bytes,
+                failed = result.failed_count,
+                dry_run = true,
+                "Batch deletion complete"
+            );
+        } else {
+            tracing::info!(
+                deleted = result.deleted_count,
+                bytes_freed = result.total_bytes_freed,
+                failed = result.failed_count,
+                dry_run = false,
+                "Batch deletion complete"
+            );
+        }
 
         Ok(result)
     }
@@ -207,7 +228,7 @@ impl OrphanCleaner {
             .as_ref()
             .context("Detector required for revalidation but not provided")?;
 
-        let mut validated = Vec::new();
+        let mut validated = vec![];
 
         for candidate in batch {
             // Parse table identifier
@@ -283,6 +304,8 @@ mod tests {
             deleted_count: 10,
             failed_count: 2,
             total_bytes_freed: 10240,
+            would_delete_count: 0,
+            would_free_bytes: 0,
             failed_deletions: vec![
                 ("file1.parquet".to_string(), "permission denied".to_string()),
                 ("file2.parquet".to_string(), "not found".to_string()),
@@ -292,6 +315,8 @@ mod tests {
         assert_eq!(result.deleted_count, 10);
         assert_eq!(result.failed_count, 2);
         assert_eq!(result.total_bytes_freed, 10240);
+        assert_eq!(result.would_delete_count, 0);
+        assert_eq!(result.would_free_bytes, 0);
         assert_eq!(result.failed_deletions.len(), 2);
     }
 
@@ -306,6 +331,8 @@ mod tests {
         assert_eq!(result.deleted_count, 0);
         assert_eq!(result.failed_count, 0);
         assert_eq!(result.total_bytes_freed, 0);
+        assert_eq!(result.would_delete_count, 0);
+        assert_eq!(result.would_free_bytes, 0);
     }
 
     #[tokio::test]
@@ -336,10 +363,12 @@ mod tests {
 
         let result = cleaner.delete_orphans_batch(candidates).await.unwrap();
 
-        // In dry-run mode, files should be "deleted" (counted) but not actually removed
-        assert_eq!(result.deleted_count, 2);
+        // In dry-run mode, files should be tracked in would_delete fields, not deleted fields
+        assert_eq!(result.deleted_count, 0);
+        assert_eq!(result.total_bytes_freed, 0);
+        assert_eq!(result.would_delete_count, 2);
+        assert_eq!(result.would_free_bytes, 3072);
         assert_eq!(result.failed_count, 0);
-        assert_eq!(result.total_bytes_freed, 3072);
     }
 
     #[test]
