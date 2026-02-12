@@ -144,8 +144,8 @@ importers:
         specifier: ^7.7.4
         version: 7.7.4
       style-loader:
-        specifier: 3.3.3
-        version: 3.3.3(webpack@5.105.0)
+        specifier: 4.0.0
+        version: 4.0.0(webpack@5.105.0)
       swc-loader:
         specifier: ^0.2.3
         version: 0.2.7(@swc/core@1.15.11(@swc/helpers@0.5.18))(webpack@5.105.0)
@@ -4380,11 +4380,11 @@ packages:
     resolution: {integrity: sha512-6fPc+R4ihwqP6N/aIv2f1gMH8lOVtWQHoqC4yK6oSDVVocumAsfCqjkXnqiYMhmMwS/mEHLp7Vehlt3ql6lEig==}
     engines: {node: '>=8'}
 
-  style-loader@3.3.3:
-    resolution: {integrity: sha512-53BiGLXAcll9maCYtZi2RCQZKa8NQQai5C4horqKyRmHj9H7QmcUyucrH+4KW/gBQbXM2AsB0axoEcFZPlfPcw==}
-    engines: {node: '>= 12.13.0'}
+  style-loader@4.0.0:
+    resolution: {integrity: sha512-1V4WqhhZZgjVAVJyt7TdDPZoPBPNHbekX4fWnCJL1yQukhCeZhJySUL+gL9y6sNdN95uEOS83Y55SqHcP7MzLA==}
+    engines: {node: '>= 18.12.0'}
     peerDependencies:
-      webpack: ^5.0.0
+      webpack: ^5.27.0
 
   stylis@4.2.0:
     resolution: {integrity: sha512-Orov6g6BB1sDfYgzWfTHDOxamtX1bE/zo104Dh9e6fqJ3PooipYyfJ0pUmrZO2wAvO8YbEyeFrkV91XTsGMSrw==}
@@ -9938,7 +9938,7 @@ snapshots:
 
   strip-json-comments@3.1.1: {}
 
-  style-loader@3.3.3(webpack@5.105.0):
+  style-loader@4.0.0(webpack@5.105.0):
     dependencies:
       webpack: 5.105.0(@swc/core@1.15.11(@swc/helpers@0.5.18))(webpack-cli@6.0.1)
 
