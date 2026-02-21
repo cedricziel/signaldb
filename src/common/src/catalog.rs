@@ -156,6 +156,32 @@ impl Catalog {
                 query("CREATE INDEX IF NOT EXISTS idx_datasets_tenant ON datasets(tenant_id)")
                     .execute(pool)
                     .await?;
+
+                // Compactor lease table — prevents duplicate work when multiple compactor
+                // instances run simultaneously. One row per (tenant, dataset, table, partition).
+                let create_compactor_leases = r#"
+                CREATE TABLE IF NOT EXISTS compactor_leases (
+                    tenant_id TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL,
+                    table_name TEXT NOT NULL,
+                    partition_id TEXT NOT NULL,
+                    holder_id TEXT NOT NULL,
+                    acquired_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    expires_at TEXT NOT NULL,
+                    renewed_at TEXT,
+                    PRIMARY KEY (tenant_id, dataset_id, table_name, partition_id)
+                )"#;
+                query(create_compactor_leases).execute(pool).await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_compactor_leases_holder ON compactor_leases(holder_id)",
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_compactor_leases_expires ON compactor_leases(expires_at)",
+                )
+                .execute(pool)
+                .await?;
             }
             Catalog::Postgres(pool) => {
                 // PostgreSQL schema
@@ -231,6 +257,32 @@ impl Catalog {
                 query("CREATE INDEX IF NOT EXISTS idx_datasets_tenant ON datasets(tenant_id)")
                     .execute(pool)
                     .await?;
+
+                // Compactor lease table — prevents duplicate work when multiple compactor
+                // instances run simultaneously. One row per (tenant, dataset, table, partition).
+                let create_compactor_leases = r#"
+                CREATE TABLE IF NOT EXISTS compactor_leases (
+                    tenant_id TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL,
+                    table_name TEXT NOT NULL,
+                    partition_id TEXT NOT NULL,
+                    holder_id TEXT NOT NULL,
+                    acquired_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    renewed_at TIMESTAMPTZ,
+                    PRIMARY KEY (tenant_id, dataset_id, table_name, partition_id)
+                )"#;
+                query(create_compactor_leases).execute(pool).await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_compactor_leases_holder ON compactor_leases(holder_id)",
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_compactor_leases_expires ON compactor_leases(expires_at)",
+                )
+                .execute(pool)
+                .await?;
             }
         }
 
@@ -1264,6 +1316,329 @@ impl Catalog {
         }
 
         Ok(())
+    }
+}
+
+// ── Compactor lease management ────────────────────────────────────────────────
+
+/// A lease record from the `compactor_leases` table.
+///
+/// A lease represents an exclusive claim on a single compaction work unit
+/// (identified by tenant/dataset/table/partition). Only one compactor
+/// instance may hold a non-expired lease at a time.
+#[derive(Debug, Clone)]
+pub struct CompactorLease {
+    /// Tenant identifier
+    pub tenant_id: String,
+    /// Dataset identifier
+    pub dataset_id: String,
+    /// Table name (e.g. "traces", "logs")
+    pub table_name: String,
+    /// Partition identifier
+    pub partition_id: String,
+    /// UUID (as string) of the compactor instance that holds this lease
+    pub holder_id: String,
+    /// When the lease was first acquired
+    pub acquired_at: DateTime<Utc>,
+    /// When the lease expires (may be renewed)
+    pub expires_at: DateTime<Utc>,
+    /// Last renewal time, if any
+    pub renewed_at: Option<DateTime<Utc>>,
+}
+
+impl Catalog {
+    /// Attempt to acquire a compaction lease for a specific work unit.
+    ///
+    /// Uses an atomic `INSERT … ON CONFLICT DO UPDATE WHERE expires_at < now`
+    /// pattern so that only one instance can hold a non-expired lease at a time.
+    /// Expired leases are automatically taken over.
+    ///
+    /// Returns `true` when the lease was acquired (new insert or expired takeover),
+    /// `false` when another instance holds a live lease.
+    pub async fn try_acquire_compaction_lease(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+        partition_id: &str,
+        holder_id: &str,
+        ttl_seconds: i64,
+    ) -> Result<bool, sqlx::Error> {
+        let now = Utc::now();
+        let expires_at = now + chrono::Duration::seconds(ttl_seconds);
+        let now_str = now.to_rfc3339();
+        let expires_at_str = expires_at.to_rfc3339();
+
+        match self {
+            Catalog::Sqlite(pool) => {
+                let stmt = r#"
+                INSERT INTO compactor_leases
+                    (tenant_id, dataset_id, table_name, partition_id, holder_id, acquired_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (tenant_id, dataset_id, table_name, partition_id) DO UPDATE
+                SET holder_id  = excluded.holder_id,
+                    acquired_at = excluded.acquired_at,
+                    expires_at  = excluded.expires_at,
+                    renewed_at  = NULL
+                WHERE compactor_leases.expires_at < ?
+                "#;
+                let result = query(stmt)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(table_name)
+                    .bind(partition_id)
+                    .bind(holder_id)
+                    .bind(&now_str)
+                    .bind(&expires_at_str)
+                    .bind(&now_str) // WHERE clause: existing lease must be expired
+                    .execute(pool)
+                    .await?;
+                Ok(result.rows_affected() > 0)
+            }
+            Catalog::Postgres(pool) => {
+                let stmt = r#"
+                INSERT INTO compactor_leases
+                    (tenant_id, dataset_id, table_name, partition_id, holder_id, acquired_at, expires_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (tenant_id, dataset_id, table_name, partition_id) DO UPDATE
+                SET holder_id   = EXCLUDED.holder_id,
+                    acquired_at = EXCLUDED.acquired_at,
+                    expires_at  = EXCLUDED.expires_at,
+                    renewed_at  = NULL
+                WHERE compactor_leases.expires_at < $8
+                "#;
+                let result = query(stmt)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(table_name)
+                    .bind(partition_id)
+                    .bind(holder_id)
+                    .bind(now)
+                    .bind(expires_at)
+                    .bind(now) // WHERE clause: existing lease must be expired
+                    .execute(pool)
+                    .await?;
+                Ok(result.rows_affected() > 0)
+            }
+        }
+    }
+
+    /// Renew an existing lease, extending its expiry by `ttl_seconds` from now.
+    ///
+    /// Only succeeds if `holder_id` matches the current holder (prevents
+    /// renewing a lease that was taken over by another instance).
+    ///
+    /// Returns `true` if renewed, `false` if the lease was stolen or not found.
+    pub async fn renew_compaction_lease(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+        partition_id: &str,
+        holder_id: &str,
+        ttl_seconds: i64,
+    ) -> Result<bool, sqlx::Error> {
+        let now = Utc::now();
+        let expires_at = now + chrono::Duration::seconds(ttl_seconds);
+
+        match self {
+            Catalog::Sqlite(pool) => {
+                let stmt = r#"
+                UPDATE compactor_leases
+                SET expires_at = ?,
+                    renewed_at = ?
+                WHERE tenant_id    = ?
+                  AND dataset_id   = ?
+                  AND table_name   = ?
+                  AND partition_id = ?
+                  AND holder_id    = ?
+                "#;
+                let result = query(stmt)
+                    .bind(expires_at.to_rfc3339())
+                    .bind(now.to_rfc3339())
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(table_name)
+                    .bind(partition_id)
+                    .bind(holder_id)
+                    .execute(pool)
+                    .await?;
+                Ok(result.rows_affected() > 0)
+            }
+            Catalog::Postgres(pool) => {
+                let stmt = r#"
+                UPDATE compactor_leases
+                SET expires_at = $1,
+                    renewed_at = $2
+                WHERE tenant_id    = $3
+                  AND dataset_id   = $4
+                  AND table_name   = $5
+                  AND partition_id = $6
+                  AND holder_id    = $7
+                "#;
+                let result = query(stmt)
+                    .bind(expires_at)
+                    .bind(now)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(table_name)
+                    .bind(partition_id)
+                    .bind(holder_id)
+                    .execute(pool)
+                    .await?;
+                Ok(result.rows_affected() > 0)
+            }
+        }
+    }
+
+    /// Release a lease explicitly after work completes.
+    ///
+    /// Only deletes the lease if `holder_id` matches, preventing an instance
+    /// from releasing a lease it no longer owns.
+    ///
+    /// Returns `true` if the lease was deleted, `false` if not found or stolen.
+    pub async fn release_compaction_lease(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+        partition_id: &str,
+        holder_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let stmt = r#"
+                DELETE FROM compactor_leases
+                WHERE tenant_id    = ?
+                  AND dataset_id   = ?
+                  AND table_name   = ?
+                  AND partition_id = ?
+                  AND holder_id    = ?
+                "#;
+                let result = query(stmt)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(table_name)
+                    .bind(partition_id)
+                    .bind(holder_id)
+                    .execute(pool)
+                    .await?;
+                Ok(result.rows_affected() > 0)
+            }
+            Catalog::Postgres(pool) => {
+                let stmt = r#"
+                DELETE FROM compactor_leases
+                WHERE tenant_id    = $1
+                  AND dataset_id   = $2
+                  AND table_name   = $3
+                  AND partition_id = $4
+                  AND holder_id    = $5
+                "#;
+                let result = query(stmt)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(table_name)
+                    .bind(partition_id)
+                    .bind(holder_id)
+                    .execute(pool)
+                    .await?;
+                Ok(result.rows_affected() > 0)
+            }
+        }
+    }
+
+    /// Delete all expired leases (where `expires_at < now`).
+    ///
+    /// Called periodically to garbage-collect leases from crashed instances.
+    /// Returns the count of leases removed.
+    pub async fn expire_stale_compaction_leases(&self) -> Result<u64, sqlx::Error> {
+        let now = Utc::now();
+        match self {
+            Catalog::Sqlite(pool) => {
+                let result = query("DELETE FROM compactor_leases WHERE expires_at < ?")
+                    .bind(now.to_rfc3339())
+                    .execute(pool)
+                    .await?;
+                Ok(result.rows_affected())
+            }
+            Catalog::Postgres(pool) => {
+                let result = query("DELETE FROM compactor_leases WHERE expires_at < $1")
+                    .bind(now)
+                    .execute(pool)
+                    .await?;
+                Ok(result.rows_affected())
+            }
+        }
+    }
+
+    /// List all currently active (non-expired) leases.
+    ///
+    /// Used for status reporting and observability.
+    pub async fn list_active_compaction_leases(&self) -> Result<Vec<CompactorLease>, sqlx::Error> {
+        let now = Utc::now();
+        match self {
+            Catalog::Sqlite(pool) => {
+                let rows = sqlx::query(
+                    r#"
+                    SELECT tenant_id, dataset_id, table_name, partition_id,
+                           holder_id, acquired_at, expires_at, renewed_at
+                    FROM compactor_leases
+                    WHERE expires_at >= ?
+                    ORDER BY acquired_at
+                    "#,
+                )
+                .bind(now.to_rfc3339())
+                .fetch_all(pool)
+                .await?;
+
+                rows.iter()
+                    .map(|row| {
+                        Ok(CompactorLease {
+                            tenant_id: row.try_get("tenant_id")?,
+                            dataset_id: row.try_get("dataset_id")?,
+                            table_name: row.try_get("table_name")?,
+                            partition_id: row.try_get("partition_id")?,
+                            holder_id: row.try_get("holder_id")?,
+                            acquired_at: parse_rfc3339(row.try_get("acquired_at")?)?,
+                            expires_at: parse_rfc3339(row.try_get("expires_at")?)?,
+                            renewed_at: row
+                                .try_get::<Option<&str>, _>("renewed_at")?
+                                .map(parse_rfc3339)
+                                .transpose()?,
+                        })
+                    })
+                    .collect()
+            }
+            Catalog::Postgres(pool) => {
+                let rows = sqlx::query(
+                    r#"
+                    SELECT tenant_id, dataset_id, table_name, partition_id,
+                           holder_id, acquired_at, expires_at, renewed_at
+                    FROM compactor_leases
+                    WHERE expires_at >= $1
+                    ORDER BY acquired_at
+                    "#,
+                )
+                .bind(now)
+                .fetch_all(pool)
+                .await?;
+
+                rows.iter()
+                    .map(|row| {
+                        Ok(CompactorLease {
+                            tenant_id: row.try_get("tenant_id")?,
+                            dataset_id: row.try_get("dataset_id")?,
+                            table_name: row.try_get("table_name")?,
+                            partition_id: row.try_get("partition_id")?,
+                            holder_id: row.try_get::<Uuid, _>("holder_id")?.to_string(),
+                            acquired_at: row.try_get("acquired_at")?,
+                            expires_at: row.try_get("expires_at")?,
+                            renewed_at: row.try_get("renewed_at")?,
+                        })
+                    })
+                    .collect()
+            }
+        }
     }
 }
 

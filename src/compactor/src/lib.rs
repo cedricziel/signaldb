@@ -2,26 +2,20 @@
 //!
 //! Provides compaction planning and execution for Iceberg tables.
 //!
-//! # Phase 2: Full Compaction Execution
+//! # Phase 3: Retention & Lifecycle Management
 //!
-//! This library now includes complete compaction execution with:
-//! - Manifest reading and file grouping
-//! - Parquet file merging with DataFusion
-//! - Atomic commits with Iceberg optimistic concurrency
-//! - Conflict detection and retry logic
-//! - Comprehensive metrics tracking
+//! Includes complete compaction execution with atomic commits, retention
+//! enforcement, snapshot expiration, and orphan file cleanup.
 //!
-//! # Phase 3: Retention Management (In Progress)
+//! # Phase 4: Multi-Instance Safety + Scheduling (in progress)
 //!
-//! Phase 3 adds retention enforcement capabilities:
-//! - Retention configuration with override hierarchy
-//! - Snapshot management and expiration
-//! - Manifest reading for orphan detection
-//! - Partition lifecycle management
+//! - `lease`: Distributed lease management for conflict-free multi-instance operation
+//! - `scheduler`: Fair round-robin scheduling across tenants
 
 pub mod commit;
 pub mod executor;
 pub mod iceberg;
+pub mod lease;
 pub mod metrics;
 pub mod orphan;
 pub mod planner;
@@ -41,7 +35,7 @@ pub use iceberg::{
 pub use metrics::{CompactionMetrics, MetricsSummary};
 pub use orphan::{
     DeletionResult, ObjectStoreFile, OrphanCandidate, OrphanCleaner, OrphanCleanupConfig,
-    OrphanDetector,
+    OrphanDetector, OrphanMetrics, SkipReason,
 };
 pub use planner::{
     CompactionCandidate, CompactionPlanner, FileInfo, PartitionStats, PlannerConfig,

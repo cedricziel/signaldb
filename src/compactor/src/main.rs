@@ -298,6 +298,24 @@ async fn main() -> Result<()> {
                         if orphan_cleanup_config.enabled {
                             log::debug!("Running orphan cleanup cycle");
 
+                            // Run retention enforcement first to expire old snapshots,
+                            // which reduces the live file set size before orphan detection.
+                            // This is the ordering fix for issue #475 (P3).
+                            if retention_config.enabled {
+                                log::debug!("Running pre-orphan retention enforcement to reduce live file set");
+                                for tenant_config in catalog_manager.get_enabled_tenants() {
+                                    for dataset_config in &tenant_config.datasets {
+                                        let tid = &tenant_config.id;
+                                        let did = &dataset_config.id;
+                                        if let Err(e) = retention_enforcer.enforce_retention(tid, did).await {
+                                            log::warn!(
+                                                "Pre-orphan retention enforcement failed for {tid}/{did}: {e:#}"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
                             let signal_tables = [
                                 "traces",
                                 "logs",
