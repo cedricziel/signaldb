@@ -1,7 +1,8 @@
 //! SignalDB Compactor Service
 //!
-//! Phase 2: Full execution service that identifies compaction candidates,
-//! executes compaction with Parquet rewriting, and commits changes atomically.
+//! Phase 3: Full execution service that identifies compaction candidates,
+//! executes compaction with Parquet rewriting, commits changes atomically,
+//! and enforces data retention / lifecycle policies.
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -76,8 +77,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    log::info!("Starting SignalDB Compactor Service (Phase 2: Full execution)");
-    log::info!("Running with full compaction execution and atomic commits");
+    log::info!("Starting SignalDB Compactor Service (Phase 3: Retention & Lifecycle)");
+    log::info!("Running with full compaction execution, atomic commits, and retention enforcement");
 
     // Initialize service bootstrap with sentinel address
     // The compactor is a background worker that doesn't expose any Flight endpoints,
@@ -157,6 +158,18 @@ async fn main() -> Result<()> {
     let object_store = create_object_store(&config.storage)
         .context("Failed to create object store for orphan cleanup")?;
 
+    // Create orphan detector and cleaner once — reused across cleanup ticks so
+    // that metrics accumulate over the lifetime of the service.
+    let orphan_detector = Arc::new(OrphanDetector::new(
+        orphan_cleanup_config.clone(),
+        catalog_manager.clone(),
+        object_store.clone(),
+    ));
+    let orphan_cleaner = Arc::new(OrphanCleaner::with_detector(
+        orphan_cleanup_config.clone(),
+        object_store.clone(),
+        orphan_detector.clone(),
+    ));
     // Start planning, execution, and retention enforcement loop
     let compaction_interval = config.compactor.tick_interval;
     let planning_task = {
@@ -167,7 +180,8 @@ async fn main() -> Result<()> {
         let retention_config = retention_config.clone();
         let orphan_cleanup_config = orphan_cleanup_config.clone();
         let catalog_manager = catalog_manager.clone();
-        let object_store = object_store.clone();
+        let orphan_detector = orphan_detector.clone();
+        let orphan_cleaner = orphan_cleaner.clone();
 
         tokio::spawn(async move {
             use tokio::time::interval;
@@ -243,40 +257,37 @@ async fn main() -> Result<()> {
                         if retention_config.enabled {
                             log::debug!("Running retention enforcement cycle");
 
-                            // TODO: Get list of all tenants/datasets from catalog
-                            // For now, we'll use a placeholder list
-                            log::warn!("Using placeholder tenant list - catalog enumeration not implemented. Retention will not run on real tenants.");
-                            let tenant_dataset_pairs = vec![
-                                ("default".to_string(), "default".to_string()),
-                            ];
-
-                            for (tenant_id, dataset_id) in tenant_dataset_pairs {
-                                match retention_enforcer.enforce_retention(&tenant_id, &dataset_id).await {
-                                    Ok(result) => {
-                                        log::info!(
-                                            "Retention enforcement completed for {}/{}: {} tables processed, {} partitions dropped, {} snapshots expired, {} bytes reclaimed",
-                                            tenant_id,
-                                            dataset_id,
-                                            result.tables_processed,
-                                            result.total_partitions_dropped,
-                                            result.total_snapshots_expired,
-                                            result.total_bytes_reclaimed
-                                        );
-
-                                        if !result.errors.is_empty() {
-                                            log::warn!(
-                                                "Retention enforcement had {} errors for {}/{}",
-                                                result.errors.len(),
+                            for tenant_config in catalog_manager.get_enabled_tenants() {
+                                for dataset_config in &tenant_config.datasets {
+                                    let tenant_id = &tenant_config.id;
+                                    let dataset_id = &dataset_config.id;
+                                    match retention_enforcer.enforce_retention(tenant_id, dataset_id).await {
+                                        Ok(result) => {
+                                            log::info!(
+                                                "Retention enforcement completed for {}/{}: {} tables processed, {} partitions dropped, {} snapshots expired, {} bytes reclaimed",
                                                 tenant_id,
-                                                dataset_id
+                                                dataset_id,
+                                                result.tables_processed,
+                                                result.total_partitions_dropped,
+                                                result.total_snapshots_expired,
+                                                result.total_bytes_reclaimed
                                             );
-                                            for error in &result.errors {
-                                                log::warn!("Retention error: {}", error);
+
+                                            if !result.errors.is_empty() {
+                                                log::warn!(
+                                                    "Retention enforcement had {} errors for {}/{}",
+                                                    result.errors.len(),
+                                                    tenant_id,
+                                                    dataset_id
+                                                );
+                                                for error in &result.errors {
+                                                    log::warn!("Retention error: {}", error);
+                                                }
                                             }
                                         }
-                                    }
-                                    Err(e) => {
-                                        log::error!("Retention enforcement failed for {}/{}: {e:?}", tenant_id, dataset_id);
+                                        Err(e) => {
+                                            log::error!("Retention enforcement failed for {}/{}: {e:?}", tenant_id, dataset_id);
+                                        }
                                     }
                                 }
                             }
@@ -294,28 +305,18 @@ async fn main() -> Result<()> {
                                 "metrics_counter",
                                 "metrics_histogram",
                             ];
-                            let detector = Arc::new(OrphanDetector::new(
-                                orphan_cleanup_config.clone(),
-                                catalog_manager.clone(),
-                                object_store.clone(),
-                            ));
-                            let cleaner = OrphanCleaner::with_detector(
-                                orphan_cleanup_config.clone(),
-                                object_store.clone(),
-                                detector.clone(),
-                            );
 
                             for tenant_config in catalog_manager.get_enabled_tenants() {
                                 for dataset_config in &tenant_config.datasets {
                                     for table_name in &signal_tables {
                                         let tid = &tenant_config.id;
                                         let did = &dataset_config.id;
-                                        match detector
+                                        match orphan_detector
                                             .identify_orphan_candidates(tid, did, table_name)
                                             .await
                                         {
                                             Ok(candidates) if !candidates.is_empty() => {
-                                                match cleaner.delete_orphans_batch(candidates).await {
+                                                match orphan_cleaner.delete_orphans_batch(candidates).await {
                                                     Ok(result) => log::info!(
                                                         "Orphan cleanup {}/{}/{}: deleted={}, \
                                                          would_delete={}, bytes_freed={}, failed={}",
@@ -347,6 +348,9 @@ async fn main() -> Result<()> {
                                     }
                                 }
                             }
+
+                            // Log accumulated metrics periodically
+                            orphan_detector.metrics().log_summary();
                         }
                     }
                 }
