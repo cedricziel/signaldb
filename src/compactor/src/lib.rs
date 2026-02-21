@@ -14,6 +14,7 @@
 
 pub mod commit;
 pub mod executor;
+pub mod flight;
 pub mod iceberg;
 pub mod lease;
 pub mod metrics;

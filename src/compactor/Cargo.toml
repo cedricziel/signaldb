@@ -32,6 +32,12 @@ humantime-serde = "1.1"
 thiserror.workspace = true
 tracing.workspace = true
 
+# Phase 4 dependencies (multi-instance safety + Flight endpoints)
+arrow-flight.workspace = true
+bytes.workspace = true
+futures.workspace = true
+tonic.workspace = true
+
 [[bin]]
 name = "signaldb-compactor"
 path = "src/main.rs"

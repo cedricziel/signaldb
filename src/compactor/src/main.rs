@@ -6,12 +6,14 @@
 //! multiple instances using distributed leases and round-robin scheduling.
 
 use anyhow::{Context, Result};
+use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
 use common::catalog_manager::CatalogManager;
 use common::config::Configuration;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::storage::create_object_store;
 use compactor::executor::{CompactionExecutor, ExecutorConfig};
+use compactor::flight::CompactorFlightService;
 use compactor::lease::LeaseManager;
 use compactor::metrics::CompactionMetrics;
 use compactor::orphan::{OrphanCleaner, OrphanCleanupConfig, OrphanDetector};
@@ -21,6 +23,7 @@ use compactor::retention::{RetentionConfig, RetentionEnforcer};
 use compactor::scheduler::RoundRobinScheduler;
 use std::sync::Arc;
 use std::time::Duration;
+use tonic::transport::Server;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -88,20 +91,25 @@ async fn main() -> Result<()> {
         "Running with full compaction execution, atomic commits, distributed leases, and retention enforcement"
     );
 
-    // Initialize service bootstrap with sentinel address
-    // The compactor is a background worker that doesn't expose any Flight endpoints,
-    // so it uses "compactor:none" as a sentinel address to indicate it's not
-    // connectable. This ensures discovery logic won't treat it as a valid endpoint.
+    // Determine Flight listen address from environment or default
+    let flight_addr_str =
+        std::env::var("COMPACTOR_FLIGHT_ADDR").unwrap_or_else(|_| "0.0.0.0:50055".to_string());
+    let flight_addr: std::net::SocketAddr = flight_addr_str
+        .parse()
+        .with_context(|| format!("Invalid COMPACTOR_FLIGHT_ADDR: {flight_addr_str}"))?;
+
+    // Initialize service bootstrap — register with the real Flight address so that
+    // other services and operators can discover this compactor instance.
     let bootstrap = ServiceBootstrap::new(
         config.clone(),
         ServiceType::Compactor,
-        "compactor:none".to_string(),
+        flight_addr_str.clone(),
     )
     .await
     .context("Failed to initialize compactor service bootstrap")?;
 
     log::info!(
-        "Compactor service registered with ID: {}",
+        "Compactor service registered with ID: {} (Flight: {flight_addr_str})",
         bootstrap.service_id()
     );
 
@@ -159,6 +167,29 @@ async fn main() -> Result<()> {
         config.compactor.max_candidates_per_cycle,
         config.compactor.max_per_tenant
     );
+
+    // Start Flight service (Phase 4d) — CompactorFlightService shares the same
+    // planner/executor/lease_manager via cloning; leases protect against
+    // duplicate work between the background task and on-demand Flight requests.
+    let flight_service = CompactorFlightService::new(
+        planner.clone(),
+        executor.clone(),
+        lease_manager.clone(),
+        compaction_metrics.clone(),
+    );
+    let flight_task = {
+        tokio::spawn(async move {
+            log::info!("Starting Compactor Flight service on {flight_addr}");
+            match Server::builder()
+                .add_service(FlightServiceServer::new(flight_service))
+                .serve(flight_addr)
+                .await
+            {
+                Ok(_) => log::info!("Compactor Flight service stopped"),
+                Err(e) => log::error!("Compactor Flight service error: {e}"),
+            }
+        })
+    };
 
     // Initialize retention enforcement (Phase 3)
     let retention_config = RetentionConfig::from(config.compactor.retention.clone());
@@ -460,8 +491,9 @@ async fn main() -> Result<()> {
 
     log::info!("Received shutdown signal, stopping compactor service");
 
-    // Stop planning task
+    // Stop background tasks
     planning_task.abort();
+    flight_task.abort();
 
     // Graceful shutdown
     bootstrap

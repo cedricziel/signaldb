@@ -1814,6 +1814,8 @@ name = "compactor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrow-flight",
+ "bytes",
  "chrono",
  "chrono-tz",
  "clap",
@@ -1821,6 +1823,7 @@ dependencies = [
  "datafusion",
  "datafusion_iceberg",
  "env_logger",
+ "futures",
  "humantime",
  "humantime-serde",
  "iceberg-rust",
@@ -1831,6 +1834,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
+ "tonic 0.14.2",
  "tracing",
  "uuid",
  "writer",
