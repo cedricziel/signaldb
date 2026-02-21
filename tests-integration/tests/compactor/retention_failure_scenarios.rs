@@ -359,11 +359,12 @@ async fn test_retention_respects_dry_run_mode() -> Result<()> {
         result.errors.len()
     );
 
-    // The important verification is that NO actual drops occurred
-    // This would be validated by checking catalog/storage state remains unchanged
-    assert_eq!(
-        result.total_partitions_dropped, 0,
-        "Dry-run should not actually drop partitions (current value may reflect simulation count)"
+    // In dry-run mode total_partitions_dropped reflects the simulation count
+    // (partitions that WOULD be dropped), not actual modifications.
+    // The actual verification that nothing was modified is the table-state check below.
+    assert!(
+        result.total_partitions_dropped > 0,
+        "Dry-run should report at least 1 partition that would be dropped"
     );
 
     // Verify partitions are preserved by re-fetching them from catalog
