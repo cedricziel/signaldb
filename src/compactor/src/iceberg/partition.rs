@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
+use iceberg_rust::spec::manifest::Status;
 use iceberg_rust::table::Table;
 use std::collections::HashMap;
 
@@ -114,17 +115,80 @@ impl PartitionManager {
         Ok(())
     }
 
-    /// List all partitions for a table
+    /// List all partitions for a table by scanning its current snapshot manifests.
     ///
-    /// Note: This is a placeholder. Full implementation would require
-    /// scanning table metadata or using DataFusion to query partition info.
-    pub async fn list_partitions(&self, _table: &Table) -> Result<Vec<PartitionInfo>> {
-        // SAFETY: Explicitly error instead of returning empty list.
-        // An empty partition list would cause retention enforcement to silently no-op,
-        // potentially leaving old data indefinitely and violating retention policies.
-        Err(anyhow::anyhow!(
-            "list_partitions not implemented — manifest scanning required"
-        ))
+    /// Reads manifest files from the current snapshot, groups non-deleted data
+    /// files by their `timestamp_hour=<N>` partition directory component (where N
+    /// is hours since Unix epoch, produced by the Iceberg Hour transform), and
+    /// returns one `PartitionInfo` per unique partition value found.
+    pub async fn list_partitions(&self, table: &Table) -> Result<Vec<PartitionInfo>> {
+        let all_manifests = table
+            .manifests(None, None)
+            .await
+            .context("Failed to read manifest list")?;
+
+        if all_manifests.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let file_iter = table
+            .datafiles(&all_manifests, None, (None, None))
+            .await
+            .context("Failed to read data files from manifests")?;
+
+        // Accumulate (file_count, total_bytes) per partition hour (integer hours since epoch).
+        let mut by_hour: HashMap<String, (usize, u64)> = HashMap::new();
+
+        for result in file_iter {
+            let (_, entry) = result.context("Failed to read manifest entry")?;
+            if *entry.status() == Status::Deleted {
+                continue;
+            }
+            let file_path = entry.data_file().file_path();
+            let file_size = *entry.data_file().file_size_in_bytes() as u64;
+
+            // Extract "timestamp_hour=<N>" path segment produced by Iceberg Hour transform.
+            // The Hour transform on the "timestamp" field creates integer-valued partition
+            // directories where N = hours since Unix epoch.
+            if let Some(hours_str) = file_path
+                .split('/')
+                .find(|c| c.starts_with("timestamp_hour="))
+                .and_then(|c| c.strip_prefix("timestamp_hour="))
+            {
+                let slot = by_hour.entry(hours_str.to_string()).or_insert((0, 0));
+                slot.0 += 1;
+                slot.1 += file_size;
+            }
+        }
+
+        let partitions = by_hour
+            .into_iter()
+            .filter_map(|(hours_str, (file_count, total_bytes))| {
+                // Convert integer hours-since-epoch to DateTime<Utc>
+                let hours_since_epoch: i64 = hours_str.parse().ok()?;
+                let secs = hours_since_epoch.checked_mul(3600)?;
+                let timestamp = DateTime::from_timestamp(secs, 0)?;
+
+                // Store ISO format in "hour" key for display/logging compat
+                let iso_hour = timestamp.format("%Y-%m-%d-%H").to_string();
+                let mut partition_values = HashMap::new();
+                partition_values.insert("hour".to_string(), iso_hour);
+                partition_values.insert("timestamp_hour".to_string(), hours_str);
+
+                Some(PartitionInfo {
+                    partition_values,
+                    timestamp,
+                    file_count: Some(file_count),
+                    total_size_bytes: if total_bytes > 0 {
+                        Some(total_bytes)
+                    } else {
+                        None
+                    },
+                })
+            })
+            .collect();
+
+        Ok(partitions)
     }
 
     /// Generate SQL to drop a partition

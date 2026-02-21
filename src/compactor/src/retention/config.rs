@@ -161,7 +161,7 @@ impl RetentionConfig {
             });
         }
 
-        if self.grace_period <= zero {
+        if self.grace_period < zero {
             return Err(RetentionConfigError::InvalidGracePeriod(self.grace_period));
         }
 

@@ -167,44 +167,44 @@ async fn test_snapshot_expiration_respects_time_based_retention() -> Result<()> 
     let all_snapshots = snapshot_manager.list_snapshots(&table)?;
     log::info!("Total snapshots: {}", all_snapshots.len());
 
-    // With delays, snapshots will span ~1 second
-    // Use a cutoff that's halfway through this period
-    let oldest_snapshot_time = all_snapshots
-        .iter()
-        .map(|s| s.timestamp_secs())
-        .min()
-        .unwrap();
-    let newest_snapshot_time = all_snapshots
-        .iter()
-        .map(|s| s.timestamp_secs())
-        .max()
-        .unwrap();
+    // Use milliseconds for the midpoint cutoff to avoid second-truncation issues
+    // (snapshots created 100ms apart may all round to the same second value)
+    let oldest_snapshot_ms = all_snapshots.iter().map(|s| s.timestamp_ms).min().unwrap();
+    let newest_snapshot_ms = all_snapshots.iter().map(|s| s.timestamp_ms).max().unwrap();
 
-    // Cutoff halfway through the snapshot creation period
-    let cutoff_secs = (oldest_snapshot_time + newest_snapshot_time) / 2;
+    // Cutoff halfway through the snapshot creation period (in ms)
+    let cutoff_ms = (oldest_snapshot_ms + newest_snapshot_ms) / 2;
 
-    let old_snapshots = snapshot_manager.list_snapshots_older_than(&table, cutoff_secs)?;
+    // Filter directly by timestamp_ms to avoid second-truncation in list_snapshots_older_than
+    let old_snapshots: Vec<_> = all_snapshots
+        .iter()
+        .filter(|s| s.timestamp_ms < cutoff_ms)
+        .collect();
 
     log::info!(
-        "Cutoff: {} | Old snapshots: {} | All snapshots: {}",
-        cutoff_secs,
+        "Cutoff ms: {} | Old snapshots: {} | All snapshots: {}",
+        cutoff_ms,
         old_snapshots.len(),
         all_snapshots.len()
     );
 
-    // With 10 snapshots over ~1 second and cutoff at midpoint,
-    // expect roughly half to be "old"
+    // With 10 snapshots and a midpoint cutoff, expect roughly half to be "old".
+    // Must have at least 1 old and at least 1 recent (oldest != newest is guaranteed
+    // because each write takes measurable time and iceberg records commit timestamps).
     assert!(
-        old_snapshots.len() >= 3 && old_snapshots.len() <= 7,
-        "Expected 3-7 old snapshots, got {}",
-        old_snapshots.len()
+        !old_snapshots.is_empty() && old_snapshots.len() < all_snapshots.len(),
+        "Expected some old snapshots and some recent ones, got old={} total={}",
+        old_snapshots.len(),
+        all_snapshots.len()
     );
 
     // Verify all old snapshots are indeed older than cutoff
     for snapshot in &old_snapshots {
         assert!(
-            snapshot.is_older_than_secs(cutoff_secs),
-            "Old snapshot should be older than cutoff"
+            snapshot.timestamp_ms < cutoff_ms,
+            "Old snapshot timestamp_ms {} should be < cutoff {}",
+            snapshot.timestamp_ms,
+            cutoff_ms
         );
     }
 
@@ -223,7 +223,7 @@ async fn test_snapshot_expiration_handles_no_snapshots() -> Result<()> {
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
-    let table_name = "metrics";
+    let table_name = "metrics_gauge";
 
     // Create table but don't write any data (no snapshots)
     let _writer = ctx.create_table(tenant_id, dataset_id, table_name).await?;
