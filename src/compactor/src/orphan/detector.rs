@@ -176,6 +176,37 @@ impl OrphanDetector {
             _ => anyhow::bail!("Expected table but found different tabular type"),
         };
 
+        // Cheap threshold check using manifest list metadata before reading all manifest files.
+        // Sums the file count estimates from ManifestListEntry metadata (no manifest reads needed).
+        // If the estimate exceeds the configured cap, skip cleanup with a warning rather than
+        // risking excessive memory use.
+        if self.config.max_live_files_threshold > 0 {
+            let manifests = table
+                .manifests(None, None)
+                .await
+                .context("Failed to read manifest list for threshold check")?;
+            let estimated_live_files: usize = manifests
+                .iter()
+                .map(|m| {
+                    m.added_files_count.unwrap_or(0).max(0) as usize
+                        + m.existing_files_count.unwrap_or(0).max(0) as usize
+                })
+                .sum();
+            if estimated_live_files > self.config.max_live_files_threshold {
+                tracing::warn!(
+                    tenant_id = %tenant_id,
+                    dataset_id = %dataset_id,
+                    table_name = %table_name,
+                    estimated_live_files,
+                    threshold = self.config.max_live_files_threshold,
+                    "Skipping orphan cleanup: estimated live file count exceeds threshold. \
+                     Run snapshot expiration first to reduce file counts, or raise \
+                     max_live_files_threshold if memory allows."
+                );
+                return Ok(HashSet::new());
+            }
+        }
+
         // Filter snapshots by age
         let cutoff_time = Utc::now()
             - chrono::Duration::from_std(self.config.max_snapshot_age())

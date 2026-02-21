@@ -3,7 +3,8 @@
 //! Provides functionality to read manifest lists and manifest files
 //! to extract data file paths for orphan detection.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use iceberg_rust::spec::manifest::Status;
 use iceberg_rust::table::Table;
 use std::collections::HashSet;
 
@@ -27,28 +28,79 @@ impl ManifestReader {
         Self
     }
 
-    /// Build a set of live data file paths from all snapshots
+    /// Build a set of live data file paths from the current table snapshot.
     ///
-    /// This scans all snapshots in the table and extracts all referenced
-    /// data files to build a "live set" for orphan detection.
+    /// Reads the manifest list for the current snapshot and collects all
+    /// data file paths with ADDED or EXISTING status. Files with DELETED
+    /// status are excluded as they are no longer live.
     ///
     /// # Arguments
     /// * `table` - The Iceberg table to scan
-    /// * `snapshot_ids` - Optional list of snapshot IDs to scan (None = all snapshots)
+    /// * `snapshot_ids` - Optional list of snapshot IDs; when provided, only
+    ///   manifests added by those snapshots are included. When None, all
+    ///   manifests in the current snapshot are used.
     ///
     /// # Returns
-    /// A HashSet of absolute file paths that are currently referenced
+    /// A HashSet of absolute file paths that are currently referenced.
+    ///
+    /// # Safety
+    /// Run snapshot expiration before calling this to ensure that files
+    /// referenced only by expired snapshots are not protected from cleanup.
     pub async fn build_live_file_set(
         &self,
-        _table: &Table,
-        _snapshot_ids: Option<&[i64]>,
+        table: &Table,
+        snapshot_ids: Option<&[i64]>,
     ) -> Result<HashSet<String>> {
-        // SAFETY: Fail-safe design - explicitly error instead of returning empty set.
-        // An empty live file set would incorrectly mark ALL files as orphans,
-        // potentially causing catastrophic data loss during orphan cleanup.
-        Err(anyhow::anyhow!(
-            "build_live_file_set: manifest reading not implemented; cannot produce live file set"
-        ))
+        // Read all manifests from the current snapshot's manifest list.
+        // table.manifests(None, None) reads the current snapshot and returns
+        // all ManifestListEntry records (one per manifest file).
+        let all_manifests = table
+            .manifests(None, None)
+            .await
+            .context("Failed to read manifest list from current snapshot")?;
+
+        // Optionally filter to only manifests added by specific snapshots.
+        let manifests = if let Some(ids) = snapshot_ids {
+            let ids_set: HashSet<i64> = ids.iter().copied().collect();
+            all_manifests
+                .into_iter()
+                .filter(|m| ids_set.contains(&m.added_snapshot_id))
+                .collect::<Vec<_>>()
+        } else {
+            all_manifests
+        };
+
+        tracing::debug!(
+            manifest_count = manifests.len(),
+            "Reading manifests to build live file set"
+        );
+
+        if manifests.is_empty() {
+            tracing::debug!("No manifests found, live file set is empty");
+            return Ok(HashSet::new());
+        }
+
+        // Read all data file entries from the manifests.
+        let file_iter = table
+            .datafiles(&manifests, None, (None, None))
+            .await
+            .context("Failed to read data files from manifests")?;
+
+        let mut live_files = HashSet::new();
+        for result in file_iter {
+            let (_, entry) = result.context("Failed to read manifest entry")?;
+            // Only include ADDED and EXISTING files; DELETED entries are no longer live.
+            if *entry.status() != Status::Deleted {
+                live_files.insert(entry.data_file().file_path().to_string());
+            }
+        }
+
+        tracing::debug!(
+            live_files_count = live_files.len(),
+            "Built live file set from manifests"
+        );
+
+        Ok(live_files)
     }
 
     /// Extract data file paths from a snapshot

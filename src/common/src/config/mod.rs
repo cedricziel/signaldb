@@ -104,6 +104,18 @@ pub struct OrphanCleanupConfig {
     pub revalidate_before_delete: bool,
     #[serde(default = "default_max_snapshot_age_hours")]
     pub max_snapshot_age_hours: u64,
+
+    /// Maximum estimated live file count before orphan cleanup is skipped.
+    ///
+    /// If the manifest list metadata indicates more than this many live files,
+    /// orphan cleanup is skipped with a warning to avoid excessive memory use.
+    /// Set to 0 to disable the cap (not recommended for production).
+    ///
+    /// Default: 500_000
+    ///
+    /// Env: SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__MAX_LIVE_FILES_THRESHOLD
+    #[serde(default = "default_max_live_files_threshold")]
+    pub max_live_files_threshold: usize,
 }
 
 fn default_grace_period_hours() -> u64 {
@@ -130,6 +142,10 @@ fn default_max_snapshot_age_hours() -> u64 {
     720 // 30 days
 }
 
+fn default_max_live_files_threshold() -> usize {
+    500_000
+}
+
 impl Default for OrphanCleanupConfig {
     fn default() -> Self {
         Self {
@@ -140,6 +156,7 @@ impl Default for OrphanCleanupConfig {
             dry_run: default_orphan_dry_run(),
             revalidate_before_delete: default_revalidate_before_delete(),
             max_snapshot_age_hours: default_max_snapshot_age_hours(),
+            max_live_files_threshold: default_max_live_files_threshold(),
         }
     }
 }

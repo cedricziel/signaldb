@@ -73,6 +73,7 @@ async fn test_orphan_detection_finds_unreferenced_files() -> Result<()> {
         revalidate_before_delete: false,
         cleanup_interval_hours: 24,
         max_snapshot_age_hours: 720,
+        max_live_files_threshold: 500_000,
     };
 
     let detector = OrphanDetector::new(
@@ -174,6 +175,7 @@ async fn test_orphan_cleanup_grace_period_configuration() -> Result<()> {
         revalidate_before_delete: false,
         cleanup_interval_hours: 24,
         max_snapshot_age_hours: 720,
+        max_live_files_threshold: 500_000,
     };
 
     let detector = OrphanDetector::new(
@@ -273,6 +275,7 @@ async fn test_orphan_cleanup_batch_deletion() -> Result<()> {
         revalidate_before_delete: false,
         cleanup_interval_hours: 24,
         max_snapshot_age_hours: 720,
+        max_live_files_threshold: 500_000,
     };
 
     let detector = Arc::new(OrphanDetector::new(
@@ -375,6 +378,7 @@ async fn test_orphan_cleanup_dry_run_mode() -> Result<()> {
         revalidate_before_delete: false,
         cleanup_interval_hours: 24,
         max_snapshot_age_hours: 720,
+        max_live_files_threshold: 500_000,
     };
 
     let detector = Arc::new(OrphanDetector::new(
@@ -474,6 +478,7 @@ async fn test_orphan_cleanup_preserves_live_files() -> Result<()> {
         revalidate_before_delete: false,
         cleanup_interval_hours: 24,
         max_snapshot_age_hours: 720,
+        max_live_files_threshold: 500_000,
     };
 
     let detector = OrphanDetector::new(
