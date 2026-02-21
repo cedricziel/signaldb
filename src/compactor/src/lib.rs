@@ -21,6 +21,7 @@ pub mod orphan;
 pub mod planner;
 pub mod retention;
 pub mod rewriter;
+pub mod scheduler;
 
 // Re-export commonly used types
 pub use commit::{DataFileChange, IcebergCommitter, is_conflict_error};

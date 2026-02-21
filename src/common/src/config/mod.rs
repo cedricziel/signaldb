@@ -146,6 +146,18 @@ fn default_max_live_files_threshold() -> usize {
     500_000
 }
 
+fn default_max_candidates_per_cycle() -> usize {
+    20
+}
+
+fn default_max_per_tenant() -> usize {
+    5
+}
+
+fn default_lease_ttl_seconds() -> u64 {
+    300 // 5 minutes
+}
+
 impl Default for OrphanCleanupConfig {
     fn default() -> Self {
         Self {
@@ -295,6 +307,36 @@ pub struct CompactorConfig {
     /// Env: SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__*
     #[serde(default)]
     pub orphan_cleanup: OrphanCleanupConfig,
+
+    /// Maximum compaction candidates to process per scheduling cycle (Phase 4).
+    ///
+    /// Limits total work per tick across all tenants.
+    /// Set to 0 to disable the cap (process all candidates).
+    ///
+    /// Default: 20
+    /// Env: SIGNALDB__COMPACTOR__MAX_CANDIDATES_PER_CYCLE
+    #[serde(default = "default_max_candidates_per_cycle")]
+    pub max_candidates_per_cycle: usize,
+
+    /// Maximum candidates per tenant per scheduling cycle (Phase 4).
+    ///
+    /// Ensures no single tenant monopolises a compaction tick.
+    /// Set to 0 to disable per-tenant cap.
+    ///
+    /// Default: 5
+    /// Env: SIGNALDB__COMPACTOR__MAX_PER_TENANT
+    #[serde(default = "default_max_per_tenant")]
+    pub max_per_tenant: usize,
+
+    /// Lease TTL in seconds (Phase 4).
+    ///
+    /// How long a compaction lease remains valid without renewal.
+    /// Should be longer than the expected duration of a single compaction job.
+    ///
+    /// Default: 300 (5 minutes)
+    /// Env: SIGNALDB__COMPACTOR__LEASE_TTL_SECONDS
+    #[serde(default = "default_lease_ttl_seconds")]
+    pub lease_ttl_seconds: u64,
 }
 
 impl Default for CompactorConfig {
@@ -308,6 +350,9 @@ impl Default for CompactorConfig {
             max_files_per_job: 50,
             retention: RetentionConfig::default(),
             orphan_cleanup: OrphanCleanupConfig::default(),
+            max_candidates_per_cycle: default_max_candidates_per_cycle(),
+            max_per_tenant: default_max_per_tenant(),
+            lease_ttl_seconds: default_lease_ttl_seconds(),
         }
     }
 }

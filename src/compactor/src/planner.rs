@@ -396,6 +396,9 @@ mod tests {
             max_files_per_job: 50,
             retention: Default::default(),
             orphan_cleanup: Default::default(),
+            max_candidates_per_cycle: 20,
+            max_per_tenant: 5,
+            lease_ttl_seconds: 300,
         };
 
         let planner_config = PlannerConfig::from(&compactor_config);
