@@ -29,6 +29,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::time::sleep;
+use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 use writer::IcebergWriterFlightService;
 
@@ -76,6 +77,7 @@ async fn wait_for_storage_service(
 }
 
 async fn setup_logs_metrics_services() -> TestServices {
+    let _ = env_logger::try_init();
     let temp_dir = TempDir::new().unwrap();
     let wal_config = WalConfig {
         wal_dir: PathBuf::from(temp_dir.path()),
@@ -99,6 +101,12 @@ async fn setup_logs_metrics_services() -> TestServices {
 
     let mut config = Configuration::default();
     config.storage.dsn = format!("file://{}", storage_dir.display());
+    // Each test needs its own isolated Iceberg catalog. The default "sqlite::memory:"
+    // maps to "sqlite:file::memory:?cache=shared" which is shared across all connections
+    // in the same process — causing cross-test Iceberg table conflicts when tests run
+    // in parallel. A per-test on-disk SQLite file gives full isolation.
+    let iceberg_catalog_db_path = temp_dir.path().join("iceberg_catalog.db");
+    config.schema.catalog_uri = format!("sqlite://{}", iceberg_catalog_db_path.display());
     config.discovery = Some(common::config::DiscoveryConfig {
         dsn: catalog_dsn,
         heartbeat_interval: Duration::from_secs(30),
@@ -115,9 +123,10 @@ async fn setup_logs_metrics_services() -> TestServices {
     .unwrap();
     let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
 
+    // Bind first, keep the listener alive to avoid TOCTOU port-reuse races under
+    // parallel test execution. Pass the live listener to serve_with_incoming.
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
-    drop(writer_listener);
 
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
     let writer_catalog_manager = Arc::new(
@@ -130,7 +139,7 @@ async fn setup_logs_metrics_services() -> TestServices {
     let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
         .add_service(FlightServiceServer::new(writer_service))
-        .serve(writer_addr);
+        .serve_with_incoming(TcpListenerStream::new(writer_listener));
     tokio::spawn(writer_server);
 
     let _writer_bootstrap =
@@ -328,6 +337,35 @@ async fn wait_for_object_locations(
     }
 }
 
+/// Wait until the object store contains at least one path matching EACH of the given
+/// patterns, or until `timeout_duration` elapses. Used by the mixed-types test where
+/// multiple metric tables are written sequentially and the first table's objects
+/// would otherwise satisfy `wait_for_object_locations` before the others are committed.
+async fn wait_for_object_locations_all(
+    store: &Arc<dyn ObjectStore>,
+    required_patterns: &[&str],
+    timeout_duration: Duration,
+) -> Vec<String> {
+    let start = std::time::Instant::now();
+
+    loop {
+        let locations = object_locations(store).await;
+        let all_found = required_patterns
+            .iter()
+            .all(|pat| locations.iter().any(|l| l.contains(pat)));
+
+        if all_found {
+            return locations;
+        }
+
+        if start.elapsed() >= timeout_duration {
+            return locations;
+        }
+
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
 #[tokio::test]
 async fn test_logs_ingestion_and_persistence() {
     let services = setup_logs_metrics_services().await;
@@ -378,7 +416,12 @@ async fn test_metrics_mixed_types_ingestion() {
         .handle_grpc_otlp_metrics(&tenant_context, metrics_request)
         .await;
 
-    let locations = wait_for_object_locations(&services.object_store, Duration::from_secs(20)).await;
+    let locations = wait_for_object_locations_all(
+        &services.object_store,
+        &["metrics_gauge", "metrics_sum", "metrics_histogram"],
+        Duration::from_secs(20),
+    )
+    .await;
     assert!(
         locations
             .iter()

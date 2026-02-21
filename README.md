@@ -95,6 +95,143 @@ SignalDB uses Apache Iceberg as the table format for reliable data management:
 * **Memory Management**: Memory-aware batch processing to prevent OOM issues
 * **Concurrent Processing**: Configurable concurrent batch processing for optimal throughput
 
+## Compactor Service
+
+The Compactor Service manages the complete data lifecycle for observability signals, providing automatic storage optimization and retention enforcement.
+
+### Three-Phase Lifecycle Management
+
+**Phase 1: Dry-Run Planning**
+* Analyzes partition statistics to identify compaction opportunities
+* Validates potential improvements without modifying data
+* Safe exploration mode for testing and analysis
+
+**Phase 2: Active Compaction**
+* Consolidates small Parquet files into larger, more efficient files
+* Reduces file count and improves query performance
+* Maintains Iceberg snapshot isolation during operations
+
+**Phase 3: Retention & Lifecycle Management** ✨ **NEW**
+* **Retention Enforcement**: Automatically drops expired partitions based on configurable policies
+* **Snapshot Expiration**: Maintains bounded metadata size by expiring old snapshots
+* **Orphan Cleanup**: Reclaims storage by detecting and deleting unreferenced files
+
+### Configurable Retention Policies
+
+SignalDB uses a **3-tier override hierarchy** for flexible retention management:
+
+```text
+Global Defaults → Tenant Overrides → Dataset Overrides
+```
+
+**Example Configuration:**
+
+```toml
+[compactor.retention]
+enabled = true
+dry_run = false  # Always test with true first!
+retention_check_interval = "1h"
+grace_period = "1h"  # Safety margin
+
+# Global defaults (all tenants)
+traces = "7d"
+logs = "3d"
+metrics = "30d"
+snapshots_to_keep = 5
+
+# Production tenant override
+[[compactor.retention.tenant_overrides]]
+tenant_id = "production"
+traces = "30d"  # Keep production traces longer
+
+# Critical dataset override (highest priority)
+[[compactor.retention.tenant_overrides.dataset_overrides]]
+dataset_id = "critical"
+traces = "90d"  # Critical data kept 90 days
+```
+
+**Retention Resolution Example:**
+* `production/critical` → **90 days** (dataset override wins)
+* `production/default` → **30 days** (tenant override wins)
+* `dev/staging` → **7 days** (global default wins)
+
+### Orphan File Cleanup
+
+Automatically identifies and deletes unreferenced Parquet files using a **4-phase safety-first algorithm**:
+
+1. **Build Reference Set**: Scan all live snapshots and collect referenced file paths
+2. **Scan Object Store**: List all Parquet files in storage
+3. **Identify Orphans**: Files not in reference set AND older than grace period
+4. **Revalidate & Delete**: Optional re-check before deletion (prevents race conditions)
+
+**Safety Features:**
+* **Grace Period**: 24-hour default prevents deletion of in-flight writes
+* **Revalidation**: Catches concurrent writes before deletion
+* **Dry-Run Mode**: Test orphan detection without actual deletion
+* **Batch Processing**: Resumable progress tracking for crash recovery
+
+```toml
+[compactor.orphan_cleanup]
+enabled = true
+dry_run = false  # Always test with true first!
+cleanup_interval_hours = 24
+grace_period_hours = 24
+revalidate_before_delete = true  # Extra safety
+```
+
+### Running the Compactor
+
+```bash
+# Monolithic mode (recommended)
+cargo run --bin signaldb
+
+# Standalone compactor service
+cargo run --bin compactor
+
+# Development with local storage
+./scripts/run-dev.sh
+```
+
+### Monitoring & Metrics
+
+Key metrics exposed on port 9091 (Prometheus format):
+
+**Retention Metrics:**
+* `compactor_partitions_dropped_total` - Partitions dropped per tenant/signal
+* `compactor_snapshots_expired_total` - Snapshots expired per table
+* `compactor_retention_enforcement_duration_seconds` - Enforcement duration
+
+**Orphan Cleanup Metrics:**
+* `compactor_files_deleted_total` - Files successfully deleted
+* `compactor_bytes_freed_total` - Storage reclaimed
+* `compactor_orphans_identified_total` - Orphan files detected
+* `compactor_deletion_failures_total` - Deletion errors (should be 0)
+
+**Example Prometheus Query:**
+
+```promql
+# Storage reclaimed per tenant (last 24h)
+sum by (tenant) (
+  increase(compactor_bytes_freed_total[24h])
+)
+```
+
+### Documentation
+
+* **Comprehensive README**: [`src/compactor/README.md`](src/compactor/README.md)
+* **Configuration Reference**: [`docs/compactor/phase3-configuration.md`](docs/compactor/phase3-configuration.md)
+* **Operations Guide**: [`docs/compactor/phase3-operations.md`](docs/compactor/phase3-operations.md)
+* **Troubleshooting**: [`docs/compactor/phase3-troubleshooting.md`](docs/compactor/phase3-troubleshooting.md)
+* **Implementation Plan**: [`docs/compactor/phase3-implementation-plan.md`](docs/compactor/phase3-implementation-plan.md)
+
+### Safety Best Practices
+
+1. **Always Start with Dry-Run**: Set `dry_run = true` and monitor logs before enabling
+2. **Test on Non-Production First**: Use test tenant with short retention for validation
+3. **Use Grace Periods**: Minimum 1 hour for retention, 24 hours for orphan cleanup
+4. **Monitor Metrics**: Set up alerts for unexpected partition drops or deletion failures
+5. **Keep Sufficient Snapshots**: Maintain 5-10 snapshots for query isolation
+
 ## Multi-Tenancy & Authentication
 
 SignalDB provides robust multi-tenant isolation with API key-based authentication:

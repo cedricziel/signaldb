@@ -160,12 +160,27 @@ pub(crate) async fn create_sql_catalog_with_builder(
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create SQLite catalog at '{}': {}", uri, e))?;
         Arc::new(catalog) as Arc<dyn IcebergCatalog>
+    } else if catalog_uri.starts_with("sqlite:file:") {
+        // Named in-memory or file-URI SQLite (e.g. sqlite:file:mydb?mode=memory&cache=shared).
+        // Passed through directly — the caller is responsible for supplying a valid SQLite URI.
+        let catalog = SqlCatalog::new(catalog_uri, catalog_name, object_store_builder)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to create SQLite catalog '{}': {}", catalog_uri, e)
+            })?;
+        Arc::new(catalog) as Arc<dyn IcebergCatalog>
     } else if catalog_uri == "sqlite://"
         || catalog_uri.contains(":memory:")
         || catalog_uri == "memory://"
     {
-        // In-memory SQLite catalog (also handle memory:// for compatibility)
-        let catalog = SqlCatalog::new("sqlite::memory:", catalog_name, object_store_builder)
+        // In-memory SQLite catalog (also handle memory:// for compatibility).
+        // Use a unique named database per instance so that concurrent test runs
+        // don't share catalog state (which causes UNIQUE constraint conflicts).
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static MEMORY_CATALOG_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = MEMORY_CATALOG_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let unique_uri = format!("sqlite:file:signaldb_mem_{id}?mode=memory&cache=shared");
+        let catalog = SqlCatalog::new(&unique_uri, catalog_name, object_store_builder)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create in-memory SQLite catalog: {}", e))?;
         Arc::new(catalog) as Arc<dyn IcebergCatalog>

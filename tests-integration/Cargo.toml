@@ -39,6 +39,7 @@ hex.workspace = true
 prost.workspace = true
 snap.workspace = true
 chrono.workspace = true
+bytes.workspace = true
 
 # Iceberg catalog for integration tests
 iceberg-rust.workspace = true
@@ -78,6 +79,26 @@ path = "tests/compactor/logs_compaction.rs"
 [[test]]
 name = "metrics_compaction"
 path = "tests/compactor/metrics_compaction.rs"
+
+[[test]]
+name = "retention_cutoff"
+path = "tests/compactor/retention_cutoff.rs"
+
+[[test]]
+name = "partition_drop"
+path = "tests/compactor/partition_drop.rs"
+
+[[test]]
+name = "snapshot_expiration"
+path = "tests/compactor/snapshot_expiration.rs"
+
+[[test]]
+name = "orphan_cleanup"
+path = "tests/compactor/orphan_cleanup.rs"
+
+[[test]]
+name = "retention_failure_scenarios"
+path = "tests/compactor/retention_failure_scenarios.rs"
 
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory

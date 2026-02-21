@@ -207,6 +207,109 @@ panic!("Failed to initialize: {error}");
 
 Always use `cargo machete --with-metadata` for comprehensive unused dependency detection before committing.
 
+## Compactor Service
+
+The Compactor Service manages complete data lifecycle with three phases:
+
+- **Phase 1**: Dry-run compaction planning and validation
+- **Phase 2**: Active Parquet file compaction for storage efficiency
+- **Phase 3**: Retention enforcement and lifecycle management ✨ NEW
+
+### Running the Compactor
+
+```bash
+# Standalone compactor service
+cargo run --bin compactor
+
+# Monolithic mode (includes compactor)
+cargo run --bin signaldb
+./scripts/run-dev.sh
+
+# With debug logging
+RUST_LOG=debug,compactor=trace cargo run --bin compactor
+```
+
+### Phase 3: Retention & Lifecycle Management
+
+**Key Features:**
+- 3-tier retention policies (Global → Tenant → Dataset)
+- Per-signal type retention (traces/logs/metrics)
+- Automatic partition dropping
+- Snapshot expiration
+- Orphan file cleanup
+
+**Configuration Example:**
+
+```toml
+[compactor.retention]
+enabled = true
+dry_run = false  # Start with true for testing
+retention_check_interval = "1h"
+grace_period = "1h"
+traces = "7d"
+logs = "3d"
+metrics = "30d"
+snapshots_to_keep = 5
+
+# Tenant override
+[[compactor.retention.tenant_overrides]]
+tenant_id = "production"
+traces = "30d"
+
+# Dataset override (highest priority)
+[[compactor.retention.tenant_overrides.dataset_overrides]]
+dataset_id = "critical"
+traces = "90d"
+
+[compactor.orphan_cleanup]
+enabled = true
+dry_run = false  # Start with true for testing
+cleanup_interval_hours = 24
+grace_period_hours = 24
+revalidate_before_delete = true
+```
+
+**Testing Phase 3:**
+
+```bash
+# Integration tests (19 tests covering all Phase 3 features)
+cargo test -p tests-integration --test retention_cutoff
+cargo test -p tests-integration --test partition_drop
+cargo test -p tests-integration --test snapshot_expiration
+cargo test -p tests-integration --test orphan_cleanup
+
+# Run all compactor tests
+cargo test -p compactor
+cargo test -p tests-integration compactor
+```
+
+**Metrics:**
+
+```bash
+# Check metrics endpoint
+curl -s localhost:9091/metrics | grep compactor
+
+# Key Phase 3 metrics:
+# - compactor_partitions_dropped_total
+# - compactor_snapshots_expired_total
+# - compactor_files_deleted_total
+# - compactor_bytes_freed_total
+```
+
+**Documentation:**
+
+- Configuration: `docs/compactor/phase3-configuration.md`
+- Operations: `docs/compactor/phase3-operations.md`
+- Troubleshooting: `docs/compactor/phase3-troubleshooting.md`
+- Implementation Plan: `docs/compactor/phase3-implementation-plan.md`
+- README: `src/compactor/README.md`
+
+**Important Notes:**
+- Always test retention with `dry_run = true` first
+- Use grace periods to prevent accidental deletion
+- Monitor `compactor_deletion_failures_total` metric
+- Keep `snapshots_to_keep` high enough for query isolation
+
 ## Development Guidelines
 
 - @docs/ai/development.md

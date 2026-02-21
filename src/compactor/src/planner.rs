@@ -394,6 +394,8 @@ mod tests {
             file_count_threshold: 10,
             min_input_file_size_kb: 1024,
             max_files_per_job: 50,
+            retention: Default::default(),
+            orphan_cleanup: Default::default(),
         };
 
         let planner_config = PlannerConfig::from(&compactor_config);

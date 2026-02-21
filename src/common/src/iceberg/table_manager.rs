@@ -82,6 +82,33 @@ impl IcebergTableManager {
             _ => return Err(anyhow::anyhow!("Unknown table name: {table_name}")),
         };
 
+        // Ensure namespace exists before creating table
+        let namespace = names::build_namespace(tenant_slug, dataset_slug)?;
+        // Try to create namespace - idempotent, will succeed if already exists
+        match self
+            .catalog
+            .clone()
+            .create_namespace(&namespace, None)
+            .await
+        {
+            Ok(_) => {
+                // Namespace created successfully
+            }
+            Err(e) => {
+                let message = e.to_string().to_lowercase();
+                // Ignore "already exists" errors from concurrent creation attempts.
+                // SQLite surfaces this as "unique constraint failed" rather than "already exists".
+                if !message.contains("already exists")
+                    && !message.contains("conflict")
+                    && !message.contains("unique constraint")
+                {
+                    return Err(anyhow::anyhow!(
+                        "Failed to create namespace {namespace}: {e}"
+                    ));
+                }
+            }
+        }
+
         let table_create = CreateTableBuilder::default()
             .with_name(table_name.to_string())
             .with_schema(table_schema.schema()?)
@@ -103,7 +130,9 @@ impl IcebergTableManager {
             Ok(table) => table,
             Err(create_err) => {
                 let message = create_err.to_string().to_lowercase();
-                if message.contains("already exists") {
+                // SQLite surfaces concurrent duplicate-create as "unique constraint failed"
+                // rather than "already exists", so treat both the same way.
+                if message.contains("already exists") || message.contains("unique constraint") {
                     let tabular = self
                         .catalog
                         .clone()

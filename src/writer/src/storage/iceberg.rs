@@ -434,6 +434,13 @@ impl IcebergTableWriter {
             table_location
         );
 
+        // Apply schema transformation if needed (same logic as transaction path)
+        let batch = if table_name == "traces" {
+            self.apply_schema_transformation_if_needed(batch)?
+        } else {
+            batch
+        };
+
         // Debug: Check schema compatibility before registering batch
         let target_table_schema = self.table.metadata().current_schema(None)?;
         log::debug!(

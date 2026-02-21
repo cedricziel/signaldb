@@ -22,6 +22,8 @@ cargo test <test_name>              # Specific test by name
 cargo test -- --nocapture           # With stdout visible
 RUST_LOG=debug cargo test <name> -- --nocapture   # With logging
 cargo test -p tests-integration     # Integration tests
+cargo test -p tests-integration compactor   # Compactor integration tests
+cargo test -p compactor             # Compactor unit tests
 ```
 
 ## Pre-Commit Checks (MANDATORY before committing)

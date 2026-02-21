@@ -55,7 +55,16 @@ impl CatalogManager {
     /// let catalog = manager.catalog();
     /// ```
     pub async fn new_in_memory() -> Result<Self> {
-        Self::new(Configuration::default()).await
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static CATALOG_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = CATALOG_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+        let mut config = Configuration::default();
+        // Use a uniquely-named in-memory SQLite database so that concurrent test calls
+        // each get an isolated catalog rather than sharing the unnamed global cache.
+        config.schema.catalog_uri =
+            format!("sqlite:file:signaldb_test_{id}?mode=memory&cache=shared");
+        Self::new(config).await
     }
 
     /// Get the shared Iceberg catalog.
