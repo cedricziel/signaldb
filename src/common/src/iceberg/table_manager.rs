@@ -130,7 +130,9 @@ impl IcebergTableManager {
             Ok(table) => table,
             Err(create_err) => {
                 let message = create_err.to_string().to_lowercase();
-                if message.contains("already exists") {
+                // SQLite surfaces concurrent duplicate-create as "unique constraint failed"
+                // rather than "already exists", so treat both the same way.
+                if message.contains("already exists") || message.contains("unique constraint") {
                     let tabular = self
                         .catalog
                         .clone()

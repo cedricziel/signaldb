@@ -160,6 +160,15 @@ pub(crate) async fn create_sql_catalog_with_builder(
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create SQLite catalog at '{}': {}", uri, e))?;
         Arc::new(catalog) as Arc<dyn IcebergCatalog>
+    } else if catalog_uri.starts_with("sqlite:file:") {
+        // Named in-memory or file-URI SQLite (e.g. sqlite:file:mydb?mode=memory&cache=shared).
+        // Passed through directly — the caller is responsible for supplying a valid SQLite URI.
+        let catalog = SqlCatalog::new(catalog_uri, catalog_name, object_store_builder)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to create SQLite catalog '{}': {}", catalog_uri, e)
+            })?;
+        Arc::new(catalog) as Arc<dyn IcebergCatalog>
     } else if catalog_uri == "sqlite://"
         || catalog_uri.contains(":memory:")
         || catalog_uri == "memory://"
