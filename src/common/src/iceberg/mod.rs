@@ -173,15 +173,16 @@ pub(crate) async fn create_sql_catalog_with_builder(
         || catalog_uri.contains(":memory:")
         || catalog_uri == "memory://"
     {
-        // In-memory SQLite catalog (also handle memory:// for compatibility)
-        // Use shared memory mode to ensure all connections see the same database
-        let catalog = SqlCatalog::new(
-            "sqlite:file::memory:?cache=shared",
-            catalog_name,
-            object_store_builder,
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to create in-memory SQLite catalog: {}", e))?;
+        // In-memory SQLite catalog (also handle memory:// for compatibility).
+        // Use a unique named database per instance so that concurrent test runs
+        // don't share catalog state (which causes UNIQUE constraint conflicts).
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static MEMORY_CATALOG_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = MEMORY_CATALOG_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let unique_uri = format!("sqlite:file:signaldb_mem_{id}?mode=memory&cache=shared");
+        let catalog = SqlCatalog::new(&unique_uri, catalog_name, object_store_builder)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create in-memory SQLite catalog: {}", e))?;
         Arc::new(catalog) as Arc<dyn IcebergCatalog>
     } else {
         return Err(anyhow::anyhow!(
