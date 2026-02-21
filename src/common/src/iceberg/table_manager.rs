@@ -96,8 +96,12 @@ impl IcebergTableManager {
             }
             Err(e) => {
                 let message = e.to_string().to_lowercase();
-                // Ignore "already exists" errors from concurrent creation attempts
-                if !message.contains("already exists") && !message.contains("conflict") {
+                // Ignore "already exists" errors from concurrent creation attempts.
+                // SQLite surfaces this as "unique constraint failed" rather than "already exists".
+                if !message.contains("already exists")
+                    && !message.contains("conflict")
+                    && !message.contains("unique constraint")
+                {
                     return Err(anyhow::anyhow!(
                         "Failed to create namespace {namespace}: {e}"
                     ));
