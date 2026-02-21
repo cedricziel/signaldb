@@ -104,11 +104,19 @@ impl OrphanDetector {
             "Starting orphan detection"
         );
 
-        // Phase 1: Build live reference set from manifests
-        let live_files = self
+        // Phase 1: Build live reference set from manifests.
+        // Returns None when the threshold guard trips → skip cleanup for this table.
+        let live_files = match self
             .build_live_reference_set(tenant_id, dataset_id, table_name)
             .await
-            .context("Failed to build live file reference set")?;
+            .context("Failed to build live file reference set")?
+        {
+            Some(set) => set,
+            None => {
+                // Threshold exceeded; return empty candidate list (cleanup skipped).
+                return Ok(vec![]);
+            }
+        };
 
         tracing::info!(
             tenant_id = %tenant_id,
@@ -152,12 +160,15 @@ impl OrphanDetector {
     ///
     /// Scans all snapshots within the retention window and collects
     /// all referenced data file paths.
+    ///
+    /// Returns `Ok(None)` when the `max_live_files_threshold` guard trips,
+    /// signalling that the caller should skip orphan cleanup for this table.
     async fn build_live_reference_set(
         &self,
         tenant_id: &str,
         dataset_id: &str,
         table_name: &str,
-    ) -> Result<HashSet<String>> {
+    ) -> Result<Option<HashSet<String>>> {
         // Load table metadata using catalog manager
         let table_identifier = self
             .catalog_manager
@@ -203,7 +214,7 @@ impl OrphanDetector {
                      Run snapshot expiration first to reduce file counts, or raise \
                      max_live_files_threshold if memory allows."
                 );
-                return Ok(HashSet::new());
+                return Ok(None);
             }
         }
 
@@ -251,7 +262,7 @@ impl OrphanDetector {
             "Built live file reference set from manifests"
         );
 
-        Ok(live_files)
+        Ok(Some(live_files))
     }
 
     /// Scan object store for all Parquet files in table location.

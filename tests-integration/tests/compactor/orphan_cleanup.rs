@@ -407,15 +407,24 @@ async fn test_orphan_cleanup_dry_run_mode() -> Result<()> {
         result.total_bytes_freed
     );
 
-    // Verify metrics are tracked
+    // Verify dry-run metrics are tracked (dry_run mode uses would_delete_count, not deleted_count)
     assert_eq!(
-        result.deleted_count, 3,
+        result.would_delete_count, 3,
         "Dry-run should report 3 files as 'would delete'"
     );
     assert_eq!(
-        result.total_bytes_freed,
+        result.would_free_bytes,
         3 * 1024,
         "Dry-run should report bytes that would be freed"
+    );
+    // Actual deletion counters must be zero in dry-run
+    assert_eq!(
+        result.deleted_count, 0,
+        "Dry-run must not increment deleted_count"
+    );
+    assert_eq!(
+        result.total_bytes_freed, 0,
+        "Dry-run must not increment total_bytes_freed"
     );
 
     // Verify files still exist (not actually deleted)
@@ -543,5 +552,63 @@ async fn test_orphan_cleanup_preserves_live_files() -> Result<()> {
         "Should free no bytes when no orphans exist"
     );
 
+    Ok(())
+}
+
+/// Test: `max_live_files_threshold` causes early-return with empty candidate list.
+///
+/// When the estimated live file count from manifest metadata exceeds
+/// `max_live_files_threshold`, orphan cleanup is skipped entirely and
+/// `identify_orphan_candidates` returns an empty list rather than
+/// (incorrectly) treating all files as orphans.
+#[tokio::test]
+async fn test_orphan_cleanup_threshold_skips_cleanup() -> Result<()> {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let ctx = RetentionTestContext::new_in_memory().await?;
+    let tenant_id = "threshold-tenant";
+    let dataset_id = "threshold-dataset";
+    let table_name = "traces";
+
+    let mut writer = ctx.create_table(tenant_id, dataset_id, table_name).await?;
+
+    // Write 5 data files so manifest metadata reports >= 5 live files.
+    let gen_config = DataGeneratorConfig {
+        partition_count: 1,
+        files_per_partition: 5,
+        rows_per_file: 10,
+        base_timestamp: chrono::Utc::now().timestamp_millis() - (60 * 60 * 1000),
+        partition_granularity: PartitionGranularity::Day,
+    };
+    generators::generate_traces(&mut writer, &gen_config).await?;
+
+    // Set threshold to 1 — will be exceeded by the 5 files written above.
+    let threshold_config = OrphanCleanupConfig {
+        enabled: true,
+        grace_period_hours: 0,
+        batch_size: 100,
+        dry_run: false,
+        revalidate_before_delete: false,
+        cleanup_interval_hours: 24,
+        max_snapshot_age_hours: 720,
+        max_live_files_threshold: 1, // force threshold exceeded
+    };
+
+    let detector = OrphanDetector::new(
+        threshold_config,
+        ctx.catalog_manager().clone(),
+        ctx.object_store().clone(),
+    );
+
+    let orphans = detector
+        .identify_orphan_candidates(tenant_id, dataset_id, table_name)
+        .await?;
+
+    // Threshold exceeded → cleanup skipped → no candidates returned.
+    assert!(
+        orphans.is_empty(),
+        "Expected no candidates when threshold exceeded, got {}",
+        orphans.len()
+    );
     Ok(())
 }

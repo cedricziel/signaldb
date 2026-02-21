@@ -8,9 +8,10 @@ use clap::Parser;
 use common::catalog_manager::CatalogManager;
 use common::config::Configuration;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
+use common::storage::create_object_store;
 use compactor::executor::{CompactionExecutor, ExecutorConfig};
 use compactor::metrics::CompactionMetrics;
-use compactor::orphan::OrphanCleanupConfig;
+use compactor::orphan::{OrphanCleaner, OrphanCleanupConfig, OrphanDetector};
 use compactor::planner::{CompactionPlanner, PlannerConfig};
 use compactor::retention::metrics::RetentionMetrics;
 use compactor::retention::{RetentionConfig, RetentionEnforcer};
@@ -152,6 +153,10 @@ async fn main() -> Result<()> {
         orphan_cleanup_config.dry_run
     );
 
+    // Create object store for orphan cleanup
+    let object_store = create_object_store(&config.storage)
+        .context("Failed to create object store for orphan cleanup")?;
+
     // Start planning, execution, and retention enforcement loop
     let compaction_interval = config.compactor.tick_interval;
     let planning_task = {
@@ -161,6 +166,8 @@ async fn main() -> Result<()> {
         let retention_enforcer = retention_enforcer.clone();
         let retention_config = retention_config.clone();
         let orphan_cleanup_config = orphan_cleanup_config.clone();
+        let catalog_manager = catalog_manager.clone();
+        let object_store = object_store.clone();
 
         tokio::spawn(async move {
             use tokio::time::interval;
@@ -280,12 +287,66 @@ async fn main() -> Result<()> {
                         if orphan_cleanup_config.enabled {
                             log::debug!("Running orphan cleanup cycle");
 
-                            // Orphan cleanup would be implemented here
-                            // For now, we just log that it would run
-                            log::info!(
-                                "[{}] Orphan cleanup would run here",
-                                if orphan_cleanup_config.dry_run { "DRY RUN" } else { "LIVE" }
+                            let signal_tables = [
+                                "traces",
+                                "logs",
+                                "metrics_gauge",
+                                "metrics_counter",
+                                "metrics_histogram",
+                            ];
+                            let detector = Arc::new(OrphanDetector::new(
+                                orphan_cleanup_config.clone(),
+                                catalog_manager.clone(),
+                                object_store.clone(),
+                            ));
+                            let cleaner = OrphanCleaner::with_detector(
+                                orphan_cleanup_config.clone(),
+                                object_store.clone(),
+                                detector.clone(),
                             );
+
+                            for tenant_config in catalog_manager.get_enabled_tenants() {
+                                for dataset_config in &tenant_config.datasets {
+                                    for table_name in &signal_tables {
+                                        let tid = &tenant_config.id;
+                                        let did = &dataset_config.id;
+                                        match detector
+                                            .identify_orphan_candidates(tid, did, table_name)
+                                            .await
+                                        {
+                                            Ok(candidates) if !candidates.is_empty() => {
+                                                match cleaner.delete_orphans_batch(candidates).await {
+                                                    Ok(result) => log::info!(
+                                                        "Orphan cleanup {}/{}/{}: deleted={}, \
+                                                         would_delete={}, bytes_freed={}, failed={}",
+                                                        tid,
+                                                        did,
+                                                        table_name,
+                                                        result.deleted_count,
+                                                        result.would_delete_count,
+                                                        result.total_bytes_freed,
+                                                        result.failed_count,
+                                                    ),
+                                                    Err(e) => log::error!(
+                                                        "Orphan cleanup failed for {}/{}/{}: {e:?}",
+                                                        tid,
+                                                        did,
+                                                        table_name
+                                                    ),
+                                                }
+                                            }
+                                            Ok(_) => {} // no orphans
+                                            Err(e) => log::warn!(
+                                                "Orphan detection skipped for {}/{}/{} \
+                                                 (table may not exist): {e:#}",
+                                                tid,
+                                                did,
+                                                table_name
+                                            ),
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
