@@ -165,9 +165,14 @@ pub(crate) async fn create_sql_catalog_with_builder(
         || catalog_uri == "memory://"
     {
         // In-memory SQLite catalog (also handle memory:// for compatibility)
-        let catalog = SqlCatalog::new("sqlite::memory:", catalog_name, object_store_builder)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create in-memory SQLite catalog: {}", e))?;
+        // Use shared memory mode to ensure all connections see the same database
+        let catalog = SqlCatalog::new(
+            "sqlite:file::memory:?cache=shared",
+            catalog_name,
+            object_store_builder,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create in-memory SQLite catalog: {}", e))?;
         Arc::new(catalog) as Arc<dyn IcebergCatalog>
     } else {
         return Err(anyhow::anyhow!(

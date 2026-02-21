@@ -82,6 +82,29 @@ impl IcebergTableManager {
             _ => return Err(anyhow::anyhow!("Unknown table name: {table_name}")),
         };
 
+        // Ensure namespace exists before creating table
+        let namespace = names::build_namespace(tenant_slug, dataset_slug)?;
+        // Try to create namespace - idempotent, will succeed if already exists
+        match self
+            .catalog
+            .clone()
+            .create_namespace(&namespace, None)
+            .await
+        {
+            Ok(_) => {
+                // Namespace created successfully
+            }
+            Err(e) => {
+                let message = e.to_string().to_lowercase();
+                // Ignore "already exists" errors from concurrent creation attempts
+                if !message.contains("already exists") && !message.contains("conflict") {
+                    return Err(anyhow::anyhow!(
+                        "Failed to create namespace {namespace}: {e}"
+                    ));
+                }
+            }
+        }
+
         let table_create = CreateTableBuilder::default()
             .with_name(table_name.to_string())
             .with_schema(table_schema.schema()?)
