@@ -1,8 +1,9 @@
 //! SignalDB Compactor Service
 //!
-//! Phase 3: Full execution service that identifies compaction candidates,
+//! Phase 3/4: Full execution service that identifies compaction candidates,
 //! executes compaction with Parquet rewriting, commits changes atomically,
-//! and enforces data retention / lifecycle policies.
+//! enforces data retention / lifecycle policies, and coordinates across
+//! multiple instances using distributed leases and round-robin scheduling.
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -11,12 +12,15 @@ use common::config::Configuration;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::storage::create_object_store;
 use compactor::executor::{CompactionExecutor, ExecutorConfig};
+use compactor::lease::LeaseManager;
 use compactor::metrics::CompactionMetrics;
 use compactor::orphan::{OrphanCleaner, OrphanCleanupConfig, OrphanDetector};
 use compactor::planner::{CompactionPlanner, PlannerConfig};
 use compactor::retention::metrics::RetentionMetrics;
 use compactor::retention::{RetentionConfig, RetentionEnforcer};
+use compactor::scheduler::RoundRobinScheduler;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -77,8 +81,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    log::info!("Starting SignalDB Compactor Service (Phase 3: Retention & Lifecycle)");
-    log::info!("Running with full compaction execution, atomic commits, and retention enforcement");
+    log::info!(
+        "Starting SignalDB Compactor Service (Phase 3/4: Retention, Lifecycle & Multi-Instance Safety)"
+    );
+    log::info!(
+        "Running with full compaction execution, atomic commits, distributed leases, and retention enforcement"
+    );
 
     // Initialize service bootstrap with sentinel address
     // The compactor is a background worker that doesn't expose any Flight endpoints,
@@ -123,6 +131,33 @@ async fn main() -> Result<()> {
     log::info!(
         "Compaction planner and executor initialized with tick interval: {:?}",
         config.compactor.tick_interval
+    );
+
+    // Initialize distributed lease manager (Phase 4)
+    let lease_ttl = Duration::from_secs(config.compactor.lease_ttl_seconds);
+    let lease_manager = LeaseManager::new(
+        Arc::new(bootstrap.catalog().clone()),
+        bootstrap.service_id(),
+        lease_ttl,
+    );
+
+    log::info!(
+        "Lease manager initialized (instance_id: {}, ttl: {:?})",
+        bootstrap.service_id(),
+        lease_ttl
+    );
+
+    // Initialize round-robin scheduler (Phase 4)
+    let mut scheduler = RoundRobinScheduler::new(
+        planner.clone(),
+        config.compactor.max_candidates_per_cycle,
+        config.compactor.max_per_tenant,
+    );
+
+    log::info!(
+        "Round-robin scheduler initialized (max_per_cycle: {}, max_per_tenant: {})",
+        config.compactor.max_candidates_per_cycle,
+        config.compactor.max_per_tenant
     );
 
     // Initialize retention enforcement (Phase 3)
@@ -173,7 +208,6 @@ async fn main() -> Result<()> {
     // Start planning, execution, and retention enforcement loop
     let compaction_interval = config.compactor.tick_interval;
     let planning_task = {
-        let planner = planner.clone();
         let executor = executor.clone();
         let metrics = compaction_metrics.clone();
         let retention_enforcer = retention_enforcer.clone();
@@ -189,55 +223,87 @@ async fn main() -> Result<()> {
             let mut compaction_ticker = interval(compaction_interval);
             let mut retention_ticker = interval(retention_config.retention_check_interval);
             let mut orphan_cleanup_ticker = interval(orphan_cleanup_config.cleanup_interval());
+            // Clean up stale leases from crashed instances every 30 seconds
+            let mut lease_expiry_ticker = interval(Duration::from_secs(30));
 
             loop {
                 tokio::select! {
                     _ = compaction_ticker.tick() => {
                         log::debug!("Running compaction planning cycle");
 
-                        match planner.plan().await {
+                        match scheduler.schedule().await {
                             Ok(candidates) => {
                                 if candidates.is_empty() {
                                     log::info!("No compaction candidates found in this cycle");
                                 } else {
-                                    log::info!("Found {} compaction candidates:", candidates.len());
+                                    log::info!("Found {} compaction candidates (scheduler: round-robin):", candidates.len());
 
-                                    // Execute compaction for each candidate
+                                    // Execute compaction for each candidate, guarded by a distributed lease
                                     for candidate in candidates {
                                         candidate.log();
 
-                                        log::info!(
-                                            "Executing compaction for {}/{}/{} partition {}",
-                                            candidate.tenant_id,
-                                            candidate.dataset_id,
-                                            candidate.table_name,
-                                            candidate.partition_id
-                                        );
-
-                                        match executor.execute_candidate(candidate).await {
-                                            Ok(result) => {
-                                                log::info!(
-                                                    "Compaction job {} completed with status: {:?}",
-                                                    result.job_id,
-                                                    result.status
+                                        // Attempt to acquire a lease; skip if another instance holds it
+                                        match lease_manager.try_acquire_default(&candidate).await {
+                                            Ok(None) => {
+                                                log::debug!(
+                                                    "Skipping {}/{}/{} partition {} — lease held by another instance",
+                                                    candidate.tenant_id,
+                                                    candidate.dataset_id,
+                                                    candidate.table_name,
+                                                    candidate.partition_id
                                                 );
-
-                                                if let Some(error) = result.error {
-                                                    log::error!("Job {} error: {}", result.job_id, error);
-                                                } else {
-                                                    log::info!(
-                                                        "Job {}: {} files → {} files, {} bytes → {} bytes, duration={:?}",
-                                                        result.job_id,
-                                                        result.input_files_count,
-                                                        result.output_files_count,
-                                                        result.bytes_before,
-                                                        result.bytes_after,
-                                                        result.duration
-                                                    );
-                                                }
+                                                continue;
                                             }
                                             Err(e) => {
-                                                log::error!("Failed to execute compaction: {e:?}");
+                                                log::warn!(
+                                                    "Lease acquisition failed for {}/{}/{} partition {}: {e:#}",
+                                                    candidate.tenant_id,
+                                                    candidate.dataset_id,
+                                                    candidate.table_name,
+                                                    candidate.partition_id
+                                                );
+                                                continue;
+                                            }
+                                            Ok(Some(lease)) => {
+                                                log::info!(
+                                                    "Executing compaction for {}/{}/{} partition {}",
+                                                    candidate.tenant_id,
+                                                    candidate.dataset_id,
+                                                    candidate.table_name,
+                                                    candidate.partition_id
+                                                );
+
+                                                match executor.execute_candidate(candidate).await {
+                                                    Ok(result) => {
+                                                        log::info!(
+                                                            "Compaction job {} completed with status: {:?}",
+                                                            result.job_id,
+                                                            result.status
+                                                        );
+
+                                                        if let Some(error) = result.error {
+                                                            log::error!("Job {} error: {}", result.job_id, error);
+                                                        } else {
+                                                            log::info!(
+                                                                "Job {}: {} files → {} files, {} bytes → {} bytes, duration={:?}",
+                                                                result.job_id,
+                                                                result.input_files_count,
+                                                                result.output_files_count,
+                                                                result.bytes_before,
+                                                                result.bytes_after,
+                                                                result.duration
+                                                            );
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        log::error!("Failed to execute compaction: {e:?}");
+                                                    }
+                                                }
+
+                                                // Release the lease regardless of job outcome
+                                                if let Err(e) = lease_manager.release(&lease).await {
+                                                    log::warn!("Failed to release lease: {e:#}");
+                                                }
                                             }
                                         }
                                     }
@@ -248,7 +314,19 @@ async fn main() -> Result<()> {
                                 }
                             }
                             Err(e) => {
-                                log::error!("Compaction planning cycle failed: {e:?}");
+                                log::error!("Compaction scheduling cycle failed: {e:?}");
+                            }
+                        }
+                    }
+
+                    _ = lease_expiry_ticker.tick() => {
+                        match lease_manager.expire_stale().await {
+                            Ok(count) if count > 0 => {
+                                log::info!("Expired {count} stale compaction lease(s) from crashed instances");
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                log::warn!("Stale lease cleanup failed: {e:#}");
                             }
                         }
                     }
