@@ -12,6 +12,7 @@
 
 use crate::iceberg::ManifestReader;
 use crate::orphan::config::OrphanCleanupConfig;
+use crate::orphan::metrics::{OrphanMetrics, SkipReason};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use common::catalog_manager::CatalogManager;
@@ -54,6 +55,7 @@ pub struct OrphanDetector {
     catalog_manager: Arc<CatalogManager>,
     object_store: Arc<dyn ObjectStore>,
     manifest_reader: ManifestReader,
+    metrics: OrphanMetrics,
 }
 
 impl OrphanDetector {
@@ -69,7 +71,13 @@ impl OrphanDetector {
             catalog_manager,
             object_store,
             manifest_reader,
+            metrics: OrphanMetrics::new(),
         }
+    }
+
+    /// Return a reference to the accumulated metrics for this detector.
+    pub fn metrics(&self) -> &OrphanMetrics {
+        &self.metrics
     }
 
     /// Identify orphan candidates for a specific table.
@@ -210,10 +218,13 @@ impl OrphanDetector {
                     table_name = %table_name,
                     estimated_live_files,
                     threshold = self.config.max_live_files_threshold,
+                    skip_reason = SkipReason::LiveFilesThresholdExceeded.as_str(),
                     "Skipping orphan cleanup: estimated live file count exceeds threshold. \
                      Run snapshot expiration first to reduce file counts, or raise \
                      max_live_files_threshold if memory allows."
                 );
+                self.metrics
+                    .record_cleanup_skipped(SkipReason::LiveFilesThresholdExceeded);
                 return Ok(None);
             }
         }
