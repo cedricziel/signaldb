@@ -159,7 +159,7 @@ rdkafka = { version = "0.36", features = ["tokio"] }
 criterion = { version = "0.8", features = ["html_reports", "async_tokio"] }
 
 chrono = { version = "0.4", features = ["serde"] }
-sysinfo = "0.35"
+sysinfo = "0.38"
 sqlx = { version = "0.8", default-features = false, features = [
     "postgres",
     "sqlite",
