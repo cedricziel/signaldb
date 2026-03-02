@@ -39,8 +39,8 @@ importers:
         specifier: ^9.0.0
         version: 9.0.0(@stylistic/eslint-plugin-ts@2.13.0(eslint@9.39.2)(typescript@5.9.3))(@typescript-eslint/eslint-plugin@8.54.0(@typescript-eslint/parser@8.54.0(eslint@9.39.2)(typescript@5.9.3))(eslint@9.39.2)(typescript@5.9.3))(@typescript-eslint/parser@8.54.0(eslint@9.39.2)(typescript@5.9.3))(eslint-config-prettier@10.1.8(eslint@9.39.2))(eslint-plugin-jsdoc@62.5.1(eslint@9.39.2))(eslint-plugin-react-hooks@7.0.1(eslint@9.39.2))(eslint-plugin-react@7.37.5(eslint@9.39.2))(eslint@9.39.2)(typescript@5.9.3)
       '@grafana/plugin-e2e':
-        specifier: ^2.2.0
-        version: 2.2.3(@playwright/test@1.58.2)
+        specifier: ^3.4.0
+        version: 3.4.0(@axe-core/playwright@4.11.1(playwright-core@1.58.2))(@playwright/test@1.58.2)(axe-core@4.11.1)
       '@grafana/tsconfig':
         specifier: ^2.0.0
         version: 2.0.1
@@ -178,6 +178,11 @@ packages:
 
   '@asamuzakjp/css-color@3.2.0':
     resolution: {integrity: sha512-K1A6z8tS3XsmCMM86xoWdn7Fkdn9m6RSVtocUrJYIwZnFVkng/PvkEoWtOWmP+Scc6saYWHWZYbndEEXxl24jw==}
+
+  '@axe-core/playwright@4.11.1':
+    resolution: {integrity: sha512-mKEfoUIB1MkVTht0BGZFXtSAEKXMJoDkyV5YZ9jbBmZCcWDz71tegNsdTkIN8zc/yMi5Gm2kx7Z5YQ9PfWNAWw==}
+    peerDependencies:
+      playwright-core: '>= 1.0.0'
 
   '@babel/code-frame@7.28.6':
     resolution: {integrity: sha512-JYgintcMjRiCvS8mMECzaEn+m3PfoQiyqukOMCCVQtoJGYJw8j/8LBJEiqkHLkfwCcs74E3pbAUFNg7d9VNJ+Q==}
@@ -535,11 +540,11 @@ packages:
       react: ^18.0.0
       react-dom: ^18.0.0
 
-  '@grafana/e2e-selectors@12.3.1':
-    resolution: {integrity: sha512-65riVBmMDMIqndLL/dQcmVP/Jujn5nkTs9IbE5+nTjEniqLopWXlkz1OGt7k/Q32PRVmzNKJbFvNqp4msGWK7Q==}
-
   '@grafana/e2e-selectors@12.4.0':
     resolution: {integrity: sha512-GPFmqIJJD8yom7ld4NxAFW2kFTqiOta/8KlsqDoasiNIWjwPp2fn3ILTuZ97a+W0D7Z1LJ9QKznFXOAhKpFRJQ==}
+
+  '@grafana/e2e-selectors@12.4.0-21983999378':
+    resolution: {integrity: sha512-Y0rZOywbGlcITX40Xp5SsydvX7qbNiDuUJwtsniL9ToHIZrBQsS24hHrKtHUpv1JJvQoH15MaqM+HPVevdPf7w==}
 
   '@grafana/eslint-config@9.0.0':
     resolution: {integrity: sha512-Jw7/kyO29iNKiHrDwsVwP3/YSNdYCt8ofCgSFNfcYQeK7+Z3zn1RrMBXWohVQ47OuwjXr6AUqo5ReQBCPq6Fzw==}
@@ -565,11 +570,13 @@ packages:
     peerDependencies:
       react: '>=18'
 
-  '@grafana/plugin-e2e@2.2.3':
-    resolution: {integrity: sha512-32EHUKOPOs8E+moMewuiDWuvGLOgYdT5ykvziIUrMrl+b5qMmmY4h81D0vLAAL5IiayRFugLpsfo8CB/T7hsBg==}
-    engines: {node: '>=18 <=22'}
+  '@grafana/plugin-e2e@3.4.0':
+    resolution: {integrity: sha512-UmYu0Xwlajkghcjddb5Ip7mFC3m2TlnuXtlfUUS7dBxEJMuSwm2Iq0XjvN0vihMbdlVnkRx4BL7kQ0MbkTVYBQ==}
+    engines: {node: '>=20 <=24'}
     peerDependencies:
+      '@axe-core/playwright': ^4.11.1
       '@playwright/test': ^1.52.0
+      axe-core: ^4.11.1
 
   '@grafana/runtime@12.4.0':
     resolution: {integrity: sha512-e03r1dsy671sEe+bEbMyBQFx0ijBJZIIyZPTEVeEJ+1XeAAkPafov0uV+w3nr+11/WqMU40ZQgjNxvgnNUGkBw==}
@@ -1904,6 +1911,10 @@ packages:
   available-typed-arrays@1.0.7:
     resolution: {integrity: sha512-wvUjBtSGN7+7SjNpq/9M2Tg350UZD3q62IFZLbRAR1bSMlCo1ZaeW+BJ+D090e4hIIZLBcTDWe4Mh4jvUDajzQ==}
     engines: {node: '>= 0.4'}
+
+  axe-core@4.11.1:
+    resolution: {integrity: sha512-BASOg+YwO2C+346x3LZOeoovTIoTrRqEsqMa6fmfAV0P+U9mFr9NsyOEpiYvFjbc64NMrSswhV50WdXzdb/Z5A==}
+    engines: {node: '>=4'}
 
   babel-jest@30.2.0:
     resolution: {integrity: sha512-0YiBEOxWqKkSQWL9nNGGEgndoeL0ZpWrbLMNL5u/Kaxrli3Eaxlt3ZtIDktEvXt4L/R9r3ODr2zKwGM/2BjxVw==}
@@ -4958,6 +4969,11 @@ snapshots:
       '@csstools/css-tokenizer': 3.0.4
       lru-cache: 10.4.3
 
+  '@axe-core/playwright@4.11.1(playwright-core@1.58.2)':
+    dependencies:
+      axe-core: 4.11.1
+      playwright-core: 1.58.2
+
   '@babel/code-frame@7.28.6':
     dependencies:
       '@babel/helper-validator-identifier': 7.28.5
@@ -5425,13 +5441,13 @@ snapshots:
       - supports-color
       - typescript
 
-  '@grafana/e2e-selectors@12.3.1':
+  '@grafana/e2e-selectors@12.4.0':
     dependencies:
       semver: 7.7.4
       tslib: 2.8.1
       typescript: 5.9.2
 
-  '@grafana/e2e-selectors@12.4.0':
+  '@grafana/e2e-selectors@12.4.0-21983999378':
     dependencies:
       semver: 7.7.4
       tslib: 2.8.1
@@ -5478,10 +5494,12 @@ snapshots:
       - supports-color
       - typescript
 
-  '@grafana/plugin-e2e@2.2.3(@playwright/test@1.58.2)':
+  '@grafana/plugin-e2e@3.4.0(@axe-core/playwright@4.11.1(playwright-core@1.58.2))(@playwright/test@1.58.2)(axe-core@4.11.1)':
     dependencies:
-      '@grafana/e2e-selectors': 12.3.1
+      '@axe-core/playwright': 4.11.1(playwright-core@1.58.2)
+      '@grafana/e2e-selectors': 12.4.0-21983999378
       '@playwright/test': 1.58.2
+      axe-core: 4.11.1
       semver: 7.7.4
       uuid: 13.0.0
       yaml: 2.8.2
@@ -7106,6 +7124,8 @@ snapshots:
   available-typed-arrays@1.0.7:
     dependencies:
       possible-typed-array-names: 1.1.0
+
+  axe-core@4.11.1: {}
 
   babel-jest@30.2.0(@babel/core@7.28.6):
     dependencies:
