@@ -1,6 +1,6 @@
 {
   "name": "signaldb-datasource",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "scripts": {
     "build": "npm run build:frontend && npm run build:backend",
     "build:frontend": "webpack -c ./.config/webpack/webpack.config.ts --env production",
