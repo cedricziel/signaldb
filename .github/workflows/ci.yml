@@ -226,7 +226,7 @@ jobs:
             type=ref,event=pr,suffix=-amd64
 
       - name: Build and optionally push image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
@@ -269,7 +269,7 @@ jobs:
             type=ref,event=branch,suffix=-arm64
 
       - name: Build and push image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
