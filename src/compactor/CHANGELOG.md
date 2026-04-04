@@ -5,6 +5,17 @@ All notable changes to the SignalDB Compactor Service will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.0 (2026-03-02)
+
+
+### Features
+
+* **compactor:** enable compaction for all table types ([#466](https://github.com/cedricziel/signaldb/issues/466)) ([55ab128](https://github.com/cedricziel/signaldb/commit/55ab12825f26c3d45c8c61859940f082421ffa98))
+* **compactor:** Phase 1 - Dry-run compaction planner ([#462](https://github.com/cedricziel/signaldb/issues/462)) ([a0ad75f](https://github.com/cedricziel/signaldb/commit/a0ad75f5478be94786d77e732a1b8db319ae8650))
+* **compactor:** Phase 2 - Compaction Execution Engine ([#465](https://github.com/cedricziel/signaldb/issues/465)) ([e58271d](https://github.com/cedricziel/signaldb/commit/e58271d0d14f495290da4abe3d4ff3b9c185082b))
+* **compactor:** Phase 3 - Retention & Lifecycle Management ([#467](https://github.com/cedricziel/signaldb/issues/467)) ([28acc8d](https://github.com/cedricziel/signaldb/commit/28acc8d215f029fe0b81dcd9b916f29ccdea60d6))
+* **compactor:** Phase 4 — multi-instance safety (leases, round-robin, Flight endpoints) ([e9acbc2](https://github.com/cedricziel/signaldb/commit/e9acbc28ac75898fc1d9bd4fd866665b0ea076a5))
+
 ## [Unreleased]
 
 ## [0.3.0] - 2026-02-09
