@@ -3,7 +3,8 @@
 //! Coordinates the compaction process: reading manifests, merging files,
 //! writing output, and committing changes atomically.
 
-use crate::commit::{DataFileChange, IcebergCommitter, is_conflict_error};
+use crate::commit::{IcebergCommitter, is_conflict_error};
+use crate::iceberg::ManifestReader;
 use crate::metrics::CompactionMetrics;
 use crate::planner::{CompactionCandidate, PlannerConfig};
 use crate::rewriter::ParquetRewriter;
@@ -12,6 +13,7 @@ use common::CatalogManager;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tracing::Instrument;
 
 /// Information about a data file for compaction
 #[derive(Debug, Clone)]
@@ -87,7 +89,6 @@ impl From<&PlannerConfig> for ExecutorConfig {
 
 /// Orchestrates compaction job execution
 pub struct CompactionExecutor {
-    catalog_manager: Arc<CatalogManager>,
     committer: IcebergCommitter,
     rewriter: ParquetRewriter,
     metrics: CompactionMetrics,
@@ -102,10 +103,9 @@ impl CompactionExecutor {
         metrics: CompactionMetrics,
     ) -> Self {
         let committer = IcebergCommitter::new(catalog_manager.clone());
-        let rewriter = ParquetRewriter::new(catalog_manager.clone());
+        let rewriter = ParquetRewriter::new(catalog_manager);
 
         Self {
-            catalog_manager,
             committer,
             rewriter,
             metrics,
@@ -118,16 +118,28 @@ impl CompactionExecutor {
         &self,
         candidate: CompactionCandidate,
     ) -> Result<CompactionResult> {
-        // Create a compaction job from the candidate
-        let job = self.create_job(candidate).await?;
+        let span = tracing::info_span!(
+            "compaction_job",
+            tenant_id = %candidate.tenant_id,
+            dataset_id = %candidate.dataset_id,
+            table = %candidate.table_name,
+            partition = %candidate.partition_id,
+        );
 
-        // Execute the job with retry logic
-        self.execute_job_with_retry(job).await
+        async {
+            // Create a compaction job from the candidate
+            let job = self.create_job(candidate).await?;
+
+            // Execute the job with retry logic
+            self.execute_job_with_retry(job).await
+        }
+        .instrument(span)
+        .await
     }
 
     /// Create a compaction job from a candidate
     async fn create_job(&self, candidate: CompactionCandidate) -> Result<CompactionJob> {
-        log::debug!(
+        tracing::debug!(
             "Creating compaction job for {}/{}/{} partition {}",
             candidate.tenant_id,
             candidate.dataset_id,
@@ -138,10 +150,9 @@ impl CompactionExecutor {
         // Generate a unique job ID
         let job_id = uuid::Uuid::new_v4().to_string();
 
-        // For Phase 2, we'll use a simplified approach where input_files
-        // are derived from the candidate's partition stats.
-        // The actual file list will be read from manifests during execution.
-        let input_files = vec![]; // Will be populated during execution
+        // The real input file list is read from the snapshot's manifests
+        // during execution; the candidate only carries planner estimates.
+        let input_files = vec![];
 
         let job = CompactionJob {
             job_id,
@@ -155,7 +166,7 @@ impl CompactionExecutor {
             created_at: Instant::now(),
         };
 
-        log::info!(
+        tracing::info!(
             "Created compaction job {} for table {}/{}/{}",
             job.job_id,
             job.tenant_id,
@@ -172,7 +183,7 @@ impl CompactionExecutor {
         self.metrics.record_job_start();
 
         for attempt in 1..=self.config.max_retries {
-            log::debug!(
+            tracing::debug!(
                 "Executing compaction job {} (attempt {}/{})",
                 job_id,
                 attempt,
@@ -182,7 +193,7 @@ impl CompactionExecutor {
             match self.execute_job(&job).await {
                 Ok(result) => {
                     if attempt > 1 {
-                        log::info!(
+                        tracing::info!(
                             "Compaction job {} succeeded after {} attempts",
                             job_id,
                             attempt
@@ -210,7 +221,7 @@ impl CompactionExecutor {
                             let delay_ms = self.config.base_delay_ms * 2_u64.pow(attempt - 1);
                             let delay = Duration::from_millis(delay_ms);
 
-                            log::warn!(
+                            tracing::warn!(
                                 "Conflict detected for job {} (attempt {}/{}), retrying after {:?}",
                                 job_id,
                                 attempt,
@@ -222,7 +233,7 @@ impl CompactionExecutor {
                             tokio::time::sleep(delay).await;
                             continue;
                         } else {
-                            log::error!(
+                            tracing::error!(
                                 "Job {} failed after {} conflict retry attempts",
                                 job_id,
                                 self.config.max_retries
@@ -243,7 +254,7 @@ impl CompactionExecutor {
                         }
                     } else {
                         // Non-conflict error, fail immediately
-                        log::error!("Job {} failed with non-conflict error: {}", job_id, e);
+                        tracing::error!("Job {} failed with non-conflict error: {}", job_id, e);
 
                         self.metrics.record_job_failure();
 
@@ -280,7 +291,7 @@ impl CompactionExecutor {
     async fn execute_job(&self, job: &CompactionJob) -> Result<CompactionResult> {
         let start_time = Instant::now();
 
-        log::info!(
+        tracing::info!(
             "Starting compaction job {}: table={}/{}/{}, partition={}",
             job.job_id,
             job.tenant_id,
@@ -289,128 +300,131 @@ impl CompactionExecutor {
             job.partition_id
         );
 
-        // Step 1: Get the current snapshot ID before we start
-        let table_identifier = self.catalog_manager.build_table_identifier(
-            &job.tenant_id,
-            &job.dataset_id,
-            &job.table_name,
-        );
-
-        let catalog = self.catalog_manager.catalog();
-        let table = catalog
-            .load_tabular(&table_identifier)
+        // Step 1: Load the table with fresh metadata and pin the snapshot.
+        // All reads below use this pinned table handle, so the rewrite sees a
+        // consistent snapshot even if concurrent writes land meanwhile; the
+        // commit detects such writes as conflicts and the job retries.
+        let table = self
+            .rewriter
+            .load_fresh_table(&job.tenant_id, &job.dataset_id, &job.table_name)
             .await
-            .with_context(|| {
-                format!(
-                    "Failed to load table {}/{}/{}",
-                    job.tenant_id, job.dataset_id, job.table_name
-                )
-            })?;
-
-        let table = match table {
-            iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "Expected table but got view for {}/{}/{}",
-                    job.tenant_id,
-                    job.dataset_id,
-                    job.table_name
-                ));
-            }
-        };
+            .context("Failed to load table for compaction")?;
 
         let original_snapshot_id = table.metadata().current_snapshot_id;
 
-        log::debug!(
+        tracing::debug!(
             "Job {}: Original snapshot ID: {:?}",
             job.job_id,
             original_snapshot_id
         );
 
-        // Step 2: Read and merge files using the rewriter
-        // For Phase 2, we'll use a simplified approach
-        // where we assume the input files are already known
-        let (output_files, input_size, output_size) = self
-            .rewriter
-            .compact_partition(
-                &job.tenant_id,
-                &job.dataset_id,
-                &job.table_name,
-                &job.partition_id,
-                job.target_file_size_bytes,
-            )
+        // Step 2: Read the real input file set from the snapshot's manifests.
+        let manifest_reader = ManifestReader::new();
+        let input_files = manifest_reader
+            .get_snapshot_files(&table)
             .await
-            .context("Failed to compact partition")?;
+            .context("Failed to read input file list from manifests")?;
 
-        log::debug!(
-            "Job {}: Compacted {} input bytes into {} output bytes ({} files)",
+        if input_files.len() <= 1 {
+            tracing::info!(
+                "Job {}: table {}/{}/{} has {} live data file(s), nothing to compact",
+                job.job_id,
+                job.tenant_id,
+                job.dataset_id,
+                job.table_name,
+                input_files.len()
+            );
+            return Ok(CompactionResult {
+                job_id: job.job_id.clone(),
+                status: CompactionStatus::Success,
+                input_files_count: input_files.len(),
+                output_files_count: input_files.len(),
+                bytes_before: 0,
+                bytes_after: 0,
+                duration: start_time.elapsed(),
+                error: None,
+            });
+        }
+
+        let input_size: u64 = input_files.iter().map(|f| f.file_size_bytes).sum();
+        let input_rows: u64 = input_files.iter().map(|f| f.record_count).sum();
+
+        // Step 3: Read, merge, sort, and write new compacted files.
+        let outcome = match self
+            .rewriter
+            .rewrite_table(&table, job.target_file_size_bytes)
+            .await
+            .context("Failed to rewrite table data")?
+        {
+            Some(outcome) => outcome,
+            None => {
+                return Ok(CompactionResult {
+                    job_id: job.job_id.clone(),
+                    status: CompactionStatus::Success,
+                    input_files_count: input_files.len(),
+                    output_files_count: 0,
+                    bytes_before: 0,
+                    bytes_after: 0,
+                    duration: start_time.elapsed(),
+                    error: None,
+                });
+            }
+        };
+
+        // Defense in depth: the rewritten files must account for every row
+        // the manifests said was live. Abort before committing otherwise.
+        anyhow::ensure!(
+            outcome.rows_written == input_rows,
+            "Compaction row count mismatch for {}/{}/{}: manifests report {} live rows but rewrite produced {}",
+            job.tenant_id,
+            job.dataset_id,
+            job.table_name,
+            input_rows,
+            outcome.rows_written
+        );
+
+        tracing::debug!(
+            "Job {}: Rewrote {} input files ({} bytes) into {} output files ({} bytes)",
             job.job_id,
+            input_files.len(),
             input_size,
-            output_size,
-            output_files.len()
+            outcome.new_files.len(),
+            outcome.output_size_bytes
         );
 
-        // Step 3: Commit the changes atomically
-        let new_files: Vec<DataFileChange> = output_files
-            .iter()
-            .map(|f| DataFileChange {
-                file_path: f.clone(),
-                size_bytes: 0, // Actual size will be tracked by Iceberg
-                record_count: 0,
-            })
-            .collect();
-
-        // Phase 2 limitation: We don't populate old_files because we lack manifest reading
-        //
-        // WARNING: This means old files are NOT removed from the Iceberg snapshot,
-        // which has data correctness implications:
-        // - Query engines will continue to read the old (uncompacted) files
-        // - Storage is not reclaimed
-        // - Compaction provides no benefit
-        //
-        // TODO(Phase 3): Implement manifest reading in planner to:
-        // 1. Get actual list of files in the partition being compacted
-        // 2. Track which files were read during compaction
-        // 3. Pass those file paths here as old_files to be removed
-        // 4. This enables proper file replacement: add new, remove old
-        //
-        // For Phase 2 testing, this limitation is acceptable to validate the
-        // overall execution flow, but Phase 3 must address this for production use.
-        let old_files = vec![];
-
-        log::warn!(
-            "Phase 2 limitation: old_files not populated - compacted files will not be removed from snapshot. \
-             This is expected for Phase 2 testing but must be fixed in Phase 3."
-        );
-
+        // Step 4: Commit atomically — the new files replace all previous data
+        // files in a single snapshot; old files become orphans handled by the
+        // orphan cleanup cycle after snapshot expiration.
+        let output_files_count = outcome.new_files.len();
+        let output_size = outcome.output_size_bytes;
         self.committer
             .commit_compaction(
                 &job.tenant_id,
                 &job.dataset_id,
                 &job.table_name,
                 original_snapshot_id,
-                new_files,
-                old_files,
+                outcome.new_files,
             )
             .await
             .context("Failed to commit compaction")?;
 
         let duration = start_time.elapsed();
 
-        log::info!(
-            "Compaction job {} completed: {} input bytes → {} output bytes ({} files), duration={:?}",
+        tracing::info!(
+            "Compaction job {} completed: {} files ({} bytes) → {} files ({} bytes), duration={:?}",
             job.job_id,
+            input_files.len(),
             input_size,
+            output_files_count,
             output_size,
-            output_files.len(),
             duration
         );
 
         Ok(CompactionResult {
             job_id: job.job_id.clone(),
             status: CompactionStatus::Success,
-            input_files_count: job.input_files_count,
-            output_files_count: output_files.len(),
+            input_files_count: input_files.len(),
+            output_files_count,
             bytes_before: input_size,
             bytes_after: output_size,
             duration,
