@@ -66,8 +66,11 @@ async fn main() -> Result<()> {
     utils::init_logging(&cli.common, telemetry.as_ref());
     if let Some(e) = telemetry_error {
         log::warn!("Self-monitoring init failed, continuing without it: {e}");
-    } else if telemetry.is_some() {
-        log::info!("Self-monitoring telemetry initialized");
+    } else if let Some(ref t) = telemetry {
+        log::info!(
+            "Self-monitoring telemetry initialized (sampler: {})",
+            t.sampler_description()
+        );
     }
     let _telemetry = telemetry;
 

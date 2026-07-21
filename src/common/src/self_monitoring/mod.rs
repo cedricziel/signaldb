@@ -29,12 +29,19 @@ pub struct Telemetry {
     tracer_provider: SdkTracerProvider,
     logger_provider: SdkLoggerProvider,
     meter_provider: SdkMeterProvider,
+    sampler_description: String,
     _metrics_handle: metrics::MetricsHandle,
 }
 
 impl Telemetry {
     pub fn tracer_provider(&self) -> &SdkTracerProvider {
         &self.tracer_provider
+    }
+
+    /// Human-readable description of the active trace sampler, for startup
+    /// logging.
+    pub fn sampler_description(&self) -> &str {
+        &self.sampler_description
     }
 
     pub fn logger_provider(&self) -> &SdkLoggerProvider {
@@ -113,8 +120,15 @@ pub fn init_telemetry(config: &Configuration, service_name: &str) -> Result<Opti
         .with_metadata(metadata.clone())
         .build()
         .context("Failed to build span exporter")?;
+    let sampler = resolve_trace_sampler(
+        config.self_monitoring.trace_sample_ratio,
+        std::env::var("OTEL_TRACES_SAMPLER").ok(),
+        std::env::var("OTEL_TRACES_SAMPLER_ARG").ok(),
+    );
+    let sampler_description = format!("{sampler:?}");
     let tracer_provider = SdkTracerProvider::builder()
         .with_resource(resource.clone())
+        .with_sampler(sampler)
         .with_batch_exporter(span_exporter)
         .build();
 
@@ -156,8 +170,44 @@ pub fn init_telemetry(config: &Configuration, service_name: &str) -> Result<Opti
         tracer_provider,
         logger_provider,
         meter_provider,
+        sampler_description,
         _metrics_handle: metrics_handle,
     }))
+}
+
+/// Resolve the trace sampler from config and the standard OTel environment
+/// variables (`OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG`), which take
+/// precedence over `self_monitoring.trace_sample_ratio`.
+fn resolve_trace_sampler(
+    config_ratio: f64,
+    sampler_env: Option<String>,
+    sampler_arg_env: Option<String>,
+) -> opentelemetry_sdk::trace::Sampler {
+    use opentelemetry_sdk::trace::Sampler;
+
+    let ratio = sampler_arg_env
+        .as_deref()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(config_ratio)
+        .clamp(0.0, 1.0);
+
+    match sampler_env.as_deref() {
+        Some("always_on") => Sampler::AlwaysOn,
+        Some("always_off") => Sampler::AlwaysOff,
+        Some("parentbased_always_on") => Sampler::ParentBased(Box::new(Sampler::AlwaysOn)),
+        Some("parentbased_always_off") => Sampler::ParentBased(Box::new(Sampler::AlwaysOff)),
+        Some("parentbased_traceidratio") => {
+            Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(ratio)))
+        }
+        Some("traceidratio") | None => Sampler::TraceIdRatioBased(ratio),
+        Some(other) => {
+            tracing::warn!(
+                sampler = %other,
+                "Unsupported OTEL_TRACES_SAMPLER value; falling back to traceidratio"
+            );
+            Sampler::TraceIdRatioBased(ratio)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -180,6 +230,53 @@ mod tests {
         assert_eq!(sm.tenant_id, "_system");
         assert_eq!(sm.dataset_id, "_monitoring");
         assert_eq!(sm.interval, std::time::Duration::from_secs(60));
+        assert_eq!(sm.trace_sample_ratio, 0.1);
+    }
+
+    #[test]
+    fn sampler_defaults_to_config_ratio() {
+        let sampler = resolve_trace_sampler(0.1, None, None);
+        assert_eq!(format!("{sampler:?}"), "TraceIdRatioBased(0.1)");
+    }
+
+    #[test]
+    fn sampler_arg_env_overrides_config_ratio() {
+        let sampler = resolve_trace_sampler(0.1, Some("traceidratio".into()), Some("0.2".into()));
+        assert_eq!(format!("{sampler:?}"), "TraceIdRatioBased(0.2)");
+
+        // arg applies even when only the arg env is set
+        let sampler = resolve_trace_sampler(0.1, None, Some("0.5".into()));
+        assert_eq!(format!("{sampler:?}"), "TraceIdRatioBased(0.5)");
+    }
+
+    #[test]
+    fn sampler_env_selects_always_on_off() {
+        let on = resolve_trace_sampler(0.1, Some("always_on".into()), None);
+        assert_eq!(format!("{on:?}"), "AlwaysOn");
+        let off = resolve_trace_sampler(0.1, Some("always_off".into()), Some("0.9".into()));
+        assert_eq!(format!("{off:?}"), "AlwaysOff");
+    }
+
+    #[test]
+    fn sampler_env_parent_based_variants() {
+        let s = resolve_trace_sampler(
+            0.1,
+            Some("parentbased_traceidratio".into()),
+            Some("0.3".into()),
+        );
+        assert_eq!(format!("{s:?}"), "ParentBased(TraceIdRatioBased(0.3))");
+        let s = resolve_trace_sampler(0.1, Some("parentbased_always_on".into()), None);
+        assert_eq!(format!("{s:?}"), "ParentBased(AlwaysOn)");
+    }
+
+    #[test]
+    fn sampler_ratio_is_clamped_and_bad_values_fall_back() {
+        let s = resolve_trace_sampler(5.0, None, None);
+        assert_eq!(format!("{s:?}"), "TraceIdRatioBased(1.0)");
+        let s = resolve_trace_sampler(0.1, None, Some("not-a-number".into()));
+        assert_eq!(format!("{s:?}"), "TraceIdRatioBased(0.1)");
+        let s = resolve_trace_sampler(0.1, Some("bogus".into()), None);
+        assert_eq!(format!("{s:?}"), "TraceIdRatioBased(0.1)");
     }
 
     #[tokio::test]

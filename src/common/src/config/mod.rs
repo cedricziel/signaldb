@@ -542,6 +542,10 @@ fn default_self_monitoring_dataset() -> String {
     "_monitoring".to_string()
 }
 
+fn default_trace_sample_ratio() -> f64 {
+    0.1
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SelfMonitoringConfig {
     #[serde(default)]
@@ -554,6 +558,12 @@ pub struct SelfMonitoringConfig {
     pub tenant_id: String,
     #[serde(default = "default_self_monitoring_dataset")]
     pub dataset_id: String,
+    /// Fraction of self-monitoring traces to sample (0.0 to 1.0).
+    ///
+    /// Overridden by the standard OTel env vars `OTEL_TRACES_SAMPLER` /
+    /// `OTEL_TRACES_SAMPLER_ARG` when set.
+    #[serde(default = "default_trace_sample_ratio")]
+    pub trace_sample_ratio: f64,
 }
 
 impl Default for SelfMonitoringConfig {
@@ -564,6 +574,7 @@ impl Default for SelfMonitoringConfig {
             interval: default_self_monitoring_interval(),
             tenant_id: default_self_monitoring_tenant(),
             dataset_id: default_self_monitoring_dataset(),
+            trace_sample_ratio: default_trace_sample_ratio(),
         }
     }
 }
@@ -1064,6 +1075,16 @@ mod tests {
         assert!(!config.is_tenant_enabled("disabled-tenant"));
         // Default tenant should still be enabled
         assert!(config.is_tenant_enabled("default"));
+    }
+
+    #[test]
+    fn trace_sample_ratio_env_override() {
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB__SELF_MONITORING__TRACE_SAMPLE_RATIO", "0.5");
+            let config = Configuration::load().expect("load config");
+            assert_eq!(config.self_monitoring.trace_sample_ratio, 0.5);
+            Ok(())
+        });
     }
 
     #[test]
