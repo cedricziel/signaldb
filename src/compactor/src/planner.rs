@@ -44,7 +44,7 @@ fn format_mb(bytes: u64) -> String {
 impl CompactionCandidate {
     /// Log this compaction candidate
     pub fn log(&self) {
-        log::info!(
+        tracing::info!(
             "Compaction candidate: tenant={}, dataset={}, table={}, partition={}, files={}, total_size={} MB, avg_size={} MB",
             self.tenant_id,
             self.dataset_id,
@@ -101,23 +101,23 @@ impl CompactionPlanner {
     /// Phase 1: Returns empty list as this is dry-run only
     /// Phase 2: Will implement actual table scanning and analysis
     pub async fn plan(&self) -> Result<Vec<CompactionCandidate>> {
-        log::debug!("Starting compaction planning cycle (Phase 1: dry-run)");
+        tracing::debug!("Starting compaction planning cycle (Phase 1: dry-run)");
 
         let mut candidates = vec![];
 
         // Get enabled tenants from configuration
         let tenants = self.catalog_manager.get_enabled_tenants();
 
-        log::debug!("Found {} enabled tenants to analyze", tenants.len());
+        tracing::debug!("Found {} enabled tenants to analyze", tenants.len());
 
         for tenant_config in tenants {
             let tenant_id = &tenant_config.id;
-            log::debug!("Analyzing tenant: {tenant_id}");
+            tracing::debug!("Analyzing tenant: {tenant_id}");
 
             // Iterate through datasets for this tenant
             for dataset_config in &tenant_config.datasets {
                 let dataset_id = &dataset_config.id;
-                log::debug!("  Analyzing dataset: {dataset_id}");
+                tracing::debug!("  Analyzing dataset: {dataset_id}");
 
                 // Analyze this dataset (non-fatal: log errors and continue)
                 match self.analyze_dataset(tenant_id, dataset_id).await {
@@ -125,7 +125,7 @@ impl CompactionPlanner {
                         candidates.extend(dataset_candidates);
                     }
                     Err(e) => {
-                        log::warn!(
+                        tracing::warn!(
                             "Failed to analyze dataset {tenant_id}/{dataset_id}: {e:?}. Continuing with other datasets."
                         );
                     }
@@ -133,7 +133,7 @@ impl CompactionPlanner {
             }
         }
 
-        log::debug!(
+        tracing::debug!(
             "Planning cycle complete: found {} candidates",
             candidates.len()
         );
@@ -165,7 +165,7 @@ impl CompactionPlanner {
             .await
             .context("Failed to list tables")?;
 
-        log::debug!(
+        tracing::debug!(
             "    Found {} tables in {}/{}",
             table_identifiers.len(),
             tenant_id,
@@ -174,7 +174,7 @@ impl CompactionPlanner {
 
         for identifier in table_identifiers {
             let table_name = identifier.name();
-            log::debug!("      Analyzing table: {table_name}");
+            tracing::debug!("      Analyzing table: {table_name}");
 
             // Analyze this table (non-fatal: log errors and continue)
             match self.analyze_table(tenant_id, dataset_id, table_name).await {
@@ -182,7 +182,7 @@ impl CompactionPlanner {
                     candidates.extend(table_candidates);
                 }
                 Err(e) => {
-                    log::warn!(
+                    tracing::warn!(
                         "Failed to analyze table {tenant_id}/{dataset_id}/{table_name}: {e:?}. Continuing with other tables."
                     );
                 }
@@ -222,7 +222,7 @@ impl CompactionPlanner {
         let mut candidates = vec![];
 
         for (partition_id, files) in partitions {
-            log::debug!("        Partition {partition_id}: {} files", files.len());
+            tracing::debug!("        Partition {partition_id}: {} files", files.len());
 
             // Evaluate if this partition needs compaction
             if let Some(stats) = self.evaluate_partition(&files) {
@@ -261,7 +261,7 @@ impl CompactionPlanner {
             .current_snapshot_id
             .ok_or_else(|| anyhow::anyhow!("Table has no current snapshot"))?;
 
-        log::debug!(
+        tracing::debug!(
             "Reading manifests for table {} (snapshot {})",
             table.identifier(),
             snapshot_id
@@ -308,14 +308,14 @@ impl CompactionPlanner {
             })
             .collect();
 
-        log::debug!(
+        tracing::debug!(
             "Phase 2: Created {} synthetic file entries for planning (actual data read via DataFusion)",
             synthetic_files.len()
         );
 
         partitions.insert(partition_key, synthetic_files);
 
-        log::debug!(
+        tracing::debug!(
             "Grouped files into {} partitions for table {}",
             partitions.len(),
             table.identifier()
@@ -336,7 +336,7 @@ impl CompactionPlanner {
 
         // Not enough eligible files to trigger compaction
         if file_count < self.config.file_count_threshold {
-            log::debug!(
+            tracing::debug!(
                 "Not enough eligible files ({}) after size filtering",
                 file_count
             );
@@ -358,7 +358,7 @@ impl CompactionPlanner {
         if avg_file_size_bytes >= target.saturating_sub(tolerance)
             && avg_file_size_bytes <= target + tolerance
         {
-            log::debug!(
+            tracing::debug!(
                 "Partition has good average file size ({} MB), skipping",
                 format_mb(avg_file_size_bytes)
             );
@@ -399,6 +399,7 @@ mod tests {
             max_candidates_per_cycle: 20,
             max_per_tenant: 5,
             lease_ttl_seconds: 300,
+            metrics_addr: "0.0.0.0:9091".to_string(),
         };
 
         let planner_config = PlannerConfig::from(&compactor_config);

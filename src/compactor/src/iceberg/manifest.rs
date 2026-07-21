@@ -105,27 +105,41 @@ impl ManifestReader {
         Ok(live_files)
     }
 
-    /// Extract data file paths from a snapshot
+    /// Extract live data file information from the table's current snapshot.
     ///
-    /// This is a simplified version that gets file information from
-    /// the table's metadata without reading individual manifests.
-    ///
-    /// # Note
-    /// This is a placeholder for Phase 3. Full manifest reading would
-    /// require iceberg-rust APIs that may not be stable yet.
-    pub async fn get_snapshot_files(
-        &self,
-        _table: &Table,
-        _snapshot_id: i64,
-    ) -> Result<Vec<ManifestFileInfo>> {
-        // Placeholder: Real implementation would read manifest list,
-        // then read each manifest file to extract data file entries.
+    /// Reads the manifest list and every manifest to collect path, size, and
+    /// record count for each live (non-deleted) data file. Used by the
+    /// compaction executor to determine the real input file set for a rewrite.
+    pub async fn get_snapshot_files(&self, table: &Table) -> Result<Vec<ManifestFileInfo>> {
+        let manifests = table
+            .manifests(None, None)
+            .await
+            .context("Failed to read manifest list from current snapshot")?;
 
-        tracing::warn!(
-            "Manifest reading not fully implemented yet - requires iceberg-rust manifest APIs"
-        );
+        if manifests.is_empty() {
+            return Ok(vec![]);
+        }
 
-        Ok(vec![])
+        let file_iter = table
+            .datafiles(&manifests, None, (None, None))
+            .await
+            .context("Failed to read data files from manifests")?;
+
+        let mut files = Vec::new();
+        let mut file_iter = std::pin::pin!(file_iter);
+        while let Some(result) = file_iter.next().await {
+            let (_, entry) = result.context("Failed to read manifest entry")?;
+            if *entry.status() != Status::Deleted {
+                let data_file = entry.data_file();
+                files.push(ManifestFileInfo {
+                    file_path: data_file.file_path().to_string(),
+                    file_size_bytes: *data_file.file_size_in_bytes() as u64,
+                    record_count: *data_file.record_count() as u64,
+                });
+            }
+        }
+
+        Ok(files)
     }
 
     /// Build live file set using DataFusion table scan (alternative approach)

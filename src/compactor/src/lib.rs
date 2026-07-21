@@ -1,20 +1,21 @@
 //! SignalDB Compactor Library
 //!
-//! Provides compaction planning and execution for Iceberg tables.
+//! Provides compaction planning and execution for Iceberg tables:
 //!
-//! # Phase 3: Retention & Lifecycle Management
-//!
-//! Includes complete compaction execution with atomic commits, retention
-//! enforcement, snapshot expiration, and orphan file cleanup.
-//!
-//! # Phase 4: Multi-Instance Safety + Scheduling (in progress)
-//!
-//! - `lease`: Distributed lease management for conflict-free multi-instance operation
-//! - `scheduler`: Fair round-robin scheduling across tenants
+//! - `planner`/`scheduler`: identify compaction candidates with fair
+//!   round-robin scheduling across tenants
+//! - `rewriter`/`commit`/`executor`: read, merge, sort, and rewrite data
+//!   files, then atomically replace them in a new Iceberg snapshot
+//! - `retention`/`orphan`: retention enforcement, snapshot expiration, and
+//!   orphan file cleanup
+//! - `lease`: distributed lease management for conflict-free multi-instance
+//!   operation
+//! - `flight`/`http`: on-demand admin actions and observability endpoints
 
 pub mod commit;
 pub mod executor;
 pub mod flight;
+pub mod http;
 pub mod iceberg;
 pub mod lease;
 pub mod metrics;
@@ -30,6 +31,7 @@ pub use executor::{
     CompactionExecutor, CompactionJob, CompactionResult, CompactionStatus, DataFileInfo,
     ExecutorConfig,
 };
+pub use http::ObservabilityState;
 pub use iceberg::{
     ManifestFileInfo, ManifestReader, PartitionInfo, PartitionManager, SnapshotInfo,
     SnapshotManager,

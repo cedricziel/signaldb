@@ -118,7 +118,7 @@ impl LeaseManager {
         ttl: Duration,
     ) -> Result<Option<Lease>> {
         let holder_id = self.instance_id.to_string();
-        let ttl_secs = ttl.as_secs() as i64;
+        let ttl_ms = ttl.as_millis() as i64;
 
         let acquired = self
             .catalog
@@ -128,7 +128,7 @@ impl LeaseManager {
                 &candidate.table_name,
                 &candidate.partition_id,
                 &holder_id,
-                ttl_secs,
+                ttl_ms,
             )
             .await
             .with_context(|| {
@@ -172,7 +172,7 @@ impl LeaseManager {
     /// Call this periodically during long-running compaction jobs to prevent
     /// lease expiry. Fails with an error if the lease was stolen.
     pub async fn renew(&self, lease: &Lease, ttl: Duration) -> Result<()> {
-        let ttl_secs = ttl.as_secs() as i64;
+        let ttl_ms = ttl.as_millis() as i64;
 
         let renewed = self
             .catalog
@@ -182,7 +182,7 @@ impl LeaseManager {
                 &lease.table_name,
                 &lease.partition_id,
                 &lease.holder_id,
-                ttl_secs,
+                ttl_ms,
             )
             .await
             .with_context(|| {

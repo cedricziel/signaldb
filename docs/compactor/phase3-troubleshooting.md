@@ -75,7 +75,7 @@ grep -A 5 "compactor.retention" signaldb.toml
 grep "dry_run" signaldb.toml | grep retention
 
 # 3. Check computed cutoff in logs
-RUST_LOG=debug,compactor::retention=trace cargo run --bin compactor &
+RUST_LOG=debug,compactor::retention=trace cargo run --bin signaldb-compactor &
 sleep 60 && tail -50 .data/logs/compactor.log | grep "retention cutoff"
 
 # 4. List actual partitions
@@ -124,7 +124,7 @@ traces_retention_days = 7
 
 ```bash
 # 1. Check effective retention configuration
-RUST_LOG=debug,compactor::retention=trace cargo run --bin compactor &
+RUST_LOG=debug,compactor::retention=trace cargo run --bin signaldb-compactor &
 sleep 30 && tail -100 .data/logs/compactor.log | grep -E "(tenant_override|dataset_override|retention cutoff)"
 
 # 2. Check for configuration errors
@@ -423,7 +423,7 @@ cleanup_interval_hours = 48  # Every 2 days instead of daily
 curl -s localhost:9091/metrics | grep compactor_retention_enforcement_duration
 
 # 2. Profile with CPU profiling
-RUST_LOG=info cargo flamegraph --bin compactor
+RUST_LOG=info cargo flamegraph --bin signaldb-compactor
 
 # 3. Check partition counts
 psql -h localhost -U signaldb signaldb -c "
@@ -615,7 +615,7 @@ rate(compactor_partitions_dropped_total[5m]) > 20
 **Temporary (current session):**
 
 ```bash
-RUST_LOG=debug,compactor=trace cargo run --bin compactor
+RUST_LOG=debug,compactor=trace cargo run --bin signaldb-compactor
 ```
 
 **Persistent (config file):**
@@ -648,7 +648,7 @@ loggers:
 EOF
 
 # Run with logging config
-RUST_LOG_CONFIG=/tmp/log4rs.yml cargo run --bin compactor
+RUST_LOG_CONFIG=/tmp/log4rs.yml cargo run --bin signaldb-compactor
 ```
 
 ### Trace Specific Operation
@@ -657,7 +657,7 @@ RUST_LOG_CONFIG=/tmp/log4rs.yml cargo run --bin compactor
 
 ```bash
 # Enable trace logging for retention only
-RUST_LOG=info,compactor::retention=trace cargo run --bin compactor 2>&1 | \
+RUST_LOG=info,compactor::retention=trace cargo run --bin signaldb-compactor 2>&1 | \
   grep -E "(retention|cutoff|drop|partition)"
 ```
 
@@ -665,7 +665,7 @@ RUST_LOG=info,compactor::retention=trace cargo run --bin compactor 2>&1 | \
 
 ```bash
 # Enable trace logging for orphan cleanup only
-RUST_LOG=info,compactor::orphan=trace cargo run --bin compactor 2>&1 | \
+RUST_LOG=info,compactor::orphan=trace cargo run --bin signaldb-compactor 2>&1 | \
   grep -E "(orphan|cleanup|delete|reference)"
 ```
 

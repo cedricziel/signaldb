@@ -39,6 +39,8 @@ prost.workspace = true
 snap.workspace = true
 chrono.workspace = true
 bytes.workspace = true
+uuid.workspace = true
+datafusion_iceberg.workspace = true
 
 # Iceberg catalog for integration tests
 iceberg-rust.workspace = true
@@ -98,6 +100,10 @@ path = "tests/compactor/orphan_cleanup.rs"
 [[test]]
 name = "retention_failure_scenarios"
 path = "tests/compactor/retention_failure_scenarios.rs"
+
+[[test]]
+name = "multi_instance"
+path = "tests/compactor/multi_instance.rs"
 
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory

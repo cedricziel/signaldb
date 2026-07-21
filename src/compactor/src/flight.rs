@@ -192,16 +192,16 @@ impl FlightService for CompactorFlightService {
                             match self.executor.execute_candidate(candidate).await {
                                 Ok(_) => started += 1,
                                 Err(e) => {
-                                    log::error!("compact_now execution failed: {e:#}");
+                                    tracing::error!("compact_now execution failed: {e:#}");
                                 }
                             }
                             if let Err(e) = self.lease_manager.release(&lease).await {
-                                log::warn!("compact_now lease release failed: {e:#}");
+                                tracing::warn!("compact_now lease release failed: {e:#}");
                             }
                         }
                         Ok(None) => skipped += 1,
                         Err(e) => {
-                            log::warn!("compact_now lease acquisition failed: {e:#}");
+                            tracing::warn!("compact_now lease acquisition failed: {e:#}");
                             skipped += 1;
                         }
                     }

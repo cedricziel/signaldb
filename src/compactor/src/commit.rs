@@ -19,7 +19,7 @@ pub fn is_conflict_error(error: &anyhow::Error) -> bool {
             || msg.contains("mismatch"))
 }
 
-/// Information about a data file to add or remove
+/// Information about a data file to add or remove (reporting/metrics only)
 #[derive(Debug, Clone)]
 pub struct DataFileChange {
     pub file_path: String,
@@ -38,32 +38,99 @@ impl IcebergCommitter {
         Self { catalog_manager }
     }
 
-    /// Commit a compaction operation atomically
+    /// Commit a compaction atomically: replace all of the table's data files
+    /// with the newly written compacted files.
     ///
-    /// This uses Iceberg's snapshot-based optimistic concurrency:
-    /// 1. Capture the original snapshot ID before compaction
-    /// 2. Create a transaction to add new files and remove old files
-    /// 3. Commit with snapshot ID check (fails if snapshot changed)
-    /// 4. Return conflict error if concurrent modification detected
+    /// Uses Iceberg's snapshot-based optimistic concurrency:
+    /// 1. Load fresh table metadata and verify the snapshot has not moved
+    ///    since compaction started (`original_snapshot_id`)
+    /// 2. Commit a `replace` transaction: the new files become the table's
+    ///    complete data file set; all previously live files are removed from
+    ///    the new snapshot (physical deletion is left to orphan cleanup)
+    /// 3. Reload the table and verify the commit took effect — the SQL
+    ///    catalog's compare-and-swap does not surface lost races as errors,
+    ///    so a post-commit verification guards against silently dropped
+    ///    commits
+    ///
+    /// Returns the snapshot ID created by the commit.
     pub async fn commit_compaction(
         &self,
         tenant_id: &str,
         dataset_id: &str,
         table_name: &str,
         original_snapshot_id: Option<i64>,
-        new_files: Vec<DataFileChange>,
-        old_files: Vec<DataFileChange>,
+        new_files: Vec<iceberg_rust::spec::manifest::DataFile>,
     ) -> Result<i64> {
-        log::info!(
-            "Committing compaction for {}/{}/{}: adding {} files, removing {} files",
+        tracing::info!(
             tenant_id,
             dataset_id,
             table_name,
-            new_files.len(),
-            old_files.len()
+            new_file_count = new_files.len(),
+            "Committing compaction (replace data files)"
         );
 
-        // Load the table (this will get fresh metadata from catalog)
+        let table = self
+            .load_fresh(tenant_id, dataset_id, table_name)
+            .await
+            .context("Failed to load table for commit")?;
+
+        // Check if snapshot has changed since we started compaction
+        let current_snapshot_id = Self::get_current_snapshot_id(&table)?;
+        if let Some(original_id) = original_snapshot_id
+            && current_snapshot_id != original_id
+        {
+            return Err(anyhow::anyhow!(
+                "Snapshot conflict: table snapshot changed from {} to {} during compaction",
+                original_id,
+                current_snapshot_id
+            ));
+        }
+
+        let mut table = table;
+        table
+            .new_transaction(None)
+            .replace(new_files)
+            .commit()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to commit compaction snapshot: {e}"))?;
+
+        // The commit mutated our local handle to the snapshot it created.
+        let committed_snapshot_id = Self::get_current_snapshot_id(&table)?;
+
+        // Post-commit verification: reload from the catalog and confirm OUR
+        // snapshot is the current one. The SQL catalog's UPDATE ... WHERE
+        // metadata_location = <previous> does not report a failed CAS, so a
+        // concurrent commit racing ours could silently win; treat that as a
+        // conflict so the caller retries against fresh metadata.
+        let verified = self
+            .load_fresh(tenant_id, dataset_id, table_name)
+            .await
+            .context("Failed to reload table for post-commit verification")?;
+        let verified_snapshot_id = Self::get_current_snapshot_id(&verified)?;
+        if verified_snapshot_id != committed_snapshot_id {
+            return Err(anyhow::anyhow!(
+                "Snapshot conflict: compaction commit did not take effect (expected snapshot {committed_snapshot_id}, catalog has {verified_snapshot_id}); a concurrent commit likely won the race"
+            ));
+        }
+
+        tracing::info!(
+            tenant_id,
+            dataset_id,
+            table_name,
+            snapshot_id = verified_snapshot_id,
+            "Compaction commit verified"
+        );
+
+        Ok(verified_snapshot_id)
+    }
+
+    /// Load a table with fresh metadata directly from the catalog.
+    async fn load_fresh(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+    ) -> Result<Table> {
         let table_identifier = self
             .catalog_manager
             .build_table_identifier(tenant_id, dataset_id, table_name);
@@ -73,57 +140,15 @@ impl IcebergCommitter {
             .load_tabular(&table_identifier)
             .await
             .with_context(|| {
-                format!("Failed to load table {tenant_id}/{dataset_id}/{table_name} for commit")
+                format!("Failed to load table {tenant_id}/{dataset_id}/{table_name}")
             })?;
 
-        let table = match table {
-            iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "Expected table but got view for {tenant_id}/{dataset_id}/{table_name}"
-                ));
-            }
-        };
-
-        // Get the current snapshot ID from the freshly loaded table
-        let current_snapshot_id = Self::get_current_snapshot_id(&table)?;
-
-        // Check if snapshot has changed since we started compaction
-        if let Some(original_id) = original_snapshot_id
-            && current_snapshot_id != original_id
-        {
-            log::warn!(
-                "Snapshot changed during compaction: expected {}, found {}. Conflict detected.",
-                original_id,
-                current_snapshot_id
-            );
-            return Err(anyhow::anyhow!(
-                "Snapshot conflict: table snapshot changed from {} to {} during compaction",
-                original_id,
-                current_snapshot_id
-            ));
+        match table {
+            iceberg_rust::catalog::tabular::Tabular::Table(t) => Ok(t),
+            _ => Err(anyhow::anyhow!(
+                "Expected table but got view for {tenant_id}/{dataset_id}/{table_name}"
+            )),
         }
-
-        // For Phase 2, we'll use the existing IcebergTableWriter pattern
-        // which already handles Iceberg transactions through DataFusion.
-        // The actual commit will happen through write_batch operations
-        // that use INSERT statements, which DataFusion's Iceberg integration
-        // translates into proper Iceberg commits.
-        //
-        // Future optimization: Use iceberg-rust's native transaction API
-        // directly once it's stable enough for production use.
-
-        log::debug!(
-            "Snapshot ID verified: {}. Ready to commit {} new files, {} old files to remove",
-            current_snapshot_id,
-            new_files.len(),
-            old_files.len()
-        );
-
-        // For now, we return the current snapshot ID to indicate success
-        // The actual file operations will be handled by the rewriter module
-        // using IcebergTableWriter's transaction support
-        Ok(current_snapshot_id)
     }
 
     /// Get the current snapshot ID from a table
@@ -146,7 +171,7 @@ impl IcebergCommitter {
         dataset_id: &str,
         table_name: &str,
     ) -> Result<Table> {
-        log::debug!(
+        tracing::debug!(
             "Reloading table metadata for {}/{}/{}",
             tenant_id,
             dataset_id,

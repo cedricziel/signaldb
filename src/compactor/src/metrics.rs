@@ -145,6 +145,11 @@ impl CompactionMetrics {
         self.inner.bytes_after_compaction.load(Ordering::Relaxed)
     }
 
+    /// Get the cumulative duration of successful jobs in milliseconds
+    pub fn total_duration_ms(&self) -> u64 {
+        self.inner.total_duration_ms.load(Ordering::Relaxed)
+    }
+
     /// Calculate the overall compression ratio
     pub fn compression_ratio(&self) -> f64 {
         let before = self.bytes_before_compaction() as f64;
@@ -222,30 +227,30 @@ impl MetricsSummary {
 
     /// Log the metrics summary
     pub fn log(&self) {
-        log::info!("=== Compaction Metrics Summary ===");
-        log::info!(
+        tracing::info!("=== Compaction Metrics Summary ===");
+        tracing::info!(
             "Jobs: {} started, {} succeeded, {} failed",
             self.jobs_started,
             self.jobs_succeeded,
             self.jobs_failed
         );
-        log::info!(
+        tracing::info!(
             "Conflicts: {} detected, {} retries attempted",
             self.conflicts_detected,
             self.retries_attempted
         );
-        log::info!(
+        tracing::info!(
             "Files: {} input → {} output",
             self.total_input_files,
             self.total_output_files
         );
-        log::info!(
+        tracing::info!(
             "Storage: {} MB → {} MB ({:.2}x compression)",
             Self::format_mb(self.bytes_before_compaction),
             Self::format_mb(self.bytes_after_compaction),
             self.compression_ratio
         );
-        log::info!("Average job duration: {:.2}ms", self.avg_duration_ms);
+        tracing::info!("Average job duration: {:.2}ms", self.avg_duration_ms);
     }
 }
 

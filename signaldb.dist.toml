@@ -161,6 +161,20 @@ file_count_threshold = 5              # Minimum files to trigger compaction
 min_input_file_size_kb = 1024         # Minimum input file size for compaction (KB)
 max_files_per_job = 20                # Maximum files per compaction job
 
+# Phase 4: Multi-Instance Safety + Scheduling
+# Multiple compactor instances coordinate through distributed leases in the
+# SQL catalog; the round-robin scheduler ensures per-tenant fairness.
+max_candidates_per_cycle = 20         # Max candidates per scheduling cycle (0 = unlimited)
+max_per_tenant = 5                    # Max candidates per tenant per cycle (0 = unlimited)
+lease_ttl_seconds = 300               # Lease validity without renewal; crashed instances
+                                      # release their partitions after this TTL
+
+# Phase 6: Observability
+# HTTP endpoint serving Prometheus metrics (/metrics), a JSON status document
+# (/status), and a liveness probe (/health). Set to "" to disable.
+# Override with COMPACTOR_METRICS_ADDR.
+metrics_addr = "0.0.0.0:9091"
+
 # Phase 3: Retention Enforcement Configuration
 # Automatically drops expired partitions based on configurable retention policies.
 # Uses a 3-tier hierarchy: Global defaults → Tenant overrides → Dataset overrides.
@@ -234,6 +248,9 @@ max_snapshot_age_hours = 720          # Consider snapshots within last N hours (
 # Performance Settings
 batch_size = 1000                     # Process N files per batch (default: 1000)
                                       # Smaller = more checkpoints, larger = faster processing
+max_live_files_threshold = 500000     # Skip cleanup for tables whose estimated live file
+                                      # count exceeds this cap (bounds memory use; 0 = no cap).
+                                      # Skips are recorded in compactor_orphan_cleanup_skipped_total
 rate_limit_delay_ms = 0               # Delay between batches in milliseconds (default: 0)
                                       # Use if hitting object store rate limits (S3 throttling)
 

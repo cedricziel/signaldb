@@ -1,4 +1,9 @@
-use crate::schema_transform::transform_trace_v1_to_v2;
+use crate::schema_transform::{
+    transform_logs_v1_to_iceberg, transform_metrics_exponential_histogram_v1_to_iceberg,
+    transform_metrics_gauge_v1_to_iceberg, transform_metrics_histogram_v1_to_iceberg,
+    transform_metrics_sum_v1_to_iceberg, transform_metrics_summary_v1_to_iceberg,
+    transform_trace_v1_to_v2,
+};
 use anyhow::Result;
 use common::CatalogManager;
 
@@ -228,9 +233,16 @@ impl IcebergTableWriter {
         result_batches
     }
 
-    /// Apply schema transformation if the batch has v1 schema but table expects v2
+    /// Apply schema transformation if the batch has v1 (wire) schema but the
+    /// table expects the Iceberg storage schema.
+    ///
+    /// Dispatches per table so that logs and metrics batches are handled, not
+    /// just traces. Wire-format batches are recognized by their raw OTLP
+    /// marker columns (`time_unix_nano` for logs, `data_json` for metrics);
+    /// batches already in storage format lack those columns and pass through
+    /// unchanged, keeping the method idempotent for callers that already
+    /// transformed (e.g. the Flight ingestion path).
     fn apply_schema_transformation_if_needed(&self, batch: RecordBatch) -> Result<RecordBatch> {
-        // Detect schema version based on column count and field names
         let num_columns = batch.num_columns();
         let field_names: Vec<String> = batch
             .schema()
@@ -238,26 +250,46 @@ impl IcebergTableWriter {
             .iter()
             .map(|f| f.name().clone())
             .collect();
+        let has_field = |name: &str| field_names.iter().any(|f| f == name);
 
-        // Detect schema version by field names rather than column count for robustness.
-        // v1 schema uses "name" (renamed to "span_name" in v2) and lacks "timestamp" computed field.
-        // v2 schema uses "span_name" and has computed fields like "timestamp", "date_day", "hour".
-        let has_v1_name_field = field_names.contains(&"name".to_string());
-        let has_v2_span_name_field = field_names.contains(&"span_name".to_string());
-        let is_v1_schema = has_v1_name_field && !has_v2_span_name_field;
-        let is_v2_schema = has_v2_span_name_field;
-
-        if is_v1_schema {
-            log::debug!("Detected v1 schema batch, applying v1->v2 transformation");
-            transform_trace_v1_to_v2(batch)
-        } else if is_v2_schema {
-            log::debug!("Detected v2 schema batch, no transformation needed");
-            Ok(batch)
-        } else {
-            log::warn!(
-                "Unknown schema detected: {num_columns} columns with fields: {field_names:?}. Assuming no transformation needed."
-            );
-            Ok(batch)
+        match self.table.identifier().name() {
+            "traces" => {
+                // v1 schema uses "name" (renamed to "span_name" in v2) and lacks
+                // computed fields; v2 uses "span_name" plus "timestamp"/"date_day"/"hour".
+                if has_field("name") && !has_field("span_name") {
+                    log::debug!("Detected v1 traces batch, applying v1->v2 transformation");
+                    transform_trace_v1_to_v2(batch)
+                } else if has_field("span_name") {
+                    log::debug!("Detected v2 traces batch, no transformation needed");
+                    Ok(batch)
+                } else {
+                    log::warn!(
+                        "Unknown traces schema: {num_columns} columns with fields: {field_names:?}. Assuming no transformation needed."
+                    );
+                    Ok(batch)
+                }
+            }
+            // Wire-format logs carry raw OTLP "time_unix_nano"; the storage
+            // schema uses computed "timestamp"/"date_day"/"hour" columns.
+            "logs" if has_field("time_unix_nano") => {
+                log::debug!("Detected v1 logs batch, applying logs->iceberg transformation");
+                transform_logs_v1_to_iceberg(batch)
+            }
+            // Wire-format metrics carry the raw "data_json" payload column.
+            "metrics_gauge" if has_field("data_json") => {
+                transform_metrics_gauge_v1_to_iceberg(batch)
+            }
+            "metrics_sum" if has_field("data_json") => transform_metrics_sum_v1_to_iceberg(batch),
+            "metrics_histogram" if has_field("data_json") => {
+                transform_metrics_histogram_v1_to_iceberg(batch)
+            }
+            "metrics_exponential_histogram" if has_field("data_json") => {
+                transform_metrics_exponential_histogram_v1_to_iceberg(batch)
+            }
+            "metrics_summary" if has_field("data_json") => {
+                transform_metrics_summary_v1_to_iceberg(batch)
+            }
+            _ => Ok(batch),
         }
     }
 
@@ -331,12 +363,8 @@ impl IcebergTableWriter {
                 let insert_sql =
                     format!("INSERT INTO {table_name} SELECT * FROM {temp_table_name}");
 
-                // Apply schema transformation if needed
-                let transformed_batch = if table_name == "traces" {
-                    self.apply_schema_transformation_if_needed(batch)?
-                } else {
-                    batch
-                };
+                // Apply schema transformation if needed (table-aware)
+                let transformed_batch = self.apply_schema_transformation_if_needed(batch)?;
 
                 // Store the pending operation
                 let operation = PendingOperation {
@@ -433,11 +461,7 @@ impl IcebergTableWriter {
         );
 
         // Apply schema transformation if needed (same logic as transaction path)
-        let batch = if table_name == "traces" {
-            self.apply_schema_transformation_if_needed(batch)?
-        } else {
-            batch
-        };
+        let batch = self.apply_schema_transformation_if_needed(batch)?;
 
         // Debug: Check schema compatibility before registering batch
         let target_table_schema = self.table.metadata().current_schema(None)?;

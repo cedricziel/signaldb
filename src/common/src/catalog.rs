@@ -1362,10 +1362,10 @@ impl Catalog {
         table_name: &str,
         partition_id: &str,
         holder_id: &str,
-        ttl_seconds: i64,
+        ttl_ms: i64,
     ) -> Result<bool, sqlx::Error> {
         let now = Utc::now();
-        let expires_at = now + chrono::Duration::seconds(ttl_seconds);
+        let expires_at = now + chrono::Duration::milliseconds(ttl_ms);
         let now_str = now.to_rfc3339();
         let expires_at_str = expires_at.to_rfc3339();
 
@@ -1423,7 +1423,7 @@ impl Catalog {
         }
     }
 
-    /// Renew an existing lease, extending its expiry by `ttl_seconds` from now.
+    /// Renew an existing lease, extending its expiry by `ttl_ms` from now.
     ///
     /// Only succeeds if `holder_id` matches the current holder (prevents
     /// renewing a lease that was taken over by another instance).
@@ -1436,10 +1436,10 @@ impl Catalog {
         table_name: &str,
         partition_id: &str,
         holder_id: &str,
-        ttl_seconds: i64,
+        ttl_ms: i64,
     ) -> Result<bool, sqlx::Error> {
         let now = Utc::now();
-        let expires_at = now + chrono::Duration::seconds(ttl_seconds);
+        let expires_at = now + chrono::Duration::milliseconds(ttl_ms);
 
         match self {
             Catalog::Sqlite(pool) => {

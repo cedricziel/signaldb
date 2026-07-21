@@ -1,13 +1,28 @@
 //! Parquet file reading, merging, and rewriting
 //!
-//! Handles the core compaction logic: reading multiple small Parquet files,
-//! merging and sorting the data, and writing optimized larger files.
+//! Handles the core compaction logic: reading a table's live data files,
+//! merging and sorting the data, and writing optimized larger Parquet files
+//! directly to the table's object store. The atomic snapshot commit that swaps
+//! old files for new ones is performed by [`crate::commit::IcebergCommitter`].
 
 use anyhow::{Context, Result};
 use common::CatalogManager;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::prelude::*;
+use iceberg_rust::spec::manifest::DataFile;
+use iceberg_rust::table::Table;
 use std::sync::Arc;
+
+/// Result of rewriting a table's data files.
+pub struct RewriteOutcome {
+    /// Newly written data files (with real paths, sizes, and record counts)
+    /// ready to be committed as a replacement snapshot.
+    pub new_files: Vec<DataFile>,
+    /// Total bytes written across the new files.
+    pub output_size_bytes: u64,
+    /// Total rows written (for integrity verification against the input).
+    pub rows_written: u64,
+}
 
 /// Handles Parquet file merging and rewriting
 pub struct ParquetRewriter {
@@ -20,93 +35,100 @@ impl ParquetRewriter {
         Self { catalog_manager }
     }
 
-    /// Compact a partition by reading, merging, and rewriting files
+    /// Load a table with fresh metadata, bypassing the `ensure_table` cache.
     ///
-    /// Returns: (output_file_paths, input_size_bytes, output_size_bytes)
-    ///
-    /// Note: Size measurements are estimates based on in-memory RecordBatch sizes.
-    /// Phase 3 will use actual Parquet file sizes from Iceberg manifests for
-    /// accurate compression metrics.
-    pub async fn compact_partition(
+    /// The `IcebergTableManager` cache returns stale `Table` handles that do
+    /// not reflect snapshots committed after the handle was cached; compaction
+    /// must always operate on current metadata.
+    pub async fn load_fresh_table(
         &self,
         tenant_id: &str,
         dataset_id: &str,
         table_name: &str,
-        partition_id: &str,
-        target_file_size_bytes: u64,
-    ) -> Result<(Vec<String>, u64, u64)> {
-        log::info!(
-            "Compacting partition {} for table {}/{}/{}",
-            partition_id,
-            tenant_id,
-            dataset_id,
-            table_name
-        );
-
-        // Step 1: Load the table to get file information
-        let table = self
+    ) -> Result<Table> {
+        let identifier = self
             .catalog_manager
-            .ensure_table(tenant_id, dataset_id, table_name)
+            .build_table_identifier(tenant_id, dataset_id, table_name);
+        let tabular = self
+            .catalog_manager
+            .catalog()
+            .load_tabular(&identifier)
             .await
-            .context("Failed to load table for compaction")?;
+            .with_context(|| format!("Failed to load table {identifier} with fresh metadata"))?;
+        match tabular {
+            iceberg_rust::catalog::tabular::Tabular::Table(table) => Ok(table),
+            _ => Err(anyhow::anyhow!("Expected table but got view: {identifier}")),
+        }
+    }
 
-        log::debug!(
-            "Loaded table {} for partition {} compaction",
-            table.identifier(),
-            partition_id
-        );
+    /// Read, merge, sort, and rewrite the table's data into new Parquet files.
+    ///
+    /// Reads all live data from `table` (which the caller loaded fresh and
+    /// pinned to a snapshot), sorts it for query performance, and writes new
+    /// Parquet files directly to the table's object store. No snapshot is
+    /// committed here — the caller commits the returned files atomically.
+    ///
+    /// Returns `None` when the table has no data to compact.
+    pub async fn rewrite_table(
+        &self,
+        table: &Table,
+        target_file_size_bytes: u64,
+    ) -> Result<Option<RewriteOutcome>> {
+        let table_name = table.identifier().name().to_string();
 
-        // Step 2: Read and merge files using DataFusion
-        // For Phase 2, we'll use a simplified approach where we read
-        // the entire table and filter by partition
         let merged_batches = self
-            .read_and_merge_partition(&table, partition_id)
+            .read_and_merge(table)
             .await
-            .context("Failed to read and merge partition data")?;
+            .context("Failed to read and merge table data")?;
 
-        if merged_batches.is_empty() {
-            log::info!(
-                "No data found in partition {}, skipping compaction",
-                partition_id
-            );
-            return Ok((vec![], 0, 0));
+        if merged_batches.is_empty() || merged_batches.iter().all(|b| b.num_rows() == 0) {
+            tracing::info!(table = %table_name, "No data found, skipping compaction");
+            return Ok(None);
         }
 
-        // Calculate input size (estimate from in-memory batches)
-        // TODO(Phase 3): Read actual Parquet file sizes from Iceberg manifests
-        // for accurate input size measurement and compression ratio calculation
-        let input_size: u64 = merged_batches
+        let rows_read: u64 = merged_batches.iter().map(|b| b.num_rows() as u64).sum();
+
+        // Chunk batches toward the target file size so the writer produces
+        // reasonably sized files.
+        let split_batches = self.split_batches_by_size(merged_batches, target_file_size_bytes)?;
+
+        let batch_stream = futures::stream::iter(
+            split_batches
+                .into_iter()
+                .map(Ok::<_, datafusion::arrow::error::ArrowError>),
+        );
+
+        let new_files =
+            iceberg_rust::arrow::write::write_parquet_partitioned(table, batch_stream, None)
+                .await
+                .context("Failed to write compacted Parquet files")?;
+
+        let output_size_bytes: u64 = new_files
             .iter()
-            .map(|b| b.get_array_memory_size() as u64)
+            .map(|f| *f.file_size_in_bytes() as u64)
             .sum();
+        let rows_written: u64 = new_files.iter().map(|f| *f.record_count() as u64).sum();
 
-        log::debug!(
-            "Read and merged {} batches from partition {} (estimated {} bytes)",
-            merged_batches.len(),
-            partition_id,
-            input_size
+        // A rewrite must never lose rows. Fail loudly before the commit if
+        // the written files do not account for every row that was read.
+        anyhow::ensure!(
+            rows_written == rows_read,
+            "Compaction row count mismatch for {table_name}: read {rows_read} rows but wrote {rows_written}"
         );
 
-        // Step 3: Write merged batches to new files
-        let (output_files, output_size) = self
-            .write_merged_batches(
-                tenant_id,
-                dataset_id,
-                table_name,
-                merged_batches,
-                target_file_size_bytes,
-            )
-            .await
-            .context("Failed to write merged batches")?;
-
-        log::info!(
-            "Compacted partition {} into {} output files (estimated {} bytes)",
-            partition_id,
-            output_files.len(),
-            output_size
+        tracing::info!(
+            table = %table_name,
+            output_files = new_files.len(),
+            output_bytes = output_size_bytes,
+            rows = rows_written,
+            "Rewrote table data into compacted files"
         );
 
-        Ok((output_files, input_size, output_size))
+        Ok(Some(RewriteOutcome {
+            new_files,
+            output_size_bytes,
+            rows_written,
+        }))
     }
 
     /// Get sort columns for a given table type
@@ -132,42 +154,29 @@ impl ParquetRewriter {
                 ("service_name", true, true),
             ],
             _ => {
-                log::warn!("No sort configuration for table {table_name}, data will not be sorted");
+                tracing::warn!(
+                    "No sort configuration for table {table_name}, data will not be sorted"
+                );
                 vec![]
             }
         }
     }
 
-    /// Read and merge data from a partition
-    async fn read_and_merge_partition(
-        &self,
-        table: &iceberg_rust::table::Table,
-        partition_id: &str,
-    ) -> Result<Vec<RecordBatch>> {
-        log::debug!(
-            "Reading partition {} from table {}",
-            partition_id,
-            table.identifier()
-        );
-
-        // Create a DataFusion session context
+    /// Read and merge all live data from the table, sorted for query performance.
+    async fn read_and_merge(&self, table: &Table) -> Result<Vec<RecordBatch>> {
         let ctx = SessionContext::new();
 
-        // Register the Iceberg table with DataFusion
-        let table_name = table.identifier().name();
+        let table_name = table.identifier().name().to_string();
         let datafusion_table = Arc::new(datafusion_iceberg::DataFusionTable::from(table.clone()));
-        ctx.register_table(table_name, datafusion_table)
+        ctx.register_table(&table_name, datafusion_table)
             .context("Failed to register table with DataFusion")?;
 
-        // For Phase 2, we'll read all data from the table
-        // A full implementation would filter by partition values
         let df = ctx
-            .table(table_name)
+            .table(&table_name)
             .await
             .context("Failed to read table")?;
 
-        // Sort the data for optimal query performance
-        let sort_cols = Self::get_sort_columns(table_name);
+        let sort_cols = Self::get_sort_columns(&table_name);
         let sorted_df = if !sort_cols.is_empty() {
             let sort_exprs: Vec<_> = sort_cols
                 .into_iter()
@@ -180,125 +189,18 @@ impl ParquetRewriter {
             df
         };
 
-        // Collect the data into RecordBatches
         let batches = sorted_df
             .collect()
             .await
             .context("Failed to collect query results")?;
 
-        log::debug!(
-            "Collected {} batches from partition {}",
-            batches.len(),
-            partition_id
+        tracing::debug!(
+            table = %table_name,
+            batch_count = batches.len(),
+            "Collected table data for rewrite"
         );
 
         Ok(batches)
-    }
-
-    /// Write merged batches to new files
-    ///
-    /// Returns: (output_file_paths, estimated_output_size_bytes)
-    async fn write_merged_batches(
-        &self,
-        tenant_id: &str,
-        dataset_id: &str,
-        table_name: &str,
-        batches: Vec<RecordBatch>,
-        target_file_size_bytes: u64,
-    ) -> Result<(Vec<String>, u64)> {
-        log::debug!(
-            "Writing {} merged batches to table {}/{}/{}",
-            batches.len(),
-            tenant_id,
-            dataset_id,
-            table_name
-        );
-
-        // For Phase 2, we use an in-memory object store for simplicity
-        // A full implementation would use the actual storage backend
-        let object_store = Arc::new(object_store::memory::InMemory::new());
-
-        // Create an IcebergTableWriter for atomic writes
-        let mut writer = writer::IcebergTableWriter::new(
-            &self.catalog_manager,
-            object_store,
-            tenant_id.to_string(),
-            dataset_id.to_string(),
-            table_name.to_string(),
-        )
-        .await
-        .context("Failed to create Iceberg table writer")?;
-
-        // Begin a transaction for atomic writes
-        let transaction_id = writer
-            .begin_transaction()
-            .await
-            .context("Failed to begin transaction")?;
-
-        log::debug!(
-            "Started transaction {} for compaction write",
-            transaction_id
-        );
-
-        // Split batches if they exceed target file size
-        let split_batches = self.split_batches_by_size(batches, target_file_size_bytes)?;
-
-        log::debug!(
-            "Split batches into {} groups for target size {} bytes",
-            split_batches.len(),
-            target_file_size_bytes
-        );
-
-        // Calculate estimated output size from split batches
-        // This is more accurate than the input estimate since it reflects
-        // the actual data that will be written to Parquet files
-        let estimated_output_size: u64 = split_batches
-            .iter()
-            .map(|b| b.get_array_memory_size() as u64)
-            .sum();
-
-        log::debug!(
-            "Estimated output size: {} bytes ({} MB)",
-            estimated_output_size,
-            estimated_output_size / 1_048_576
-        );
-
-        // Write each batch group
-        for (i, batch) in split_batches.iter().enumerate() {
-            log::debug!(
-                "Writing batch group {}/{} ({} rows)",
-                i + 1,
-                split_batches.len(),
-                batch.num_rows()
-            );
-
-            writer
-                .write_batch(batch.clone())
-                .await
-                .with_context(|| format!("Failed to write batch group {}", i))?;
-        }
-
-        // Commit the transaction
-        writer
-            .commit_transaction(&transaction_id)
-            .await
-            .context("Failed to commit transaction")?;
-
-        log::info!(
-            "Successfully wrote {} batch groups to {}/{}/{}",
-            split_batches.len(),
-            tenant_id,
-            dataset_id,
-            table_name
-        );
-
-        // Return placeholder file paths (actual paths will be in Iceberg metadata)
-        // For Phase 2, we return synthetic paths
-        let output_files: Vec<String> = (0..split_batches.len())
-            .map(|i| format!("compacted-{}.parquet", i))
-            .collect();
-
-        Ok((output_files, estimated_output_size))
     }
 
     /// Split batches to target file size

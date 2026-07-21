@@ -1,9 +1,10 @@
 //! SignalDB Compactor Service
 //!
-//! Phase 3/4: Full execution service that identifies compaction candidates,
-//! executes compaction with Parquet rewriting, commits changes atomically,
-//! enforces data retention / lifecycle policies, and coordinates across
-//! multiple instances using distributed leases and round-robin scheduling.
+//! Full execution service that identifies compaction candidates, executes
+//! compaction with Parquet rewriting, commits changes atomically, enforces
+//! data retention / lifecycle policies, coordinates across multiple instances
+//! using distributed leases and round-robin scheduling, and serves
+//! observability endpoints (Prometheus metrics, status, health).
 
 use anyhow::{Context, Result};
 use arrow_flight::flight_service_server::FlightServiceServer;
@@ -45,8 +46,8 @@ async fn wait_for_shutdown_signal() -> Result<()> {
             signal(SignalKind::terminate()).context("Failed to install SIGTERM handler")?;
 
         tokio::select! {
-            _ = sigint.recv() => log::info!("Received SIGINT"),
-            _ = sigterm.recv() => log::info!("Received SIGTERM"),
+            _ = sigint.recv() => tracing::info!("Received SIGINT"),
+            _ = sigterm.recv() => tracing::info!("Received SIGTERM"),
         }
     }
 
@@ -55,7 +56,7 @@ async fn wait_for_shutdown_signal() -> Result<()> {
         tokio::signal::ctrl_c()
             .await
             .context("Failed to listen for shutdown signal")?;
-        log::info!("Received Ctrl+C");
+        tracing::info!("Received Ctrl+C");
     }
 
     Ok(())
@@ -63,8 +64,13 @@ async fn wait_for_shutdown_signal() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // Initialize structured logging (RUST_LOG-compatible env filter)
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
 
     let args = Args::parse();
 
@@ -73,21 +79,23 @@ async fn main() -> Result<()> {
         Configuration::load_from_path(std::path::Path::new(&args.config))
             .context("Failed to load configuration")?
     } else {
-        log::info!("Configuration file not found, using defaults");
+        tracing::info!("Configuration file not found, using defaults");
         Configuration::default()
     };
 
     // Check if compactor is enabled
     if !config.compactor.enabled {
-        log::info!("Compactor is disabled in configuration (compactor.enabled = false)");
-        log::info!("Set SIGNALDB_COMPACTOR_ENABLED=true or enable in config file to run compactor");
+        tracing::info!("Compactor is disabled in configuration (compactor.enabled = false)");
+        tracing::info!(
+            "Set SIGNALDB_COMPACTOR_ENABLED=true or enable in config file to run compactor"
+        );
         return Ok(());
     }
 
-    log::info!(
+    tracing::info!(
         "Starting SignalDB Compactor Service (Phase 3/4: Retention, Lifecycle & Multi-Instance Safety)"
     );
-    log::info!(
+    tracing::info!(
         "Running with full compaction execution, atomic commits, distributed leases, and retention enforcement"
     );
 
@@ -108,7 +116,7 @@ async fn main() -> Result<()> {
     .await
     .context("Failed to initialize compactor service bootstrap")?;
 
-    log::info!(
+    tracing::info!(
         "Compactor service registered with ID: {} (Flight: {flight_addr_str})",
         bootstrap.service_id()
     );
@@ -136,7 +144,7 @@ async fn main() -> Result<()> {
         compaction_metrics.clone(),
     ));
 
-    log::info!(
+    tracing::info!(
         "Compaction planner and executor initialized with tick interval: {:?}",
         config.compactor.tick_interval
     );
@@ -149,7 +157,7 @@ async fn main() -> Result<()> {
         lease_ttl,
     );
 
-    log::info!(
+    tracing::info!(
         "Lease manager initialized (instance_id: {}, ttl: {:?})",
         bootstrap.service_id(),
         lease_ttl
@@ -162,7 +170,7 @@ async fn main() -> Result<()> {
         config.compactor.max_per_tenant,
     );
 
-    log::info!(
+    tracing::info!(
         "Round-robin scheduler initialized (max_per_cycle: {}, max_per_tenant: {})",
         config.compactor.max_candidates_per_cycle,
         config.compactor.max_per_tenant
@@ -179,14 +187,14 @@ async fn main() -> Result<()> {
     );
     let flight_task = {
         tokio::spawn(async move {
-            log::info!("Starting Compactor Flight service on {flight_addr}");
+            tracing::info!("Starting Compactor Flight service on {flight_addr}");
             match Server::builder()
                 .add_service(FlightServiceServer::new(flight_service))
                 .serve(flight_addr)
                 .await
             {
-                Ok(_) => log::info!("Compactor Flight service stopped"),
-                Err(e) => log::error!("Compactor Flight service error: {e}"),
+                Ok(_) => tracing::info!("Compactor Flight service stopped"),
+                Err(e) => tracing::error!("Compactor Flight service error: {e}"),
             }
         })
     };
@@ -198,12 +206,12 @@ async fn main() -> Result<()> {
         RetentionEnforcer::new(
             catalog_manager.clone(),
             retention_config.clone(),
-            retention_metrics,
+            retention_metrics.clone(),
         )
         .context("Failed to initialize retention enforcer")?,
     );
 
-    log::info!(
+    tracing::info!(
         "Retention enforcer initialized (enabled: {}, check_interval: {:?}, dry_run: {})",
         retention_config.enabled,
         retention_config.retention_check_interval,
@@ -213,7 +221,7 @@ async fn main() -> Result<()> {
     // Initialize orphan cleanup (Phase 3)
     let orphan_cleanup_config = OrphanCleanupConfig::from(config.compactor.orphan_cleanup.clone());
 
-    log::info!(
+    tracing::info!(
         "Orphan cleanup configured (enabled: {}, cleanup_interval: {:?}, dry_run: {})",
         orphan_cleanup_config.enabled,
         orphan_cleanup_config.cleanup_interval(),
@@ -236,6 +244,30 @@ async fn main() -> Result<()> {
         object_store.clone(),
         orphan_detector.clone(),
     ));
+    // Start observability HTTP endpoint (Phase 6): Prometheus /metrics,
+    // JSON /status, and /health. Disabled when metrics_addr is empty.
+    let metrics_addr_str = std::env::var("COMPACTOR_METRICS_ADDR")
+        .unwrap_or_else(|_| config.compactor.metrics_addr.clone());
+    let observability_task = if metrics_addr_str.is_empty() {
+        tracing::info!("Compactor observability HTTP endpoint disabled (metrics_addr is empty)");
+        None
+    } else {
+        let metrics_addr: std::net::SocketAddr = metrics_addr_str
+            .parse()
+            .with_context(|| format!("Invalid compactor metrics_addr: {metrics_addr_str}"))?;
+        let observability_state = compactor::http::ObservabilityState::new(
+            bootstrap.service_id(),
+            compaction_metrics.clone(),
+            retention_metrics.clone(),
+            orphan_detector.metrics().clone(),
+        );
+        Some(tokio::spawn(async move {
+            if let Err(e) = compactor::http::serve(metrics_addr, observability_state).await {
+                tracing::error!("Compactor observability HTTP endpoint error: {e:#}");
+            }
+        }))
+    };
+
     // Start planning, execution, and retention enforcement loop
     let compaction_interval = config.compactor.tick_interval;
     let planning_task = {
@@ -260,14 +292,14 @@ async fn main() -> Result<()> {
             loop {
                 tokio::select! {
                     _ = compaction_ticker.tick() => {
-                        log::debug!("Running compaction planning cycle");
+                        tracing::debug!("Running compaction planning cycle");
 
                         match scheduler.schedule().await {
                             Ok(candidates) => {
                                 if candidates.is_empty() {
-                                    log::info!("No compaction candidates found in this cycle");
+                                    tracing::info!("No compaction candidates found in this cycle");
                                 } else {
-                                    log::info!("Found {} compaction candidates (scheduler: round-robin):", candidates.len());
+                                    tracing::info!("Found {} compaction candidates (scheduler: round-robin):", candidates.len());
 
                                     // Execute compaction for each candidate, guarded by a distributed lease
                                     for candidate in candidates {
@@ -276,7 +308,7 @@ async fn main() -> Result<()> {
                                         // Attempt to acquire a lease; skip if another instance holds it
                                         match lease_manager.try_acquire_default(&candidate).await {
                                             Ok(None) => {
-                                                log::debug!(
+                                                tracing::debug!(
                                                     "Skipping {}/{}/{} partition {} — lease held by another instance",
                                                     candidate.tenant_id,
                                                     candidate.dataset_id,
@@ -286,7 +318,7 @@ async fn main() -> Result<()> {
                                                 continue;
                                             }
                                             Err(e) => {
-                                                log::warn!(
+                                                tracing::warn!(
                                                     "Lease acquisition failed for {}/{}/{} partition {}: {e:#}",
                                                     candidate.tenant_id,
                                                     candidate.dataset_id,
@@ -296,7 +328,7 @@ async fn main() -> Result<()> {
                                                 continue;
                                             }
                                             Ok(Some(lease)) => {
-                                                log::info!(
+                                                tracing::info!(
                                                     "Executing compaction for {}/{}/{} partition {}",
                                                     candidate.tenant_id,
                                                     candidate.dataset_id,
@@ -306,16 +338,16 @@ async fn main() -> Result<()> {
 
                                                 match executor.execute_candidate(candidate).await {
                                                     Ok(result) => {
-                                                        log::info!(
+                                                        tracing::info!(
                                                             "Compaction job {} completed with status: {:?}",
                                                             result.job_id,
                                                             result.status
                                                         );
 
                                                         if let Some(error) = result.error {
-                                                            log::error!("Job {} error: {}", result.job_id, error);
+                                                            tracing::error!("Job {} error: {}", result.job_id, error);
                                                         } else {
-                                                            log::info!(
+                                                            tracing::info!(
                                                                 "Job {}: {} files → {} files, {} bytes → {} bytes, duration={:?}",
                                                                 result.job_id,
                                                                 result.input_files_count,
@@ -327,13 +359,13 @@ async fn main() -> Result<()> {
                                                         }
                                                     }
                                                     Err(e) => {
-                                                        log::error!("Failed to execute compaction: {e:?}");
+                                                        tracing::error!("Failed to execute compaction: {e:?}");
                                                     }
                                                 }
 
                                                 // Release the lease regardless of job outcome
                                                 if let Err(e) = lease_manager.release(&lease).await {
-                                                    log::warn!("Failed to release lease: {e:#}");
+                                                    tracing::warn!("Failed to release lease: {e:#}");
                                                 }
                                             }
                                         }
@@ -345,7 +377,7 @@ async fn main() -> Result<()> {
                                 }
                             }
                             Err(e) => {
-                                log::error!("Compaction scheduling cycle failed: {e:?}");
+                                tracing::error!("Compaction scheduling cycle failed: {e:?}");
                             }
                         }
                     }
@@ -353,18 +385,18 @@ async fn main() -> Result<()> {
                     _ = lease_expiry_ticker.tick() => {
                         match lease_manager.expire_stale().await {
                             Ok(count) if count > 0 => {
-                                log::info!("Expired {count} stale compaction lease(s) from crashed instances");
+                                tracing::info!("Expired {count} stale compaction lease(s) from crashed instances");
                             }
                             Ok(_) => {}
                             Err(e) => {
-                                log::warn!("Stale lease cleanup failed: {e:#}");
+                                tracing::warn!("Stale lease cleanup failed: {e:#}");
                             }
                         }
                     }
 
                     _ = retention_ticker.tick() => {
                         if retention_config.enabled {
-                            log::debug!("Running retention enforcement cycle");
+                            tracing::debug!("Running retention enforcement cycle");
 
                             for tenant_config in catalog_manager.get_enabled_tenants() {
                                 for dataset_config in &tenant_config.datasets {
@@ -372,7 +404,7 @@ async fn main() -> Result<()> {
                                     let dataset_id = &dataset_config.id;
                                     match retention_enforcer.enforce_retention(tenant_id, dataset_id).await {
                                         Ok(result) => {
-                                            log::info!(
+                                            tracing::info!(
                                                 "Retention enforcement completed for {}/{}: {} tables processed, {} partitions dropped, {} snapshots expired, {} bytes reclaimed",
                                                 tenant_id,
                                                 dataset_id,
@@ -383,19 +415,19 @@ async fn main() -> Result<()> {
                                             );
 
                                             if !result.errors.is_empty() {
-                                                log::warn!(
+                                                tracing::warn!(
                                                     "Retention enforcement had {} errors for {}/{}",
                                                     result.errors.len(),
                                                     tenant_id,
                                                     dataset_id
                                                 );
                                                 for error in &result.errors {
-                                                    log::warn!("Retention error: {}", error);
+                                                    tracing::warn!("Retention error: {}", error);
                                                 }
                                             }
                                         }
                                         Err(e) => {
-                                            log::error!("Retention enforcement failed for {}/{}: {e:?}", tenant_id, dataset_id);
+                                            tracing::error!("Retention enforcement failed for {}/{}: {e:?}", tenant_id, dataset_id);
                                         }
                                     }
                                 }
@@ -405,19 +437,19 @@ async fn main() -> Result<()> {
 
                     _ = orphan_cleanup_ticker.tick() => {
                         if orphan_cleanup_config.enabled {
-                            log::debug!("Running orphan cleanup cycle");
+                            tracing::debug!("Running orphan cleanup cycle");
 
                             // Run retention enforcement first to expire old snapshots,
                             // which reduces the live file set size before orphan detection.
                             // This is the ordering fix for issue #475 (P3).
                             if retention_config.enabled {
-                                log::debug!("Running pre-orphan retention enforcement to reduce live file set");
+                                tracing::debug!("Running pre-orphan retention enforcement to reduce live file set");
                                 for tenant_config in catalog_manager.get_enabled_tenants() {
                                     for dataset_config in &tenant_config.datasets {
                                         let tid = &tenant_config.id;
                                         let did = &dataset_config.id;
                                         if let Err(e) = retention_enforcer.enforce_retention(tid, did).await {
-                                            log::warn!(
+                                            tracing::warn!(
                                                 "Pre-orphan retention enforcement failed for {tid}/{did}: {e:#}"
                                             );
                                         }
@@ -444,7 +476,7 @@ async fn main() -> Result<()> {
                                         {
                                             Ok(candidates) if !candidates.is_empty() => {
                                                 match orphan_cleaner.delete_orphans_batch(candidates).await {
-                                                    Ok(result) => log::info!(
+                                                    Ok(result) => tracing::info!(
                                                         "Orphan cleanup {}/{}/{}: deleted={}, \
                                                          would_delete={}, bytes_freed={}, failed={}",
                                                         tid,
@@ -455,7 +487,7 @@ async fn main() -> Result<()> {
                                                         result.total_bytes_freed,
                                                         result.failed_count,
                                                     ),
-                                                    Err(e) => log::error!(
+                                                    Err(e) => tracing::error!(
                                                         "Orphan cleanup failed for {}/{}/{}: {e:?}",
                                                         tid,
                                                         did,
@@ -464,7 +496,7 @@ async fn main() -> Result<()> {
                                                 }
                                             }
                                             Ok(_) => {} // no orphans
-                                            Err(e) => log::warn!(
+                                            Err(e) => tracing::warn!(
                                                 "Orphan detection skipped for {}/{}/{} \
                                                  (table may not exist): {e:#}",
                                                 tid,
@@ -486,14 +518,17 @@ async fn main() -> Result<()> {
     };
 
     // Wait for shutdown signal (SIGINT or SIGTERM)
-    log::info!("Compactor service running, waiting for shutdown signal");
+    tracing::info!("Compactor service running, waiting for shutdown signal");
     wait_for_shutdown_signal().await?;
 
-    log::info!("Received shutdown signal, stopping compactor service");
+    tracing::info!("Received shutdown signal, stopping compactor service");
 
     // Stop background tasks
     planning_task.abort();
     flight_task.abort();
+    if let Some(task) = observability_task {
+        task.abort();
+    }
 
     // Graceful shutdown
     bootstrap
@@ -501,7 +536,7 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to shutdown service bootstrap")?;
 
-    log::info!("Compactor service stopped");
+    tracing::info!("Compactor service stopped");
 
     Ok(())
 }

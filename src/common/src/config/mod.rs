@@ -337,6 +337,21 @@ pub struct CompactorConfig {
     /// Env: SIGNALDB__COMPACTOR__LEASE_TTL_SECONDS
     #[serde(default = "default_lease_ttl_seconds")]
     pub lease_ttl_seconds: u64,
+
+    /// Listen address for the observability HTTP endpoint (Phase 6).
+    ///
+    /// Serves Prometheus metrics at `/metrics`, a JSON status document at
+    /// `/status`, and a liveness probe at `/health`. Set to an empty string
+    /// to disable the endpoint.
+    ///
+    /// Default: "0.0.0.0:9091"
+    /// Env: SIGNALDB__COMPACTOR__METRICS_ADDR (or COMPACTOR_METRICS_ADDR)
+    #[serde(default = "default_compactor_metrics_addr")]
+    pub metrics_addr: String,
+}
+
+fn default_compactor_metrics_addr() -> String {
+    "0.0.0.0:9091".to_string()
 }
 
 impl Default for CompactorConfig {
@@ -353,6 +368,7 @@ impl Default for CompactorConfig {
             max_candidates_per_cycle: default_max_candidates_per_cycle(),
             max_per_tenant: default_max_per_tenant(),
             lease_ttl_seconds: default_lease_ttl_seconds(),
+            metrics_addr: default_compactor_metrics_addr(),
         }
     }
 }
