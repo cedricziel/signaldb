@@ -176,6 +176,7 @@ fn convert_resource_group(
 
     if !job.is_empty() {
         resource_attributes.push(KeyValue {
+            key_strindex: 0,
             key: "service.name".to_string(),
             value: Some(AnyValue {
                 value: Some(any_value::Value::StringValue(job.to_string())),
@@ -185,6 +186,7 @@ fn convert_resource_group(
 
     if !instance.is_empty() {
         resource_attributes.push(KeyValue {
+            key_strindex: 0,
             key: "service.instance.id".to_string(),
             value: Some(AnyValue {
                 value: Some(any_value::Value::StringValue(instance.to_string())),
@@ -250,6 +252,7 @@ fn extract_instrumentation_scope(
                 // Other otel_scope_* labels become scope attributes
                 if attr_name != "name" && attr_name != "version" {
                     scope_attributes.push(KeyValue {
+                        key_strindex: 0,
                         key: attr_name.to_string(),
                         value: Some(AnyValue {
                             value: Some(any_value::Value::StringValue(label.value.clone())),
@@ -331,6 +334,7 @@ fn convert_metric_group(
     let mut metric_metadata = Vec::new();
     if metric_type != PrometheusMetricType::Unknown {
         metric_metadata.push(KeyValue {
+            key_strindex: 0,
             key: "prometheus.type".to_string(),
             value: Some(AnyValue {
                 value: Some(any_value::Value::StringValue(
@@ -802,6 +806,7 @@ fn convert_labels_to_attributes(labels: &[PrometheusLabel]) -> Vec<KeyValue> {
                 && !l.name.starts_with(OTEL_SCOPE_PREFIX)
         })
         .map(|l| KeyValue {
+            key_strindex: 0,
             key: l.name.clone(),
             value: Some(AnyValue {
                 value: Some(any_value::Value::StringValue(l.value.clone())),

@@ -247,6 +247,7 @@ pub fn arrow_to_otlp_logs(batch: &RecordBatch) -> ExportLogsServiceRequest {
         {
             map.into_iter()
                 .map(|(k, v)| KeyValue {
+                    key_strindex: 0,
                     key: k,
                     value: Some(json_value_to_any_value(&v)),
                 })
@@ -261,6 +262,7 @@ pub fn arrow_to_otlp_logs(batch: &RecordBatch) -> ExportLogsServiceRequest {
         {
             map.into_iter()
                 .map(|(k, v)| KeyValue {
+                    key_strindex: 0,
                     key: k,
                     value: Some(json_value_to_any_value(&v)),
                 })
@@ -288,6 +290,7 @@ pub fn arrow_to_otlp_logs(batch: &RecordBatch) -> ExportLogsServiceRequest {
             if let Some(serde_json::Value::Object(attrs_map)) = map.get("attributes") {
                 for (k, v) in attrs_map {
                     scope_attributes.push(KeyValue {
+                        key_strindex: 0,
                         key: k.clone(),
                         value: Some(json_value_to_any_value(v)),
                     });

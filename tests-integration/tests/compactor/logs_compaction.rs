@@ -33,6 +33,7 @@ fn init_test_logging() {
 fn make_resource(service_name: &str) -> Resource {
     Resource {
         attributes: vec![KeyValue {
+            key_strindex: 0,
             key: "service.name".to_string(),
             value: Some(AnyValue {
                 value: Some(Value::StringValue(service_name.to_string())),
@@ -80,12 +81,14 @@ fn build_logs_request_multi_severity(
             }),
             attributes: vec![
                 KeyValue {
+                    key_strindex: 0,
                     key: "service.name".to_string(),
                     value: Some(AnyValue {
                         value: Some(Value::StringValue(service_names[service_idx].to_string())),
                     }),
                 },
                 KeyValue {
+                    key_strindex: 0,
                     key: "batch.number".to_string(),
                     value: Some(AnyValue {
                         value: Some(Value::IntValue(batch_num as i64)),

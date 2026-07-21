@@ -391,6 +391,7 @@ pub fn arrow_to_otlp_metrics(batch: &RecordBatch) -> ExportMetricsServiceRequest
         {
             map.into_iter()
                 .map(|(k, v)| KeyValue {
+                    key_strindex: 0,
                     key: k,
                     value: Some(json_value_to_any_value(&v)),
                 })
@@ -405,6 +406,7 @@ pub fn arrow_to_otlp_metrics(batch: &RecordBatch) -> ExportMetricsServiceRequest
         {
             map.into_iter()
                 .map(|(k, v)| KeyValue {
+                    key_strindex: 0,
                     key: k,
                     value: Some(json_value_to_any_value(&v)),
                 })
@@ -432,6 +434,7 @@ pub fn arrow_to_otlp_metrics(batch: &RecordBatch) -> ExportMetricsServiceRequest
             if let Some(serde_json::Value::Object(attrs_map)) = map.get("attributes") {
                 for (k, v) in attrs_map {
                     scope_attributes.push(KeyValue {
+                        key_strindex: 0,
                         key: k.clone(),
                         value: Some(json_value_to_any_value(v)),
                     });
@@ -597,6 +600,7 @@ fn parse_number_data_points(
                     attrs_map
                         .iter()
                         .map(|(k, v)| KeyValue {
+                            key_strindex: 0,
                             key: k.clone(),
                             value: Some(json_value_to_any_value(v)),
                         })
@@ -688,6 +692,7 @@ fn parse_histogram_data_points(
                     attrs_map
                         .iter()
                         .map(|(k, v)| KeyValue {
+                            key_strindex: 0,
                             key: k.clone(),
                             value: Some(json_value_to_any_value(v)),
                         })
@@ -821,6 +826,7 @@ fn parse_exponential_histogram_data_points(
                     attrs_map
                         .iter()
                         .map(|(k, v)| KeyValue {
+                            key_strindex: 0,
                             key: k.clone(),
                             value: Some(json_value_to_any_value(v)),
                         })
@@ -926,6 +932,7 @@ fn parse_summary_data_points(
                     attrs_map
                         .iter()
                         .map(|(k, v)| KeyValue {
+                            key_strindex: 0,
                             key: k.clone(),
                             value: Some(json_value_to_any_value(v)),
                         })
@@ -996,6 +1003,7 @@ fn parse_exemplars(exemplars_val: &serde_json::Value) -> Vec<Exemplar> {
                     attrs_map
                         .iter()
                         .map(|(k, v)| KeyValue {
+                            key_strindex: 0,
                             key: k.clone(),
                             value: Some(json_value_to_any_value(v)),
                         })

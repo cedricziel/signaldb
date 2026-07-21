@@ -1378,12 +1378,14 @@ async fn test_trace_attributes_round_trip() {
             resource: Some(Resource {
                 attributes: vec![
                     KeyValue {
+                        key_strindex: 0,
                         key: "service.name".to_string(),
                         value: Some(AnyValue {
                             value: Some(Value::StringValue("my-test-service".to_string())),
                         }),
                     },
                     KeyValue {
+                        key_strindex: 0,
                         key: "deployment.environment".to_string(),
                         value: Some(AnyValue {
                             value: Some(Value::StringValue("test".to_string())),
@@ -1405,12 +1407,14 @@ async fn test_trace_attributes_round_trip() {
                     end_time_unix_nano: 2_000_000_000,
                     attributes: vec![
                         KeyValue {
+                            key_strindex: 0,
                             key: "http.method".to_string(),
                             value: Some(AnyValue {
                                 value: Some(Value::StringValue("GET".to_string())),
                             }),
                         },
                         KeyValue {
+                            key_strindex: 0,
                             key: "http.status_code".to_string(),
                             value: Some(AnyValue {
                                 value: Some(Value::IntValue(200)),

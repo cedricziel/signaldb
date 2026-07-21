@@ -382,6 +382,7 @@ mod tests {
             resource_metrics: vec![ResourceMetrics {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
+                        key_strindex: 0,
                         key: "service.name".to_string(),
                         value: Some(AnyValue {
                             value: Some(any_value::Value::StringValue("test-service".to_string())),
@@ -399,6 +400,7 @@ mod tests {
                         data: Some(Data::Gauge(Gauge {
                             data_points: vec![NumberDataPoint {
                                 attributes: vec![KeyValue {
+                                    key_strindex: 0,
                                     key: "location".to_string(),
                                     value: Some(AnyValue {
                                         value: Some(any_value::Value::StringValue(

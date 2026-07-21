@@ -24,6 +24,7 @@ use writer::IcebergTableWriter;
 fn make_resource(service_name: &str) -> Resource {
     Resource {
         attributes: vec![KeyValue {
+            key_strindex: 0,
             key: "service.name".to_string(),
             value: Some(AnyValue {
                 value: Some(
@@ -46,6 +47,7 @@ fn create_gauge_batch(batch_num: usize, num_rows: usize) -> Result<ExportMetrics
     for i in 0..num_rows {
         data_points.push(NumberDataPoint {
             attributes: vec![KeyValue {
+                key_strindex: 0,
                 key: "instance".to_string(),
                 value: Some(AnyValue {
                     value: Some(
@@ -97,6 +99,7 @@ fn create_histogram_batch(
     for i in 0..num_rows {
         data_points.push(HistogramDataPoint {
             attributes: vec![KeyValue {
+                key_strindex: 0,
                 key: "endpoint".to_string(),
                 value: Some(AnyValue {
                     value: Some(

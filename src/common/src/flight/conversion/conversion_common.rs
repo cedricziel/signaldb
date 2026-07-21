@@ -42,6 +42,9 @@ pub fn extract_value(
                     let s = String::from_utf8(vec.to_owned()).unwrap_or_default();
                     JsonValue::String(s)
                 }
+                // Interned string references (OTLP string interning) cannot be
+                // resolved here without the enclosing message's string table.
+                Value::StringValueStrindex(_) => JsonValue::Null,
             },
             None => JsonValue::Null,
         },
@@ -148,6 +151,7 @@ pub fn json_value_to_any_value(json_val: &JsonValue) -> AnyValue {
             let values = obj
                 .iter()
                 .map(|(k, v)| KeyValue {
+                    key_strindex: 0,
                     key: k.clone(),
                     value: Some(json_value_to_any_value(v)),
                 })
