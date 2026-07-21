@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
+use futures::StreamExt;
 use iceberg_rust::spec::manifest::Status;
 use iceberg_rust::table::Table;
 use std::collections::HashMap;
@@ -139,7 +140,8 @@ impl PartitionManager {
         // Accumulate (file_count, total_bytes) per partition hour (integer hours since epoch).
         let mut by_hour: HashMap<String, (usize, u64)> = HashMap::new();
 
-        for result in file_iter {
+        let mut file_iter = std::pin::pin!(file_iter);
+        while let Some(result) = file_iter.next().await {
             let (_, entry) = result.context("Failed to read manifest entry")?;
             if *entry.status() == Status::Deleted {
                 continue;

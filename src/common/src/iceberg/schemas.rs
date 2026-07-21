@@ -15,6 +15,8 @@ fn required_field(id: i32, name: &str, prim: PrimitiveType) -> StructField {
         required: true,
         field_type: Type::Primitive(prim),
         doc: None,
+        initial_default: None,
+        write_default: None,
     }
 }
 
@@ -26,6 +28,8 @@ fn optional_field(id: i32, name: &str, prim: PrimitiveType) -> StructField {
         required: false,
         field_type: Type::Primitive(prim),
         doc: None,
+        initial_default: None,
+        write_default: None,
     }
 }
 

@@ -77,6 +77,7 @@ impl StorageTestContext {
 mod tests {
     use super::*;
     use bytes::Bytes;
+    use object_store::ObjectStoreExt;
     use object_store::path::Path;
 
     #[tokio::test]

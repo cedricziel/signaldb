@@ -63,19 +63,19 @@ crossterm = { version = "0.29.0", features = ["event-stream"] }
 tui-tree-widget = "0.24.0"
 
 # DataFusion for workspace members
-datafusion = { version = "51.0.0", default-features = false, features = [
+datafusion = { version = "54.1.0", default-features = false, features = [
     "parquet",
 ] }
 # Direct Arrow and Parquet dependencies
-arrow = { version = "57.3.0", features = ["prettyprint"] }
-parquet = { version = "57.3.0", features = ["arrow", "async"] }
-arrow-flight = { version = "57.3.0" }
-object_store = { version = "0.12.4", features = ["aws"] }
+arrow = { version = "58.3.0", features = ["prettyprint"] }
+parquet = { version = "58.3.0", features = ["arrow", "async"] }
+arrow-flight = { version = "58.3.0" }
+object_store = { version = "0.13.1", features = ["aws"] }
 
 # Iceberg table format support (schema, catalog, and write operations)
-datafusion_iceberg = { git = "https://github.com/JanKaul/iceberg-rust", rev = "31d6d911" }
-iceberg-rust = { git = "https://github.com/JanKaul/iceberg-rust", rev = "31d6d911" }
-iceberg-sql-catalog = { git = "https://github.com/JanKaul/iceberg-rust", rev = "31d6d911" }
+datafusion_iceberg = { git = "https://github.com/JanKaul/iceberg-rust", rev = "170ef972" }
+iceberg-rust = { git = "https://github.com/JanKaul/iceberg-rust", rev = "170ef972" }
+iceberg-sql-catalog = { git = "https://github.com/JanKaul/iceberg-rust", rev = "170ef972" }
 
 tonic = { version = "0.14.2", features = ["transport", "channel"] }
 tonic-build = "0.14.2"

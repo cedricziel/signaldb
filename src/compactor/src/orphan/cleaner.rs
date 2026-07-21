@@ -9,8 +9,8 @@
 use crate::orphan::config::OrphanCleanupConfig;
 use crate::orphan::detector::{OrphanCandidate, OrphanDetector};
 use anyhow::{Context, Result};
-use object_store::ObjectStore;
 use object_store::path::Path as ObjectPath;
+use object_store::{ObjectStore, ObjectStoreExt};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
