@@ -9,7 +9,7 @@ use compactor::orphan::{
     cleaner::OrphanCleaner, config::OrphanCleanupConfig, detector::OrphanDetector,
 };
 use iceberg_rust::catalog::tabular::Tabular;
-use object_store::ObjectStore;
+use object_store::ObjectStoreExt;
 use object_store::path::Path as ObjectPath;
 use std::sync::Arc;
 use tests_integration::fixtures::{

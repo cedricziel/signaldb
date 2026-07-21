@@ -194,6 +194,8 @@ impl ResolvedSchema {
                 required: field.required,
                 field_type,
                 doc: None,
+                initial_default: None,
+                write_default: None,
             };
 
             fields.push(struct_field);

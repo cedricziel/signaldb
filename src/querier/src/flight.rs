@@ -16,7 +16,6 @@ use datafusion::execution::context::SessionContext;
 use futures::StreamExt;
 use futures::stream::{self, BoxStream};
 use object_store::ObjectStore;
-use std::any::Any;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
@@ -41,10 +40,6 @@ impl std::fmt::Debug for LiveIcebergSchema {
 
 #[async_trait::async_trait]
 impl SchemaProvider for LiveIcebergSchema {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn table_names(&self) -> Vec<String> {
         vec![]
     }
@@ -106,10 +101,6 @@ impl std::fmt::Debug for TenantCatalog {
 }
 
 impl CatalogProvider for TenantCatalog {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema_names(&self) -> Vec<String> {
         vec![]
     }
