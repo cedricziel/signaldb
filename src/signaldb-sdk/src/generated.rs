@@ -65,11 +65,6 @@ pub mod types {
         ///Human-readable error description
         pub message: ::std::string::String,
     }
-    impl ::std::convert::From<&ApiError> for ApiError {
-        fn from(value: &ApiError) -> Self {
-            value.clone()
-        }
-    }
     impl ApiError {
         pub fn builder() -> builder::ApiError {
             Default::default()
@@ -121,11 +116,6 @@ pub mod types {
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub revoked_at: ::std::option::Option<::std::string::String>,
     }
-    impl ::std::convert::From<&ApiKeyResponse> for ApiKeyResponse {
-        fn from(value: &ApiKeyResponse) -> Self {
-            value.clone()
-        }
-    }
     impl ApiKeyResponse {
         pub fn builder() -> builder::ApiKeyResponse {
             Default::default()
@@ -153,11 +143,6 @@ pub mod types {
         ///Optional human-readable name for the key
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
-    }
-    impl ::std::convert::From<&CreateApiKeyRequest> for CreateApiKeyRequest {
-        fn from(value: &CreateApiKeyRequest) -> Self {
-            value.clone()
-        }
     }
     impl ::std::default::Default for CreateApiKeyRequest {
         fn default() -> Self {
@@ -217,11 +202,6 @@ pub mod types {
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
     }
-    impl ::std::convert::From<&CreateApiKeyResponse> for CreateApiKeyResponse {
-        fn from(value: &CreateApiKeyResponse) -> Self {
-            value.clone()
-        }
-    }
     impl CreateApiKeyResponse {
         pub fn builder() -> builder::CreateApiKeyResponse {
             Default::default()
@@ -251,11 +231,6 @@ pub mod types {
     pub struct CreateDatasetRequest {
         ///Dataset name
         pub name: ::std::string::String,
-    }
-    impl ::std::convert::From<&CreateDatasetRequest> for CreateDatasetRequest {
-        fn from(value: &CreateDatasetRequest) -> Self {
-            value.clone()
-        }
     }
     impl CreateDatasetRequest {
         pub fn builder() -> builder::CreateDatasetRequest {
@@ -300,11 +275,6 @@ pub mod types {
         pub id: ::std::string::String,
         ///Human-readable tenant name
         pub name: ::std::string::String,
-    }
-    impl ::std::convert::From<&CreateTenantRequest> for CreateTenantRequest {
-        fn from(value: &CreateTenantRequest) -> Self {
-            value.clone()
-        }
     }
     impl CreateTenantRequest {
         pub fn builder() -> builder::CreateTenantRequest {
@@ -357,11 +327,6 @@ pub mod types {
         ///Tenant that owns this dataset
         pub tenant_id: ::std::string::String,
     }
-    impl ::std::convert::From<&DatasetResponse> for DatasetResponse {
-        fn from(value: &DatasetResponse) -> Self {
-            value.clone()
-        }
-    }
     impl DatasetResponse {
         pub fn builder() -> builder::DatasetResponse {
             Default::default()
@@ -394,11 +359,6 @@ pub mod types {
     pub struct ListApiKeysResponse {
         ///List of API key records (without raw keys)
         pub api_keys: ::std::vec::Vec<ApiKeyResponse>,
-    }
-    impl ::std::convert::From<&ListApiKeysResponse> for ListApiKeysResponse {
-        fn from(value: &ListApiKeysResponse) -> Self {
-            value.clone()
-        }
     }
     impl ListApiKeysResponse {
         pub fn builder() -> builder::ListApiKeysResponse {
@@ -433,11 +393,6 @@ pub mod types {
         ///List of dataset records
         pub datasets: ::std::vec::Vec<DatasetResponse>,
     }
-    impl ::std::convert::From<&ListDatasetsResponse> for ListDatasetsResponse {
-        fn from(value: &ListDatasetsResponse) -> Self {
-            value.clone()
-        }
-    }
     impl ListDatasetsResponse {
         pub fn builder() -> builder::ListDatasetsResponse {
             Default::default()
@@ -470,11 +425,6 @@ pub mod types {
     pub struct ListTenantsResponse {
         ///List of tenant records
         pub tenants: ::std::vec::Vec<TenantResponse>,
-    }
-    impl ::std::convert::From<&ListTenantsResponse> for ListTenantsResponse {
-        fn from(value: &ListTenantsResponse) -> Self {
-            value.clone()
-        }
     }
     impl ListTenantsResponse {
         pub fn builder() -> builder::ListTenantsResponse {
@@ -541,11 +491,6 @@ pub mod types {
         ///ISO 8601 last-updated timestamp
         pub updated_at: ::std::string::String,
     }
-    impl ::std::convert::From<&TenantResponse> for TenantResponse {
-        fn from(value: &TenantResponse) -> Self {
-            value.clone()
-        }
-    }
     impl TenantResponse {
         pub fn builder() -> builder::TenantResponse {
             Default::default()
@@ -580,11 +525,6 @@ pub mod types {
         ///Updated tenant name
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
-    }
-    impl ::std::convert::From<&UpdateTenantRequest> for UpdateTenantRequest {
-        fn from(value: &UpdateTenantRequest) -> Self {
-            value.clone()
-        }
     }
     impl ::std::default::Default for UpdateTenantRequest {
         fn default() -> Self {
@@ -622,7 +562,7 @@ pub mod types {
             {
                 self.error = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for error: {}", e));
+                    .map_err(|e| format!("error converting supplied value for error: {e}"));
                 self
             }
             pub fn message<T>(mut self, value: T) -> Self
@@ -632,7 +572,7 @@ pub mod types {
             {
                 self.message = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for message: {}", e));
+                    .map_err(|e| format!("error converting supplied value for message: {e}"));
                 self
             }
         }
@@ -686,7 +626,7 @@ pub mod types {
             {
                 self.created_at = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for created_at: {}", e));
+                    .map_err(|e| format!("error converting supplied value for created_at: {e}"));
                 self
             }
             pub fn id<T>(mut self, value: T) -> Self
@@ -696,7 +636,7 @@ pub mod types {
             {
                 self.id = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for id: {}", e));
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
                 self
             }
             pub fn name<T>(mut self, value: T) -> Self
@@ -706,7 +646,7 @@ pub mod types {
             {
                 self.name = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for name: {}", e));
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
                 self
             }
             pub fn revoked_at<T>(mut self, value: T) -> Self
@@ -716,7 +656,7 @@ pub mod types {
             {
                 self.revoked_at = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for revoked_at: {}", e));
+                    .map_err(|e| format!("error converting supplied value for revoked_at: {e}"));
                 self
             }
         }
@@ -765,7 +705,7 @@ pub mod types {
             {
                 self.name = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for name: {}", e));
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
                 self
             }
         }
@@ -812,7 +752,7 @@ pub mod types {
             {
                 self.created_at = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for created_at: {}", e));
+                    .map_err(|e| format!("error converting supplied value for created_at: {e}"));
                 self
             }
             pub fn id<T>(mut self, value: T) -> Self
@@ -822,7 +762,7 @@ pub mod types {
             {
                 self.id = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for id: {}", e));
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
                 self
             }
             pub fn key<T>(mut self, value: T) -> Self
@@ -832,7 +772,7 @@ pub mod types {
             {
                 self.key = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for key: {}", e));
+                    .map_err(|e| format!("error converting supplied value for key: {e}"));
                 self
             }
             pub fn name<T>(mut self, value: T) -> Self
@@ -842,7 +782,7 @@ pub mod types {
             {
                 self.name = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for name: {}", e));
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
                 self
             }
         }
@@ -888,7 +828,7 @@ pub mod types {
             {
                 self.name = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for name: {}", e));
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
                 self
             }
         }
@@ -932,7 +872,7 @@ pub mod types {
                 T::Error: ::std::fmt::Display,
             {
                 self.default_dataset = value.try_into().map_err(|e| {
-                    format!("error converting supplied value for default_dataset: {}", e)
+                    format!("error converting supplied value for default_dataset: {e}")
                 });
                 self
             }
@@ -943,7 +883,7 @@ pub mod types {
             {
                 self.id = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for id: {}", e));
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
                 self
             }
             pub fn name<T>(mut self, value: T) -> Self
@@ -953,7 +893,7 @@ pub mod types {
             {
                 self.name = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for name: {}", e));
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
                 self
             }
         }
@@ -1003,7 +943,7 @@ pub mod types {
             {
                 self.created_at = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for created_at: {}", e));
+                    .map_err(|e| format!("error converting supplied value for created_at: {e}"));
                 self
             }
             pub fn id<T>(mut self, value: T) -> Self
@@ -1013,7 +953,7 @@ pub mod types {
             {
                 self.id = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for id: {}", e));
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
                 self
             }
             pub fn name<T>(mut self, value: T) -> Self
@@ -1023,7 +963,7 @@ pub mod types {
             {
                 self.name = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for name: {}", e));
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
                 self
             }
             pub fn tenant_id<T>(mut self, value: T) -> Self
@@ -1033,7 +973,7 @@ pub mod types {
             {
                 self.tenant_id = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for tenant_id: {}", e));
+                    .map_err(|e| format!("error converting supplied value for tenant_id: {e}"));
                 self
             }
         }
@@ -1082,7 +1022,7 @@ pub mod types {
             {
                 self.api_keys = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for api_keys: {}", e));
+                    .map_err(|e| format!("error converting supplied value for api_keys: {e}"));
                 self
             }
         }
@@ -1125,7 +1065,7 @@ pub mod types {
             {
                 self.datasets = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for datasets: {}", e));
+                    .map_err(|e| format!("error converting supplied value for datasets: {e}"));
                 self
             }
         }
@@ -1168,7 +1108,7 @@ pub mod types {
             {
                 self.tenants = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for tenants: {}", e));
+                    .map_err(|e| format!("error converting supplied value for tenants: {e}"));
                 self
             }
         }
@@ -1221,7 +1161,7 @@ pub mod types {
             {
                 self.created_at = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for created_at: {}", e));
+                    .map_err(|e| format!("error converting supplied value for created_at: {e}"));
                 self
             }
             pub fn default_dataset<T>(mut self, value: T) -> Self
@@ -1230,7 +1170,7 @@ pub mod types {
                 T::Error: ::std::fmt::Display,
             {
                 self.default_dataset = value.try_into().map_err(|e| {
-                    format!("error converting supplied value for default_dataset: {}", e)
+                    format!("error converting supplied value for default_dataset: {e}")
                 });
                 self
             }
@@ -1241,7 +1181,7 @@ pub mod types {
             {
                 self.id = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for id: {}", e));
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
                 self
             }
             pub fn name<T>(mut self, value: T) -> Self
@@ -1251,7 +1191,7 @@ pub mod types {
             {
                 self.name = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for name: {}", e));
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
                 self
             }
             pub fn source<T>(mut self, value: T) -> Self
@@ -1261,7 +1201,7 @@ pub mod types {
             {
                 self.source = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for source: {}", e));
+                    .map_err(|e| format!("error converting supplied value for source: {e}"));
                 self
             }
             pub fn updated_at<T>(mut self, value: T) -> Self
@@ -1271,7 +1211,7 @@ pub mod types {
             {
                 self.updated_at = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for updated_at: {}", e));
+                    .map_err(|e| format!("error converting supplied value for updated_at: {e}"));
                 self
             }
         }
@@ -1328,7 +1268,7 @@ pub mod types {
                 T::Error: ::std::fmt::Display,
             {
                 self.default_dataset = value.try_into().map_err(|e| {
-                    format!("error converting supplied value for default_dataset: {}", e)
+                    format!("error converting supplied value for default_dataset: {e}")
                 });
                 self
             }
@@ -1339,7 +1279,7 @@ pub mod types {
             {
                 self.name = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for name: {}", e));
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
                 self
             }
         }
