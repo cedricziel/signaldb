@@ -28,7 +28,7 @@ jobs:
     name: Check & Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Init submodules
         run: git submodule update --init --recursive
@@ -71,7 +71,7 @@ jobs:
         rust: [stable, beta]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Init submodules
         run: git submodule update --init --recursive
@@ -128,7 +128,7 @@ jobs:
             deployment: monolithic
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Init submodules
         run: git submodule update --init --recursive
@@ -200,7 +200,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: check
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Init submodules
         run: git submodule update --init --recursive
@@ -245,7 +245,7 @@ jobs:
     needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Init submodules
         run: git submodule update --init --recursive
@@ -311,7 +311,7 @@ jobs:
         deployment: [monolithic, microservices]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Download binaries
         uses: actions/download-artifact@v8
@@ -351,7 +351,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: check
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Init submodules
         run: git submodule update --init --recursive
@@ -407,7 +407,7 @@ jobs:
           - 5432:5432
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Init submodules
         run: git submodule update --init --recursive
