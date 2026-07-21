@@ -4,6 +4,7 @@
 //! to extract data file paths for orphan detection.
 
 use anyhow::{Context, Result};
+use futures::StreamExt;
 use iceberg_rust::spec::manifest::Status;
 use iceberg_rust::table::Table;
 use std::collections::HashSet;
@@ -87,7 +88,8 @@ impl ManifestReader {
             .context("Failed to read data files from manifests")?;
 
         let mut live_files = HashSet::new();
-        for result in file_iter {
+        let mut file_iter = std::pin::pin!(file_iter);
+        while let Some(result) = file_iter.next().await {
             let (_, entry) = result.context("Failed to read manifest entry")?;
             // Only include ADDED and EXISTING files; DELETED entries are no longer live.
             if *entry.status() != Status::Deleted {

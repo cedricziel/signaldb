@@ -17,7 +17,7 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_semantic_conventions::attribute::{
     HTTP_REQUEST_METHOD, HTTP_RESPONSE_STATUS_CODE, URL_FULL,
 };
-use rand::Rng;
+use rand::RngExt;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about = "SignalDB OTLP signal producer")]
