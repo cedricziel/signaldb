@@ -1923,6 +1923,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
+ "axum",
  "bytes",
  "chrono",
  "chrono-tz",
@@ -1930,12 +1931,10 @@ dependencies = [
  "common",
  "datafusion",
  "datafusion_iceberg",
- "env_logger",
  "futures",
  "humantime",
  "humantime-serde",
  "iceberg-rust",
- "log",
  "object_store",
  "serde",
  "serde_json",
@@ -1944,8 +1943,8 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tracing",
+ "tracing-subscriber",
  "uuid",
- "writer",
 ]
 
 [[package]]
@@ -8113,6 +8112,7 @@ dependencies = [
  "common",
  "compactor",
  "datafusion",
+ "datafusion_iceberg",
  "env_logger",
  "futures",
  "hex",
@@ -8133,6 +8133,7 @@ dependencies = [
  "tonic",
  "tower",
  "url",
+ "uuid",
  "writer",
 ]
 
