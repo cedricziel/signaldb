@@ -4,6 +4,13 @@
 //! telemetry through the normal OTLP write pipeline (dogfooding).
 
 pub mod metrics;
+pub mod suppress;
+
+pub use suppress::{
+    SELF_MONITORING_DATASET, SELF_MONITORING_TENANT, SelfTelemetrySuppressionFilter,
+    is_self_monitoring_tenant, self_telemetry_suppressed, suppress_self_telemetry,
+    suppress_self_telemetry_sync,
+};
 
 use anyhow::{Context, Result};
 use opentelemetry::KeyValue;

@@ -114,6 +114,30 @@ name = "Development Key"
 id = "local"
 slug = "local"
 is_default = true
+
+# Self-monitoring: services export their own telemetry to the acceptor
+[self_monitoring]
+enabled = true
+endpoint = "http://localhost:4317"
+tenant_id = "_system"
+dataset_id = "_monitoring"
+trace_sample_ratio = 0.1
+
+# _system tenant for self-monitoring
+[[auth.tenants]]
+id = "_system"
+slug = "_system"
+name = "System (Self-Monitoring)"
+default_dataset = "_monitoring"
+
+[[auth.tenants.api_keys]]
+key = "dev-admin-key"
+name = "Self-Monitoring Key"
+
+[[auth.tenants.datasets]]
+id = "_monitoring"
+slug = "_monitoring"
+is_default = true
 EOF
 
 # Database configuration
@@ -216,6 +240,7 @@ if [ "$MODE" = "monolithic" ]; then
     echo "  • OTLP HTTP: http://localhost:4318"
     echo "  • HTTP API:  http://localhost:3001"
     echo "  • Flight:    http://localhost:50053"
+    echo "  • Self-Monitoring: enabled (dataset: _system/_monitoring, sample ratio: 10%)"
     echo ""
 
     cargo run --bin signaldb -- --config "${DEV_CONFIG}" 2>&1 | tee "${LOG_DIR}/monolithic.log" &
@@ -295,6 +320,7 @@ else
 
     echo ""
     echo -e "${YELLOW}All services started!${NC}"
+    echo "  • Self-Monitoring: enabled (dataset: _system/_monitoring, sample ratio: 10%)"
     echo -e "${YELLOW}Press Ctrl+C to stop all services${NC}"
     echo ""
     echo -e "${BLUE}Tail logs with:${NC}"

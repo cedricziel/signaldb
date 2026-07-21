@@ -124,11 +124,18 @@ pub async fn auth_middleware(
         tenant_context.source
     );
 
+    let is_system = common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id);
+
     // Insert TenantContext into request extensions
     request.extensions_mut().insert(tenant_context);
 
-    // Continue to next middleware/handler
-    next.run(request).await
+    // Anti-loop guard: processing the _system tenant's own telemetry must not
+    // generate more self-monitoring telemetry (infinite feedback loop).
+    if is_system {
+        common::self_monitoring::suppress_self_telemetry(next.run(request)).await
+    } else {
+        next.run(request).await
+    }
 }
 
 /// Axum extractor for TenantContext from request extensions

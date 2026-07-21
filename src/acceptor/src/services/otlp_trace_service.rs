@@ -48,9 +48,16 @@ impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAccepto
 
         let request_inner = request.into_inner();
 
-        self.handler
-            .handle_grpc_otlp_traces(&tenant_context, request_inner)
-            .await;
+        // Anti-loop guard: processing the _system tenant's own telemetry must
+        // not generate more self-monitoring telemetry.
+        let handle = self
+            .handler
+            .handle_grpc_otlp_traces(&tenant_context, request_inner);
+        if common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id) {
+            common::self_monitoring::suppress_self_telemetry(handle).await;
+        } else {
+            handle.await;
+        }
 
         Ok(Response::new(ExportTraceServiceResponse::default()))
     }
