@@ -58,11 +58,6 @@ pub struct ApiError {
     ///Human-readable error description
     pub message: ::std::string::String,
 }
-impl ::std::convert::From<&ApiError> for ApiError {
-    fn from(value: &ApiError) -> Self {
-        value.clone()
-    }
-}
 ///API key information (without the raw key)
 ///
 /// <details><summary>JSON schema</summary>
@@ -109,11 +104,6 @@ pub struct ApiKeyResponse {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub revoked_at: ::std::option::Option<::std::string::String>,
 }
-impl ::std::convert::From<&ApiKeyResponse> for ApiKeyResponse {
-    fn from(value: &ApiKeyResponse) -> Self {
-        value.clone()
-    }
-}
 ///Request body for creating a new API key
 ///
 /// <details><summary>JSON schema</summary>
@@ -136,11 +126,6 @@ pub struct CreateApiKeyRequest {
     ///Optional human-readable name for the key
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub name: ::std::option::Option<::std::string::String>,
-}
-impl ::std::convert::From<&CreateApiKeyRequest> for CreateApiKeyRequest {
-    fn from(value: &CreateApiKeyRequest) -> Self {
-        value.clone()
-    }
 }
 impl ::std::default::Default for CreateApiKeyRequest {
     fn default() -> Self {
@@ -195,11 +180,6 @@ pub struct CreateApiKeyResponse {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub name: ::std::option::Option<::std::string::String>,
 }
-impl ::std::convert::From<&CreateApiKeyResponse> for CreateApiKeyResponse {
-    fn from(value: &CreateApiKeyResponse) -> Self {
-        value.clone()
-    }
-}
 ///Request body for creating a new dataset
 ///
 /// <details><summary>JSON schema</summary>
@@ -224,11 +204,6 @@ impl ::std::convert::From<&CreateApiKeyResponse> for CreateApiKeyResponse {
 pub struct CreateDatasetRequest {
     ///Dataset name
     pub name: ::std::string::String,
-}
-impl ::std::convert::From<&CreateDatasetRequest> for CreateDatasetRequest {
-    fn from(value: &CreateDatasetRequest) -> Self {
-        value.clone()
-    }
 }
 ///Request body for creating a new tenant
 ///
@@ -268,11 +243,6 @@ pub struct CreateTenantRequest {
     pub id: ::std::string::String,
     ///Human-readable tenant name
     pub name: ::std::string::String,
-}
-impl ::std::convert::From<&CreateTenantRequest> for CreateTenantRequest {
-    fn from(value: &CreateTenantRequest) -> Self {
-        value.clone()
-    }
 }
 ///Dataset information returned by the API
 ///
@@ -320,11 +290,6 @@ pub struct DatasetResponse {
     ///Tenant that owns this dataset
     pub tenant_id: ::std::string::String,
 }
-impl ::std::convert::From<&DatasetResponse> for DatasetResponse {
-    fn from(value: &DatasetResponse) -> Self {
-        value.clone()
-    }
-}
 ///Response containing a list of API keys
 ///
 /// <details><summary>JSON schema</summary>
@@ -352,11 +317,6 @@ impl ::std::convert::From<&DatasetResponse> for DatasetResponse {
 pub struct ListApiKeysResponse {
     ///List of API key records (without raw keys)
     pub api_keys: ::std::vec::Vec<ApiKeyResponse>,
-}
-impl ::std::convert::From<&ListApiKeysResponse> for ListApiKeysResponse {
-    fn from(value: &ListApiKeysResponse) -> Self {
-        value.clone()
-    }
 }
 ///Response containing a list of datasets
 ///
@@ -386,11 +346,6 @@ pub struct ListDatasetsResponse {
     ///List of dataset records
     pub datasets: ::std::vec::Vec<DatasetResponse>,
 }
-impl ::std::convert::From<&ListDatasetsResponse> for ListDatasetsResponse {
-    fn from(value: &ListDatasetsResponse) -> Self {
-        value.clone()
-    }
-}
 ///Response containing a list of tenants
 ///
 /// <details><summary>JSON schema</summary>
@@ -418,11 +373,6 @@ impl ::std::convert::From<&ListDatasetsResponse> for ListDatasetsResponse {
 pub struct ListTenantsResponse {
     ///List of tenant records
     pub tenants: ::std::vec::Vec<TenantResponse>,
-}
-impl ::std::convert::From<&ListTenantsResponse> for ListTenantsResponse {
-    fn from(value: &ListTenantsResponse) -> Self {
-        value.clone()
-    }
 }
 ///Tenant information returned by the API
 ///
@@ -484,11 +434,6 @@ pub struct TenantResponse {
     ///ISO 8601 last-updated timestamp
     pub updated_at: ::std::string::String,
 }
-impl ::std::convert::From<&TenantResponse> for TenantResponse {
-    fn from(value: &TenantResponse) -> Self {
-        value.clone()
-    }
-}
 ///Request body for updating an existing tenant
 ///
 /// <details><summary>JSON schema</summary>
@@ -518,11 +463,6 @@ pub struct UpdateTenantRequest {
     ///Updated tenant name
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub name: ::std::option::Option<::std::string::String>,
-}
-impl ::std::convert::From<&UpdateTenantRequest> for UpdateTenantRequest {
-    fn from(value: &UpdateTenantRequest) -> Self {
-        value.clone()
-    }
 }
 impl ::std::default::Default for UpdateTenantRequest {
     fn default() -> Self {
