@@ -7293,7 +7293,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
- "rand 0.9.5",
+ "rand 0.10.2",
  "tokio",
  "tracing-subscriber",
 ]
@@ -9596,7 +9596,7 @@ dependencies = [
  "iceberg-rust",
  "log",
  "object_store",
- "rand 0.9.5",
+ "rand 0.10.2",
  "serde_json",
  "tempfile",
  "tokio",
