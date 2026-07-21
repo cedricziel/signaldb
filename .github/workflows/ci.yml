@@ -27,16 +27,8 @@ jobs:
   check:
     name: Check & Lint
     runs-on: ubuntu-latest
-    outputs:
-      msrv: ${{ steps.msrv.outputs.msrv }}
     steps:
       - uses: actions/checkout@v6
-
-      - name: Get MSRV from Cargo.toml
-        id: msrv
-        run: |
-          MSRV=$(grep -E '^rust-version\s*=' Cargo.toml | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
-          echo "msrv=${MSRV}" >> "$GITHUB_OUTPUT"
 
       - name: Init submodules
         run: git submodule update --init --recursive
@@ -76,7 +68,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rust: [stable, beta, "${{ needs.check.outputs.msrv }}"] # Test with stable, beta, and MSRV (from Cargo.toml)
+        rust: [stable, beta]
 
     steps:
       - uses: actions/checkout@v6

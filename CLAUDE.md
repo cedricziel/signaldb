@@ -184,7 +184,7 @@ catalog_uri = "sqlite::memory:"  # or sqlite:///path/to/catalog.db
 
 ### Rust Edition 2024
 
-Project requires Rust 1.91.0+ minimum.
+Project tracks stable Rust (no MSRV policy — SignalDB ships binaries, not a library).
 
 ### Clippy Compliance
 

@@ -45,6 +45,17 @@ updates:
       interval: "weekly"
     assignees:
       - cedricziel
+    ignore:
+      # TypeScript 6+/7+ removed baseUrl/downlevelIteration/moduleResolution=node10,
+      # which @grafana/tsconfig and the create-plugin scaffold still emit.
+      # Remove once the Grafana plugin toolchain supports TypeScript 6+.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      # eslint 10 removed context.getFilename(), which eslint-plugin-react
+      # (peer range capped at eslint ^9.7) still calls. Remove once
+      # eslint-plugin-react supports eslint 10.
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
     groups:
       grafana-ecosystem:
         patterns:

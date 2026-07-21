@@ -1,0 +1,84 @@
+---
+# Keeps the @grafana/create-plugin scaffold (src/grafana-plugin/.config/)
+# in sync with the latest plugin toolchain. Dependabot only bumps package.json
+# dependencies; the scaffolded build config (webpack, tsconfig, jest) is
+# generated code that only changes when `create-plugin update` is run.
+#
+# Modeled on grafana/plugin-actions/create-plugin-update, which we cannot use
+# directly because it assumes the plugin lives at the repository root.
+name: Grafana Scaffold Update
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 1 * *" # monthly, 1st day at 06:00 UTC
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  scaffold-update:
+    name: Check and Update Plugin Scaffold
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Get latest create-plugin version
+        id: latest
+        run: |
+          VERSION=$(npx -y @grafana/create-plugin@latest version | sed 's/.*@//' | tr -d '[:space:]')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Get scaffold version from .config/.cprc.json
+        id: current
+        run: |
+          VERSION=$(jq -r '.version' src/grafana-plugin/.config/.cprc.json)
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Run create-plugin update
+        if: steps.latest.outputs.version != steps.current.outputs.version
+        working-directory: src/grafana-plugin
+        run: npx -y @grafana/create-plugin@latest update
+
+      - name: Refresh lockfile
+        if: steps.latest.outputs.version != steps.current.outputs.version
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Create PR
+        if: steps.latest.outputs.version != steps.current.outputs.version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEW_VERSION="${{ steps.latest.outputs.version }}"
+          CURRENT="${{ steps.current.outputs.version }}"
+          BRANCH="chore/grafana-scaffold-${NEW_VERSION}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Skip if a PR for this version already exists
+          if gh pr list --head "$BRANCH" --state open --json number --jq 'length' | grep -qv '^0$'; then
+            echo "PR for branch $BRANCH already exists, skipping"
+            exit 0
+          fi
+
+          git checkout -b "$BRANCH"
+          git add src/grafana-plugin pnpm-lock.yaml package.json
+          git commit -m "chore(grafana-plugin): update create-plugin scaffold from ${CURRENT} to ${NEW_VERSION}"
+          git push --force origin "$BRANCH"
+
+          gh pr create \
+            --title "chore(grafana-plugin): update create-plugin scaffold to ${NEW_VERSION}" \
+            --body "Updates the \`@grafana/create-plugin\` scaffold (\`src/grafana-plugin/.config/\`) from ${CURRENT} to ${NEW_VERSION} via \`create-plugin update\`.
+
+          Review the diff for toolchain changes (webpack, tsconfig, jest). If this update makes the scaffold compatible with newer TypeScript/eslint majors, also remove the corresponding \`ignore\` rules in \`.github/dependabot.yml\`." \
+            --label "dependencies"
