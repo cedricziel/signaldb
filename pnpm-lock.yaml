@@ -39,11 +39,11 @@ importers:
         specifier: ^9.0.0
         version: 9.0.0(@stylistic/eslint-plugin-ts@4.4.1(eslint@9.39.5)(typescript@5.9.3))(@typescript-eslint/eslint-plugin@8.65.0(@typescript-eslint/parser@8.65.0(eslint@9.39.5)(typescript@5.9.3))(eslint@9.39.5)(typescript@5.9.3))(@typescript-eslint/parser@8.65.0(eslint@9.39.5)(typescript@5.9.3))(eslint-config-prettier@10.1.8(eslint@9.39.5))(eslint-plugin-jsdoc@63.2.0(eslint@9.39.5))(eslint-plugin-react-hooks@7.1.1(eslint@9.39.5))(eslint-plugin-react@7.37.5(eslint@9.39.5))(eslint@9.39.5)(typescript@5.9.3)
       '@grafana/plugin-e2e':
-        specifier: ^3.4.1
-        version: 3.4.1(@axe-core/playwright@4.11.1(playwright-core@1.58.2))(@playwright/test@1.58.2)(axe-core@4.11.1)
+        specifier: ^3.10.0
+        version: 3.10.0(@axe-core/playwright@4.11.1(playwright-core@1.58.2))(@playwright/test@1.58.2)
       '@grafana/tsconfig':
-        specifier: ^2.0.0
-        version: 2.0.1
+        specifier: ^2.2.0
+        version: 2.2.0
       '@playwright/test':
         specifier: ^1.58.2
         version: 1.58.2
@@ -571,8 +571,8 @@ packages:
   '@grafana/e2e-selectors@12.4.0':
     resolution: {integrity: sha512-GPFmqIJJD8yom7ld4NxAFW2kFTqiOta/8KlsqDoasiNIWjwPp2fn3ILTuZ97a+W0D7Z1LJ9QKznFXOAhKpFRJQ==}
 
-  '@grafana/e2e-selectors@13.0.0-22358195095':
-    resolution: {integrity: sha512-uh+FbZHYDx3s9zLh9bVb0fyrdg+K0VNNXc1RXXZj0BylUVts9mdf9BlnYC4bA1N0scc/jlZDJ/keXKVvgRxv3Q==}
+  '@grafana/e2e-selectors@13.1.0-25644485979':
+    resolution: {integrity: sha512-2H+veZBayawey47iUTb5N69QK5KYHxzspe8uaauvLH7aSsjeyzH6nFubLkOVxz1JUOVtVrwOaH+libUwSaPMXw==}
 
   '@grafana/eslint-config@9.0.0':
     resolution: {integrity: sha512-Jw7/kyO29iNKiHrDwsVwP3/YSNdYCt8ofCgSFNfcYQeK7+Z3zn1RrMBXWohVQ47OuwjXr6AUqo5ReQBCPq6Fzw==}
@@ -598,13 +598,15 @@ packages:
     peerDependencies:
       react: '>=18'
 
-  '@grafana/plugin-e2e@3.4.1':
-    resolution: {integrity: sha512-pXnpeu1x1Sq70lxB8no5+9E6IyZJKrp8tNAlfTpFQ33+thi1H8izNUJ7FuAviiefMGL9OsBb0j/H1yePQtle3A==}
+  '@grafana/plugin-e2e@3.10.0':
+    resolution: {integrity: sha512-KvIC4klLuDdgT9Go61yY+Mm/8+8zSqF4lqhlMomBl53h9gx4PPYjoVRdK9e272oVJqlpgy42z7+OxHrs7IYY2g==}
     engines: {node: '>=20 <=24'}
     peerDependencies:
       '@axe-core/playwright': ^4.11.1
       '@playwright/test': ^1.52.0
-      axe-core: ^4.11.1
+    peerDependenciesMeta:
+      '@axe-core/playwright':
+        optional: true
 
   '@grafana/runtime@12.4.0':
     resolution: {integrity: sha512-e03r1dsy671sEe+bEbMyBQFx0ijBJZIIyZPTEVeEJ+1XeAAkPafov0uV+w3nr+11/WqMU40ZQgjNxvgnNUGkBw==}
@@ -615,8 +617,8 @@ packages:
   '@grafana/schema@12.4.0':
     resolution: {integrity: sha512-UEcsY6anwBuBdDt7C9Ke00p374iiBtPYiw+m+QnnXESCPW9x+nPZCF5utDs6irao6moIJmFU2Mm7F6I81BmKlA==}
 
-  '@grafana/tsconfig@2.0.1':
-    resolution: {integrity: sha512-yGNQWQDlxFfklzMfk0i8qnDqKOvIGc0Aqe62zLS4LTqptkhnyLEVsdaVmX99m3QFOcBiiFn8scREDzGeF2iNvQ==}
+  '@grafana/tsconfig@2.2.0':
+    resolution: {integrity: sha512-hhhXetqhSKTfgErStfWVPhqo4JPi+lNqBJNhBF6RT4ZIM4vwKxEfnfsyswT+NwHIXNrOz23xoOGeKWPpxmaHWQ==}
 
   '@grafana/ui@12.4.0':
     resolution: {integrity: sha512-ikB/qMmwd2OWsPA3i1tjuvMb+ZWw/FEwi6PgWTiUaATnNA5hqkBXPowjvw4VTsX9h5vq2TILxrQnHjv9kiBn7A==}
@@ -1875,8 +1877,8 @@ packages:
     resolution: {integrity: sha512-wvUjBtSGN7+7SjNpq/9M2Tg350UZD3q62IFZLbRAR1bSMlCo1ZaeW+BJ+D090e4hIIZLBcTDWe4Mh4jvUDajzQ==}
     engines: {node: '>= 0.4'}
 
-  axe-core@4.11.1:
-    resolution: {integrity: sha512-BASOg+YwO2C+346x3LZOeoovTIoTrRqEsqMa6fmfAV0P+U9mFr9NsyOEpiYvFjbc64NMrSswhV50WdXzdb/Z5A==}
+  axe-core@4.11.4:
+    resolution: {integrity: sha512-KunSNx+TVpkAw/6ULfhnx+HWRecjqZGTOyquAoWHYLRSdK1tB5Ihce1ZW+UY3fj33bYAFWPu7W/GRSmmrCGuxA==}
     engines: {node: '>=4'}
 
   babel-jest@30.2.0:
@@ -3945,8 +3947,8 @@ packages:
       react: ^0.14.0 || ^15.0.0 || ^16.0.0 || ^17.0.0 || ^18.0.0
       react-dom: ^0.14.0 || ^15.0.0 || ^16.0.0 || ^17.0.0 || ^18.0.0
 
-  react-data-grid@https://codeload.github.com/grafana/react-data-grid/tar.gz/a922856b5ede21d55db3fdffb6d38dc76bdc7c58:
-    resolution: {tarball: https://codeload.github.com/grafana/react-data-grid/tar.gz/a922856b5ede21d55db3fdffb6d38dc76bdc7c58}
+  react-data-grid@git+https://git@github.com:grafana/react-data-grid.git#a922856b5ede21d55db3fdffb6d38dc76bdc7c58:
+    resolution: {commit: a922856b5ede21d55db3fdffb6d38dc76bdc7c58, repo: git@github.com:grafana/react-data-grid.git, type: git}
     version: 7.0.0-beta.56
     peerDependencies:
       react: ^18.0 || ^19.0
@@ -4714,6 +4716,11 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
+  typescript@6.0.2:
+    resolution: {integrity: sha512-bGdAIrZ0wiGDo5l8c++HWtbaNCWTS4UTv7RaTH/ThVIgjkveJt83m74bBHMJkuCbslY8ixgLBVZJIOiQlQTjfQ==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
   ua-parser-js@1.0.41:
     resolution: {integrity: sha512-LbBDqdIC5s8iROCUjMbW1f5dJQTEFB1+KO9ogbvlb3nm9n4YHa5p4KTvFPWvh2Hs8gZMBuiB1/8+pdfe/tDPug==}
     hasBin: true
@@ -4763,10 +4770,6 @@ packages:
 
   uuid@11.1.0:
     resolution: {integrity: sha512-0/A9rDy9P7cJ+8w1c9WD9V//9Wj15Ce2MPz8Ri6032usz+NfePxx5AcN3bN+r6ZL6jEo066/yNYB3tn4pQEx+A==}
-    hasBin: true
-
-  uuid@13.0.0:
-    resolution: {integrity: sha512-XQegIaBTVUjSHliKqcnFqYypAd4S+WCYt5NIeRs6w/UAry7z8Y9j5ZwRRL4kzq9U3sD6v+85er9FvkEaBpji2w==}
     hasBin: true
 
   uwrap@0.1.2:
@@ -4972,12 +4975,12 @@ packages:
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
 
-  yaml@1.10.2:
-    resolution: {integrity: sha512-r3vXyErRCYJ7wg28yvBY5VSoAF8ZvlcW9/BwUzEtUsjvX/DKs24dIkuwjtuprwJJHsbyUbLApepYTR1BN4uHrg==}
+  yaml@1.10.3:
+    resolution: {integrity: sha512-vIYeF1u3CjlhAFekPPAk2h/Kv4T3mAkMox5OymRiJQB0spDP10LHvt+K7G9Ny6NuuMAb25/6n1qyUjAcGNf/AA==}
     engines: {node: '>= 6'}
 
-  yaml@2.8.2:
-    resolution: {integrity: sha512-mplynKqc1C2hTVYxd0PU2xQAc22TI1vShAYGksCCfxbn/dFwnHTNi1bvYsBTkhdUNtGIf5xNOg938rrSSYvS9A==}
+  yaml@2.9.0:
+    resolution: {integrity: sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==}
     engines: {node: '>= 14.6'}
     hasBin: true
 
@@ -5026,8 +5029,9 @@ snapshots:
 
   '@axe-core/playwright@4.11.1(playwright-core@1.58.2)':
     dependencies:
-      axe-core: 4.11.1
+      axe-core: 4.11.4
       playwright-core: 1.58.2
+    optional: true
 
   '@babel/code-frame@7.28.6':
     dependencies:
@@ -5534,11 +5538,11 @@ snapshots:
       tslib: 2.8.1
       typescript: 5.9.2
 
-  '@grafana/e2e-selectors@13.0.0-22358195095':
+  '@grafana/e2e-selectors@13.1.0-25644485979':
     dependencies:
-      semver: 7.7.4
+      semver: 7.8.5
       tslib: 2.8.1
-      typescript: 5.9.2
+      typescript: 6.0.2
 
   '@grafana/eslint-config@9.0.0(@stylistic/eslint-plugin-ts@4.4.1(eslint@9.39.5)(typescript@5.9.3))(@typescript-eslint/eslint-plugin@8.65.0(@typescript-eslint/parser@8.65.0(eslint@9.39.5)(typescript@5.9.3))(eslint@9.39.5)(typescript@5.9.3))(@typescript-eslint/parser@8.65.0(eslint@9.39.5)(typescript@5.9.3))(eslint-config-prettier@10.1.8(eslint@9.39.5))(eslint-plugin-jsdoc@63.2.0(eslint@9.39.5))(eslint-plugin-react-hooks@7.1.1(eslint@9.39.5))(eslint-plugin-react@7.37.5(eslint@9.39.5))(eslint@9.39.5)(typescript@5.9.3)':
     dependencies:
@@ -5581,15 +5585,13 @@ snapshots:
       - supports-color
       - typescript
 
-  '@grafana/plugin-e2e@3.4.1(@axe-core/playwright@4.11.1(playwright-core@1.58.2))(@playwright/test@1.58.2)(axe-core@4.11.1)':
+  '@grafana/plugin-e2e@3.10.0(@axe-core/playwright@4.11.1(playwright-core@1.58.2))(@playwright/test@1.58.2)':
     dependencies:
-      '@axe-core/playwright': 4.11.1(playwright-core@1.58.2)
-      '@grafana/e2e-selectors': 13.0.0-22358195095
+      '@grafana/e2e-selectors': 13.1.0-25644485979
       '@playwright/test': 1.58.2
-      axe-core: 4.11.1
-      semver: 7.7.4
-      uuid: 13.0.0
-      yaml: 2.8.2
+      yaml: 2.9.0
+    optionalDependencies:
+      '@axe-core/playwright': 4.11.1(playwright-core@1.58.2)
 
   '@grafana/runtime@12.4.0(@openfeature/web-sdk@1.7.2(@openfeature/core@1.9.2))(@types/react@19.2.14)(eslint@9.39.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3)':
     dependencies:
@@ -5624,7 +5626,7 @@ snapshots:
     dependencies:
       tslib: 2.8.1
 
-  '@grafana/tsconfig@2.0.1': {}
+  '@grafana/tsconfig@2.2.0': {}
 
   '@grafana/ui@12.4.0(@types/react@19.2.14)(eslint@9.39.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3)':
     dependencies:
@@ -5675,7 +5677,7 @@ snapshots:
       react-calendar: 6.0.0(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       react-colorful: 5.6.1(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       react-custom-scrollbars-2: 4.5.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
-      react-data-grid: https://codeload.github.com/grafana/react-data-grid/tar.gz/a922856b5ede21d55db3fdffb6d38dc76bdc7c58(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      react-data-grid: git+https://git@github.com:grafana/react-data-grid.git#a922856b5ede21d55db3fdffb6d38dc76bdc7c58(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       react-dom: 19.2.4(react@19.2.4)
       react-dropzone: 14.3.8(react@19.2.4)
       react-highlight-words: 0.21.0(react@19.2.4)
@@ -7135,7 +7137,8 @@ snapshots:
     dependencies:
       possible-typed-array-names: 1.1.0
 
-  axe-core@4.11.1: {}
+  axe-core@4.11.4:
+    optional: true
 
   babel-jest@30.2.0(@babel/core@7.29.7):
     dependencies:
@@ -7364,7 +7367,7 @@ snapshots:
       import-fresh: 3.3.1
       parse-json: 5.2.0
       path-type: 4.0.0
-      yaml: 1.10.2
+      yaml: 1.10.3
 
   cosmiconfig@8.3.6(typescript@5.9.3):
     dependencies:
@@ -9546,7 +9549,7 @@ snapshots:
       react: 19.2.4
       react-dom: 19.2.4(react@19.2.4)
 
-  react-data-grid@https://codeload.github.com/grafana/react-data-grid/tar.gz/a922856b5ede21d55db3fdffb6d38dc76bdc7c58(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
+  react-data-grid@git+https://git@github.com:grafana/react-data-grid.git#a922856b5ede21d55db3fdffb6d38dc76bdc7c58(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
     dependencies:
       clsx: 2.1.1
       react: 19.2.4
@@ -10387,6 +10390,8 @@ snapshots:
 
   typescript@5.9.3: {}
 
+  typescript@6.0.2: {}
+
   ua-parser-js@1.0.41: {}
 
   unbox-primitive@1.1.0:
@@ -10449,8 +10454,6 @@ snapshots:
   util-deprecate@1.0.2: {}
 
   uuid@11.1.0: {}
-
-  uuid@13.0.0: {}
 
   uwrap@0.1.2: {}
 
@@ -10682,9 +10685,9 @@ snapshots:
 
   yallist@3.1.1: {}
 
-  yaml@1.10.2: {}
+  yaml@1.10.3: {}
 
-  yaml@2.8.2: {}
+  yaml@2.9.0: {}
 
   yargs-parser@21.1.1: {}
 
