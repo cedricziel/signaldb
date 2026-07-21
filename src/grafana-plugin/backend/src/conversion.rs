@@ -8,7 +8,7 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::{DataType, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
 use grafana_plugin_sdk::data::{self, Field};
-use grafana_plugin_sdk::prelude::IntoField;
+use grafana_plugin_sdk::prelude::{IntoField, IntoOptField};
 
 /// Error type for conversion operations.
 #[derive(Debug, thiserror::Error)]
@@ -154,7 +154,7 @@ fn convert_column_to_field(
                     })
                 })
                 .collect();
-            Some(values.into_field(field_name))
+            Some(values.into_opt_field(field_name))
         }
 
         DataType::UInt64 => {
@@ -183,7 +183,7 @@ fn convert_column_to_field(
                     })
                 })
                 .collect();
-            Some(values.into_field(field_name))
+            Some(values.into_opt_field(field_name))
         }
 
         DataType::UInt32 => {
@@ -212,7 +212,7 @@ fn convert_column_to_field(
                     })
                 })
                 .collect();
-            Some(values.into_field(field_name))
+            Some(values.into_opt_field(field_name))
         }
 
         DataType::Int64 => {
@@ -241,7 +241,7 @@ fn convert_column_to_field(
                     })
                 })
                 .collect();
-            Some(values.into_field(field_name))
+            Some(values.into_opt_field(field_name))
         }
 
         DataType::Int32 => {
@@ -270,7 +270,7 @@ fn convert_column_to_field(
                     })
                 })
                 .collect();
-            Some(values.into_field(field_name))
+            Some(values.into_opt_field(field_name))
         }
 
         DataType::Float64 => {
@@ -299,7 +299,7 @@ fn convert_column_to_field(
                     })
                 })
                 .collect();
-            Some(values.into_field(field_name))
+            Some(values.into_opt_field(field_name))
         }
 
         DataType::Boolean => {
@@ -328,7 +328,7 @@ fn convert_column_to_field(
                     })
                 })
                 .collect();
-            Some(values.into_field(field_name))
+            Some(values.into_opt_field(field_name))
         }
 
         // Skip unsupported types
