@@ -25,21 +25,32 @@ jobs:
       - name: Get DataFusion MSRV from crates.io
         id: datafusion
         run: |
-          CRATE_INFO=$(curl -sL "https://crates.io/api/v1/crates/datafusion")
-          DF_MSRV=$(echo "$CRATE_INFO" | jq -r '.versions[0].rust_version // empty')
+          # crates.io rejects requests without a descriptive User-Agent
+          CRATE_INFO=$(curl -sfL \
+            -H "User-Agent: signaldb-msrv-check (https://github.com/${GITHUB_REPOSITORY})" \
+            "https://crates.io/api/v1/crates/datafusion")
+
+          # Take the rust_version of the latest stable release, not versions[0]
+          # (which may be a prerelease or yanked)
+          DF_MSRV=$(echo "$CRATE_INFO" | jq -r '
+            .crate.max_stable_version as $v
+            | .versions[] | select(.num == $v) | .rust_version // empty')
+
+          if [ -z "$DF_MSRV" ]; then
+            echo "::error::Could not determine DataFusion MSRV from crates.io"
+            exit 1
+          fi
           echo "msrv=${DF_MSRV}" >> $GITHUB_OUTPUT
 
       - name: Compare and update if needed
         if: steps.current.outputs.msrv != steps.datafusion.outputs.msrv
         run: |
           NEW_MSRV="${{ steps.datafusion.outputs.msrv }}"
-          CURRENT="${{ steps.current.outputs.msrv }}"
 
-          # Update Cargo.toml
+          # Update Cargo.toml only — the CI test matrix reads the MSRV from
+          # Cargo.toml dynamically, and GITHUB_TOKEN is not allowed to push
+          # changes to workflow files anyway.
           sed -i "s/^rust-version = \"[^\"]*\"/rust-version = \"${NEW_MSRV}\"/" Cargo.toml
-
-          # Update CI test matrix
-          sed -i "s/\[stable, beta, ${CURRENT}\]/[stable, beta, ${NEW_MSRV}]/" .github/workflows/ci.yml
 
       - name: Create PR
         if: steps.current.outputs.msrv != steps.datafusion.outputs.msrv
@@ -52,10 +63,16 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Skip if a PR for this version already exists
+          if gh pr list --head "$BRANCH" --state open --json number --jq 'length' | grep -qv '^0$'; then
+            echo "PR for branch $BRANCH already exists, skipping"
+            exit 0
+          fi
+
           git checkout -b "$BRANCH"
-          git add Cargo.toml .github/workflows/ci.yml
+          git add Cargo.toml
           git commit -m "chore(deps): update Rust MSRV from ${CURRENT} to ${NEW_MSRV}"
-          git push origin "$BRANCH"
+          git push --force origin "$BRANCH"
 
           gh pr create \
             --title "chore(deps): update Rust MSRV to ${NEW_MSRV}" \
