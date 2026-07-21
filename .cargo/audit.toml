@@ -10,4 +10,16 @@ ignore = [
     # arrow2 is unmaintained with no fix available. The Grafana plugin is for development/testing.
     # Tracked: https://github.com/grafana/grafana-plugin-sdk-rust/issues
     "RUSTSEC-2025-0038",
+    # quick-xml 0.39 is pinned by object_store 0.13; the fix (quick-xml 0.41) is only in
+    # object_store 0.14.1, but datafusion 54 requires object_store ^0.13.2. Remove when moving
+    # to a datafusion release on object_store 0.14+. XML parsing only used for S3 list
+    # responses from trusted endpoints. Mirrors the same ignores in deny.toml.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+    # rustls-webpki 0.101 comes via rustls 0.21, a legacy TLS path in aws-smithy-http-client.
+    # Only pulled in by aws-config in tests-integration (dev-only). The 0.103 copy used in
+    # production paths is on the fixed 0.103.13. Mirrors the same ignores in deny.toml.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
 ]
