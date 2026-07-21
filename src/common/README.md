@@ -417,7 +417,7 @@ cargo test -p common -- flight_integration
 ### Configuration Testing
 ```bash
 # Test configuration loading
-SIGNALDB_DATABASE_URL=test://url cargo test -p common -- config
+SIGNALDB_DATABASE_DSN=test://url cargo test -p common -- config
 ```
 
 ## Integration
