@@ -488,6 +488,7 @@ fn parse_events_from_list_array(
                 {
                     for (key, value) in attrs_obj {
                         attributes.push(KeyValue {
+                            key_strindex: 0,
                             key: key.clone(),
                             value: Some(json_value_to_any_value(value)),
                         });
@@ -552,6 +553,7 @@ fn parse_links_from_list_array(
                 {
                     for (key, value) in attrs_obj {
                         attributes.push(KeyValue {
+                            key_strindex: 0,
                             key: key.clone(),
                             value: Some(json_value_to_any_value(value)),
                         });
@@ -743,6 +745,7 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
         {
             map.into_iter()
                 .map(|(k, v)| KeyValue {
+                    key_strindex: 0,
                     key: k,
                     value: Some(json_value_to_any_value(&v)),
                 })
@@ -757,6 +760,7 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
         {
             map.into_iter()
                 .map(|(k, v)| KeyValue {
+                    key_strindex: 0,
                     key: k,
                     value: Some(json_value_to_any_value(&v)),
                 })
@@ -772,6 +776,7 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
             .map(|map| {
                 map.into_iter()
                     .map(|(k, v)| KeyValue {
+                        key_strindex: 0,
                         key: k,
                         value: Some(json_value_to_any_value(&v)),
                     })
@@ -872,6 +877,7 @@ mod tests {
 
         // Create a span with attributes
         let attributes = vec![KeyValue {
+            key_strindex: 0,
             key: "attr1".to_string(),
             value: Some(AnyValue {
                 value: Some(
@@ -887,6 +893,7 @@ mod tests {
             time_unix_nano: 1500000000,
             name: "test-event".to_string(),
             attributes: vec![KeyValue {
+                key_strindex: 0,
                 key: "event_attr".to_string(),
                 value: Some(AnyValue {
                     value: Some(
@@ -908,6 +915,7 @@ mod tests {
             span_id: link_span_id,
             trace_state: "".to_string(),
             attributes: vec![KeyValue {
+                key_strindex: 0,
                 key: "link_attr".to_string(),
                 value: Some(AnyValue {
                     value: Some(
@@ -946,6 +954,7 @@ mod tests {
 
         // Create resource attributes
         let resource_attributes = vec![KeyValue {
+            key_strindex: 0,
             key: "service.name".to_string(),
             value: Some(AnyValue {
                 value: Some(
@@ -968,6 +977,7 @@ mod tests {
             name: "test-library".to_string(),
             version: "1.0.0".to_string(),
             attributes: vec![KeyValue {
+                key_strindex: 0,
                 key: "scope_attr".to_string(),
                 value: Some(AnyValue {
                     value: Some(
@@ -1238,6 +1248,7 @@ mod tests {
         // Create a span with attributes
         let attributes = vec![
             KeyValue {
+                key_strindex: 0,
                 key: "attr1".to_string(),
                 value: Some(AnyValue {
                     value: Some(
@@ -1248,6 +1259,7 @@ mod tests {
                 }),
             },
             KeyValue {
+                key_strindex: 0,
                 key: "attr2".to_string(),
                 value: Some(AnyValue {
                     value: Some(
@@ -1263,6 +1275,7 @@ mod tests {
                 time_unix_nano: 1500000000,
                 name: "span-event".to_string(),
                 attributes: vec![KeyValue {
+                    key_strindex: 0,
                     key: "event_key".to_string(),
                     value: Some(AnyValue {
                         value: Some(
@@ -1291,6 +1304,7 @@ mod tests {
             span_id: link_span_id,
             trace_state: "".to_string(),
             attributes: vec![KeyValue {
+                key_strindex: 0,
                 key: "link_key".to_string(),
                 value: Some(AnyValue {
                     value: Some(
@@ -1327,6 +1341,7 @@ mod tests {
 
         // Create resource attributes
         let resource_attributes = vec![KeyValue {
+            key_strindex: 0,
             key: "service.name".to_string(),
             value: Some(AnyValue {
                 value: Some(

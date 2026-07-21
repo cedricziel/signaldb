@@ -82,12 +82,12 @@ tonic-prost = "0.14.5"
 tonic-prost-build = "0.14.3"
 tonic-reflection = "0.14.2"
 
-opentelemetry = "0.31.0"
-opentelemetry_sdk = "0.31.0"
+opentelemetry = "0.32.0"
+opentelemetry_sdk = "0.32.1"
 opentelemetry-stdout = { version = "0.31.0" }
-opentelemetry-otlp = { version = "0.31.0" }
-opentelemetry-proto = "0.31.0"
-opentelemetry-semantic-conventions = "0.31.0"
+opentelemetry-otlp = { version = "0.32.0" }
+opentelemetry-proto = "0.32.0"
+opentelemetry-semantic-conventions = "0.32.1"
 
 tokio = { version = "1.48.0", features = [
     "rt-multi-thread",

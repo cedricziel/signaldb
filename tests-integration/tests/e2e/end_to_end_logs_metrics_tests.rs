@@ -170,7 +170,7 @@ async fn setup_logs_metrics_services() -> TestServices {
 
 fn make_resource(service_name: &str) -> Resource {
     Resource {
-        attributes: vec![KeyValue {
+        attributes: vec![KeyValue { key_strindex: 0,
             key: "service.name".to_string(),
             value: Some(AnyValue {
                 value: Some(Value::StringValue(service_name.to_string())),
