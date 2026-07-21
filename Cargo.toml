@@ -69,7 +69,7 @@ datafusion = { version = "54.1.0", default-features = false, features = [
 arrow = { version = "58.3.0", features = ["prettyprint"] }
 parquet = { version = "58.3.0", features = ["arrow", "async"] }
 arrow-flight = { version = "58.3.0" }
-object_store = { version = "0.13.2", features = ["aws"] }
+object_store = { version = "0.14.1", features = ["aws"] }
 
 # Iceberg table format support (schema, catalog, and write operations)
 datafusion_iceberg = { git = "https://github.com/JanKaul/iceberg-rust", rev = "170ef972" }
