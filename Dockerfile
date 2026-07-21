@@ -94,7 +94,7 @@ RUN strip target/release/signaldb-acceptor && \
     strip target/release/signaldb
 
 # Runtime base image - minimal Alpine with required libraries
-FROM alpine:3.23 AS runtime-base
+FROM alpine:3.24 AS runtime-base
 
 # Install runtime dependencies
 RUN apk add --no-cache \
