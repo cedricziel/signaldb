@@ -9664,7 +9664,7 @@ dependencies = [
  "schemars 0.8.22",
  "serde_json",
  "serde_yaml",
- "syn 2.0.119",
+ "syn 3.0.2",
  "typify 0.7.0",
 ]
 
