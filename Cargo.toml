@@ -149,7 +149,7 @@ tower = "0.5.2"
 testcontainers = { version = "0.27.3", features = ["blocking"] }
 testcontainers-modules = { version = "0.15", features = ["postgres", "kafka", "minio"] }
 tempfile = "3.20.0"
-rand = "0.9"
+rand = "0.10"
 
 
 # Dev dependencies
