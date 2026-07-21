@@ -67,6 +67,7 @@ fn build_logs_request(batch_num: usize, rows: usize) -> ExportLogsServiceRequest
         resource_logs: vec![ResourceLogs {
             resource: Some(Resource {
                 attributes: vec![KeyValue {
+                    key_strindex: 0,
                     key: "service.name".to_string(),
                     value: Some(AnyValue {
                         value: Some(Value::StringValue("multi-instance-test".to_string())),
