@@ -5,6 +5,8 @@ The Compactor Service is a critical component of SignalDB that manages the compl
 - **Phase 1**: Dry-run compaction planning and validation
 - **Phase 2**: Active compaction execution for Parquet file consolidation
 - **Phase 3**: Comprehensive retention enforcement and storage lifecycle management
+- **Phase 4**: Multi-instance safety via distributed leases, fair scheduling, and Flight admin endpoints
+- **Phase 6**: Observability — Prometheus metrics, JSON status, and health endpoints
 
 ## Table of Contents
 
@@ -72,6 +74,30 @@ All operations respect Iceberg's transactional guarantees and snapshot isolation
 - **Safety First**: 24-hour grace period default, dry-run mode, tenant isolation
 - **Batch Processing**: Configurable batch sizes with progress tracking
 - **Resumability**: Checkpoint-based progress tracking for crash recovery
+- **Bounded Memory**: `max_live_files_threshold` skips cleanup for very large
+  tables instead of risking OOM, recorded in
+  `compactor_orphan_cleanup_skipped_total` (see issue #475)
+
+### Phase 4: Multi-Instance Safety + Scheduling
+
+- **Distributed Leases**: Instances coordinate through a `compactor_leases`
+  table in the SQL catalog (SQLite or PostgreSQL). A lease on
+  `(tenant, dataset, table, partition)` guarantees at most one instance
+  compacts a partition at a time; leases from crashed instances expire after
+  `lease_ttl_seconds` and are swept every 30 seconds
+- **Round-Robin Scheduling**: Fair candidate selection across tenants with
+  `max_candidates_per_cycle` and `max_per_tenant` caps
+- **Flight Admin Endpoints** (port 50055, `COMPACTOR_FLIGHT_ADDR`):
+  - `compact_now` — trigger compaction on demand
+  - `compact_status` — active leases + cumulative metrics as JSON
+  - `compact_dry_run` — return the current compaction plan without executing
+
+### Phase 6: Observability
+
+- **Prometheus metrics** at `GET /metrics` (default port 9091)
+- **JSON status document** at `GET /status` — instance ID, uptime, and all
+  compaction/retention/orphan counters
+- **Liveness probe** at `GET /health`
 
 ## Configuration
 
@@ -251,13 +277,13 @@ SIGNALDB_COMPACTOR_ORPHAN_CLEANUP_GRACE_PERIOD_HOURS=48
 
 ```bash
 # Run compactor as standalone service
-cargo run --bin compactor
+cargo run --bin signaldb-compactor
 
 # With specific config file
-cargo run --bin compactor -- --config /path/to/signaldb.toml
+cargo run --bin signaldb-compactor -- --config /path/to/signaldb.toml
 
 # With debug logging
-RUST_LOG=debug,compactor=trace cargo run --bin compactor
+RUST_LOG=debug,compactor=trace cargo run --bin signaldb-compactor
 ```
 
 #### Monolithic Mode
@@ -286,7 +312,7 @@ traces_retention_days = 7
 Start the compactor and monitor logs:
 
 ```bash
-RUST_LOG=info,compactor=debug cargo run --bin compactor
+RUST_LOG=info,compactor=debug cargo run --bin signaldb-compactor
 ```
 
 Look for log entries like:
@@ -352,56 +378,96 @@ revalidate_before_delete = true  # Extra safety
 
 Monitor metrics `compactor_files_deleted_total` to verify cleanup is working.
 
+### Multi-Instance Deployment
+
+Multiple compactor instances can safely share one catalog. Coordination is
+entirely lease-based — no additional configuration beyond pointing every
+instance at the same `[database]` is required:
+
+```bash
+# Instance 1
+COMPACTOR_FLIGHT_ADDR=0.0.0.0:50055 COMPACTOR_METRICS_ADDR=0.0.0.0:9091 \
+  cargo run --bin signaldb-compactor
+
+# Instance 2 (same machine: distinct ports; separate hosts: defaults are fine)
+COMPACTOR_FLIGHT_ADDR=0.0.0.0:50056 COMPACTOR_METRICS_ADDR=0.0.0.0:9092 \
+  cargo run --bin signaldb-compactor
+```
+
+Operational properties:
+
+- A partition is compacted by at most one instance at a time (lease mutual
+  exclusion on `(tenant, dataset, table, partition)`)
+- If an instance crashes mid-job, its leases expire after `lease_ttl_seconds`
+  (default 300s) and any other instance picks up the partition
+- Set `lease_ttl_seconds` comfortably above your longest expected compaction
+  job; a too-short TTL risks two instances working the same partition back to
+  back (never concurrently)
+- Inspect active leases on any instance via the Flight `compact_status` action
+  or `GET /status` on the metrics port
+
+Covered by `tests-integration/tests/compactor/multi_instance.rs`.
+
 ## Metrics
 
-The compactor exposes Prometheus metrics on the configured metrics port (default: 9091).
+The compactor serves observability endpoints on `metrics_addr`
+(default `0.0.0.0:9091`, override with `COMPACTOR_METRICS_ADDR`, disable by
+setting it to an empty string):
 
-### Compaction Metrics (Phase 1+2)
+- `GET /metrics` — Prometheus text exposition
+- `GET /status` — JSON document with instance ID, uptime, and all counters
+- `GET /health` — liveness probe (returns `ok`)
 
-- `compactor_compaction_runs_total{tenant, dataset, signal}` - Total compaction runs
-- `compactor_files_compacted_total{tenant, dataset, signal}` - Files processed
-- `compactor_bytes_compacted_total{tenant, dataset, signal}` - Bytes processed
-- `compactor_compaction_duration_seconds{tenant, dataset, signal}` - Duration histogram
+```bash
+curl -s localhost:9091/metrics | grep compactor
+curl -s localhost:9091/status | jq .
+```
+
+### Compaction Metrics (Phase 2)
+
+- `compactor_jobs_started_total` - Compaction jobs started
+- `compactor_jobs_succeeded_total` - Jobs completed successfully
+- `compactor_jobs_failed_total` - Jobs failed
+- `compactor_conflicts_detected_total` - Iceberg commit conflicts detected
+- `compactor_retries_attempted_total` - Retries after commit conflicts
+- `compactor_input_files_total` / `compactor_output_files_total` - File consolidation ratio
+- `compactor_bytes_before_compaction_total` / `compactor_bytes_after_compaction_total` - Size reduction
+- `compactor_compaction_duration_ms_total` - Cumulative job wall-clock time
 
 ### Retention Metrics (Phase 3)
 
-- `compactor_retention_cutoffs_computed{tenant, dataset, signal}` - Cutoffs computed
-- `compactor_partitions_evaluated_total{tenant, dataset, signal}` - Partitions checked
-- `compactor_partitions_dropped_total{tenant, dataset, signal}` - Partitions dropped
-- `compactor_snapshots_expired_total{tenant, dataset, table}` - Snapshots expired
-- `compactor_retention_enforcement_duration_seconds{tenant, dataset}` - Duration histogram
+- `compactor_retention_cutoffs_computed_total` - Cutoffs computed
+- `compactor_partitions_evaluated_total` - Partitions checked
+- `compactor_partitions_dropped_total` - Partitions dropped
+- `compactor_snapshots_expired_total` - Snapshots expired
+- `compactor_bytes_reclaimed_total` - Storage reclaimed by retention
+- `compactor_retention_duration_ms_total` - Cumulative enforcement wall-clock time
 
 ### Orphan Cleanup Metrics (Phase 3)
 
-- `compactor_orphan_cleanup_runs_total{tenant, dataset, table}` - Cleanup runs
-- `compactor_files_scanned_total{tenant, dataset, table}` - Files scanned
-- `compactor_orphans_identified_total{tenant, dataset, table}` - Orphans found
-- `compactor_files_deleted_total{tenant, dataset, table}` - Files deleted
-- `compactor_deletion_failures_total{tenant, dataset, table}` - Deletion errors
-- `compactor_bytes_freed_total{tenant, dataset, table}` - Storage reclaimed
-- `compactor_orphan_cleanup_duration_seconds{tenant, dataset, table}` - Duration histogram
+- `compactor_orphan_candidates_identified_total` - Orphans found
+- `compactor_files_deleted_total` - Files deleted
+- `compactor_bytes_freed_total` - Storage reclaimed by orphan deletion
+- `compactor_deletion_failures_total` - Deletion errors
+- `compactor_orphan_cleanup_skipped_total{reason}` - Cleanup runs skipped
+  (e.g. `reason="live_files_threshold_exceeded"` when the live file set
+  exceeds `max_live_files_threshold`)
 
 ### Example Prometheus Queries
 
-**Storage reclaimed per tenant (last 24h):**
+**Storage reclaimed in the last 24h:**
 ```promql
-sum by (tenant) (
-  increase(compactor_bytes_freed_total[24h])
-)
+increase(compactor_bytes_freed_total[24h]) + increase(compactor_bytes_reclaimed_total[24h])
 ```
 
-**Partitions dropped per signal type (last 7d):**
+**File consolidation effectiveness (input:output ratio, last 7d):**
 ```promql
-sum by (signal) (
-  increase(compactor_partitions_dropped_total[7d])
-)
+increase(compactor_input_files_total[7d]) / increase(compactor_output_files_total[7d])
 ```
 
-**Average retention enforcement duration:**
+**Alert on deletion failures:**
 ```promql
-rate(compactor_retention_enforcement_duration_seconds_sum[5m])
-/
-rate(compactor_retention_enforcement_duration_seconds_count[5m])
+increase(compactor_deletion_failures_total[1h]) > 0
 ```
 
 ## Troubleshooting
@@ -433,7 +499,7 @@ rate(compactor_retention_enforcement_duration_seconds_count[5m])
 
 ```bash
 # Check effective retention cutoff
-RUST_LOG=debug,compactor::retention=trace cargo run --bin compactor
+RUST_LOG=debug,compactor::retention=trace cargo run --bin signaldb-compactor
 
 # Look for log line:
 # "Computed retention cutoff: tenant=X dataset=Y signal=traces cutoff=2026-01-25T10:00:00Z"
@@ -464,7 +530,7 @@ RUST_LOG=debug,compactor::retention=trace cargo run --bin compactor
 
 ```bash
 # Enable detailed logging
-RUST_LOG=debug,compactor::orphan=trace cargo run --bin compactor
+RUST_LOG=debug,compactor::orphan=trace cargo run --bin signaldb-compactor
 
 # Check for revalidation logs
 grep "Revalidation" .data/logs/compactor.log
@@ -541,7 +607,7 @@ retention_check_interval_secs = 7200  # Every 2 hours instead of 1
 psql -h localhost -U signaldb -d signaldb -c "SELECT * FROM services LIMIT 1"
 
 # Verify partition format
-RUST_LOG=debug,compactor::iceberg=trace cargo run --bin compactor
+RUST_LOG=debug,compactor::iceberg=trace cargo run --bin signaldb-compactor
 ```
 
 ## Development

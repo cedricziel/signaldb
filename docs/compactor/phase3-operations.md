@@ -67,7 +67,7 @@ Start the compactor with dry-run enabled:
 
 ```bash
 # Start compactor
-cargo run --bin compactor
+cargo run --bin signaldb-compactor
 
 # Or in monolithic mode
 cargo run --bin signaldb
@@ -391,7 +391,7 @@ traces_retention_days = 14  # Changed from 30 to 14
 ```bash
 # Restart compactor (graceful)
 pkill -TERM compactor
-cargo run --bin compactor
+cargo run --bin signaldb-compactor
 
 # Or restart monolithic service
 systemctl restart signaldb
@@ -443,7 +443,7 @@ To check what the current retention cutoff would be:
 
 ```bash
 # Enable debug logging
-RUST_LOG=debug,compactor::retention=trace cargo run --bin compactor
+RUST_LOG=debug,compactor::retention=trace cargo run --bin signaldb-compactor
 
 # Look for cutoff computation logs
 tail -f .data/logs/compactor.log | grep "Computed retention cutoff"

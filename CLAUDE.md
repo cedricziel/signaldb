@@ -219,14 +219,14 @@ The Compactor Service manages complete data lifecycle with three phases:
 
 ```bash
 # Standalone compactor service
-cargo run --bin compactor
+cargo run --bin signaldb-compactor
 
 # Monolithic mode (includes compactor)
 cargo run --bin signaldb
 ./scripts/run-dev.sh
 
 # With debug logging
-RUST_LOG=debug,compactor=trace cargo run --bin compactor
+RUST_LOG=debug,compactor=trace cargo run --bin signaldb-compactor
 ```
 
 ### Phase 3: Retention & Lifecycle Management

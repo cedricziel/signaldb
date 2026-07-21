@@ -308,6 +308,7 @@ max_snapshot_age_hours = 168     # 7-day snapshot window
 |-------|------|---------|-------|-------------|
 | `batch_size` | `usize` | `1000` | 10-10000 | Files to process per batch |
 | `rate_limit_delay_ms` | `u64` | `0` | 0-10000 | Delay between batches (milliseconds) |
+| `max_live_files_threshold` | `usize` | `500000` | 0 = disabled | Skip cleanup for tables whose estimated live file count exceeds this cap (bounds memory; skips recorded in `compactor_orphan_cleanup_skipped_total`) |
 
 **Example:**
 ```toml
