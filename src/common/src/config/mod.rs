@@ -746,6 +746,8 @@ impl Configuration {
 }
 
 #[cfg(test)]
+// figment::Error is >200 bytes but Jail::expect_with's closure signature is figment's API
+#[allow(clippy::result_large_err)]
 mod tests {
     use super::*;
     use figment::Jail;

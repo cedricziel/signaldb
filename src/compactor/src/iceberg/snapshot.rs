@@ -96,7 +96,7 @@ impl SnapshotManager {
         let mut snapshots = self.list_snapshots(table)?;
 
         // Sort by timestamp descending (most recent first)
-        snapshots.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+        snapshots.sort_by_key(|s| std::cmp::Reverse(s.timestamp_ms));
 
         // Take the first N
         snapshots.truncate(count);
@@ -124,7 +124,7 @@ impl SnapshotManager {
         }
 
         // Sort by timestamp descending (most recent first)
-        all_snapshots.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+        all_snapshots.sort_by_key(|s| std::cmp::Reverse(s.timestamp_ms));
 
         // Keep the first N, expire the rest
         let mut to_expire: Vec<SnapshotInfo> = all_snapshots.into_iter().skip(keep_count).collect();

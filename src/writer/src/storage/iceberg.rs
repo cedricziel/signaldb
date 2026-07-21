@@ -193,11 +193,9 @@ impl IcebergTableWriter {
         // Calculate optimal split size
         let max_rows_per_split = std::cmp::min(
             self.batch_config.max_rows_per_batch,
-            if memory_size > 0 {
-                (self.batch_config.max_memory_per_batch_bytes * row_count) / memory_size
-            } else {
-                self.batch_config.max_rows_per_batch
-            },
+            (self.batch_config.max_memory_per_batch_bytes * row_count)
+                .checked_div(memory_size)
+                .unwrap_or(self.batch_config.max_rows_per_batch),
         );
 
         log::info!(
