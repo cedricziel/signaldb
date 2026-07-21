@@ -46,9 +46,6 @@ impl Default for SignalDbCommands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Initialize logging based on CLI arguments
-    utils::init_logging(&cli.common);
-
     // Load application configuration
     let config = utils::load_config(cli.common.config.as_ref())?;
 
@@ -59,18 +56,20 @@ async fn main() -> Result<()> {
         return Ok(()); // Command handled, exit early
     }
 
-    let _telemetry = match common::self_monitoring::init_telemetry(&config, "signaldb") {
-        Ok(t) => {
-            if t.is_some() {
-                log::info!("Self-monitoring telemetry initialized");
-            }
-            t
-        }
-        Err(e) => {
-            log::warn!("Self-monitoring init failed, continuing without it: {e}");
-            None
-        }
-    };
+    // Initialize self-monitoring telemetry first so the OTel bridge layers
+    // can be attached to the tracing subscriber, then initialize logging.
+    let (telemetry, telemetry_error) =
+        match common::self_monitoring::init_telemetry(&config, "signaldb") {
+            Ok(t) => (t, None),
+            Err(e) => (None, Some(e)),
+        };
+    utils::init_logging(&cli.common, telemetry.as_ref());
+    if let Some(e) = telemetry_error {
+        log::warn!("Self-monitoring init failed, continuing without it: {e}");
+    } else if telemetry.is_some() {
+        log::info!("Self-monitoring telemetry initialized");
+    }
+    let _telemetry = telemetry;
 
     log::info!("Loaded configuration:");
     log::info!("  Database DSN: {}", config.database.dsn);

@@ -7,9 +7,9 @@ pub mod metrics;
 pub mod suppress;
 
 pub use suppress::{
-    SELF_MONITORING_DATASET, SELF_MONITORING_TENANT, SelfTelemetrySuppressionFilter,
-    is_self_monitoring_tenant, self_telemetry_suppressed, suppress_self_telemetry,
-    suppress_self_telemetry_sync,
+    OtelExportFilter, SELF_MONITORING_DATASET, SELF_MONITORING_TENANT,
+    SelfTelemetrySuppressionFilter, is_self_monitoring_tenant, self_telemetry_suppressed,
+    suppress_self_telemetry, suppress_self_telemetry_sync,
 };
 
 use anyhow::{Context, Result};
@@ -141,6 +141,16 @@ pub fn init_telemetry(config: &Configuration, service_name: &str) -> Result<Opti
         .build();
 
     let metrics_handle = metrics::register_system_metrics(&meter_provider, service_name);
+
+    // Install globals so instrumentation sites can use the OTel API without
+    // threading providers through every call: W3C trace-context propagation
+    // across Flight, `global::meter()` for application metrics, and
+    // `global::tracer()` for manual spans.
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
+    opentelemetry::global::set_tracer_provider(tracer_provider.clone());
+    opentelemetry::global::set_meter_provider(meter_provider.clone());
 
     Ok(Some(Telemetry {
         tracer_provider,

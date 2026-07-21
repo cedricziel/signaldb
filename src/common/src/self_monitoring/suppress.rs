@@ -82,6 +82,50 @@ impl<S> tracing_subscriber::layer::Filter<S> for SelfTelemetrySuppressionFilter 
     }
 }
 
+/// Targets whose spans/events must never be exported via OTel: the exporter's
+/// own gRPC/HTTP stack and the OpenTelemetry SDK itself. Exporting those would
+/// create a feedback loop where every (possibly failing) export produces new
+/// telemetry to export.
+const OTEL_EXCLUDED_TARGET_PREFIXES: &[&str] = &["opentelemetry", "h2", "hyper", "tonic", "tower"];
+
+/// Filter for the OpenTelemetry export layers (spans and logs).
+///
+/// Drops everything while [`self_telemetry_suppressed`] is set (anti-loop
+/// guard for `_system` request processing) and everything emitted by the
+/// export transport stack itself (exporter feedback guard).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OtelExportFilter;
+
+impl OtelExportFilter {
+    fn is_exportable(meta: &tracing::Metadata<'_>) -> bool {
+        if self_telemetry_suppressed() {
+            return false;
+        }
+        let target = meta.target();
+        !OTEL_EXCLUDED_TARGET_PREFIXES
+            .iter()
+            .any(|prefix| target.starts_with(prefix))
+    }
+}
+
+impl<S> tracing_subscriber::layer::Filter<S> for OtelExportFilter {
+    fn enabled(
+        &self,
+        meta: &tracing::Metadata<'_>,
+        _cx: &tracing_subscriber::layer::Context<'_, S>,
+    ) -> bool {
+        Self::is_exportable(meta)
+    }
+
+    fn callsite_enabled(
+        &self,
+        _meta: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        // Depends on runtime task-local state; never cache per-callsite.
+        tracing::subscriber::Interest::sometimes()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
