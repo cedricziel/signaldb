@@ -6480,6 +6480,7 @@ dependencies = [
  "bytes",
  "clap",
  "common",
+ "dashmap",
  "datafusion",
  "datafusion_iceberg",
  "futures",

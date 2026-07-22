@@ -191,6 +191,10 @@ max_sql_rows = 1000000
 # Upper bound for the client-supplied `limit` on /api/search (trace
 # count; the span fetch limit is 50x this value).
 max_search_limit = 1000
+#
+# Maximum queries a single tenant may run concurrently; excess queries
+# are rejected with RESOURCE_EXHAUSTED (retryable). Unset = unlimited.
+# max_concurrent_queries_per_tenant = 8
 
 [compactor]
 # Compactor Service Configuration

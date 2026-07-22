@@ -170,6 +170,9 @@ pub struct QuerierFlightService {
     #[allow(dead_code)]
     iceberg_catalog: Option<Arc<dyn iceberg_rust::catalog::Catalog>>,
     limits: QuerierConfig,
+    /// Per-tenant concurrent-query permits, populated lazily. Bounded by
+    /// the number of distinct tenants.
+    query_permits: dashmap::DashMap<String, Arc<tokio::sync::Semaphore>>,
 }
 
 /// Build a SessionContext whose RuntimeEnv enforces the configured memory
@@ -245,6 +248,7 @@ impl QuerierFlightService {
             trace_service,
             iceberg_catalog: None,
             limits,
+            query_permits: dashmap::DashMap::new(),
         }
     }
 
@@ -336,7 +340,39 @@ impl QuerierFlightService {
             trace_service,
             iceberg_catalog: Some(iceberg_catalog),
             limits,
+            query_permits: dashmap::DashMap::new(),
         })
+    }
+
+    /// Reserve a concurrent-query slot for `tenant`, or reject with
+    /// RESOURCE_EXHAUSTED when the tenant is already at its cap. Returns
+    /// `None` (no permit needed) when no cap is configured.
+    #[allow(clippy::result_large_err)]
+    fn try_acquire_query_permit(
+        &self,
+        tenant: &str,
+    ) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, Status> {
+        let Some(cap) = self.limits.max_concurrent_queries_per_tenant else {
+            return Ok(None);
+        };
+        let semaphore = self
+            .query_permits
+            .entry(tenant.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(cap)))
+            .clone();
+        match semaphore.try_acquire_owned() {
+            Ok(permit) => Ok(Some(permit)),
+            Err(_) => {
+                tracing::warn!(
+                    tenant_id = %tenant,
+                    limit = cap,
+                    "Rejecting query: tenant is at its concurrent-query limit"
+                );
+                Err(Status::resource_exhausted(format!(
+                    "tenant '{tenant}' has reached its concurrent-query limit ({cap}); retry later"
+                )))
+            }
+        }
     }
 
     /// Parse ticket content to determine query type and parameters
@@ -696,6 +732,24 @@ impl FlightService for QuerierFlightService {
                 TicketRequest::SearchTraces { .. } => "trace_search",
                 TicketRequest::SqlQuery { .. } => "sql",
             };
+
+            // Per-tenant concurrent-query cap. The tenant is the
+            // authenticated caller when present, else the tenant named in
+            // the ticket (internal callers proxy on behalf of tenants).
+            // Internal raw-SQL callers carry no tenant and are exempt.
+            let permit_tenant = caller_tenant
+                .as_ref()
+                .map(|ctx| ctx.tenant_id.clone())
+                .or_else(|| match &ticket_request {
+                    TicketRequest::FindTrace { tenant_slug, .. }
+                    | TicketRequest::SearchTraces { tenant_slug, .. } => Some(tenant_slug.clone()),
+                    TicketRequest::SqlQuery { .. } => None,
+                });
+            // Held until the query's batches are fully computed.
+            let _query_permit = match &permit_tenant {
+                Some(tenant) => self.try_acquire_query_permit(tenant)?,
+                None => None,
+            };
             let query_start = std::time::Instant::now();
             let query_future = async {
                 Ok(match ticket_request {
@@ -1013,6 +1067,42 @@ mod tests {
             .unwrap();
         let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(rows, 10, "raw SQL results must be capped at max_sql_rows");
+    }
+
+    #[tokio::test]
+    async fn concurrent_query_cap_is_enforced_per_tenant() {
+        let service = make_service_with_limits(QuerierConfig {
+            max_concurrent_queries_per_tenant: Some(1),
+            ..QuerierConfig::default()
+        })
+        .await;
+
+        let held = service
+            .try_acquire_query_permit("acme")
+            .expect("first query is within the cap")
+            .expect("a permit is issued when a cap is configured");
+
+        // Same tenant at the cap: rejected with the gRPC analog of 429.
+        let status = service
+            .try_acquire_query_permit("acme")
+            .expect_err("second concurrent query must be rejected");
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+
+        // A different tenant has its own budget.
+        let other = service.try_acquire_query_permit("globex").unwrap();
+        assert!(other.is_some());
+
+        // Releasing the permit frees the slot.
+        drop(held);
+        assert!(service.try_acquire_query_permit("acme").is_ok());
+    }
+
+    #[tokio::test]
+    async fn no_cap_means_no_permits_needed() {
+        let service = make_service_with_limits(QuerierConfig::default()).await;
+        for _ in 0..100 {
+            assert!(service.try_acquire_query_permit("acme").unwrap().is_none());
+        }
     }
 
     #[test]
