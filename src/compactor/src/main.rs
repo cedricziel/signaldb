@@ -34,6 +34,31 @@ struct Args {
     config: String,
 }
 
+/// List the signal tables that actually exist in a dataset's namespace,
+/// so lifecycle jobs neither chase phantom tables nor skip real ones.
+async fn list_signal_tables(
+    catalog_manager: &CatalogManager,
+    tenant_id: &str,
+    dataset_id: &str,
+) -> Result<Vec<String>> {
+    let namespace = catalog_manager
+        .build_namespace(tenant_id, dataset_id)
+        .context("Failed to build namespace")?;
+    let identifiers = catalog_manager
+        .catalog()
+        .list_tabulars(&namespace)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to list tables in {namespace:?}: {e}"))?;
+
+    let mut tables: Vec<String> = identifiers
+        .iter()
+        .map(|identifier| identifier.name().to_string())
+        .filter(|name| name == "traces" || name == "logs" || name.starts_with("metrics"))
+        .collect();
+    tables.sort();
+    Ok(tables)
+}
+
 /// Waits for a shutdown signal (SIGINT or SIGTERM)
 async fn wait_for_shutdown_signal() -> Result<()> {
     #[cfg(unix)]
@@ -493,16 +518,31 @@ async fn main() -> Result<()> {
                                 }
                             }
 
-                            let signal_tables = [
-                                "traces",
-                                "logs",
-                                "metrics_gauge",
-                                "metrics_counter",
-                                "metrics_histogram",
-                            ];
-
                             for tenant_config in catalog_manager.get_enabled_tenants() {
                                 for dataset_config in &tenant_config.datasets {
+                                    // List the tables that actually exist in this
+                                    // dataset's namespace. The previous hardcoded
+                                    // list chased the nonexistent metrics_counter
+                                    // every cycle and silently skipped
+                                    // metrics_sum / metrics_exponential_histogram /
+                                    // metrics_summary forever (issue #561).
+                                    let signal_tables = match list_signal_tables(
+                                        &catalog_manager,
+                                        &tenant_config.id,
+                                        &dataset_config.id,
+                                    )
+                                    .await
+                                    {
+                                        Ok(tables) => tables,
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "Failed to list tables for {}/{}: {e:#}",
+                                                tenant_config.id,
+                                                dataset_config.id
+                                            );
+                                            continue;
+                                        }
+                                    };
                                     for table_name in &signal_tables {
                                         let tid = &tenant_config.id;
                                         let did = &dataset_config.id;
@@ -580,6 +620,36 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn list_signal_tables_reflects_catalog_contents() {
+        let catalog_manager = CatalogManager::new_in_memory().await.unwrap();
+
+        // Empty namespace: no phantom tables to iterate.
+        let tables = list_signal_tables(&catalog_manager, "t", "d")
+            .await
+            .unwrap();
+        assert!(tables.is_empty(), "empty catalog must list no tables");
+
+        // Only the tables that exist come back — including the metrics
+        // subtypes the old hardcoded list skipped.
+        for table in ["traces", "metrics_sum", "metrics_summary"] {
+            catalog_manager.ensure_table("t", "d", table).await.unwrap();
+        }
+        let tables = list_signal_tables(&catalog_manager, "t", "d")
+            .await
+            .unwrap();
+        assert_eq!(tables, vec!["metrics_sum", "metrics_summary", "traces"]);
+
+        // The phantom table from the old list cannot even be created.
+        assert!(
+            catalog_manager
+                .ensure_table("t", "d", "metrics_counter")
+                .await
+                .is_err(),
+            "metrics_counter is not a real signal table"
+        );
+    }
     use std::time::Duration;
 
     #[test]
