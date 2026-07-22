@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::Context;
 use common::auth::TenantContext;
 use common::flight::conversion::otlp_metrics_to_arrow;
 use common::flight::transport::InMemoryFlightTransport;
@@ -41,11 +42,12 @@ impl MockMetricsHandler {
         &self,
         _tenant_context: &TenantContext,
         request: ExportMetricsServiceRequest,
-    ) {
+    ) -> anyhow::Result<()> {
         self.handle_grpc_otlp_metrics_calls
             .lock()
             .await
             .push(request);
+        Ok(())
     }
 
     pub fn expect_handle_grpc_otlp_metrics(&mut self) -> &mut Self {
@@ -235,6 +237,16 @@ impl MetricsHandler {
         result
     }
 
+    /// Handle an OTLP metrics export.
+    ///
+    /// Returns `Ok(())` once every metric-type partition is durably
+    /// accepted: written and flushed to the WAL. Failed Flight forwards
+    /// after that point are not errors — the WAL retry consumer re-forwards
+    /// those entries.
+    ///
+    /// If any partition fails before WAL durability, an error is returned
+    /// so the client retries the export. Retrying partitions that did reach
+    /// the WAL produces duplicates (at-least-once semantics).
     #[tracing::instrument(
         skip_all,
         fields(
@@ -246,7 +258,7 @@ impl MetricsHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportMetricsServiceRequest,
-    ) {
+    ) -> anyhow::Result<()> {
         tracing::info!(
             tenant_id = %tenant_context.tenant_id,
             dataset_id = %tenant_context.dataset_id,
@@ -254,7 +266,7 @@ impl MetricsHandler {
         );
 
         // Get tenant/dataset-specific WAL
-        let wal = match self
+        let wal = self
             .wal_manager
             .get_wal(
                 &tenant_context.tenant_id,
@@ -262,26 +274,18 @@ impl MetricsHandler {
                 "metrics",
             )
             .await
-        {
-            Ok(wal) => wal,
-            Err(e) => {
-                tracing::error!(
-                    tenant_id = %tenant_context.tenant_id,
-                    dataset_id = %tenant_context.dataset_id,
-                    error = %e,
-                    "Failed to get WAL"
-                );
-                return;
-            }
-        };
+            .context("Failed to get WAL")?;
 
         // Partition metrics by type to prevent schema conflicts
         let partitions = Self::partition_metrics_by_type(&request);
 
         if partitions.is_empty() {
             tracing::warn!("No metrics found in request");
-            return;
+            return Ok(());
         }
+
+        // Metric types that failed before reaching WAL durability
+        let mut undurable: Vec<String> = Vec::new();
 
         tracing::info!(
             partition_count = partitions.len(),
@@ -304,6 +308,7 @@ impl MetricsHandler {
                 Ok(bytes) => bytes,
                 Err(e) => {
                     tracing::error!(metric_type = %metric_type, error = %e, "Failed to serialize record batch");
+                    undurable.push(metric_type.clone());
                     continue;
                 }
             };
@@ -339,12 +344,14 @@ impl MetricsHandler {
                 Ok(id) => id,
                 Err(e) => {
                     tracing::error!(metric_type = %metric_type, error = %e, "Failed to write metrics to WAL");
+                    undurable.push(metric_type.clone());
                     continue;
                 }
             };
 
             if let Err(e) = wal.flush().await {
                 tracing::error!(metric_type = %metric_type, error = %e, "Failed to flush WAL");
+                undurable.push(metric_type.clone());
                 continue;
             }
 
@@ -401,7 +408,15 @@ impl MetricsHandler {
             }
         }
 
+        if !undurable.is_empty() {
+            anyhow::bail!(
+                "Failed to durably accept metrics for types: {}",
+                undurable.join(", ")
+            );
+        }
+
         tracing::info!("Completed processing metrics request for all types");
+        Ok(())
     }
 }
 
