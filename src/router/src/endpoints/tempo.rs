@@ -15,8 +15,7 @@ use futures::StreamExt;
 use serde::Deserialize;
 use std::collections::HashMap;
 use tempo_api::{
-    self, MetricSeries, MetricsData, MetricsQueryParams, MetricsRangeQueryParams, MetricsResponse,
-    TraceQueryParams,
+    self, MetricsQueryParams, MetricsRangeQueryParams, MetricsResponse, TraceQueryParams,
 };
 
 /// Query parameters for v2 tag search
@@ -39,17 +38,20 @@ pub fn router<S: RouterState>() -> Router<S> {
         .route("/api/traces/{trace_id}", get(query_single_trace::<S>))
         .route("/api/search", get(search::<S>))
         .route("/api/search/tags", get(search_tags))
-        .route("/api/search/tag/{tag_name}/values", get(search_tag_values))
+        .route(
+            "/api/search/tag/{tag_name}/values",
+            get(search_tag_values::<S>),
+        )
         // v2 routes
         .route("/api/v2/traces/{trace_id}", get(query_single_trace::<S>)) // V2 uses same handler for now
         .route("/api/v2/search/tags", get(search_tags_v2))
         .route(
             "/api/v2/search/tag/{tag_name}/values",
-            get(search_tag_values_v2),
+            get(search_tag_values_v2::<S>),
         )
         // metrics endpoints
-        .route("/api/metrics/query", get(metrics_query::<S>))
-        .route("/api/metrics/query_range", get(metrics_query_range::<S>))
+        .route("/api/metrics/query", get(metrics_query))
+        .route("/api/metrics/query_range", get(metrics_query_range))
 }
 
 /// Convert Arrow FlightData to internal trace model, then to Tempo API format
@@ -706,23 +708,147 @@ pub async fn search<S: RouterState>(
     }
 }
 
+/// Tag names trace search can actually filter on today (see the
+/// querier's search_filter module). Returned instead of an empty stub so
+/// Grafana autocomplete reflects real capability without fabricating
+/// unqueryable tags.
+const RESOURCE_TAGS: &[&str] = &["service.name"];
+const INTRINSIC_TAGS: &[&str] = &["name", "status"];
+
+/// Map a (possibly scoped) tag name to the traces column that backs it.
+fn tag_value_column(tag_name: &str) -> Option<&'static str> {
+    let unscoped = tag_name
+        .strip_prefix("resource.")
+        .or_else(|| tag_name.strip_prefix("span."))
+        .unwrap_or(tag_name)
+        .trim_start_matches('.');
+    match unscoped {
+        "service.name" => Some("service_name"),
+        "name" => Some("span_name"),
+        _ => None,
+    }
+}
+
+/// Fetch distinct values of a traces column for the tenant via the
+/// querier's Flight SQL path.
+async fn distinct_column_values<S: RouterState>(
+    state: &S,
+    tenant_ctx: &common::auth::TenantContext,
+    column: &str,
+) -> Result<Vec<String>, axum::http::StatusCode> {
+    let mut client = state
+        .service_registry()
+        .get_flight_client_for_capability(ServiceCapability::QueryExecution)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to get Flight client for tag values");
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        })?;
+
+    // Slugs are validated at authentication time; quote identifiers so
+    // hyphenated slugs parse.
+    let sql = format!(
+        "SELECT DISTINCT \"{column}\" FROM \"{}\".\"{}\".\"traces\" ORDER BY 1 LIMIT 1000",
+        tenant_ctx.tenant_slug, tenant_ctx.dataset_slug
+    );
+    let mut flight_request = tonic::Request::new(Ticket::new(sql));
+    common::flight::trace_context::inject_context_into_request(&mut flight_request);
+    if let Some(key) = &state.config().auth.internal_service_key {
+        common::flight::auth::attach_internal_auth(&mut flight_request, key);
+    }
+
+    let mut stream = client
+        .do_get(flight_request)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Tag values query failed");
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .into_inner();
+
+    let mut flight_data = Vec::new();
+    while let Some(data) = stream.next().await {
+        flight_data.push(data.map_err(|e| {
+            tracing::error!(error = %e, "Error reading tag values flight data");
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        })?);
+    }
+    if flight_data.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let batches = flight_data_to_batches(&flight_data).map_err(|e| {
+        tracing::error!(error = %e, "Failed to decode tag values flight data");
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let mut values = Vec::new();
+    for batch in batches {
+        if batch.num_columns() == 0 {
+            continue;
+        }
+        if let Some(column) = batch.column(0).as_any().downcast_ref::<StringArray>() {
+            for i in 0..column.len() {
+                if !column.is_null(i) {
+                    values.push(column.value(i).to_string());
+                }
+            }
+        }
+    }
+    Ok(values)
+}
+
 /// GET /api/search/tags?scope=<resource|span|intrinsic>
 ///
 /// See https://grafana.com/docs/tempo/latest/api_docs/#search-tags
 #[tracing::instrument]
 pub async fn search_tags()
 -> Result<axum::Json<tempo_api::TagSearchResponse>, axum::http::StatusCode> {
-    let response = tempo_api::TagSearchResponse { tag_names: vec![] };
+    let response = tempo_api::TagSearchResponse {
+        tag_names: RESOURCE_TAGS
+            .iter()
+            .chain(INTRINSIC_TAGS)
+            .map(|t| t.to_string())
+            .collect(),
+    };
     Ok(axum::Json(response))
 }
 
 /// GET /api/search/tag/:tag_name/values
-#[tracing::instrument]
-pub async fn search_tag_values(
-    Path(_tag_name): Path<String>,
+///
+/// Backed by real data: distinct values from the tenant's traces table
+/// for supported tags, static status values for `status`, and an
+/// explicit 501 for tags that are not queryable yet.
+#[tracing::instrument(skip(state, tenant_ctx))]
+pub async fn search_tag_values<S: RouterState>(
+    state: State<S>,
+    tenant_ctx: TenantContextExtractor,
+    Path(tag_name): Path<String>,
 ) -> Result<axum::Json<tempo_api::TagValuesResponse>, axum::http::StatusCode> {
-    let response = tempo_api::TagValuesResponse { tag_values: vec![] };
-    Ok(axum::Json(response))
+    let tag_values = tag_values_for(&state, &tenant_ctx.0, &tag_name).await?;
+    Ok(axum::Json(tempo_api::TagValuesResponse { tag_values }))
+}
+
+async fn tag_values_for<S: RouterState>(
+    state: &State<S>,
+    tenant_ctx: &common::auth::TenantContext,
+    tag_name: &str,
+) -> Result<Vec<String>, axum::http::StatusCode> {
+    if let Some(column) = tag_value_column(tag_name) {
+        return distinct_column_values(&state.0, tenant_ctx, column).await;
+    }
+    let unscoped = tag_name.trim_start_matches('.');
+    if unscoped == "status" || unscoped == "intrinsic.status" {
+        return Ok(vec![
+            "ok".to_string(),
+            "error".to_string(),
+            "unset".to_string(),
+        ]);
+    }
+    // Attribute tag values require an index (#411); saying so beats an
+    // empty list that looks like "no data".
+    tracing::debug!(tag_name = %tag_name, "Tag value lookup not implemented for this tag");
+    Err(axum::http::StatusCode::NOT_IMPLEMENTED)
 }
 
 /// GET /api/v2/search/tags?scope=<resource|span|intrinsic>
@@ -730,84 +856,63 @@ pub async fn search_tag_values(
 pub async fn search_tags_v2(
     Query(_params): Query<TagSearchV2Params>,
 ) -> Result<axum::Json<tempo_api::v2::TagSearchResponse>, axum::http::StatusCode> {
-    let response = tempo_api::v2::TagSearchResponse { scopes: vec![] };
+    let response = tempo_api::v2::TagSearchResponse {
+        scopes: vec![
+            tempo_api::v2::TagSearchScope {
+                scope: "resource".to_string(),
+                tags: RESOURCE_TAGS.iter().map(|t| t.to_string()).collect(),
+            },
+            tempo_api::v2::TagSearchScope {
+                scope: "intrinsic".to_string(),
+                tags: INTRINSIC_TAGS.iter().map(|t| t.to_string()).collect(),
+            },
+        ],
+    };
     Ok(axum::Json(response))
 }
 
 /// GET /api/v2/search/tag/{tag_name}/values
-#[tracing::instrument]
-pub async fn search_tag_values_v2(
-    Path(_scoped_tag): Path<String>,
+#[tracing::instrument(skip(state, tenant_ctx))]
+pub async fn search_tag_values_v2<S: RouterState>(
+    state: State<S>,
+    tenant_ctx: TenantContextExtractor,
+    Path(scoped_tag): Path<String>,
     Query(_params): Query<TagValueSearchV2Params>,
 ) -> Result<axum::Json<tempo_api::v2::TagValuesResponse>, axum::http::StatusCode> {
-    let response = tempo_api::v2::TagValuesResponse { tag_values: vec![] };
-    Ok(axum::Json(response))
+    let values = tag_values_for(&state, &tenant_ctx.0, &scoped_tag).await?;
+    Ok(axum::Json(tempo_api::v2::TagValuesResponse {
+        tag_values: values
+            .into_iter()
+            .map(|value| tempo_api::v2::TagWithValue {
+                tag: scoped_tag.clone(),
+                value,
+            })
+            .collect(),
+    }))
 }
 
 /// GET /api/metrics/query - Instant TraceQL metrics query
-#[tracing::instrument(skip(_state, _params))]
-pub async fn metrics_query<S: RouterState>(
-    _state: State<S>,
+///
+/// TraceQL metrics are not implemented. Answer 501 instead of the
+/// fabricated series this endpoint used to return (issue #552).
+#[tracing::instrument]
+pub async fn metrics_query(
     Query(_params): Query<MetricsQueryParams>,
 ) -> Result<axum::Json<MetricsResponse>, axum::http::StatusCode> {
-    tracing::info!("Metrics instant query");
-
-    // For now, return a simple response indicating the endpoint is available
-    // Full implementation will parse TraceQL and execute queries
-
-    // Parse the TraceQL query to extract selector and metric function
-    // Example: "{service.name='api'}|count()" -> selector: service.name='api', function: count
-
-    let response = MetricsResponse {
-        status: "success".to_string(),
-        data: MetricsData {
-            result_type: "vector".to_string(),
-            result: vec![
-                // Example response structure
-                MetricSeries {
-                    metric: HashMap::new(),
-                    values: vec![(chrono::Utc::now().timestamp(), "0".to_string())],
-                },
-            ],
-        },
-    };
-
-    Ok(axum::Json(response))
+    tracing::debug!("TraceQL metrics instant query not implemented");
+    Err(axum::http::StatusCode::NOT_IMPLEMENTED)
 }
 
 /// GET /api/metrics/query_range - Range TraceQL metrics query with time series
-#[tracing::instrument(skip(_state, _params))]
-pub async fn metrics_query_range<S: RouterState>(
-    _state: State<S>,
+///
+/// TraceQL metrics are not implemented. Answer 501 instead of the
+/// fabricated series this endpoint used to return (issue #552).
+#[tracing::instrument]
+pub async fn metrics_query_range(
     Query(_params): Query<MetricsRangeQueryParams>,
 ) -> Result<axum::Json<MetricsResponse>, axum::http::StatusCode> {
-    tracing::info!("Metrics range query");
-
-    // For now, return a simple response indicating the endpoint is available
-    // Full implementation will:
-    // 1. Parse TraceQL query
-    // 2. Execute time-bucketed SQL queries
-    // 3. Return time series data
-
-    let response = MetricsResponse {
-        status: "success".to_string(),
-        data: MetricsData {
-            result_type: "matrix".to_string(),
-            result: vec![
-                // Example time series response
-                MetricSeries {
-                    metric: HashMap::new(),
-                    values: vec![
-                        // Multiple timestamp-value pairs for time series
-                        (chrono::Utc::now().timestamp() - 300, "10".to_string()),
-                        (chrono::Utc::now().timestamp(), "15".to_string()),
-                    ],
-                },
-            ],
-        },
-    };
-
-    Ok(axum::Json(response))
+    tracing::debug!("TraceQL metrics range query not implemented");
+    Err(axum::http::StatusCode::NOT_IMPLEMENTED)
 }
 
 #[cfg(test)]
