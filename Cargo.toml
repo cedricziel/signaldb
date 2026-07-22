@@ -68,7 +68,7 @@ datafusion = { version = "54.1.0", default-features = false, features = [
 # Direct Arrow and Parquet dependencies
 arrow = { version = "58.3.0", features = ["prettyprint"] }
 parquet = { version = "58.3.0", features = ["arrow", "async"] }
-arrow-flight = { version = "58.3.0" }
+arrow-flight = { version = "59.1.0" }
 object_store = { version = "0.13.2", features = ["aws"] }
 
 # Iceberg table format support (schema, catalog, and write operations)
