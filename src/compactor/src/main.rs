@@ -368,6 +368,9 @@ async fn main() -> Result<()> {
                                                     candidate.partition_id
                                                 );
 
+                                                // Keep the lease alive for jobs longer than the TTL.
+                                                let renewal = lease_manager.spawn_renewal(lease.clone());
+
                                                 match executor.execute_candidate(candidate).await {
                                                     Ok(result) => {
                                                         tracing::info!(
@@ -396,6 +399,7 @@ async fn main() -> Result<()> {
                                                 }
 
                                                 // Release the lease regardless of job outcome
+                                                drop(renewal);
                                                 if let Err(e) = lease_manager.release(&lease).await {
                                                     tracing::warn!("Failed to release lease: {e:#}");
                                                 }
