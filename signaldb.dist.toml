@@ -156,6 +156,29 @@ max_buffer_entries = 1000
 flush_interval = "30s"
 max_buffer_size_bytes = 134217728     # 128MB
 
+[querier]
+# Querier resource limits — bound what a single query (or tenant) can do
+# to the shared querier process.
+#
+# Maximum memory for query execution, in MiB. When unset the memory pool
+# is UNBOUNDED (a startup warning is logged) and one heavy query can OOM
+# the process. Strongly recommended in production.
+# memory_limit_mb = 4096
+#
+# Fraction of memory_limit_mb usable by query operators before they
+# spill to disk or fail (0.0-1.0).
+memory_pool_fraction = 0.8
+#
+# Wall-clock timeout per Flight query.
+query_timeout = "60s"
+#
+# Row cap for raw SQL queries received over Flight.
+max_sql_rows = 1000000
+#
+# Upper bound for the client-supplied `limit` on /api/search (trace
+# count; the span fetch limit is 50x this value).
+max_search_limit = 1000
+
 [compactor]
 # Compactor Service Configuration
 # The compactor manages the complete data lifecycle with three phases:

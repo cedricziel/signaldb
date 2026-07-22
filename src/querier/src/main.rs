@@ -129,10 +129,20 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Create Flight query service with CatalogManager for per-tenant catalog support
-    let flight_service =
-        QuerierFlightService::new_with_catalog_manager(flight_transport.clone(), catalog_manager)
-            .await
-            .context("Failed to create querier flight service with CatalogManager")?;
+    tracing::info!(
+        memory_limit_mb = ?config.querier.memory_limit_mb,
+        query_timeout = ?config.querier.query_timeout,
+        max_sql_rows = config.querier.max_sql_rows,
+        max_search_limit = config.querier.max_search_limit,
+        "Querier resource limits"
+    );
+    let flight_service = QuerierFlightService::new_with_catalog_manager(
+        flight_transport.clone(),
+        catalog_manager,
+        config.querier.clone(),
+    )
+    .await
+    .context("Failed to create querier flight service with CatalogManager")?;
     tracing::info!(address = %flight_addr, "Starting Flight query service");
     let flight_auth = config.auth.internal_service_key.clone().map(|key| {
         let authenticator = Arc::new(common::auth::Authenticator::new(

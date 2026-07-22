@@ -220,6 +220,7 @@ async fn main() -> Result<()> {
     let querier_flight_service = QuerierFlightService::new_with_catalog_manager(
         querier_flight_transport.clone(),
         catalog_manager.clone(),
+        config.querier.clone(),
     )
     .await
     .context("Failed to create querier flight service")?;

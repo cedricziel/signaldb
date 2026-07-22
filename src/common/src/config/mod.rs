@@ -696,6 +696,9 @@ pub struct Configuration {
     /// Compactor configuration
     #[serde(default)]
     pub compactor: CompactorConfig,
+    /// Querier resource limits
+    #[serde(default)]
+    pub querier: QuerierConfig,
 }
 
 impl Default for Configuration {
@@ -717,6 +720,42 @@ impl Default for Configuration {
             self_monitoring: SelfMonitoringConfig::default(),
             profiling: ProfilingConfig::default(),
             compactor: CompactorConfig::default(),
+            querier: QuerierConfig::default(),
+        }
+    }
+}
+
+/// Resource limits for the querier service.
+///
+/// The querier executes client-controlled queries in a shared process;
+/// without limits a single query can exhaust process memory or run
+/// unbounded. See `[querier]` in `signaldb.dist.toml`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QuerierConfig {
+    /// Maximum memory the query engine may use, in MiB. When unset the
+    /// memory pool is unbounded and the querier logs a startup warning.
+    pub memory_limit_mb: Option<u64>,
+    /// Fraction of `memory_limit_mb` usable by query operators before
+    /// they spill or fail (0.0–1.0).
+    pub memory_pool_fraction: f64,
+    /// Wall-clock timeout applied to each Flight query.
+    #[serde(with = "humantime_serde")]
+    pub query_timeout: Duration,
+    /// Row cap applied to raw SQL queries received over Flight.
+    pub max_sql_rows: usize,
+    /// Upper bound for the client-supplied `limit` on trace search.
+    pub max_search_limit: usize,
+}
+
+impl Default for QuerierConfig {
+    fn default() -> Self {
+        Self {
+            memory_limit_mb: None,
+            memory_pool_fraction: 0.8,
+            query_timeout: Duration::from_secs(60),
+            max_sql_rows: 1_000_000,
+            max_search_limit: 1_000,
         }
     }
 }
@@ -911,6 +950,41 @@ mod tests {
         assert_eq!(discovery.heartbeat_interval, Duration::from_secs(30));
         assert_eq!(discovery.poll_interval, Duration::from_secs(60));
         assert_eq!(discovery.ttl, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn querier_limits_default_and_parse_from_toml() {
+        // Defaults: unbounded memory (with warning at startup), bounded
+        // timeout/rows/limit.
+        let config = Configuration::default();
+        assert_eq!(config.querier.memory_limit_mb, None);
+        assert_eq!(config.querier.query_timeout, Duration::from_secs(60));
+        assert_eq!(config.querier.max_sql_rows, 1_000_000);
+        assert_eq!(config.querier.max_search_limit, 1_000);
+
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                [querier]
+                memory_limit_mb = 512
+                memory_pool_fraction = 0.5
+                query_timeout = "5s"
+                max_sql_rows = 1000
+                max_search_limit = 50
+                "#,
+            )?;
+            let config: Configuration = Figment::new()
+                .merge(Serialized::defaults(Configuration::default()))
+                .merge(figment::providers::Toml::file("signaldb.toml"))
+                .extract()?;
+            assert_eq!(config.querier.memory_limit_mb, Some(512));
+            assert_eq!(config.querier.memory_pool_fraction, 0.5);
+            assert_eq!(config.querier.query_timeout, Duration::from_secs(5));
+            assert_eq!(config.querier.max_sql_rows, 1000);
+            assert_eq!(config.querier.max_search_limit, 50);
+            Ok(())
+        });
     }
 
     #[test]

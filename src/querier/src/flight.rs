@@ -7,6 +7,7 @@ use arrow_flight::{
 };
 use bytes::Bytes;
 use common::CatalogManager;
+use common::config::QuerierConfig;
 use common::flight::schema::{FlightSchemas, create_span_batch_schema};
 use common::flight::transport::InMemoryFlightTransport;
 use common::storage::create_object_store_from_dsn;
@@ -14,6 +15,8 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::{CatalogProvider, SchemaProvider};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::context::SessionContext;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::prelude::SessionConfig;
 use futures::StreamExt;
 use futures::stream::{self, BoxStream};
 use object_store::ObjectStore;
@@ -166,15 +169,62 @@ pub struct QuerierFlightService {
     trace_service: TraceService,
     #[allow(dead_code)]
     iceberg_catalog: Option<Arc<dyn iceberg_rust::catalog::Catalog>>,
+    limits: QuerierConfig,
+}
+
+/// Build a SessionContext whose RuntimeEnv enforces the configured memory
+/// limit (spilling operators use the default disk manager). Falls back to
+/// an unlimited default context if the runtime cannot be built, which is
+/// logged as an error and practically cannot happen with default settings.
+fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
+    let mut builder = RuntimeEnvBuilder::new();
+    match limits.memory_limit_mb {
+        Some(mb) => {
+            builder =
+                builder.with_memory_limit((mb as usize) * 1024 * 1024, limits.memory_pool_fraction);
+            tracing::info!(
+                memory_limit_mb = mb,
+                memory_pool_fraction = limits.memory_pool_fraction,
+                "Querier memory pool configured"
+            );
+        }
+        None => {
+            tracing::warn!(
+                "Querier memory is UNBOUNDED ([querier].memory_limit_mb is not set); \
+                 a single heavy query can exhaust process memory"
+            );
+        }
+    }
+    match builder.build() {
+        Ok(runtime_env) => {
+            SessionContext::new_with_config_rt(SessionConfig::new(), Arc::new(runtime_env))
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "Failed to build limited RuntimeEnv; falling back to unlimited defaults"
+            );
+            SessionContext::new()
+        }
+    }
 }
 
 impl QuerierFlightService {
-    /// Create a new QuerierFlightService
+    /// Create a new QuerierFlightService with default resource limits
     pub fn new(
         object_store: Arc<dyn ObjectStore>,
         flight_transport: Arc<InMemoryFlightTransport>,
     ) -> Self {
-        let session_ctx = Arc::new(SessionContext::new());
+        Self::new_with_limits(object_store, flight_transport, QuerierConfig::default())
+    }
+
+    /// Create a new QuerierFlightService with explicit resource limits
+    pub fn new_with_limits(
+        object_store: Arc<dyn ObjectStore>,
+        flight_transport: Arc<InMemoryFlightTransport>,
+        limits: QuerierConfig,
+    ) -> Self {
+        let session_ctx = Arc::new(session_context_with_limits(&limits));
 
         // Register object store with DataFusion for querying Parquet files
         // This allows querying files like: SELECT * FROM 'batch/file.parquet'
@@ -184,7 +234,8 @@ impl QuerierFlightService {
             .register_object_store(&url, object_store.clone());
 
         // Create trace service for specialized trace queries
-        let trace_service = TraceService::new(session_ctx.as_ref().clone(), "traces".to_string());
+        let trace_service = TraceService::new(session_ctx.as_ref().clone(), "traces".to_string())
+            .with_max_search_limit(limits.max_search_limit);
 
         Self {
             object_store,
@@ -193,6 +244,7 @@ impl QuerierFlightService {
             session_ctx,
             trace_service,
             iceberg_catalog: None,
+            limits,
         }
     }
 
@@ -203,8 +255,9 @@ impl QuerierFlightService {
     pub async fn new_with_catalog_manager(
         flight_transport: Arc<InMemoryFlightTransport>,
         catalog_manager: Arc<CatalogManager>,
+        limits: QuerierConfig,
     ) -> anyhow::Result<Self> {
-        let session_ctx = Arc::new(SessionContext::new());
+        let session_ctx = Arc::new(session_context_with_limits(&limits));
 
         // Track registered storage URLs to avoid duplicates
         let mut registered_urls: HashSet<String> = HashSet::new();
@@ -272,7 +325,8 @@ impl QuerierFlightService {
         }
 
         // Create trace service for specialized trace queries
-        let trace_service = TraceService::new(session_ctx.as_ref().clone(), "traces".to_string());
+        let trace_service = TraceService::new(session_ctx.as_ref().clone(), "traces".to_string())
+            .with_max_search_limit(limits.max_search_limit);
 
         Ok(Self {
             object_store,
@@ -281,6 +335,7 @@ impl QuerierFlightService {
             session_ctx,
             trace_service,
             iceberg_catalog: Some(iceberg_catalog),
+            limits,
         })
     }
 
@@ -464,6 +519,10 @@ impl QuerierFlightService {
         tracing::info!(sql = %sql, "Executing query");
 
         let df = ctx.sql(sql).await?;
+        // Cap the number of rows a raw SQL query can materialize; the
+        // client controls the SQL, so an unbounded SELECT could otherwise
+        // buffer arbitrarily many rows in memory.
+        let df = df.limit(0, Some(self.limits.max_sql_rows))?;
         let batches = df.collect().await?;
 
         Ok(batches)
@@ -638,7 +697,7 @@ impl FlightService for QuerierFlightService {
                 TicketRequest::SqlQuery { .. } => "sql",
             };
             let query_start = std::time::Instant::now();
-            let batches_result: Result<Vec<_>, Status> = async {
+            let query_future = async {
                 Ok(match ticket_request {
                     TicketRequest::FindTrace {
                         tenant_slug,
@@ -760,8 +819,17 @@ impl FlightService for QuerierFlightService {
                             .map_err(|e| Status::internal(format!("Query execution failed: {e}")))?
                     }
                 })
-            }
-            .await;
+            };
+            // Bound every query's wall-clock time so a heavy scan cannot
+            // occupy the querier indefinitely.
+            let batches_result: Result<Vec<_>, Status> =
+                match tokio::time::timeout(self.limits.query_timeout, query_future).await {
+                    Ok(result) => result,
+                    Err(_) => Err(Status::deadline_exceeded(format!(
+                        "query exceeded the configured timeout of {:?}",
+                        self.limits.query_timeout
+                    ))),
+                };
 
             let app_metrics = common::self_monitoring::app_metrics();
             let query_attrs = [opentelemetry::KeyValue::new("query_type", query_type)];
@@ -901,6 +969,93 @@ mod tests {
             .execute_query(&service.session_ctx, "SELECT 1 as test_col")
             .await;
         assert!(result.is_ok());
+    }
+
+    async fn make_service_with_limits(limits: QuerierConfig) -> QuerierFlightService {
+        let object_store = Arc::new(InMemory::new());
+
+        let config = Configuration {
+            database: DatabaseConfig {
+                dsn: "sqlite::memory:".to_string(),
+            },
+            discovery: Some(DiscoveryConfig {
+                dsn: "sqlite::memory:".to_string(),
+                heartbeat_interval: Duration::from_secs(5),
+                poll_interval: Duration::from_secs(10),
+                ttl: Duration::from_secs(60),
+            }),
+            ..Default::default()
+        };
+
+        let bootstrap =
+            ServiceBootstrap::new(config, ServiceType::Querier, "localhost:50054".to_string())
+                .await
+                .unwrap();
+
+        let flight_transport = Arc::new(InMemoryFlightTransport::new(bootstrap));
+        QuerierFlightService::new_with_limits(object_store, flight_transport, limits)
+    }
+
+    #[tokio::test]
+    async fn sql_row_cap_bounds_raw_sql_results() {
+        let service = make_service_with_limits(QuerierConfig {
+            max_sql_rows: 10,
+            ..QuerierConfig::default()
+        })
+        .await;
+
+        let batches = service
+            .execute_query(
+                &service.session_ctx,
+                "SELECT * FROM generate_series(1, 1000)",
+            )
+            .await
+            .unwrap();
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(rows, 10, "raw SQL results must be capped at max_sql_rows");
+    }
+
+    #[test]
+    fn memory_pool_is_bounded_when_configured() {
+        use datafusion::execution::memory_pool::MemoryConsumer;
+
+        let ctx = session_context_with_limits(&QuerierConfig {
+            memory_limit_mb: Some(1),
+            memory_pool_fraction: 1.0,
+            ..QuerierConfig::default()
+        });
+        let reservation = MemoryConsumer::new("test").register(&ctx.runtime_env().memory_pool);
+        assert!(
+            reservation.try_grow(10 * 1024 * 1024).is_err(),
+            "allocations beyond the configured limit must be refused"
+        );
+
+        // Without a configured limit the pool is unbounded (legacy behavior).
+        let ctx = session_context_with_limits(&QuerierConfig::default());
+        let reservation = MemoryConsumer::new("test").register(&ctx.runtime_env().memory_pool);
+        assert!(reservation.try_grow(10 * 1024 * 1024).is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn query_timeout_returns_deadline_exceeded() {
+        let service = make_service_with_limits(QuerierConfig {
+            query_timeout: Duration::from_millis(50),
+            ..QuerierConfig::default()
+        })
+        .await;
+
+        // A cross join over 1e10 combinations cannot finish in 50ms.
+        let ticket = Ticket {
+            ticket: Bytes::from(
+                "SELECT count(*) FROM generate_series(1, 100000000) t1(a) \
+                 CROSS JOIN generate_series(1, 100) t2(b)",
+            ),
+        };
+        let status = match service.do_get(Request::new(ticket)).await {
+            Ok(_) => panic!("query must be aborted by the timeout"),
+            Err(status) => status,
+        };
+        assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
     }
 
     async fn make_service() -> QuerierFlightService {

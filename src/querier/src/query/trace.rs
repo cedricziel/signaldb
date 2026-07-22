@@ -48,6 +48,8 @@ pub struct TraceService {
     // skip debug on session_context
     session_context: Arc<SessionContext>,
     traces_path: String,
+    /// Upper bound for the client-supplied `limit` (trace count) on search.
+    max_search_limit: usize,
 }
 
 impl Debug for TraceService {
@@ -55,6 +57,7 @@ impl Debug for TraceService {
         f.debug_struct("TraceService")
             .field("session_context", &"set")
             .field("traces_path", &self.traces_path)
+            .field("max_search_limit", &self.max_search_limit)
             .finish()
     }
 }
@@ -64,6 +67,7 @@ impl Clone for TraceService {
         Self {
             session_context: Arc::clone(&self.session_context),
             traces_path: self.traces_path.clone(),
+            max_search_limit: self.max_search_limit,
         }
     }
 }
@@ -74,7 +78,14 @@ impl TraceService {
         Self {
             session_context: Arc::new(session_context),
             traces_path,
+            max_search_limit: common::config::QuerierConfig::default().max_search_limit,
         }
+    }
+
+    /// Override the clamp applied to client-supplied search limits.
+    pub fn with_max_search_limit(mut self, max_search_limit: usize) -> Self {
+        self.max_search_limit = max_search_limit;
+        self
     }
 
     /// Find a trace by ID with tenant isolation
@@ -423,18 +434,7 @@ impl TraceService {
 
         // Apply limit — we query for more spans than the requested trace count because
         // each trace typically contains many spans. This estimate avoids truncating traces.
-        const SPANS_PER_TRACE_ESTIMATE: usize = 50;
-        let raw_limit = query.limit.unwrap_or(20);
-        let limit: usize = usize::try_from(raw_limit).map_err(|_| {
-            QuerierError::InvalidInput(format!(
-                "Invalid limit '{raw_limit}': must be a non-negative integer"
-            ))
-        })?;
-        let span_limit = limit.checked_mul(SPANS_PER_TRACE_ESTIMATE).ok_or_else(|| {
-            QuerierError::InvalidInput(format!(
-                "Limit {limit} * {SPANS_PER_TRACE_ESTIMATE} overflows"
-            ))
-        })?;
+        let (limit, span_limit) = clamped_limits(query.limit, self.max_search_limit)?;
         df = df.limit(0, Some(span_limit)).map_err(|e| {
             log::error!("Failed to apply limit: {e}");
             QuerierError::QueryFailed(e)
@@ -969,10 +969,68 @@ impl TraceQuerier for TraceService {
     }
 }
 
+/// Each trace typically contains many spans, so search fetches more spans
+/// than the requested trace count to avoid truncating traces.
+const SPANS_PER_TRACE_ESTIMATE: usize = 50;
+
+/// Compute the effective (trace, span-row) limits for a search: validate
+/// the client-supplied trace `limit`, clamp it to `max_search_limit` (the
+/// client fully controls the value, so without a clamp `limit=40000000`
+/// would materialize ~2e9 rows), and scale by the spans-per-trace estimate.
+fn clamped_limits(
+    client_limit: Option<i32>,
+    max_search_limit: usize,
+) -> Result<(usize, usize), QuerierError> {
+    let raw_limit = client_limit.unwrap_or(20);
+    let limit: usize = usize::try_from(raw_limit).map_err(|_| {
+        QuerierError::InvalidInput(format!(
+            "Invalid limit '{raw_limit}': must be a non-negative integer"
+        ))
+    })?;
+    let limit = if limit > max_search_limit {
+        log::warn!(
+            "Clamping client-supplied search limit {limit} to the configured maximum {max_search_limit}"
+        );
+        max_search_limit
+    } else {
+        limit
+    };
+    let span_limit = limit.checked_mul(SPANS_PER_TRACE_ESTIMATE).ok_or_else(|| {
+        QuerierError::InvalidInput(format!(
+            "Limit {limit} * {SPANS_PER_TRACE_ESTIMATE} overflows"
+        ))
+    })?;
+    Ok((limit, span_limit))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use datafusion::prelude::SessionContext;
+
+    #[test]
+    fn span_limit_uses_default_when_absent() {
+        assert_eq!(clamped_limits(None, 1000).unwrap(), (20, 20 * 50));
+    }
+
+    #[test]
+    fn span_limit_respects_client_limit_below_max() {
+        assert_eq!(clamped_limits(Some(100), 1000).unwrap(), (100, 100 * 50));
+    }
+
+    #[test]
+    fn span_limit_clamps_excessive_client_limit() {
+        // The issue's example: limit=40000000 must not produce ~2e9 rows.
+        assert_eq!(
+            clamped_limits(Some(40_000_000), 1000).unwrap(),
+            (1000, 50_000)
+        );
+    }
+
+    #[test]
+    fn span_limit_rejects_negative_limit() {
+        assert!(clamped_limits(Some(-1), 1000).is_err());
+    }
 
     #[tokio::test]
     #[ignore = "Superseded by integration tests in tests-integration/tests/router_tempo_endpoints.rs. \
