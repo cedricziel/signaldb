@@ -185,11 +185,14 @@ async fn setup_test_services() -> TestServices {
     }
 
     // Start querier service with per-tenant catalog registration
-    let querier_service =
-        QuerierFlightService::new_with_catalog_manager(flight_transport.clone(), catalog_manager)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create querier service: {}", e))
-            .unwrap();
+    let querier_service = QuerierFlightService::new_with_catalog_manager(
+        flight_transport.clone(),
+        catalog_manager,
+        common::config::QuerierConfig::default(),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to create querier service: {}", e))
+    .unwrap();
     let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let querier_addr = querier_listener.local_addr().unwrap();
     drop(querier_listener);
@@ -927,11 +930,14 @@ async fn setup_multi_tenant_test_services() -> TestServices {
     }
 
     // Start querier service with per-tenant catalog registration
-    let querier_service =
-        QuerierFlightService::new_with_catalog_manager(flight_transport.clone(), catalog_manager)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create querier service: {}", e))
-            .unwrap();
+    let querier_service = QuerierFlightService::new_with_catalog_manager(
+        flight_transport.clone(),
+        catalog_manager,
+        common::config::QuerierConfig::default(),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to create querier service: {}", e))
+    .unwrap();
     let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let querier_addr = querier_listener.local_addr().unwrap();
     drop(querier_listener);
