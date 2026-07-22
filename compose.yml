@@ -41,6 +41,8 @@ services:
     environment:
       SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
       SIGNALDB_DISCOVERY_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
+      SIGNALDB__SCHEMA__CATALOG_TYPE: "sql"
+      SIGNALDB__SCHEMA__CATALOG_URI: "postgres://signaldb:password@postgres:5432/signaldb"
       WRITER_FLIGHT_ADDR: "0.0.0.0:50051"
       WRITER_ADVERTISE_ADDR: "signaldb-writer:50051"
       # WAL persistence configuration - mounted to persistent volume
@@ -82,6 +84,8 @@ services:
     environment:
       SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
       SIGNALDB_DISCOVERY_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
+      SIGNALDB__SCHEMA__CATALOG_TYPE: "sql"
+      SIGNALDB__SCHEMA__CATALOG_URI: "postgres://signaldb:password@postgres:5432/signaldb"
       ACCEPTOR_GRPC_ADDR: "0.0.0.0:4317"
       ACCEPTOR_HTTP_ADDR: "0.0.0.0:4318"
       # WAL persistence for acceptor durability
@@ -109,6 +113,8 @@ services:
     environment:
       SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
       SIGNALDB_DISCOVERY_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
+      SIGNALDB__SCHEMA__CATALOG_TYPE: "sql"
+      SIGNALDB__SCHEMA__CATALOG_URI: "postgres://signaldb:password@postgres:5432/signaldb"
       QUERIER_FLIGHT_ADDR: "0.0.0.0:50054"
       QUERIER_ADVERTISE_ADDR: "signaldb-querier:50054"
       # S3/MinIO storage configuration
@@ -135,6 +141,8 @@ services:
     environment:
       SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
       SIGNALDB_DISCOVERY_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
+      SIGNALDB__SCHEMA__CATALOG_TYPE: "sql"
+      SIGNALDB__SCHEMA__CATALOG_URI: "postgres://signaldb:password@postgres:5432/signaldb"
       ROUTER_FLIGHT_ADDR: "0.0.0.0:50053"
       ROUTER_HTTP_ADDR: "0.0.0.0:3001"
     ports:
@@ -153,6 +161,8 @@ services:
     environment:
       SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
       SIGNALDB_DISCOVERY_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
+      SIGNALDB__SCHEMA__CATALOG_TYPE: "sql"
+      SIGNALDB__SCHEMA__CATALOG_URI: "postgres://signaldb:password@postgres:5432/signaldb"
       # Compactor config uses double-underscore separator for fields with underscores
       SIGNALDB__COMPACTOR__ENABLED: "true"
       SIGNALDB__COMPACTOR__TICK_INTERVAL: "5m"

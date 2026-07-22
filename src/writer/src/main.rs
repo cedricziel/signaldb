@@ -62,6 +62,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Load configuration
     let config = utils::load_config(cli.common.config.as_ref())?;
+    // Standalone services need shared discovery/catalog backends; the
+    // in-memory defaults only make sense in monolithic mode (issue #554).
+    config.validate_for_distributed("writer")?;
 
     // Handle common commands that don't require starting the service
     let command = cli.command.unwrap_or_default();

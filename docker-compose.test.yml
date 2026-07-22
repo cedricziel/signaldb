@@ -61,6 +61,8 @@ services:
     environment:
       - SIGNALDB_DATABASE_DSN=postgres://postgres:postgres@postgres-15:5432/signaldb_test
       - SIGNALDB_DISCOVERY_DSN=postgres://postgres:postgres@postgres-15:5432/signaldb_test
+      - SIGNALDB__SCHEMA__CATALOG_TYPE=sql
+      - SIGNALDB__SCHEMA__CATALOG_URI=postgres://postgres:postgres@postgres-15:5432/signaldb_test
     ports:
       - "4317:4317"
       - "4318:4318"
@@ -80,6 +82,8 @@ services:
     environment:
       - SIGNALDB_DATABASE_DSN=postgres://postgres:postgres@postgres-15:5432/signaldb_test
       - SIGNALDB_DISCOVERY_DSN=postgres://postgres:postgres@postgres-15:5432/signaldb_test
+      - SIGNALDB__SCHEMA__CATALOG_TYPE=sql
+      - SIGNALDB__SCHEMA__CATALOG_URI=postgres://postgres:postgres@postgres-15:5432/signaldb_test
     ports:
       - "50053:50053"
       - "3000:3000"
@@ -99,6 +103,8 @@ services:
     environment:
       - SIGNALDB_DATABASE_DSN=postgres://postgres:postgres@postgres-15:5432/signaldb_test
       - SIGNALDB_DISCOVERY_DSN=postgres://postgres:postgres@postgres-15:5432/signaldb_test
+      - SIGNALDB__SCHEMA__CATALOG_TYPE=sql
+      - SIGNALDB__SCHEMA__CATALOG_URI=postgres://postgres:postgres@postgres-15:5432/signaldb_test
     ports:
       - "50051:50051"
     volumes:
