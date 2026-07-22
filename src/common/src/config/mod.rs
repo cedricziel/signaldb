@@ -779,6 +779,10 @@ pub struct QuerierConfig {
     pub max_sql_rows: usize,
     /// Upper bound for the client-supplied `limit` on trace search.
     pub max_search_limit: usize,
+    /// Maximum queries a single tenant may run concurrently. Excess
+    /// queries are rejected with RESOURCE_EXHAUSTED. Unset means
+    /// unlimited.
+    pub max_concurrent_queries_per_tenant: Option<usize>,
 }
 
 impl Default for QuerierConfig {
@@ -789,6 +793,7 @@ impl Default for QuerierConfig {
             query_timeout: Duration::from_secs(60),
             max_sql_rows: 1_000_000,
             max_search_limit: 1_000,
+            max_concurrent_queries_per_tenant: None,
         }
     }
 }
