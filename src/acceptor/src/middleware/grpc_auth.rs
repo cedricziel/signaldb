@@ -3,7 +3,9 @@
 //! This module provides an interceptor for extracting and validating
 //! authentication headers on gRPC/OTLP requests.
 
-use common::auth::{AuthError, Authenticator, TenantContext};
+use common::auth::{
+    AuthError, Authenticator, TenantContext, validate_dataset_id, validate_tenant_id,
+};
 use std::sync::Arc;
 use tonic::{Request, Status};
 
@@ -25,19 +27,21 @@ fn extract_grpc_auth_headers(
         .ok_or_else(|| AuthError::bad_request("Authorization must use Bearer scheme"))?
         .to_string();
 
-    // Extract x-tenant-id header
-    let tenant_id = metadata
+    // Extract and validate x-tenant-id header (same validator as the HTTP
+    // middleware: charset allowlist, length cap, path-traversal rejection —
+    // these IDs end up in WAL paths and Iceberg namespaces)
+    let tenant_id_raw = metadata
         .get("x-tenant-id")
         .ok_or_else(|| AuthError::bad_request("Missing x-tenant-id metadata"))?
         .to_str()
-        .map_err(|_| AuthError::bad_request("Invalid x-tenant-id metadata"))?
-        .to_string();
+        .map_err(|_| AuthError::bad_request("Invalid x-tenant-id metadata"))?;
+    let tenant_id = validate_tenant_id(tenant_id_raw)?;
 
-    // Extract optional x-dataset-id header
-    let dataset_id = metadata
-        .get("x-dataset-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+    // Extract and validate optional x-dataset-id header
+    let dataset_id = match metadata.get("x-dataset-id").and_then(|v| v.to_str().ok()) {
+        Some(id) => Some(validate_dataset_id(id)?),
+        None => None,
+    };
 
     Ok((api_key, tenant_id, dataset_id))
 }
@@ -209,6 +213,52 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.status_code, 400);
         assert!(err.message.contains("x-tenant-id"));
+    }
+
+    #[test]
+    fn extract_grpc_auth_headers_rejects_path_traversal_tenant_id() {
+        let mut metadata = MetadataMap::new();
+        metadata.insert(
+            "authorization",
+            MetadataValue::from_static("Bearer test-api-key-123"),
+        );
+        metadata.insert("x-tenant-id", MetadataValue::from_static("..evil"));
+
+        let result = extract_grpc_auth_headers(&metadata);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("Invalid tenant ID"));
+    }
+
+    #[test]
+    fn extract_grpc_auth_headers_rejects_invalid_dataset_id() {
+        let mut metadata = MetadataMap::new();
+        metadata.insert(
+            "authorization",
+            MetadataValue::from_static("Bearer test-api-key-123"),
+        );
+        metadata.insert("x-tenant-id", MetadataValue::from_static("acme"));
+        metadata.insert("x-dataset-id", MetadataValue::from_static("data set"));
+
+        let result = extract_grpc_auth_headers(&metadata);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("Invalid dataset ID"));
+    }
+
+    #[test]
+    fn extract_grpc_auth_headers_trims_tenant_whitespace() {
+        let mut metadata = MetadataMap::new();
+        metadata.insert(
+            "authorization",
+            MetadataValue::from_static("Bearer test-api-key-123"),
+        );
+        metadata.insert("x-tenant-id", MetadataValue::from_static("  acme  "));
+
+        let (_, tenant_id, _) = extract_grpc_auth_headers(&metadata).unwrap();
+        assert_eq!(tenant_id, "acme");
     }
 
     #[test]
