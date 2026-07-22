@@ -83,22 +83,25 @@ async fn test_partition_drop_removes_old_partitions() -> Result<()> {
         result.total_partitions_dropped
     );
 
-    // Enforcement ran to completion (enforce_retention returned Ok).
-    // Individual table errors are expected in non-dry-run mode because:
-    //   - traces: create_datafusion_context is a placeholder that always bails
-    //   - logs/metrics_*: only the traces table was created in this test
-    // The enforcement cycle iterated all tables and recorded per-table outcomes.
-    log::info!(
-        "Enforcement completed: processed={}, errors={}: {:?}",
-        result.tables_processed,
-        result.errors.len(),
+    // Real enforcement: only tables that exist are processed, no errors,
+    // and the expired partitions are actually dropped.
+    assert!(
+        result.errors.is_empty(),
+        "Enforcement must not error: {:?}",
         result.errors
     );
+    assert_eq!(
+        result.tables_processed, 1,
+        "Only the traces table exists in this test"
+    );
     assert!(
-        result.tables_processed + result.errors.len() >= 5,
-        "Expected all 5 tables to be attempted (processed + errors), got processed={} errors={}",
-        result.tables_processed,
-        result.errors.len()
+        result.total_partitions_dropped >= 1,
+        "Expected at least one expired partition to be dropped, got {}",
+        result.total_partitions_dropped
+    );
+    assert!(
+        result.total_bytes_reclaimed > 0,
+        "Dropped partitions must account reclaimed bytes"
     );
 
     // Calculate expected partitions to drop
@@ -157,6 +160,24 @@ async fn test_partition_drop_removes_old_partitions() -> Result<()> {
             .flatten()
             .is_some(),
         "Table should have a current snapshot after enforcement"
+    );
+
+    // The expired partitions must be gone from the live snapshot.
+    let partition_manager = compactor::iceberg::PartitionManager::new();
+    let partitions_after = partition_manager.list_partitions(&table_after).await?;
+    let cutoff_dt = chrono::DateTime::<chrono::Utc>::from_timestamp(cutoff_timestamp / 1000, 0)
+        .expect("valid cutoff");
+    let still_expired: Vec<_> = partitions_after
+        .iter()
+        .filter(|p| p.is_older_than(&cutoff_dt))
+        .collect();
+    assert!(
+        still_expired.is_empty(),
+        "No expired partitions may survive enforcement: {still_expired:?}"
+    );
+    assert!(
+        !partitions_after.is_empty(),
+        "Recent partitions must survive enforcement"
     );
 
     log::info!(
@@ -230,6 +251,15 @@ async fn test_partition_drop_respects_grace_period() -> Result<()> {
     log::info!(
         "With grace period - partitions dropped: {}",
         result.total_partitions_dropped
+    );
+    assert!(
+        result.errors.is_empty(),
+        "Enforcement must not error: {:?}",
+        result.errors
+    );
+    assert_eq!(
+        result.total_partitions_dropped, 0,
+        "Grace period must protect the boundary partition from being dropped"
     );
 
     // The partition at 3h 1min ago should be protected by the grace period
@@ -328,6 +358,19 @@ async fn test_partition_drop_handles_mixed_signal_types() -> Result<()> {
         "Mixed signal types - tables processed: {}, total partitions dropped: {}",
         result.tables_processed,
         result.total_partitions_dropped
+    );
+    assert!(
+        result.errors.is_empty(),
+        "Enforcement must not error: {:?}",
+        result.errors
+    );
+    assert_eq!(
+        result.tables_processed, 3,
+        "traces, logs, and metrics_gauge exist in this test"
+    );
+    assert!(
+        result.total_partitions_dropped >= 1,
+        "Expired partitions must actually be dropped across signal types"
     );
 
     // Assert: Verify correct partitions would be dropped per signal type
@@ -473,9 +516,15 @@ async fn test_partition_drop_preserves_partition_metadata() -> Result<()> {
         snapshot_after.as_ref().map(|s| s.snapshot_id())
     );
 
-    // Note: In actual implementation with partition drops, a new snapshot would be created
-    // For now, we verify the table metadata is still accessible
+    // A real partition drop commits a new replace snapshot.
     assert!(!table_after.metadata().snapshots.is_empty());
+    if result.total_partitions_dropped > 0 {
+        assert_ne!(
+            snapshot_before.as_ref().map(|s| s.snapshot_id()),
+            snapshot_after.as_ref().map(|s| s.snapshot_id()),
+            "Dropping partitions must advance the snapshot"
+        );
+    }
 
     // Verify table is still readable
     let metadata = table_after.metadata();
