@@ -265,13 +265,39 @@ impl WalSegment {
         Ok(buffer)
     }
 
-    /// Close the segment files
-    pub async fn close(&mut self) -> Result<()> {
-        if let Some(mut file) = self.file.take() {
-            file.flush().await?;
+    /// Durably persist appended entries and data to disk (fsync)
+    ///
+    /// The data file is synced before the entry log: an entry record that
+    /// survives a crash must never point at data that did not.
+    pub async fn sync(&self) -> Result<()> {
+        if let Some(ref data_file) = self.data_file {
+            data_file
+                .sync_all()
+                .await
+                .context("Failed to fsync WAL data file")?;
         }
+        if let Some(ref file) = self.file {
+            file.sync_all()
+                .await
+                .context("Failed to fsync WAL segment file")?;
+        }
+        Ok(())
+    }
+
+    /// Close the segment files, syncing them to disk first
+    pub async fn close(&mut self) -> Result<()> {
         if let Some(mut data_file) = self.data_file.take() {
             data_file.flush().await?;
+            data_file
+                .sync_all()
+                .await
+                .context("Failed to fsync WAL data file on close")?;
+        }
+        if let Some(mut file) = self.file.take() {
+            file.flush().await?;
+            file.sync_all()
+                .await
+                .context("Failed to fsync WAL segment file on close")?;
         }
         Ok(())
     }
@@ -339,6 +365,12 @@ impl WalSegment {
 
         file.write_all(&buffer).await?;
         file.flush().await?;
+        // Sync the index so processed-state survives power loss; losing it
+        // would only cause reprocessing (at-least-once), but it is cheap
+        // relative to how rarely the index is rewritten.
+        file.sync_all()
+            .await
+            .context("Failed to fsync WAL index file")?;
 
         Ok(())
     }
@@ -709,6 +741,11 @@ impl Wal {
                 .append(entry_id, operation, &data, tenant_id, dataset_id, metadata)
                 .await?;
         }
+
+        // fsync once per flushed batch: callers treat a successful flush as
+        // a durability guarantee (the acceptor ACKs OTLP exports on it), so
+        // the entries must survive power loss, not just reach the page cache.
+        segment.sync().await?;
 
         Ok(())
     }
