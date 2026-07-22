@@ -554,7 +554,14 @@ impl FlightService for QuerierFlightService {
 
         // Parse ticket to determine request type
         let ticket_request = self.parse_ticket(&ticket_content)?;
-        let batches = match ticket_request {
+        let query_type = match &ticket_request {
+            TicketRequest::FindTrace { .. } => "trace_by_id",
+            TicketRequest::SearchTraces { .. } => "trace_search",
+            TicketRequest::SqlQuery { .. } => "sql",
+        };
+        let query_start = std::time::Instant::now();
+        let batches_result: Result<Vec<_>, Status> = async {
+            Ok(match ticket_request {
             TicketRequest::FindTrace {
                 tenant_slug,
                 dataset_slug,
@@ -667,7 +674,30 @@ impl FlightService for QuerierFlightService {
                     .await
                     .map_err(|e| Status::internal(format!("Query execution failed: {e}")))?
             }
+            })
+        }
+        .await;
+
+        let app_metrics = common::self_monitoring::app_metrics();
+        let query_attrs = [opentelemetry::KeyValue::new("query_type", query_type)];
+        app_metrics
+            .query_duration
+            .record(query_start.elapsed().as_secs_f64(), &query_attrs);
+        app_metrics.flight_request_duration.record(
+            query_start.elapsed().as_secs_f64(),
+            &[opentelemetry::KeyValue::new("rpc.method", "do_get")],
+        );
+        let batches = match batches_result {
+            Ok(batches) => batches,
+            Err(status) => {
+                app_metrics.query_errors.add(1, &query_attrs);
+                return Err(status);
+            }
         };
+        let rows_returned: u64 = batches.iter().map(|b| b.num_rows() as u64).sum();
+        app_metrics
+            .query_rows_returned
+            .record(rows_returned, &query_attrs);
 
         if batches.is_empty() {
             let out = stream::empty().boxed();

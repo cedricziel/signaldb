@@ -594,6 +594,16 @@ impl Wal {
     ) -> Result<Uuid> {
         let entry_id = Uuid::new_v4();
 
+        {
+            let metrics = crate::self_monitoring::app_metrics();
+            let attrs = [opentelemetry::KeyValue::new(
+                "operation",
+                format!("{operation:?}"),
+            )];
+            metrics.wal_entries_written.add(1, &attrs);
+            metrics.wal_entries_pending.add(1, &[]);
+        }
+
         // Add to buffer first for batching
         {
             let mut buffer = self.buffer.write().await;
@@ -698,14 +708,19 @@ impl Wal {
 
     /// Force flush all buffered entries
     pub async fn flush(&self) -> Result<()> {
-        Self::flush_buffer(
+        let start = std::time::Instant::now();
+        let result = Self::flush_buffer(
             &self.buffer,
             &self.current_segment,
             &self.config,
             &self.next_segment_id,
             &self.segments,
         )
-        .await
+        .await;
+        crate::self_monitoring::app_metrics()
+            .wal_flush_duration
+            .record(start.elapsed().as_secs_f64(), &[]);
+        result
     }
 
     /// Get all entries from WAL for recovery
@@ -755,6 +770,12 @@ impl Wal {
             for entry in &mut segment.entries {
                 if entry.id == entry_id {
                     entry.processed = true;
+
+                    {
+                        let metrics = crate::self_monitoring::app_metrics();
+                        metrics.wal_entries_processed.add(1, &[]);
+                        metrics.wal_entries_pending.add(-1, &[]);
+                    }
 
                     // Persist the processed state to disk
                     segment.save_index().await?;

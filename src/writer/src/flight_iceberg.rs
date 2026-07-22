@@ -123,9 +123,13 @@ impl FlightService for IcebergWriterFlightService {
         let mut data_vec = Vec::new();
         let mut flight_metadata: Option<FlightMetadata> = None;
         let mut schema_ref: Option<SchemaRef> = None;
+        let put_start = std::time::Instant::now();
+        let mut bytes_received: u64 = 0;
 
         while let Some(msg) = inbound.next().await {
             let d = msg.map_err(|e| Status::internal(e.to_string()))?;
+            bytes_received +=
+                (d.data_header.len() + d.data_body.len() + d.app_metadata.len()) as u64;
 
             // Extract full metadata from the first FlightData message (which contains metadata)
             if flight_metadata.is_none() && !d.app_metadata.is_empty() {
@@ -170,6 +174,20 @@ impl FlightService for IcebergWriterFlightService {
         // Convert FlightData stream into Arrow RecordBatches
         let batches =
             flight_data_to_batches(&data_vec).map_err(|e| Status::internal(e.to_string()))?;
+
+        {
+            let app_metrics = common::self_monitoring::app_metrics();
+            let attrs = [opentelemetry::KeyValue::new("rpc.method", "do_put")];
+            app_metrics
+                .flight_request_duration
+                .record(put_start.elapsed().as_secs_f64(), &attrs);
+            app_metrics
+                .flight_bytes_received
+                .add(bytes_received, &attrs);
+            app_metrics.ingest_batches_written.add(1, &[]);
+            let rows: u64 = batches.iter().map(|b| b.num_rows() as u64).sum();
+            app_metrics.ingest_batch_size.record(rows, &[]);
+        }
 
         // Determine WAL operation from metadata
         let wal_operation = if let Some(ref metadata) = flight_metadata {

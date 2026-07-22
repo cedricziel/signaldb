@@ -3,9 +3,11 @@
 //! Services instrument themselves via the OpenTelemetry SDK and export
 //! telemetry through the normal OTLP write pipeline (dogfooding).
 
+pub mod app_metrics;
 pub mod metrics;
 pub mod suppress;
 
+pub use app_metrics::{AppMetrics, app_metrics, http_metrics_middleware, should_count_tenant};
 pub use suppress::{
     OtelExportFilter, SELF_MONITORING_DATASET, SELF_MONITORING_TENANT,
     SelfTelemetrySuppressionFilter, is_self_monitoring_tenant, self_telemetry_suppressed,
@@ -165,6 +167,8 @@ pub fn init_telemetry(config: &Configuration, service_name: &str) -> Result<Opti
     );
     opentelemetry::global::set_tracer_provider(tracer_provider.clone());
     opentelemetry::global::set_meter_provider(meter_provider.clone());
+    // Bind application instruments to the freshly installed provider.
+    let _ = app_metrics::app_metrics();
 
     Ok(Some(Telemetry {
         tracer_provider,

@@ -16,6 +16,7 @@ tokio.workspace = true
 log.workspace = true
 datafusion.workspace = true
 tracing.workspace = true
+opentelemetry.workspace = true
 tonic.workspace = true
 arrow-flight.workspace = true
 object_store.workspace = true

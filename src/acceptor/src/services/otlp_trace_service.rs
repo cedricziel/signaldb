@@ -48,6 +48,14 @@ impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAccepto
 
         let request_inner = request.into_inner();
 
+        let span_count: u64 = request_inner
+            .resource_spans
+            .iter()
+            .flat_map(|rs| rs.scope_spans.iter())
+            .map(|ss| ss.spans.len() as u64)
+            .sum();
+        let rpc_start = std::time::Instant::now();
+
         // Anti-loop guard: processing the _system tenant's own telemetry must
         // not generate more self-monitoring telemetry.
         let handle = self
@@ -57,6 +65,28 @@ impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAccepto
             common::self_monitoring::suppress_self_telemetry(handle).await;
         } else {
             handle.await;
+        }
+
+        let app_metrics = common::self_monitoring::app_metrics();
+        app_metrics.rpc_server_duration.record(
+            rpc_start.elapsed().as_secs_f64() * 1000.0,
+            &[
+                opentelemetry::KeyValue::new("rpc.system", "grpc"),
+                opentelemetry::KeyValue::new(
+                    "rpc.service",
+                    "opentelemetry.proto.collector.trace.v1.TraceService",
+                ),
+                opentelemetry::KeyValue::new("rpc.method", "Export"),
+            ],
+        );
+        if common::self_monitoring::should_count_tenant(&tenant_context.tenant_id) {
+            app_metrics.ingest_spans_received.add(
+                span_count,
+                &[opentelemetry::KeyValue::new(
+                    "tenant_id",
+                    tenant_context.tenant_id.clone(),
+                )],
+            );
         }
 
         Ok(Response::new(ExportTraceServiceResponse::default()))

@@ -229,6 +229,9 @@ pub fn acceptor_router() -> Router {
     Router::new()
         .route("/v1/traces", post(handle_traces))
         .route("/health", get(health))
+        .layer(axum::middleware::from_fn(
+            common::self_monitoring::http_metrics_middleware,
+        ))
 }
 
 /// Create a router for Prometheus remote_write endpoint with authentication
@@ -263,6 +266,9 @@ pub fn prometheus_router(
             let auth = authenticator.clone();
             async move { auth_middleware(auth, req, next).await }
         }))
+        .layer(middleware::from_fn(
+            common::self_monitoring::http_metrics_middleware,
+        ))
 }
 
 /// Handler variant using Extension instead of State for simpler router composition

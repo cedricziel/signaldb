@@ -28,6 +28,7 @@ async-trait.workspace = true
 clap.workspace = true
 
 tracing.workspace = true
+opentelemetry.workspace = true
 
 uuid.workspace = true
 bytes.workspace = true
