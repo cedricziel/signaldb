@@ -185,15 +185,43 @@ async fn main() -> Result<()> {
         lease_manager.clone(),
         compaction_metrics.clone(),
     );
+    // The compactor's Flight surface is operator/service-to-service only
+    // (do_action can trigger compaction cycles and exposes tenant lease
+    // metadata): when the internal key is configured, tenant API keys are
+    // rejected outright.
+    let flight_auth = config
+        .auth
+        .internal_service_key
+        .clone()
+        .map(common::flight::auth::FlightAuthInterceptor::internal_only);
+    if flight_auth.is_none() {
+        tracing::warn!(
+            "Flight port is UNAUTHENTICATED ([auth].internal_service_key is not set); \
+             it must be restricted to a trusted network"
+        );
+    }
     let flight_task = {
         tokio::spawn(async move {
             tracing::info!("Starting Compactor Flight service on {flight_addr}");
-            match Server::builder()
-                .add_service(FlightServiceServer::new(flight_service))
-                .serve(flight_addr)
-                .await
-            {
-                Ok(_) => tracing::info!("Compactor Flight service stopped"),
+            let serve = match flight_auth {
+                Some(interceptor) => {
+                    Server::builder()
+                        .add_service(FlightServiceServer::with_interceptor(
+                            flight_service,
+                            move |req| interceptor.intercept(req),
+                        ))
+                        .serve(flight_addr)
+                        .await
+                }
+                None => {
+                    Server::builder()
+                        .add_service(FlightServiceServer::new(flight_service))
+                        .serve(flight_addr)
+                        .await
+                }
+            };
+            match serve {
+                Ok(()) => tracing::info!("Compactor Flight service stopped"),
                 Err(e) => tracing::error!("Compactor Flight service error: {e}"),
             }
         })

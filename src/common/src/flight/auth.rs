@@ -1,6 +1,7 @@
 //! # Flight Authentication
 //!
-//! Authentication for the Arrow Flight ports (router, querier).
+//! Authentication for the Arrow Flight ports (router, querier, writer,
+//! compactor).
 //!
 //! The Flight servers are reachable over the network, and the querier
 //! executes SQL against a session where every tenant catalog is registered.
