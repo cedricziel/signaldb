@@ -494,6 +494,10 @@ pub struct Wal {
     cleanup_handle: Option<tokio::task::JoinHandle<()>>,
     /// All segments including current (for cleanup operations)
     segments: Arc<Mutex<Vec<Arc<Mutex<WalSegment>>>>>,
+    /// Stable identity of this WAL directory, persisted in `writer.id`.
+    /// Survives restarts so downstream consumers can key idempotency
+    /// markers to the WAL whose entries they process.
+    writer_id: String,
 }
 
 impl Wal {
@@ -515,6 +519,8 @@ impl Wal {
         }
 
         create_dir_all(&config.wal_dir).await?;
+
+        let writer_id = Self::load_or_create_writer_id(&config.wal_dir).await?;
 
         // Find all segment IDs
         let mut segment_ids = Vec::new();
@@ -569,9 +575,47 @@ impl Wal {
             flush_handle: None,
             cleanup_handle: None,
             segments: Arc::new(Mutex::new(all_segments)),
+            writer_id,
         };
 
         Ok(wal)
+    }
+
+    /// Stable identity of this WAL directory (see the `writer_id` field).
+    pub fn writer_id(&self) -> &str {
+        &self.writer_id
+    }
+
+    /// Load the persisted writer id from `writer.id`, creating (and
+    /// fsyncing) it on first use. The id shares the WAL directory's
+    /// lifetime: if the directory is wiped, the entries the id guarded
+    /// are gone with it, so a fresh id is correct.
+    async fn load_or_create_writer_id(wal_dir: &Path) -> Result<String> {
+        let path = wal_dir.join("writer.id");
+        match tokio::fs::read_to_string(&path).await {
+            Ok(contents) => {
+                let id = contents.trim().to_string();
+                if !id.is_empty() {
+                    return Ok(id);
+                }
+                // Empty file (e.g. crash between create and write): regenerate
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e).context("Failed to read WAL writer.id");
+            }
+        }
+
+        let id = Uuid::new_v4().simple().to_string();
+        let mut file = File::create(&path)
+            .await
+            .context("Failed to create WAL writer.id")?;
+        file.write_all(id.as_bytes()).await?;
+        file.flush().await?;
+        file.sync_all()
+            .await
+            .context("Failed to fsync WAL writer.id")?;
+        Ok(id)
     }
 
     /// Start background flush task
@@ -1020,6 +1064,7 @@ impl Wal {
         let current_segment = self.current_segment.clone();
         let next_segment_id = self.next_segment_id.clone();
         let segments = self.segments.clone();
+        let writer_id = self.writer_id.clone();
 
         let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
@@ -1038,6 +1083,7 @@ impl Wal {
                     flush_handle: None,
                     cleanup_handle: None,
                     segments: segments.clone(),
+                    writer_id: writer_id.clone(),
                 };
 
                 if let Err(e) = wal.cleanup().await {
@@ -1086,6 +1132,41 @@ mod tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn writer_id_is_stable_across_reopen() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            max_segment_size: 1024,
+            max_buffer_entries: 10,
+            flush_interval_secs: 1,
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+
+        let wal = Wal::new(config.clone()).await.unwrap();
+        let first_id = wal.writer_id().to_string();
+        assert!(!first_id.is_empty());
+        drop(wal);
+
+        let reopened = Wal::new(config.clone()).await.unwrap();
+        assert_eq!(reopened.writer_id(), first_id);
+        drop(reopened);
+
+        // A different WAL directory gets a different identity
+        let other_dir = TempDir::new().unwrap();
+        let other = Wal::new(WalConfig {
+            wal_dir: other_dir.path().to_path_buf(),
+            ..config
+        })
+        .await
+        .unwrap();
+        assert_ne!(other.writer_id(), first_id);
+    }
 
     #[tokio::test]
     async fn test_wal_basic_operations() {
