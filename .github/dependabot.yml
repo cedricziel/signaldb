@@ -20,9 +20,6 @@ updates:
           - "arrow*"
           - "parquet*"
           - "object_store*"
-        update-types:
-          - "minor"
-          - "patch"
       serde:
         patterns:
           - "serde*"
