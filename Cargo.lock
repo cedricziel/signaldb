@@ -265,10 +265,10 @@ dependencies = [
  "arrow-array 58.3.0",
  "arrow-buffer 58.3.0",
  "arrow-cast 58.3.0",
- "arrow-csv",
+ "arrow-csv 58.3.0",
  "arrow-data 58.3.0",
  "arrow-ipc 58.3.0",
- "arrow-json",
+ "arrow-json 58.3.0",
  "arrow-ord 58.3.0",
  "arrow-row 58.3.0",
  "arrow-schema 58.3.0",
@@ -286,8 +286,10 @@ dependencies = [
  "arrow-array 59.1.0",
  "arrow-buffer 59.1.0",
  "arrow-cast 59.1.0",
+ "arrow-csv 59.1.0",
  "arrow-data 59.1.0",
  "arrow-ipc 59.1.0",
+ "arrow-json 59.1.0",
  "arrow-ord 59.1.0",
  "arrow-row 59.1.0",
  "arrow-schema 59.1.0",
@@ -421,6 +423,7 @@ dependencies = [
  "atoi",
  "base64",
  "chrono",
+ "comfy-table",
  "half",
  "lexical-core",
  "num-traits",
@@ -436,6 +439,21 @@ dependencies = [
  "arrow-array 58.3.0",
  "arrow-cast 58.3.0",
  "arrow-schema 58.3.0",
+ "chrono",
+ "csv",
+ "csv-core",
+ "regex",
+]
+
+[[package]]
+name = "arrow-csv"
+version = "59.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8aa7bf96d6141a7bcca2eed57c7c9767d2a2175281857b8a7b68308992864784"
+dependencies = [
+ "arrow-array 59.1.0",
+ "arrow-cast 59.1.0",
+ "arrow-schema 59.1.0",
  "chrono",
  "csv",
  "csv-core",
@@ -530,6 +548,31 @@ dependencies = [
  "arrow-ord 58.3.0",
  "arrow-schema 58.3.0",
  "arrow-select 58.3.0",
+ "chrono",
+ "half",
+ "indexmap 2.14.0",
+ "itoa",
+ "lexical-core",
+ "memchr",
+ "num-traits",
+ "ryu",
+ "serde_core",
+ "serde_json",
+ "simdutf8",
+]
+
+[[package]]
+name = "arrow-json"
+version = "59.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fe05e916ddc50f4c7a363cd69c0ef5894fcee063517e9a0b8582f0c56746af6"
+dependencies = [
+ "arrow-array 59.1.0",
+ "arrow-buffer 59.1.0",
+ "arrow-cast 59.1.0",
+ "arrow-ord 59.1.0",
+ "arrow-schema 59.1.0",
+ "arrow-select 59.1.0",
  "chrono",
  "half",
  "indexmap 2.14.0",
@@ -1838,7 +1881,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn 3.0.2",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -7690,7 +7733,7 @@ name = "signaldb-cli"
 version = "0.1.1"
 dependencies = [
  "anyhow",
- "arrow 58.3.0",
+ "arrow 59.1.0",
  "arrow-flight",
  "chrono",
  "clap",
