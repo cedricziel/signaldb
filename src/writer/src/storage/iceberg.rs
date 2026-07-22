@@ -8,14 +8,18 @@ use anyhow::Result;
 use common::CatalogManager;
 
 use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::SessionConfig;
 use datafusion_iceberg::DataFusionTable;
+use iceberg_rust::arrow::write::write_parquet_partitioned;
 use iceberg_rust::catalog::Catalog as IcebergRustCatalog;
 use iceberg_rust::catalog::identifier::Identifier;
+use iceberg_rust::catalog::tabular::Tabular;
 use iceberg_rust::table::Table;
 use object_store::ObjectStore;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid;
@@ -106,7 +110,6 @@ impl Default for BatchOptimizationConfig {
 /// Iceberg table writer that replaces direct Parquet file writing
 /// Provides ACID transactions and proper metadata tracking
 pub struct IcebergTableWriter {
-    #[allow(dead_code)] // Will be used for future operations
     catalog: Arc<dyn IcebergRustCatalog>,
     table: Table,
     #[allow(dead_code)] // Will be used for data writing
@@ -1014,6 +1017,241 @@ impl IcebergTableWriter {
     pub fn batch_config(&self) -> &BatchOptimizationConfig {
         &self.batch_config
     }
+
+    /// Reload the table from the catalog, bypassing any cached handle,
+    /// so marker reads and the next commit are based on current metadata.
+    async fn reload_table(&mut self) -> Result<()> {
+        let ident = self.table.identifier().clone();
+        let tabular = self
+            .catalog
+            .clone()
+            .load_tabular(&ident)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to reload Iceberg table {ident}: {e}"))?;
+        match tabular {
+            Tabular::Table(table) => {
+                self.table = table;
+                Ok(())
+            }
+            _ => Err(anyhow::anyhow!(
+                "Expected table but found different tabular type for {ident}"
+            )),
+        }
+    }
+
+    /// Parse this WAL writer's idempotency marker from the (in-memory)
+    /// table properties.
+    fn read_marker(&self, wal_writer_id: &str) -> HashSet<uuid::Uuid> {
+        self.table
+            .metadata()
+            .properties
+            .get(&wal_marker_key(wal_writer_id))
+            .map(|value| decode_marker_ids(value))
+            .unwrap_or_default()
+    }
+
+    /// Reload the table and return the WAL entry ids recorded by the most
+    /// recent marker commit for `wal_writer_id`. Ids present here are
+    /// durably committed to Iceberg even if the WAL never marked them
+    /// processed (crash between commit and index write).
+    pub async fn load_committed_marker(
+        &mut self,
+        wal_writer_id: &str,
+    ) -> Result<HashSet<uuid::Uuid>> {
+        self.reload_table().await?;
+        Ok(self.read_marker(wal_writer_id))
+    }
+
+    /// Atomically append `entries`' batches and record their WAL entry ids
+    /// as this writer's idempotency marker — data files and marker ride in
+    /// ONE Iceberg commit (a single catalog CAS), so replay after a crash
+    /// can always tell whether the data landed.
+    ///
+    /// Contract for callers: dedupe `entries` against
+    /// [`Self::load_committed_marker`] and durably mark any previously
+    /// committed ids processed BEFORE calling this — the commit REPLACES
+    /// the marker, discarding the evidence for earlier commits.
+    ///
+    /// Commit outcomes are verified against the catalog rather than
+    /// trusted: an `Err` can follow a commit that actually landed
+    /// (ambiguous failure), and the sql catalog can lose a CAS silently.
+    /// After every attempt the table is reloaded and the marker checked —
+    /// only the marker decides success, so retries can never double-append.
+    #[tracing::instrument(
+        skip_all,
+        fields(
+            tenant_id = %self.tenant_id,
+            dataset_id = %self.dataset_id,
+            entry_count = entries.len()
+        )
+    )]
+    pub async fn append_batches_with_marker(
+        &mut self,
+        wal_writer_id: &str,
+        entries: Vec<(uuid::Uuid, RecordBatch)>,
+    ) -> Result<()> {
+        let (ids, batches): (Vec<uuid::Uuid>, Vec<RecordBatch>) = entries.into_iter().unzip();
+
+        // The Parquet writer requires batches in the table's exact Arrow
+        // schema (derived from the Iceberg schema, e.g. microsecond
+        // timestamps), so coerce after the wire→storage transformation.
+        let target_schema: ArrowSchemaRef = Arc::new(
+            self.table
+                .current_schema(None)
+                .map_err(|e| anyhow::anyhow!("Failed to get current Iceberg schema: {e}"))?
+                .fields()
+                .try_into()
+                .map_err(|e: iceberg_rust::spec::error::Error| {
+                    anyhow::anyhow!("Failed to convert Iceberg schema to Arrow: {e}")
+                })?,
+        );
+
+        let mut transformed = Vec::new();
+        for batch in batches {
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            let batch = self.apply_schema_transformation_if_needed(batch)?;
+            transformed.push(coerce_batch_to_schema(batch, &target_schema)?);
+        }
+        if transformed.is_empty() {
+            // Nothing to append: the ids can be marked processed without
+            // a commit, and replaying them is a no-op either way.
+            return Ok(());
+        }
+        let total_rows: usize = transformed.iter().map(|b| b.num_rows()).sum();
+
+        let stream = futures::stream::iter(transformed.into_iter().map(Ok));
+        let files = write_parquet_partitioned(&self.table, stream, None)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to write Parquet files for Iceberg table {}: {e}",
+                    self.table.identifier()
+                )
+            })?;
+        if files.is_empty() {
+            return Err(anyhow::anyhow!(
+                "write_parquet_partitioned produced no data files for {total_rows} rows"
+            ));
+        }
+
+        let marker_key = wal_marker_key(wal_writer_id);
+        let marker_value = encode_marker_ids(&ids);
+        let id_set: HashSet<uuid::Uuid> = ids.iter().copied().collect();
+
+        let mut attempt = 0;
+        let mut delay = self.retry_config.initial_delay;
+        loop {
+            attempt += 1;
+            let commit_result = self
+                .table
+                .new_transaction(None)
+                .append_data(files.clone())
+                .update_properties(vec![(marker_key.clone(), marker_value.clone())])
+                .commit()
+                .await;
+
+            // The catalog is the source of truth for whether the commit
+            // landed, regardless of what commit() returned.
+            self.reload_table().await?;
+            if self.read_marker(wal_writer_id) == id_set {
+                if let Err(e) = commit_result {
+                    log::warn!(
+                        "Iceberg commit reported an error but the marker landed \
+                         (treating as success): {e}"
+                    );
+                }
+                log::info!(
+                    "Committed {} rows in {} data files to Iceberg table {} (attempt {attempt})",
+                    total_rows,
+                    files.len(),
+                    self.table.identifier()
+                );
+                return Ok(());
+            }
+
+            let error = match commit_result {
+                Ok(()) => anyhow::anyhow!(
+                    "Iceberg commit reported success but the marker is absent \
+                     (catalog CAS silently lost)"
+                ),
+                Err(e) => anyhow::anyhow!("Iceberg commit failed: {e}"),
+            };
+            if attempt >= self.retry_config.max_attempts {
+                return Err(error.context(format!(
+                    "Failed to commit {} entries to Iceberg table {} after {attempt} attempts",
+                    id_set.len(),
+                    self.table.identifier()
+                )));
+            }
+            log::warn!(
+                "Commit attempt {attempt} for Iceberg table {} did not land: {error}. \
+                 Retrying in {delay:?}",
+                self.table.identifier()
+            );
+            tokio::time::sleep(delay).await;
+            delay = std::cmp::min(
+                self.retry_config.max_delay,
+                Duration::from_secs_f64(delay.as_secs_f64() * self.retry_config.backoff_multiplier),
+            );
+        }
+    }
+}
+
+/// Prefix for the per-WAL idempotency marker stored in Iceberg table
+/// properties. The full key is `signaldb.wal.committed.<wal-writer-id>`,
+/// so concurrent writer nodes (distinct WAL directories) never clobber
+/// each other's markers.
+pub const WAL_MARKER_PREFIX: &str = "signaldb.wal.committed.";
+
+fn wal_marker_key(wal_writer_id: &str) -> String {
+    format!("{WAL_MARKER_PREFIX}{wal_writer_id}")
+}
+
+fn encode_marker_ids(ids: &[uuid::Uuid]) -> String {
+    ids.iter()
+        .map(|id| id.simple().to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn decode_marker_ids(value: &str) -> HashSet<uuid::Uuid> {
+    value
+        .split(',')
+        .filter_map(|part| uuid::Uuid::parse_str(part.trim()).ok())
+        .collect()
+}
+
+/// Project and cast a batch onto the table's Arrow schema (columns matched
+/// by name). Extra batch columns are dropped; missing columns are an error,
+/// as is a null in a column the table declares non-nullable.
+fn coerce_batch_to_schema(batch: RecordBatch, target: &ArrowSchemaRef) -> Result<RecordBatch> {
+    let mut columns = Vec::with_capacity(target.fields().len());
+    for field in target.fields() {
+        let index = batch.schema().index_of(field.name()).map_err(|_| {
+            anyhow::anyhow!(
+                "Batch is missing column '{}' required by the table schema",
+                field.name()
+            )
+        })?;
+        let column = batch.column(index);
+        let column = if column.data_type() == field.data_type() {
+            column.clone()
+        } else {
+            datafusion::arrow::compute::cast(column, field.data_type()).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to cast column '{}' from {:?} to {:?}: {e}",
+                    field.name(),
+                    column.data_type(),
+                    field.data_type()
+                )
+            })?
+        };
+        columns.push(column);
+    }
+    RecordBatch::try_new(target.clone(), columns)
+        .map_err(|e| anyhow::anyhow!("Failed to build coerced batch: {e}"))
 }
 
 #[cfg(test)]
@@ -1036,6 +1274,32 @@ mod tests {
         };
 
         CatalogManager::new(config).await.unwrap()
+    }
+
+    #[test]
+    fn marker_ids_round_trip() {
+        let ids = vec![uuid::Uuid::new_v4(), uuid::Uuid::new_v4()];
+        let encoded = encode_marker_ids(&ids);
+        let decoded = decode_marker_ids(&encoded);
+        assert_eq!(decoded, ids.iter().copied().collect::<HashSet<_>>());
+    }
+
+    #[test]
+    fn marker_decode_tolerates_garbage() {
+        let id = uuid::Uuid::new_v4();
+        let value = format!("not-a-uuid,{},", id.simple());
+        let decoded = decode_marker_ids(&value);
+        assert_eq!(decoded, HashSet::from([id]));
+        assert!(decode_marker_ids("").is_empty());
+    }
+
+    #[test]
+    fn marker_key_is_namespaced_per_writer() {
+        assert_eq!(
+            wal_marker_key("abc123"),
+            "signaldb.wal.committed.abc123".to_string()
+        );
+        assert_ne!(wal_marker_key("writer-a"), wal_marker_key("writer-b"));
     }
 
     #[tokio::test]
