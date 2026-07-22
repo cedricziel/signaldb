@@ -560,6 +560,9 @@ pub async fn query_single_trace<S: RouterState>(
     ));
     let mut flight_request = tonic::Request::new(ticket);
     common::flight::trace_context::inject_context_into_request(&mut flight_request);
+    if let Some(key) = &state.config().auth.internal_service_key {
+        common::flight::auth::attach_internal_auth(&mut flight_request, key);
+    }
 
     match client.do_get(flight_request).await {
         Ok(response) => {
@@ -653,6 +656,9 @@ pub async fn search<S: RouterState>(
     ));
     let mut flight_request = tonic::Request::new(ticket);
     common::flight::trace_context::inject_context_into_request(&mut flight_request);
+    if let Some(key) = &state.config().auth.internal_service_key {
+        common::flight::auth::attach_internal_auth(&mut flight_request, key);
+    }
 
     match client.do_get(flight_request).await {
         Ok(response) => {

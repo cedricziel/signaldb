@@ -27,9 +27,7 @@ use std::sync::Arc;
 
 use tonic::{Request, Status};
 
-use crate::auth::{
-    Authenticator, TenantContext, validate_dataset_id, validate_tenant_id,
-};
+use crate::auth::{Authenticator, validate_dataset_id, validate_tenant_id};
 
 /// Request-extension marker for callers that presented the internal
 /// service key. Such callers are trusted to specify tenant scoping
@@ -40,14 +38,25 @@ pub struct InternalService;
 /// Interceptor enforcing authentication on Flight servers.
 #[derive(Clone)]
 pub struct FlightAuthInterceptor {
-    authenticator: Arc<Authenticator>,
+    /// When None, only the internal service key is accepted (used by the
+    /// writer, whose Flight surface is not meant for tenant clients).
+    authenticator: Option<Arc<Authenticator>>,
     internal_key: String,
 }
 
 impl FlightAuthInterceptor {
+    /// Accept the internal service key or tenant API keys.
     pub fn new(authenticator: Arc<Authenticator>, internal_key: String) -> Self {
         Self {
-            authenticator,
+            authenticator: Some(authenticator),
+            internal_key,
+        }
+    }
+
+    /// Accept only the internal service key.
+    pub fn internal_only(internal_key: String) -> Self {
+        Self {
+            authenticator: None,
             internal_key,
         }
     }
@@ -83,6 +92,12 @@ impl FlightAuthInterceptor {
         }
 
         // Tenant caller: same header contract as the OTLP gRPC ingest path
+        let Some(authenticator) = &self.authenticator else {
+            return Err(Status::permission_denied(
+                "this Flight endpoint accepts only internal service callers",
+            ));
+        };
+
         let tenant_id_raw = metadata
             .get("x-tenant-id")
             .ok_or_else(|| Status::unauthenticated("Missing x-tenant-id metadata"))?
@@ -99,7 +114,7 @@ impl FlightAuthInterceptor {
         };
 
         let api_key = bearer.to_string();
-        let authenticator = self.authenticator.clone();
+        let authenticator = authenticator.clone();
         let tenant_context = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
                 authenticator
@@ -149,6 +164,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::TenantContext;
     use crate::catalog::Catalog;
     use crate::config::{ApiKeyConfig, AuthConfig, DatasetConfig, TenantConfig};
     use tonic::metadata::MetadataValue;
@@ -235,6 +251,31 @@ mod tests {
 
         let status = interceptor.intercept(request).unwrap_err();
         assert_eq!(status.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn internal_only_rejects_tenant_keys() {
+        let interceptor = FlightAuthInterceptor::internal_only("internal-secret".to_string());
+
+        let mut request = Request::new(());
+        request.metadata_mut().insert(
+            "authorization",
+            MetadataValue::from_static("Bearer tenant-key-123"),
+        );
+        request
+            .metadata_mut()
+            .insert("x-tenant-id", MetadataValue::from_static("acme"));
+
+        let status = interceptor.intercept(request).unwrap_err();
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+
+        // The internal key still works
+        let mut request = Request::new(());
+        request.metadata_mut().insert(
+            "authorization",
+            MetadataValue::from_static("Bearer internal-secret"),
+        );
+        assert!(interceptor.intercept(request).is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread")]
