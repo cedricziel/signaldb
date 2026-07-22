@@ -67,6 +67,10 @@ name = "iceberg_integration"
 path = "tests/writer/iceberg_integration.rs"
 
 [[test]]
+name = "wal_replay_idempotency"
+path = "tests/writer/wal_replay_idempotency.rs"
+
+[[test]]
 name = "flight_rpc_tests"
 path = "tests/e2e/flight_rpc_tests.rs"
 

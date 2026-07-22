@@ -1,5 +1,5 @@
 use crate::storage::IcebergTableWriter;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use common::CatalogManager;
 use common::wal::{Wal, WalEntry, bytes_to_record_batch};
 use datafusion::arrow::array::RecordBatch;
@@ -8,6 +8,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{Duration, interval};
 use uuid::Uuid;
+
+/// Maximum WAL entries committed per Iceberg transaction. Bounds the size
+/// of the idempotency marker written with each commit (one uuid per entry).
+const MAX_ENTRIES_PER_COMMIT: usize = 1024;
 
 /// WAL processor that reads entries and writes them to Iceberg tables
 /// Replaces the direct Parquet writing approach with transaction-based Iceberg writes
@@ -82,19 +86,21 @@ impl WalProcessor {
                 .push((entry.id, batch));
         }
 
-        // Process each group using batch writes
+        // Process each group using batch writes. Marking happens inside
+        // process_batch_for_table, interleaved with commits to preserve
+        // the idempotency-marker invariant.
         for ((tenant_id, dataset_id, table_name), entries) in grouped_entries {
             match self
                 .process_batch_for_table(&tenant_id, &dataset_id, &table_name, entries)
                 .await
             {
                 Ok(processed_ids) => {
-                    // Mark all entries as processed
-                    for entry_id in processed_ids {
-                        if let Err(e) = self.wal.mark_processed(entry_id).await {
-                            tracing::warn!(entry_id = %entry_id, error = %e, "Failed to mark WAL entry as processed");
-                        }
-                    }
+                    tracing::debug!(
+                        entry_count = processed_ids.len(),
+                        tenant_id = %tenant_id,
+                        table_name = %table_name,
+                        "Processed and marked entries for table"
+                    );
                 }
                 Err(e) => {
                     tracing::error!(tenant_id = %tenant_id, table_name = %table_name, error = %e, "Failed to process batch for table");
@@ -137,25 +143,63 @@ impl WalProcessor {
             self.table_writers.insert(writer_key.clone(), writer);
         }
 
+        let wal = self.wal.clone();
+        let wal_writer_id = wal.writer_id().to_string();
         let writer = self
             .table_writers
             .get_mut(&writer_key)
             .ok_or_else(|| anyhow::anyhow!("Failed to get table writer for {}", writer_key))?;
 
-        // Extract batches and IDs
-        let (entry_ids, batches): (Vec<Uuid>, Vec<RecordBatch>) = entries.into_iter().unzip();
+        // Step 1: dedupe against the idempotency marker. Ids recorded
+        // there were committed to Iceberg but never marked processed
+        // (crash between commit and index write, or a failed mark).
+        // Re-inserting them would duplicate rows — mark them durably
+        // instead, and do it BEFORE any new commit replaces the marker.
+        // A mark failure aborts the whole group for the same reason.
+        let committed = writer.load_committed_marker(&wal_writer_id).await?;
+        let mut processed_ids = Vec::new();
+        let mut fresh = Vec::new();
+        for (entry_id, batch) in entries {
+            if committed.contains(&entry_id) {
+                wal.mark_processed(entry_id).await.with_context(|| {
+                    format!("Failed to mark already-committed WAL entry {entry_id} as processed")
+                })?;
+                tracing::info!(
+                    entry_id = %entry_id,
+                    table_name = %table_name,
+                    "Skipping re-insert of WAL entry already committed to Iceberg"
+                );
+                processed_ids.push(entry_id);
+            } else {
+                fresh.push((entry_id, batch));
+            }
+        }
 
-        // Write all batches in a single transaction
-        writer.write_batches(batches).await?;
+        // Step 2: commit fresh entries in bounded chunks, marking each
+        // chunk before the next commit so at most one commit's ids are
+        // ever unmarked — which is exactly what the marker covers.
+        let mut fresh_iter = fresh.into_iter().peekable();
+        while fresh_iter.peek().is_some() {
+            let chunk: Vec<(Uuid, RecordBatch)> =
+                fresh_iter.by_ref().take(MAX_ENTRIES_PER_COMMIT).collect();
+            let chunk_ids: Vec<Uuid> = chunk.iter().map(|(id, _)| *id).collect();
 
-        tracing::debug!(
-            entry_count = entry_ids.len(),
-            tenant_id = %tenant_id,
-            table_name = %table_name,
-            "Successfully processed entries for table"
-        );
+            writer
+                .append_batches_with_marker(&wal_writer_id, chunk)
+                .await?;
 
-        Ok(entry_ids)
+            for entry_id in &chunk_ids {
+                // On failure the entry stays unprocessed but its id is in
+                // the marker, so the next tick re-marks instead of
+                // re-inserting.
+                wal.mark_processed(*entry_id).await.with_context(|| {
+                    format!("Failed to mark WAL entry {entry_id} as processed after commit")
+                })?;
+            }
+            processed_ids.extend(chunk_ids);
+        }
+
+        Ok(processed_ids)
     }
 
     /// Determine which tenant, dataset, and table an entry should go to
@@ -262,7 +306,6 @@ impl WalProcessor {
             .await
         {
             Ok(_) => {
-                self.wal.mark_processed(entry_id).await?;
                 tracing::debug!(entry_id = %entry_id, "Successfully processed single WAL entry");
                 Ok(())
             }
