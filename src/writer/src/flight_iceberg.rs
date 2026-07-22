@@ -18,6 +18,7 @@ use object_store::ObjectStore;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
+use tracing::Instrument;
 
 /// Enhanced Flight service that uses Iceberg table writer instead of direct Parquet writes
 /// This demonstrates the integration of the new Iceberg-based processor
@@ -114,7 +115,6 @@ impl FlightService for IcebergWriterFlightService {
 
     type DoPutStream = BoxStream<'static, Result<PutResult, Status>>;
 
-    #[tracing::instrument(name = "flight_do_put", skip_all)]
     async fn do_put(
         &self,
         request: Request<tonic::Streaming<FlightData>>,
@@ -141,12 +141,6 @@ impl FlightService for IcebergWriterFlightService {
                             target_table = ?metadata.target_table,
                             "Received data"
                         );
-                        // Adopt the sender's trace context so this span joins
-                        // the distributed trace (e.g. Acceptor -> Writer).
-                        common::flight::trace_context::adopt_parent_context_from_fields(
-                            metadata.traceparent.as_deref(),
-                            metadata.tracestate.as_deref(),
-                        );
                         flight_metadata = Some(metadata);
                     }
                     Err(e) => {
@@ -171,6 +165,17 @@ impl FlightService for IcebergWriterFlightService {
             return Err(Status::invalid_argument("No FlightData received"));
         }
 
+        // Process within a span that joins the sender's distributed trace
+        // (parent must be set before the span is first entered).
+        let span = tracing::info_span!("flight_do_put");
+        if let Some(ref metadata) = flight_metadata {
+            common::flight::trace_context::set_parent_from_fields(
+                &span,
+                metadata.traceparent.as_deref(),
+                metadata.tracestate.as_deref(),
+            );
+        }
+        async move {
         // Convert FlightData stream into Arrow RecordBatches
         let batches =
             flight_data_to_batches(&data_vec).map_err(|e| Status::internal(e.to_string()))?;
@@ -287,6 +292,9 @@ impl FlightService for IcebergWriterFlightService {
         };
         let out = stream::once(async move { Ok(result) }).boxed();
         Ok(Response::new(out))
+        }
+        .instrument(span)
+        .await
     }
 
     type DoGetStream = BoxStream<'static, Result<FlightData, Status>>;

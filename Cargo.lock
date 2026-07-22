@@ -5615,6 +5615,7 @@ dependencies = [
  "portable-atomic",
  "rand 0.9.5",
  "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]
@@ -8476,7 +8477,9 @@ dependencies = [
  "iceberg-rust",
  "log",
  "object_store",
+ "opentelemetry",
  "opentelemetry-proto",
+ "opentelemetry_sdk",
  "prost",
  "querier",
  "router",
@@ -8489,6 +8492,9 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tower",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
  "url",
  "uuid",
  "writer",

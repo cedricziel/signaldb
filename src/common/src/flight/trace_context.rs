@@ -67,15 +67,18 @@ pub fn inject_context_into_request<T>(request: &mut tonic::Request<T>) {
 }
 
 /// Extract the remote trace context from a tonic request's gRPC metadata and
-/// re-parent the current span with it (server side, e.g. Querier `do_get`).
+/// set it as `span`'s parent (server side, e.g. Querier `do_get`).
 ///
-/// No-op when the request carries no (valid) `traceparent`.
-pub fn adopt_parent_context_from_request<T>(request: &tonic::Request<T>) {
+/// IMPORTANT: must be called before `span` is first entered —
+/// tracing-opentelemetry consumes the span builder on first enter and the
+/// parent can no longer be changed afterwards. Create the span, call this,
+/// then run the handler via `.instrument(span)`.
+pub fn set_parent_from_request<T>(span: &tracing::Span, request: &tonic::Request<T>) {
     let cx = opentelemetry::global::get_text_map_propagator(|propagator| {
         propagator.extract(&MetadataMapExtractor(request.metadata()))
     });
-    if let Err(err) = tracing::Span::current().set_parent(cx) {
-        // Benign: no OTel layer attached (self-monitoring disabled).
+    if let Err(err) = span.set_parent(cx) {
+        // Benign when no OTel layer is attached (self-monitoring disabled).
         tracing::debug!(error = %err, "Failed to adopt remote trace context");
     }
 }
@@ -96,11 +99,17 @@ pub fn current_trace_context_fields() -> Option<(String, Option<String>)> {
     Some((traceparent, tracestate))
 }
 
-/// Re-parent the current span with a context carried in Flight
-/// `app_metadata` fields (server side, e.g. Writer `do_put`).
+/// Set a context carried in Flight `app_metadata` fields as `span`'s parent
+/// (server side, e.g. Writer `do_put`).
 ///
-/// No-op when `traceparent` is absent or invalid.
-pub fn adopt_parent_context_from_fields(traceparent: Option<&str>, tracestate: Option<&str>) {
+/// No-op when `traceparent` is absent or invalid. Like
+/// [`set_parent_from_request`], must be called before `span` is first
+/// entered.
+pub fn set_parent_from_fields(
+    span: &tracing::Span,
+    traceparent: Option<&str>,
+    tracestate: Option<&str>,
+) {
     let Some(traceparent) = traceparent else {
         return;
     };
@@ -111,8 +120,8 @@ pub fn adopt_parent_context_from_fields(traceparent: Option<&str>, tracestate: O
     }
     let cx =
         opentelemetry::global::get_text_map_propagator(|propagator| propagator.extract(&carrier));
-    if let Err(err) = tracing::Span::current().set_parent(cx) {
-        // Benign: no OTel layer attached (self-monitoring disabled).
+    if let Err(err) = span.set_parent(cx) {
+        // Benign when no OTel layer is attached (self-monitoring disabled).
         tracing::debug!(error = %err, "Failed to adopt remote trace context");
     }
 }
@@ -170,10 +179,11 @@ mod tests {
     }
 
     #[test]
-    fn adopt_parent_context_ignores_missing_traceparent() {
-        // Must not panic outside of any span / without a global propagator.
-        adopt_parent_context_from_fields(None, None);
-        adopt_parent_context_from_fields(Some("garbage"), None);
+    fn set_parent_ignores_missing_traceparent() {
+        // Must not panic on a disabled span / without a global propagator.
+        let span = tracing::Span::none();
+        set_parent_from_fields(&span, None, None);
+        set_parent_from_fields(&span, Some("garbage"), None);
     }
 
     #[test]
