@@ -1486,16 +1486,19 @@ impl Catalog {
                 Ok(result.rows_affected() > 0)
             }
             Catalog::Postgres(pool) => {
+                // Use the database clock (NOW()) for both the expiry stamp
+                // and the takeover comparison so that clock skew between
+                // compactor instances cannot steal a live lease.
                 let stmt = r#"
                 INSERT INTO compactor_leases
                     (tenant_id, dataset_id, table_name, partition_id, holder_id, acquired_at, expires_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                VALUES ($1, $2, $3, $4, $5, NOW(), NOW() + $6 * INTERVAL '1 millisecond')
                 ON CONFLICT (tenant_id, dataset_id, table_name, partition_id) DO UPDATE
                 SET holder_id   = EXCLUDED.holder_id,
                     acquired_at = EXCLUDED.acquired_at,
                     expires_at  = EXCLUDED.expires_at,
                     renewed_at  = NULL
-                WHERE compactor_leases.expires_at < $8
+                WHERE compactor_leases.expires_at < NOW()
                 "#;
                 let result = query(stmt)
                     .bind(tenant_id)
@@ -1503,9 +1506,7 @@ impl Catalog {
                     .bind(table_name)
                     .bind(partition_id)
                     .bind(holder_id)
-                    .bind(now)
-                    .bind(expires_at)
-                    .bind(now) // WHERE clause: existing lease must be expired
+                    .bind(ttl_ms)
                     .execute(pool)
                     .await?;
                 Ok(result.rows_affected() > 0)
@@ -1556,19 +1557,19 @@ impl Catalog {
                 Ok(result.rows_affected() > 0)
             }
             Catalog::Postgres(pool) => {
+                // DB clock, matching try_acquire (clock-skew immunity).
                 let stmt = r#"
                 UPDATE compactor_leases
-                SET expires_at = $1,
-                    renewed_at = $2
-                WHERE tenant_id    = $3
-                  AND dataset_id   = $4
-                  AND table_name   = $5
-                  AND partition_id = $6
-                  AND holder_id    = $7
+                SET expires_at = NOW() + $1 * INTERVAL '1 millisecond',
+                    renewed_at = NOW()
+                WHERE tenant_id    = $2
+                  AND dataset_id   = $3
+                  AND table_name   = $4
+                  AND partition_id = $5
+                  AND holder_id    = $6
                 "#;
                 let result = query(stmt)
-                    .bind(expires_at)
-                    .bind(now)
+                    .bind(ttl_ms)
                     .bind(tenant_id)
                     .bind(dataset_id)
                     .bind(table_name)
@@ -1652,8 +1653,7 @@ impl Catalog {
                 Ok(result.rows_affected())
             }
             Catalog::Postgres(pool) => {
-                let result = query("DELETE FROM compactor_leases WHERE expires_at < $1")
-                    .bind(now)
+                let result = query("DELETE FROM compactor_leases WHERE expires_at < NOW()")
                     .execute(pool)
                     .await?;
                 Ok(result.rows_affected())

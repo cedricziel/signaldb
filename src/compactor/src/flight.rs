@@ -189,12 +189,15 @@ impl FlightService for CompactorFlightService {
                 for candidate in candidates {
                     match self.lease_manager.try_acquire_default(&candidate).await {
                         Ok(Some(lease)) => {
+                            // Keep the lease alive for jobs longer than the TTL.
+                            let renewal = self.lease_manager.spawn_renewal(lease.clone());
                             match self.executor.execute_candidate(candidate).await {
                                 Ok(_) => started += 1,
                                 Err(e) => {
                                     tracing::error!("compact_now execution failed: {e:#}");
                                 }
                             }
+                            drop(renewal);
                             if let Err(e) = self.lease_manager.release(&lease).await {
                                 tracing::warn!("compact_now lease release failed: {e:#}");
                             }

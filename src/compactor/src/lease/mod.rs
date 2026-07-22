@@ -77,6 +77,18 @@ impl From<CompactorLease> for Lease {
     }
 }
 
+/// Keeps a lease's background renewal task alive; dropping the guard
+/// stops renewal (see [`LeaseManager::spawn_renewal`]).
+pub struct LeaseRenewalGuard {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for LeaseRenewalGuard {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
 /// Manages distributed compaction leases via the shared SQL catalog.
 ///
 /// Create one `LeaseManager` per compactor instance and reuse it across
@@ -205,6 +217,55 @@ impl LeaseManager {
         }
     }
 
+    /// Keep a lease alive while a long-running compaction executes.
+    ///
+    /// Spawns a background task renewing the lease every `ttl / 3`; the
+    /// task stops when the returned guard is dropped. Without this, any
+    /// compaction longer than the lease TTL (default 300s) silently lost
+    /// its lease mid-run and a second instance started a duplicate
+    /// full-table rewrite (issue #560).
+    ///
+    /// A failed renewal (lease stolen, catalog unreachable) is logged
+    /// loudly but does not abort the job: the Iceberg CAS commit plus
+    /// post-commit verification still guarantee only one commit wins —
+    /// the lease exists to avoid wasted duplicate work, not correctness.
+    pub fn spawn_renewal(&self, lease: Lease) -> LeaseRenewalGuard {
+        let manager = self.clone();
+        let ttl = self.default_ttl;
+        let renew_every = (ttl / 3).max(Duration::from_secs(1));
+        let handle = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(renew_every);
+            // The first tick fires immediately; the lease was just
+            // acquired, so skip it.
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                match manager.renew(&lease, ttl).await {
+                    Ok(()) => {
+                        tracing::debug!(
+                            tenant_id = %lease.tenant_id,
+                            table_name = %lease.table_name,
+                            partition_id = %lease.partition_id,
+                            "Renewed compaction lease"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            tenant_id = %lease.tenant_id,
+                            table_name = %lease.table_name,
+                            partition_id = %lease.partition_id,
+                            error = %e,
+                            "Failed to renew compaction lease; a concurrent \
+                             instance may start duplicate work (the Iceberg \
+                             CAS commit still protects correctness)"
+                        );
+                    }
+                }
+            }
+        });
+        LeaseRenewalGuard { handle }
+    }
+
     /// Release a lease explicitly after compaction completes.
     ///
     /// If the lease was stolen (another instance took it over), this is a no-op
@@ -290,6 +351,45 @@ mod tests {
                 avg_file_size_bytes: 204_800,
             },
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn renewal_keeps_lease_held_past_its_ttl() {
+        let catalog = Arc::new(make_catalog().await);
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        // 900ms TTL -> renewal every 300ms... but spawn_renewal floors the
+        // interval at 1s, so use a 3s TTL for a meaningful renewal at 1s.
+        let ttl = Duration::from_secs(3);
+        let mgr1 = LeaseManager::new(catalog.clone(), id1, ttl);
+        let mgr2 = LeaseManager::new(catalog.clone(), id2, ttl);
+        let cand = make_candidate("renewal-test");
+
+        let lease = mgr1
+            .try_acquire_default(&cand)
+            .await
+            .unwrap()
+            .expect("instance 1 acquires");
+        let renewal = mgr1.spawn_renewal(lease.clone());
+
+        // Sleep past the original TTL: the renewal task must have
+        // extended the lease, so instance 2 still cannot take it.
+        tokio::time::sleep(ttl + Duration::from_millis(500)).await;
+        let steal = mgr2.try_acquire_default(&cand).await.unwrap();
+        assert!(
+            steal.is_none(),
+            "renewed lease must not be stolen after the original TTL"
+        );
+
+        // Stop renewing: after the TTL elapses the lease expires and
+        // instance 2 takes over.
+        drop(renewal);
+        tokio::time::sleep(ttl + Duration::from_millis(500)).await;
+        let steal = mgr2.try_acquire_default(&cand).await.unwrap();
+        assert!(
+            steal.is_some(),
+            "expired lease must be claimable once renewal stops"
+        );
     }
 
     #[tokio::test]
