@@ -11,4 +11,6 @@ pub enum QuerierError {
     FailedToRegisterParquet(DataFusionError),
     #[error("Invalid input: {0}")]
     InvalidInput(String),
+    #[error("Unsupported query feature: {0}")]
+    Unsupported(String),
 }
