@@ -17,8 +17,8 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
+      release_created: ${{ steps.release.outputs['src/signaldb-bin--release_created'] }}
+      tag_name: ${{ steps.release.outputs['src/signaldb-bin--tag_name'] }}
       grafana-plugin--release_created: ${{ steps.release.outputs['src/grafana-plugin--release_created'] }}
       grafana-plugin--tag_name: ${{ steps.release.outputs['src/grafana-plugin--tag_name'] }}
       grafana-plugin--version: ${{ steps.release.outputs['src/grafana-plugin--version'] }}
