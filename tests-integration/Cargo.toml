@@ -12,7 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 # Workspace crates
 acceptor = { path = "../src/acceptor" }
-common = { path = "../src/common" }
+common = { path = "../src/common", features = ["testing"] }
 compactor = { path = "../src/compactor" }
 querier = { path = "../src/querier" }
 router = { path = "../src/router" }
