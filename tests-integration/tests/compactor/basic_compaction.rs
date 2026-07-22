@@ -10,42 +10,11 @@ use common::catalog_manager::CatalogManager;
 use compactor::executor::{CompactionExecutor, ExecutorConfig};
 use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionCandidate, CompactionPlanner, PartitionStats, PlannerConfig};
-use datafusion::arrow::array::{Int64Array, RecordBatch, StringArray};
-use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use object_store::memory::InMemory;
 use std::sync::Arc;
-use tempfile::tempdir;
+use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
+use tests_integration::generators;
 use writer::IcebergTableWriter;
-
-/// Helper to create test trace data
-fn create_test_trace_batch(trace_id: &str, num_rows: usize) -> Result<RecordBatch> {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("trace_id", DataType::Utf8, false),
-        Field::new("span_id", DataType::Utf8, false),
-        Field::new("span_name", DataType::Utf8, false),
-        Field::new("timestamp", DataType::Int64, false),
-        Field::new("duration_ns", DataType::Int64, false),
-    ]));
-
-    let trace_ids: Vec<String> = (0..num_rows).map(|_| trace_id.to_string()).collect();
-    let span_ids: Vec<String> = (0..num_rows).map(|i| format!("span-{}", i)).collect();
-    let span_names: Vec<String> = (0..num_rows).map(|i| format!("test-span-{}", i)).collect();
-    let timestamps: Vec<i64> = (0..num_rows).map(|i| 1700000000000 + i as i64).collect();
-    let durations: Vec<i64> = (0..num_rows).map(|_| 1000000).collect();
-
-    let batch = RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(StringArray::from(trace_ids)),
-            Arc::new(StringArray::from(span_ids)),
-            Arc::new(StringArray::from(span_names)),
-            Arc::new(Int64Array::from(timestamps)),
-            Arc::new(Int64Array::from(durations)),
-        ],
-    )?;
-
-    Ok(batch)
-}
 
 /// Test basic compaction with a simple scenario
 #[tokio::test]
@@ -53,62 +22,70 @@ async fn test_basic_compaction() -> Result<()> {
     // Initialize logging for the test
     let _ = env_logger::builder().is_test(true).try_init();
 
-    // Setup test environment
-    let _temp_dir = tempdir()?;
-    let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
+    // Setup: the planner discovers work by iterating configured tenants,
+    // so the test tenant must exist in auth config.
+    let config = common::testing::TestConfigBuilder::new()
+        .in_memory()
+        .with_tenant("test-tenant", "test-dataset")
+        .build();
+    let catalog_manager = Arc::new(CatalogManager::new(config).await?);
     let object_store = Arc::new(InMemory::new());
 
-    // Create the traces table with some test data
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
     let table_name = "traces";
-
-    log::info!(
-        "Creating test table {}/{}/{}",
-        tenant_id,
-        dataset_id,
-        table_name
-    );
-
-    // Create writer for the table
-    let result = IcebergTableWriter::new(
+    let mut writer = IcebergTableWriter::new(
         &catalog_manager,
         object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
     )
-    .await;
+    .await
+    .expect("Failed to create Iceberg writer");
 
-    // For Phase 2, we expect table creation to work but may have environment limitations
-    match result {
-        Ok(mut writer) => {
-            log::info!("Successfully created Iceberg writer");
-
-            // Write some small batches (simulating multiple small files)
-            for i in 0..5 {
-                let batch = create_test_trace_batch(&format!("trace-{}", i), 100)?;
-                log::info!("Writing test batch {} with {} rows", i, batch.num_rows());
-
-                if let Err(e) = writer.write_batch(batch).await {
-                    log::warn!("Failed to write batch {}: {}", i, e);
-                    // Continue - may fail due to test environment
-                }
-            }
-
-            log::info!("Completed writing test data");
-        }
-        Err(e) => {
-            log::warn!("Could not create writer in test environment: {}", e);
-            // For Phase 2, this is acceptable as we're testing the compactor logic
-            // The core functionality is unit tested
-            return Ok(());
-        }
+    // 5 separate writes -> 5 small live files: the table genuinely needs
+    // compaction.
+    let config = DataGeneratorConfig {
+        partition_count: 1,
+        files_per_partition: 1,
+        rows_per_file: 100,
+        base_timestamp: chrono::Utc::now().timestamp_millis() - (60 * 60 * 1000),
+        partition_granularity: PartitionGranularity::Hour,
+    };
+    for _ in 0..5 {
+        generators::generate_traces(&mut writer, &config).await?;
     }
+
+    // Count the REAL live files before compaction.
+    let manifest_reader = compactor::iceberg::ManifestReader::new();
+    let table_identifier =
+        catalog_manager.build_table_identifier(tenant_id, dataset_id, table_name);
+    let load_table = || async {
+        match catalog_manager
+            .catalog()
+            .load_tabular(&table_identifier)
+            .await
+            .expect("Failed to load table")
+        {
+            iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
+            _ => panic!("Expected table"),
+        }
+    };
+    let files_before = manifest_reader
+        .get_snapshot_files(&load_table().await)
+        .await?;
+    let rows_before: u64 = files_before.iter().map(|f| f.record_count).sum();
+    assert!(
+        files_before.len() >= 2,
+        "Test setup must produce multiple small files, got {}",
+        files_before.len()
+    );
+    assert_eq!(rows_before, 500, "5 writes x 100 rows");
 
     // Create compaction planner
     let planner_config = PlannerConfig {
-        file_count_threshold: 2, // Low threshold for testing
+        file_count_threshold: 3, // Low threshold for testing (above post-compaction steady state)
         min_input_file_size_bytes: 100,
         max_files_per_job: 50,
         target_file_size_bytes: 128 * 1024 * 1024,
@@ -116,55 +93,58 @@ async fn test_basic_compaction() -> Result<()> {
 
     let planner = CompactionPlanner::new(catalog_manager.clone(), planner_config.clone());
 
-    log::info!("Running compaction planning");
-
-    // Run planning
+    // Planning must be based on the REAL file set (issue #559): the table
+    // has multiple small files, so it is a candidate with real stats.
     let candidates = planner.plan().await?;
+    assert_eq!(
+        candidates.len(),
+        1,
+        "expected exactly one whole-table candidate, got {candidates:?}"
+    );
+    let candidate = &candidates[0];
+    assert_eq!(candidate.partition_id, "all");
+    assert_eq!(
+        candidate.stats.file_count,
+        files_before.len(),
+        "candidate must report the real live file count"
+    );
 
-    log::info!("Found {} compaction candidates", candidates.len());
+    // Execute the compaction and verify it actually reduced the file set.
+    let executor_config = ExecutorConfig::from(&planner_config);
+    let metrics = CompactionMetrics::new();
+    let executor =
+        CompactionExecutor::new(catalog_manager.clone(), executor_config, metrics.clone());
+    let result = executor
+        .execute_candidate(candidates.into_iter().next().unwrap())
+        .await?;
+    assert!(
+        matches!(
+            result.status,
+            compactor::executor::CompactionStatus::Success
+        ),
+        "compaction must succeed: {:?}",
+        result.error
+    );
 
-    // For Phase 2 with simplified manifest reading, we may or may not find candidates
-    // The important thing is that the planning doesn't error
-    if !candidates.is_empty() {
-        // Create executor and metrics
-        let executor_config = ExecutorConfig::from(&planner_config);
-        let metrics = CompactionMetrics::new();
-        let executor =
-            CompactionExecutor::new(catalog_manager.clone(), executor_config, metrics.clone());
+    let files_after = manifest_reader
+        .get_snapshot_files(&load_table().await)
+        .await?;
+    let rows_after: u64 = files_after.iter().map(|f| f.record_count).sum();
+    assert!(
+        files_after.len() < files_before.len(),
+        "compaction must reduce the live file count ({} -> {})",
+        files_before.len(),
+        files_after.len()
+    );
+    assert_eq!(rows_after, rows_before, "compaction must not lose rows");
 
-        // Execute compaction
-        for candidate in candidates {
-            log::info!(
-                "Executing compaction for {}/{}/{}",
-                candidate.tenant_id,
-                candidate.dataset_id,
-                candidate.table_name
-            );
-
-            match executor.execute_candidate(candidate).await {
-                Ok(result) => {
-                    log::info!("Compaction result: {:?}", result.status);
-                    log::info!("Duration: {:?}", result.duration);
-
-                    if let Some(error) = result.error {
-                        log::warn!("Compaction had error: {}", error);
-                    }
-                }
-                Err(e) => {
-                    log::warn!("Compaction execution failed: {}", e);
-                    // This is acceptable in test environment
-                }
-            }
-        }
-
-        // Check metrics
-        let summary = metrics.summary();
-        log::info!("Compaction metrics:");
-        log::info!("  Jobs started: {}", summary.jobs_started);
-        log::info!("  Jobs succeeded: {}", summary.jobs_succeeded);
-        log::info!("  Jobs failed: {}", summary.jobs_failed);
-        log::info!("  Conflicts detected: {}", summary.conflicts_detected);
-    }
+    // With the table compacted below the threshold, re-planning finds
+    // nothing — the planner no longer flags every table forever.
+    let candidates = planner.plan().await?;
+    assert!(
+        candidates.is_empty(),
+        "compacted table must not be re-flagged: {candidates:?}"
+    );
 
     log::info!("Basic compaction test completed successfully");
 

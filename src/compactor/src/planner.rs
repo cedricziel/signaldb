@@ -239,9 +239,19 @@ impl CompactionPlanner {
         Ok(candidates)
     }
 
-    /// Group files by partition
+    /// Group the table's live data files for planning.
     ///
-    /// Reads Iceberg manifest files and groups data files by their partition values.
+    /// Reads the REAL data file set from the current snapshot's manifests
+    /// so the planning thresholds operate on actual file counts and sizes
+    /// (issue #559 — this used to fabricate synthetic files, which made
+    /// every table with a snapshot a candidate on every cycle).
+    ///
+    /// All files are grouped under the single `"all"` key: the executor
+    /// rewrites and commits the WHOLE table (a `replace` snapshot), so the
+    /// candidate's `partition_id = "all"` deliberately keys the lease at
+    /// table granularity — the unit the executor actually mutates.
+    /// Partition-scoped planning must not be introduced without also
+    /// scoping the rewrite/commit (see issue #559's latent-race note).
     async fn group_files_by_partition(
         &self,
         table: &iceberg_rust::catalog::tabular::Tabular,
@@ -254,10 +264,9 @@ impl CompactionPlanner {
             }
         };
 
-        let metadata = table.metadata();
-
         // Get current snapshot
-        let snapshot_id = metadata
+        let snapshot_id = table
+            .metadata()
             .current_snapshot_id
             .ok_or_else(|| anyhow::anyhow!("Table has no current snapshot"))?;
 
@@ -267,59 +276,28 @@ impl CompactionPlanner {
             snapshot_id
         );
 
-        // For Phase 2, we use a simplified approach:
-        // Since iceberg-rust's manifest reading API is still evolving,
-        // we'll use the table scan API which provides file-level information
-        // through the DataFusion integration.
-        //
-        // The table's metadata contains snapshot information, but for practical
-        // purposes in Phase 2, we'll group files by a synthetic partition key
-        // based on the table's partitioning scheme.
-        //
-        // A full implementation would:
-        // 1. Read manifest list from snapshot
-        // 2. Parse Avro manifest files
-        // 3. Extract data file entries with partition values
-        // 4. Group by formatted partition key
-        //
-        // For Phase 2, we create synthetic FileInfo entries to enable
-        // end-to-end testing of the compaction flow. The actual data reading
-        // is handled by the executor through DataFusion, so these entries
-        // are only used for planning thresholds.
-
-        let mut partitions: HashMap<String, Vec<FileInfo>> = HashMap::new();
-
-        // Create a synthetic partition for all files
-        // This allows the executor to process the table
-        let partition_key = "all".to_string();
-
-        // Phase 2 workaround: Create synthetic file entries to pass planning thresholds
-        // We create files that:
-        // - Meet the file count threshold (default: 10)
-        // - Have sizes that justify compaction (< target size)
-        // - Total to a reasonable compaction workload
-        //
-        // TODO(Phase 3): Replace with actual manifest reading to get real file metadata
-        let synthetic_files: Vec<FileInfo> = (0..15)
-            .map(|i| FileInfo {
-                path: format!("data/partition-all/file-{}.parquet", i),
-                size_bytes: 5 * 1024 * 1024, // 5MB each (small files needing compaction)
-                record_count: 50000,         // Estimated rows
+        let files: Vec<FileInfo> = crate::iceberg::ManifestReader::new()
+            .get_snapshot_files(table)
+            .await
+            .context("Failed to read data files from manifests")?
+            .into_iter()
+            .map(|file| FileInfo {
+                path: file.file_path,
+                size_bytes: file.file_size_bytes,
+                record_count: file.record_count,
             })
             .collect();
 
         tracing::debug!(
-            "Phase 2: Created {} synthetic file entries for planning (actual data read via DataFusion)",
-            synthetic_files.len()
-        );
-
-        partitions.insert(partition_key, synthetic_files);
-
-        tracing::debug!(
-            "Grouped files into {} partitions for table {}",
-            partitions.len(),
+            "Read {} live data files from manifests for table {}",
+            files.len(),
             table.identifier()
         );
+
+        let mut partitions: HashMap<String, Vec<FileInfo>> = HashMap::new();
+        if !files.is_empty() {
+            partitions.insert("all".to_string(), files);
+        }
 
         Ok(partitions)
     }
