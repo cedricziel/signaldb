@@ -87,7 +87,6 @@ async fn setup_test_services() -> TestServices {
 
     // Configure single-tenant authentication for test
     config.auth = common::config::AuthConfig {
-        enabled: true,
         tenants: vec![common::config::TenantConfig {
             id: "test-tenant".to_string(),
             slug: "test-tenant".to_string(),
@@ -738,7 +737,6 @@ async fn test_tempo_v2_trace_endpoint() {
         .unwrap();
     let mut config = Configuration::default();
     config.auth = common::config::AuthConfig {
-        enabled: true,
         tenants: vec![common::config::TenantConfig {
             id: "test-tenant".to_string(),
             slug: "test-tenant".to_string(),
@@ -832,7 +830,6 @@ async fn setup_multi_tenant_test_services() -> TestServices {
 
     // Configure multi-tenant authentication
     config.auth = common::config::AuthConfig {
-        enabled: true,
         tenants: vec![
             common::config::TenantConfig {
                 id: "acme".to_string(),

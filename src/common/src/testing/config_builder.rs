@@ -122,7 +122,6 @@ impl TestConfigBuilder {
         };
 
         self.config.auth.tenants.push(tenant_config);
-        self.config.auth.enabled = true;
         self
     }
 
@@ -166,12 +165,6 @@ impl TestConfigBuilder {
     /// Disable discovery.
     pub fn without_discovery(mut self) -> Self {
         self.config.discovery = None;
-        self
-    }
-
-    /// Enable authentication.
-    pub fn with_auth_enabled(mut self) -> Self {
-        self.config.auth.enabled = true;
         self
     }
 
@@ -255,7 +248,6 @@ mod tests {
             .with_tenant("acme", "prod")
             .build();
 
-        assert!(config.auth.enabled);
         assert_eq!(config.auth.tenants.len(), 1);
 
         let tenant = &config.auth.tenants[0];

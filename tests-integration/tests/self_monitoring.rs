@@ -79,7 +79,6 @@ async fn self_monitoring_export_lands_in_system_wal() {
         poll_interval: Duration::from_secs(60),
         ttl: Duration::from_secs(300),
     });
-    config.auth.enabled = true;
     config.auth.admin_api_key = Some("test-admin-key".to_string());
     config.self_monitoring.enabled = true;
     config.self_monitoring.trace_sample_ratio = 1.0;

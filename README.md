@@ -268,7 +268,6 @@ Configure multi-tenancy in `signaldb.toml`:
 
 ```toml
 [auth]
-enabled = true
 
 [[auth.tenants]]
 id = "acme"

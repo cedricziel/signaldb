@@ -246,7 +246,6 @@ mod tests {
         let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
 
         let auth_config = AuthConfig {
-            enabled: true,
             tenants: vec![TenantConfig {
                 id: "acme".to_string(),
                 slug: "acme".to_string(),
@@ -307,7 +306,6 @@ mod tests {
     async fn test_invalid_api_key() {
         let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
         let auth_config = AuthConfig {
-            enabled: true,
             tenants: vec![],
             admin_api_key: None,
             internal_service_key: None,
@@ -327,7 +325,6 @@ mod tests {
     async fn test_tenant_mismatch() {
         let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
         let auth_config = AuthConfig {
-            enabled: true,
             tenants: vec![TenantConfig {
                 id: "acme".to_string(),
                 slug: "acme".to_string(),
@@ -366,7 +363,6 @@ mod tests {
     async fn test_invalid_dataset() {
         let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
         let auth_config = AuthConfig {
-            enabled: true,
             tenants: vec![TenantConfig {
                 id: "acme".to_string(),
                 slug: "acme".to_string(),
@@ -404,7 +400,6 @@ mod tests {
     async fn test_missing_default_dataset() {
         let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
         let auth_config = AuthConfig {
-            enabled: true,
             tenants: vec![TenantConfig {
                 id: "acme".to_string(),
                 slug: "acme".to_string(),
