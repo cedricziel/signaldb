@@ -29,7 +29,7 @@ use common::{
             conversion_prometheus::{decode_prometheus_remote_write, prometheus_to_otel_metrics},
             otlp_metrics_to_arrow,
         },
-        transport::{InMemoryFlightTransport, ServiceCapability},
+        transport::InMemoryFlightTransport,
     },
     wal::{WalOperation, record_batch_to_bytes},
 };
@@ -37,9 +37,8 @@ use opentelemetry_proto::tonic::metrics::v1::metric::Data;
 use tracing;
 
 use super::WalManager;
+use super::forward::forward_batch_to_writer;
 use crate::middleware::TenantContextExtractor;
-use arrow_flight::utils::batches_to_flight_data;
-use futures::{StreamExt, stream};
 
 /// Content type for Prometheus remote_write requests
 pub const PROMETHEUS_CONTENT_TYPE: &str = "application/x-protobuf";
@@ -242,67 +241,26 @@ impl PrometheusHandler {
             }
 
             // Forward to writer via Flight
-            let mut client = match self
-                .flight_transport
-                .get_client_for_capability(ServiceCapability::Storage)
-                .await
+            match forward_batch_to_writer(
+                &self.flight_transport,
+                record_batch,
+                Some(&metadata.to_string()),
+            )
+            .await
             {
-                Ok(client) => client,
-                Err(e) => {
-                    tracing::error!(error = ?e, "Failed to get Flight client");
-                    // Data remains in WAL for retry
-                    continue;
-                }
-            };
-
-            let schema = record_batch.schema();
-            let mut flight_data = match batches_to_flight_data(&schema, vec![record_batch]) {
-                Ok(data) => data,
-                Err(e) => {
-                    tracing::error!(error = ?e, "Failed to convert to flight data");
-                    continue;
-                }
-            };
-
-            // Add metadata to first FlightData message
-            if !flight_data.is_empty() {
-                flight_data[0].app_metadata = Bytes::from(metadata.to_string().into_bytes());
-            }
-
-            let flight_stream = stream::iter(flight_data);
-
-            match client.do_put(flight_stream).await {
-                Ok(response) => {
-                    let mut response_stream = response.into_inner();
-                    let mut success = true;
-                    while let Some(result) = response_stream.next().await {
-                        match result {
-                            Ok(put_result) => {
-                                tracing::debug!(?put_result, "Flight put response");
-                            }
-                            Err(e) => {
-                                tracing::error!(error = ?e, "Flight put error");
-                                success = false;
-                                break;
-                            }
-                        }
+                Ok(()) => {
+                    // Mark WAL entry as processed
+                    if let Err(e) = wal.mark_processed(wal_entry_id).await {
+                        tracing::warn!(error = ?e, wal_entry_id = %wal_entry_id, "Failed to mark WAL entry as processed");
                     }
-
-                    if success {
-                        // Mark WAL entry as processed
-                        if let Err(e) = wal.mark_processed(wal_entry_id).await {
-                            tracing::warn!(error = ?e, wal_entry_id = %wal_entry_id, "Failed to mark WAL entry as processed");
-                        }
-                        tracing::debug!(
-                            metric_type = %metric_type,
-                            target_table = %target_table,
-                            "Successfully forwarded to writer"
-                        );
-                    }
+                    tracing::debug!(
+                        metric_type = %metric_type,
+                        target_table = %target_table,
+                        "Successfully forwarded to writer"
+                    );
                 }
                 Err(e) => {
-                    tracing::error!(error = ?e, "Failed to forward via Flight");
-                    // Data remains in WAL for retry
+                    tracing::error!(error = ?e, "Failed to forward via Flight - data remains in WAL for retry");
                 }
             }
         }

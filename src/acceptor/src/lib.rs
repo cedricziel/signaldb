@@ -32,11 +32,11 @@ use common::flight::transport::InMemoryFlightTransport;
 // WAL for durability
 use common::wal::WalConfig;
 
-use crate::handler::WalManager;
 use crate::handler::otlp_grpc::TraceHandler;
 use crate::handler::otlp_log_handler::LogHandler;
 use crate::handler::otlp_metrics_handler::MetricsHandler;
 use crate::handler::{PrometheusHandler, PrometheusHandlerState};
+use crate::handler::{WalManager, WalRetryConsumer};
 use crate::middleware::auth_middleware;
 use crate::middleware::grpc_auth::grpc_auth_interceptor;
 use crate::services::{
@@ -149,6 +149,24 @@ pub async fn init_acceptor_resources(
         wal_dir = %wal_dir.display(),
         "Initialized WalManager for multi-tenant WAL isolation"
     );
+
+    // Open WALs left on disk by previous runs so their unprocessed entries
+    // get retried even before new traffic arrives for those tenants.
+    match wal_manager.discover_existing_wals().await {
+        Ok(discovered) if discovered > 0 => {
+            tracing::info!(discovered, "Discovered existing WALs from previous runs");
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to discover existing WALs");
+        }
+    }
+
+    // Background retry consumer: re-forwards unprocessed WAL entries whose
+    // inline forward to the writer failed, and marks them processed so
+    // segments can be reclaimed.
+    WalRetryConsumer::new(wal_manager.clone(), flight_transport.clone()).spawn();
+    tracing::info!("Started WAL retry consumer");
 
     // Create Authenticator for multi-tenant authentication
     let authenticator = Arc::new(Authenticator::new(auth_config, catalog));

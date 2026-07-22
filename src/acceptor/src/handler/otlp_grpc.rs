@@ -2,15 +2,12 @@ use std::sync::Arc;
 
 use common::auth::TenantContext;
 use common::flight::conversion::otlp_traces_to_arrow;
-use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
+use common::flight::transport::InMemoryFlightTransport;
 use common::wal::{WalOperation, record_batch_to_bytes};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 
 use super::WalManager;
-// Flight protocol imports
-use arrow_flight::utils::batches_to_flight_data;
-use bytes::Bytes;
-use futures::{StreamExt, stream};
+use super::forward::forward_batch_to_writer;
 
 pub struct TraceHandler {
     /// Flight transport for forwarding telemetry
@@ -154,68 +151,22 @@ impl TraceHandler {
         tracing::debug!(entry_id = %wal_entry_id, "Traces written to WAL");
 
         // Step 2: Forward from WAL to writer via Flight
-        // Get a Flight client for a writer service with storage capability (excludes acceptor)
-        let mut client = match self
-            .flight_transport
-            .get_client_for_capability(ServiceCapability::Storage)
-            .await
+        match forward_batch_to_writer(
+            &self.flight_transport,
+            record_batch,
+            Some(&metadata.to_string()),
+        )
+        .await
         {
-            Ok(client) => client,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to get Flight client for storage service");
-                // Data remains in WAL for retry by background processor
-                return;
-            }
-        };
-
-        let schema = record_batch.schema();
-        let mut flight_data = match batches_to_flight_data(&schema, vec![record_batch]) {
-            Ok(data) => data,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to convert batch to flight data");
-                // Data remains in WAL for retry
-                return;
-            }
-        };
-
-        // Add metadata to the first FlightData message (which contains the schema)
-        if !flight_data.is_empty() {
-            let metadata_bytes = metadata.to_string().into_bytes();
-            flight_data[0].app_metadata = Bytes::from(metadata_bytes);
-        }
-
-        let flight_stream = stream::iter(flight_data);
-
-        match client.do_put(flight_stream).await {
-            Ok(response) => {
-                let mut response_stream = response.into_inner();
-                let mut success = true;
-                while let Some(result) = response_stream.next().await {
-                    match result {
-                        Ok(put_result) => {
-                            tracing::debug!(response = ?put_result, "Flight put response");
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "Flight put error");
-                            success = false;
-                            break;
-                        }
-                    }
-                }
-
-                if success {
-                    tracing::debug!("Successfully forwarded traces via Flight protocol");
-                    // Mark WAL entry as processed after successful forwarding
-                    if let Err(e) = wal.mark_processed(wal_entry_id).await {
-                        tracing::warn!(entry_id = %wal_entry_id, error = %e, "Failed to mark WAL entry as processed");
-                    }
-                } else {
-                    tracing::error!("Failed to forward traces - data remains in WAL for retry");
+            Ok(()) => {
+                tracing::debug!("Successfully forwarded traces via Flight protocol");
+                // Mark WAL entry as processed after successful forwarding
+                if let Err(e) = wal.mark_processed(wal_entry_id).await {
+                    tracing::warn!(entry_id = %wal_entry_id, error = %e, "Failed to mark WAL entry as processed");
                 }
             }
             Err(e) => {
-                tracing::error!(error = %e, "Failed to forward traces via Flight protocol");
-                // Data remains in WAL for retry by background processor
+                tracing::error!(error = %e, "Failed to forward traces - data remains in WAL for retry");
             }
         }
     }
