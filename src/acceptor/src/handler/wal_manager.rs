@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// Key for WAL cache: (tenant_id, dataset_id, signal_type)
-type WalKey = (String, String, String);
+pub type WalKey = (String, String, String);
 
 /// Manager for creating and caching per-tenant/dataset WAL instances
 ///
@@ -176,6 +176,121 @@ impl WalManager {
     /// Useful for monitoring and debugging.
     pub async fn wal_count(&self) -> usize {
         self.wals.lock().await.len()
+    }
+
+    /// Snapshot of all cached WAL instances with their keys
+    ///
+    /// Used by the WAL retry consumer to scan every tenant/dataset/signal
+    /// WAL for unprocessed entries.
+    pub async fn all_wals(&self) -> Vec<(WalKey, Arc<Wal>)> {
+        self.wals
+            .lock()
+            .await
+            .iter()
+            .map(|(key, wal)| (key.clone(), wal.clone()))
+            .collect()
+    }
+
+    /// Discover WAL directories left on disk by previous runs and open them
+    ///
+    /// WALs are created lazily on first write, so after a restart a WAL with
+    /// pending entries would not be in the cache until new traffic arrives
+    /// for that tenant/dataset/signal — and entries from the previous run
+    /// would never be retried. This scans the base WAL directories for
+    /// `{tenant}/{dataset}/{signal}` layouts and opens each one.
+    ///
+    /// Returns the number of newly opened WAL instances.
+    pub async fn discover_existing_wals(&self) -> Result<usize, anyhow::Error> {
+        let mut base_dirs = Vec::new();
+        for config in [&self.traces_config, &self.logs_config, &self.metrics_config] {
+            if !base_dirs.contains(&config.wal_dir) {
+                base_dirs.push(config.wal_dir.clone());
+            }
+        }
+
+        let mut opened = 0;
+        for base_dir in base_dirs {
+            if !base_dir.is_dir() {
+                continue;
+            }
+            for (tenant, dataset, signal) in Self::scan_wal_layout(&base_dir).await? {
+                let already_cached = {
+                    let wals = self.wals.lock().await;
+                    wals.contains_key(&(tenant.clone(), dataset.clone(), signal.clone()))
+                };
+                if already_cached {
+                    continue;
+                }
+                match self.get_wal(&tenant, &dataset, &signal).await {
+                    Ok(_) => {
+                        opened += 1;
+                        log::info!(
+                            "Discovered existing WAL for tenant='{tenant}', dataset='{dataset}', signal='{signal}'"
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to open discovered WAL for tenant='{tenant}', dataset='{dataset}', signal='{signal}': {e}"
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(opened)
+    }
+
+    /// Scan a base WAL directory for `{tenant}/{dataset}/{signal}` triples
+    /// that contain WAL segment files.
+    async fn scan_wal_layout(
+        base_dir: &std::path::Path,
+    ) -> Result<Vec<(String, String, String)>, anyhow::Error> {
+        const SIGNALS: [&str; 3] = ["traces", "logs", "metrics"];
+        let mut found = Vec::new();
+
+        let mut tenants = tokio::fs::read_dir(base_dir).await?;
+        while let Some(tenant_entry) = tenants.next_entry().await? {
+            if !tenant_entry.file_type().await?.is_dir() {
+                continue;
+            }
+            let Some(tenant) = tenant_entry.file_name().to_str().map(String::from) else {
+                continue;
+            };
+
+            let mut datasets = tokio::fs::read_dir(tenant_entry.path()).await?;
+            while let Some(dataset_entry) = datasets.next_entry().await? {
+                if !dataset_entry.file_type().await?.is_dir() {
+                    continue;
+                }
+                let Some(dataset) = dataset_entry.file_name().to_str().map(String::from) else {
+                    continue;
+                };
+
+                for signal in SIGNALS {
+                    let signal_dir = dataset_entry.path().join(signal);
+                    if !signal_dir.is_dir() {
+                        continue;
+                    }
+                    // Only open directories that actually contain WAL segments
+                    let mut has_segments = false;
+                    let mut files = tokio::fs::read_dir(&signal_dir).await?;
+                    while let Some(file) = files.next_entry().await? {
+                        if let Some(name) = file.file_name().to_str()
+                            && name.starts_with("wal-")
+                            && name.ends_with(".log")
+                        {
+                            has_segments = true;
+                            break;
+                        }
+                    }
+                    if has_segments {
+                        found.push((tenant.clone(), dataset.clone(), signal.to_string()));
+                    }
+                }
+            }
+        }
+
+        Ok(found)
     }
 
     /// Clear all cached WAL instances
