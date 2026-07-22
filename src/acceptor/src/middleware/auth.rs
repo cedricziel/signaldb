@@ -104,10 +104,10 @@ pub async fn auth_middleware(
     {
         Ok(ctx) => ctx,
         Err(err) => {
-            log::warn!(
-                "Authentication failed for tenant '{}': {}",
-                tenant_id,
-                err.message
+            tracing::warn!(
+                tenant_id = %tenant_id,
+                error = %err.message,
+                "Authentication failed"
             );
             return (
                 StatusCode::from_u16(err.status_code).unwrap_or(StatusCode::UNAUTHORIZED),
@@ -117,11 +117,11 @@ pub async fn auth_middleware(
         }
     };
 
-    log::debug!(
-        "Authenticated request for tenant '{}', dataset '{}' (source: {})",
-        tenant_context.tenant_id,
-        tenant_context.dataset_id,
-        tenant_context.source
+    tracing::debug!(
+        tenant_id = %tenant_context.tenant_id,
+        dataset_id = %tenant_context.dataset_id,
+        source = %tenant_context.source,
+        "Authenticated request"
     );
 
     let is_system = common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id);

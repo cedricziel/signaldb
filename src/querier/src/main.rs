@@ -63,11 +63,11 @@ async fn main() -> anyhow::Result<()> {
         };
     utils::init_logging(&cli.common, telemetry.as_ref());
     if let Some(e) = telemetry_error {
-        log::warn!("Self-monitoring init failed, continuing without it: {e}");
+        tracing::warn!(error = %e, "Self-monitoring init failed, continuing without it");
     } else if let Some(ref t) = telemetry {
-        log::info!(
-            "Self-monitoring telemetry initialized (sampler: {})",
-            t.sampler_description()
+        tracing::info!(
+            sampler = %t.sampler_description(),
+            "Self-monitoring telemetry initialized"
         );
     }
     let _telemetry = telemetry;
@@ -101,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to register Flight service: {}", e))?;
 
-    log::info!("Querier Flight service registered with ID: {service_id}");
+    tracing::info!(service_id = %service_id, "Querier Flight service registered");
 
     // Create shared catalog manager
     let catalog_manager = Arc::new(
@@ -115,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
         QuerierFlightService::new_with_catalog_manager(flight_transport.clone(), catalog_manager)
             .await
             .context("Failed to create querier flight service with CatalogManager")?;
-    log::info!("Starting Flight query service on {flight_addr}");
+    tracing::info!(address = %flight_addr, "Starting Flight query service");
     let flight_handle = tokio::spawn(async move {
         Server::builder()
             .add_service(FlightServiceServer::new(flight_service))
@@ -128,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
     signal::ctrl_c()
         .await
         .context("Failed to listen for shutdown signal")?;
-    log::info!("Shutting down querier service");
+    tracing::info!("Shutting down querier service");
 
     // Graceful shutdown: unregister Flight service
     flight_transport

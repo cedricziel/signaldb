@@ -74,16 +74,16 @@ async fn main() -> Result<()> {
         };
     utils::init_logging(&cli.common, telemetry.as_ref());
     if let Some(e) = telemetry_error {
-        log::warn!("Self-monitoring init failed, continuing without it: {e}");
+        tracing::warn!(error = %e, "Self-monitoring init failed, continuing without it");
     } else if let Some(ref t) = telemetry {
-        log::info!(
-            "Self-monitoring telemetry initialized (sampler: {})",
-            t.sampler_description()
+        tracing::info!(
+            sampler = %t.sampler_description(),
+            "Self-monitoring telemetry initialized"
         );
     }
     let _telemetry = telemetry;
 
-    log::info!("Starting SignalDB Acceptor Service");
+    tracing::info!("Starting SignalDB Acceptor Service");
 
     // Use CLI-provided ports or defaults
     let bind_ip = cli
@@ -101,7 +101,7 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to initialize acceptor resources")?;
 
-    log::info!("Acceptor resources initialized successfully");
+    tracing::info!("Acceptor resources initialized successfully");
 
     // Clone resources for HTTP server (Arc refs are cheap to clone)
     let grpc_resources = AcceptorResources {
@@ -135,7 +135,7 @@ async fn main() -> Result<()> {
         if let Err(e) =
             serve_otlp_grpc(grpc_config, grpc_init_tx, grpc_shutdown_rx, grpc_stopped_tx).await
         {
-            log::error!("OTLP/gRPC server error: {e}");
+            tracing::error!(error = %e, "OTLP/gRPC server error");
         }
     });
 
@@ -150,7 +150,7 @@ async fn main() -> Result<()> {
         if let Err(e) =
             serve_otlp_http(http_config, http_init_tx, http_shutdown_rx, http_stopped_tx).await
         {
-            log::error!("OTLP/HTTP server error: {e}");
+            tracing::error!(error = %e, "OTLP/HTTP server error");
         }
     });
 
@@ -162,17 +162,17 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to initialize OTLP/HTTP server")?;
 
-    log::info!("Acceptor service started successfully");
-    log::info!("OTLP gRPC server listening on {grpc_addr}");
-    log::info!("OTLP HTTP server listening on {http_addr}");
-    log::info!("Prometheus remote_write available at http://{http_addr}/api/v1/write");
+    tracing::info!("Acceptor service started successfully");
+    tracing::info!(address = %grpc_addr, "OTLP gRPC server listening");
+    tracing::info!(address = %http_addr, "OTLP HTTP server listening");
+    tracing::info!(address = %http_addr, "Prometheus remote_write available at /api/v1/write");
 
     // Wait for shutdown signal (Ctrl+C)
     tokio::signal::ctrl_c()
         .await
         .context("Failed to listen for shutdown signal")?;
 
-    log::info!("Shutting down acceptor service...");
+    tracing::info!("Shutting down acceptor service...");
 
     // Trigger shutdown
     let _ = grpc_shutdown_tx.send(());
@@ -190,7 +190,7 @@ async fn main() -> Result<()> {
         telemetry.shutdown();
     }
 
-    log::info!("Acceptor service stopped gracefully");
+    tracing::info!("Acceptor service stopped gracefully");
 
     Ok(())
 }

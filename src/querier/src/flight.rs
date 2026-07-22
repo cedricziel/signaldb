@@ -229,17 +229,19 @@ impl QuerierFlightService {
                                 })?;
                             session_ctx.runtime_env().register_object_store(&url, store);
                             registered_urls.insert(url_str.clone());
-                            log::info!(
-                                "Registered object store for scheme '{}': {url_str}",
-                                url.scheme()
+                            tracing::info!(
+                                scheme = %url.scheme(),
+                                url = %url_str,
+                                "Registered object store"
                             );
                         }
                         Err(e) => {
-                            log::warn!(
-                                "Skipping invalid storage DSN '{}' for tenant '{}' dataset '{}': {e}",
-                                url_str,
-                                tenant.id,
-                                dataset.id
+                            tracing::warn!(
+                                dsn = %url_str,
+                                tenant_id = %tenant.id,
+                                dataset_id = %dataset.id,
+                                error = %e,
+                                "Skipping invalid storage DSN"
                             );
                         }
                     }
@@ -260,10 +262,10 @@ impl QuerierFlightService {
             };
 
             session_ctx.register_catalog(&tenant.slug, Arc::new(tenant_catalog));
-            log::info!(
-                "Registered DataFusion catalog '{}' for tenant '{}'",
-                tenant.slug,
-                tenant.id
+            tracing::info!(
+                catalog = %tenant.slug,
+                tenant_id = %tenant.id,
+                "Registered DataFusion catalog"
             );
         }
 
@@ -287,11 +289,11 @@ impl QuerierFlightService {
         if let Some(remainder) = ticket_content.strip_prefix("find_trace:") {
             let parts: Vec<&str> = remainder.splitn(3, ':').collect();
             if parts.len() == 3 {
-                log::info!(
-                    "Parsing find_trace ticket for tenant_slug={}, dataset_slug={}, trace_id={}",
-                    parts[0],
-                    parts[1],
-                    parts[2]
+                tracing::info!(
+                    tenant_slug = %parts[0],
+                    dataset_slug = %parts[1],
+                    trace_id = %parts[2],
+                    "Parsing find_trace ticket"
                 );
                 return Ok(TicketRequest::FindTrace {
                     tenant_slug: parts[0].to_string(),
@@ -309,11 +311,11 @@ impl QuerierFlightService {
         if let Some(remainder) = ticket_content.strip_prefix("search_traces:") {
             let parts: Vec<&str> = remainder.splitn(3, ':').collect();
             if parts.len() == 3 {
-                log::info!(
-                    "Parsing search_traces ticket for tenant_slug={}, dataset_slug={}, params={}",
-                    parts[0],
-                    parts[1],
-                    parts[2]
+                tracing::info!(
+                    tenant_slug = %parts[0],
+                    dataset_slug = %parts[1],
+                    params = %parts[2],
+                    "Parsing search_traces ticket"
                 );
                 let params: SearchQueryParams = serde_json::from_str(parts[2]).map_err(|e| {
                     Status::invalid_argument(format!("Invalid search parameters: {e}"))
@@ -418,7 +420,7 @@ impl QuerierFlightService {
         &self,
         sql: &str,
     ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error + Send + Sync>> {
-        log::info!("Executing query: {sql}");
+        tracing::info!(sql = %sql, "Executing query");
 
         let df = self.session_ctx.sql(sql).await?;
         let batches = df.collect().await?;
@@ -437,11 +439,14 @@ impl QuerierFlightService {
 
         match self.execute_query(query).await {
             Ok(batches) => {
-                log::debug!("Retrieved {} batches from object store", batches.len());
+                tracing::debug!(
+                    batch_count = batches.len(),
+                    "Retrieved batches from object store"
+                );
                 Ok(batches)
             }
             Err(e) => {
-                log::error!("Error querying object store: {e}");
+                tracing::error!(error = %e, "Error querying object store");
                 Err(e)
             }
         }
@@ -550,7 +555,7 @@ impl FlightService for QuerierFlightService {
         let ticket_content = String::from_utf8(ticket.ticket.to_vec())
             .map_err(|e| Status::invalid_argument(format!("Invalid ticket: {e}")))?;
 
-        log::info!("Processing Flight ticket: {}", ticket_content);
+        tracing::info!(ticket = %ticket_content, "Processing Flight ticket");
 
         // Parse ticket to determine request type
         let ticket_request = self.parse_ticket(&ticket_content)?;
@@ -562,118 +567,125 @@ impl FlightService for QuerierFlightService {
         let query_start = std::time::Instant::now();
         let batches_result: Result<Vec<_>, Status> = async {
             Ok(match ticket_request {
-            TicketRequest::FindTrace {
-                tenant_slug,
-                dataset_slug,
-                trace_id,
-            } => {
-                log::info!(
-                    "Executing find_trace for tenant_slug={tenant_slug}, dataset_slug={dataset_slug}, trace_id={trace_id}"
-                );
-
-                let params = FindTraceByIdParams {
-                    trace_id,
-                    start: None,
-                    end: None,
-                };
-
-                match self
-                    .trace_service
-                    .find_by_id_with_tenant(params, &tenant_slug, &dataset_slug)
-                    .await
-                {
-                    Ok(Some(trace)) => {
-                        log::info!("Found trace with {} root spans", trace.spans.len());
-                        self.trace_to_record_batches(&trace).await.map_err(|e| {
-                            Status::internal(format!("Failed to convert trace to batches: {e}"))
-                        })?
-                    }
-                    Ok(None) => {
-                        log::info!("No trace found");
-                        vec![]
-                    }
-                    Err(e) => {
-                        log::error!("Error querying trace: {e:?}");
-                        return Err(Status::internal(format!("Trace query failed: {e:?}")));
-                    }
-                }
-            }
-            TicketRequest::SearchTraces {
-                tenant_slug,
-                dataset_slug,
-                params,
-            } => {
-                log::info!(
-                    "Executing search_traces for tenant_slug={tenant_slug}, dataset_slug={dataset_slug}, params={params:?}"
-                );
-
-                match self
-                    .trace_service
-                    .find_traces_with_tenant(params, &tenant_slug, &dataset_slug)
-                    .await
-                {
-                    Ok(traces) => {
-                        log::info!("Found {} traces", traces.len());
-
-                        let mut all_batches = Vec::new();
-                        for trace in &traces {
-                            let trace_batches =
-                                self.trace_to_record_batches(trace).await.map_err(|e| {
-                                    Status::internal(format!(
-                                        "Failed to convert trace to batches: {e}"
-                                    ))
-                                })?;
-                            all_batches.extend(trace_batches);
-                        }
-                        all_batches
-                    }
-                    Err(e) => {
-                        log::error!("Error searching traces: {e:?}");
-                        return Err(Status::internal(format!("Trace search failed: {e:?}")));
-                    }
-                }
-            }
-            TicketRequest::SqlQuery { sql } => {
-                let tenant_slug = metadata
-                    .get("x-tenant-id")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string());
-                let dataset_slug = metadata
-                    .get("x-dataset-id")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string());
-
-                log::info!(
-                    "Executing SQL query (tenant={:?}, dataset={:?}): {sql}",
+                TicketRequest::FindTrace {
                     tenant_slug,
-                    dataset_slug
-                );
+                    dataset_slug,
+                    trace_id,
+                } => {
+                    tracing::info!(
+                        tenant_slug = %tenant_slug,
+                        dataset_slug = %dataset_slug,
+                        trace_id = %trace_id,
+                        "Executing find_trace"
+                    );
 
-                if let Some(tenant) = &tenant_slug {
-                    self.session_ctx
-                        .sql(&format!(
-                            "SET datafusion.catalog.default_catalog = '{tenant}'"
-                        ))
-                        .await
-                        .map_err(|e| {
-                            Status::internal(format!("Failed to set default catalog: {e}"))
-                        })?;
+                    let params = FindTraceByIdParams {
+                        trace_id,
+                        start: None,
+                        end: None,
+                    };
 
-                    let dataset = dataset_slug.as_deref().unwrap_or("default");
-                    self.session_ctx
-                        .sql(&format!(
-                            "SET datafusion.catalog.default_schema = '{dataset}'"
-                        ))
+                    match self
+                        .trace_service
+                        .find_by_id_with_tenant(params, &tenant_slug, &dataset_slug)
                         .await
-                        .map_err(|e| {
-                            Status::internal(format!("Failed to set default schema: {e}"))
-                        })?;
+                    {
+                        Ok(Some(trace)) => {
+                            tracing::info!(span_count = trace.spans.len(), "Found trace");
+                            self.trace_to_record_batches(&trace).await.map_err(|e| {
+                                Status::internal(format!("Failed to convert trace to batches: {e}"))
+                            })?
+                        }
+                        Ok(None) => {
+                            tracing::info!("No trace found");
+                            vec![]
+                        }
+                        Err(e) => {
+                            tracing::error!(error = ?e, "Error querying trace");
+                            return Err(Status::internal(format!("Trace query failed: {e:?}")));
+                        }
+                    }
                 }
+                TicketRequest::SearchTraces {
+                    tenant_slug,
+                    dataset_slug,
+                    params,
+                } => {
+                    tracing::info!(
+                        tenant_slug = %tenant_slug,
+                        dataset_slug = %dataset_slug,
+                        params = ?params,
+                        "Executing search_traces"
+                    );
 
-                self.execute_distributed_query(&sql)
-                    .await
-                    .map_err(|e| Status::internal(format!("Query execution failed: {e}")))?
-            }
+                    match self
+                        .trace_service
+                        .find_traces_with_tenant(params, &tenant_slug, &dataset_slug)
+                        .await
+                    {
+                        Ok(traces) => {
+                            tracing::info!(trace_count = traces.len(), "Found traces");
+
+                            let mut all_batches = Vec::new();
+                            for trace in &traces {
+                                let trace_batches =
+                                    self.trace_to_record_batches(trace).await.map_err(|e| {
+                                        Status::internal(format!(
+                                            "Failed to convert trace to batches: {e}"
+                                        ))
+                                    })?;
+                                all_batches.extend(trace_batches);
+                            }
+                            all_batches
+                        }
+                        Err(e) => {
+                            tracing::error!(error = ?e, "Error searching traces");
+                            return Err(Status::internal(format!("Trace search failed: {e:?}")));
+                        }
+                    }
+                }
+                TicketRequest::SqlQuery { sql } => {
+                    let tenant_slug = metadata
+                        .get("x-tenant-id")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string());
+                    let dataset_slug = metadata
+                        .get("x-dataset-id")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string());
+
+                    tracing::info!(
+                        tenant_id = ?tenant_slug,
+                        dataset_id = ?dataset_slug,
+                        sql = %sql,
+                        "Executing SQL query"
+                    );
+
+                    if let Some(tenant) = &tenant_slug {
+                        self.session_ctx
+                            .sql(&format!(
+                                "SET datafusion.catalog.default_catalog = '{tenant}'"
+                            ))
+                            .await
+                            .map_err(|e| {
+                                Status::internal(format!("Failed to set default catalog: {e}"))
+                            })?;
+
+                        let dataset = dataset_slug.as_deref().unwrap_or("default");
+                        self.session_ctx
+                            .sql(&format!(
+                                "SET datafusion.catalog.default_schema = '{dataset}'"
+                            ))
+                            .await
+                            .map_err(|e| {
+                                Status::internal(format!("Failed to set default schema: {e}"))
+                            })?;
+                    }
+
+                    self.execute_distributed_query(&sql)
+                        .await
+                        .map_err(|e| Status::internal(format!("Query execution failed: {e}")))?
+                }
             })
         }
         .await;

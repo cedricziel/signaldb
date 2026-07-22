@@ -105,7 +105,7 @@ pub mod utils {
     pub fn load_config(config_path: Option<&PathBuf>) -> Result<Configuration> {
         match config_path {
             Some(path) => {
-                log::info!("Loading configuration from: {}", path.display());
+                tracing::info!(path = %path.display(), "Loading configuration");
                 Configuration::load_from_path(path).context("Failed to load configuration")
             }
             None => Configuration::load().context("Failed to load configuration"),
@@ -146,7 +146,7 @@ pub mod utils {
 
     /// Validate configuration and report any issues
     pub fn validate_config(config: &Configuration) -> Result<()> {
-        log::info!("Validating configuration...");
+        tracing::info!("Validating configuration...");
 
         // Basic validation checks
         if config.database.dsn.is_empty() {
@@ -168,7 +168,7 @@ pub mod utils {
             anyhow::bail!("Discovery DSN cannot be empty when discovery is enabled");
         }
 
-        log::info!("✅ Configuration validation passed");
+        tracing::info!("Configuration validation passed");
         Ok(())
     }
 

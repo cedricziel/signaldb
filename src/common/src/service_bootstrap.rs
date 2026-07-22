@@ -60,12 +60,12 @@ impl ServiceBootstrap {
             &config.database.dsn
         };
 
-        log::info!("Using DSN for service bootstrap: {dsn}");
-        log::info!("Database config DSN: {}", config.database.dsn);
+        tracing::info!(dsn = %dsn, "Using DSN for service bootstrap");
+        tracing::info!(dsn = %config.database.dsn, "Database config DSN");
         if let Some(discovery_config) = &config.discovery {
-            log::info!("Discovery config DSN: {}", discovery_config.dsn);
+            tracing::info!(dsn = %discovery_config.dsn, "Discovery config DSN");
         } else {
-            log::info!("No discovery config found");
+            tracing::info!("No discovery config found");
         }
 
         // Ensure data directory exists for SQLite databases
@@ -74,7 +74,7 @@ impl ServiceBootstrap {
         let catalog = Catalog::new(dsn).await?;
         let service_id = Uuid::new_v4();
 
-        log::info!("Registering {service_type} service {service_id} at {address} with catalog");
+        tracing::info!(service_type = %service_type, service_id = %service_id, address = %address, "Registering service with catalog");
 
         // Get default capabilities for this service type
         let capabilities = Self::get_default_capabilities(&service_type);
@@ -104,11 +104,11 @@ impl ServiceBootstrap {
 
     /// Ensure the data directory exists for SQLite databases
     fn ensure_data_directory(dsn: &str) -> Result<()> {
-        log::info!("Ensuring data directory exists for DSN: {dsn}");
+        tracing::info!(dsn = %dsn, "Ensuring data directory exists");
 
         // Only handle SQLite databases
         if !dsn.starts_with("sqlite:") {
-            log::info!("Not a SQLite DSN, skipping directory creation");
+            tracing::info!("Not a SQLite DSN, skipping directory creation");
             return Ok(());
         }
 
@@ -120,7 +120,7 @@ impl ServiceBootstrap {
         // - sqlite:///absolute/path/file.db (absolute path with ///)
         let file_path = if let Some(path) = dsn.strip_prefix("sqlite:") {
             if path == ":memory:" {
-                log::info!("In-memory database, skipping directory creation");
+                tracing::info!("In-memory database, skipping directory creation");
                 return Ok(());
             }
 
@@ -139,34 +139,34 @@ impl ServiceBootstrap {
                 path // Keep as is
             }
         } else {
-            log::info!("Failed to extract file path from DSN: {dsn}");
+            tracing::info!(dsn = %dsn, "Failed to extract file path from DSN");
             return Ok(());
         };
 
-        log::info!("Extracted file path: {file_path}");
+        tracing::info!(path = %file_path, "Extracted file path");
 
         // Get the directory part of the path
         if let Some(parent) = Path::new(file_path).parent() {
-            log::info!(
-                "Parent directory: {}, exists: {}",
-                parent.display(),
-                parent.exists()
+            tracing::info!(
+                parent = %parent.display(),
+                exists = parent.exists(),
+                "Parent directory"
             );
             if !parent.exists() {
-                log::info!("Creating directory: {}", parent.display());
+                tracing::info!(path = %parent.display(), "Creating directory");
                 fs::create_dir_all(parent).map_err(|e| {
-                    log::error!("Failed to create directory '{}': {}", parent.display(), e);
+                    tracing::error!(path = %parent.display(), error = %e, "Failed to create directory");
                     e
                 })?;
-                log::info!("Created data directory: {}", parent.display());
+                tracing::info!(path = %parent.display(), "Created data directory");
             } else {
-                log::info!("Directory already exists: {}", parent.display());
+                tracing::info!(path = %parent.display(), "Directory already exists");
             }
         } else {
-            log::info!("No parent directory found for path: {file_path}");
+            tracing::info!(path = %file_path, "No parent directory found");
         }
 
-        log::info!("Directory setup completed successfully");
+        tracing::info!("Directory setup completed successfully");
         Ok(())
     }
 
@@ -367,10 +367,10 @@ impl ServiceBootstrap {
 
     /// Gracefully shutdown the service and deregister from catalog
     pub async fn shutdown(mut self) -> Result<()> {
-        log::info!(
-            "Shutting down {} service {} and deregistering from catalog",
-            self.service_type,
-            self.service_id
+        tracing::info!(
+            service_type = %self.service_type,
+            service_id = %self.service_id,
+            "Shutting down service and deregistering from catalog"
         );
 
         // Stop heartbeat task
@@ -381,7 +381,7 @@ impl ServiceBootstrap {
         // Deregister from catalog
         self.catalog.deregister_ingester(self.service_id).await?;
 
-        log::info!("Service {} deregistered successfully", self.service_id);
+        tracing::info!(service_id = %self.service_id, "Service deregistered successfully");
         Ok(())
     }
 }

@@ -63,16 +63,16 @@ async fn main() -> Result<()> {
         };
     utils::init_logging(&cli.common, telemetry.as_ref());
     if let Some(e) = telemetry_error {
-        log::warn!("Self-monitoring init failed, continuing without it: {e}");
+        tracing::warn!(error = %e, "Self-monitoring init failed, continuing without it");
     } else if let Some(ref t) = telemetry {
-        log::info!(
-            "Self-monitoring telemetry initialized (sampler: {})",
-            t.sampler_description()
+        tracing::info!(
+            sampler = %t.sampler_description(),
+            "Self-monitoring telemetry initialized"
         );
     }
     let _telemetry = telemetry;
 
-    log::info!("Starting SignalDB Router Service");
+    tracing::info!("Starting SignalDB Router Service");
 
     // Use CLI-provided ports or defaults
     let bind_ip = cli
@@ -93,9 +93,9 @@ async fn main() -> Result<()> {
         .sync_config_tenants(&config.auth)
         .await
         .context("Failed to sync config tenants to catalog")?;
-    log::info!(
-        "Synced {} config tenant(s) to catalog",
-        config.auth.tenants.len()
+    tracing::info!(
+        tenant_count = config.auth.tenants.len(),
+        "Synced config tenants to catalog"
     );
 
     // Create router state with catalog access and configuration
@@ -108,23 +108,23 @@ async fn main() -> Result<()> {
             .service_registry()
             .start_background_polling(poll_interval)
             .await;
-        log::info!("Started service registry background polling with interval: {poll_interval:?}");
+        tracing::info!(interval = ?poll_interval, "Started service registry background polling");
     }
 
-    log::info!("Router service registered with catalog");
+    tracing::info!("Router service registered with catalog");
 
     // Create HTTP router
     let app = create_router(state.clone());
     let (http_shutdown_tx, http_shutdown_rx) = oneshot::channel::<()>();
     let http_handle = tokio::spawn(async move {
-        log::info!("Starting HTTP router on {http_addr}");
+        tracing::info!(address = %http_addr, "Starting HTTP router");
         let listener = tokio::net::TcpListener::bind(http_addr)
             .await
             .expect("Failed to bind HTTP router");
         axum::serve(listener, app.into_make_service())
             .with_graceful_shutdown(async {
                 http_shutdown_rx.await.ok();
-                log::info!("HTTP router shutting down gracefully");
+                tracing::info!("HTTP router shutting down gracefully");
             })
             .await
             .expect("HTTP router error");
@@ -133,7 +133,7 @@ async fn main() -> Result<()> {
     // Start Flight service
     let flight_service = create_flight_service(state);
     let flight_handle = tokio::spawn(async move {
-        log::info!("Starting Flight service on {flight_addr}");
+        tracing::info!(address = %flight_addr, "Starting Flight service");
 
         match Server::builder()
             .add_service(
@@ -142,25 +142,25 @@ async fn main() -> Result<()> {
             .serve(flight_addr)
             .await
         {
-            Ok(_) => log::info!("Flight service stopped"),
-            Err(e) => log::error!("Flight service error: {e}"),
+            Ok(_) => tracing::info!("Flight service stopped"),
+            Err(e) => tracing::error!(error = %e, "Flight service error"),
         }
     });
 
-    log::info!("Router service started successfully");
-    log::info!("Arrow Flight server listening on {flight_addr}");
-    log::info!("HTTP API server listening on {http_addr}");
+    tracing::info!("Router service started successfully");
+    tracing::info!(address = %flight_addr, "Arrow Flight server listening");
+    tracing::info!(address = %http_addr, "HTTP API server listening");
 
     // Wait for ctrl+c
     tokio::signal::ctrl_c()
         .await
         .context("Failed to listen for ctrl+c signal")?;
 
-    log::info!("Shutting down router service...");
+    tracing::info!("Shutting down router service...");
 
     // Graceful deregistration using service bootstrap
     if let Err(e) = router_bootstrap.shutdown().await {
-        log::error!("Failed to shutdown router service bootstrap: {e}");
+        tracing::error!(error = %e, "Failed to shutdown router service bootstrap");
     }
 
     // Signal HTTP router to shutdown gracefully
@@ -174,7 +174,7 @@ async fn main() -> Result<()> {
         telemetry.shutdown();
     }
 
-    log::info!("Router service stopped gracefully");
+    tracing::info!("Router service stopped gracefully");
 
     Ok(())
 }

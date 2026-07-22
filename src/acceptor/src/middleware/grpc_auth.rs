@@ -84,10 +84,10 @@ pub fn grpc_auth_interceptor<T>(
         })
     })
     .map_err(|err| {
-        log::warn!(
-            "gRPC authentication failed for tenant '{}': {}",
-            tenant_id,
-            err.message
+        tracing::warn!(
+            tenant_id = %tenant_id,
+            error = %err.message,
+            "gRPC authentication failed"
         );
         match err.status_code {
             400 => Status::invalid_argument(err.message),
@@ -97,11 +97,11 @@ pub fn grpc_auth_interceptor<T>(
         }
     })?;
 
-    log::debug!(
-        "Authenticated gRPC request for tenant '{}', dataset '{}' (source: {})",
-        tenant_context.tenant_id,
-        tenant_context.dataset_id,
-        tenant_context.source
+    tracing::debug!(
+        tenant_id = %tenant_context.tenant_id,
+        dataset_id = %tenant_context.dataset_id,
+        source = %tenant_context.source,
+        "Authenticated gRPC request"
     );
 
     // Insert TenantContext into request extensions

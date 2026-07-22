@@ -43,7 +43,7 @@ impl WalProcessor {
             interval.tick().await;
 
             if let Err(e) = self.process_pending_entries().await {
-                log::error!("Error processing WAL entries: {e}");
+                tracing::error!(error = %e, "Error processing WAL entries");
                 // Continue processing despite errors
             }
         }
@@ -58,7 +58,10 @@ impl WalProcessor {
             return Ok(());
         }
 
-        log::debug!("Processing {} pending WAL entries", pending_entries.len());
+        tracing::debug!(
+            entry_count = pending_entries.len(),
+            "Processing pending WAL entries"
+        );
 
         // Group entries by tenant, dataset, and table for batch processing
         let mut grouped_entries: HashMap<(String, String, String), Vec<(Uuid, RecordBatch)>> =
@@ -89,12 +92,12 @@ impl WalProcessor {
                     // Mark all entries as processed
                     for entry_id in processed_ids {
                         if let Err(e) = self.wal.mark_processed(entry_id).await {
-                            log::warn!("Failed to mark WAL entry {entry_id} as processed: {e}");
+                            tracing::warn!(entry_id = %entry_id, error = %e, "Failed to mark WAL entry as processed");
                         }
                     }
                 }
                 Err(e) => {
-                    log::error!("Failed to process batch for table {tenant_id}.{table_name}: {e}");
+                    tracing::error!(tenant_id = %tenant_id, table_name = %table_name, error = %e, "Failed to process batch for table");
                 }
             }
         }
@@ -145,11 +148,11 @@ impl WalProcessor {
         // Write all batches in a single transaction
         writer.write_batches(batches).await?;
 
-        log::debug!(
-            "Successfully processed {} entries for table {}.{}",
-            entry_ids.len(),
-            tenant_id,
-            table_name
+        tracing::debug!(
+            entry_count = entry_ids.len(),
+            tenant_id = %tenant_id,
+            table_name = %table_name,
+            "Successfully processed entries for table"
         );
 
         Ok(entry_ids)
@@ -191,20 +194,21 @@ impl WalProcessor {
                     .and_then(|m| m.get("target_table"))
                     .map(|target_table| {
                         if let Some(table_str) = target_table.as_str() {
-                            log::debug!(
-                                "Using target_table from metadata: {table_str} for WAL entry {}",
-                                entry.id
+                            tracing::debug!(
+                                target_table = %table_str,
+                                entry_id = %entry.id,
+                                "Using target_table from metadata"
                             );
                             table_str.to_string()
                         } else {
-                            log::warn!(
+                            tracing::warn!(
                                 "target_table in metadata is not a string, defaulting to metrics_gauge"
                             );
                             "metrics_gauge".to_string()
                         }
                     })
                     .unwrap_or_else(|| {
-                        log::debug!("No target_table in metadata, defaulting to metrics_gauge");
+                        tracing::debug!("No target_table in metadata, defaulting to metrics_gauge");
                         "metrics_gauge".to_string()
                     })
             }
@@ -259,11 +263,11 @@ impl WalProcessor {
         {
             Ok(_) => {
                 self.wal.mark_processed(entry_id).await?;
-                log::debug!("Successfully processed single WAL entry {entry_id}");
+                tracing::debug!(entry_id = %entry_id, "Successfully processed single WAL entry");
                 Ok(())
             }
             Err(e) => {
-                log::error!("Failed to process WAL entry {entry_id}: {e}");
+                tracing::error!(entry_id = %entry_id, error = %e, "Failed to process WAL entry");
                 Err(e)
             }
         }
@@ -279,9 +283,9 @@ impl WalProcessor {
 
     /// Close all table writers and clean up resources
     pub async fn shutdown(&mut self) -> Result<()> {
-        log::info!(
-            "Shutting down WAL processor with {} active writers",
-            self.table_writers.len()
+        tracing::info!(
+            writer_count = self.table_writers.len(),
+            "Shutting down WAL processor"
         );
 
         // Clear all writers (they should handle cleanup automatically when dropped)

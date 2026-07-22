@@ -57,7 +57,7 @@ impl IcebergWriterFlightService {
             loop {
                 let mut processor_guard = processor.lock().await;
                 if let Err(e) = processor_guard.process_pending_entries().await {
-                    log::error!("Background WAL processing error: {e}");
+                    tracing::error!(error = %e, "Background WAL processing error");
                 }
                 drop(processor_guard);
 
@@ -66,7 +66,7 @@ impl IcebergWriterFlightService {
             }
         });
 
-        log::info!("Started background WAL processing task");
+        tracing::info!("Started background WAL processing task");
         handle
     }
 }
@@ -135,11 +135,11 @@ impl FlightService for IcebergWriterFlightService {
             if flight_metadata.is_none() && !d.app_metadata.is_empty() {
                 match extract_flight_metadata(&d.app_metadata) {
                     Ok(metadata) => {
-                        log::info!(
-                            "Received data - schema: {}, signal: {:?}, target: {:?}",
-                            metadata.schema_version,
-                            metadata.signal_type,
-                            metadata.target_table
+                        tracing::info!(
+                            schema_version = %metadata.schema_version,
+                            signal_type = ?metadata.signal_type,
+                            target_table = ?metadata.target_table,
+                            "Received data"
                         );
                         // Adopt the sender's trace context so this span joins
                         // the distributed trace (e.g. Acceptor -> Writer).
@@ -150,7 +150,7 @@ impl FlightService for IcebergWriterFlightService {
                         flight_metadata = Some(metadata);
                     }
                     Err(e) => {
-                        log::warn!("Failed to extract metadata: {e}, using defaults");
+                        tracing::warn!(error = %e, "Failed to extract metadata, using defaults");
                         flight_metadata = Some(FlightMetadata {
                             schema_version: "v1".to_string(),
                             signal_type: Some("traces".to_string()),
@@ -196,7 +196,7 @@ impl FlightService for IcebergWriterFlightService {
             WalOperation::WriteTraces // Default fallback
         };
 
-        log::debug!("Using WAL operation: {wal_operation:?}");
+        tracing::debug!(operation = ?wal_operation, "Using WAL operation");
 
         let transformed_batches = if let Some(ref metadata) = flight_metadata {
             if metadata.schema_version == "v1" {
@@ -271,10 +271,10 @@ impl FlightService for IcebergWriterFlightService {
         for entry_id in wal_entry_ids {
             match processor.process_single_entry(entry_id).await {
                 Ok(_) => {
-                    log::debug!("Successfully processed WAL entry {entry_id} via Iceberg");
+                    tracing::debug!(entry_id = %entry_id, "Successfully processed WAL entry via Iceberg");
                 }
                 Err(e) => {
-                    log::error!("Failed to process WAL entry {entry_id} via Iceberg: {e}");
+                    tracing::error!(entry_id = %entry_id, error = %e, "Failed to process WAL entry via Iceberg");
                     return Err(Status::internal(format!(
                         "Failed to process via Iceberg: {e}"
                     )));
