@@ -90,6 +90,8 @@ pub struct InMemoryFlightTransport {
     max_pool_size: usize,
     /// Connection timeout in seconds
     connection_timeout: u64,
+    /// Rotates capability-based selection across healthy instances.
+    round_robin: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl InMemoryFlightTransport {
@@ -100,6 +102,7 @@ impl InMemoryFlightTransport {
             connections: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             max_pool_size: 50,
             connection_timeout: 30,
+            round_robin: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -114,6 +117,7 @@ impl InMemoryFlightTransport {
             connections: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             max_pool_size,
             connection_timeout,
+            round_robin: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -279,8 +283,15 @@ impl InMemoryFlightTransport {
             return Err("No services found with required capability".into());
         }
 
-        // Simple round-robin selection (could be enhanced with proper load balancing)
-        let service = &services[0];
+        // Round-robin across healthy instances; sort by id for a stable
+        // rotation order regardless of catalog listing order.
+        let mut services = services;
+        services.sort_by_key(|s| s.service_id);
+        let index = self
+            .round_robin
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % services.len();
+        let service = &services[index];
         self.get_flight_client(service.service_id).await
     }
 
@@ -365,6 +376,7 @@ impl InMemoryFlightTransport {
             connections: self.connections.clone(),
             max_pool_size: self.max_pool_size,
             connection_timeout: self.connection_timeout,
+            round_robin: self.round_robin.clone(),
         };
 
         tokio::spawn(async move {

@@ -278,3 +278,77 @@ async fn test_ingester_update_sqlite() {
     assert_eq!(ingesters[0].address, "127.0.0.1:8081");
     assert_eq!(ingesters[0].capabilities.len(), 2);
 }
+
+#[tokio::test]
+async fn test_list_active_ingesters_filters_stale_rows() {
+    let catalog = Catalog::new("sqlite::memory:")
+        .await
+        .expect("Failed to create catalog");
+
+    let id = Uuid::new_v4();
+    catalog
+        .register_ingester(
+            id,
+            "127.0.0.1:9000",
+            ServiceType::Querier,
+            &[ServiceCapability::QueryExecution],
+        )
+        .await
+        .expect("Failed to register ingester");
+
+    // A generous TTL keeps the freshly-registered service.
+    let active = catalog
+        .list_active_ingesters(std::time::Duration::from_secs(300))
+        .await
+        .expect("Failed to list active ingesters");
+    assert_eq!(active.len(), 1);
+
+    // A zero TTL treats it as stale — the row exists but must not be
+    // handed out.
+    let active = catalog
+        .list_active_ingesters(std::time::Duration::ZERO)
+        .await
+        .expect("Failed to list active ingesters");
+    assert!(active.is_empty(), "zero TTL must filter every row");
+
+    // The raw listing still contains the row (filtering, not deleting).
+    let all = catalog
+        .list_ingesters()
+        .await
+        .expect("Failed to list ingesters");
+    assert_eq!(all.len(), 1);
+}
+
+#[tokio::test]
+async fn test_reap_stale_ingesters_deletes_only_old_rows() {
+    let catalog = Catalog::new("sqlite::memory:")
+        .await
+        .expect("Failed to create catalog");
+
+    let id = Uuid::new_v4();
+    catalog
+        .register_ingester(
+            id,
+            "127.0.0.1:9000",
+            ServiceType::Writer,
+            &[ServiceCapability::Storage],
+        )
+        .await
+        .expect("Failed to register ingester");
+
+    // A cutoff in the past reaps nothing (the row is fresh).
+    let removed = catalog
+        .reap_stale_ingesters(chrono::Utc::now() - chrono::Duration::hours(1))
+        .await
+        .expect("Failed to reap");
+    assert_eq!(removed, 0);
+    assert_eq!(catalog.list_ingesters().await.unwrap().len(), 1);
+
+    // A cutoff in the future treats the row as stale and deletes it.
+    let removed = catalog
+        .reap_stale_ingesters(chrono::Utc::now() + chrono::Duration::hours(1))
+        .await
+        .expect("Failed to reap");
+    assert_eq!(removed, 1);
+    assert!(catalog.list_ingesters().await.unwrap().is_empty());
+}
