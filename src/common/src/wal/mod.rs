@@ -686,17 +686,19 @@ impl Wal {
                     current_id
                 };
 
+                // The current_segment Arc is also an element of the segments
+                // list, so swapping its contents in place would overwrite the
+                // list's only reference to the old segment. Move the old
+                // segment out and re-insert it as a sealed segment just
+                // before the current one (cleanup relies on current being
+                // last).
                 let new_segment = WalSegment::new(&config.wal_dir, new_segment_id).await?;
-                *segment = new_segment;
+                let old_segment = std::mem::replace(&mut *segment, new_segment);
 
-                // Add the new segment to the segments list
-                // Note: current_segment is already in segments list, so we update it there too
                 drop(segment); // Release lock before acquiring segments lock
                 let mut segs = segments.lock().await;
-                let new_seg_arc = Arc::new(Mutex::new(
-                    WalSegment::new(&config.wal_dir, new_segment_id).await?,
-                ));
-                segs.push(new_seg_arc);
+                let insert_at = segs.len().saturating_sub(1);
+                segs.insert(insert_at, Arc::new(Mutex::new(old_segment)));
                 drop(segs);
 
                 // Re-acquire the current segment lock
@@ -729,17 +731,35 @@ impl Wal {
         result
     }
 
-    /// Get all entries from WAL for recovery
+    /// Get all entries from WAL for recovery, across all segments
     #[tracing::instrument(level = "debug", skip_all)]
     pub async fn get_entries(&self) -> Result<Vec<WalEntry>> {
-        let segment = self.current_segment.lock().await;
-        Ok(segment.entries.clone())
+        let segments = self.segments.lock().await;
+        let mut entries = Vec::new();
+        for segment_arc in segments.iter() {
+            let segment = segment_arc.lock().await;
+            entries.extend(segment.entries.iter().cloned());
+        }
+        Ok(entries)
     }
 
     /// Read data for a specific entry
+    ///
+    /// Locates the segment that contains the entry (offsets are relative to
+    /// each segment's own data file) and reads from there.
     pub async fn read_entry_data(&self, entry: &WalEntry) -> Result<Vec<u8>> {
-        let segment = self.current_segment.lock().await;
-        segment.read_entry_data(entry).await
+        let segments = self.segments.lock().await;
+        for segment_arc in segments.iter() {
+            let segment = segment_arc.lock().await;
+            if segment.entries.iter().any(|e| e.id == entry.id) {
+                return segment.read_entry_data(entry).await;
+            }
+        }
+        anyhow::bail!(
+            "WAL entry {} not found in any of {} segments",
+            entry.id,
+            segments.len()
+        )
     }
 
     /// Shutdown the WAL and cleanup resources
@@ -801,15 +821,15 @@ impl Wal {
         )
     }
 
-    /// Get all unprocessed entries
+    /// Get all unprocessed entries, across all segments
     pub async fn get_unprocessed_entries(&self) -> Result<Vec<WalEntry>> {
-        let segment = self.current_segment.lock().await;
-        Ok(segment
-            .entries
-            .iter()
-            .filter(|e| !e.processed)
-            .cloned()
-            .collect())
+        let segments = self.segments.lock().await;
+        let mut entries = Vec::new();
+        for segment_arc in segments.iter() {
+            let segment = segment_arc.lock().await;
+            entries.extend(segment.entries.iter().filter(|e| !e.processed).cloned());
+        }
+        Ok(entries)
     }
 
     /// Delete fully-processed old segments
@@ -1065,6 +1085,96 @@ mod tests {
         assert!(!entries.is_empty());
 
         wal.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn segment_rotation_preserves_sealed_segment_entries() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            // Small enough that every entry triggers a rotation
+            max_segment_size: 64,
+            max_buffer_entries: 100,
+            flush_interval_secs: 3600,
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+
+        let wal = Wal::new(config).await.unwrap();
+
+        // Append three entries with distinct payloads, flushing each so
+        // rotation happens between them
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            let payload = format!("payload-{i}-{}", "x".repeat(100)).into_bytes();
+            let id = wal
+                .append(WalOperation::WriteTraces, payload, None)
+                .await
+                .unwrap();
+            wal.flush().await.unwrap();
+            ids.push(id);
+        }
+
+        // All entries must be visible, not just those in the current segment
+        let entries = wal.get_entries().await.unwrap();
+        assert_eq!(entries.len(), 3, "rotation must not lose sealed entries");
+
+        let unprocessed = wal.get_unprocessed_entries().await.unwrap();
+        assert_eq!(unprocessed.len(), 3);
+
+        // Data must be readable from sealed segments with correct contents
+        for (i, id) in ids.iter().enumerate() {
+            let entry = entries.iter().find(|e| e.id == *id).unwrap();
+            let data = wal.read_entry_data(entry).await.unwrap();
+            let expected = format!("payload-{i}-{}", "x".repeat(100)).into_bytes();
+            assert_eq!(data, expected, "entry {i} data must round-trip");
+        }
+
+        // Entries in sealed segments must be markable as processed
+        for id in &ids {
+            wal.mark_processed(*id).await.unwrap();
+        }
+        assert!(wal.get_unprocessed_entries().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn reload_after_rotation_sees_all_unprocessed_entries() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            max_segment_size: 64,
+            max_buffer_entries: 100,
+            flush_interval_secs: 3600,
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+
+        let wal = Wal::new(config.clone()).await.unwrap();
+        for i in 0..3 {
+            let payload = format!("payload-{i}-{}", "x".repeat(100)).into_bytes();
+            wal.append(WalOperation::WriteTraces, payload, None)
+                .await
+                .unwrap();
+            wal.flush().await.unwrap();
+        }
+        wal.shutdown().await.unwrap();
+
+        // Re-open the WAL from disk: replay must surface entries from all
+        // segments, not only the current one
+        let reopened = Wal::new(config).await.unwrap();
+        let unprocessed = reopened.get_unprocessed_entries().await.unwrap();
+        assert_eq!(unprocessed.len(), 3);
+
+        for entry in &unprocessed {
+            let data = reopened.read_entry_data(entry).await.unwrap();
+            assert!(!data.is_empty());
+        }
     }
 
     #[tokio::test]
