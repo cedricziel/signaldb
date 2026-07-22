@@ -219,6 +219,7 @@ mod tests {
                     },
                 ],
                 admin_api_key: None,
+                internal_service_key: None,
             },
             storage: StorageConfig {
                 dsn: "memory://".to_string(),

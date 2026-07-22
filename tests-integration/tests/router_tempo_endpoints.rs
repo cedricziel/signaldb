@@ -106,6 +106,7 @@ async fn setup_test_services() -> TestServices {
             schema_config: None,
         }],
         admin_api_key: None,
+        internal_service_key: None,
     };
 
     let wal_config = WalConfig {
@@ -723,6 +724,7 @@ async fn test_tempo_v2_trace_endpoint() {
             schema_config: None,
         }],
         admin_api_key: None,
+        internal_service_key: None,
     };
     let state = InMemoryStateImpl::new(catalog, config);
 
@@ -833,6 +835,7 @@ async fn setup_multi_tenant_test_services() -> TestServices {
             },
         ],
         admin_api_key: None,
+        internal_service_key: None,
     };
 
     // Create WAL configs for both tenants

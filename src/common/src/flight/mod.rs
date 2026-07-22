@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod conversion;
 pub mod schema;
 pub mod trace_context;
