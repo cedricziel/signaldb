@@ -50,6 +50,12 @@ impl Default for WriterCommands {
     }
 }
 
+// Heap profiling: install jemalloc as global allocator when built with
+// the jemalloc-profiling feature (see [profiling] config)
+#[cfg(feature = "jemalloc-profiling")]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -81,6 +87,14 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     let _telemetry = telemetry;
+
+    let _profiling = match common::self_monitoring::init_profiling(&config, "signaldb-writer") {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "Profiling init failed, continuing without it");
+            None
+        }
+    };
 
     let bind_ip = cli
         .bind

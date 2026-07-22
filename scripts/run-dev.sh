@@ -241,6 +241,7 @@ if [ "$MODE" = "monolithic" ]; then
     echo "  • HTTP API:  http://localhost:3001"
     echo "  • Flight:    http://localhost:50053"
     echo "  • Self-Monitoring: enabled (dataset: _system/_monitoring, sample ratio: 10%)"
+    echo "  • Profiling: set SIGNALDB_PROFILING_ENABLED=true with Pyroscope at http://localhost:4040"
     echo ""
 
     cargo run --bin signaldb -- --config "${DEV_CONFIG}" 2>&1 | tee "${LOG_DIR}/monolithic.log" &

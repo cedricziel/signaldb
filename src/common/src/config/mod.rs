@@ -579,6 +579,44 @@ impl Default for SelfMonitoringConfig {
     }
 }
 
+fn default_pyroscope_url() -> String {
+    "http://localhost:4040".to_string()
+}
+
+fn default_cpu_sample_rate() -> u32 {
+    100
+}
+
+/// Continuous profiling configuration (CPU via Pyroscope, memory via
+/// jemalloc when built with the `jemalloc-profiling` feature).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProfilingConfig {
+    /// Enable continuous profiling (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+    /// Pyroscope server URL profiles are pushed to
+    #[serde(default = "default_pyroscope_url")]
+    pub pyroscope_url: String,
+    /// CPU profiling sample rate in Hz
+    #[serde(default = "default_cpu_sample_rate")]
+    pub cpu_sample_rate: u32,
+    /// Enable memory (heap) profiling via jemalloc; requires binaries built
+    /// with the `jemalloc-profiling` feature
+    #[serde(default)]
+    pub memory_profiling: bool,
+}
+
+impl Default for ProfilingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            pyroscope_url: default_pyroscope_url(),
+            cpu_sample_rate: default_cpu_sample_rate(),
+            memory_profiling: false,
+        }
+    }
+}
+
 // Keep IcebergConfig for backward compatibility
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IcebergConfig {
@@ -631,6 +669,9 @@ pub struct Configuration {
     pub auth: AuthConfig,
     #[serde(default)]
     pub self_monitoring: SelfMonitoringConfig,
+    /// Continuous profiling configuration
+    #[serde(default)]
+    pub profiling: ProfilingConfig,
     /// Compactor configuration
     #[serde(default)]
     pub compactor: CompactorConfig,
@@ -653,6 +694,7 @@ impl Default for Configuration {
             // Auth disabled by default
             auth: AuthConfig::default(),
             self_monitoring: SelfMonitoringConfig::default(),
+            profiling: ProfilingConfig::default(),
             compactor: CompactorConfig::default(),
         }
     }

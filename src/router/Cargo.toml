@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
 common.workspace = true
 signaldb-api.workspace = true
 tempo-api.workspace = true
@@ -36,3 +37,6 @@ tower.workspace = true
 
 [package.metadata.cargo-machete]
 ignored = ["tokio-test"]
+
+[features]
+jemalloc-profiling = ["common/jemalloc-profiling", "dep:tikv-jemallocator"]

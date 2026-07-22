@@ -42,6 +42,12 @@ impl Default for SignalDbCommands {
     }
 }
 
+// Heap profiling: install jemalloc as global allocator when built with
+// the jemalloc-profiling feature (see [profiling] config)
+#[cfg(feature = "jemalloc-profiling")]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -73,6 +79,14 @@ async fn main() -> Result<()> {
         );
     }
     let _telemetry = telemetry;
+
+    let _profiling = match common::self_monitoring::init_profiling(&config, "signaldb") {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "Profiling init failed, continuing without it");
+            None
+        }
+    };
 
     log::info!("Loaded configuration:");
     log::info!("  Database DSN: {}", config.database.dsn);

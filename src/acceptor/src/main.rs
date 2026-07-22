@@ -51,6 +51,12 @@ impl Default for AcceptorCommands {
     }
 }
 
+// Heap profiling: install jemalloc as global allocator when built with
+// the jemalloc-profiling feature (see [profiling] config)
+#[cfg(feature = "jemalloc-profiling")]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -82,6 +88,14 @@ async fn main() -> Result<()> {
         );
     }
     let _telemetry = telemetry;
+
+    let _profiling = match common::self_monitoring::init_profiling(&config, "signaldb-acceptor") {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "Profiling init failed, continuing without it");
+            None
+        }
+    };
 
     tracing::info!("Starting SignalDB Acceptor Service");
 
@@ -186,6 +200,9 @@ async fn main() -> Result<()> {
     let _ = grpc_handle.await;
     let _ = http_handle.await;
 
+    if let Some(profiling) = _profiling {
+        profiling.shutdown();
+    }
     if let Some(telemetry) = _telemetry {
         telemetry.shutdown();
     }

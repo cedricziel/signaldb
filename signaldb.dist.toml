@@ -287,6 +287,20 @@ rate_limit_delay_ms = 0               # Delay between batches in milliseconds (d
 # OTEL_TRACES_SAMPLER_ARG=<ratio>.
 # trace_sample_ratio = 0.1
 
+# Continuous profiling: CPU flame graphs (and optionally heap profiles)
+# pushed to a Grafana Pyroscope server (docker compose includes one at
+# http://localhost:4040).
+[profiling]
+# Enable continuous CPU profiling (default: false)
+# enabled = true
+# Pyroscope server URL (default shown)
+# pyroscope_url = "http://localhost:4040"
+# CPU sampling rate in Hz (default: 100)
+# cpu_sample_rate = 100
+# Heap profiling via jemalloc; requires binaries built with
+# `--features jemalloc-profiling` and MALLOC_CONF=prof:true,prof_active:true
+# memory_profiling = false
+
 [tenants]
 # Multi-tenant configuration (always active)
 default_tenant = "default"
