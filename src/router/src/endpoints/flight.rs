@@ -263,7 +263,9 @@ impl<S: RouterState> FlightService for SignalDBFlightService<S> {
         &self,
         _request: Request<Streaming<HandshakeRequest>>,
     ) -> Result<Response<Self::HandshakeStream>, Status> {
-        // Simple handshake implementation - no authentication for now
+        // Authentication happens per-request in the FlightAuthInterceptor
+        // installed at server construction; the handshake carries no
+        // credentials and just confirms protocol compatibility.
         let response = HandshakeResponse {
             protocol_version: 0,
             payload: Bytes::new(),
