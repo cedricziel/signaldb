@@ -9,17 +9,25 @@
 //! - Grace period prevents premature deletion
 //! - Dry-run mode for testing without actual deletion
 //! - Comprehensive logging and metrics for auditing
-//! - Transactional partition drops via Iceberg
+//! - Transactional partition drops via Iceberg: one CAS-guarded and
+//!   post-verified `replace` commit removes every data file in the
+//!   expired partitions (the same model the compaction executor uses);
+//!   physical file deletion stays with the orphan cleaner
+//! - Snapshot expiration is metadata-only (`RemoveSnapshots`); the
+//!   orphan cleaner remains the sole deletion authority
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use datafusion::prelude::SessionContext;
+use futures::StreamExt;
+use iceberg_rust::spec::manifest::Status;
+use std::collections::HashSet;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use common::CatalogManager;
 
-use crate::iceberg::{ManifestReader, PartitionInfo, PartitionManager, SnapshotManager};
+use crate::commit::{IcebergCommitter, is_conflict_error};
+use crate::iceberg::{ManifestReader, PartitionManager, SnapshotManager};
 use crate::retention::config::RetentionConfig;
 use crate::retention::policy::RetentionPolicyResolver;
 
@@ -241,9 +249,10 @@ impl RetentionEnforcer {
             .await
             .context("Failed to drop expired partitions")?;
 
-        // Step 2: Expire old snapshots (keep N most recent)
+        // Step 2: Expire old snapshots (keep N most recent). Loads the
+        // table fresh internally — step 1 may have advanced the snapshot.
         let snapshots_expired = self
-            .expire_old_snapshots(tenant_id, dataset_id, table_name, &table)
+            .expire_old_snapshots(tenant_id, dataset_id, table_name)
             .await
             .context("Failed to expire old snapshots")?;
 
@@ -367,98 +376,179 @@ impl RetentionEnforcer {
             ));
         }
 
-        // Actually drop partitions
-        let ctx = self
-            .create_datafusion_context(tenant_id, dataset_id)
-            .await?;
+        // Actually drop partitions: one replace commit removes every data
+        // file in the expired partitions. Retried on CAS conflicts with
+        // concurrent compaction/ingest commits.
+        let expired_hours: HashSet<String> = expired_partitions
+            .iter()
+            .filter_map(|p| p.partition_values.get("timestamp_hour").cloned())
+            .collect();
 
-        let mut dropped_count = 0;
-        let mut bytes_reclaimed = 0u64;
-
-        for partition in &expired_partitions {
+        const MAX_ATTEMPTS: usize = 3;
+        let mut attempt = 0;
+        let (dropped_partitions, dropped_files, bytes_reclaimed) = loop {
+            attempt += 1;
             match self
-                .drop_partition(&ctx, table_name, partition)
+                .try_drop_partitions_once(tenant_id, dataset_id, table_name, &expired_hours)
                 .await
-                .with_context(|| {
-                    format!("Failed to drop partition {:?}", partition.get_hour_value())
-                }) {
-                Ok(_) => {
-                    info!(
-                        tenant_id = %tenant_id,
-                        dataset_id = %dataset_id,
-                        table_name = %table_name,
-                        partition_hour = ?partition.get_hour_value(),
-                        file_count = partition.file_count,
-                        size_bytes = partition.total_size_bytes,
-                        "Partition dropped successfully"
-                    );
-
-                    dropped_count += 1;
-
-                    // Only accumulate bytes after successful drop
-                    if let Some(size) = partition.total_size_bytes {
-                        bytes_reclaimed += size;
-                    }
-
-                    self.metrics.record_partitions_dropped(1);
-                }
-                Err(e) => {
+            {
+                Ok(result) => break result,
+                Err(e) if is_conflict_error(&e) && attempt < MAX_ATTEMPTS => {
                     warn!(
                         tenant_id = %tenant_id,
                         dataset_id = %dataset_id,
                         table_name = %table_name,
-                        partition_hour = ?partition.get_hour_value(),
+                        attempt,
                         error = %e,
-                        "Failed to drop partition"
+                        "Partition drop hit a snapshot conflict; retrying against fresh metadata"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(200 * attempt as u64))
+                        .await;
+                }
+                Err(e) => return Err(e).context("Failed to commit partition drop"),
+            }
+        };
+
+        if dropped_partitions > 0 {
+            info!(
+                tenant_id = %tenant_id,
+                dataset_id = %dataset_id,
+                table_name = %table_name,
+                dropped_partitions,
+                dropped_files,
+                bytes_reclaimed,
+                "Dropped expired partitions"
+            );
+            self.metrics.record_partitions_dropped(dropped_partitions);
+        }
+
+        Ok((all_partitions.len(), dropped_partitions, bytes_reclaimed))
+    }
+
+    /// One attempt at dropping the expired partitions: load the table
+    /// fresh, split the live data files into kept vs expired by their
+    /// `timestamp_hour=<N>` partition value, and commit a CAS-guarded,
+    /// post-verified `replace` with only the kept files. Physical file
+    /// deletion is left to the orphan cleaner.
+    ///
+    /// Returns (partitions_dropped, files_dropped, bytes_reclaimed).
+    async fn try_drop_partitions_once(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+        expired_hours: &HashSet<String>,
+    ) -> Result<(usize, usize, u64)> {
+        let table_identifier = self
+            .catalog_manager
+            .build_table_identifier(tenant_id, dataset_id, table_name);
+        let tabular = self
+            .catalog_manager
+            .catalog()
+            .load_tabular(&table_identifier)
+            .await
+            .with_context(|| format!("Failed to load table {table_name} for partition drop"))?;
+        let table = match tabular {
+            iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
+            _ => anyhow::bail!("Expected table but got view for {table_name}"),
+        };
+        let original_snapshot_id = table.metadata().current_snapshot_id;
+
+        let manifests = table
+            .manifests(None, None)
+            .await
+            .context("Failed to read manifest list for partition drop")?;
+        if manifests.is_empty() {
+            return Ok((0, 0, 0));
+        }
+        let file_iter = table
+            .datafiles(&manifests, None, (None, None))
+            .await
+            .context("Failed to read data files for partition drop")?;
+
+        let mut kept_files = Vec::new();
+        let mut dropped_hours: HashSet<String> = HashSet::new();
+        let mut dropped_files = 0usize;
+        let mut dropped_bytes = 0u64;
+
+        let mut file_iter = std::pin::pin!(file_iter);
+        while let Some(result) = file_iter.next().await {
+            let (_, entry) = result.context("Failed to read manifest entry")?;
+            if *entry.status() == Status::Deleted {
+                continue;
+            }
+            let data_file = entry.data_file();
+            let partition_hour = data_file
+                .file_path()
+                .split('/')
+                .find(|component| component.starts_with("timestamp_hour="))
+                .and_then(|component| component.strip_prefix("timestamp_hour="));
+
+            match partition_hour {
+                Some(hour) if expired_hours.contains(hour) => {
+                    dropped_hours.insert(hour.to_string());
+                    dropped_files += 1;
+                    dropped_bytes += *data_file.file_size_in_bytes() as u64;
+                    debug!(
+                        file_path = %data_file.file_path(),
+                        partition_hour = %hour,
+                        "Dropping expired data file"
                     );
                 }
+                _ => kept_files.push(data_file.clone()),
             }
         }
 
-        Ok((all_partitions.len(), dropped_count, bytes_reclaimed))
+        if dropped_files == 0 {
+            // Nothing left to drop (e.g. a concurrent compaction already
+            // rewrote the expired partitions away).
+            return Ok((0, 0, 0));
+        }
+
+        let committer = IcebergCommitter::new(self.catalog_manager.clone());
+        committer
+            .commit_compaction(
+                tenant_id,
+                dataset_id,
+                table_name,
+                original_snapshot_id,
+                kept_files,
+            )
+            .await
+            .context("Failed to commit partition-drop replace snapshot")?;
+
+        Ok((dropped_hours.len(), dropped_files, dropped_bytes))
     }
 
-    /// Drop a single partition using DataFusion
-    async fn drop_partition(
-        &self,
-        ctx: &SessionContext,
-        table_name: &str,
-        partition: &PartitionInfo,
-    ) -> Result<()> {
-        let hour_value = partition
-            .get_hour_value()
-            .ok_or_else(|| anyhow::anyhow!("Partition has no hour value"))?;
-
-        let sql = self
-            .partition_manager
-            .generate_partition_drop_sql(table_name, hour_value)?;
-
-        info!(
-            table_name = %table_name,
-            partition_hour = ?partition.get_hour_value(),
-            sql = %sql,
-            "Executing partition drop"
-        );
-
-        ctx.sql(&sql)
-            .await
-            .context("Failed to execute DROP PARTITION SQL")?
-            .collect()
-            .await
-            .context("Failed to collect DROP PARTITION results")?;
-
-        Ok(())
-    }
-
-    /// Expire old snapshots, keeping N most recent
+    /// Expire old snapshots, keeping N most recent.
+    ///
+    /// Loads the table fresh (the partition-drop step may have advanced
+    /// the snapshot) and commits a metadata-only `RemoveSnapshots` update.
+    /// Data files referenced only by expired snapshots become orphans and
+    /// are reclaimed by the orphan cleaner after its grace period — that
+    /// grace window is also what protects in-flight queries, since
+    /// queriers do not pin snapshots.
     async fn expire_old_snapshots(
         &self,
         tenant_id: &str,
         dataset_id: &str,
         table_name: &str,
-        table: &iceberg_rust::table::Table,
     ) -> Result<usize> {
         let snapshots_to_keep = self.config.snapshots_to_keep.unwrap_or(10);
+
+        let table_identifier = self
+            .catalog_manager
+            .build_table_identifier(tenant_id, dataset_id, table_name);
+        let tabular = self
+            .catalog_manager
+            .catalog()
+            .load_tabular(&table_identifier)
+            .await
+            .with_context(|| format!("Failed to load table {table_name} for snapshot expiry"))?;
+        let mut table = match tabular {
+            iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
+            _ => anyhow::bail!("Expected table but got view for {table_name}"),
+        };
 
         info!(
             tenant_id = %tenant_id,
@@ -470,7 +560,7 @@ impl RetentionEnforcer {
 
         let snapshots_to_expire = self
             .snapshot_manager
-            .get_snapshots_to_expire(table, snapshots_to_keep)
+            .get_snapshots_to_expire(&table, snapshots_to_keep)
             .context("Failed to get snapshots to expire")?;
 
         if snapshots_to_expire.is_empty() {
@@ -516,54 +606,67 @@ impl RetentionEnforcer {
             return Ok(snapshots_to_expire.len());
         }
 
-        // In a real implementation, we would call Iceberg's expire_snapshots API here
-        // For now, we log a warning that this is not yet implemented
-        warn!(
+        // Metadata-only expiration: a RemoveSnapshots update through the
+        // catalog CAS. retain_ref_snapshots keeps branch/tag-referenced
+        // snapshots; the current snapshot is never expired by iceberg-rust.
+        // clean_orphan_files is deliberately false — physical reclamation
+        // is the orphan cleaner's job (and the flag is a no-op in this
+        // iceberg-rust revision anyway).
+        let expired_count = snapshots_to_expire.len();
+        table
+            .new_transaction(None)
+            .expire_snapshots(None, Some(snapshots_to_keep), false, true, false)
+            .commit()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to commit snapshot expiration: {e}"))?;
+
+        info!(
             tenant_id = %tenant_id,
             dataset_id = %dataset_id,
             table_name = %table_name,
-            "Snapshot expiration not yet implemented in iceberg-rust"
+            snapshots_expired = expired_count,
+            snapshots_to_keep,
+            "Expired old snapshots"
         );
+        self.metrics.record_snapshots_expired(expired_count);
 
-        // Do not record metrics for unimplemented functionality
-        // self.metrics.record_snapshots_expired(...) will be called once implemented
-
-        Ok(0) // Return 0 until actually implemented
+        Ok(expired_count)
     }
 
-    /// Get all tables for a tenant/dataset with their signal types
+    /// Get all signal tables for a tenant/dataset by listing the catalog
+    /// namespace, so retention only touches tables that actually exist.
     async fn get_tables(
         &self,
-        _tenant_id: &str,
-        _dataset_id: &str,
+        tenant_id: &str,
+        dataset_id: &str,
     ) -> Result<Vec<(String, SignalType)>> {
-        // In a real implementation, we would list tables from the catalog
-        // For now, we return the standard signal tables
-        let tables = vec![
-            ("traces".to_string(), SignalType::Traces),
-            ("logs".to_string(), SignalType::Logs),
-            ("metrics_gauge".to_string(), SignalType::Metrics),
-            ("metrics_counter".to_string(), SignalType::Metrics),
-            ("metrics_histogram".to_string(), SignalType::Metrics),
-        ];
+        let namespace = self
+            .catalog_manager
+            .build_namespace(tenant_id, dataset_id)
+            .context("Failed to build namespace for table listing")?;
+        let identifiers = self
+            .catalog_manager
+            .catalog()
+            .list_tabulars(&namespace)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list tables in {namespace:?}: {e}"))?;
+
+        let mut tables: Vec<(String, SignalType)> = identifiers
+            .iter()
+            .filter_map(|identifier| {
+                let name = identifier.name();
+                let signal_type = match name {
+                    "traces" => SignalType::Traces,
+                    "logs" => SignalType::Logs,
+                    n if n.starts_with("metrics") => SignalType::Metrics,
+                    _ => return None,
+                };
+                Some((name.to_string(), signal_type))
+            })
+            .collect();
+        tables.sort_by(|a, b| a.0.cmp(&b.0));
 
         Ok(tables)
-    }
-
-    /// Create a DataFusion context for executing SQL
-    async fn create_datafusion_context(
-        &self,
-        _tenant_id: &str,
-        _dataset_id: &str,
-    ) -> Result<SessionContext> {
-        // Create a new DataFusion session context
-        // In a real implementation, we would configure it with the catalog
-        let _ctx = SessionContext::new();
-
-        // TODO: Register tables with the catalog
-        anyhow::bail!(
-            "SQL execution not available until tables are registered in DataFusion context"
-        )
     }
 
     /// Get the policy resolver for testing
@@ -617,19 +720,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_tables() {
+    async fn get_tables_lists_only_existing_tables() {
         let config = create_test_config();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let metrics = RetentionMetrics::new_mock();
 
-        let enforcer = RetentionEnforcer::new(catalog_manager, config, metrics).unwrap();
+        let enforcer = RetentionEnforcer::new(catalog_manager.clone(), config, metrics).unwrap();
 
+        // Nothing in the catalog: no phantom tables to enforce on.
         let tables = enforcer
             .get_tables("test_tenant", "test_dataset")
             .await
             .unwrap();
-        assert_eq!(tables.len(), 5);
-        assert!(tables.iter().any(|(name, _)| name == "traces"));
-        assert!(tables.iter().any(|(name, _)| name == "logs"));
+        assert!(
+            tables.is_empty(),
+            "Empty catalog must yield no tables, got {tables:?}"
+        );
+
+        // A created table shows up with its signal type.
+        catalog_manager
+            .ensure_table("test_tenant", "test_dataset", "traces")
+            .await
+            .unwrap();
+        let tables = enforcer
+            .get_tables("test_tenant", "test_dataset")
+            .await
+            .unwrap();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].0, "traces");
+        assert_eq!(tables[0].1, SignalType::Traces);
     }
 }

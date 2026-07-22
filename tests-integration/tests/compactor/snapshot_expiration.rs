@@ -373,3 +373,114 @@ async fn test_snapshot_expiration_preserves_current_snapshot() -> Result<()> {
 
     Ok(())
 }
+
+/// Test: enforce_retention actually expires snapshots (issue #539)
+///
+/// Runs the real (non-dry-run) enforcement path and verifies snapshots
+/// are removed from table metadata, the current snapshot survives, and
+/// the table remains readable.
+#[tokio::test]
+async fn test_enforce_retention_expires_snapshots_for_real() -> Result<()> {
+    use compactor::retention::config::RetentionConfig;
+    use compactor::retention::enforcer::RetentionEnforcer;
+    use compactor::retention::metrics::RetentionMetrics;
+    use std::collections::HashMap;
+
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let ctx = RetentionTestContext::new_in_memory().await?;
+    let tenant_id = "test-tenant";
+    let dataset_id = "test-dataset";
+    let table_name = "traces";
+    let mut writer = ctx.create_table(tenant_id, dataset_id, table_name).await?;
+
+    // 10 writes -> 10 snapshots, all with recent data (nothing to drop
+    // partition-wise: retention window comfortably covers the data).
+    let config = DataGeneratorConfig {
+        partition_count: 1,
+        files_per_partition: 1,
+        rows_per_file: 10,
+        base_timestamp: chrono::Utc::now().timestamp_millis() - (60 * 60 * 1000),
+        partition_granularity: PartitionGranularity::Hour,
+    };
+    for _ in 0..10 {
+        generators::generate_traces(&mut writer, &config).await?;
+    }
+
+    let table_identifier = ctx
+        .catalog_manager()
+        .build_table_identifier(tenant_id, dataset_id, table_name);
+    let load_table = || async {
+        let tabular = ctx
+            .catalog_manager()
+            .catalog()
+            .load_tabular(&table_identifier)
+            .await
+            .context("Failed to load table")?;
+        match tabular {
+            Tabular::Table(t) => Ok(t),
+            _ => anyhow::bail!("Expected table but got view"),
+        }
+    };
+
+    let snapshot_manager = SnapshotManager::new();
+    let table_before = load_table().await?;
+    assert_eq!(snapshot_manager.list_snapshots(&table_before)?.len(), 10);
+    let current_before = table_before.metadata().current_snapshot_id;
+
+    let retention_config = RetentionConfig {
+        enabled: true,
+        retention_check_interval: std::time::Duration::from_secs(3600),
+        traces: std::time::Duration::from_secs(30 * 24 * 3600),
+        logs: std::time::Duration::from_secs(30 * 24 * 3600),
+        metrics: std::time::Duration::from_secs(30 * 24 * 3600),
+        tenant_overrides: HashMap::new(),
+        grace_period: std::time::Duration::from_secs(0),
+        timezone: "UTC".to_string(),
+        dry_run: false,
+        snapshots_to_keep: Some(3),
+    };
+    let enforcer = RetentionEnforcer::new(
+        ctx.catalog_manager().clone(),
+        retention_config,
+        RetentionMetrics::new(),
+    )?;
+
+    let result = enforcer.enforce_retention(tenant_id, dataset_id).await?;
+    assert!(
+        result.errors.is_empty(),
+        "Enforcement must not error: {:?}",
+        result.errors
+    );
+    assert_eq!(
+        result.total_snapshots_expired, 7,
+        "10 snapshots with keep=3 must expire 7"
+    );
+    assert_eq!(
+        result.total_partitions_dropped, 0,
+        "Recent data must not be partition-dropped"
+    );
+
+    // Reload: metadata now holds only the 3 kept snapshots, current survives.
+    let table_after = load_table().await?;
+    let snapshots_after = snapshot_manager.list_snapshots(&table_after)?;
+    assert_eq!(
+        snapshots_after.len(),
+        3,
+        "Only snapshots_to_keep snapshots may remain after expiration"
+    );
+    assert_eq!(
+        table_after.metadata().current_snapshot_id,
+        current_before,
+        "The current snapshot must survive expiration"
+    );
+
+    // The table is still readable via its current snapshot's manifests.
+    let manifests = table_after.manifests(None, None).await?;
+    assert!(
+        !manifests.is_empty(),
+        "Current snapshot must remain readable after expiration"
+    );
+
+    Ok(())
+}

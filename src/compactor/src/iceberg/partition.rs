@@ -193,57 +193,6 @@ impl PartitionManager {
         Ok(partitions)
     }
 
-    /// Generate SQL to drop a partition
-    ///
-    /// Returns the ALTER TABLE statement to drop the specified partition.
-    ///
-    /// # Arguments
-    /// * `table_name` - Fully qualified table name (e.g., "tenant.dataset.traces")
-    /// * `hour_value` - Partition hour value (e.g., "2024-01-15-10")
-    pub fn generate_partition_drop_sql(
-        &self,
-        table_name: &str,
-        hour_value: &str,
-    ) -> Result<String> {
-        // Validate the hour format first
-        self.validate_partition_hour(hour_value)?;
-
-        // SAFETY: Validate table_name to prevent SQL injection
-        // Only allow alphanumeric characters, underscores, and dots for qualified names
-        if !table_name
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
-        {
-            return Err(anyhow::anyhow!(
-                "Invalid table name '{}': must contain only alphanumeric characters, underscores, and dots",
-                table_name
-            ));
-        }
-
-        // Generate the DROP PARTITION statement
-        // Note: Syntax may vary by query engine (DataFusion, Spark, etc.)
-        let sql = format!(
-            "ALTER TABLE {} DROP PARTITION (hour = '{}')",
-            table_name, hour_value
-        );
-
-        Ok(sql)
-    }
-
-    /// Generate SQL to drop multiple partitions
-    ///
-    /// Returns a vector of ALTER TABLE statements, one per partition.
-    pub fn generate_partition_drop_sql_batch(
-        &self,
-        table_name: &str,
-        hour_values: &[String],
-    ) -> Result<Vec<String>> {
-        hour_values
-            .iter()
-            .map(|hour| self.generate_partition_drop_sql(table_name, hour))
-            .collect()
-    }
-
     /// Filter partitions older than cutoff
     pub fn filter_partitions_older_than(
         &self,
@@ -311,40 +260,6 @@ mod tests {
 
         assert!(manager.validate_partition_hour("2024-01-15-10").is_ok());
         assert!(manager.validate_partition_hour("2024-13-15-10").is_err());
-    }
-
-    #[test]
-    fn test_generate_partition_drop_sql() {
-        let manager = PartitionManager::new();
-
-        let sql = manager
-            .generate_partition_drop_sql("tenant.dataset.traces", "2024-01-15-10")
-            .unwrap();
-
-        assert!(sql.contains("ALTER TABLE"));
-        assert!(sql.contains("DROP PARTITION"));
-        assert!(sql.contains("hour = '2024-01-15-10'"));
-    }
-
-    #[test]
-    fn test_generate_partition_drop_sql_batch() {
-        let manager = PartitionManager::new();
-
-        let hours = vec![
-            "2024-01-15-10".to_string(),
-            "2024-01-15-11".to_string(),
-            "2024-01-15-12".to_string(),
-        ];
-
-        let sqls = manager
-            .generate_partition_drop_sql_batch("tenant.dataset.traces", &hours)
-            .unwrap();
-
-        assert_eq!(sqls.len(), 3);
-        for sql in sqls {
-            assert!(sql.contains("ALTER TABLE"));
-            assert!(sql.contains("DROP PARTITION"));
-        }
     }
 
     #[test]
