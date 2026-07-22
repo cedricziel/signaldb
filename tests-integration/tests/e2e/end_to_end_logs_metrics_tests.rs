@@ -375,7 +375,8 @@ async fn test_logs_ingestion_and_persistence() {
     services
         .log_handler
         .handle_grpc_otlp_logs(&tenant_context, log_request)
-        .await;
+        .await
+        .expect("logs export must be durably accepted");
 
     let locations = wait_for_object_locations(&services.object_store, Duration::from_secs(20)).await;
     assert!(!locations.is_empty(), "expected persisted objects for logs");
@@ -394,7 +395,8 @@ async fn test_metrics_gauge_ingestion_and_persistence() {
     services
         .metrics_handler
         .handle_grpc_otlp_metrics(&tenant_context, metrics_request)
-        .await;
+        .await
+        .expect("metrics export must be durably accepted");
 
     let locations = wait_for_object_locations(&services.object_store, Duration::from_secs(20)).await;
     assert!(
@@ -414,7 +416,8 @@ async fn test_metrics_mixed_types_ingestion() {
     services
         .metrics_handler
         .handle_grpc_otlp_metrics(&tenant_context, metrics_request)
-        .await;
+        .await
+        .expect("metrics export must be durably accepted");
 
     let locations = wait_for_object_locations_all(
         &services.object_store,
