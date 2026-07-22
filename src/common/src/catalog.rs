@@ -290,6 +290,11 @@ impl Catalog {
     }
 
     /// Register or update an ingester with its address, service type, capabilities and heartbeat.
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(service_id = %id, address = %address, service_type = ?service_type)
+    )]
     pub async fn register_ingester(
         &self,
         id: Uuid,
@@ -367,6 +372,7 @@ impl Catalog {
     }
 
     /// Update heartbeat timestamp for an ingester.
+    #[tracing::instrument(level = "debug", skip_all, fields(service_id = %id))]
     pub async fn heartbeat(&self, id: Uuid) -> Result<(), sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
@@ -396,6 +402,7 @@ impl Catalog {
     }
 
     /// List all ingesters in the catalog.
+    #[tracing::instrument(level = "debug", skip_all)]
     pub async fn list_ingesters(&self) -> Result<Vec<Ingester>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
@@ -624,6 +631,7 @@ impl Catalog {
         }
     }
     /// Discover services that have a specific capability.
+    #[tracing::instrument(level = "debug", skip_all, fields(capability = ?capability))]
     pub async fn discover_services_by_capability(
         &self,
         capability: ServiceCapability,
@@ -640,6 +648,7 @@ impl Catalog {
     }
 
     /// Deregister an ingester instance, removing it from the catalog.
+    #[tracing::instrument(level = "debug", skip_all, fields(service_id = %id))]
     pub async fn deregister_ingester(&self, id: Uuid) -> Result<(), sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {

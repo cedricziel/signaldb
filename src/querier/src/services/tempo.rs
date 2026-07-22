@@ -14,7 +14,7 @@ pub struct SignalDBQuerier {}
 
 #[tonic::async_trait]
 impl Querier for SignalDBQuerier {
-    #[tracing::instrument]
+    #[tracing::instrument(skip_all)]
     async fn find_trace_by_id(
         &self,
         _request: tonic::Request<TraceByIdRequest>,
@@ -29,7 +29,7 @@ impl Querier for SignalDBQuerier {
         Ok(Response::new(response))
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip_all)]
     async fn search_recent(
         &self,
         _request: tonic::Request<SearchRequest>,
@@ -42,7 +42,7 @@ impl Querier for SignalDBQuerier {
         Ok(Response::new(response))
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip_all)]
     async fn search_block(
         &self,
         _request: tonic::Request<SearchBlockRequest>,
@@ -51,7 +51,7 @@ impl Querier for SignalDBQuerier {
         unimplemented!()
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip_all)]
     async fn search_tags(
         &self,
         _request: tonic::Request<SearchTagsRequest>,
@@ -64,7 +64,7 @@ impl Querier for SignalDBQuerier {
         Ok(Response::new(response))
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip_all)]
     async fn search_tags_v2(
         &self,
         _request: tonic::Request<SearchTagsRequest>,
@@ -80,7 +80,7 @@ impl Querier for SignalDBQuerier {
         Ok(Response::new(response))
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip_all)]
     async fn search_tag_values(
         &self,
         _request: tonic::Request<SearchTagValuesRequest>,
@@ -93,7 +93,7 @@ impl Querier for SignalDBQuerier {
         Ok(Response::new(response))
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip_all)]
     async fn search_tag_values_v2(
         &self,
         _request: tonic::Request<SearchTagValuesRequest>,

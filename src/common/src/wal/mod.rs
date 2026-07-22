@@ -586,6 +586,11 @@ impl Wal {
     /// * `operation` - The type of WAL operation
     /// * `data` - The data to write
     /// * `metadata` - Optional metadata (e.g., JSON-serialized FlightMetadata with target_table)
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(operation = ?operation, data_size = data.len())
+    )]
     pub async fn append(
         &self,
         operation: WalOperation,
@@ -707,6 +712,7 @@ impl Wal {
     }
 
     /// Force flush all buffered entries
+    #[tracing::instrument(level = "debug", skip_all)]
     pub async fn flush(&self) -> Result<()> {
         let start = std::time::Instant::now();
         let result = Self::flush_buffer(
@@ -724,6 +730,7 @@ impl Wal {
     }
 
     /// Get all entries from WAL for recovery
+    #[tracing::instrument(level = "debug", skip_all)]
     pub async fn get_entries(&self) -> Result<Vec<WalEntry>> {
         let segment = self.current_segment.lock().await;
         Ok(segment.entries.clone())
@@ -759,6 +766,7 @@ impl Wal {
     }
 
     /// Mark a WAL entry as processed and persist the state to disk
+    #[tracing::instrument(level = "debug", skip_all, fields(entry_id = %entry_id))]
     pub async fn mark_processed(&self, entry_id: Uuid) -> Result<()> {
         // Search all segments, not just current
         let segments = self.segments.lock().await;

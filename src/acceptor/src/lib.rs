@@ -272,6 +272,13 @@ pub fn prometheus_router(
 }
 
 /// Handler variant using Extension instead of State for simpler router composition
+#[tracing::instrument(
+    skip_all,
+    fields(
+        tenant_id = %tenant_context.tenant_id,
+        dataset_id = %tenant_context.dataset_id
+    )
+)]
 async fn handle_prometheus_write_with_ext(
     Extension(state): Extension<PrometheusHandlerState>,
     headers: axum::http::HeaderMap,
@@ -290,6 +297,7 @@ async fn health() -> &'static str {
     "ok"
 }
 
+#[tracing::instrument(skip_all)]
 async fn handle_traces(
     axum::extract::Json(payload): axum::extract::Json<serde_json::Value>,
 ) -> axum::response::Response<axum::body::Body> {

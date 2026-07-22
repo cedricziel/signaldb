@@ -513,7 +513,13 @@ pub async fn echo() -> &'static str {
 /// GET /api/traces/<traceid>?start=<start>&end=<end>
 ///
 /// See https://grafana.com/docs/tempo/latest/api_docs/#query
-#[tracing::instrument(skip(tenant_ctx))]
+#[tracing::instrument(
+    skip(state, tenant_ctx),
+    fields(
+        tenant_id = %tenant_ctx.0.tenant_id,
+        dataset_id = %tenant_ctx.0.dataset_id
+    )
+)]
 pub async fn query_single_trace<S: RouterState>(
     state: State<S>,
     tenant_ctx: TenantContextExtractor,
@@ -597,7 +603,13 @@ pub async fn query_single_trace<S: RouterState>(
 }
 
 /// GET https://grafana.com/docs/tempo/latest/api_docs/#search
-#[tracing::instrument(skip(tenant_ctx))]
+#[tracing::instrument(
+    skip(state, tenant_ctx),
+    fields(
+        tenant_id = %tenant_ctx.0.tenant_id,
+        dataset_id = %tenant_ctx.0.dataset_id
+    )
+)]
 pub async fn search<S: RouterState>(
     state: State<S>,
     tenant_ctx: TenantContextExtractor,
@@ -718,7 +730,7 @@ pub async fn search_tag_values_v2(
 }
 
 /// GET /api/metrics/query - Instant TraceQL metrics query
-#[tracing::instrument]
+#[tracing::instrument(skip(_state))]
 pub async fn metrics_query<S: RouterState>(
     _state: State<S>,
     Query(params): Query<MetricsQueryParams>,
@@ -749,7 +761,7 @@ pub async fn metrics_query<S: RouterState>(
 }
 
 /// GET /api/metrics/query_range - Range TraceQL metrics query with time series
-#[tracing::instrument]
+#[tracing::instrument(skip(_state))]
 pub async fn metrics_query_range<S: RouterState>(
     _state: State<S>,
     Query(params): Query<MetricsRangeQueryParams>,

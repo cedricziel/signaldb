@@ -43,6 +43,11 @@ pub struct ServiceBootstrap {
 
 impl ServiceBootstrap {
     /// Create a new service bootstrap instance and register with catalog
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(service_type = ?service_type, address = %address)
+    )]
     pub async fn new(
         config: Configuration,
         service_type: ServiceType,
@@ -191,12 +196,14 @@ impl ServiceBootstrap {
     }
 
     /// Discover other services of the specified type
+    #[tracing::instrument(level = "debug", skip_all)]
     pub async fn discover_ingesters(&self) -> Result<Vec<Ingester>> {
         let ingesters = self.catalog.list_ingesters().await?;
         Ok(ingesters)
     }
 
     /// Discover services by capability
+    #[tracing::instrument(level = "debug", skip_all, fields(capability = ?capability))]
     pub async fn discover_services_by_capability(
         &self,
         capability: crate::flight::transport::ServiceCapability,
@@ -216,6 +223,7 @@ impl ServiceBootstrap {
     }
 
     /// Manually send a heartbeat (useful for testing or manual health checks)
+    #[tracing::instrument(level = "debug", skip_all, fields(service_id = %self.service_id))]
     pub async fn heartbeat(&self) -> Result<()> {
         self.catalog.heartbeat(self.service_id).await?;
         Ok(())

@@ -294,6 +294,14 @@ impl IcebergTableWriter {
     }
 
     /// Write a batch of data to the Iceberg table with transaction support
+    #[tracing::instrument(
+        skip_all,
+        fields(
+            tenant_id = %self.tenant_id,
+            dataset_id = %self.dataset_id,
+            row_count = batch.num_rows()
+        )
+    )]
     pub async fn write_batch(&mut self, batch: RecordBatch) -> Result<()> {
         // Validate input
         if batch.num_rows() == 0 {
@@ -334,6 +342,7 @@ impl IcebergTableWriter {
     }
 
     /// Write a single batch (internal method)
+    #[tracing::instrument(level = "debug", skip_all, fields(row_count = batch.num_rows()))]
     async fn write_single_batch(&mut self, batch: RecordBatch) -> Result<()> {
         log::debug!(
             "Writing single batch with {} rows to Iceberg table {}",
@@ -547,6 +556,15 @@ impl IcebergTableWriter {
     }
 
     /// Write multiple batches in a single transaction
+    #[tracing::instrument(
+        skip_all,
+        fields(
+            tenant_id = %self.tenant_id,
+            dataset_id = %self.dataset_id,
+            batch_count = batches.len(),
+            row_count = batches.iter().map(|b| b.num_rows()).sum::<usize>()
+        )
+    )]
     pub async fn write_batches(&mut self, batches: Vec<RecordBatch>) -> Result<()> {
         if batches.is_empty() {
             return Ok(());

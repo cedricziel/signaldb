@@ -50,6 +50,7 @@ impl WalProcessor {
     }
 
     /// Process all pending WAL entries
+    #[tracing::instrument(level = "debug", skip_all)]
     pub async fn process_pending_entries(&mut self) -> Result<()> {
         let pending_entries = self.wal.get_unprocessed_entries().await?;
 
@@ -102,6 +103,15 @@ impl WalProcessor {
     }
 
     /// Process a batch of entries for a specific table
+    #[tracing::instrument(
+        skip_all,
+        fields(
+            tenant_id = %tenant_id,
+            dataset_id = %dataset_id,
+            table_name = %table_name,
+            entry_count = entries.len()
+        )
+    )]
     async fn process_batch_for_table(
         &mut self,
         tenant_id: &str,
@@ -216,6 +226,7 @@ impl WalProcessor {
     }
 
     /// Process a single WAL entry (for immediate processing)
+    #[tracing::instrument(skip_all, fields(entry_id = %entry_id))]
     pub async fn process_single_entry(&mut self, entry_id: Uuid) -> Result<()> {
         // Find the entry in the current entries
         let entries = self.wal.get_entries().await?;

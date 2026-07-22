@@ -139,6 +139,7 @@ impl InMemoryFlightTransport {
     }
 
     /// Discover Flight services with specific capabilities using catalog
+    #[tracing::instrument(level = "debug", skip_all, fields(capability = ?capability))]
     pub async fn discover_services_by_capability(
         &self,
         capability: ServiceCapability,
@@ -181,6 +182,7 @@ impl InMemoryFlightTransport {
     }
 
     /// Get a Flight client for the specified service
+    #[tracing::instrument(level = "debug", skip_all, fields(service_id = %service_id))]
     pub async fn get_flight_client(
         &self,
         service_id: Uuid,
@@ -260,6 +262,7 @@ impl InMemoryFlightTransport {
     }
 
     /// Get a Flight client for a service with specific capability (round-robin)
+    #[tracing::instrument(level = "debug", skip_all, fields(capability = ?capability))]
     pub async fn get_client_for_capability(
         &self,
         capability: ServiceCapability,

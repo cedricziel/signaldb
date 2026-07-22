@@ -83,6 +83,14 @@ impl PrometheusHandler {
     /// 3. Convert to OTEL ExportMetricsServiceRequest
     /// 4. Write to WAL
     /// 5. Forward to writer via Flight
+    #[tracing::instrument(
+        skip_all,
+        fields(
+            tenant_id = %tenant_context.tenant_id,
+            dataset_id = %tenant_context.dataset_id,
+            body_size = body.len()
+        )
+    )]
     pub async fn handle_remote_write(
         &self,
         tenant_context: &TenantContext,
@@ -489,6 +497,13 @@ impl IntoResponse for PrometheusError {
 ///
 /// This is the HTTP endpoint that receives Prometheus remote_write requests.
 /// Authentication is expected to be handled by middleware that sets TenantContext.
+#[tracing::instrument(
+    skip_all,
+    fields(
+        tenant_id = %tenant_context.tenant_id,
+        dataset_id = %tenant_context.dataset_id
+    )
+)]
 pub async fn handle_prometheus_write(
     State(state): State<PrometheusHandlerState>,
     headers: HeaderMap,
