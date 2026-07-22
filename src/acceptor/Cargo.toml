@@ -11,6 +11,7 @@ testing = []
 [dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
 common.workspace = true
+prost.workspace = true
 
 datafusion.workspace = true
 arrow-flight.workspace = true

@@ -122,12 +122,14 @@ async fn main() -> Result<()> {
         flight_transport: Arc::clone(&resources.flight_transport),
         wal_manager: Arc::clone(&resources.wal_manager),
         authenticator: Arc::clone(&resources.authenticator),
+        rate_limiter: Arc::clone(&resources.rate_limiter),
     };
 
     let http_resources = AcceptorResources {
         flight_transport: Arc::clone(&resources.flight_transport),
         wal_manager: Arc::clone(&resources.wal_manager),
         authenticator: Arc::clone(&resources.authenticator),
+        rate_limiter: Arc::clone(&resources.rate_limiter),
     };
 
     // Channels for OTLP/gRPC server signals
@@ -159,6 +161,7 @@ async fn main() -> Result<()> {
         flight_transport: http_resources.flight_transport,
         wal_manager: http_resources.wal_manager,
         authenticator: http_resources.authenticator,
+        rate_limiter: http_resources.rate_limiter,
     };
     let http_handle = tokio::spawn(async move {
         if let Err(e) =

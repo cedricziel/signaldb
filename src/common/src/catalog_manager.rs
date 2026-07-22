@@ -200,6 +200,7 @@ mod tests {
                         ],
                         api_keys: vec![],
                         schema_config: None,
+                        limits: None,
                     },
                     TenantConfig {
                         id: "beta".to_string(),
@@ -216,10 +217,12 @@ mod tests {
                         }],
                         api_keys: vec![],
                         schema_config: None,
+                        limits: None,
                     },
                 ],
                 admin_api_key: None,
                 internal_service_key: None,
+                default_limits: Default::default(),
             },
             storage: StorageConfig {
                 dsn: "memory://".to_string(),

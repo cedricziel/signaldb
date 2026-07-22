@@ -151,6 +151,7 @@ humantime-serde = "1.1.1"
 hex = "0.4"
 env_logger = "0.11.5"
 tower = "0.5.2"
+dashmap = "6.2"
 
 testcontainers = { version = "0.27.3", features = ["blocking"] }
 testcontainers-modules = { version = "0.15", features = ["postgres", "kafka", "minio"] }

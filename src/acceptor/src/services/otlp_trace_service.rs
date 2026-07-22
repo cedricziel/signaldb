@@ -6,6 +6,9 @@ use tonic::{Request, Response, Status};
 use crate::handler::otlp_grpc::TraceHandler;
 use crate::middleware::get_tenant_context;
 use common::auth::TenantContext;
+use common::ratelimit::TenantRateLimiter;
+use prost::Message;
+use std::sync::Arc;
 
 #[async_trait::async_trait]
 pub trait TraceHandlerTrait {
@@ -29,11 +32,21 @@ impl TraceHandlerTrait for TraceHandler {
 
 pub struct TraceAcceptorService<H: TraceHandlerTrait> {
     handler: H,
+    rate_limiter: Option<Arc<TenantRateLimiter>>,
 }
 
 impl<H: TraceHandlerTrait> TraceAcceptorService<H> {
     pub fn new(handler: H) -> Self {
-        Self { handler }
+        Self {
+            handler,
+            rate_limiter: None,
+        }
+    }
+
+    /// Enforce per-tenant ingest rate limits on this service.
+    pub fn with_rate_limiter(mut self, rate_limiter: Arc<TenantRateLimiter>) -> Self {
+        self.rate_limiter = Some(rate_limiter);
+        self
     }
 }
 
@@ -47,6 +60,14 @@ impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAccepto
         let tenant_context = get_tenant_context(&request)?;
 
         let request_inner = request.into_inner();
+
+        // Per-tenant ingest rate limiting: RESOURCE_EXHAUSTED is the gRPC
+        // analog of HTTP 429 and OTLP clients treat it as retryable.
+        if let Some(limiter) = &self.rate_limiter {
+            limiter
+                .check_ingest(&tenant_context.tenant_id, request_inner.encoded_len())
+                .map_err(|e| Status::resource_exhausted(e.to_string()))?;
+        }
 
         let span_count: u64 = request_inner
             .resource_spans
@@ -168,6 +189,54 @@ mod tests {
 
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert!(status.message().contains("durably accept"));
+    }
+
+    /// Handler that always succeeds (rate-limit tests must fail before it).
+    struct NoopTraceHandler;
+
+    #[async_trait::async_trait]
+    impl TraceHandlerTrait for NoopTraceHandler {
+        async fn handle_grpc_otlp_traces(
+            &self,
+            _tenant_context: &TenantContext,
+            _request: ExportTraceServiceRequest,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn export_rejects_with_resource_exhausted_when_rate_limited() {
+        use common::config::{AuthConfig, TenantLimits};
+
+        // One request per second: the first export passes, the second is
+        // rejected with the gRPC analog of HTTP 429.
+        let limiter = Arc::new(TenantRateLimiter::from_auth_config(&AuthConfig {
+            default_limits: TenantLimits {
+                max_ingest_requests_per_sec: Some(1),
+                burst_seconds: 1.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let service = TraceAcceptorService::new(NoopTraceHandler).with_rate_limiter(limiter);
+
+        let mut first = Request::new(ExportTraceServiceRequest::default());
+        first.extensions_mut().insert(test_tenant_context());
+        service
+            .export(first)
+            .await
+            .expect("first request is within budget");
+
+        let mut second = Request::new(ExportTraceServiceRequest::default());
+        second.extensions_mut().insert(test_tenant_context());
+        let status = service
+            .export(second)
+            .await
+            .expect_err("second request must exceed the 1 rps budget");
+
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert!(status.message().contains("request rate"));
     }
 
     #[tokio::test]

@@ -271,9 +271,11 @@ mod tests {
                     name: Some("prod-key".to_string()),
                 }],
                 schema_config: None,
+                limits: None,
             }],
             admin_api_key: None,
             internal_service_key: None,
+            default_limits: Default::default(),
         };
 
         let authenticator = Authenticator::new(auth_config, catalog);
@@ -309,6 +311,7 @@ mod tests {
             tenants: vec![],
             admin_api_key: None,
             internal_service_key: None,
+            default_limits: Default::default(),
         };
         let authenticator = Authenticator::new(auth_config, catalog);
 
@@ -341,9 +344,11 @@ mod tests {
                     name: None,
                 }],
                 schema_config: None,
+                limits: None,
             }],
             admin_api_key: None,
             internal_service_key: None,
+            default_limits: Default::default(),
         };
         let authenticator = Authenticator::new(auth_config, catalog);
 
@@ -378,9 +383,11 @@ mod tests {
                     name: None,
                 }],
                 schema_config: None,
+                limits: None,
             }],
             admin_api_key: None,
             internal_service_key: None,
+            default_limits: Default::default(),
         };
         let authenticator = Authenticator::new(auth_config, catalog);
 
@@ -409,9 +416,11 @@ mod tests {
                     name: None,
                 }],
                 schema_config: None,
+                limits: None,
             }],
             admin_api_key: None,
             internal_service_key: None,
+            default_limits: Default::default(),
         };
         let authenticator = Authenticator::new(auth_config, catalog);
 

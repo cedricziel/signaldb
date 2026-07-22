@@ -118,6 +118,7 @@ impl TestConfigBuilder {
             }],
             api_keys: vec![],
             schema_config: None,
+            limits: None,
         };
 
         self.config.auth.tenants.push(tenant_config);

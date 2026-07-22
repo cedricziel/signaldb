@@ -522,6 +522,35 @@ pub struct TenantConfig {
     /// Optional schema configuration override
     #[serde(default)]
     pub schema_config: Option<TenantSchemaConfig>,
+    /// Optional rate-limit override for this tenant; falls back to
+    /// `[auth].default_limits` when unset.
+    #[serde(default)]
+    pub limits: Option<TenantLimits>,
+}
+
+/// Per-tenant ingest rate limits.
+///
+/// Unset fields mean unlimited. `burst_seconds` controls how many
+/// seconds' worth of budget a tenant may consume in a burst.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TenantLimits {
+    /// Maximum ingest requests per second.
+    pub max_ingest_requests_per_sec: Option<u32>,
+    /// Maximum ingest payload bytes per second.
+    pub max_ingest_bytes_per_sec: Option<u64>,
+    /// Burst allowance in seconds of budget (minimum 1.0).
+    pub burst_seconds: f64,
+}
+
+impl Default for TenantLimits {
+    fn default() -> Self {
+        Self {
+            max_ingest_requests_per_sec: None,
+            max_ingest_bytes_per_sec: None,
+            burst_seconds: 2.0,
+        }
+    }
 }
 
 /// Authentication configuration
@@ -530,6 +559,10 @@ pub struct AuthConfig {
     /// Whether multi-tenancy authentication is enabled
     #[serde(default)]
     pub enabled: bool,
+    /// Default ingest rate limits applied to every tenant without an
+    /// explicit `limits` override. Unset fields mean unlimited.
+    #[serde(default)]
+    pub default_limits: TenantLimits,
     /// List of configured tenants
     #[serde(default)]
     pub tenants: Vec<TenantConfig>,
@@ -848,6 +881,7 @@ impl Configuration {
                 name: Some("Self-Monitoring Key".to_string()),
             }],
             schema_config: None,
+            limits: None,
         });
     }
 
@@ -1283,6 +1317,7 @@ mod tests {
             datasets: vec![],
             api_keys: vec![],
             schema_config: None,
+            limits: None,
         });
 
         config.ensure_self_monitoring_tenant();
