@@ -39,6 +39,7 @@ humantime-serde.workspace = true
 
 sqlx.workspace = true
 uuid.workspace = true
+dashmap.workspace = true
 chrono = { workspace = true }
 
 arrow-flight.workspace = true

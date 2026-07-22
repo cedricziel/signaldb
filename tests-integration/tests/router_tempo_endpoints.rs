@@ -104,9 +104,11 @@ async fn setup_test_services() -> TestServices {
                 name: Some("test-key".to_string()),
             }],
             schema_config: None,
+            limits: None,
         }],
         admin_api_key: None,
         internal_service_key: None,
+        default_limits: Default::default(),
     };
 
     let wal_config = WalConfig {
@@ -722,9 +724,11 @@ async fn test_tempo_v2_trace_endpoint() {
                 name: Some("test-key".to_string()),
             }],
             schema_config: None,
+            limits: None,
         }],
         admin_api_key: None,
         internal_service_key: None,
+        default_limits: Default::default(),
     };
     let state = InMemoryStateImpl::new(catalog, config);
 
@@ -815,6 +819,7 @@ async fn setup_multi_tenant_test_services() -> TestServices {
                     name: Some("acme-test-key".to_string()),
                 }],
                 schema_config: None,
+                limits: None,
             },
             common::config::TenantConfig {
                 id: "globex".to_string(),
@@ -832,10 +837,12 @@ async fn setup_multi_tenant_test_services() -> TestServices {
                     name: Some("globex-test-key".to_string()),
                 }],
                 schema_config: None,
+                limits: None,
             },
         ],
         admin_api_key: None,
         internal_service_key: None,
+        default_limits: Default::default(),
     };
 
     // Create WAL configs for both tenants

@@ -299,9 +299,11 @@ mod tests {
                     name: Some("test-key".to_string()),
                 }],
                 schema_config: None,
+                limits: None,
             }],
             admin_api_key: None,
             internal_service_key: None,
+            default_limits: Default::default(),
         };
         let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
@@ -333,6 +335,7 @@ mod tests {
             tenants: vec![],
             admin_api_key: None,
             internal_service_key: None,
+            default_limits: Default::default(),
         };
         let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
@@ -353,6 +356,7 @@ mod tests {
             tenants: vec![],
             admin_api_key: None,
             internal_service_key: None,
+            default_limits: Default::default(),
         };
         let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
