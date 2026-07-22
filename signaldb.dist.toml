@@ -25,6 +25,14 @@ enabled = true  # Set to false to disable authentication (dev/testing only)
 # All SignalDB services must share the same value.
 # internal_service_key = "sk-internal-your-secret-key-here"
 
+# Default per-tenant ingest rate limits, applied to every tenant without an
+# explicit [auth.tenants.limits] override. Unset fields mean unlimited.
+# Exceeding a limit returns HTTP 429 / gRPC RESOURCE_EXHAUSTED (retryable).
+# [auth.default_limits]
+# max_ingest_requests_per_sec = 100
+# max_ingest_bytes_per_sec = 10485760   # 10 MiB/s
+# burst_seconds = 2.0                   # burst allowance in seconds of budget
+
 # Tenant definitions with API keys and datasets
 # Each tenant is isolated with separate WAL paths and Iceberg catalogs
 
@@ -34,6 +42,11 @@ id = "acme"
 slug = "acme"
 name = "Acme Corporation"
 default_dataset = "production"  # Used when X-Dataset-ID header is not provided
+
+# Per-tenant rate-limit override (takes precedence over [auth.default_limits])
+# [auth.tenants.limits]
+# max_ingest_requests_per_sec = 500
+# max_ingest_bytes_per_sec = 52428800   # 50 MiB/s
 
 # API keys for the Acme tenant
 # Each key can have a descriptive name for auditing

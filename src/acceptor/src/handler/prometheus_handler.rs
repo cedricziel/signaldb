@@ -31,6 +31,7 @@ use common::{
         },
         transport::InMemoryFlightTransport,
     },
+    ratelimit::TenantRateLimiter,
     wal::{WalOperation, record_batch_to_bytes},
 };
 use opentelemetry_proto::tonic::metrics::v1::metric::Data;
@@ -61,6 +62,8 @@ pub struct PrometheusHandler {
     flight_transport: Arc<InMemoryFlightTransport>,
     /// WAL manager for multi-tenant WAL isolation
     wal_manager: Arc<WalManager>,
+    /// Per-tenant ingest rate limiter (no limiting when unset)
+    rate_limiter: Option<Arc<TenantRateLimiter>>,
 }
 
 impl PrometheusHandler {
@@ -72,7 +75,14 @@ impl PrometheusHandler {
         Self {
             flight_transport,
             wal_manager,
+            rate_limiter: None,
         }
+    }
+
+    /// Enforce per-tenant ingest rate limits on remote_write requests.
+    pub fn with_rate_limiter(mut self, rate_limiter: Arc<TenantRateLimiter>) -> Self {
+        self.rate_limiter = Some(rate_limiter);
+        self
     }
 
     /// Handle Prometheus remote_write request
@@ -96,6 +106,13 @@ impl PrometheusHandler {
         body: Bytes,
         headers: &HeaderMap,
     ) -> Result<(), PrometheusError> {
+        // Per-tenant ingest rate limiting (HTTP 429 with the reason)
+        if let Some(limiter) = &self.rate_limiter {
+            limiter
+                .check_ingest(&tenant_context.tenant_id, body.len())
+                .map_err(|e| PrometheusError::RateLimited(e.to_string()))?;
+        }
+
         // Log request info
         let version = headers
             .get(HEADER_REMOTE_WRITE_VERSION)
@@ -433,6 +450,7 @@ pub enum PrometheusError {
     SerializationError(String),
     WalError(String),
     InternalError(String),
+    RateLimited(String),
 }
 
 impl std::fmt::Display for PrometheusError {
@@ -442,6 +460,7 @@ impl std::fmt::Display for PrometheusError {
             Self::SerializationError(msg) => write!(f, "Serialization error: {msg}"),
             Self::WalError(msg) => write!(f, "WAL error: {msg}"),
             Self::InternalError(msg) => write!(f, "Internal error: {msg}"),
+            Self::RateLimited(msg) => write!(f, "Rate limited: {msg}"),
         }
     }
 }
@@ -455,6 +474,7 @@ impl IntoResponse for PrometheusError {
             Self::SerializationError(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Self::WalError(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
             Self::InternalError(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+            Self::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
         };
 
         (status, message).into_response()
@@ -495,5 +515,13 @@ mod tests {
     fn test_prometheus_error_display() {
         let err = PrometheusError::DecodeError("invalid protobuf".to_string());
         assert!(err.to_string().contains("invalid protobuf"));
+    }
+
+    #[test]
+    fn rate_limited_error_maps_to_http_429() {
+        let response =
+            PrometheusError::RateLimited("tenant 'acme' exceeded its request rate limit".into())
+                .into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 }

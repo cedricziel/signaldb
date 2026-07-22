@@ -96,6 +96,7 @@ pub struct AcceptorResources {
     pub flight_transport: Arc<InMemoryFlightTransport>,
     pub wal_manager: Arc<WalManager>,
     pub authenticator: Arc<Authenticator>,
+    pub rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
 }
 
 /// Initialize shared resources for acceptor services
@@ -168,6 +169,12 @@ pub async fn init_acceptor_resources(
     WalRetryConsumer::new(wal_manager.clone(), flight_transport.clone()).spawn();
     tracing::info!("Started WAL retry consumer");
 
+    // Per-tenant ingest rate limiter (unlimited unless configured via
+    // [auth].default_limits / [[auth.tenants]].limits)
+    let rate_limiter = Arc::new(common::ratelimit::TenantRateLimiter::from_auth_config(
+        &auth_config,
+    ));
+
     // Create Authenticator for multi-tenant authentication
     let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
@@ -177,6 +184,7 @@ pub async fn init_acceptor_resources(
         flight_transport,
         wal_manager,
         authenticator,
+        rate_limiter,
     })
 }
 
@@ -198,25 +206,28 @@ pub async fn serve_otlp_grpc(
         flight_transport,
         wal_manager,
         authenticator,
+        rate_limiter,
     } = config.resources;
 
     // Set up OTLP/gRPC services with handler pattern, WAL Manager integration, and auth interceptor
     let log_handler = LogHandler::new(flight_transport.clone(), wal_manager.clone());
-    let log_service = LogAcceptorService::new(log_handler);
+    let log_service = LogAcceptorService::new(log_handler).with_rate_limiter(rate_limiter.clone());
     let auth_for_logs = authenticator.clone();
     let log_server = LogsServiceServer::with_interceptor(log_service, move |req| {
         grpc_auth_interceptor(auth_for_logs.clone(), req)
     });
 
     let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
-    let trace_service = TraceAcceptorService::new(trace_handler);
+    let trace_service =
+        TraceAcceptorService::new(trace_handler).with_rate_limiter(rate_limiter.clone());
     let auth_for_traces = authenticator.clone();
     let trace_server = TraceServiceServer::with_interceptor(trace_service, move |req| {
         grpc_auth_interceptor(auth_for_traces.clone(), req)
     });
 
     let metrics_handler = MetricsHandler::new(flight_transport.clone(), wal_manager.clone());
-    let metrics_service = MetricsAcceptorService::new(metrics_handler);
+    let metrics_service =
+        MetricsAcceptorService::new(metrics_handler).with_rate_limiter(rate_limiter.clone());
     let auth_for_metrics = authenticator.clone();
     let metric_server = MetricsServiceServer::with_interceptor(metrics_service, move |req| {
         grpc_auth_interceptor(auth_for_metrics.clone(), req)
@@ -335,6 +346,7 @@ pub struct HttpAcceptorConfig {
     pub flight_transport: Arc<InMemoryFlightTransport>,
     pub wal_manager: Arc<WalManager>,
     pub authenticator: Arc<Authenticator>,
+    pub rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
 }
 
 pub async fn serve_otlp_http(
@@ -346,10 +358,10 @@ pub async fn serve_otlp_http(
     tracing::info!(address = %config.addr, "Starting OTLP/HTTP acceptor");
 
     // Create Prometheus handler with shared resources
-    let prometheus_handler = Arc::new(PrometheusHandler::new(
-        config.flight_transport.clone(),
-        config.wal_manager.clone(),
-    ));
+    let prometheus_handler = Arc::new(
+        PrometheusHandler::new(config.flight_transport.clone(), config.wal_manager.clone())
+            .with_rate_limiter(config.rate_limiter.clone()),
+    );
 
     // Build combined router with health, traces, and Prometheus endpoints
     let app = acceptor_router().merge(prometheus_router(

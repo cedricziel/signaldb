@@ -6,6 +6,9 @@ use tonic::{Request, Response, Status};
 use crate::handler::otlp_log_handler::LogHandler;
 use crate::middleware::get_tenant_context;
 use common::auth::TenantContext;
+use common::ratelimit::TenantRateLimiter;
+use prost::Message;
+use std::sync::Arc;
 
 #[async_trait::async_trait]
 pub trait LogHandlerTrait {
@@ -29,11 +32,21 @@ impl LogHandlerTrait for LogHandler {
 
 pub struct LogAcceptorService<H: LogHandlerTrait> {
     handler: H,
+    rate_limiter: Option<Arc<TenantRateLimiter>>,
 }
 
 impl<H: LogHandlerTrait> LogAcceptorService<H> {
     pub fn new(handler: H) -> Self {
-        Self { handler }
+        Self {
+            handler,
+            rate_limiter: None,
+        }
+    }
+
+    /// Enforce per-tenant ingest rate limits on this service.
+    pub fn with_rate_limiter(mut self, rate_limiter: Arc<TenantRateLimiter>) -> Self {
+        self.rate_limiter = Some(rate_limiter);
+        self
     }
 }
 
@@ -47,6 +60,14 @@ impl<H: LogHandlerTrait + Send + Sync + 'static> LogsService for LogAcceptorServ
         let tenant_context = get_tenant_context(&request)?;
 
         let request_inner = request.into_inner();
+
+        // Per-tenant ingest rate limiting: RESOURCE_EXHAUSTED is the gRPC
+        // analog of HTTP 429 and OTLP clients treat it as retryable.
+        if let Some(limiter) = &self.rate_limiter {
+            limiter
+                .check_ingest(&tenant_context.tenant_id, request_inner.encoded_len())
+                .map_err(|e| Status::resource_exhausted(e.to_string()))?;
+        }
 
         let log_count: u64 = request_inner
             .resource_logs
