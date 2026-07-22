@@ -551,8 +551,10 @@ pub async fn query_single_trace<S: RouterState>(
         "find_trace:{}:{}:{trace_id}",
         tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
     ));
+    let mut flight_request = tonic::Request::new(ticket);
+    common::flight::trace_context::inject_context_into_request(&mut flight_request);
 
-    match client.do_get(ticket).await {
+    match client.do_get(flight_request).await {
         Ok(response) => {
             let mut stream = response.into_inner();
             let mut trace_data = Vec::new();
@@ -636,8 +638,10 @@ pub async fn search<S: RouterState>(
         "search_traces:{}:{}:{search_params}",
         tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
     ));
+    let mut flight_request = tonic::Request::new(ticket);
+    common::flight::trace_context::inject_context_into_request(&mut flight_request);
 
-    match client.do_get(ticket).await {
+    match client.do_get(flight_request).await {
         Ok(response) => {
             let mut stream = response.into_inner();
             let mut search_results = Vec::new();

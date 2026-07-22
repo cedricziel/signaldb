@@ -100,12 +100,20 @@ impl LogHandler {
         let record_batch = otlp_logs_to_arrow(&request);
 
         // Add schema version metadata (v1 for OTLP conversion)
-        let metadata = serde_json::json!({
+        let mut metadata = serde_json::json!({
             "schema_version": "v1",
             "signal_type": "logs",
             "tenant_id": tenant_context.tenant_id,
             "dataset_id": tenant_context.dataset_id,
         });
+        if let Some((traceparent, tracestate)) =
+            common::flight::trace_context::current_trace_context_fields()
+        {
+            metadata["traceparent"] = traceparent.into();
+            if let Some(tracestate) = tracestate {
+                metadata["tracestate"] = tracestate.into();
+            }
+        }
 
         // Serialize metadata for WAL storage (enables background processor routing)
         let metadata_str = serde_json::to_string(&metadata).ok();

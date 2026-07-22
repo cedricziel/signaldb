@@ -537,10 +537,14 @@ impl FlightService for QuerierFlightService {
 
     type DoGetStream = BoxStream<'static, Result<FlightData, Status>>;
 
+    #[tracing::instrument(name = "flight_do_get", skip_all)]
     async fn do_get(
         &self,
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
+        // Adopt the caller's trace context so this span joins the distributed
+        // trace (e.g. Router -> Querier).
+        common::flight::trace_context::adopt_parent_context_from_request(&request);
         let metadata = request.metadata().clone();
         let ticket = request.into_inner();
         let ticket_content = String::from_utf8(ticket.ticket.to_vec())

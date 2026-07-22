@@ -102,12 +102,20 @@ impl TraceHandler {
         // Convert OTLP traces to Arrow RecordBatch
         let record_batch = otlp_traces_to_arrow(&request);
 
-        let metadata = serde_json::json!({
+        let mut metadata = serde_json::json!({
             "schema_version": "v1",
             "signal_type": "traces",
             "tenant_id": tenant_context.tenant_id,
             "dataset_id": tenant_context.dataset_id,
         });
+        if let Some((traceparent, tracestate)) =
+            common::flight::trace_context::current_trace_context_fields()
+        {
+            metadata["traceparent"] = traceparent.into();
+            if let Some(tracestate) = tracestate {
+                metadata["tracestate"] = tracestate.into();
+            }
+        }
         let metadata_str = serde_json::to_string(&metadata).ok();
 
         let batch_bytes = match record_batch_to_bytes(&record_batch) {

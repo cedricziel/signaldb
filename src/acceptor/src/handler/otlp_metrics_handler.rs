@@ -337,7 +337,7 @@ impl MetricsHandler {
                 metric_type
             );
 
-            let metadata = serde_json::json!({
+            let mut metadata = serde_json::json!({
                 "schema_version": "v1",
                 "signal_type": "metrics",
                 "metric_type": metric_type,
@@ -346,6 +346,14 @@ impl MetricsHandler {
                 "dataset_id": tenant_context.dataset_id,
                 "wal_entry_id": wal_entry_id
             });
+            if let Some((traceparent, tracestate)) =
+                common::flight::trace_context::current_trace_context_fields()
+            {
+                metadata["traceparent"] = traceparent.into();
+                if let Some(tracestate) = tracestate {
+                    metadata["tracestate"] = tracestate.into();
+                }
+            }
 
             // Step 2: Forward from WAL to writer via Flight
             // Get a Flight client for a writer service with storage capability

@@ -114,6 +114,7 @@ impl FlightService for IcebergWriterFlightService {
 
     type DoPutStream = BoxStream<'static, Result<PutResult, Status>>;
 
+    #[tracing::instrument(name = "flight_do_put", skip_all)]
     async fn do_put(
         &self,
         request: Request<tonic::Streaming<FlightData>>,
@@ -136,6 +137,12 @@ impl FlightService for IcebergWriterFlightService {
                             metadata.signal_type,
                             metadata.target_table
                         );
+                        // Adopt the sender's trace context so this span joins
+                        // the distributed trace (e.g. Acceptor -> Writer).
+                        common::flight::trace_context::adopt_parent_context_from_fields(
+                            metadata.traceparent.as_deref(),
+                            metadata.tracestate.as_deref(),
+                        );
                         flight_metadata = Some(metadata);
                     }
                     Err(e) => {
@@ -146,6 +153,8 @@ impl FlightService for IcebergWriterFlightService {
                             target_table: None,
                             tenant_id: None,
                             dataset_id: None,
+                            traceparent: None,
+                            tracestate: None,
                         });
                     }
                 }

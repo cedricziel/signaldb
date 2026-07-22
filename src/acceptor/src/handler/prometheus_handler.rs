@@ -204,7 +204,7 @@ impl PrometheusHandler {
                 "Written to WAL"
             );
 
-            let metadata = serde_json::json!({
+            let mut metadata = serde_json::json!({
                 "schema_version": "v1",
                 "signal_type": "metrics",
                 "metric_type": metric_type,
@@ -214,6 +214,14 @@ impl PrometheusHandler {
                 "wal_entry_id": wal_entry_id,
                 "source": "prometheus_remote_write"
             });
+            if let Some((traceparent, tracestate)) =
+                common::flight::trace_context::current_trace_context_fields()
+            {
+                metadata["traceparent"] = traceparent.into();
+                if let Some(tracestate) = tracestate {
+                    metadata["tracestate"] = tracestate.into();
+                }
+            }
 
             // Forward to writer via Flight
             let mut client = match self
