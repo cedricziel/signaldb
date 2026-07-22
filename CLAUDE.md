@@ -122,8 +122,6 @@ SignalDB provides tenant isolation with API key-based authentication:
 
 ```toml
 [auth]
-enabled = true
-
 [[auth.tenants]]
 id = "acme"
 name = "Acme Corporation"

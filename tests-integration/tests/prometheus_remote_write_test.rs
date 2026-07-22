@@ -111,7 +111,6 @@ async fn setup_prometheus_test() -> (axum::Router, TempDir) {
 
     // Configure test tenant
     config.auth = common::config::AuthConfig {
-        enabled: true,
         admin_api_key: None,
         internal_service_key: None,
         default_limits: Default::default(),

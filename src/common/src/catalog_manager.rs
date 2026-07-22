@@ -175,7 +175,6 @@ mod tests {
     fn create_test_config() -> Configuration {
         Configuration {
             auth: AuthConfig {
-                enabled: true,
                 tenants: vec![
                     TenantConfig {
                         id: "acme".to_string(),

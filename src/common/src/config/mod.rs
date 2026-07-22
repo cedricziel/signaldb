@@ -554,11 +554,13 @@ impl Default for TenantLimits {
 }
 
 /// Authentication configuration
+///
+/// Authentication is always enforced on the tenant-facing ingest and
+/// query surfaces; there is no off switch (the former `enabled` flag was
+/// dead config that never gated anything, issue #553). The internal
+/// Flight mesh is separately controlled by `internal_service_key`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AuthConfig {
-    /// Whether multi-tenancy authentication is enabled
-    #[serde(default)]
-    pub enabled: bool,
     /// Default ingest rate limits applied to every tenant without an
     /// explicit `limits` override. Unset fields mean unlimited.
     #[serde(default)]
@@ -916,7 +918,7 @@ impl Configuration {
     /// Without an admin API key the tenant cannot be provisioned; a warning is
     /// logged and the config is left untouched.
     pub fn ensure_self_monitoring_tenant(&mut self) {
-        if !self.self_monitoring.enabled || !self.auth.enabled {
+        if !self.self_monitoring.enabled {
             return;
         }
         let tenant_id = self.self_monitoring.tenant_id.clone();
@@ -1149,6 +1151,28 @@ mod tests {
         });
         config.schema.catalog_uri = "sqlite://.data/catalog.db".to_string();
         config.validate_for_distributed("writer").unwrap();
+    }
+
+    #[test]
+    fn legacy_auth_enabled_key_is_tolerated() {
+        // Configs written before the dead `[auth] enabled` flag was
+        // removed must still load; the unknown key is ignored.
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                [auth]
+                enabled = true
+                admin_api_key = "sk-admin"
+                "#,
+            )?;
+            let config: Configuration = Figment::new()
+                .merge(Serialized::defaults(Configuration::default()))
+                .merge(figment::providers::Toml::file("signaldb.toml"))
+                .extract()?;
+            assert_eq!(config.auth.admin_api_key.as_deref(), Some("sk-admin"));
+            Ok(())
+        });
     }
 
     #[test]
@@ -1405,7 +1429,6 @@ mod tests {
     fn self_monitoring_tenant_auto_provisioned_with_admin_key() {
         let mut config = Configuration::default();
         config.self_monitoring.enabled = true;
-        config.auth.enabled = true;
         config.auth.admin_api_key = Some("admin-key".to_string());
 
         config.ensure_self_monitoring_tenant();
@@ -1426,7 +1449,6 @@ mod tests {
     fn self_monitoring_tenant_not_provisioned_without_admin_key() {
         let mut config = Configuration::default();
         config.self_monitoring.enabled = true;
-        config.auth.enabled = true;
         config.auth.admin_api_key = None;
 
         config.ensure_self_monitoring_tenant();
@@ -1437,7 +1459,6 @@ mod tests {
     fn self_monitoring_tenant_not_duplicated_when_configured() {
         let mut config = Configuration::default();
         config.self_monitoring.enabled = true;
-        config.auth.enabled = true;
         config.auth.admin_api_key = Some("admin-key".to_string());
         config.auth.tenants.push(TenantConfig {
             id: "_system".to_string(),
@@ -1466,7 +1487,6 @@ mod tests {
     #[test]
     fn self_monitoring_tenant_not_provisioned_when_disabled() {
         let mut config = Configuration::default();
-        config.auth.enabled = true;
         config.auth.admin_api_key = Some("admin-key".to_string());
 
         config.ensure_self_monitoring_tenant();

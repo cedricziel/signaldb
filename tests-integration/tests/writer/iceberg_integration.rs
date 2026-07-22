@@ -133,7 +133,6 @@ async fn test_iceberg_namespace_slug_based() -> Result<()> {
             dsn: "memory://".to_string(),
         },
         auth: AuthConfig {
-            enabled: true,
             tenants: vec![TenantConfig {
                 id: "tenant-1".to_string(),
                 slug: "mycorp".to_string(),
@@ -296,7 +295,6 @@ async fn test_write_and_query_with_slugs() -> Result<()> {
             dsn: format!("file://{}", storage_path.display()),
         },
         auth: AuthConfig {
-            enabled: true,
             tenants: vec![TenantConfig {
                 id: "test-tenant".to_string(),
                 slug: "testco".to_string(),

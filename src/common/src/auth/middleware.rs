@@ -304,7 +304,6 @@ mod tests {
         // Setup authenticator
         let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
         let auth_config = AuthConfig {
-            enabled: true,
             tenants: vec![TenantConfig {
                 id: "acme".to_string(),
                 slug: "acme".to_string(),

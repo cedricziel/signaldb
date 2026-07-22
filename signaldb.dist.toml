@@ -8,8 +8,11 @@ dsn = "sqlite://.data/signaldb.db"
 
 [auth]
 # Multi-Tenancy Authentication Configuration
-# Controls API key validation and tenant isolation
-enabled = true  # Set to false to disable authentication (dev/testing only)
+# API key validation and tenant isolation are always enforced on the
+# tenant-facing ingest and query APIs; there is no off switch. (The
+# former `enabled` flag never did anything and was removed.) The
+# internal Flight ports are controlled separately by
+# internal_service_key below.
 
 # Admin API key for the /api/v1/admin/* management endpoints
 # Generate a strong random key for production use

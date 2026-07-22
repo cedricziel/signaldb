@@ -96,7 +96,6 @@ catalog_type = "sql"
 catalog_uri = "sqlite://$(pwd)/${BASE_DIR}/iceberg_catalog.db"
 
 [auth]
-enabled = true
 admin_api_key = "dev-admin-key"
 
 # Development tenant

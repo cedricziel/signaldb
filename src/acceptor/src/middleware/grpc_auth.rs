@@ -282,7 +282,6 @@ mod tests {
         // Setup authenticator
         let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
         let auth_config = AuthConfig {
-            enabled: true,
             tenants: vec![TenantConfig {
                 id: "acme".to_string(),
                 slug: "acme".to_string(),
@@ -331,7 +330,6 @@ mod tests {
     async fn test_grpc_auth_interceptor_missing_header() {
         let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
         let auth_config = AuthConfig {
-            enabled: true,
             tenants: vec![],
             admin_api_key: None,
             internal_service_key: None,
@@ -352,7 +350,6 @@ mod tests {
     async fn test_grpc_auth_interceptor_invalid_key() {
         let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
         let auth_config = AuthConfig {
-            enabled: true,
             tenants: vec![],
             admin_api_key: None,
             internal_service_key: None,
