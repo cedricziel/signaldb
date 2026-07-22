@@ -211,10 +211,12 @@ impl WalSegment {
         dataset_id: &str,
         metadata: Option<String>,
     ) -> Result<Uuid> {
+        // A clock before the epoch yields timestamp 0 rather than a panic
+        // on the hot write path.
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         // Write data to data file first
         let data_offset = self.data_size;
@@ -563,7 +565,9 @@ impl Wal {
         } else {
             all_segments
                 .last()
-                .expect("segments list should not be empty")
+                .ok_or_else(|| {
+                    anyhow::anyhow!("WAL segment list empty despite discovered segment ids")
+                })?
                 .clone()
         };
 
@@ -584,6 +588,37 @@ impl Wal {
     /// Stable identity of this WAL directory (see the `writer_id` field).
     pub fn writer_id(&self) -> &str {
         &self.writer_id
+    }
+
+    /// Move a poison entry aside: persist its raw payload to
+    /// `<wal_dir>/dead-letter/<entry_id>.bin` (fsynced) and mark the
+    /// entry processed so it stops blocking the processing loop. The
+    /// data is preserved for manual inspection/replay rather than lost.
+    ///
+    /// Returns the dead-letter file path.
+    pub async fn dead_letter(&self, entry_id: Uuid) -> Result<PathBuf> {
+        let entry = self
+            .get_entries()
+            .await?
+            .into_iter()
+            .find(|e| e.id == entry_id)
+            .ok_or_else(|| anyhow::anyhow!("WAL entry {entry_id} not found"))?;
+        let data = self.read_entry_data(&entry).await?;
+
+        let dir = self.config.wal_dir.join("dead-letter");
+        create_dir_all(&dir).await?;
+        let path = dir.join(format!("{}.bin", entry_id.simple()));
+        let mut file = File::create(&path)
+            .await
+            .with_context(|| format!("Failed to create dead-letter file {}", path.display()))?;
+        file.write_all(&data).await?;
+        file.flush().await?;
+        file.sync_all()
+            .await
+            .context("Failed to fsync dead-letter file")?;
+
+        self.mark_processed(entry_id).await?;
+        Ok(path)
     }
 
     /// Load the persisted writer id from `writer.id`, creating (and
@@ -1132,6 +1167,41 @@ mod tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn dead_letter_preserves_payload_and_marks_processed() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            max_segment_size: 1024,
+            max_buffer_entries: 10,
+            flush_interval_secs: 1,
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+        let wal = Wal::new(config).await.unwrap();
+
+        let payload = b"poison payload".to_vec();
+        let entry_id = wal
+            .append(WalOperation::WriteTraces, payload.clone(), None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        let path = wal.dead_letter(entry_id).await.unwrap();
+        let preserved = tokio::fs::read(&path).await.unwrap();
+        assert_eq!(preserved, payload, "payload must be preserved verbatim");
+
+        // The entry no longer blocks processing.
+        let unprocessed = wal.get_unprocessed_entries().await.unwrap();
+        assert!(
+            unprocessed.is_empty(),
+            "dead-lettered entry must be marked processed"
+        );
+    }
 
     #[tokio::test]
     async fn writer_id_is_stable_across_reopen() {
