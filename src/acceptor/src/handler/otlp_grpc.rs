@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::Context;
 use common::auth::TenantContext;
 use common::flight::conversion::otlp_traces_to_arrow;
 use common::flight::transport::InMemoryFlightTransport;
@@ -40,11 +41,12 @@ impl MockTraceHandler {
         &self,
         _tenant_context: &TenantContext,
         request: ExportTraceServiceRequest,
-    ) {
+    ) -> anyhow::Result<()> {
         self.handle_grpc_otlp_traces_calls
             .lock()
             .await
             .push(request);
+        Ok(())
     }
 
     pub fn expect_handle_grpc_otlp_traces(&mut self) -> &mut Self {
@@ -64,6 +66,14 @@ impl TraceHandler {
         }
     }
 
+    /// Handle an OTLP trace export.
+    ///
+    /// Returns `Ok(())` once the data is durably accepted: written and
+    /// flushed to the WAL. A failed Flight forward after that point is not
+    /// an error — the WAL retry consumer re-forwards the entry.
+    ///
+    /// Any failure before WAL durability is returned as an error so the
+    /// service layer can reject the export and the client retries.
     #[tracing::instrument(
         skip_all,
         fields(
@@ -75,7 +85,7 @@ impl TraceHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportTraceServiceRequest,
-    ) {
+    ) -> anyhow::Result<()> {
         tracing::info!(
             tenant_id = %tenant_context.tenant_id,
             dataset_id = %tenant_context.dataset_id,
@@ -83,7 +93,7 @@ impl TraceHandler {
         );
 
         // Get tenant/dataset-specific WAL
-        let wal = match self
+        let wal = self
             .wal_manager
             .get_wal(
                 &tenant_context.tenant_id,
@@ -91,18 +101,7 @@ impl TraceHandler {
                 "traces",
             )
             .await
-        {
-            Ok(wal) => wal,
-            Err(e) => {
-                tracing::error!(
-                    tenant_id = %tenant_context.tenant_id,
-                    dataset_id = %tenant_context.dataset_id,
-                    error = %e,
-                    "Failed to get WAL"
-                );
-                return;
-            }
-        };
+            .context("Failed to get WAL")?;
 
         // Convert OTLP traces to Arrow RecordBatch
         let record_batch = otlp_traces_to_arrow(&request);
@@ -123,30 +122,16 @@ impl TraceHandler {
         }
         let metadata_str = serde_json::to_string(&metadata).ok();
 
-        let batch_bytes = match record_batch_to_bytes(&record_batch) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to serialize record batch");
-                return;
-            }
-        };
+        let batch_bytes =
+            record_batch_to_bytes(&record_batch).context("Failed to serialize record batch")?;
 
-        let wal_entry_id = match wal
+        let wal_entry_id = wal
             .append(WalOperation::WriteTraces, batch_bytes.clone(), metadata_str)
             .await
-        {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to write traces to WAL");
-                return;
-            }
-        };
+            .context("Failed to write traces to WAL")?;
 
         // Flush WAL to ensure durability
-        if let Err(e) = wal.flush().await {
-            tracing::error!(error = %e, "Failed to flush WAL");
-            return;
-        }
+        wal.flush().await.context("Failed to flush WAL")?;
 
         tracing::debug!(entry_id = %wal_entry_id, "Traces written to WAL");
 
@@ -169,5 +154,9 @@ impl TraceHandler {
                 tracing::error!(error = %e, "Failed to forward traces - data remains in WAL for retry");
             }
         }
+
+        // Data is durable in the WAL at this point; forward failures are
+        // recovered by the retry consumer, so the export is acknowledged.
+        Ok(())
     }
 }

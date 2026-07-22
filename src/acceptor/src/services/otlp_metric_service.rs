@@ -14,7 +14,7 @@ pub trait MetricsHandlerTrait {
         &self,
         tenant_context: &TenantContext,
         request: ExportMetricsServiceRequest,
-    );
+    ) -> anyhow::Result<()>;
 }
 
 #[async_trait::async_trait]
@@ -23,8 +23,8 @@ impl MetricsHandlerTrait for MetricsHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportMetricsServiceRequest,
-    ) {
-        self.handle_grpc_otlp_metrics(tenant_context, request).await;
+    ) -> anyhow::Result<()> {
+        self.handle_grpc_otlp_metrics(tenant_context, request).await
     }
 }
 
@@ -62,10 +62,21 @@ impl<H: MetricsHandlerTrait + Send + Sync + 'static> MetricsService for MetricsA
         let handle = self
             .handler
             .handle_grpc_otlp_metrics(&tenant_context, request_inner);
-        if common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id) {
-            common::self_monitoring::suppress_self_telemetry(handle).await;
-        } else {
-            handle.await;
+        let result =
+            if common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id) {
+                common::self_monitoring::suppress_self_telemetry(handle).await
+            } else {
+                handle.await
+            };
+
+        // Reject the export if the data was not durably accepted, so the
+        // client retries instead of dropping its copy (OTLP treats
+        // UNAVAILABLE as retryable).
+        if let Err(e) = result {
+            tracing::error!(error = %e, "Failed to durably accept metrics export");
+            return Err(Status::unavailable(format!(
+                "failed to durably accept metrics export: {e:#}"
+            )));
         }
 
         // Anti-loop guard: _system traffic is SignalDB's own telemetry and
@@ -104,8 +115,8 @@ impl MetricsHandlerTrait for crate::handler::otlp_metrics_handler::MockMetricsHa
         &self,
         tenant_context: &TenantContext,
         request: ExportMetricsServiceRequest,
-    ) {
-        self.handle_grpc_otlp_metrics(tenant_context, request).await;
+    ) -> anyhow::Result<()> {
+        self.handle_grpc_otlp_metrics(tenant_context, request).await
     }
 }
 

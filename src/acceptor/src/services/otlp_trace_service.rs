@@ -13,7 +13,7 @@ pub trait TraceHandlerTrait {
         &self,
         tenant_context: &TenantContext,
         request: ExportTraceServiceRequest,
-    );
+    ) -> anyhow::Result<()>;
 }
 
 #[async_trait::async_trait]
@@ -22,8 +22,8 @@ impl TraceHandlerTrait for TraceHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportTraceServiceRequest,
-    ) {
-        self.handle_grpc_otlp_traces(tenant_context, request).await;
+    ) -> anyhow::Result<()> {
+        self.handle_grpc_otlp_traces(tenant_context, request).await
     }
 }
 
@@ -61,10 +61,21 @@ impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAccepto
         let handle = self
             .handler
             .handle_grpc_otlp_traces(&tenant_context, request_inner);
-        if common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id) {
-            common::self_monitoring::suppress_self_telemetry(handle).await;
-        } else {
-            handle.await;
+        let result =
+            if common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id) {
+                common::self_monitoring::suppress_self_telemetry(handle).await
+            } else {
+                handle.await
+            };
+
+        // Reject the export if the data was not durably accepted, so the
+        // client retries instead of dropping its copy (OTLP treats
+        // UNAVAILABLE as retryable).
+        if let Err(e) = result {
+            tracing::error!(error = %e, "Failed to durably accept trace export");
+            return Err(Status::unavailable(format!(
+                "failed to durably accept trace export: {e:#}"
+            )));
         }
 
         // Anti-loop guard: _system traffic is SignalDB's own telemetry and
@@ -103,8 +114,8 @@ impl TraceHandlerTrait for crate::handler::otlp_grpc::MockTraceHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportTraceServiceRequest,
-    ) {
-        self.handle_grpc_otlp_traces(tenant_context, request).await;
+    ) -> anyhow::Result<()> {
+        self.handle_grpc_otlp_traces(tenant_context, request).await
     }
 }
 
@@ -117,6 +128,47 @@ mod tests {
         resource::v1::Resource,
         trace::v1::{ResourceSpans, ScopeSpans, Span, Status as SpanStatus, span::SpanKind},
     };
+
+    /// Handler that always fails before WAL durability
+    struct FailingTraceHandler;
+
+    #[async_trait::async_trait]
+    impl TraceHandlerTrait for FailingTraceHandler {
+        async fn handle_grpc_otlp_traces(
+            &self,
+            _tenant_context: &TenantContext,
+            _request: ExportTraceServiceRequest,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("WAL unavailable")
+        }
+    }
+
+    fn test_tenant_context() -> TenantContext {
+        TenantContext {
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            tenant_slug: "test-tenant".to_string(),
+            dataset_slug: "test-dataset".to_string(),
+            api_key_name: Some("test-key".to_string()),
+            source: common::auth::TenantSource::Config,
+        }
+    }
+
+    #[tokio::test]
+    async fn export_rejects_with_unavailable_when_write_path_fails() {
+        let service = TraceAcceptorService::new(FailingTraceHandler);
+
+        let mut tonic_request = Request::new(ExportTraceServiceRequest::default());
+        tonic_request.extensions_mut().insert(test_tenant_context());
+
+        let status = service
+            .export(tonic_request)
+            .await
+            .expect_err("export must fail when data is not durably accepted");
+
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert!(status.message().contains("durably accept"));
+    }
 
     #[tokio::test]
     async fn test_trace_acceptor_service() {

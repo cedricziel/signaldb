@@ -13,7 +13,7 @@ pub trait LogHandlerTrait {
         &self,
         tenant_context: &TenantContext,
         request: ExportLogsServiceRequest,
-    );
+    ) -> anyhow::Result<()>;
 }
 
 #[async_trait::async_trait]
@@ -22,8 +22,8 @@ impl LogHandlerTrait for LogHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportLogsServiceRequest,
-    ) {
-        self.handle_grpc_otlp_logs(tenant_context, request).await;
+    ) -> anyhow::Result<()> {
+        self.handle_grpc_otlp_logs(tenant_context, request).await
     }
 }
 
@@ -61,10 +61,21 @@ impl<H: LogHandlerTrait + Send + Sync + 'static> LogsService for LogAcceptorServ
         let handle = self
             .handler
             .handle_grpc_otlp_logs(&tenant_context, request_inner);
-        if common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id) {
-            common::self_monitoring::suppress_self_telemetry(handle).await;
-        } else {
-            handle.await;
+        let result =
+            if common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id) {
+                common::self_monitoring::suppress_self_telemetry(handle).await
+            } else {
+                handle.await
+            };
+
+        // Reject the export if the data was not durably accepted, so the
+        // client retries instead of dropping its copy (OTLP treats
+        // UNAVAILABLE as retryable).
+        if let Err(e) = result {
+            tracing::error!(error = %e, "Failed to durably accept logs export");
+            return Err(Status::unavailable(format!(
+                "failed to durably accept logs export: {e:#}"
+            )));
         }
 
         // Anti-loop guard: _system traffic is SignalDB's own telemetry and
@@ -103,8 +114,8 @@ impl LogHandlerTrait for crate::handler::otlp_log_handler::MockLogHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportLogsServiceRequest,
-    ) {
-        self.handle_grpc_otlp_logs(tenant_context, request).await;
+    ) -> anyhow::Result<()> {
+        self.handle_grpc_otlp_logs(tenant_context, request).await
     }
 }
 
