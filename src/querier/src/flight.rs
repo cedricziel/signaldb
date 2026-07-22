@@ -12,6 +12,7 @@ use common::flight::transport::InMemoryFlightTransport;
 use common::storage::create_object_store_from_dsn;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::{CatalogProvider, SchemaProvider};
+use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::context::SessionContext;
 use futures::StreamExt;
 use futures::stream::{self, BoxStream};
@@ -416,14 +417,53 @@ impl QuerierFlightService {
         Ok(vec![batch])
     }
 
+    /// Build a per-request SessionContext with tenant/dataset defaults.
+    ///
+    /// The shared context's session state is cloned per request so that
+    /// concurrent queries can never observe each other's default
+    /// catalog/schema — mutating the shared context (the previous `SET
+    /// datafusion.catalog.default_catalog` approach) let two concurrent
+    /// queries for different tenants execute against the wrong tenant's
+    /// catalog. Registered catalogs and the runtime environment remain
+    /// shared through Arcs inside the cloned state.
+    fn session_for_request(
+        &self,
+        tenant_slug: Option<&str>,
+        dataset_slug: Option<&str>,
+    ) -> SessionContext {
+        let state = self.session_ctx.state();
+
+        let Some(tenant) = tenant_slug else {
+            return SessionContext::new_with_state(state);
+        };
+
+        // create_default_catalog_and_schema must be off: with it on,
+        // SessionStateBuilder::build() would register a fresh EMPTY catalog
+        // under the tenant's name on the shared catalog list, shadowing the
+        // real tenant catalog for every session.
+        let mut config = state
+            .config()
+            .clone()
+            .with_create_default_catalog_and_schema(false);
+        let options = config.options_mut();
+        options.catalog.default_catalog = tenant.to_string();
+        options.catalog.default_schema = dataset_slug.unwrap_or("default").to_string();
+
+        let state = SessionStateBuilder::new_from_existing(state)
+            .with_config(config)
+            .build();
+        SessionContext::new_with_state(state)
+    }
+
     /// Execute a SQL query and return results as RecordBatches
     async fn execute_query(
         &self,
+        ctx: &SessionContext,
         sql: &str,
     ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error + Send + Sync>> {
         tracing::info!(sql = %sql, "Executing query");
 
-        let df = self.session_ctx.sql(sql).await?;
+        let df = ctx.sql(sql).await?;
         let batches = df.collect().await?;
 
         Ok(batches)
@@ -432,13 +472,14 @@ impl QuerierFlightService {
     /// Execute a query against the object store
     async fn execute_distributed_query(
         &self,
+        ctx: &SessionContext,
         query: &str,
     ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error + Send + Sync>> {
         // Query only the object store - data at rest
         // Writers are responsible for persisting data to object store
         // Querier should not depend on or know about writers
 
-        match self.execute_query(query).await {
+        match self.execute_query(ctx, query).await {
             Ok(batches) => {
                 tracing::debug!(
                     batch_count = batches.len(),
@@ -668,28 +709,13 @@ impl FlightService for QuerierFlightService {
                             "Executing SQL query"
                         );
 
-                        if let Some(tenant) = &tenant_slug {
-                            self.session_ctx
-                                .sql(&format!(
-                                    "SET datafusion.catalog.default_catalog = '{tenant}'"
-                                ))
-                                .await
-                                .map_err(|e| {
-                                    Status::internal(format!("Failed to set default catalog: {e}"))
-                                })?;
+                        // Per-request context: tenant/dataset defaults must
+                        // never be applied to the shared session (see
+                        // session_for_request).
+                        let request_ctx = self
+                            .session_for_request(tenant_slug.as_deref(), dataset_slug.as_deref());
 
-                            let dataset = dataset_slug.as_deref().unwrap_or("default");
-                            self.session_ctx
-                                .sql(&format!(
-                                    "SET datafusion.catalog.default_schema = '{dataset}'"
-                                ))
-                                .await
-                                .map_err(|e| {
-                                    Status::internal(format!("Failed to set default schema: {e}"))
-                                })?;
-                        }
-
-                        self.execute_distributed_query(&sql)
+                        self.execute_distributed_query(&request_ctx, &sql)
                             .await
                             .map_err(|e| Status::internal(format!("Query execution failed: {e}")))?
                     }
@@ -831,7 +857,118 @@ mod tests {
         let service = QuerierFlightService::new(object_store, flight_transport);
 
         // Test basic query execution (will fail due to no data, but tests the path)
-        let result = service.execute_query("SELECT 1 as test_col").await;
+        let result = service
+            .execute_query(&service.session_ctx, "SELECT 1 as test_col")
+            .await;
         assert!(result.is_ok());
+    }
+
+    async fn make_service() -> QuerierFlightService {
+        let object_store = Arc::new(InMemory::new());
+
+        let config = Configuration {
+            database: DatabaseConfig {
+                dsn: "sqlite::memory:".to_string(),
+            },
+            discovery: Some(DiscoveryConfig {
+                dsn: "sqlite::memory:".to_string(),
+                heartbeat_interval: Duration::from_secs(5),
+                poll_interval: Duration::from_secs(10),
+                ttl: Duration::from_secs(60),
+            }),
+            ..Default::default()
+        };
+
+        let bootstrap =
+            ServiceBootstrap::new(config, ServiceType::Querier, "localhost:50054".to_string())
+                .await
+                .unwrap();
+
+        let flight_transport = Arc::new(InMemoryFlightTransport::new(bootstrap));
+        QuerierFlightService::new(object_store, flight_transport)
+    }
+
+    /// Register a catalog `name` with schema `schema` containing a
+    /// single-row table `t` whose column `owner` holds `name`.
+    fn register_tenant_catalog(service: &QuerierFlightService, name: &str, schema: &str) {
+        use datafusion::arrow::array::StringArray;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::catalog::MemoryCatalogProvider;
+        use datafusion::catalog::MemorySchemaProvider;
+        use datafusion::datasource::MemTable;
+
+        let table_schema = Arc::new(Schema::new(vec![Field::new(
+            "owner",
+            DataType::Utf8,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            table_schema.clone(),
+            vec![Arc::new(StringArray::from(vec![name.to_string()]))],
+        )
+        .unwrap();
+        let table = MemTable::try_new(table_schema, vec![vec![batch]]).unwrap();
+
+        let schema_provider = MemorySchemaProvider::new();
+        schema_provider
+            .register_table("t".to_string(), Arc::new(table))
+            .unwrap();
+
+        let catalog = MemoryCatalogProvider::new();
+        catalog
+            .register_schema(schema, Arc::new(schema_provider))
+            .unwrap();
+
+        service
+            .session_ctx
+            .register_catalog(name, Arc::new(catalog));
+    }
+
+    #[tokio::test]
+    async fn per_request_sessions_isolate_tenant_defaults() {
+        use datafusion::arrow::array::StringArray;
+
+        let service = make_service().await;
+        register_tenant_catalog(&service, "tenant_a", "prod");
+        register_tenant_catalog(&service, "tenant_b", "prod");
+
+        // Two per-request contexts for different tenants, both alive at once
+        let ctx_a = service.session_for_request(Some("tenant_a"), Some("prod"));
+        let ctx_b = service.session_for_request(Some("tenant_b"), Some("prod"));
+
+        // Building per-request contexts must not shadow the real tenant
+        // catalogs on the shared catalog list (SessionStateBuilder would
+        // register an empty default catalog if not explicitly disabled)
+        let cat = service.session_ctx.catalog("tenant_a").unwrap();
+        assert_eq!(
+            cat.schema("prod").unwrap().table_names(),
+            vec!["t".to_string()],
+            "shared tenant catalog must remain intact"
+        );
+
+        // Each context must resolve the unqualified table in its own catalog,
+        // regardless of the other context existing concurrently
+        for (ctx, expected) in [(&ctx_a, "tenant_a"), (&ctx_b, "tenant_b")] {
+            let batches = ctx
+                .sql("SELECT owner FROM t")
+                .await
+                .unwrap()
+                .collect()
+                .await
+                .unwrap();
+            let owners = batches[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            assert_eq!(owners.value(0), expected);
+        }
+
+        // The shared context's defaults must be untouched
+        let state = service.session_ctx.state();
+        assert_eq!(
+            state.config().options().catalog.default_catalog,
+            "datafusion"
+        );
     }
 }
