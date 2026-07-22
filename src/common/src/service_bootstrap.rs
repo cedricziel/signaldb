@@ -39,6 +39,7 @@ pub struct ServiceBootstrap {
     address: String,
     config: Configuration,
     heartbeat_handle: Option<JoinHandle<()>>,
+    reaper_handle: Option<JoinHandle<()>>,
 }
 
 impl ServiceBootstrap {
@@ -92,6 +93,14 @@ impl ServiceBootstrap {
             Some(catalog.spawn_ingester_heartbeat(service_id, Duration::from_secs(30)))
         };
 
+        // Reap registrations whose heartbeat stopped: crashed services
+        // never deregister, so without this the catalog leaks a row per
+        // crash and routers keep handing out dead addresses (issue #555).
+        // Rows are deleted once they are 2x TTL stale — well past the
+        // staleness filter consumers apply at TTL.
+        let ttl = Self::discovery_ttl(&config);
+        let reaper_handle = Some(catalog.spawn_ingester_reaper(ttl, ttl * 2));
+
         Ok(ServiceBootstrap {
             catalog,
             service_id,
@@ -99,7 +108,17 @@ impl ServiceBootstrap {
             address,
             config,
             heartbeat_handle,
+            reaper_handle,
         })
+    }
+
+    /// The staleness TTL for service discovery from config (default 300s).
+    fn discovery_ttl(config: &Configuration) -> Duration {
+        config
+            .discovery
+            .as_ref()
+            .map(|d| d.ttl)
+            .unwrap_or_else(|| Duration::from_secs(300))
     }
 
     /// Ensure the data directory exists for SQLite databases
@@ -198,7 +217,9 @@ impl ServiceBootstrap {
     /// Discover other services of the specified type
     #[tracing::instrument(level = "debug", skip_all)]
     pub async fn discover_ingesters(&self) -> Result<Vec<Ingester>> {
-        let ingesters = self.catalog.list_ingesters().await?;
+        // Stale rows belong to crashed services; never hand them out.
+        let ttl = Self::discovery_ttl(&self.config);
+        let ingesters = self.catalog.list_active_ingesters(ttl).await?;
         Ok(ingesters)
     }
 
@@ -208,11 +229,18 @@ impl ServiceBootstrap {
         &self,
         capability: crate::flight::transport::ServiceCapability,
     ) -> Result<Vec<Ingester>> {
+        let ttl = Self::discovery_ttl(&self.config);
         let services = self
             .catalog
             .discover_services_by_capability(capability)
             .await?;
-        Ok(services)
+        // Stale rows belong to crashed services; never hand them out.
+        let now = chrono::Utc::now();
+        let ttl = chrono::Duration::from_std(ttl).unwrap_or(chrono::Duration::MAX);
+        Ok(services
+            .into_iter()
+            .filter(|s| now.signed_duration_since(s.last_seen) <= ttl)
+            .collect())
     }
 
     /// Discover all registered services (returns ingesters for now, extensible for other types)
@@ -362,6 +390,7 @@ impl ServiceBootstrap {
             address: address.to_string(),
             config,
             heartbeat_handle: None,
+            reaper_handle: None,
         })
     }
 
@@ -373,8 +402,11 @@ impl ServiceBootstrap {
             "Shutting down service and deregistering from catalog"
         );
 
-        // Stop heartbeat task
+        // Stop heartbeat and reaper tasks
         if let Some(handle) = self.heartbeat_handle.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.reaper_handle.take() {
             handle.abort();
         }
 
@@ -388,8 +420,11 @@ impl ServiceBootstrap {
 
 impl Drop for ServiceBootstrap {
     fn drop(&mut self) {
-        // Stop heartbeat task on drop
+        // Stop heartbeat and reaper tasks on drop
         if let Some(handle) = self.heartbeat_handle.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.reaper_handle.take() {
             handle.abort();
         }
     }

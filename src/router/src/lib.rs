@@ -42,7 +42,10 @@ impl std::fmt::Debug for InMemoryStateImpl {
 
 impl InMemoryStateImpl {
     pub fn new(catalog: Catalog, config: Configuration) -> Self {
-        let service_registry = discovery::ServiceRegistry::new(catalog.clone());
+        let mut service_registry = discovery::ServiceRegistry::new(catalog.clone());
+        if let Some(discovery_config) = &config.discovery {
+            service_registry = service_registry.with_discovery_ttl(discovery_config.ttl);
+        }
         let authenticator = Arc::new(Authenticator::new(
             config.auth.clone(),
             Arc::new(catalog.clone()),
@@ -61,8 +64,11 @@ impl InMemoryStateImpl {
         config: Configuration,
         flight_transport: common::flight::transport::InMemoryFlightTransport,
     ) -> Self {
-        let service_registry =
+        let mut service_registry =
             discovery::ServiceRegistry::with_flight_transport(catalog.clone(), flight_transport);
+        if let Some(discovery_config) = &config.discovery {
+            service_registry = service_registry.with_discovery_ttl(discovery_config.ttl);
+        }
         let authenticator = Arc::new(Authenticator::new(
             config.auth.clone(),
             Arc::new(catalog.clone()),

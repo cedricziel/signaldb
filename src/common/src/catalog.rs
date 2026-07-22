@@ -649,6 +649,62 @@ impl Catalog {
         Ok(filtered)
     }
 
+    /// List ingesters whose heartbeat is fresher than `ttl`.
+    ///
+    /// Crashed services never deregister (only graceful shutdown does),
+    /// so consumers must ignore rows whose `last_seen` is stale or they
+    /// will route to dead addresses (issue #555).
+    pub async fn list_active_ingesters(
+        &self,
+        ttl: std::time::Duration,
+    ) -> Result<Vec<Ingester>, sqlx::Error> {
+        let ttl = chrono::Duration::from_std(ttl).unwrap_or(chrono::Duration::MAX);
+        let now = Utc::now();
+        let ingesters = self.list_ingesters().await?;
+        Ok(ingesters
+            .into_iter()
+            .filter(|ingester| now.signed_duration_since(ingester.last_seen) <= ttl)
+            .collect())
+    }
+
+    /// Delete ingester rows whose `last_seen` is older than `cutoff`.
+    ///
+    /// Returns the number of rows removed. Safe to run from every
+    /// service concurrently — the DELETE is idempotent.
+    pub async fn reap_stale_ingesters(&self, cutoff: DateTime<Utc>) -> Result<u64, sqlx::Error> {
+        let removed = match self {
+            Catalog::Sqlite(pool) => {
+                // last_seen is stored as chrono RFC3339 text (UTC, +00:00
+                // offset), so lexicographic comparison against another
+                // RFC3339 UTC timestamp is chronologically correct.
+                let stmt = r#"
+                DELETE FROM ingesters
+                WHERE last_seen < ?
+                "#;
+                query(stmt)
+                    .bind(cutoff.to_rfc3339())
+                    .execute(pool)
+                    .await?
+                    .rows_affected()
+            }
+            Catalog::Postgres(pool) => {
+                let stmt = r#"
+                DELETE FROM ingesters
+                WHERE last_seen < $1
+                "#;
+                query(stmt)
+                    .bind(cutoff)
+                    .execute(pool)
+                    .await?
+                    .rows_affected()
+            }
+        };
+        if removed > 0 {
+            tracing::info!(removed, cutoff = %cutoff, "Reaped stale service registrations");
+        }
+        Ok(removed)
+    }
+
     /// Deregister an ingester instance, removing it from the catalog.
     #[tracing::instrument(level = "debug", skip_all, fields(service_id = %id))]
     pub async fn deregister_ingester(&self, id: Uuid) -> Result<(), sqlx::Error> {
@@ -689,6 +745,29 @@ impl Catalog {
                 ticker.tick().await;
                 if let Err(e) = catalog.heartbeat(id).await {
                     tracing::error!(service_id = %id, error = %e, "Failed to send heartbeat for ingester");
+                }
+            }
+        })
+    }
+
+    /// Spawn a background task that periodically deletes service rows
+    /// whose heartbeat stopped more than `reap_after` ago. Every service
+    /// runs one; the DELETE is idempotent across instances.
+    pub fn spawn_ingester_reaper(
+        &self,
+        interval: std::time::Duration,
+        reap_after: std::time::Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        let catalog = self.clone();
+        tokio::spawn(async move {
+            let reap_after =
+                chrono::Duration::from_std(reap_after).unwrap_or(chrono::Duration::MAX);
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                let cutoff = Utc::now() - reap_after;
+                if let Err(e) = catalog.reap_stale_ingesters(cutoff).await {
+                    tracing::error!(error = %e, "Failed to reap stale service registrations");
                 }
             }
         })
