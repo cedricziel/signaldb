@@ -13,7 +13,7 @@ use datafusion::{
 };
 
 use super::{
-    FindTraceByIdParams, SearchQueryParams, TraceQuerier, error::QuerierError,
+    FindTraceByIdParams, SearchQueryParams, TraceQuerier, error::QuerierError, search_filter,
     table_ref::build_table_reference,
 };
 
@@ -430,6 +430,23 @@ impl TraceService {
                     log::error!("Failed to apply max duration filter: {e}");
                     QuerierError::QueryFailed(e)
                 })?;
+        }
+
+        // Apply the `q` (TraceQL subset) and `tags` (logfmt) selectors.
+        // Unsupported constructs error out instead of silently returning
+        // unfiltered results (issue #551).
+        let mut conditions = Vec::new();
+        if let Some(q) = query.q.as_deref().filter(|s| !s.trim().is_empty()) {
+            conditions.extend(search_filter::parse_traceql(q)?);
+        }
+        if let Some(tags) = query.tags.as_deref().filter(|s| !s.trim().is_empty()) {
+            conditions.extend(search_filter::parse_tags(tags)?);
+        }
+        for condition in &conditions {
+            df = df.filter(condition.to_expr()?).map_err(|e| {
+                log::error!("Failed to apply search filter {condition:?}: {e}");
+                QuerierError::QueryFailed(e)
+            })?;
         }
 
         // Apply limit — we query for more spans than the requested trace count because

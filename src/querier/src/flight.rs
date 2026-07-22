@@ -828,9 +828,20 @@ impl FlightService for QuerierFlightService {
                             }
                             Err(e) => {
                                 tracing::error!(error = ?e, "Error searching traces");
-                                return Err(Status::internal(format!(
-                                    "Trace search failed: {e:?}"
-                                )));
+                                // Distinguish caller errors from server
+                                // errors so bad or unsupported selectors
+                                // surface as 400/501, not 500.
+                                return Err(match e {
+                                    crate::query::error::QuerierError::InvalidInput(msg) => {
+                                        Status::invalid_argument(msg)
+                                    }
+                                    crate::query::error::QuerierError::Unsupported(msg) => {
+                                        Status::unimplemented(msg)
+                                    }
+                                    other => {
+                                        Status::internal(format!("Trace search failed: {other:?}"))
+                                    }
+                                });
                             }
                         }
                     }

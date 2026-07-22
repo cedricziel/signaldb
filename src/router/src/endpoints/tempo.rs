@@ -693,7 +693,15 @@ pub async fn search<S: RouterState>(
         }
         Err(e) => {
             tracing::error!(error = %e, "Flight search query failed");
-            return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+            // Surface caller errors honestly: bad selectors are 400,
+            // unsupported query features are 501, everything else 500.
+            return Err(match e.code() {
+                tonic::Code::InvalidArgument => axum::http::StatusCode::BAD_REQUEST,
+                tonic::Code::Unimplemented => axum::http::StatusCode::NOT_IMPLEMENTED,
+                tonic::Code::ResourceExhausted => axum::http::StatusCode::TOO_MANY_REQUESTS,
+                tonic::Code::DeadlineExceeded => axum::http::StatusCode::GATEWAY_TIMEOUT,
+                _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            });
         }
     }
 }

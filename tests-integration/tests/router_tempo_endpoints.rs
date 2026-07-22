@@ -1539,3 +1539,161 @@ async fn test_trace_attributes_round_trip() {
         all_spans.len()
     );
 }
+
+/// Search filters must actually be applied (issue #551): matching
+/// selectors return the trace, non-matching selectors return nothing,
+/// unsupported TraceQL yields 501, and malformed tags yield 400 —
+/// never silently unfiltered results.
+#[tokio::test]
+async fn test_search_filters_are_applied() {
+    use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+    use opentelemetry_proto::tonic::resource::v1::Resource;
+
+    let services = setup_test_services().await;
+    let router_state = create_router_state(&services).await;
+
+    let authenticator = router_state.authenticator().clone();
+    let app: Router = tempo::router()
+        .with_state(router_state)
+        .layer(middleware::from_fn(move |req, next| {
+            auth_middleware(authenticator.clone(), req, next)
+        }));
+
+    // Trace with a known service name and span attribute.
+    let trace_id_bytes = vec![0xAB; 16];
+    let trace_request = ExportTraceServiceRequest {
+        resource_spans: vec![ResourceSpans {
+            resource: Some(Resource {
+                attributes: vec![KeyValue {
+                    key_strindex: 0,
+                    key: "service.name".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(Value::StringValue("filter-test-service".to_string())),
+                    }),
+                }],
+                dropped_attributes_count: 0,
+                entity_refs: vec![],
+            }),
+            scope_spans: vec![ScopeSpans {
+                scope: None,
+                spans: vec![Span {
+                    trace_id: trace_id_bytes.clone(),
+                    span_id: vec![0xBC; 8],
+                    parent_span_id: vec![],
+                    name: "filter-test-span".to_string(),
+                    kind: 1,
+                    start_time_unix_nano: 1_000_000_000,
+                    end_time_unix_nano: 2_000_000_000,
+                    attributes: vec![KeyValue {
+                        key_strindex: 0,
+                        key: "http.method".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("GET".to_string())),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                    events: vec![],
+                    dropped_events_count: 0,
+                    links: vec![],
+                    dropped_links_count: 0,
+                    status: Some(Status {
+                        code: 1,
+                        message: "".to_string(),
+                    }),
+                    trace_state: String::new(),
+                    flags: 0,
+                }],
+                schema_url: "".to_string(),
+            }],
+            schema_url: "".to_string(),
+        }],
+    };
+
+    let endpoint = format!("http://{}", services.acceptor_addr);
+    let mut otlp_client =
+        opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint)
+            .await
+            .unwrap();
+    timeout(Duration::from_secs(5), otlp_client.export(trace_request))
+        .await
+        .expect("OTLP export timed out")
+        .expect("OTLP export failed");
+    let trace_id = hex::encode(&trace_id_bytes);
+    wait_for_data_persistence(&services).await;
+
+    let search = |query: String| {
+        let app = app.clone();
+        async move {
+            let encoded: String = url::form_urlencoded::Serializer::new(String::new())
+                .extend_pairs(query.split_once('='))
+                .finish();
+            let request = Request::builder()
+                .uri(format!("/api/search?{encoded}"))
+                .header("Authorization", "Bearer test-key-123")
+                .header("X-Tenant-ID", "test-tenant")
+                .body(Body::empty())
+                .unwrap();
+            app.oneshot(request).await.unwrap()
+        }
+    };
+
+    // Matching service.name tag returns the trace.
+    let response = search("tags=service.name=filter-test-service".to_string()).await;
+    assert_eq!(response.status(), StatusCode::OK, "matching tags search");
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let result: tempo_api::SearchResult = serde_json::from_slice(&body).unwrap();
+    assert!(
+        result.traces.iter().any(|t| t.trace_id == trace_id),
+        "matching search must return the trace (got {:?})",
+        result.traces
+    );
+
+    // Non-matching service.name returns no traces.
+    let response = search("tags=service.name=does-not-exist".to_string()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let result: tempo_api::SearchResult = serde_json::from_slice(&body).unwrap();
+    assert!(
+        result.traces.is_empty(),
+        "non-matching search must return no traces (got {:?})",
+        result.traces
+    );
+
+    // TraceQL equality on a span attribute matches.
+    let response = search(r#"q={ span.http.method = "GET" }"#.to_string()).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "TraceQL span-attr search"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let result: tempo_api::SearchResult = serde_json::from_slice(&body).unwrap();
+    assert!(
+        result.traces.iter().any(|t| t.trace_id == trace_id),
+        "TraceQL attribute search must return the trace"
+    );
+
+    // Unsupported TraceQL is an explicit 501, not silently unfiltered.
+    let response = search("q={ duration > 100ms }".to_string()).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_IMPLEMENTED,
+        "unsupported TraceQL must be 501"
+    );
+
+    // Malformed tags are an explicit 400.
+    let response = search("tags=justaword".to_string()).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "malformed tags must be 400"
+    );
+
+    println!("✅ Search filter test completed");
+}
