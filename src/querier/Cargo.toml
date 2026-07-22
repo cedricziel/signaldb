@@ -33,7 +33,6 @@ datafusion_iceberg.workspace = true
 thiserror.workspace = true
 
 # PromQL support
-promql-parser.workspace = true
 
 [[bin]]
 name = "signaldb-querier"
