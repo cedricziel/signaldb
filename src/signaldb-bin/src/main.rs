@@ -367,43 +367,94 @@ async fn main() -> Result<()> {
             .expect("HTTP router error");
     });
 
+    // Flight authentication (shared across the router/querier/writer
+    // Flight servers when [auth].internal_service_key is configured)
+    let internal_service_key = config.auth.internal_service_key.clone();
+    if internal_service_key.is_none() {
+        log::warn!(
+            "Flight ports are UNAUTHENTICATED ([auth].internal_service_key is not set); \
+             they must be restricted to a trusted network"
+        );
+    }
+    let tenant_flight_auth = internal_service_key.clone().map(|key| {
+        common::flight::auth::FlightAuthInterceptor::new(
+            Arc::clone(&acceptor_resources.authenticator),
+            key,
+        )
+    });
+    let internal_flight_auth =
+        internal_service_key.map(common::flight::auth::FlightAuthInterceptor::internal_only);
+
     // Start Router Flight service
     let flight_service = create_flight_service(state);
     let flight_addr = SocketAddr::from(([0, 0, 0, 0], 50053));
+    let router_flight_auth = tenant_flight_auth.clone();
     let flight_handle = tokio::spawn(async move {
         log::info!("Starting Router Flight service on {flight_addr}");
 
-        match Server::builder()
-            .add_service(
-                arrow_flight::flight_service_server::FlightServiceServer::new(flight_service),
-            )
-            .serve_with_shutdown(flight_addr, async {
-                router_flight_shutdown_rx.await.ok();
-                log::info!("Router Flight service shutting down gracefully");
-            })
-            .await
-        {
+        let shutdown = async {
+            router_flight_shutdown_rx.await.ok();
+            log::info!("Router Flight service shutting down gracefully");
+        };
+        let serve =
+            match router_flight_auth {
+                Some(interceptor) => Server::builder()
+                    .add_service(
+                        arrow_flight::flight_service_server::FlightServiceServer::with_interceptor(
+                            flight_service,
+                            move |req| interceptor.intercept(req),
+                        ),
+                    )
+                    .serve_with_shutdown(flight_addr, shutdown)
+                    .await,
+                None => {
+                    Server::builder()
+                        .add_service(
+                            arrow_flight::flight_service_server::FlightServiceServer::new(
+                                flight_service,
+                            ),
+                        )
+                        .serve_with_shutdown(flight_addr, shutdown)
+                        .await
+                }
+            };
+        match serve {
             Ok(_) => log::info!("Router Flight service stopped"),
             Err(e) => log::error!("Router Flight service error: {e}"),
         }
     });
 
-    // Start Writer Flight service
+    // Start Writer Flight service (internal callers only)
     let writer_flight_handle = tokio::spawn(async move {
         log::info!("Starting Writer Flight service on {writer_flight_addr}");
 
-        match Server::builder()
-            .add_service(
-                arrow_flight::flight_service_server::FlightServiceServer::new(
-                    writer_flight_service,
-                ),
-            )
-            .serve_with_shutdown(writer_flight_addr, async {
-                writer_flight_shutdown_rx.await.ok();
-                log::info!("Writer Flight service shutting down gracefully");
-            })
-            .await
-        {
+        let shutdown = async {
+            writer_flight_shutdown_rx.await.ok();
+            log::info!("Writer Flight service shutting down gracefully");
+        };
+        let serve =
+            match internal_flight_auth {
+                Some(interceptor) => Server::builder()
+                    .add_service(
+                        arrow_flight::flight_service_server::FlightServiceServer::with_interceptor(
+                            writer_flight_service,
+                            move |req| interceptor.intercept(req),
+                        ),
+                    )
+                    .serve_with_shutdown(writer_flight_addr, shutdown)
+                    .await,
+                None => {
+                    Server::builder()
+                        .add_service(
+                            arrow_flight::flight_service_server::FlightServiceServer::new(
+                                writer_flight_service,
+                            ),
+                        )
+                        .serve_with_shutdown(writer_flight_addr, shutdown)
+                        .await
+                }
+            };
+        match serve {
             Ok(_) => log::info!("Writer Flight service stopped"),
             Err(e) => log::error!("Writer Flight service error: {e}"),
         }
@@ -413,18 +464,33 @@ async fn main() -> Result<()> {
     let querier_flight_handle = tokio::spawn(async move {
         log::info!("Starting Querier Flight service on {querier_flight_addr}");
 
-        match Server::builder()
-            .add_service(
-                arrow_flight::flight_service_server::FlightServiceServer::new(
-                    querier_flight_service,
-                ),
-            )
-            .serve_with_shutdown(querier_flight_addr, async {
-                querier_flight_shutdown_rx.await.ok();
-                log::info!("Querier Flight service shutting down gracefully");
-            })
-            .await
-        {
+        let shutdown = async {
+            querier_flight_shutdown_rx.await.ok();
+            log::info!("Querier Flight service shutting down gracefully");
+        };
+        let serve =
+            match tenant_flight_auth {
+                Some(interceptor) => Server::builder()
+                    .add_service(
+                        arrow_flight::flight_service_server::FlightServiceServer::with_interceptor(
+                            querier_flight_service,
+                            move |req| interceptor.intercept(req),
+                        ),
+                    )
+                    .serve_with_shutdown(querier_flight_addr, shutdown)
+                    .await,
+                None => {
+                    Server::builder()
+                        .add_service(
+                            arrow_flight::flight_service_server::FlightServiceServer::new(
+                                querier_flight_service,
+                            ),
+                        )
+                        .serve_with_shutdown(querier_flight_addr, shutdown)
+                        .await
+                }
+            };
+        match serve {
             Ok(_) => log::info!("Querier Flight service stopped"),
             Err(e) => log::error!("Querier Flight service error: {e}"),
         }

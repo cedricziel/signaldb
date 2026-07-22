@@ -15,6 +15,14 @@ enabled = true  # Set to false to disable authentication (dev/testing only)
 # Generate a strong random key for production use
 # admin_api_key = "sk-admin-your-secret-key-here"
 
+# Shared secret for service-to-service Arrow Flight calls (router -> querier,
+# acceptor -> writer). When set, the Flight ports (50051/50053/50054) require
+# every call to present either this key or a valid tenant API key; tenant
+# callers are then scoped to their own tenant. When unset, the Flight ports
+# are UNAUTHENTICATED and must be restricted to a trusted network.
+# All SignalDB services must share the same value.
+# internal_service_key = "sk-internal-your-secret-key-here"
+
 # Tenant definitions with API keys and datasets
 # Each tenant is isolated with separate WAL paths and Iceberg catalogs
 

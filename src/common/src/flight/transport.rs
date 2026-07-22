@@ -117,6 +117,12 @@ impl InMemoryFlightTransport {
         }
     }
 
+    /// The configured internal service key for authenticating outbound
+    /// Flight calls to other SignalDB services, if any.
+    pub fn internal_service_key(&self) -> Option<&str> {
+        self.bootstrap.config().auth.internal_service_key.as_deref()
+    }
+
     /// Register a Flight service with the catalog-based transport
     /// Note: Services are now registered automatically through ServiceBootstrap
     /// This method is kept for backward compatibility but now just returns the bootstrap service ID

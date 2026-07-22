@@ -163,12 +163,40 @@ async fn main() -> anyhow::Result<()> {
     let writer_bg_handle = flight_service.start_background_processing();
 
     tracing::info!(address = %flight_addr, "Starting Flight ingest service");
+    // The writer's Flight surface is service-to-service only: when the
+    // internal key is configured, tenant API keys are rejected outright.
+    let flight_auth = config
+        .auth
+        .internal_service_key
+        .clone()
+        .map(common::flight::auth::FlightAuthInterceptor::internal_only);
+    if flight_auth.is_none() {
+        tracing::warn!(
+            "Flight port is UNAUTHENTICATED ([auth].internal_service_key is not set); \
+             it must be restricted to a trusted network"
+        );
+    }
     let flight_handle = tokio::spawn(async move {
-        Server::builder()
-            .add_service(FlightServiceServer::new(flight_service))
-            .serve(flight_addr)
-            .await
-            .unwrap();
+        let serve = match flight_auth {
+            Some(interceptor) => {
+                Server::builder()
+                    .add_service(FlightServiceServer::with_interceptor(
+                        flight_service,
+                        move |req| interceptor.intercept(req),
+                    ))
+                    .serve(flight_addr)
+                    .await
+            }
+            None => {
+                Server::builder()
+                    .add_service(FlightServiceServer::new(flight_service))
+                    .serve(flight_addr)
+                    .await
+            }
+        };
+        if let Err(e) = serve {
+            tracing::error!(error = %e, "Flight server exited with error");
+        }
     });
 
     // Await shutdown signal

@@ -536,6 +536,15 @@ pub struct AuthConfig {
     /// Admin API key for management endpoints
     #[serde(default)]
     pub admin_api_key: Option<String>,
+    /// Shared secret for service-to-service Flight calls.
+    ///
+    /// When set, the router and querier Flight servers require every call
+    /// to present either this key (trusted internal caller) or a valid
+    /// tenant API key (scoped to that tenant). When unset, the Flight ports
+    /// accept unauthenticated calls and MUST be restricted to a trusted
+    /// network.
+    #[serde(default)]
+    pub internal_service_key: Option<String>,
 }
 
 fn default_self_monitoring_endpoint() -> String {

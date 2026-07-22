@@ -595,6 +595,13 @@ impl FlightService for QuerierFlightService {
         common::flight::trace_context::set_parent_from_request(&span, &request);
         async move {
             let metadata = request.metadata().clone();
+            // Tenant-scoped caller identity, inserted by the Flight auth
+            // interceptor. None for internal-service callers and for
+            // deployments without Flight auth configured.
+            let caller_tenant = request
+                .extensions()
+                .get::<common::auth::TenantContext>()
+                .cloned();
             let ticket = request.into_inner();
             let ticket_content = String::from_utf8(ticket.ticket.to_vec())
                 .map_err(|e| Status::invalid_argument(format!("Invalid ticket: {e}")))?;
@@ -603,6 +610,28 @@ impl FlightService for QuerierFlightService {
 
             // Parse ticket to determine request type
             let ticket_request = self.parse_ticket(&ticket_content)?;
+
+            // Tenant-scoped callers may only touch their own tenant's data,
+            // regardless of what the ticket claims.
+            if let Some(ctx) = &caller_tenant {
+                let ticket_tenant = match &ticket_request {
+                    TicketRequest::FindTrace { tenant_slug, .. }
+                    | TicketRequest::SearchTraces { tenant_slug, .. } => Some(tenant_slug),
+                    TicketRequest::SqlQuery { .. } => None,
+                };
+                if let Some(ticket_tenant) = ticket_tenant
+                    && ticket_tenant != &ctx.tenant_slug
+                {
+                    tracing::warn!(
+                        caller_tenant = %ctx.tenant_slug,
+                        ticket_tenant = %ticket_tenant,
+                        "Rejecting cross-tenant Flight ticket"
+                    );
+                    return Err(Status::permission_denied(
+                        "ticket tenant does not match authenticated tenant",
+                    ));
+                }
+            }
             let query_type = match &ticket_request {
                 TicketRequest::FindTrace { .. } => "trace_by_id",
                 TicketRequest::SearchTraces { .. } => "trace_search",
@@ -693,14 +722,25 @@ impl FlightService for QuerierFlightService {
                         }
                     }
                     TicketRequest::SqlQuery { sql } => {
-                        let tenant_slug = metadata
-                            .get("x-tenant-id")
-                            .and_then(|v| v.to_str().ok())
-                            .map(|s| s.to_string());
-                        let dataset_slug = metadata
-                            .get("x-dataset-id")
-                            .and_then(|v| v.to_str().ok())
-                            .map(|s| s.to_string());
+                        // Tenant-scoped callers are pinned to their
+                        // authenticated tenant/dataset; only internal or
+                        // unauthenticated callers may scope via headers.
+                        let (tenant_slug, dataset_slug) = match &caller_tenant {
+                            Some(ctx) => (
+                                Some(ctx.tenant_slug.clone()),
+                                Some(ctx.dataset_slug.clone()),
+                            ),
+                            None => (
+                                metadata
+                                    .get("x-tenant-id")
+                                    .and_then(|v| v.to_str().ok())
+                                    .map(|s| s.to_string()),
+                                metadata
+                                    .get("x-dataset-id")
+                                    .and_then(|v| v.to_str().ok())
+                                    .map(|s| s.to_string()),
+                            ),
+                        };
 
                         tracing::info!(
                             tenant_id = ?tenant_slug,
@@ -970,5 +1010,59 @@ mod tests {
             state.config().options().catalog.default_catalog,
             "datafusion"
         );
+    }
+
+    #[tokio::test]
+    async fn tenant_scoped_caller_cannot_use_cross_tenant_ticket() {
+        let service = make_service().await;
+
+        // Authenticated as tenant_a, but the ticket names tenant_b
+        let mut request = Request::new(Ticket::new("find_trace:tenant_b:prod:abc123"));
+        request
+            .extensions_mut()
+            .insert(common::auth::TenantContext::new(
+                "tenant_a".to_string(),
+                "prod".to_string(),
+                "tenant_a".to_string(),
+                "prod".to_string(),
+                None,
+                common::auth::TenantSource::Config,
+            ));
+
+        match service.do_get(request).await {
+            Ok(_) => panic!("cross-tenant ticket must be rejected"),
+            Err(status) => assert_eq!(status.code(), tonic::Code::PermissionDenied),
+        }
+    }
+
+    #[tokio::test]
+    async fn tenant_scoped_caller_may_use_own_tenant_ticket() {
+        let service = make_service().await;
+
+        // Same tenant in context and ticket: passes authorization and
+        // proceeds to execution (no data registered, so an empty result or
+        // a non-permission error are both acceptable here)
+        let mut request = Request::new(Ticket::new("find_trace:tenant_a:prod:abc123"));
+        request
+            .extensions_mut()
+            .insert(common::auth::TenantContext::new(
+                "tenant_a".to_string(),
+                "prod".to_string(),
+                "tenant_a".to_string(),
+                "prod".to_string(),
+                None,
+                common::auth::TenantSource::Config,
+            ));
+
+        match service.do_get(request).await {
+            Ok(_) => {}
+            Err(status) => {
+                assert_ne!(
+                    status.code(),
+                    tonic::Code::PermissionDenied,
+                    "same-tenant ticket must not be rejected for authorization"
+                );
+            }
+        }
     }
 }

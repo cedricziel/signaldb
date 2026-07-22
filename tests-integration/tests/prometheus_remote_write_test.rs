@@ -113,6 +113,7 @@ async fn setup_prometheus_test() -> (axum::Router, TempDir) {
     config.auth = common::config::AuthConfig {
         enabled: true,
         admin_api_key: None,
+        internal_service_key: None,
         tenants: vec![common::config::TenantConfig {
             id: "test-tenant".to_string(),
             slug: "test-tenant".to_string(),

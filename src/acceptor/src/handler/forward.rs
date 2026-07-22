@@ -42,8 +42,14 @@ pub async fn forward_batch_to_writer(
         first.app_metadata = Bytes::from(metadata_json.as_bytes().to_vec());
     }
 
+    let mut request = tonic::Request::new(stream::iter(flight_data));
+    // Authenticate to the writer when service-to-service auth is configured
+    if let Some(key) = flight_transport.internal_service_key() {
+        common::flight::auth::attach_internal_auth(&mut request, key);
+    }
+
     let response = client
-        .do_put(stream::iter(flight_data))
+        .do_put(request)
         .await
         .context("Flight do_put failed")?;
 

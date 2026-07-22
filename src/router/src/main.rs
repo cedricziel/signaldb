@@ -145,17 +145,42 @@ async fn main() -> Result<()> {
     });
 
     // Start Flight service
+    let flight_auth = state.config().auth.internal_service_key.clone().map(|key| {
+        common::flight::auth::FlightAuthInterceptor::new(state.authenticator().clone(), key)
+    });
+    if flight_auth.is_none() {
+        tracing::warn!(
+            "Flight port is UNAUTHENTICATED ([auth].internal_service_key is not set); \
+             it must be restricted to a trusted network"
+        );
+    }
     let flight_service = create_flight_service(state);
     let flight_handle = tokio::spawn(async move {
         tracing::info!(address = %flight_addr, "Starting Flight service");
 
-        match Server::builder()
-            .add_service(
-                arrow_flight::flight_service_server::FlightServiceServer::new(flight_service),
-            )
-            .serve(flight_addr)
-            .await
-        {
+        let serve =
+            match flight_auth {
+                Some(interceptor) => Server::builder()
+                    .add_service(
+                        arrow_flight::flight_service_server::FlightServiceServer::with_interceptor(
+                            flight_service,
+                            move |req| interceptor.intercept(req),
+                        ),
+                    )
+                    .serve(flight_addr)
+                    .await,
+                None => {
+                    Server::builder()
+                        .add_service(
+                            arrow_flight::flight_service_server::FlightServiceServer::new(
+                                flight_service,
+                            ),
+                        )
+                        .serve(flight_addr)
+                        .await
+                }
+            };
+        match serve {
             Ok(_) => tracing::info!("Flight service stopped"),
             Err(e) => tracing::error!(error = %e, "Flight service error"),
         }

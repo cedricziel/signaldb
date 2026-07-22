@@ -101,6 +101,10 @@ async fn main() -> anyhow::Result<()> {
             .await
             .context("Failed to initialize service bootstrap")?;
 
+    // Keep a handle on the SQL catalog for Flight authentication before the
+    // bootstrap moves into the transport
+    let sql_catalog = Arc::new(service_bootstrap.catalog().clone());
+
     // Create Flight transport and register this querier's Flight service
     let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
 
@@ -130,12 +134,43 @@ async fn main() -> anyhow::Result<()> {
             .await
             .context("Failed to create querier flight service with CatalogManager")?;
     tracing::info!(address = %flight_addr, "Starting Flight query service");
+    let flight_auth = config.auth.internal_service_key.clone().map(|key| {
+        let authenticator = Arc::new(common::auth::Authenticator::new(
+            config.auth.clone(),
+            sql_catalog,
+        ));
+        common::flight::auth::FlightAuthInterceptor::new(authenticator, key)
+    });
+    if flight_auth.is_none() {
+        tracing::warn!(
+            "Flight port is UNAUTHENTICATED ([auth].internal_service_key is not set); \
+             it must be restricted to a trusted network"
+        );
+    }
     let flight_handle = tokio::spawn(async move {
-        Server::builder()
-            .add_service(FlightServiceServer::new(flight_service))
-            .serve(flight_addr)
-            .await
-            .unwrap();
+        let builder = Server::builder();
+        let serve = match flight_auth {
+            Some(interceptor) => {
+                let mut builder = builder;
+                builder
+                    .add_service(FlightServiceServer::with_interceptor(
+                        flight_service,
+                        move |req| interceptor.intercept(req),
+                    ))
+                    .serve(flight_addr)
+                    .await
+            }
+            None => {
+                let mut builder = builder;
+                builder
+                    .add_service(FlightServiceServer::new(flight_service))
+                    .serve(flight_addr)
+                    .await
+            }
+        };
+        if let Err(e) = serve {
+            tracing::error!(error = %e, "Flight server exited with error");
+        }
     });
 
     // Await shutdown signal
