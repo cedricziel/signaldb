@@ -110,16 +110,14 @@ async fn self_monitoring_export_lands_in_system_wal() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let acceptor_addr = listener.local_addr().unwrap();
-    drop(listener);
     let auth = authenticator.clone();
     tokio::spawn(
         Server::builder()
             .add_service(TraceServiceServer::with_interceptor(service, move |req| {
                 grpc_auth_interceptor(auth.clone(), req)
             }))
-            .serve(acceptor_addr),
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
     );
-    tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Point self-monitoring at the in-process acceptor and export a span.
     config.self_monitoring.endpoint = format!("http://{acceptor_addr}");

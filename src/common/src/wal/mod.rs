@@ -777,13 +777,14 @@ impl Wal {
             // Find the entry in this segment
             for entry in &mut segment.entries {
                 if entry.id == entry_id {
-                    entry.processed = true;
-
-                    {
+                    // Count only the unprocessed -> processed transition so
+                    // repeated calls don't skew the metrics.
+                    if !entry.processed {
                         let metrics = crate::self_monitoring::app_metrics();
                         metrics.wal_entries_processed.add(1, &[]);
                         metrics.wal_entries_pending.add(-1, &[]);
                     }
+                    entry.processed = true;
 
                     // Persist the processed state to disk
                     segment.save_index().await?;

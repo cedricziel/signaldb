@@ -514,7 +514,7 @@ pub async fn echo() -> &'static str {
 ///
 /// See https://grafana.com/docs/tempo/latest/api_docs/#query
 #[tracing::instrument(
-    skip(state, tenant_ctx),
+    skip(state, tenant_ctx, _params),
     fields(
         tenant_id = %tenant_ctx.0.tenant_id,
         dataset_id = %tenant_ctx.0.dataset_id
@@ -524,7 +524,7 @@ pub async fn query_single_trace<S: RouterState>(
     state: State<S>,
     tenant_ctx: TenantContextExtractor,
     Path(trace_id): Path<String>,
-    Query(params): Query<TraceQueryParams>,
+    Query(_params): Query<TraceQueryParams>,
 ) -> Result<axum::Json<tempo_api::Trace>, axum::http::StatusCode> {
     tracing::info!(
         trace_id = %trace_id,
@@ -605,7 +605,7 @@ pub async fn query_single_trace<S: RouterState>(
 
 /// GET https://grafana.com/docs/tempo/latest/api_docs/#search
 #[tracing::instrument(
-    skip(state, tenant_ctx),
+    skip(state, tenant_ctx, query),
     fields(
         tenant_id = %tenant_ctx.0.tenant_id,
         dataset_id = %tenant_ctx.0.dataset_id
@@ -617,7 +617,6 @@ pub async fn search<S: RouterState>(
     Query(query): Query<tempo_api::SearchQueryParams>,
 ) -> Result<axum::Json<tempo_api::SearchResult>, axum::http::StatusCode> {
     tracing::info!(
-        params = ?query,
         tenant_id = %tenant_ctx.0.tenant_id,
         dataset_id = %tenant_ctx.0.dataset_id,
         "Searching for traces"
@@ -732,12 +731,12 @@ pub async fn search_tag_values_v2(
 }
 
 /// GET /api/metrics/query - Instant TraceQL metrics query
-#[tracing::instrument(skip(_state))]
+#[tracing::instrument(skip(_state, _params))]
 pub async fn metrics_query<S: RouterState>(
     _state: State<S>,
-    Query(params): Query<MetricsQueryParams>,
+    Query(_params): Query<MetricsQueryParams>,
 ) -> Result<axum::Json<MetricsResponse>, axum::http::StatusCode> {
-    tracing::info!(params = ?params, "Metrics instant query");
+    tracing::info!("Metrics instant query");
 
     // For now, return a simple response indicating the endpoint is available
     // Full implementation will parse TraceQL and execute queries
@@ -763,12 +762,12 @@ pub async fn metrics_query<S: RouterState>(
 }
 
 /// GET /api/metrics/query_range - Range TraceQL metrics query with time series
-#[tracing::instrument(skip(_state))]
+#[tracing::instrument(skip(_state, _params))]
 pub async fn metrics_query_range<S: RouterState>(
     _state: State<S>,
-    Query(params): Query<MetricsRangeQueryParams>,
+    Query(_params): Query<MetricsRangeQueryParams>,
 ) -> Result<axum::Json<MetricsResponse>, axum::http::StatusCode> {
-    tracing::info!(params = ?params, "Metrics range query");
+    tracing::info!("Metrics range query");
 
     // For now, return a simple response indicating the endpoint is available
     // Full implementation will:

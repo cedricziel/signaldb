@@ -13,6 +13,18 @@ use once_cell::sync::OnceCell;
 
 pub static CONFIG: OnceCell<Configuration> = OnceCell::new();
 
+/// Redact credentials in a DSN for safe logging:
+/// `scheme://user:pass@host/db` becomes `scheme://***@host/db`.
+/// DSNs without a userinfo component (e.g. sqlite paths) pass through.
+pub fn redact_dsn(dsn: &str) -> String {
+    if let Some((scheme, rest)) = dsn.split_once("://")
+        && let Some((_credentials, tail)) = rest.split_once('@')
+    {
+        return format!("{scheme}://***@{tail}");
+    }
+    dsn.to_string()
+}
+
 /// Retention policy configuration for compactor (Phase 3).
 /// This is a lightweight config-only version that matches the full RetentionConfig
 /// in the compactor crate but lives in common for TOML/env deserialization.
@@ -1117,6 +1129,19 @@ mod tests {
         assert!(!config.is_tenant_enabled("disabled-tenant"));
         // Default tenant should still be enabled
         assert!(config.is_tenant_enabled("default"));
+    }
+
+    #[test]
+    fn redact_dsn_strips_credentials() {
+        assert_eq!(
+            redact_dsn("postgres://user:secret@db:5432/signaldb"),
+            "postgres://***@db:5432/signaldb"
+        );
+        assert_eq!(
+            redact_dsn("sqlite://.data/signaldb.db"),
+            "sqlite://.data/signaldb.db"
+        );
+        assert_eq!(redact_dsn("sqlite::memory:"), "sqlite::memory:");
     }
 
     #[test]

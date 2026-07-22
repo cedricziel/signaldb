@@ -67,6 +67,11 @@ impl<H: LogHandlerTrait + Send + Sync + 'static> LogsService for LogAcceptorServ
             handle.await;
         }
 
+        // Anti-loop guard: _system traffic is SignalDB's own telemetry and
+        // must not be measured (would feed back into the export pipeline).
+        if !common::self_monitoring::should_count_tenant(&tenant_context.tenant_id) {
+            return Ok(Response::new(Default::default()));
+        }
         let app_metrics = common::self_monitoring::app_metrics();
         app_metrics.rpc_server_duration.record(
             rpc_start.elapsed().as_secs_f64() * 1000.0,
@@ -79,15 +84,13 @@ impl<H: LogHandlerTrait + Send + Sync + 'static> LogsService for LogAcceptorServ
                 opentelemetry::KeyValue::new("rpc.method", "Export"),
             ],
         );
-        if common::self_monitoring::should_count_tenant(&tenant_context.tenant_id) {
-            app_metrics.ingest_logs_received.add(
-                log_count,
-                &[opentelemetry::KeyValue::new(
-                    "tenant_id",
-                    tenant_context.tenant_id.clone(),
-                )],
-            );
-        }
+        app_metrics.ingest_logs_received.add(
+            log_count,
+            &[opentelemetry::KeyValue::new(
+                "tenant_id",
+                tenant_context.tenant_id.clone(),
+            )],
+        );
 
         Ok(Response::new(ExportLogsServiceResponse::default()))
     }

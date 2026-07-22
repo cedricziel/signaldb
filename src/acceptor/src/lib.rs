@@ -301,7 +301,10 @@ async fn health() -> &'static str {
 async fn handle_traces(
     axum::extract::Json(payload): axum::extract::Json<serde_json::Value>,
 ) -> axum::response::Response<axum::body::Body> {
-    tracing::info!(payload = ?payload, "Got traces");
+    tracing::info!(
+        payload_size = payload.to_string().len(),
+        "Got traces via HTTP"
+    );
     axum::response::Response::builder()
         .status(200)
         .body(axum::body::Body::empty())

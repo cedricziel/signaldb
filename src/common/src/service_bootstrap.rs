@@ -60,10 +60,10 @@ impl ServiceBootstrap {
             &config.database.dsn
         };
 
-        tracing::info!(dsn = %dsn, "Using DSN for service bootstrap");
-        tracing::info!(dsn = %config.database.dsn, "Database config DSN");
+        tracing::info!(dsn = %crate::config::redact_dsn(dsn), "Using DSN for service bootstrap");
+        tracing::info!(dsn = %crate::config::redact_dsn(&config.database.dsn), "Database config DSN");
         if let Some(discovery_config) = &config.discovery {
-            tracing::info!(dsn = %discovery_config.dsn, "Discovery config DSN");
+            tracing::info!(dsn = %crate::config::redact_dsn(&discovery_config.dsn), "Discovery config DSN");
         } else {
             tracing::info!("No discovery config found");
         }
@@ -104,7 +104,7 @@ impl ServiceBootstrap {
 
     /// Ensure the data directory exists for SQLite databases
     fn ensure_data_directory(dsn: &str) -> Result<()> {
-        tracing::info!(dsn = %dsn, "Ensuring data directory exists");
+        tracing::info!(dsn = %crate::config::redact_dsn(dsn), "Ensuring data directory exists");
 
         // Only handle SQLite databases
         if !dsn.starts_with("sqlite:") {
@@ -139,7 +139,7 @@ impl ServiceBootstrap {
                 path // Keep as is
             }
         } else {
-            tracing::info!(dsn = %dsn, "Failed to extract file path from DSN");
+            tracing::info!(dsn = %crate::config::redact_dsn(dsn), "Failed to extract file path from DSN");
             return Ok(());
         };
 

@@ -179,7 +179,7 @@ impl PrometheusHandler {
                 PrometheusError::SerializationError(e.to_string())
             })?;
 
-            let wal_metadata = serde_json::json!({
+            let mut wal_metadata = serde_json::json!({
                 "schema_version": "v1",
                 "signal_type": "metrics",
                 "metric_type": metric_type,
@@ -187,6 +187,16 @@ impl PrometheusHandler {
                 "tenant_id": tenant_context.tenant_id,
                 "dataset_id": tenant_context.dataset_id,
             });
+            // Keep the distributed-trace context with the WAL entry so retry
+            // processing after a failed Flight forward retains it.
+            if let Some((traceparent, tracestate)) =
+                common::flight::trace_context::current_trace_context_fields()
+            {
+                wal_metadata["traceparent"] = traceparent.into();
+                if let Some(tracestate) = tracestate {
+                    wal_metadata["tracestate"] = tracestate.into();
+                }
+            }
             let wal_metadata_str = serde_json::to_string(&wal_metadata).ok();
 
             let wal_entry_id = wal

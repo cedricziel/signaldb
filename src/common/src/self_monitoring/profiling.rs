@@ -86,7 +86,7 @@ pub fn init_profiling(
     #[cfg(feature = "jemalloc-profiling")]
     if profiling.memory_profiling {
         let app_name = format!("{service_name}.memory");
-        let memory_agent = PyroscopeAgentBuilder::new(
+        let memory_agent_result = PyroscopeAgentBuilder::new(
             profiling.pyroscope_url.as_str(),
             app_name.as_str(),
             profiling.cpu_sample_rate,
@@ -99,11 +99,23 @@ pub fn init_profiling(
             ("deployment.environment", "self-monitoring"),
         ])
         .build()
-        .context("Failed to build Pyroscope jemalloc agent")?
-        .start()
-        .context("Failed to start Pyroscope jemalloc agent")?;
-        agents.push(memory_agent);
-        tracing::info!("Continuous heap profiling started (jemalloc)");
+        .context("Failed to build Pyroscope jemalloc agent")
+        .and_then(|agent| {
+            agent
+                .start()
+                .context("Failed to start Pyroscope jemalloc agent")
+        });
+        match memory_agent_result {
+            Ok(memory_agent) => {
+                agents.push(memory_agent);
+                tracing::info!("Continuous heap profiling started (jemalloc)");
+            }
+            Err(e) => {
+                // Cleanly stop the already-running CPU agent before bailing.
+                ProfilingHandle { agents }.shutdown();
+                return Err(e);
+            }
+        }
     }
     #[cfg(not(feature = "jemalloc-profiling"))]
     if profiling.memory_profiling {

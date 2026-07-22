@@ -186,14 +186,37 @@ impl AppMetrics {
     }
 }
 
+/// Decrements `http.server.active_requests` on drop so the gauge stays
+/// balanced even if the downstream handler panics.
+struct ActiveRequestGuard {
+    attrs: [opentelemetry::KeyValue; 2],
+}
+
+impl Drop for ActiveRequestGuard {
+    fn drop(&mut self) {
+        app_metrics().http_active_requests.add(-1, &self.attrs);
+    }
+}
+
 /// Axum middleware recording OTel HTTP server metrics for every request.
 ///
 /// Attach with `axum::middleware::from_fn(http_metrics_middleware)`.
+/// Requests carrying the `_system` tenant header are not measured
+/// (anti-loop guard: they are SignalDB's own telemetry exports).
 pub async fn http_metrics_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use opentelemetry::KeyValue;
+
+    let is_system_request = request
+        .headers()
+        .get("x-tenant-id")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(is_self_monitoring_tenant);
+    if is_system_request {
+        return next.run(request).await;
+    }
 
     let metrics = app_metrics();
     let method = request.method().as_str().to_owned();
@@ -208,11 +231,14 @@ pub async fn http_metrics_middleware(
         KeyValue::new("url.scheme", "http"),
     ];
     metrics.http_active_requests.add(1, &active_attrs);
+    let active_guard = ActiveRequestGuard {
+        attrs: active_attrs,
+    };
     let start = Instant::now();
 
     let response = next.run(request).await;
 
-    metrics.http_active_requests.add(-1, &active_attrs);
+    drop(active_guard);
     let attrs = [
         KeyValue::new("http.request.method", method),
         KeyValue::new(

@@ -39,7 +39,7 @@ impl Catalog {
 
     /// Create a new Catalog client and initialize schema.
     pub async fn new(dsn: &str) -> Result<Self, sqlx::Error> {
-        tracing::info!(dsn = %dsn, "Connecting to catalog database");
+        tracing::info!(dsn = %crate::config::redact_dsn(dsn), "Connecting to catalog database");
 
         let catalog = if dsn.starts_with("sqlite:") {
             // Add mode=rwc to create database file if it doesn't exist
@@ -55,7 +55,7 @@ impl Catalog {
 
             let pool = SqlitePool::connect(&dsn_with_create).await.map_err(|e| {
                 tracing::error!(
-                    dsn = %dsn_with_create,
+                    dsn = %crate::config::redact_dsn(&dsn_with_create),
                     error = %e,
                     "Failed to connect to SQLite database"
                 );
@@ -64,7 +64,7 @@ impl Catalog {
             Catalog::Sqlite(pool)
         } else {
             let pool = PgPool::connect(dsn).await.map_err(|e| {
-                tracing::error!(dsn = %dsn, error = %e, "Failed to connect to PostgreSQL database");
+                tracing::error!(dsn = %crate::config::redact_dsn(dsn), error = %e, "Failed to connect to PostgreSQL database");
                 e
             })?;
             Catalog::Postgres(pool)

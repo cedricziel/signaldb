@@ -117,23 +117,31 @@ pub async fn auth_middleware(
         }
     };
 
-    tracing::debug!(
-        tenant_id = %tenant_context.tenant_id,
-        dataset_id = %tenant_context.dataset_id,
-        source = %tenant_context.source,
-        "Authenticated request"
-    );
-
     let is_system = common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id);
 
-    // Insert TenantContext into request extensions
-    request.extensions_mut().insert(tenant_context);
-
     // Anti-loop guard: processing the _system tenant's own telemetry must not
-    // generate more self-monitoring telemetry (infinite feedback loop).
+    // generate more self-monitoring telemetry (infinite feedback loop). The
+    // suppression scope covers everything from the auth event onwards.
     if is_system {
-        common::self_monitoring::suppress_self_telemetry(next.run(request)).await
+        common::self_monitoring::suppress_self_telemetry(async move {
+            tracing::debug!(
+                tenant_id = %tenant_context.tenant_id,
+                dataset_id = %tenant_context.dataset_id,
+                source = %tenant_context.source,
+                "Authenticated request"
+            );
+            request.extensions_mut().insert(tenant_context);
+            next.run(request).await
+        })
+        .await
     } else {
+        tracing::debug!(
+            tenant_id = %tenant_context.tenant_id,
+            dataset_id = %tenant_context.dataset_id,
+            source = %tenant_context.source,
+            "Authenticated request"
+        );
+        request.extensions_mut().insert(tenant_context);
         next.run(request).await
     }
 }
