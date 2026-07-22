@@ -83,6 +83,10 @@ async fn main() -> Result<()> {
         Configuration::default()
     };
 
+    // Standalone services need shared discovery/catalog backends; the
+    // in-memory defaults only make sense in monolithic mode (issue #554).
+    config.validate_for_distributed("compactor")?;
+
     // Check if compactor is enabled
     if !config.compactor.enabled {
         tracing::info!("Compactor is disabled in configuration (compactor.enabled = false)");

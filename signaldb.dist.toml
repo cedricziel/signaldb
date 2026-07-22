@@ -112,8 +112,14 @@ dsn = "file:///.data/storage"
 
 [schema]
 # Iceberg catalog configuration for table metadata
+#
+# IMPORTANT: the in-memory default only works in monolithic mode (the
+# single `signaldb` binary). Standalone services REFUSE to start with an
+# in-memory catalog — every process would get its own private catalog.
+# Distributed deployments must point catalog_uri at a shared database:
+# PostgreSQL for production, a shared sqlite:// file for single-host dev.
 catalog_type = "sql"                   # sql (recommended) or memory
-catalog_uri = "sqlite::memory:"        # In-memory SQLite catalog
+catalog_uri = "sqlite::memory:"        # In-memory SQLite catalog (monolithic only)
 # catalog_uri = "sqlite://.data/catalog.db"  # Persistent SQLite catalog
 # catalog_uri = "postgres://user:password@localhost:5432/iceberg"  # Production PostgreSQL
 
@@ -156,7 +162,12 @@ metrics_enabled = true
 
 [discovery]
 # Service discovery configuration
-dsn = "sqlite::memory:"               # In-memory service registry
+#
+# IMPORTANT: the in-memory default only works in monolithic mode.
+# Standalone services REFUSE to start with an in-memory registry —
+# services could never discover each other. Use PostgreSQL for
+# production; a shared sqlite:// file works for single-host dev.
+dsn = "sqlite::memory:"               # In-memory service registry (monolithic only)
 heartbeat_interval = "30s"
 poll_interval = "60s"
 ttl = "300s"

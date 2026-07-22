@@ -839,6 +839,73 @@ impl Configuration {
         Ok(config)
     }
 
+    /// Validate this configuration for a standalone (distributed) service.
+    ///
+    /// The defaults use `sqlite::memory:` for service discovery and the
+    /// Iceberg catalog, which is coherent only in monolithic mode: each
+    /// standalone binary would get its own private in-memory registry and
+    /// catalog, so services could never discover each other or see each
+    /// other's tables. Fail fast instead of starting a silently broken
+    /// deployment (issue #554).
+    ///
+    /// File-based SQLite is allowed with a prominent warning: it works for
+    /// single-host development (all services sharing one file, as
+    /// `scripts/run-dev.sh` sets up) but has no multi-node story —
+    /// PostgreSQL is required for production distributed deployments.
+    ///
+    /// Monolithic mode (`signaldb-bin`) intentionally does not call this.
+    pub fn validate_for_distributed(&self, service_name: &str) -> anyhow::Result<()> {
+        fn is_in_memory(dsn: &str) -> bool {
+            dsn.starts_with("sqlite::memory:") || dsn == "memory://" || dsn == "memory"
+        }
+        fn is_file_sqlite(dsn: &str) -> bool {
+            dsn.starts_with("sqlite:") && !is_in_memory(dsn)
+        }
+
+        // Discovery registry: bootstrap falls back to [database] when no
+        // [discovery] section is configured.
+        let (discovery_dsn, discovery_source) = match &self.discovery {
+            Some(discovery) => (discovery.dsn.as_str(), "[discovery] dsn"),
+            None => (self.database.dsn.as_str(), "[database] dsn"),
+        };
+        if is_in_memory(discovery_dsn) {
+            anyhow::bail!(
+                "{service_name} cannot run as a standalone service with {discovery_source} = \
+                 \"sqlite::memory:\": every process would get its own private service registry \
+                 and services could never discover each other. Point {discovery_source} at a \
+                 database shared by all services (PostgreSQL for production, a shared \
+                 sqlite:// file for single-host development), or run the monolithic \
+                 `signaldb` binary instead."
+            );
+        }
+
+        // Iceberg catalog: same failure mode for table metadata.
+        if self.schema.catalog_type == "memory" || is_in_memory(&self.schema.catalog_uri) {
+            anyhow::bail!(
+                "{service_name} cannot run as a standalone service with an in-memory Iceberg \
+                 catalog ([schema] catalog_type = \"{}\", catalog_uri = \"{}\"): every process \
+                 would get its own private catalog and services could never see each other's \
+                 tables. Point [schema] catalog_uri at a database shared by all services \
+                 (PostgreSQL for production), or run the monolithic `signaldb` binary instead.",
+                self.schema.catalog_type,
+                self.schema.catalog_uri
+            );
+        }
+
+        if is_file_sqlite(discovery_dsn) || is_file_sqlite(&self.schema.catalog_uri) {
+            tracing::warn!(
+                service = %service_name,
+                discovery_dsn = %redact_dsn(discovery_dsn),
+                catalog_uri = %redact_dsn(&self.schema.catalog_uri),
+                "SQLite-backed discovery/catalog only works when every service shares the same \
+                 file on one host (single-writer lock, no multi-node support); use PostgreSQL \
+                 for production distributed deployments"
+            );
+        }
+
+        Ok(())
+    }
+
     /// Auto-provision the self-monitoring tenant when self-monitoring is
     /// enabled together with authentication but no matching tenant is
     /// configured.
@@ -1024,6 +1091,64 @@ mod tests {
             assert_eq!(config.querier.max_search_limit, 50);
             Ok(())
         });
+    }
+
+    #[test]
+    fn distributed_validation_rejects_in_memory_backends() {
+        // The defaults are in-memory: standalone services must refuse them.
+        let config = Configuration::default();
+        let error = config
+            .validate_for_distributed("querier")
+            .expect_err("in-memory discovery must be rejected");
+        assert!(error.to_string().contains("service registry"), "{error}");
+
+        // Shared discovery but in-memory catalog: still rejected.
+        let config = Configuration {
+            discovery: Some(DiscoveryConfig {
+                dsn: "postgres://db/signaldb".to_string(),
+                ..DiscoveryConfig::default()
+            }),
+            ..Configuration::default()
+        };
+        let error = config
+            .validate_for_distributed("querier")
+            .expect_err("in-memory catalog must be rejected");
+        assert!(error.to_string().contains("catalog"), "{error}");
+
+        // No [discovery] section: the [database] fallback is checked.
+        let config = Configuration {
+            discovery: None,
+            database: DatabaseConfig {
+                dsn: "sqlite::memory:".to_string(),
+            },
+            ..Configuration::default()
+        };
+        assert!(config.validate_for_distributed("router").is_err());
+    }
+
+    #[test]
+    fn distributed_validation_accepts_shared_backends() {
+        // PostgreSQL everywhere: fine.
+        let mut config = Configuration {
+            discovery: Some(DiscoveryConfig {
+                dsn: "postgres://db/signaldb".to_string(),
+                ..DiscoveryConfig::default()
+            }),
+            schema: SchemaConfig {
+                catalog_uri: "postgres://db/iceberg".to_string(),
+                ..SchemaConfig::default()
+            },
+            ..Configuration::default()
+        };
+        config.validate_for_distributed("writer").unwrap();
+
+        // File-based SQLite: allowed (single-host dev) with a warning.
+        config.discovery = Some(DiscoveryConfig {
+            dsn: "sqlite://.data/signaldb.db".to_string(),
+            ..DiscoveryConfig::default()
+        });
+        config.schema.catalog_uri = "sqlite://.data/catalog.db".to_string();
+        config.validate_for_distributed("writer").unwrap();
     }
 
     #[test]
