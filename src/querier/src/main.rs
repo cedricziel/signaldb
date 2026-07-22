@@ -40,12 +40,15 @@ impl Default for QuerierCommands {
     }
 }
 
+// Heap profiling: install jemalloc as global allocator when built with
+// the jemalloc-profiling feature (see [profiling] config)
+#[cfg(feature = "jemalloc-profiling")]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-
-    // Initialize logging based on CLI arguments
-    utils::init_logging(&cli.common);
 
     // Load configuration
     let config = utils::load_config(cli.common.config.as_ref())?;
@@ -57,15 +60,28 @@ async fn main() -> anyhow::Result<()> {
         return Ok(()); // Command handled, exit early
     }
 
-    let _telemetry = match common::self_monitoring::init_telemetry(&config, "signaldb-querier") {
-        Ok(t) => {
-            if t.is_some() {
-                log::info!("Self-monitoring telemetry initialized");
-            }
-            t
-        }
+    // Initialize self-monitoring telemetry first so the OTel bridge layers
+    // can be attached to the tracing subscriber, then initialize logging.
+    let (telemetry, telemetry_error) =
+        match common::self_monitoring::init_telemetry(&config, "signaldb-querier") {
+            Ok(t) => (t, None),
+            Err(e) => (None, Some(e)),
+        };
+    utils::init_logging(&cli.common, telemetry.as_ref());
+    if let Some(e) = telemetry_error {
+        tracing::warn!(error = %e, "Self-monitoring init failed, continuing without it");
+    } else if let Some(ref t) = telemetry {
+        tracing::info!(
+            sampler = %t.sampler_description(),
+            "Self-monitoring telemetry initialized"
+        );
+    }
+    let _telemetry = telemetry;
+
+    let _profiling = match common::self_monitoring::init_profiling(&config, "signaldb-querier") {
+        Ok(p) => p,
         Err(e) => {
-            log::warn!("Self-monitoring init failed, continuing without it: {e}");
+            tracing::warn!(error = %e, "Profiling init failed, continuing without it");
             None
         }
     };
@@ -99,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to register Flight service: {}", e))?;
 
-    log::info!("Querier Flight service registered with ID: {service_id}");
+    tracing::info!(service_id = %service_id, "Querier Flight service registered");
 
     // Create shared catalog manager
     let catalog_manager = Arc::new(
@@ -113,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
         QuerierFlightService::new_with_catalog_manager(flight_transport.clone(), catalog_manager)
             .await
             .context("Failed to create querier flight service with CatalogManager")?;
-    log::info!("Starting Flight query service on {flight_addr}");
+    tracing::info!(address = %flight_addr, "Starting Flight query service");
     let flight_handle = tokio::spawn(async move {
         Server::builder()
             .add_service(FlightServiceServer::new(flight_service))
@@ -126,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
     signal::ctrl_c()
         .await
         .context("Failed to listen for shutdown signal")?;
-    log::info!("Shutting down querier service");
+    tracing::info!("Shutting down querier service");
 
     // Graceful shutdown: unregister Flight service
     flight_transport

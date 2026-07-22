@@ -50,12 +50,15 @@ impl Default for WriterCommands {
     }
 }
 
+// Heap profiling: install jemalloc as global allocator when built with
+// the jemalloc-profiling feature (see [profiling] config)
+#[cfg(feature = "jemalloc-profiling")]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-
-    // Initialize logging based on CLI arguments
-    utils::init_logging(&cli.common);
 
     // Load configuration
     let config = utils::load_config(cli.common.config.as_ref())?;
@@ -67,15 +70,28 @@ async fn main() -> anyhow::Result<()> {
         return Ok(()); // Command handled, exit early
     }
 
-    let _telemetry = match common::self_monitoring::init_telemetry(&config, "signaldb-writer") {
-        Ok(t) => {
-            if t.is_some() {
-                log::info!("Self-monitoring telemetry initialized");
-            }
-            t
-        }
+    // Initialize self-monitoring telemetry first so the OTel bridge layers
+    // can be attached to the tracing subscriber, then initialize logging.
+    let (telemetry, telemetry_error) =
+        match common::self_monitoring::init_telemetry(&config, "signaldb-writer") {
+            Ok(t) => (t, None),
+            Err(e) => (None, Some(e)),
+        };
+    utils::init_logging(&cli.common, telemetry.as_ref());
+    if let Some(e) = telemetry_error {
+        tracing::warn!(error = %e, "Self-monitoring init failed, continuing without it");
+    } else if let Some(ref t) = telemetry {
+        tracing::info!(
+            sampler = %t.sampler_description(),
+            "Self-monitoring telemetry initialized"
+        );
+    }
+    let _telemetry = telemetry;
+
+    let _profiling = match common::self_monitoring::init_profiling(&config, "signaldb-writer") {
+        Ok(p) => p,
         Err(e) => {
-            log::warn!("Self-monitoring init failed, continuing without it: {e}");
+            tracing::warn!(error = %e, "Profiling init failed, continuing without it");
             None
         }
     };
@@ -112,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to register Flight service: {}", e))?;
 
-    log::info!("Writer Flight service registered with ID: {service_id}");
+    tracing::info!(service_id = %service_id, "Writer Flight service registered");
 
     // Create shared catalog manager
     let catalog_manager = Arc::new(
@@ -146,7 +162,7 @@ async fn main() -> anyhow::Result<()> {
     // Start background WAL processing for Iceberg writes
     let writer_bg_handle = flight_service.start_background_processing();
 
-    log::info!("Starting Flight ingest service on {flight_addr}");
+    tracing::info!(address = %flight_addr, "Starting Flight ingest service");
     let flight_handle = tokio::spawn(async move {
         Server::builder()
             .add_service(FlightServiceServer::new(flight_service))
@@ -159,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
     signal::ctrl_c()
         .await
         .context("Failed to listen for shutdown signal")?;
-    log::info!("Shutting down writer service");
+    tracing::info!("Shutting down writer service");
 
     // Graceful shutdown: unregister Flight service
     flight_transport
@@ -174,7 +190,7 @@ async fn main() -> anyhow::Result<()> {
     let _ = flight_handle.await;
 
     // Stop background WAL processing task to release Arc<Wal> reference
-    log::info!("Stopping background WAL processing task");
+    tracing::info!("Stopping background WAL processing task");
     writer_bg_handle.abort();
     let _ = writer_bg_handle.await;
 
@@ -186,7 +202,7 @@ async fn main() -> anyhow::Result<()> {
     if let Ok(wal) = Arc::try_unwrap(wal) {
         wal.shutdown().await.context("Failed to shutdown WAL")?;
     } else {
-        log::warn!("Could not get exclusive access to WAL for shutdown - forcing flush");
+        tracing::warn!("Could not get exclusive access to WAL for shutdown - forcing flush");
         // WAL will be dropped and cleaned up automatically
     }
 

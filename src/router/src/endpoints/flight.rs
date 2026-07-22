@@ -189,6 +189,8 @@ impl<S: RouterState> SignalDBFlightService<S> {
             }
         }
 
+        common::flight::trace_context::inject_context_into_request(&mut request);
+
         let response = client.do_get(request).await.map_err(|e| {
             log::error!("Querier query failed: {}", e.message());
             Status::new(e.code(), e.message())

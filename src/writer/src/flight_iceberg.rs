@@ -18,6 +18,7 @@ use object_store::ObjectStore;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
+use tracing::Instrument;
 
 /// Enhanced Flight service that uses Iceberg table writer instead of direct Parquet writes
 /// This demonstrates the integration of the new Iceberg-based processor
@@ -57,7 +58,7 @@ impl IcebergWriterFlightService {
             loop {
                 let mut processor_guard = processor.lock().await;
                 if let Err(e) = processor_guard.process_pending_entries().await {
-                    log::error!("Background WAL processing error: {e}");
+                    tracing::error!(error = %e, "Background WAL processing error");
                 }
                 drop(processor_guard);
 
@@ -66,7 +67,7 @@ impl IcebergWriterFlightService {
             }
         });
 
-        log::info!("Started background WAL processing task");
+        tracing::info!("Started background WAL processing task");
         handle
     }
 }
@@ -122,30 +123,36 @@ impl FlightService for IcebergWriterFlightService {
         let mut data_vec = Vec::new();
         let mut flight_metadata: Option<FlightMetadata> = None;
         let mut schema_ref: Option<SchemaRef> = None;
+        let put_start = std::time::Instant::now();
+        let mut bytes_received: u64 = 0;
 
         while let Some(msg) = inbound.next().await {
             let d = msg.map_err(|e| Status::internal(e.to_string()))?;
+            bytes_received +=
+                (d.data_header.len() + d.data_body.len() + d.app_metadata.len()) as u64;
 
             // Extract full metadata from the first FlightData message (which contains metadata)
             if flight_metadata.is_none() && !d.app_metadata.is_empty() {
                 match extract_flight_metadata(&d.app_metadata) {
                     Ok(metadata) => {
-                        log::info!(
-                            "Received data - schema: {}, signal: {:?}, target: {:?}",
-                            metadata.schema_version,
-                            metadata.signal_type,
-                            metadata.target_table
+                        tracing::info!(
+                            schema_version = %metadata.schema_version,
+                            signal_type = ?metadata.signal_type,
+                            target_table = ?metadata.target_table,
+                            "Received data"
                         );
                         flight_metadata = Some(metadata);
                     }
                     Err(e) => {
-                        log::warn!("Failed to extract metadata: {e}, using defaults");
+                        tracing::warn!(error = %e, "Failed to extract metadata, using defaults");
                         flight_metadata = Some(FlightMetadata {
                             schema_version: "v1".to_string(),
                             signal_type: Some("traces".to_string()),
                             target_table: None,
                             tenant_id: None,
                             dataset_id: None,
+                            traceparent: None,
+                            tracestate: None,
                         });
                     }
                 }
@@ -158,9 +165,34 @@ impl FlightService for IcebergWriterFlightService {
             return Err(Status::invalid_argument("No FlightData received"));
         }
 
+        // Process within a span that joins the sender's distributed trace
+        // (parent must be set before the span is first entered).
+        let span = tracing::info_span!("flight_do_put");
+        if let Some(ref metadata) = flight_metadata {
+            common::flight::trace_context::set_parent_from_fields(
+                &span,
+                metadata.traceparent.as_deref(),
+                metadata.tracestate.as_deref(),
+            );
+        }
+        async move {
         // Convert FlightData stream into Arrow RecordBatches
         let batches =
             flight_data_to_batches(&data_vec).map_err(|e| Status::internal(e.to_string()))?;
+
+        {
+            let app_metrics = common::self_monitoring::app_metrics();
+            let attrs = [opentelemetry::KeyValue::new("rpc.method", "do_put")];
+            app_metrics
+                .flight_request_duration
+                .record(put_start.elapsed().as_secs_f64(), &attrs);
+            app_metrics
+                .flight_bytes_received
+                .add(bytes_received, &attrs);
+            app_metrics.ingest_batches_written.add(1, &[]);
+            let rows: u64 = batches.iter().map(|b| b.num_rows() as u64).sum();
+            app_metrics.ingest_batch_size.record(rows, &[]);
+        }
 
         // Determine WAL operation from metadata
         let wal_operation = if let Some(ref metadata) = flight_metadata {
@@ -169,7 +201,7 @@ impl FlightService for IcebergWriterFlightService {
             WalOperation::WriteTraces // Default fallback
         };
 
-        log::debug!("Using WAL operation: {wal_operation:?}");
+        tracing::debug!(operation = ?wal_operation, "Using WAL operation");
 
         let transformed_batches = if let Some(ref metadata) = flight_metadata {
             if metadata.schema_version == "v1" {
@@ -244,10 +276,10 @@ impl FlightService for IcebergWriterFlightService {
         for entry_id in wal_entry_ids {
             match processor.process_single_entry(entry_id).await {
                 Ok(_) => {
-                    log::debug!("Successfully processed WAL entry {entry_id} via Iceberg");
+                    tracing::debug!(entry_id = %entry_id, "Successfully processed WAL entry via Iceberg");
                 }
                 Err(e) => {
-                    log::error!("Failed to process WAL entry {entry_id} via Iceberg: {e}");
+                    tracing::error!(entry_id = %entry_id, error = %e, "Failed to process WAL entry via Iceberg");
                     return Err(Status::internal(format!(
                         "Failed to process via Iceberg: {e}"
                     )));
@@ -260,6 +292,9 @@ impl FlightService for IcebergWriterFlightService {
         };
         let out = stream::once(async move { Ok(result) }).boxed();
         Ok(Response::new(out))
+        }
+        .instrument(span)
+        .await
     }
 
     type DoGetStream = BoxStream<'static, Result<FlightData, Status>>;

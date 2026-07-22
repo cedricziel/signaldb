@@ -48,30 +48,64 @@ pub enum CommonCommands {
 pub mod utils {
     use super::*;
     use crate::config::Configuration;
+    use crate::self_monitoring::{OtelExportFilter, Telemetry as SelfTelemetry};
     use anyhow::{Context, Result};
+    use tracing_subscriber::Layer as _;
 
-    /// Initialize logging based on CLI arguments
-    pub fn init_logging(args: &CommonArgs) {
-        let level = if args.quiet {
+    /// Initialize logging based on CLI arguments.
+    ///
+    /// Builds a layered `tracing` subscriber:
+    /// - `EnvFilter` from `RUST_LOG` (falling back to the level implied by
+    ///   `--verbose`/`--quiet`)
+    /// - an fmt (console) layer, always present
+    /// - when self-monitoring `telemetry` is provided: an OpenTelemetry span
+    ///   bridge (`#[tracing::instrument]` spans become OTel spans) and an
+    ///   OpenTelemetry log bridge (`tracing`/`log` events become OTel log
+    ///   records), both guarded by [`OtelExportFilter`] so `_system`-tenant
+    ///   processing and the exporter's own transport stack are never exported.
+    ///
+    /// `log::` macro calls flow into all layers via tracing-subscriber's
+    /// built-in `tracing-log` compatibility (enabled by `.init()`).
+    pub fn init_logging(args: &CommonArgs, telemetry: Option<&SelfTelemetry>) {
+        use opentelemetry::trace::TracerProvider as _;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let default_level = if args.quiet {
             "warn"
         } else if args.verbose {
             "debug"
         } else {
             "info"
         };
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level));
 
-        // SAFETY: Setting RUST_LOG environment variable is safe for logging configuration
-        unsafe {
-            std::env::set_var("RUST_LOG", level);
+        let registry = tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer());
+
+        if let Some(telemetry) = telemetry {
+            let tracer = telemetry.tracer_provider().tracer("signaldb");
+            let otel_span_layer = tracing_opentelemetry::layer()
+                .with_tracer(tracer)
+                .with_filter(OtelExportFilter);
+            let otel_log_layer =
+                opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(
+                    telemetry.logger_provider(),
+                )
+                .with_filter(OtelExportFilter);
+            registry.with(otel_span_layer).with(otel_log_layer).init();
+        } else {
+            registry.init();
         }
-        tracing_subscriber::fmt::init();
     }
 
     /// Load configuration with optional override from CLI
     pub fn load_config(config_path: Option<&PathBuf>) -> Result<Configuration> {
         match config_path {
             Some(path) => {
-                log::info!("Loading configuration from: {}", path.display());
+                tracing::info!(path = %path.display(), "Loading configuration");
                 Configuration::load_from_path(path).context("Failed to load configuration")
             }
             None => Configuration::load().context("Failed to load configuration"),
@@ -112,7 +146,7 @@ pub mod utils {
 
     /// Validate configuration and report any issues
     pub fn validate_config(config: &Configuration) -> Result<()> {
-        log::info!("Validating configuration...");
+        tracing::info!("Validating configuration...");
 
         // Basic validation checks
         if config.database.dsn.is_empty() {
@@ -134,7 +168,7 @@ pub mod utils {
             anyhow::bail!("Discovery DSN cannot be empty when discovery is enabled");
         }
 
-        log::info!("✅ Configuration validation passed");
+        tracing::info!("Configuration validation passed");
         Ok(())
     }
 

@@ -89,16 +89,16 @@ impl MetricsHandler {
                             Data::Sum(_) => "sum",
                             Data::Histogram(_) => "histogram",
                             Data::ExponentialHistogram(_) => {
-                                log::info!(
-                                    "Processing ExponentialHistogram metric '{}' with full exponential metadata (scale, zero_count, positive/negative buckets)",
-                                    metric.name
+                                tracing::info!(
+                                    metric_name = %metric.name,
+                                    "Processing ExponentialHistogram metric with full exponential metadata (scale, zero_count, positive/negative buckets)"
                                 );
                                 "exponential_histogram"
                             }
                             Data::Summary(_) => {
-                                log::info!(
-                                    "Processing Summary metric '{}' with quantile values",
-                                    metric.name
+                                tracing::info!(
+                                    metric_name = %metric.name,
+                                    "Processing Summary metric with quantile values"
                                 );
                                 "summary"
                             }
@@ -124,8 +124,9 @@ impl MetricsHandler {
                 "exponential_histogram" => "metrics_exponential_histogram",
                 "summary" => "metrics_summary",
                 _ => {
-                    log::warn!(
-                        "Unknown metric type '{metric_type}', falling back to metrics_gauge table"
+                    tracing::warn!(
+                        metric_type = %metric_type,
+                        "Unknown metric type, falling back to metrics_gauge table"
                     );
                     "metrics_gauge"
                 }
@@ -237,15 +238,22 @@ impl MetricsHandler {
         result
     }
 
+    #[tracing::instrument(
+        skip_all,
+        fields(
+            tenant_id = %tenant_context.tenant_id,
+            dataset_id = %tenant_context.dataset_id
+        )
+    )]
     pub async fn handle_grpc_otlp_metrics(
         &self,
         tenant_context: &TenantContext,
         request: ExportMetricsServiceRequest,
     ) {
-        log::info!(
-            "Handling OTLP metrics request for tenant='{}', dataset='{}'",
-            tenant_context.tenant_id,
-            tenant_context.dataset_id
+        tracing::info!(
+            tenant_id = %tenant_context.tenant_id,
+            dataset_id = %tenant_context.dataset_id,
+            "Handling OTLP metrics request"
         );
 
         // Get tenant/dataset-specific WAL
@@ -260,10 +268,11 @@ impl MetricsHandler {
         {
             Ok(wal) => wal,
             Err(e) => {
-                log::error!(
-                    "Failed to get WAL for tenant='{}', dataset='{}': {e}",
-                    tenant_context.tenant_id,
-                    tenant_context.dataset_id
+                tracing::error!(
+                    tenant_id = %tenant_context.tenant_id,
+                    dataset_id = %tenant_context.dataset_id,
+                    error = %e,
+                    "Failed to get WAL"
                 );
                 return;
             }
@@ -273,22 +282,22 @@ impl MetricsHandler {
         let partitions = Self::partition_metrics_by_type(&request);
 
         if partitions.is_empty() {
-            log::warn!("No metrics found in request");
+            tracing::warn!("No metrics found in request");
             return;
         }
 
-        log::info!(
-            "Partitioned metrics into {} type(s): {}",
-            partitions.len(),
-            partitions.keys().cloned().collect::<Vec<_>>().join(", ")
+        tracing::info!(
+            partition_count = partitions.len(),
+            metric_types = %partitions.keys().cloned().collect::<Vec<_>>().join(", "),
+            "Partitioned metrics by type"
         );
 
         // Process each partition separately
         for (metric_type, (target_table, partitioned_request)) in partitions {
-            log::debug!(
-                "Processing {} metric type -> table: {}",
-                metric_type,
-                target_table
+            tracing::debug!(
+                metric_type = %metric_type,
+                target_table = %target_table,
+                "Processing metric type"
             );
 
             // Convert OTLP metrics to Arrow RecordBatch
@@ -297,12 +306,12 @@ impl MetricsHandler {
             let batch_bytes = match record_batch_to_bytes(&record_batch) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    log::error!("Failed to serialize record batch for {metric_type}: {e}");
+                    tracing::error!(metric_type = %metric_type, error = %e, "Failed to serialize record batch");
                     continue;
                 }
             };
 
-            let wal_metadata = serde_json::json!({
+            let mut wal_metadata = serde_json::json!({
                 "schema_version": "v1",
                 "signal_type": "metrics",
                 "metric_type": metric_type,
@@ -310,6 +319,16 @@ impl MetricsHandler {
                 "tenant_id": tenant_context.tenant_id,
                 "dataset_id": tenant_context.dataset_id,
             });
+            // Keep the distributed-trace context with the WAL entry so retry
+            // processing after a failed Flight forward retains it.
+            if let Some((traceparent, tracestate)) =
+                common::flight::trace_context::current_trace_context_fields()
+            {
+                wal_metadata["traceparent"] = traceparent.into();
+                if let Some(tracestate) = tracestate {
+                    wal_metadata["tracestate"] = tracestate.into();
+                }
+            }
             let wal_metadata_str = serde_json::to_string(&wal_metadata).ok();
 
             let wal_entry_id = match wal
@@ -322,22 +341,23 @@ impl MetricsHandler {
             {
                 Ok(id) => id,
                 Err(e) => {
-                    log::error!("Failed to write {metric_type} metrics to WAL: {e}");
+                    tracing::error!(metric_type = %metric_type, error = %e, "Failed to write metrics to WAL");
                     continue;
                 }
             };
 
             if let Err(e) = wal.flush().await {
-                log::error!("Failed to flush WAL for {metric_type}: {e}");
+                tracing::error!(metric_type = %metric_type, error = %e, "Failed to flush WAL");
                 continue;
             }
 
-            log::debug!(
-                "{} metrics written to WAL with entry ID: {wal_entry_id}",
-                metric_type
+            tracing::debug!(
+                metric_type = %metric_type,
+                entry_id = %wal_entry_id,
+                "Metrics written to WAL"
             );
 
-            let metadata = serde_json::json!({
+            let mut metadata = serde_json::json!({
                 "schema_version": "v1",
                 "signal_type": "metrics",
                 "metric_type": metric_type,
@@ -346,6 +366,14 @@ impl MetricsHandler {
                 "dataset_id": tenant_context.dataset_id,
                 "wal_entry_id": wal_entry_id
             });
+            if let Some((traceparent, tracestate)) =
+                common::flight::trace_context::current_trace_context_fields()
+            {
+                metadata["traceparent"] = traceparent.into();
+                if let Some(tracestate) = tracestate {
+                    metadata["tracestate"] = tracestate.into();
+                }
+            }
 
             // Step 2: Forward from WAL to writer via Flight
             // Get a Flight client for a writer service with storage capability
@@ -356,7 +384,7 @@ impl MetricsHandler {
             {
                 Ok(client) => client,
                 Err(e) => {
-                    log::error!("Failed to get Flight client for {metric_type} metrics: {e}");
+                    tracing::error!(metric_type = %metric_type, error = %e, "Failed to get Flight client for metrics");
                     // Data remains in WAL for retry by background processor
                     continue;
                 }
@@ -366,7 +394,7 @@ impl MetricsHandler {
             let mut flight_data = match batches_to_flight_data(&schema, vec![record_batch]) {
                 Ok(data) => data,
                 Err(e) => {
-                    log::error!("Failed to convert {metric_type} batch to flight data: {e}");
+                    tracing::error!(metric_type = %metric_type, error = %e, "Failed to convert batch to flight data");
                     // Data remains in WAL for retry
                     continue;
                 }
@@ -387,12 +415,14 @@ impl MetricsHandler {
                     while let Some(result) = response_stream.next().await {
                         match result {
                             Ok(put_result) => {
-                                log::debug!(
-                                    "Flight put response for {metric_type}: {put_result:?}"
+                                tracing::debug!(
+                                    metric_type = %metric_type,
+                                    response = ?put_result,
+                                    "Flight put response"
                                 );
                             }
                             Err(e) => {
-                                log::error!("Flight put error for {metric_type}: {e}");
+                                tracing::error!(metric_type = %metric_type, error = %e, "Flight put error");
                                 success = false;
                                 break;
                             }
@@ -400,28 +430,30 @@ impl MetricsHandler {
                     }
 
                     if success {
-                        log::debug!(
-                            "Successfully forwarded {metric_type} metrics to {} via Flight",
-                            target_table
+                        tracing::debug!(
+                            metric_type = %metric_type,
+                            target_table = %target_table,
+                            "Successfully forwarded metrics via Flight"
                         );
                         // Mark WAL entry as processed after successful forwarding
                         if let Err(e) = wal.mark_processed(wal_entry_id).await {
-                            log::warn!("Failed to mark WAL entry {wal_entry_id} as processed: {e}");
+                            tracing::warn!(entry_id = %wal_entry_id, error = %e, "Failed to mark WAL entry as processed");
                         }
                     } else {
-                        log::error!(
-                            "Failed to forward {metric_type} metrics - data remains in WAL for retry"
+                        tracing::error!(
+                            metric_type = %metric_type,
+                            "Failed to forward metrics - data remains in WAL for retry"
                         );
                     }
                 }
                 Err(e) => {
-                    log::error!("Failed to forward {metric_type} metrics via Flight: {e}");
+                    tracing::error!(metric_type = %metric_type, error = %e, "Failed to forward metrics via Flight");
                     // Data remains in WAL for retry by background processor
                 }
             }
         }
 
-        log::info!("Completed processing metrics request for all types");
+        tracing::info!("Completed processing metrics request for all types");
     }
 }
 

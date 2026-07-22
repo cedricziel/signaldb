@@ -104,6 +104,13 @@ tokio-test = "0.4.2"
 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-opentelemetry = "0.33"
+opentelemetry-appender-tracing = "0.32"
+
+# Continuous profiling: Pyroscope agent (pprof-rs CPU backend built in;
+# jemalloc heap backend behind the opt-in `jemalloc-profiling` feature)
+pyroscope = { version = "2.1", features = ["backend-pprof-rs"] }
+tikv-jemallocator = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 
 log = "0.4"
 anyhow = "1.0.102"

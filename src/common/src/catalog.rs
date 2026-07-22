@@ -39,7 +39,7 @@ impl Catalog {
 
     /// Create a new Catalog client and initialize schema.
     pub async fn new(dsn: &str) -> Result<Self, sqlx::Error> {
-        log::info!("Connecting to catalog database with DSN: {dsn}");
+        tracing::info!(dsn = %crate::config::redact_dsn(dsn), "Connecting to catalog database");
 
         let catalog = if dsn.starts_with("sqlite:") {
             // Add mode=rwc to create database file if it doesn't exist
@@ -54,26 +54,28 @@ impl Catalog {
             };
 
             let pool = SqlitePool::connect(&dsn_with_create).await.map_err(|e| {
-                log::error!(
-                    "Failed to connect to SQLite database with DSN '{dsn_with_create}': {e}"
+                tracing::error!(
+                    dsn = %crate::config::redact_dsn(&dsn_with_create),
+                    error = %e,
+                    "Failed to connect to SQLite database"
                 );
                 e
             })?;
             Catalog::Sqlite(pool)
         } else {
             let pool = PgPool::connect(dsn).await.map_err(|e| {
-                log::error!("Failed to connect to PostgreSQL database with DSN '{dsn}': {e}");
+                tracing::error!(dsn = %crate::config::redact_dsn(dsn), error = %e, "Failed to connect to PostgreSQL database");
                 e
             })?;
             Catalog::Postgres(pool)
         };
 
-        log::info!("Database connection established successfully");
+        tracing::info!("Database connection established successfully");
         catalog.init().await.map_err(|e| {
-            log::error!("Failed to initialize catalog schema: {e}");
+            tracing::error!(error = %e, "Failed to initialize catalog schema");
             e
         })?;
-        log::info!("Catalog schema initialized successfully");
+        tracing::info!("Catalog schema initialized successfully");
         Ok(catalog)
     }
 
@@ -290,6 +292,11 @@ impl Catalog {
     }
 
     /// Register or update an ingester with its address, service type, capabilities and heartbeat.
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(service_id = %id, address = %address, service_type = ?service_type)
+    )]
     pub async fn register_ingester(
         &self,
         id: Uuid,
@@ -367,6 +374,7 @@ impl Catalog {
     }
 
     /// Update heartbeat timestamp for an ingester.
+    #[tracing::instrument(level = "debug", skip_all, fields(service_id = %id))]
     pub async fn heartbeat(&self, id: Uuid) -> Result<(), sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
@@ -396,6 +404,7 @@ impl Catalog {
     }
 
     /// List all ingesters in the catalog.
+    #[tracing::instrument(level = "debug", skip_all)]
     pub async fn list_ingesters(&self) -> Result<Vec<Ingester>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
@@ -624,6 +633,7 @@ impl Catalog {
         }
     }
     /// Discover services that have a specific capability.
+    #[tracing::instrument(level = "debug", skip_all, fields(capability = ?capability))]
     pub async fn discover_services_by_capability(
         &self,
         capability: ServiceCapability,
@@ -640,6 +650,7 @@ impl Catalog {
     }
 
     /// Deregister an ingester instance, removing it from the catalog.
+    #[tracing::instrument(level = "debug", skip_all, fields(service_id = %id))]
     pub async fn deregister_ingester(&self, id: Uuid) -> Result<(), sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
@@ -677,7 +688,7 @@ impl Catalog {
             loop {
                 ticker.tick().await;
                 if let Err(e) = catalog.heartbeat(id).await {
-                    log::error!("Failed to send heartbeat for ingester {id}: {e}");
+                    tracing::error!(service_id = %id, error = %e, "Failed to send heartbeat for ingester");
                 }
             }
         })

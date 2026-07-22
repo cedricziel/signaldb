@@ -21,6 +21,9 @@ pub struct FlightMetadata {
     pub target_table: Option<String>,
     pub tenant_id: Option<String>,
     pub dataset_id: Option<String>,
+    /// W3C trace context of the sending service, for distributed tracing
+    pub traceparent: Option<String>,
+    pub tracestate: Option<String>,
 }
 
 /// Extract schema version from Flight metadata
@@ -73,12 +76,24 @@ pub fn extract_flight_metadata(metadata: &[u8]) -> Result<FlightMetadata> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    let traceparent = metadata_json
+        .get("traceparent")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let tracestate = metadata_json
+        .get("tracestate")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     Ok(FlightMetadata {
         schema_version,
         signal_type,
         target_table,
         tenant_id,
         dataset_id,
+        traceparent,
+        tracestate,
     })
 }
 

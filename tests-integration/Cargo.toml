@@ -31,6 +31,11 @@ log.workspace = true
 tempfile.workspace = true
 futures.workspace = true
 opentelemetry-proto.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["trace", "testing"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "registry"] }
+tracing-opentelemetry.workspace = true
 axum.workspace = true
 tower.workspace = true
 serde_json.workspace = true
@@ -52,6 +57,10 @@ testcontainers-modules.workspace = true
 aws-config.workspace = true
 aws-sdk-s3.workspace = true
 aws-credential-types.workspace = true
+
+[[test]]
+name = "self_monitoring"
+path = "tests/self_monitoring.rs"
 
 [[test]]
 name = "iceberg_integration"

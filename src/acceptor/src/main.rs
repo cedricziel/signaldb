@@ -51,12 +51,15 @@ impl Default for AcceptorCommands {
     }
 }
 
+// Heap profiling: install jemalloc as global allocator when built with
+// the jemalloc-profiling feature (see [profiling] config)
+#[cfg(feature = "jemalloc-profiling")]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-
-    // Initialize logging based on CLI arguments
-    utils::init_logging(&cli.common);
 
     // Load application configuration
     let config = utils::load_config(cli.common.config.as_ref())?;
@@ -68,20 +71,33 @@ async fn main() -> Result<()> {
         return Ok(()); // Command handled, exit early
     }
 
-    let _telemetry = match common::self_monitoring::init_telemetry(&config, "signaldb-acceptor") {
-        Ok(t) => {
-            if t.is_some() {
-                log::info!("Self-monitoring telemetry initialized");
-            }
-            t
-        }
+    // Initialize self-monitoring telemetry first so the OTel bridge layers
+    // can be attached to the tracing subscriber, then initialize logging.
+    let (telemetry, telemetry_error) =
+        match common::self_monitoring::init_telemetry(&config, "signaldb-acceptor") {
+            Ok(t) => (t, None),
+            Err(e) => (None, Some(e)),
+        };
+    utils::init_logging(&cli.common, telemetry.as_ref());
+    if let Some(e) = telemetry_error {
+        tracing::warn!(error = %e, "Self-monitoring init failed, continuing without it");
+    } else if let Some(ref t) = telemetry {
+        tracing::info!(
+            sampler = %t.sampler_description(),
+            "Self-monitoring telemetry initialized"
+        );
+    }
+    let _telemetry = telemetry;
+
+    let _profiling = match common::self_monitoring::init_profiling(&config, "signaldb-acceptor") {
+        Ok(p) => p,
         Err(e) => {
-            log::warn!("Self-monitoring init failed, continuing without it: {e}");
+            tracing::warn!(error = %e, "Profiling init failed, continuing without it");
             None
         }
     };
 
-    log::info!("Starting SignalDB Acceptor Service");
+    tracing::info!("Starting SignalDB Acceptor Service");
 
     // Use CLI-provided ports or defaults
     let bind_ip = cli
@@ -99,7 +115,7 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to initialize acceptor resources")?;
 
-    log::info!("Acceptor resources initialized successfully");
+    tracing::info!("Acceptor resources initialized successfully");
 
     // Clone resources for HTTP server (Arc refs are cheap to clone)
     let grpc_resources = AcceptorResources {
@@ -133,7 +149,7 @@ async fn main() -> Result<()> {
         if let Err(e) =
             serve_otlp_grpc(grpc_config, grpc_init_tx, grpc_shutdown_rx, grpc_stopped_tx).await
         {
-            log::error!("OTLP/gRPC server error: {e}");
+            tracing::error!(error = %e, "OTLP/gRPC server error");
         }
     });
 
@@ -148,7 +164,7 @@ async fn main() -> Result<()> {
         if let Err(e) =
             serve_otlp_http(http_config, http_init_tx, http_shutdown_rx, http_stopped_tx).await
         {
-            log::error!("OTLP/HTTP server error: {e}");
+            tracing::error!(error = %e, "OTLP/HTTP server error");
         }
     });
 
@@ -160,17 +176,17 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to initialize OTLP/HTTP server")?;
 
-    log::info!("Acceptor service started successfully");
-    log::info!("OTLP gRPC server listening on {grpc_addr}");
-    log::info!("OTLP HTTP server listening on {http_addr}");
-    log::info!("Prometheus remote_write available at http://{http_addr}/api/v1/write");
+    tracing::info!("Acceptor service started successfully");
+    tracing::info!(address = %grpc_addr, "OTLP gRPC server listening");
+    tracing::info!(address = %http_addr, "OTLP HTTP server listening");
+    tracing::info!(address = %http_addr, "Prometheus remote_write available at /api/v1/write");
 
     // Wait for shutdown signal (Ctrl+C)
     tokio::signal::ctrl_c()
         .await
         .context("Failed to listen for shutdown signal")?;
 
-    log::info!("Shutting down acceptor service...");
+    tracing::info!("Shutting down acceptor service...");
 
     // Trigger shutdown
     let _ = grpc_shutdown_tx.send(());
@@ -184,11 +200,14 @@ async fn main() -> Result<()> {
     let _ = grpc_handle.await;
     let _ = http_handle.await;
 
+    if let Some(profiling) = _profiling {
+        profiling.shutdown();
+    }
     if let Some(telemetry) = _telemetry {
         telemetry.shutdown();
     }
 
-    log::info!("Acceptor service stopped gracefully");
+    tracing::info!("Acceptor service stopped gracefully");
 
     Ok(())
 }

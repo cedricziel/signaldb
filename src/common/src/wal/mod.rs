@@ -586,6 +586,11 @@ impl Wal {
     /// * `operation` - The type of WAL operation
     /// * `data` - The data to write
     /// * `metadata` - Optional metadata (e.g., JSON-serialized FlightMetadata with target_table)
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(operation = ?operation, data_size = data.len())
+    )]
     pub async fn append(
         &self,
         operation: WalOperation,
@@ -593,6 +598,16 @@ impl Wal {
         metadata: Option<String>,
     ) -> Result<Uuid> {
         let entry_id = Uuid::new_v4();
+
+        {
+            let metrics = crate::self_monitoring::app_metrics();
+            let attrs = [opentelemetry::KeyValue::new(
+                "operation",
+                format!("{operation:?}"),
+            )];
+            metrics.wal_entries_written.add(1, &attrs);
+            metrics.wal_entries_pending.add(1, &[]);
+        }
 
         // Add to buffer first for batching
         {
@@ -697,18 +712,25 @@ impl Wal {
     }
 
     /// Force flush all buffered entries
+    #[tracing::instrument(level = "debug", skip_all)]
     pub async fn flush(&self) -> Result<()> {
-        Self::flush_buffer(
+        let start = std::time::Instant::now();
+        let result = Self::flush_buffer(
             &self.buffer,
             &self.current_segment,
             &self.config,
             &self.next_segment_id,
             &self.segments,
         )
-        .await
+        .await;
+        crate::self_monitoring::app_metrics()
+            .wal_flush_duration
+            .record(start.elapsed().as_secs_f64(), &[]);
+        result
     }
 
     /// Get all entries from WAL for recovery
+    #[tracing::instrument(level = "debug", skip_all)]
     pub async fn get_entries(&self) -> Result<Vec<WalEntry>> {
         let segment = self.current_segment.lock().await;
         Ok(segment.entries.clone())
@@ -744,6 +766,7 @@ impl Wal {
     }
 
     /// Mark a WAL entry as processed and persist the state to disk
+    #[tracing::instrument(level = "debug", skip_all, fields(entry_id = %entry_id))]
     pub async fn mark_processed(&self, entry_id: Uuid) -> Result<()> {
         // Search all segments, not just current
         let segments = self.segments.lock().await;
@@ -754,6 +777,13 @@ impl Wal {
             // Find the entry in this segment
             for entry in &mut segment.entries {
                 if entry.id == entry_id {
+                    // Count only the unprocessed -> processed transition so
+                    // repeated calls don't skew the metrics.
+                    if !entry.processed {
+                        let metrics = crate::self_monitoring::app_metrics();
+                        metrics.wal_entries_processed.add(1, &[]);
+                        metrics.wal_entries_pending.add(-1, &[]);
+                    }
                     entry.processed = true;
 
                     // Persist the processed state to disk

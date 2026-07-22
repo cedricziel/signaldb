@@ -513,24 +513,31 @@ pub async fn echo() -> &'static str {
 /// GET /api/traces/<traceid>?start=<start>&end=<end>
 ///
 /// See https://grafana.com/docs/tempo/latest/api_docs/#query
-#[tracing::instrument(skip(tenant_ctx))]
+#[tracing::instrument(
+    skip(state, tenant_ctx, _params),
+    fields(
+        tenant_id = %tenant_ctx.0.tenant_id,
+        dataset_id = %tenant_ctx.0.dataset_id
+    )
+)]
 pub async fn query_single_trace<S: RouterState>(
     state: State<S>,
     tenant_ctx: TenantContextExtractor,
     Path(trace_id): Path<String>,
-    Query(params): Query<TraceQueryParams>,
+    Query(_params): Query<TraceQueryParams>,
 ) -> Result<axum::Json<tempo_api::Trace>, axum::http::StatusCode> {
-    log::info!(
-        "Querying for trace_id: {trace_id} (tenant={}, dataset={})",
-        tenant_ctx.0.tenant_id,
-        tenant_ctx.0.dataset_id
+    tracing::info!(
+        trace_id = %trace_id,
+        tenant_id = %tenant_ctx.0.tenant_id,
+        dataset_id = %tenant_ctx.0.dataset_id,
+        "Querying for trace"
     );
 
     // Use service registry to find available services for routing
     let services = state.service_registry().get_services().await;
-    log::info!(
-        "Available services for trace query: {} services found",
-        services.len()
+    tracing::info!(
+        service_count = services.len(),
+        "Available services for trace query"
     );
 
     // Get a Flight client for a querier service
@@ -541,7 +548,7 @@ pub async fn query_single_trace<S: RouterState>(
     {
         Ok(client) => client,
         Err(e) => {
-            log::error!("Failed to get Flight client for query execution: {e}");
+            tracing::error!(error = %e, "Failed to get Flight client for query execution");
             return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
         }
     };
@@ -551,8 +558,10 @@ pub async fn query_single_trace<S: RouterState>(
         "find_trace:{}:{}:{trace_id}",
         tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
     ));
+    let mut flight_request = tonic::Request::new(ticket);
+    common::flight::trace_context::inject_context_into_request(&mut flight_request);
 
-    match client.do_get(ticket).await {
+    match client.do_get(flight_request).await {
         Ok(response) => {
             let mut stream = response.into_inner();
             let mut trace_data = Vec::new();
@@ -562,7 +571,7 @@ pub async fn query_single_trace<S: RouterState>(
                 match flight_data {
                     Ok(data) => trace_data.push(data),
                     Err(e) => {
-                        log::error!("Error reading flight data: {e}");
+                        tracing::error!(error = %e, "Error reading flight data");
                         return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
                     }
                 }
@@ -571,47 +580,53 @@ pub async fn query_single_trace<S: RouterState>(
             // Convert flight data to trace format
             match flight_data_to_tempo_trace(trace_data, &trace_id) {
                 Ok(Some(trace)) => {
-                    log::info!("Successfully converted trace {trace_id} to Tempo format");
+                    tracing::info!(trace_id = %trace_id, "Successfully converted trace to Tempo format");
                     return Ok(axum::Json(trace));
                 }
                 Ok(None) => {
-                    log::info!("No trace data found for trace {trace_id}");
+                    tracing::info!(trace_id = %trace_id, "No trace data found");
                 }
                 Err(e) => {
-                    log::error!("Failed to convert flight data to trace: {e}");
+                    tracing::error!(error = %e, "Failed to convert flight data to trace");
                     return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
                 }
             }
         }
         Err(e) => {
-            log::error!("Flight query failed for trace {trace_id}: {e}");
+            tracing::error!(trace_id = %trace_id, error = %e, "Flight query failed for trace");
             return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
         }
     }
 
     // Return 404 when no trace data is found
-    log::info!("Trace {trace_id} not found");
+    tracing::info!(trace_id = %trace_id, "Trace not found");
     Err(axum::http::StatusCode::NOT_FOUND)
 }
 
 /// GET https://grafana.com/docs/tempo/latest/api_docs/#search
-#[tracing::instrument(skip(tenant_ctx))]
+#[tracing::instrument(
+    skip(state, tenant_ctx, query),
+    fields(
+        tenant_id = %tenant_ctx.0.tenant_id,
+        dataset_id = %tenant_ctx.0.dataset_id
+    )
+)]
 pub async fn search<S: RouterState>(
     state: State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(query): Query<tempo_api::SearchQueryParams>,
 ) -> Result<axum::Json<tempo_api::SearchResult>, axum::http::StatusCode> {
-    log::info!(
-        "Searching for traces with params: {query:?} (tenant={}, dataset={})",
-        tenant_ctx.0.tenant_id,
-        tenant_ctx.0.dataset_id
+    tracing::info!(
+        tenant_id = %tenant_ctx.0.tenant_id,
+        dataset_id = %tenant_ctx.0.dataset_id,
+        "Searching for traces"
     );
 
     // Use service registry to find available services for routing
     let services = state.service_registry().get_services().await;
-    log::info!(
-        "Available services for trace search: {} services found",
-        services.len()
+    tracing::info!(
+        service_count = services.len(),
+        "Available services for trace search"
     );
 
     // Get a Flight client for a querier service
@@ -622,22 +637,24 @@ pub async fn search<S: RouterState>(
     {
         Ok(client) => client,
         Err(e) => {
-            log::error!("Failed to get Flight client for query execution: {e}");
+            tracing::error!(error = %e, "Failed to get Flight client for query execution");
             return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
         }
     };
 
     // Create Flight query for trace search with tenant context
     let search_params = serde_json::to_string(&query).map_err(|e| {
-        log::error!("Failed to serialize search parameters: {e}");
+        tracing::error!(error = %e, "Failed to serialize search parameters");
         axum::http::StatusCode::INTERNAL_SERVER_ERROR
     })?;
     let ticket = Ticket::new(format!(
         "search_traces:{}:{}:{search_params}",
         tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
     ));
+    let mut flight_request = tonic::Request::new(ticket);
+    common::flight::trace_context::inject_context_into_request(&mut flight_request);
 
-    match client.do_get(ticket).await {
+    match client.do_get(flight_request).await {
         Ok(response) => {
             let mut stream = response.into_inner();
             let mut search_results = Vec::new();
@@ -647,7 +664,7 @@ pub async fn search<S: RouterState>(
                 match flight_data {
                     Ok(data) => search_results.push(data),
                     Err(e) => {
-                        log::error!("Error reading flight data for search: {e}");
+                        tracing::error!(error = %e, "Error reading flight data for search");
                         return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
                     }
                 }
@@ -656,20 +673,20 @@ pub async fn search<S: RouterState>(
             // Convert flight data to search results
             match flight_data_to_search_results(search_results) {
                 Ok(search_result) => {
-                    log::info!(
-                        "Successfully converted {} traces to Tempo search format",
-                        search_result.traces.len()
+                    tracing::info!(
+                        trace_count = search_result.traces.len(),
+                        "Successfully converted traces to Tempo search format"
                     );
                     return Ok(axum::Json(search_result));
                 }
                 Err(e) => {
-                    log::error!("Failed to convert flight data to search results: {e}");
+                    tracing::error!(error = %e, "Failed to convert flight data to search results");
                     return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
                 }
             }
         }
         Err(e) => {
-            log::error!("Flight search query failed: {e}");
+            tracing::error!(error = %e, "Flight search query failed");
             return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
         }
     }
@@ -714,12 +731,12 @@ pub async fn search_tag_values_v2(
 }
 
 /// GET /api/metrics/query - Instant TraceQL metrics query
-#[tracing::instrument]
+#[tracing::instrument(skip(_state, _params))]
 pub async fn metrics_query<S: RouterState>(
     _state: State<S>,
-    Query(params): Query<MetricsQueryParams>,
+    Query(_params): Query<MetricsQueryParams>,
 ) -> Result<axum::Json<MetricsResponse>, axum::http::StatusCode> {
-    log::info!("Metrics instant query: {:?}", params);
+    tracing::info!("Metrics instant query");
 
     // For now, return a simple response indicating the endpoint is available
     // Full implementation will parse TraceQL and execute queries
@@ -745,12 +762,12 @@ pub async fn metrics_query<S: RouterState>(
 }
 
 /// GET /api/metrics/query_range - Range TraceQL metrics query with time series
-#[tracing::instrument]
+#[tracing::instrument(skip(_state, _params))]
 pub async fn metrics_query_range<S: RouterState>(
     _state: State<S>,
-    Query(params): Query<MetricsRangeQueryParams>,
+    Query(_params): Query<MetricsRangeQueryParams>,
 ) -> Result<axum::Json<MetricsResponse>, axum::http::StatusCode> {
-    log::info!("Metrics range query: {:?}", params);
+    tracing::info!("Metrics range query");
 
     // For now, return a simple response indicating the endpoint is available
     // Full implementation will:

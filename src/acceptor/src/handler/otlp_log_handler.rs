@@ -64,15 +64,22 @@ impl LogHandler {
         }
     }
 
+    #[tracing::instrument(
+        skip_all,
+        fields(
+            tenant_id = %tenant_context.tenant_id,
+            dataset_id = %tenant_context.dataset_id
+        )
+    )]
     pub async fn handle_grpc_otlp_logs(
         &self,
         tenant_context: &TenantContext,
         request: ExportLogsServiceRequest,
     ) {
-        log::info!(
-            "Handling OTLP log request for tenant='{}', dataset='{}'",
-            tenant_context.tenant_id,
-            tenant_context.dataset_id
+        tracing::info!(
+            tenant_id = %tenant_context.tenant_id,
+            dataset_id = %tenant_context.dataset_id,
+            "Handling OTLP log request"
         );
 
         // Get tenant/dataset-specific WAL
@@ -87,10 +94,11 @@ impl LogHandler {
         {
             Ok(wal) => wal,
             Err(e) => {
-                log::error!(
-                    "Failed to get WAL for tenant='{}', dataset='{}': {e}",
-                    tenant_context.tenant_id,
-                    tenant_context.dataset_id
+                tracing::error!(
+                    tenant_id = %tenant_context.tenant_id,
+                    dataset_id = %tenant_context.dataset_id,
+                    error = %e,
+                    "Failed to get WAL"
                 );
                 return;
             }
@@ -100,12 +108,20 @@ impl LogHandler {
         let record_batch = otlp_logs_to_arrow(&request);
 
         // Add schema version metadata (v1 for OTLP conversion)
-        let metadata = serde_json::json!({
+        let mut metadata = serde_json::json!({
             "schema_version": "v1",
             "signal_type": "logs",
             "tenant_id": tenant_context.tenant_id,
             "dataset_id": tenant_context.dataset_id,
         });
+        if let Some((traceparent, tracestate)) =
+            common::flight::trace_context::current_trace_context_fields()
+        {
+            metadata["traceparent"] = traceparent.into();
+            if let Some(tracestate) = tracestate {
+                metadata["tracestate"] = tracestate.into();
+            }
+        }
 
         // Serialize metadata for WAL storage (enables background processor routing)
         let metadata_str = serde_json::to_string(&metadata).ok();
@@ -114,7 +130,7 @@ impl LogHandler {
         let batch_bytes = match record_batch_to_bytes(&record_batch) {
             Ok(bytes) => bytes,
             Err(e) => {
-                log::error!("Failed to serialize record batch: {e}");
+                tracing::error!(error = %e, "Failed to serialize record batch");
                 return;
             }
         };
@@ -125,18 +141,18 @@ impl LogHandler {
         {
             Ok(id) => id,
             Err(e) => {
-                log::error!("Failed to write logs to WAL: {e}");
+                tracing::error!(error = %e, "Failed to write logs to WAL");
                 return;
             }
         };
 
         // Flush WAL to ensure durability
         if let Err(e) = wal.flush().await {
-            log::error!("Failed to flush WAL: {e}");
+            tracing::error!(error = %e, "Failed to flush WAL");
             return;
         }
 
-        log::debug!("Logs written to WAL with entry ID: {wal_entry_id}");
+        tracing::debug!(entry_id = %wal_entry_id, "Logs written to WAL");
 
         // Step 2: Forward from WAL to writer via Flight
         // Get a Flight client for a writer service with storage capability
@@ -147,7 +163,7 @@ impl LogHandler {
         {
             Ok(client) => client,
             Err(e) => {
-                log::error!("Failed to get Flight client for storage service: {e}");
+                tracing::error!(error = %e, "Failed to get Flight client for storage service");
                 // Data remains in WAL for retry by background processor
                 return;
             }
@@ -157,7 +173,7 @@ impl LogHandler {
         let mut flight_data = match batches_to_flight_data(&schema, vec![record_batch]) {
             Ok(data) => data,
             Err(e) => {
-                log::error!("Failed to convert batch to flight data: {e}");
+                tracing::error!(error = %e, "Failed to convert batch to flight data");
                 // Data remains in WAL for retry
                 return;
             }
@@ -178,10 +194,10 @@ impl LogHandler {
                 while let Some(result) = response_stream.next().await {
                     match result {
                         Ok(put_result) => {
-                            log::debug!("Flight put response: {put_result:?}");
+                            tracing::debug!(response = ?put_result, "Flight put response");
                         }
                         Err(e) => {
-                            log::error!("Flight put error: {e}");
+                            tracing::error!(error = %e, "Flight put error");
                             success = false;
                             break;
                         }
@@ -189,17 +205,17 @@ impl LogHandler {
                 }
 
                 if success {
-                    log::debug!("Successfully forwarded logs via Flight protocol");
+                    tracing::debug!("Successfully forwarded logs via Flight protocol");
                     // Mark WAL entry as processed after successful forwarding
                     if let Err(e) = wal.mark_processed(wal_entry_id).await {
-                        log::warn!("Failed to mark WAL entry {wal_entry_id} as processed: {e}");
+                        tracing::warn!(entry_id = %wal_entry_id, error = %e, "Failed to mark WAL entry as processed");
                     }
                 } else {
-                    log::error!("Failed to forward logs - data remains in WAL for retry");
+                    tracing::error!("Failed to forward logs - data remains in WAL for retry");
                 }
             }
             Err(e) => {
-                log::error!("Failed to forward logs via Flight protocol: {e}");
+                tracing::error!(error = %e, "Failed to forward logs via Flight protocol");
                 // Data remains in WAL for retry by background processor
             }
         }

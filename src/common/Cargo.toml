@@ -7,6 +7,9 @@ license.workspace = true
 [features]
 default = []
 testing = []
+# Heap profiling via jemalloc: binaries built with this feature install
+# jemalloc as global allocator and enable Pyroscope's jemalloc backend
+jemalloc-profiling = ["pyroscope/backend-jemalloc"]
 
 [dependencies]
 log.workspace = true
@@ -26,6 +29,9 @@ clap.workspace = true
 figment.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing-opentelemetry.workspace = true
+opentelemetry-appender-tracing.workspace = true
+pyroscope.workspace = true
 once_cell.workspace = true
 tokio.workspace = true
 

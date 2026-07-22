@@ -104,10 +104,10 @@ pub async fn auth_middleware(
     {
         Ok(ctx) => ctx,
         Err(err) => {
-            log::warn!(
-                "Authentication failed for tenant '{}': {}",
-                tenant_id,
-                err.message
+            tracing::warn!(
+                tenant_id = %tenant_id,
+                error = %err.message,
+                "Authentication failed"
             );
             return (
                 StatusCode::from_u16(err.status_code).unwrap_or(StatusCode::UNAUTHORIZED),
@@ -117,18 +117,33 @@ pub async fn auth_middleware(
         }
     };
 
-    log::debug!(
-        "Authenticated request for tenant '{}', dataset '{}' (source: {})",
-        tenant_context.tenant_id,
-        tenant_context.dataset_id,
-        tenant_context.source
-    );
+    let is_system = common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id);
 
-    // Insert TenantContext into request extensions
-    request.extensions_mut().insert(tenant_context);
-
-    // Continue to next middleware/handler
-    next.run(request).await
+    // Anti-loop guard: processing the _system tenant's own telemetry must not
+    // generate more self-monitoring telemetry (infinite feedback loop). The
+    // suppression scope covers everything from the auth event onwards.
+    if is_system {
+        common::self_monitoring::suppress_self_telemetry(async move {
+            tracing::debug!(
+                tenant_id = %tenant_context.tenant_id,
+                dataset_id = %tenant_context.dataset_id,
+                source = %tenant_context.source,
+                "Authenticated request"
+            );
+            request.extensions_mut().insert(tenant_context);
+            next.run(request).await
+        })
+        .await
+    } else {
+        tracing::debug!(
+            tenant_id = %tenant_context.tenant_id,
+            dataset_id = %tenant_context.dataset_id,
+            source = %tenant_context.source,
+            "Authenticated request"
+        );
+        request.extensions_mut().insert(tenant_context);
+        next.run(request).await
+    }
 }
 
 /// Axum extractor for TenantContext from request extensions

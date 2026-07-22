@@ -177,6 +177,11 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         // Admin routes with admin authentication
         .nest("/api/v1/admin", admin_router)
         .nest("/api/v1", endpoints::tenant::router().layer(auth_layer))
+        // OTel HTTP server metrics for all routes (no-op unless
+        // self-monitoring is enabled)
+        .layer(middleware::from_fn(
+            common::self_monitoring::http_metrics_middleware,
+        ))
         .with_state(state)
 }
 

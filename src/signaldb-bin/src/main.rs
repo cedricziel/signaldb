@@ -42,12 +42,15 @@ impl Default for SignalDbCommands {
     }
 }
 
+// Heap profiling: install jemalloc as global allocator when built with
+// the jemalloc-profiling feature (see [profiling] config)
+#[cfg(feature = "jemalloc-profiling")]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-
-    // Initialize logging based on CLI arguments
-    utils::init_logging(&cli.common);
 
     // Load application configuration
     let config = utils::load_config(cli.common.config.as_ref())?;
@@ -59,15 +62,28 @@ async fn main() -> Result<()> {
         return Ok(()); // Command handled, exit early
     }
 
-    let _telemetry = match common::self_monitoring::init_telemetry(&config, "signaldb") {
-        Ok(t) => {
-            if t.is_some() {
-                log::info!("Self-monitoring telemetry initialized");
-            }
-            t
-        }
+    // Initialize self-monitoring telemetry first so the OTel bridge layers
+    // can be attached to the tracing subscriber, then initialize logging.
+    let (telemetry, telemetry_error) =
+        match common::self_monitoring::init_telemetry(&config, "signaldb") {
+            Ok(t) => (t, None),
+            Err(e) => (None, Some(e)),
+        };
+    utils::init_logging(&cli.common, telemetry.as_ref());
+    if let Some(e) = telemetry_error {
+        log::warn!("Self-monitoring init failed, continuing without it: {e}");
+    } else if let Some(ref t) = telemetry {
+        log::info!(
+            "Self-monitoring telemetry initialized (sampler: {})",
+            t.sampler_description()
+        );
+    }
+    let _telemetry = telemetry;
+
+    let _profiling = match common::self_monitoring::init_profiling(&config, "signaldb") {
+        Ok(p) => p,
         Err(e) => {
-            log::warn!("Self-monitoring init failed, continuing without it: {e}");
+            tracing::warn!(error = %e, "Profiling init failed, continuing without it");
             None
         }
     };

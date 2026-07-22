@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
 common = { path = "../common" }
 tempo-api = { path = "../tempo-api", features = ["server"] }
 
@@ -16,6 +17,7 @@ tokio.workspace = true
 log.workspace = true
 datafusion.workspace = true
 tracing.workspace = true
+opentelemetry.workspace = true
 tonic.workspace = true
 arrow-flight.workspace = true
 object_store.workspace = true
@@ -36,3 +38,5 @@ promql-parser.workspace = true
 name = "signaldb-querier"
 path = "src/main.rs"
 
+[features]
+jemalloc-profiling = ["common/jemalloc-profiling", "dep:tikv-jemallocator"]

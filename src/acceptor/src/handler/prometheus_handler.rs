@@ -83,6 +83,14 @@ impl PrometheusHandler {
     /// 3. Convert to OTEL ExportMetricsServiceRequest
     /// 4. Write to WAL
     /// 5. Forward to writer via Flight
+    #[tracing::instrument(
+        skip_all,
+        fields(
+            tenant_id = %tenant_context.tenant_id,
+            dataset_id = %tenant_context.dataset_id,
+            body_size = body.len()
+        )
+    )]
     pub async fn handle_remote_write(
         &self,
         tenant_context: &TenantContext,
@@ -171,7 +179,7 @@ impl PrometheusHandler {
                 PrometheusError::SerializationError(e.to_string())
             })?;
 
-            let wal_metadata = serde_json::json!({
+            let mut wal_metadata = serde_json::json!({
                 "schema_version": "v1",
                 "signal_type": "metrics",
                 "metric_type": metric_type,
@@ -179,6 +187,16 @@ impl PrometheusHandler {
                 "tenant_id": tenant_context.tenant_id,
                 "dataset_id": tenant_context.dataset_id,
             });
+            // Keep the distributed-trace context with the WAL entry so retry
+            // processing after a failed Flight forward retains it.
+            if let Some((traceparent, tracestate)) =
+                common::flight::trace_context::current_trace_context_fields()
+            {
+                wal_metadata["traceparent"] = traceparent.into();
+                if let Some(tracestate) = tracestate {
+                    wal_metadata["tracestate"] = tracestate.into();
+                }
+            }
             let wal_metadata_str = serde_json::to_string(&wal_metadata).ok();
 
             let wal_entry_id = wal
@@ -204,7 +222,7 @@ impl PrometheusHandler {
                 "Written to WAL"
             );
 
-            let metadata = serde_json::json!({
+            let mut metadata = serde_json::json!({
                 "schema_version": "v1",
                 "signal_type": "metrics",
                 "metric_type": metric_type,
@@ -214,6 +232,14 @@ impl PrometheusHandler {
                 "wal_entry_id": wal_entry_id,
                 "source": "prometheus_remote_write"
             });
+            if let Some((traceparent, tracestate)) =
+                common::flight::trace_context::current_trace_context_fields()
+            {
+                metadata["traceparent"] = traceparent.into();
+                if let Some(tracestate) = tracestate {
+                    metadata["tracestate"] = tracestate.into();
+                }
+            }
 
             // Forward to writer via Flight
             let mut client = match self
@@ -481,6 +507,13 @@ impl IntoResponse for PrometheusError {
 ///
 /// This is the HTTP endpoint that receives Prometheus remote_write requests.
 /// Authentication is expected to be handled by middleware that sets TenantContext.
+#[tracing::instrument(
+    skip_all,
+    fields(
+        tenant_id = %tenant_context.tenant_id,
+        dataset_id = %tenant_context.dataset_id
+    )
+)]
 pub async fn handle_prometheus_write(
     State(state): State<PrometheusHandlerState>,
     headers: HeaderMap,

@@ -50,7 +50,7 @@ pub async fn get_parquet_writer(
     schema: Schema,
     config: &Configuration,
 ) -> AsyncArrowWriter<File> {
-    log::info!("get_parquet_writer");
+    tracing::info!("get_parquet_writer");
 
     let props = WriterProperties::builder()
         .set_writer_version(WriterVersion::PARQUET_2_0)
@@ -79,7 +79,7 @@ pub async fn get_parquet_writer(
             .as_secs()
     );
 
-    log::info!("Writing parquet file to: {file_path}");
+    tracing::info!(path = %file_path, "Writing parquet file");
 
     AsyncArrowWriter::try_new(
         File::create(file_path)
@@ -145,15 +145,15 @@ pub async fn init_acceptor_resources(
         metrics_wal_config,
     ));
 
-    log::info!(
-        "Initialized WalManager for multi-tenant WAL isolation (paths: {}/{{tenant}}/{{dataset}}/{{signal}})",
-        wal_dir.display()
+    tracing::info!(
+        wal_dir = %wal_dir.display(),
+        "Initialized WalManager for multi-tenant WAL isolation"
     );
 
     // Create Authenticator for multi-tenant authentication
     let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
-    log::info!("Initialized Authenticator for multi-tenant authentication");
+    tracing::info!("Initialized Authenticator for multi-tenant authentication");
 
     Ok(AcceptorResources {
         flight_transport,
@@ -174,7 +174,7 @@ pub async fn serve_otlp_grpc(
     shutdown_rx: oneshot::Receiver<()>,
     stopped_tx: oneshot::Sender<()>,
 ) -> Result<(), anyhow::Error> {
-    log::info!("Starting OTLP/gRPC acceptor on {}", config.addr);
+    tracing::info!(address = %config.addr, "Starting OTLP/gRPC acceptor");
 
     let AcceptorResources {
         flight_transport,
@@ -214,7 +214,7 @@ pub async fn serve_otlp_grpc(
         .add_service(metric_server)
         .serve_with_shutdown(config.addr, async {
             shutdown_rx.await.ok();
-            log::info!("Shutting down OTLP/gRPC acceptor");
+            tracing::info!("Shutting down OTLP/gRPC acceptor");
         })
         .await
         .expect("Unable to start OTLP acceptor");
@@ -229,6 +229,9 @@ pub fn acceptor_router() -> Router {
     Router::new()
         .route("/v1/traces", post(handle_traces))
         .route("/health", get(health))
+        .layer(axum::middleware::from_fn(
+            common::self_monitoring::http_metrics_middleware,
+        ))
 }
 
 /// Create a router for Prometheus remote_write endpoint with authentication
@@ -263,9 +266,19 @@ pub fn prometheus_router(
             let auth = authenticator.clone();
             async move { auth_middleware(auth, req, next).await }
         }))
+        .layer(middleware::from_fn(
+            common::self_monitoring::http_metrics_middleware,
+        ))
 }
 
 /// Handler variant using Extension instead of State for simpler router composition
+#[tracing::instrument(
+    skip_all,
+    fields(
+        tenant_id = %tenant_context.tenant_id,
+        dataset_id = %tenant_context.dataset_id
+    )
+)]
 async fn handle_prometheus_write_with_ext(
     Extension(state): Extension<PrometheusHandlerState>,
     headers: axum::http::HeaderMap,
@@ -284,10 +297,14 @@ async fn health() -> &'static str {
     "ok"
 }
 
+#[tracing::instrument(skip_all)]
 async fn handle_traces(
     axum::extract::Json(payload): axum::extract::Json<serde_json::Value>,
 ) -> axum::response::Response<axum::body::Body> {
-    log::info!("Got traces: {payload:?}");
+    tracing::info!(
+        payload_size = payload.to_string().len(),
+        "Got traces via HTTP"
+    );
     axum::response::Response::builder()
         .status(200)
         .body(axum::body::Body::empty())
@@ -308,7 +325,7 @@ pub async fn serve_otlp_http(
     shutdown_rx: oneshot::Receiver<()>,
     stopped_tx: oneshot::Sender<()>,
 ) -> Result<(), anyhow::Error> {
-    log::info!("Starting OTLP/HTTP acceptor on {}", config.addr);
+    tracing::info!(address = %config.addr, "Starting OTLP/HTTP acceptor");
 
     // Create Prometheus handler with shared resources
     let prometheus_handler = Arc::new(PrometheusHandler::new(
@@ -322,7 +339,7 @@ pub async fn serve_otlp_http(
         prometheus_handler,
     ));
 
-    log::info!("Prometheus remote_write endpoint enabled at POST /api/v1/write");
+    tracing::info!("Prometheus remote_write endpoint enabled at POST /api/v1/write");
 
     init_tx
         .send(())
@@ -332,7 +349,7 @@ pub async fn serve_otlp_http(
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             shutdown_rx.await.ok();
-            log::info!("Shutting down OTLP/HTTP acceptor");
+            tracing::info!("Shutting down OTLP/HTTP acceptor");
         })
         .await?;
 

@@ -6,6 +6,15 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: secret
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+
+  pyroscope:
+    image: grafana/pyroscope:latest
+    ports:
+      - "4040:4040"
+    volumes:
+      - pyroscope-data:/data
 
   postgres:
     image: postgres:15
@@ -207,6 +216,7 @@ services:
     restart: "no"
 
 volumes:
+  pyroscope-data:
   postgres-data:
   # Persistent WAL storage - critical for durability
   writer-wal:

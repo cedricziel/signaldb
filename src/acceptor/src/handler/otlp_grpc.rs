@@ -67,15 +67,22 @@ impl TraceHandler {
         }
     }
 
+    #[tracing::instrument(
+        skip_all,
+        fields(
+            tenant_id = %tenant_context.tenant_id,
+            dataset_id = %tenant_context.dataset_id
+        )
+    )]
     pub async fn handle_grpc_otlp_traces(
         &self,
         tenant_context: &TenantContext,
         request: ExportTraceServiceRequest,
     ) {
-        log::info!(
-            "Handling OTLP trace request for tenant='{}', dataset='{}'",
-            tenant_context.tenant_id,
-            tenant_context.dataset_id
+        tracing::info!(
+            tenant_id = %tenant_context.tenant_id,
+            dataset_id = %tenant_context.dataset_id,
+            "Handling OTLP trace request"
         );
 
         // Get tenant/dataset-specific WAL
@@ -90,10 +97,11 @@ impl TraceHandler {
         {
             Ok(wal) => wal,
             Err(e) => {
-                log::error!(
-                    "Failed to get WAL for tenant='{}', dataset='{}': {e}",
-                    tenant_context.tenant_id,
-                    tenant_context.dataset_id
+                tracing::error!(
+                    tenant_id = %tenant_context.tenant_id,
+                    dataset_id = %tenant_context.dataset_id,
+                    error = %e,
+                    "Failed to get WAL"
                 );
                 return;
             }
@@ -102,18 +110,26 @@ impl TraceHandler {
         // Convert OTLP traces to Arrow RecordBatch
         let record_batch = otlp_traces_to_arrow(&request);
 
-        let metadata = serde_json::json!({
+        let mut metadata = serde_json::json!({
             "schema_version": "v1",
             "signal_type": "traces",
             "tenant_id": tenant_context.tenant_id,
             "dataset_id": tenant_context.dataset_id,
         });
+        if let Some((traceparent, tracestate)) =
+            common::flight::trace_context::current_trace_context_fields()
+        {
+            metadata["traceparent"] = traceparent.into();
+            if let Some(tracestate) = tracestate {
+                metadata["tracestate"] = tracestate.into();
+            }
+        }
         let metadata_str = serde_json::to_string(&metadata).ok();
 
         let batch_bytes = match record_batch_to_bytes(&record_batch) {
             Ok(bytes) => bytes,
             Err(e) => {
-                log::error!("Failed to serialize record batch: {e}");
+                tracing::error!(error = %e, "Failed to serialize record batch");
                 return;
             }
         };
@@ -124,18 +140,18 @@ impl TraceHandler {
         {
             Ok(id) => id,
             Err(e) => {
-                log::error!("Failed to write traces to WAL: {e}");
+                tracing::error!(error = %e, "Failed to write traces to WAL");
                 return;
             }
         };
 
         // Flush WAL to ensure durability
         if let Err(e) = wal.flush().await {
-            log::error!("Failed to flush WAL: {e}");
+            tracing::error!(error = %e, "Failed to flush WAL");
             return;
         }
 
-        log::debug!("Traces written to WAL with entry ID: {wal_entry_id}");
+        tracing::debug!(entry_id = %wal_entry_id, "Traces written to WAL");
 
         // Step 2: Forward from WAL to writer via Flight
         // Get a Flight client for a writer service with storage capability (excludes acceptor)
@@ -146,7 +162,7 @@ impl TraceHandler {
         {
             Ok(client) => client,
             Err(e) => {
-                log::error!("Failed to get Flight client for storage service: {e}");
+                tracing::error!(error = %e, "Failed to get Flight client for storage service");
                 // Data remains in WAL for retry by background processor
                 return;
             }
@@ -156,7 +172,7 @@ impl TraceHandler {
         let mut flight_data = match batches_to_flight_data(&schema, vec![record_batch]) {
             Ok(data) => data,
             Err(e) => {
-                log::error!("Failed to convert batch to flight data: {e}");
+                tracing::error!(error = %e, "Failed to convert batch to flight data");
                 // Data remains in WAL for retry
                 return;
             }
@@ -177,10 +193,10 @@ impl TraceHandler {
                 while let Some(result) = response_stream.next().await {
                     match result {
                         Ok(put_result) => {
-                            log::debug!("Flight put response: {put_result:?}");
+                            tracing::debug!(response = ?put_result, "Flight put response");
                         }
                         Err(e) => {
-                            log::error!("Flight put error: {e}");
+                            tracing::error!(error = %e, "Flight put error");
                             success = false;
                             break;
                         }
@@ -188,17 +204,17 @@ impl TraceHandler {
                 }
 
                 if success {
-                    log::debug!("Successfully forwarded traces via Flight protocol");
+                    tracing::debug!("Successfully forwarded traces via Flight protocol");
                     // Mark WAL entry as processed after successful forwarding
                     if let Err(e) = wal.mark_processed(wal_entry_id).await {
-                        log::warn!("Failed to mark WAL entry {wal_entry_id} as processed: {e}");
+                        tracing::warn!(entry_id = %wal_entry_id, error = %e, "Failed to mark WAL entry as processed");
                     }
                 } else {
-                    log::error!("Failed to forward traces - data remains in WAL for retry");
+                    tracing::error!("Failed to forward traces - data remains in WAL for retry");
                 }
             }
             Err(e) => {
-                log::error!("Failed to forward traces via Flight protocol: {e}");
+                tracing::error!(error = %e, "Failed to forward traces via Flight protocol");
                 // Data remains in WAL for retry by background processor
             }
         }

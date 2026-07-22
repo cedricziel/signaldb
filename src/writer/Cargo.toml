@@ -5,10 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [features]
+jemalloc-profiling = ["common/jemalloc-profiling", "dep:tikv-jemallocator"]
 default = []
 benchmarks = ["dep:criterion", "dep:rand"]
 
 [dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
 common.workspace = true
 
 datafusion.workspace = true
@@ -28,6 +30,7 @@ async-trait.workspace = true
 clap.workspace = true
 
 tracing.workspace = true
+opentelemetry.workspace = true
 
 uuid.workspace = true
 bytes.workspace = true

@@ -13,6 +13,18 @@ use once_cell::sync::OnceCell;
 
 pub static CONFIG: OnceCell<Configuration> = OnceCell::new();
 
+/// Redact credentials in a DSN for safe logging:
+/// `scheme://user:pass@host/db` becomes `scheme://***@host/db`.
+/// DSNs without a userinfo component (e.g. sqlite paths) pass through.
+pub fn redact_dsn(dsn: &str) -> String {
+    if let Some((scheme, rest)) = dsn.split_once("://")
+        && let Some((_credentials, tail)) = rest.split_once('@')
+    {
+        return format!("{scheme}://***@{tail}");
+    }
+    dsn.to_string()
+}
+
 /// Retention policy configuration for compactor (Phase 3).
 /// This is a lightweight config-only version that matches the full RetentionConfig
 /// in the compactor crate but lives in common for TOML/env deserialization.
@@ -542,6 +554,10 @@ fn default_self_monitoring_dataset() -> String {
     "_monitoring".to_string()
 }
 
+fn default_trace_sample_ratio() -> f64 {
+    0.1
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SelfMonitoringConfig {
     #[serde(default)]
@@ -554,6 +570,12 @@ pub struct SelfMonitoringConfig {
     pub tenant_id: String,
     #[serde(default = "default_self_monitoring_dataset")]
     pub dataset_id: String,
+    /// Fraction of self-monitoring traces to sample (0.0 to 1.0).
+    ///
+    /// Overridden by the standard OTel env vars `OTEL_TRACES_SAMPLER` /
+    /// `OTEL_TRACES_SAMPLER_ARG` when set.
+    #[serde(default = "default_trace_sample_ratio")]
+    pub trace_sample_ratio: f64,
 }
 
 impl Default for SelfMonitoringConfig {
@@ -564,6 +586,45 @@ impl Default for SelfMonitoringConfig {
             interval: default_self_monitoring_interval(),
             tenant_id: default_self_monitoring_tenant(),
             dataset_id: default_self_monitoring_dataset(),
+            trace_sample_ratio: default_trace_sample_ratio(),
+        }
+    }
+}
+
+fn default_pyroscope_url() -> String {
+    "http://localhost:4040".to_string()
+}
+
+fn default_cpu_sample_rate() -> u32 {
+    100
+}
+
+/// Continuous profiling configuration (CPU via Pyroscope, memory via
+/// jemalloc when built with the `jemalloc-profiling` feature).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProfilingConfig {
+    /// Enable continuous profiling (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+    /// Pyroscope server URL profiles are pushed to
+    #[serde(default = "default_pyroscope_url")]
+    pub pyroscope_url: String,
+    /// CPU profiling sample rate in Hz
+    #[serde(default = "default_cpu_sample_rate")]
+    pub cpu_sample_rate: u32,
+    /// Enable memory (heap) profiling via jemalloc; requires binaries built
+    /// with the `jemalloc-profiling` feature
+    #[serde(default)]
+    pub memory_profiling: bool,
+}
+
+impl Default for ProfilingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            pyroscope_url: default_pyroscope_url(),
+            cpu_sample_rate: default_cpu_sample_rate(),
+            memory_profiling: false,
         }
     }
 }
@@ -620,6 +681,9 @@ pub struct Configuration {
     pub auth: AuthConfig,
     #[serde(default)]
     pub self_monitoring: SelfMonitoringConfig,
+    /// Continuous profiling configuration
+    #[serde(default)]
+    pub profiling: ProfilingConfig,
     /// Compactor configuration
     #[serde(default)]
     pub compactor: CompactorConfig,
@@ -642,6 +706,7 @@ impl Default for Configuration {
             // Auth disabled by default
             auth: AuthConfig::default(),
             self_monitoring: SelfMonitoringConfig::default(),
+            profiling: ProfilingConfig::default(),
             compactor: CompactorConfig::default(),
         }
     }
@@ -657,31 +722,85 @@ impl Error for Configuration {}
 
 impl Configuration {
     pub fn load() -> Result<Self, Box<figment::Error>> {
-        let config = Figment::from(Serialized::defaults(Configuration::default()))
-            .merge(Toml::file("signaldb.toml"))
-            // Support both single-underscore (legacy) and double-underscore (new) env vars
-            // Single underscore for simple configs: SIGNALDB_DATABASE_DSN
-            .merge(Env::prefixed("SIGNALDB_").split("_"))
-            // Double underscore for fields with underscores: SIGNALDB__COMPACTOR__TICK_INTERVAL
-            .merge(Env::prefixed("SIGNALDB__").split("__"))
-            .extract()
-            .map_err(Box::new)?;
+        let mut config: Configuration =
+            Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Toml::file("signaldb.toml"))
+                // Support both single-underscore (legacy) and double-underscore (new) env vars
+                // Single underscore for simple configs: SIGNALDB_DATABASE_DSN
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                // Double underscore for fields with underscores: SIGNALDB__COMPACTOR__TICK_INTERVAL
+                .merge(Env::prefixed("SIGNALDB__").split("__"))
+                .extract()
+                .map_err(Box::new)?;
 
+        config.ensure_self_monitoring_tenant();
         Ok(config)
     }
 
     pub fn load_from_path(path: &std::path::Path) -> Result<Self, Box<figment::Error>> {
-        let config = Figment::from(Serialized::defaults(Configuration::default()))
-            .merge(Toml::file(path))
-            // Support both single-underscore (legacy) and double-underscore (new) env vars
-            // Single underscore for simple configs: SIGNALDB_DATABASE_DSN
-            .merge(Env::prefixed("SIGNALDB_").split("_"))
-            // Double underscore for fields with underscores: SIGNALDB__COMPACTOR__TICK_INTERVAL
-            .merge(Env::prefixed("SIGNALDB__").split("__"))
-            .extract()
-            .map_err(Box::new)?;
+        let mut config: Configuration =
+            Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Toml::file(path))
+                // Support both single-underscore (legacy) and double-underscore (new) env vars
+                // Single underscore for simple configs: SIGNALDB_DATABASE_DSN
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                // Double underscore for fields with underscores: SIGNALDB__COMPACTOR__TICK_INTERVAL
+                .merge(Env::prefixed("SIGNALDB__").split("__"))
+                .extract()
+                .map_err(Box::new)?;
 
+        config.ensure_self_monitoring_tenant();
         Ok(config)
+    }
+
+    /// Auto-provision the self-monitoring tenant when self-monitoring is
+    /// enabled together with authentication but no matching tenant is
+    /// configured.
+    ///
+    /// The tenant is keyed by `self_monitoring.tenant_id` (default `_system`)
+    /// and authenticates with `auth.admin_api_key`, so self-monitoring OTLP
+    /// exports are accepted without requiring explicit tenant configuration.
+    /// Without an admin API key the tenant cannot be provisioned; a warning is
+    /// logged and the config is left untouched.
+    pub fn ensure_self_monitoring_tenant(&mut self) {
+        if !self.self_monitoring.enabled || !self.auth.enabled {
+            return;
+        }
+        let tenant_id = self.self_monitoring.tenant_id.clone();
+        if self.auth.tenants.iter().any(|t| t.id == tenant_id) {
+            return;
+        }
+        let Some(admin_key) = self.auth.admin_api_key.clone() else {
+            tracing::warn!(
+                tenant_id = %tenant_id,
+                "Self-monitoring enabled but the tenant is not configured and no \
+                 auth.admin_api_key is set; cannot auto-provision — exports will be rejected"
+            );
+            return;
+        };
+        let dataset_id = self.self_monitoring.dataset_id.clone();
+        tracing::info!(
+            tenant_id = %tenant_id,
+            dataset_id = %dataset_id,
+            "Auto-provisioning self-monitoring tenant"
+        );
+        self.auth.tenants.push(TenantConfig {
+            id: tenant_id.clone(),
+            slug: tenant_id,
+            name: "System (Self-Monitoring)".to_string(),
+            default_dataset: Some(dataset_id.clone()),
+            datasets: vec![DatasetConfig {
+                id: dataset_id.clone(),
+                slug: dataset_id,
+                is_default: true,
+                storage: None,
+            }],
+            api_keys: vec![ApiKeyConfig {
+                key: admin_key,
+                name: Some("Self-Monitoring Key".to_string()),
+            }],
+            schema_config: None,
+        });
     }
 
     /// Get the effective schema configuration for a given tenant
@@ -1010,5 +1129,99 @@ mod tests {
         assert!(!config.is_tenant_enabled("disabled-tenant"));
         // Default tenant should still be enabled
         assert!(config.is_tenant_enabled("default"));
+    }
+
+    #[test]
+    fn redact_dsn_strips_credentials() {
+        assert_eq!(
+            redact_dsn("postgres://user:secret@db:5432/signaldb"),
+            "postgres://***@db:5432/signaldb"
+        );
+        assert_eq!(
+            redact_dsn("sqlite://.data/signaldb.db"),
+            "sqlite://.data/signaldb.db"
+        );
+        assert_eq!(redact_dsn("sqlite::memory:"), "sqlite::memory:");
+    }
+
+    #[test]
+    fn trace_sample_ratio_env_override() {
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB__SELF_MONITORING__TRACE_SAMPLE_RATIO", "0.5");
+            let config = Configuration::load().expect("load config");
+            assert_eq!(config.self_monitoring.trace_sample_ratio, 0.5);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn self_monitoring_tenant_auto_provisioned_with_admin_key() {
+        let mut config = Configuration::default();
+        config.self_monitoring.enabled = true;
+        config.auth.enabled = true;
+        config.auth.admin_api_key = Some("admin-key".to_string());
+
+        config.ensure_self_monitoring_tenant();
+
+        let tenant = config
+            .auth
+            .tenants
+            .iter()
+            .find(|t| t.id == "_system")
+            .expect("auto-provisioned _system tenant");
+        assert_eq!(tenant.default_dataset.as_deref(), Some("_monitoring"));
+        assert_eq!(tenant.datasets.len(), 1);
+        assert!(tenant.datasets[0].is_default);
+        assert_eq!(tenant.api_keys[0].key, "admin-key");
+    }
+
+    #[test]
+    fn self_monitoring_tenant_not_provisioned_without_admin_key() {
+        let mut config = Configuration::default();
+        config.self_monitoring.enabled = true;
+        config.auth.enabled = true;
+        config.auth.admin_api_key = None;
+
+        config.ensure_self_monitoring_tenant();
+        assert!(config.auth.tenants.is_empty());
+    }
+
+    #[test]
+    fn self_monitoring_tenant_not_duplicated_when_configured() {
+        let mut config = Configuration::default();
+        config.self_monitoring.enabled = true;
+        config.auth.enabled = true;
+        config.auth.admin_api_key = Some("admin-key".to_string());
+        config.auth.tenants.push(TenantConfig {
+            id: "_system".to_string(),
+            slug: "_system".to_string(),
+            name: "Existing".to_string(),
+            default_dataset: Some("_monitoring".to_string()),
+            datasets: vec![],
+            api_keys: vec![],
+            schema_config: None,
+        });
+
+        config.ensure_self_monitoring_tenant();
+        assert_eq!(
+            config
+                .auth
+                .tenants
+                .iter()
+                .filter(|t| t.id == "_system")
+                .count(),
+            1
+        );
+        assert_eq!(config.auth.tenants[0].name, "Existing");
+    }
+
+    #[test]
+    fn self_monitoring_tenant_not_provisioned_when_disabled() {
+        let mut config = Configuration::default();
+        config.auth.enabled = true;
+        config.auth.admin_api_key = Some("admin-key".to_string());
+
+        config.ensure_self_monitoring_tenant();
+        assert!(config.auth.tenants.is_empty());
     }
 }

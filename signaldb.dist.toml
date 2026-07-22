@@ -265,6 +265,42 @@ rate_limit_delay_ms = 0               # Delay between batches in milliseconds (d
 # - Low-memory systems: decrease batch_size (250-500), reduce max_snapshot_age_hours
 # - Aggressive cleanup: reduce grace_period_hours (12h), reduce cleanup_interval_hours (12h for more frequent runs)
 
+# Self-monitoring: SignalDB observes itself (dogfooding).
+# Services export their own traces/logs/metrics via OTLP to SignalDB's
+# acceptor, stored under the reserved `_system` tenant / `_monitoring`
+# dataset. Requires auth.admin_api_key when auth is enabled (the tenant is
+# auto-provisioned with that key if not configured explicitly).
+[self_monitoring]
+# Enable self-monitoring telemetry export (default: false)
+# enabled = true
+# OTLP gRPC endpoint of the acceptor to export to (default shown)
+# endpoint = "http://localhost:4317"
+# Metric export interval (default: 60s)
+# interval = "60s"
+# Tenant/dataset the telemetry is stored under (defaults shown).
+# Requests for this tenant are exempt from re-instrumentation (anti-loop guard).
+# tenant_id = "_system"
+# dataset_id = "_monitoring"
+# Fraction of self-monitoring traces to sample, 0.0-1.0 (default: 0.1 = 10%).
+# Standard OTel env vars take precedence: OTEL_TRACES_SAMPLER=traceidratio
+# (or always_on / always_off / parentbased_traceidratio) and
+# OTEL_TRACES_SAMPLER_ARG=<ratio>.
+# trace_sample_ratio = 0.1
+
+# Continuous profiling: CPU flame graphs (and optionally heap profiles)
+# pushed to a Grafana Pyroscope server (docker compose includes one at
+# http://localhost:4040).
+[profiling]
+# Enable continuous CPU profiling (default: false)
+# enabled = true
+# Pyroscope server URL (default shown)
+# pyroscope_url = "http://localhost:4040"
+# CPU sampling rate in Hz (default: 100)
+# cpu_sample_rate = 100
+# Heap profiling via jemalloc; requires binaries built with
+# `--features jemalloc-profiling` and MALLOC_CONF=prof:true,prof_active:true
+# memory_profiling = false
+
 [tenants]
 # Multi-tenant configuration (always active)
 default_tenant = "default"

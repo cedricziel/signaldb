@@ -48,9 +48,49 @@ impl<H: LogHandlerTrait + Send + Sync + 'static> LogsService for LogAcceptorServ
 
         let request_inner = request.into_inner();
 
-        self.handler
-            .handle_grpc_otlp_logs(&tenant_context, request_inner)
-            .await;
+        let log_count: u64 = request_inner
+            .resource_logs
+            .iter()
+            .flat_map(|rl| rl.scope_logs.iter())
+            .map(|sl| sl.log_records.len() as u64)
+            .sum();
+        let rpc_start = std::time::Instant::now();
+
+        // Anti-loop guard: processing the _system tenant's own telemetry must
+        // not generate more self-monitoring telemetry.
+        let handle = self
+            .handler
+            .handle_grpc_otlp_logs(&tenant_context, request_inner);
+        if common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id) {
+            common::self_monitoring::suppress_self_telemetry(handle).await;
+        } else {
+            handle.await;
+        }
+
+        // Anti-loop guard: _system traffic is SignalDB's own telemetry and
+        // must not be measured (would feed back into the export pipeline).
+        if !common::self_monitoring::should_count_tenant(&tenant_context.tenant_id) {
+            return Ok(Response::new(Default::default()));
+        }
+        let app_metrics = common::self_monitoring::app_metrics();
+        app_metrics.rpc_server_duration.record(
+            rpc_start.elapsed().as_secs_f64() * 1000.0,
+            &[
+                opentelemetry::KeyValue::new("rpc.system", "grpc"),
+                opentelemetry::KeyValue::new(
+                    "rpc.service",
+                    "opentelemetry.proto.collector.logs.v1.LogsService",
+                ),
+                opentelemetry::KeyValue::new("rpc.method", "Export"),
+            ],
+        );
+        app_metrics.ingest_logs_received.add(
+            log_count,
+            &[opentelemetry::KeyValue::new(
+                "tenant_id",
+                tenant_context.tenant_id.clone(),
+            )],
+        );
 
         Ok(Response::new(ExportLogsServiceResponse::default()))
     }
