@@ -574,7 +574,7 @@ async fn test_tempo_search_endpoint() {
         .body(Body::empty())
         .unwrap();
 
-    let response = app.oneshot(request).await.unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
 
     // Accept 200, 503, or 500 during testing
     println!("Search response status: {}", response.status());
@@ -616,6 +616,40 @@ async fn test_tempo_search_endpoint() {
         println!("⚠️  Service unavailable during search test");
     }
 
+    // Tag values: supported tags come from real data, unsupported tags
+    // are an explicit 501 (issue #552).
+    let request = Request::builder()
+        .uri("/api/search/tag/service.name/values")
+        .header("Authorization", "Bearer test-key-123")
+        .header("X-Tenant-ID", "test-tenant")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "service.name tag values must be served from data"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let values: tempo_api::TagValuesResponse =
+        serde_json::from_slice(&body).expect("tag values should be valid JSON");
+    println!("service.name values: {:?}", values.tag_values);
+
+    let request = Request::builder()
+        .uri("/api/search/tag/http.method/values")
+        .header("Authorization", "Bearer test-key-123")
+        .header("X-Tenant-ID", "test-tenant")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_IMPLEMENTED,
+        "unsupported tag value lookups must be 501, not an empty 200"
+    );
+
     println!("✅ Tempo search endpoint test completed");
 }
 
@@ -638,7 +672,7 @@ async fn test_tempo_tag_endpoints() {
         .body(Body::empty())
         .unwrap();
 
-    let response = app.oneshot(request).await.unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -646,7 +680,15 @@ async fn test_tempo_tag_endpoints() {
         .unwrap();
     let tag_response: tempo_api::TagSearchResponse =
         serde_json::from_slice(&body).expect("Should be valid JSON");
-    assert_eq!(tag_response.tag_names.len(), 0); // Empty in test environment
+    // The searchable tags: service.name (resource), name and status
+    // (intrinsics). Never fabricated, never an empty stub.
+    assert!(
+        tag_response.tag_names.contains(&"service.name".to_string()),
+        "tags must include service.name (got {:?})",
+        tag_response.tag_names
+    );
+    assert!(tag_response.tag_names.contains(&"name".to_string()));
+    assert!(tag_response.tag_names.contains(&"status".to_string()));
 
     println!("✅ Tag endpoints test completed");
 }
@@ -663,22 +705,16 @@ async fn test_tempo_metrics_endpoints() {
     let state = InMemoryStateImpl::new(catalog, config);
     let app: Router = tempo::router().with_state(state);
 
-    // Test instant metrics query
+    // Test instant metrics query: TraceQL metrics are not implemented,
+    // and the endpoint must say so instead of fabricating series
+    // (issue #552).
     let request = Request::builder()
         .uri("/api/metrics/query?q={service.name='api'}|count()")
         .body(Body::empty())
         .unwrap();
 
     let response = app.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let metrics_response: tempo_api::MetricsResponse =
-        serde_json::from_slice(&body).expect("Should be valid JSON");
-    assert_eq!(metrics_response.status, "success");
-    assert_eq!(metrics_response.data.result_type, "vector");
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
 
     // Test range metrics query
     let request = Request::builder()
@@ -687,15 +723,7 @@ async fn test_tempo_metrics_endpoints() {
         .unwrap();
 
     let response = app.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let metrics_response: tempo_api::MetricsResponse =
-        serde_json::from_slice(&body).expect("Should be valid JSON");
-    assert_eq!(metrics_response.status, "success");
-    assert_eq!(metrics_response.data.result_type, "matrix");
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
 
     println!("✅ Metrics endpoints test completed");
 }
