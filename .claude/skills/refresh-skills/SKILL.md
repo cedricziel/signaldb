@@ -24,7 +24,6 @@ Do NOT rewrite skills that are already accurate. Only touch what changed.
 | **multi-tenancy** | `src/common/src/auth.rs`, `src/common/src/config/mod.rs`, `src/router/src/admin.rs`, `docs/architecture-overview.md` (Multi-Tenancy section) |
 | **service-discovery** | `docs/design/service-discovery.md`, `src/common/src/catalog.rs`, `src/common/src/service_bootstrap.rs`, `src/common/src/flight/transport.rs` |
 | **dev-workflow** | `CLAUDE.md`, `.serena/memories/task_completion_checklist.md`, `scripts/run-dev.sh`, `docker-compose.yml` |
-| **rust-patterns** | `docs/ai/rust.md`, `docs/ai/development.md`, `Cargo.toml` (edition, rust-version, workspace.dependencies) |
 | **crate-map** | `Cargo.toml` (workspace members), then `src/*/src/lib.rs` or `src/*/src/main.rs` for each crate to check module structure |
 | **adding-new-signal** | Cross-reference with `architecture`, `flight-schemas`, and `storage-layout` skills for consistency |
 | **tempo-api** | `src/router/src/tempo.rs`, `src/router/src/admin.rs`, `src/grafana-plugin/` |

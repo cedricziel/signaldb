@@ -178,33 +178,6 @@ catalog_type = "sql"
 catalog_uri = "sqlite::memory:"  # or sqlite:///path/to/catalog.db
 ```
 
-## Code Quality Standards
-
-### Rust Edition 2024
-
-Project tracks stable Rust (no MSRV policy — SignalDB ships binaries, not a library).
-
-### Clippy Compliance
-
-```rust
-// ✅ Direct variable interpolation
-format!("Service {service_id} at {address}")
-log::info!("Discovered {count} services")
-
-// ✅ Use vec! macro
-let items = vec![item1, item2, item3];
-
-// ✅ Prefer !is_empty() over len() > 0
-if !items.is_empty() { ... }
-
-// ✅ Use panic! for intentional panics
-panic!("Failed to initialize: {error}");
-```
-
-### Dependency Management
-
-Always use `cargo machete --with-metadata` for comprehensive unused dependency detection before committing.
-
 ## Compactor Service
 
 The Compactor Service manages complete data lifecycle with three phases:
@@ -299,7 +272,6 @@ curl -s localhost:9091/metrics | grep compactor
 - Configuration: `docs/compactor/phase3-configuration.md`
 - Operations: `docs/compactor/phase3-operations.md`
 - Troubleshooting: `docs/compactor/phase3-troubleshooting.md`
-- Implementation Plan: `docs/compactor/phase3-implementation-plan.md`
 - README: `src/compactor/README.md`
 
 **Important Notes:**
@@ -310,8 +282,9 @@ curl -s localhost:9091/metrics | grep compactor
 
 ## Development Guidelines
 
-- @docs/ai/development.md
-- @docs/ai/rust.md
+- Test Driven Development: write tests before implementing features; all tests pass before committing
+- Use testcontainers for integration tests involving external services
+- Rust coding standards: @docs/contributing/rust.md
 
 ## Commit Guidelines
 
