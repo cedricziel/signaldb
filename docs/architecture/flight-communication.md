@@ -154,9 +154,14 @@ Any other `do_get` ticket (including `find_trace:...`, `search_traces:...`, and 
 
 | Ticket | Description |
 |--------|-------------|
-| `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}` | Single trace lookup |
-| `search_traces:{tenant_slug}:{dataset_slug}:{params_json}` | Trace search (`SearchQueryParams` as JSON) |
+| `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}[:{start}:{end}]` | Single trace lookup; the optional trailing segments are unix-second time hints (either may be empty) that prune the scanned range. Routers only append them when a hint is present, so the 3-part form remains valid. A missing trace yields a Flight `not_found` status, not an empty stream |
+| `search_traces:{tenant_slug}:{dataset_slug}:{params_json}` | Trace search (`SearchQueryParams` as JSON; unknown fields are ignored on deserialization) |
 | anything else | Treated as a raw SQL query executed via DataFusion |
+
+The standalone querier binary additionally serves Tempo's `tempopb.Querier`
+gRPC protocol on the same port as Flight (see the
+[Tempo API reference](../users/tempo-api-reference.md#tempo-grpc-querier-protocol));
+that protocol does not use tickets.
 
 There is no `trace_by_id?id=...` ticket form at the Querier; that command exists only in the Router's metadata path. The Tempo HTTP endpoints bypass the Router's Flight commands entirely and send `find_trace:`/`search_traces:`/SQL tickets straight to the Querier.
 

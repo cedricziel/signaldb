@@ -216,7 +216,7 @@ flowchart LR
 
 | Property | Value |
 |----------|-------|
-| **Port** | Flight: 50054 |
+| **Port** | Flight: 50054 (standalone mode also serves Tempo's `tempopb.Querier` gRPC protocol on this port) |
 | **Capability** | `QueryExecution` |
 | **Engine** | DataFusion with Iceberg integration |
 
@@ -224,7 +224,7 @@ flowchart LR
 - `TenantCatalog` bridges DataFusion's 3-level model (`catalog.schema.table`) to Iceberg's 2-level namespace (`[tenant_slug, dataset_slug]`)
 - Registers per-dataset object stores with DataFusion's runtime environment
 - Handles Flight `do_get` tickets:
-  - `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}` -- single trace lookup
+  - `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}[:{start}:{end}]` -- single trace lookup with optional unix-second time hints
   - `search_traces:{tenant_slug}:{dataset_slug}:{params}` -- trace search with filters
 - Uses `TableReference::full(tenant_slug, dataset_slug, "traces")` with slug validation to prevent SQL injection
 
