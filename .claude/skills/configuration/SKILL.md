@@ -91,6 +91,7 @@ max_ingest_bytes_per_sec = 10485760   # 10 MiB/s
 max_query_requests_per_sec = 50       # router HTTP query API
 max_api_keys = 10                     # active (non-revoked) keys
 max_datasets = 25
+max_storage_bytes = 107374182400      # 100 GiB live Iceberg data files (eventually consistent)
 burst_seconds = 2.0
 
 [[auth.tenants]]

@@ -100,11 +100,16 @@ fields mean unlimited; DB-provisioned tenants get the defaults.
 | `max_query_requests_per_sec` | Router HTTP query API (`/tempo`, `/api/v1`) | 429 |
 | `max_api_keys` (active keys only) | Admin API key creation | 429 `quota_exceeded` |
 | `max_datasets` | Admin API dataset creation | 429 `quota_exceeded` |
+| `max_storage_bytes` | Acceptor (OTLP gRPC, remote_write) | 429 / RESOURCE_EXHAUSTED `quota_exceeded` |
 | `[querier] max_concurrent_queries_per_tenant` | Querier | query rejected |
 
 Token buckets per dimension (`common::ratelimit::TenantRateLimiter`);
-ingest and query budgets are independent. Storage quotas: not yet
-implemented (#610).
+ingest and query budgets are independent. Storage quotas
+(`common::storage_usage::StorageUsageTracker`) compare cached per-tenant
+usage — refreshed from Iceberg manifests every
+`[auth].storage_usage_refresh_interval` (default 60s) — against
+`max_storage_bytes`; enforcement is eventually consistent by design and
+usage is exported as the `signaldb.tenant.storage_usage` gauge.
 
 ## Admin API (Router)
 
