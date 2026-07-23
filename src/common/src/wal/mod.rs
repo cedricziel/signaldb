@@ -43,6 +43,8 @@ pub enum WalOperation {
     WriteLogs,
     /// Write operation for metric data
     WriteMetrics,
+    /// Write operation for profile data
+    WriteProfiles,
     /// Flush operation to persistent storage
     Flush,
 }

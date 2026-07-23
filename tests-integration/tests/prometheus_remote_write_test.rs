@@ -154,10 +154,12 @@ async fn setup_prometheus_test() -> (axum::Router, TempDir) {
     let traces_wal_config = WalConfig::with_defaults(wal_dir.clone());
     let logs_wal_config = WalConfig::with_defaults(wal_dir.clone());
     let metrics_wal_config = WalConfig::with_defaults(wal_dir.clone());
+    let profiles_wal_config = WalConfig::with_defaults(wal_dir.clone());
     let wal_manager = Arc::new(WalManager::new(
         traces_wal_config,
         logs_wal_config,
         metrics_wal_config,
+        profiles_wal_config,
     ));
 
     // Create authenticator

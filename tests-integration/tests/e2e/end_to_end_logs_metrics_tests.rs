@@ -154,6 +154,7 @@ async fn setup_logs_metrics_services() -> TestServices {
     let wal_manager = Arc::new(WalManager::new(
         wal_config.clone(),
         wal_config.clone(),
+        wal_config.clone(),
         wal_config,
     ));
 

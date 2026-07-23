@@ -140,10 +140,17 @@ pub async fn init_acceptor_resources(
     metrics_wal_config.max_buffer_entries = 5000;
     metrics_wal_config.flush_interval_secs = 10;
 
+    // Base WAL config for profiles - large payloads, lower entry count
+    let mut profiles_wal_config = WalConfig::with_defaults(wal_dir.clone());
+    profiles_wal_config.max_segment_size = 256 * 1024 * 1024; // 256MB
+    profiles_wal_config.max_buffer_entries = 500;
+    profiles_wal_config.flush_interval_secs = 60;
+
     let wal_manager = Arc::new(WalManager::new(
         traces_wal_config,
         logs_wal_config,
         metrics_wal_config,
+        profiles_wal_config,
     ));
 
     tracing::info!(

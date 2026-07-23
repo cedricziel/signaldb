@@ -29,6 +29,8 @@ pub struct WalManager {
     logs_config: WalConfig,
     /// Base configuration template for metrics WALs
     metrics_config: WalConfig,
+    /// Base configuration template for profile WALs
+    profiles_config: WalConfig,
 }
 
 impl WalManager {
@@ -39,6 +41,7 @@ impl WalManager {
     /// * `traces_config` - Base WAL configuration for traces
     /// * `logs_config` - Base WAL configuration for logs
     /// * `metrics_config` - Base WAL configuration for metrics
+    /// * `profiles_config` - Base WAL configuration for profiles
     ///
     /// The `wal_dir` in each config should point to the base directory (e.g., `.wal`).
     /// The manager will create subdirectories per tenant/dataset/signal.
@@ -46,6 +49,7 @@ impl WalManager {
         traces_config: WalConfig,
         logs_config: WalConfig,
         metrics_config: WalConfig,
+        profiles_config: WalConfig,
     ) -> Self {
         Self {
             wals: Arc::new(Mutex::new(HashMap::new())),
@@ -53,6 +57,7 @@ impl WalManager {
             traces_config,
             logs_config,
             metrics_config,
+            profiles_config,
         }
     }
 
@@ -62,7 +67,7 @@ impl WalManager {
     ///
     /// * `tenant_id` - The tenant identifier
     /// * `dataset_id` - The dataset identifier
-    /// * `signal_type` - The signal type ("traces", "logs", or "metrics")
+    /// * `signal_type` - The signal type ("traces", "logs", "metrics", or "profiles")
     ///
     /// # Returns
     ///
@@ -128,11 +133,12 @@ impl WalManager {
             "traces" => &self.traces_config,
             "logs" => &self.logs_config,
             "metrics" => &self.metrics_config,
+            "profiles" => &self.profiles_config,
             _ => {
                 // Remove guard on failure
                 self.init_guards.lock().await.remove(&key);
                 return Err(anyhow::anyhow!(
-                    "Unknown signal type: {signal_type}. Must be 'traces', 'logs', or 'metrics'"
+                    "Unknown signal type: {signal_type}. Must be 'traces', 'logs', 'metrics', or 'profiles'"
                 ));
             }
         };
@@ -202,7 +208,12 @@ impl WalManager {
     /// Returns the number of newly opened WAL instances.
     pub async fn discover_existing_wals(&self) -> Result<usize, anyhow::Error> {
         let mut base_dirs = Vec::new();
-        for config in [&self.traces_config, &self.logs_config, &self.metrics_config] {
+        for config in [
+            &self.traces_config,
+            &self.logs_config,
+            &self.metrics_config,
+            &self.profiles_config,
+        ] {
             if !base_dirs.contains(&config.wal_dir) {
                 base_dirs.push(config.wal_dir.clone());
             }
@@ -245,7 +256,7 @@ impl WalManager {
     async fn scan_wal_layout(
         base_dir: &std::path::Path,
     ) -> Result<Vec<(String, String, String)>, anyhow::Error> {
-        const SIGNALS: [&str; 3] = ["traces", "logs", "metrics"];
+        const SIGNALS: [&str; 4] = ["traces", "logs", "metrics", "profiles"];
         let mut found = Vec::new();
 
         let mut tenants = tokio::fs::read_dir(base_dir).await?;
@@ -328,6 +339,7 @@ mod tests {
             create_test_config(&base_path),
             create_test_config(&base_path),
             create_test_config(&base_path),
+            create_test_config(&base_path),
         );
 
         let _wal = manager
@@ -348,6 +360,7 @@ mod tests {
         let base_path = temp_dir.path().to_path_buf();
 
         let manager = WalManager::new(
+            create_test_config(&base_path),
             create_test_config(&base_path),
             create_test_config(&base_path),
             create_test_config(&base_path),
@@ -378,6 +391,7 @@ mod tests {
         let base_path = temp_dir.path().to_path_buf();
 
         let manager = WalManager::new(
+            create_test_config(&base_path),
             create_test_config(&base_path),
             create_test_config(&base_path),
             create_test_config(&base_path),
@@ -415,6 +429,7 @@ mod tests {
             create_test_config(&base_path),
             create_test_config(&base_path),
             create_test_config(&base_path),
+            create_test_config(&base_path),
         );
 
         let wal_prod = manager
@@ -446,6 +461,7 @@ mod tests {
             create_test_config(&base_path),
             create_test_config(&base_path),
             create_test_config(&base_path),
+            create_test_config(&base_path),
         );
 
         let wal_traces = manager
@@ -469,11 +485,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_wal_manager_creates_profiles_wal() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+
+        let manager = WalManager::new(
+            create_test_config(&base_path),
+            create_test_config(&base_path),
+            create_test_config(&base_path),
+            create_test_config(&base_path),
+        );
+
+        let _wal = manager
+            .get_wal("acme", "production", "profiles")
+            .await
+            .unwrap();
+
+        let expected_path = base_path.join("acme").join("production").join("profiles");
+        assert!(expected_path.exists());
+    }
+
+    #[tokio::test]
     async fn test_wal_manager_invalid_signal_type() {
         let temp_dir = TempDir::new().unwrap();
         let base_path = temp_dir.path().to_path_buf();
 
         let manager = WalManager::new(
+            create_test_config(&base_path),
             create_test_config(&base_path),
             create_test_config(&base_path),
             create_test_config(&base_path),
@@ -497,6 +535,7 @@ mod tests {
         let base_path = temp_dir.path().to_path_buf();
 
         let manager = WalManager::new(
+            create_test_config(&base_path),
             create_test_config(&base_path),
             create_test_config(&base_path),
             create_test_config(&base_path),
@@ -533,6 +572,7 @@ mod tests {
         let base_path = temp_dir.path().to_path_buf();
 
         let manager = Arc::new(WalManager::new(
+            create_test_config(&base_path),
             create_test_config(&base_path),
             create_test_config(&base_path),
             create_test_config(&base_path),

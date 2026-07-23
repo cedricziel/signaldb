@@ -102,6 +102,7 @@ async fn self_monitoring_export_lands_in_system_wal() {
         wal_config(&temp_dir, "traces"),
         wal_config(&temp_dir, "logs"),
         wal_config(&temp_dir, "metrics"),
+        wal_config(&temp_dir, "profiles"),
     ));
 
     let trace_handler = TraceHandler::new(flight_transport, wal_manager.clone());
@@ -216,6 +217,7 @@ async fn anti_loop_guard_prevents_reinstrumentation_of_system_requests() {
             wal_config(&temp_dir, "traces"),
             wal_config(&temp_dir, "logs"),
             wal_config(&temp_dir, "metrics"),
+            wal_config(&temp_dir, "profiles"),
         ));
         let service = TraceAcceptorService::new(TraceHandler::new(flight_transport, wal_manager));
 
