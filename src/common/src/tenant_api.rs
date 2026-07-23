@@ -260,6 +260,7 @@ impl TenantApi {
                         "OpenTelemetry exponential histogram metrics"
                     }
                     iceberg_schemas::TableSchema::MetricsSummary => "OpenTelemetry summary metrics",
+                    iceberg_schemas::TableSchema::Profiles => "OpenTelemetry profiles",
                     iceberg_schemas::TableSchema::Custom(ref name) => {
                         // For custom schemas, use a generic description
                         return TableInfo {
@@ -303,6 +304,7 @@ impl TenantApi {
                         "OpenTelemetry exponential histogram metrics"
                     }
                     iceberg_schemas::TableSchema::MetricsSummary => "OpenTelemetry summary metrics",
+                    iceberg_schemas::TableSchema::Profiles => "OpenTelemetry profiles",
                     iceberg_schemas::TableSchema::Custom(ref name) => {
                         // For custom schemas, use a generic description
                         return TableInfo {
