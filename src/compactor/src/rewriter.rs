@@ -35,11 +35,11 @@ impl ParquetRewriter {
         Self { catalog_manager }
     }
 
-    /// Load a table with fresh metadata, bypassing the `ensure_table` cache.
+    /// Load a table with fresh metadata, without creating it if missing.
     ///
-    /// The `IcebergTableManager` cache returns stale `Table` handles that do
-    /// not reflect snapshots committed after the handle was cached; compaction
-    /// must always operate on current metadata.
+    /// Unlike `ensure_table`, this never creates the table: compaction must
+    /// only operate on tables that already exist, and always on current
+    /// metadata.
     pub async fn load_fresh_table(
         &self,
         tenant_id: &str,

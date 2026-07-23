@@ -1,6 +1,5 @@
-//! Manages Iceberg table lifecycle -- loading, creating, and caching tables.
+//! Manages Iceberg table lifecycle -- loading and creating tables.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -8,53 +7,40 @@ use iceberg_rust::catalog::Catalog as IcebergCatalog;
 use iceberg_rust::catalog::create::CreateTableBuilder;
 use iceberg_rust::catalog::tabular::Tabular;
 use iceberg_rust::table::Table;
-use tokio::sync::RwLock;
 
 use super::names;
 use super::schemas;
 
-/// Manages the lifecycle of Iceberg tables with caching.
+/// Manages the lifecycle of Iceberg tables.
 ///
 /// Provides `ensure_table()` which loads an existing table or creates it
-/// if it doesn't exist. Tables are cached by (tenant_id, dataset_id, table_name).
+/// if it doesn't exist. Every call loads fresh metadata from the catalog:
+/// a `Table` handle carries table metadata as of load time, so handing out
+/// long-lived cached handles would hide snapshots committed by other
+/// writers (issue #537). Callers that need a current view must call
+/// `ensure_table` again rather than hold on to an old handle.
 pub struct IcebergTableManager {
     catalog: Arc<dyn IcebergCatalog>,
-    cache: RwLock<HashMap<(String, String, String), Table>>,
 }
 
 impl IcebergTableManager {
     /// Create from catalog reference.
     pub fn new(catalog: Arc<dyn IcebergCatalog>) -> Self {
-        Self {
-            catalog,
-            cache: RwLock::new(HashMap::new()),
-        }
+        Self { catalog }
     }
 
     /// Load an existing table or create it if it doesn't exist.
     ///
     /// This method:
-    /// 1. Checks the in-memory cache
-    /// 2. Tries `load_tabular()` -- single catalog round-trip
-    /// 3. On NotFound -> creates the table with schema from `schemas::TableSchema`
-    /// 4. Handles `AlreadyExists` gracefully (concurrent callers)
-    /// 5. Caches the result
+    /// 1. Tries `load_tabular()` -- single catalog round-trip, fresh metadata
+    /// 2. On NotFound -> creates the table with schema from `schemas::TableSchema`
+    /// 3. Handles `AlreadyExists` gracefully (concurrent callers)
     pub async fn ensure_table(
         &self,
         tenant_slug: &str,
         dataset_slug: &str,
         table_name: &str,
     ) -> Result<Table> {
-        let cache_key = (
-            tenant_slug.to_string(),
-            dataset_slug.to_string(),
-            table_name.to_string(),
-        );
-
-        if let Some(table) = self.cache.read().await.get(&cache_key).cloned() {
-            return Ok(table);
-        }
-
         let ident = names::build_table_identifier(tenant_slug, dataset_slug, table_name);
         if let Ok(tabular) = self.catalog.clone().load_tabular(&ident).await {
             let table = match tabular {
@@ -67,7 +53,6 @@ impl IcebergTableManager {
                 }
             };
 
-            self.cache.write().await.insert(cache_key, table.clone());
             return Ok(table);
         }
 
@@ -162,16 +147,6 @@ impl IcebergTableManager {
             }
         };
 
-        self.cache.write().await.insert(cache_key, table.clone());
         Ok(table)
-    }
-
-    /// Invalidate a cached table, forcing reload on next access.
-    pub async fn invalidate(&self, tenant_id: &str, dataset_id: &str, table_name: &str) {
-        self.cache.write().await.remove(&(
-            tenant_id.to_string(),
-            dataset_id.to_string(),
-            table_name.to_string(),
-        ));
     }
 }
