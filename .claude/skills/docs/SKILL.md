@@ -58,6 +58,17 @@ sources:            # code paths this doc describes; globs allowed
 - Knowledge skills in `.claude/skills/` carry the same `sources` field in their
   frontmatter and are held to the same freshness expectation.
 
+## Diagrams and structure
+
+- Docs use Mermaid for diagrams (renders on GitHub, shows in diffs, covered by
+  the freshness check). Architecture docs that describe a flow or topology
+  lead with a diagram of it; the `technical-writing` skill has the craft rules
+  (diagram-type mapping, size limits).
+- Each doc follows the skeleton for its `type` from the `technical-writing`
+  skill (how-to: goal → prerequisites → steps → verify → troubleshooting;
+  decision record: date → context → decision → consequences; etc.). Skeletons
+  are review guidance, not lint — collapse what a short doc doesn't need.
+
 ## One home per fact
 
 Every fact lives in exactly one document; everything else links to it. Before
