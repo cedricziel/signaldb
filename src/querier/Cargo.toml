@@ -11,6 +11,7 @@ tempo-api = { path = "../tempo-api", features = ["server"] }
 
 async-trait.workspace = true
 dashmap.workspace = true
+hex.workspace = true
 
 anyhow.workspace = true
 clap.workspace = true

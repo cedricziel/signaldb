@@ -22,9 +22,13 @@ pub struct FindTraceByIdParams {
 pub struct SearchQueryParams {
     pub q: Option<String>,
     pub tags: Option<String>,
-    pub min_duration: Option<i32>,
-    pub max_duration: Option<i32>,
+    /// Minimum span duration in nanoseconds
+    pub min_duration: Option<i64>,
+    /// Maximum span duration in nanoseconds
+    pub max_duration: Option<i64>,
     pub limit: Option<i32>,
-    pub start: Option<i32>,
-    pub end: Option<i32>,
+    /// Search window start (unix seconds)
+    pub start: Option<i64>,
+    /// Search window end (unix seconds)
+    pub end: Option<i64>,
 }

@@ -393,7 +393,7 @@ impl TraceService {
 
         // Apply time range filters if provided
         if let Some(start) = query.start {
-            let start_nanos = (start as i64) * 1_000_000_000;
+            let start_nanos = start.saturating_mul(1_000_000_000);
             df = df
                 .filter(col("start_time_unix_nano").gt_eq(lit(start_nanos)))
                 .map_err(|e| {
@@ -402,7 +402,7 @@ impl TraceService {
                 })?;
         }
         if let Some(end) = query.end {
-            let end_nanos = (end as i64) * 1_000_000_000;
+            let end_nanos = end.saturating_mul(1_000_000_000);
             df = df
                 .filter(col("start_time_unix_nano").lt_eq(lit(end_nanos)))
                 .map_err(|e| {
@@ -414,7 +414,7 @@ impl TraceService {
         // Apply duration filters
         if let Some(min_dur) = query.min_duration {
             df = df
-                .filter(col("duration_nanos").gt_eq(lit(min_dur as i64)))
+                .filter(col("duration_nanos").gt_eq(lit(min_dur)))
                 .map_err(|e| {
                     log::error!("Failed to apply min duration filter: {e}");
                     QuerierError::QueryFailed(e)
@@ -422,7 +422,7 @@ impl TraceService {
         }
         if let Some(max_dur) = query.max_duration {
             df = df
-                .filter(col("duration_nanos").lt_eq(lit(max_dur as i64)))
+                .filter(col("duration_nanos").lt_eq(lit(max_dur)))
                 .map_err(|e| {
                     log::error!("Failed to apply max duration filter: {e}");
                     QuerierError::QueryFailed(e)

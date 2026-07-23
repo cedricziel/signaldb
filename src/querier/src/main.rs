@@ -7,6 +7,7 @@ use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use querier::QuerierFlightService;
 use std::sync::Arc;
+use tempo_api::tempopb::querier_server::QuerierServer;
 use tokio::signal;
 use tonic::transport::Server;
 
@@ -160,16 +161,23 @@ async fn main() -> anyhow::Result<()> {
              it must be restricted to a trusted network"
         );
     }
+    // Serve Tempo's internal querier gRPC protocol on the same port as
+    // Flight, so a Tempo query-frontend can use SignalDB as a querier.
+    let tempo_querier = flight_service.tempo_querier();
     let flight_handle = tokio::spawn(async move {
         let builder = Server::builder();
         let serve = match flight_auth {
             Some(interceptor) => {
+                let tempo_interceptor = interceptor.clone();
                 let mut builder = builder;
                 builder
                     .add_service(FlightServiceServer::with_interceptor(
                         flight_service,
                         move |req| interceptor.intercept(req),
                     ))
+                    .add_service(QuerierServer::with_interceptor(tempo_querier, move |req| {
+                        tempo_interceptor.intercept(req)
+                    }))
                     .serve(flight_addr)
                     .await
             }
@@ -177,6 +185,7 @@ async fn main() -> anyhow::Result<()> {
                 let mut builder = builder;
                 builder
                     .add_service(FlightServiceServer::new(flight_service))
+                    .add_service(QuerierServer::new(tempo_querier))
                     .serve(flight_addr)
                     .await
             }

@@ -216,6 +216,12 @@ fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
 }
 
 impl QuerierFlightService {
+    /// Build a Tempo gRPC querier backed by this service's trace query
+    /// engine, for serving `tempopb.Querier` alongside Flight.
+    pub fn tempo_querier(&self) -> crate::services::tempo::SignalDBQuerier {
+        crate::services::tempo::SignalDBQuerier::new(self.trace_service.clone())
+    }
+
     /// Create a new QuerierFlightService with default resource limits
     pub fn new(
         object_store: Arc<dyn ObjectStore>,
