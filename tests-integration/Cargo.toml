@@ -63,6 +63,10 @@ name = "self_monitoring"
 path = "tests/self_monitoring.rs"
 
 [[test]]
+name = "storage_quota"
+path = "tests/storage_quota.rs"
+
+[[test]]
 name = "iceberg_integration"
 path = "tests/writer/iceberg_integration.rs"
 
