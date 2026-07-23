@@ -7,7 +7,7 @@ sources:
   - src/common/src/storage.rs
   - src/common/src/wal/**
   - src/common/src/catalog_manager.rs
-  - src/common/src/schema/iceberg_schemas.rs
+  - src/common/src/iceberg/**
 ---
 
 # SignalDB Storage Layout Reference
@@ -97,15 +97,20 @@ pub struct WalEntry {
 ### WAL Config
 ```rust
 pub struct WalConfig {
-    pub wal_dir: PathBuf,
-    pub max_segment_size: u64,       // Default: 64 MB
-    pub max_buffer_entries: usize,   // Default: 1000
-    pub flush_interval_secs: u64,    // Default: 30s
-    pub max_buffer_size: usize,      // Default: 128 MB
-    pub tenant_id: String,           // Required, non-empty
-    pub dataset_id: String,          // Required, non-empty
+    pub wal_dir: PathBuf,               // Default: ".wal"
+    pub max_segment_size: u64,          // Default: 64 MB
+    pub max_buffer_entries: usize,      // Default: 1000
+    pub flush_interval_secs: u64,       // Default: 30s
+    pub tenant_id: String,              // Required, non-empty
+    pub dataset_id: String,             // Required, non-empty
+    pub retention_secs: u64,            // Default: 3600 (1h) — keep processed entries
+    pub cleanup_interval_secs: u64,     // Default: 300 (5m) — cleanup cadence
+    pub compaction_threshold: f64,      // Default: 0.5 — processed fraction that triggers segment compaction
 }
 ```
+
+Note: `WalConfig::default()` uses `.wal` as the base directory; the TOML-level
+`[wal] wal_dir` (see the `configuration` skill) is what sets `.data/wal` in dev.
 
 ### Segment Lifecycle
 1. **Write**: Append to current segment's `.log` and `.data`

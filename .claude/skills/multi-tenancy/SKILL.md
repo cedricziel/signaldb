@@ -7,6 +7,7 @@ sources:
   - src/common/src/config/mod.rs
   - src/common/src/ratelimit.rs
   - src/router/src/endpoints/admin.rs
+  - src/router/src/endpoints/tenant.rs
 ---
 
 # SignalDB Multi-Tenancy & Authentication
@@ -54,9 +55,12 @@ All storage paths and Iceberg identifiers use **slugs** (URL-friendly), not raw 
 - `CatalogManager::get_tenant_slug(tenant_id)` -> slug from config, or tenant_id if not found
 - `CatalogManager::get_dataset_slug(tenant_id, dataset_id)` -> slug from config, or dataset_id if not found
 
-**Security**: Slugs validated against alphanumeric + hyphen pattern. Path traversal (`../`) is checked.
+**Security**: Slugs validated against alphanumeric, hyphen, and underscore pattern. Path traversal (`../`) is checked.
 
 ## Configuration
+
+Tenant auth is always enforced on the tenant-facing APIs; there is no
+`enabled` flag (removed in #601).
 
 ```toml
 [auth]
@@ -104,21 +108,41 @@ implemented (#610).
 
 ## Admin API (Router)
 
-Requires `admin_api_key`:
+Mounted at `/api/v1/admin`, requires `admin_api_key` (`src/router/src/lib.rs`):
 
-| Endpoint | Description |
-|----------|-------------|
-| `/api/v1/admin/tenants` | CRUD for tenants |
-| `/api/v1/admin/tenants/{id}/api-keys` | Manage API keys |
-| `/api/v1/admin/tenants/{id}/datasets` | Manage datasets |
+| Endpoint | Methods | Description |
+|----------|---------|-------------|
+| `/api/v1/admin/tenants` | GET, POST | List/create tenants |
+| `/api/v1/admin/tenants/{id}` | GET, PUT, DELETE | Manage a tenant |
+| `/api/v1/admin/tenants/{id}/api-keys` | GET, POST | List/create API keys |
+| `/api/v1/admin/tenants/{id}/api-keys/{key_id}` | DELETE | Revoke API key |
+| `/api/v1/admin/tenants/{id}/datasets` | GET, POST | List/create datasets |
+| `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE | Delete dataset |
+
+## Tenant Self-Service API (Router)
+
+Mounted at `/api/v1` with tenant auth (`src/router/src/endpoints/tenant.rs`):
+
+| Endpoint | Methods | Description |
+|----------|---------|-------------|
+| `/api/v1/tenants` | GET | List tenants visible to the caller |
+| `/api/v1/tenants/{id}` | GET | Tenant details |
+| `/api/v1/tenants/{id}/tables` | GET | List tenant tables |
+| `/api/v1/tenants/{id}/tables/create` | POST | Create tenant tables |
+| `/api/v1/tenants/{id}/schemas` | GET | List tenant schemas |
+| `/api/v1/schemas/available` | GET | List available schema definitions |
 
 ## CLI Tool
 
+Subcommands: `tenant`, `api-key`, `dataset`, `query` (SQL), `tui`.
+
 ```bash
 signaldb-cli tenant list
-signaldb-cli tenant create --name "Acme Corp" --slug acme
-signaldb-cli api-key create --tenant acme --name "Production Key"
-signaldb-cli dataset create --tenant acme --name production --slug prod
+signaldb-cli tenant create acme --name "Acme Corp" [--default-dataset production]
+signaldb-cli api-key create acme --name "Production Key"
+signaldb-cli dataset create acme --name production
+signaldb-cli query ...          # SQL queries against SignalDB
+signaldb-cli tui                # Interactive terminal UI
 ```
 
 ## Key Implementation Files
@@ -126,8 +150,9 @@ signaldb-cli dataset create --tenant acme --name production --slug prod
 | File | Purpose |
 |------|---------|
 | `src/common/src/config/mod.rs` | Tenant/dataset config structs |
-| `src/common/src/auth/` | Authenticator, TenantContext, middleware |
+| `src/common/src/auth/` | Authenticator, TenantContext, middleware, validation |
 | `src/common/src/catalog_manager.rs` | Slug resolution |
 | `src/router/src/endpoints/admin.rs` | Admin API endpoints (incl. quota checks) |
+| `src/router/src/endpoints/tenant.rs` | Tenant self-service API endpoints |
 | `src/common/src/ratelimit.rs` | Per-tenant token-bucket rate limiter |
 | `src/signaldb-cli/` | CLI for tenant management |

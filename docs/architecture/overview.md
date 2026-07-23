@@ -5,6 +5,12 @@ status: living
 sources:
   - Cargo.toml
   - src/signaldb-bin/src/**
+  - src/router/src/endpoints/**
+  - src/common/src/config/mod.rs
+  - src/common/src/service_bootstrap.rs
+  - src/common/src/iceberg/**
+  - src/compactor/src/**
+  - schemas.toml
 ---
 
 # SignalDB Architecture Overview
@@ -38,7 +44,7 @@ Write-Ahead Logging ensures data persistence and crash recovery:
 SignalDB maintains two distinct catalog systems:
 
 - **Service Catalog** (`Catalog`): PostgreSQL or SQLite-backed registry for service discovery, tenant management, API keys, and datasets. Used by `ServiceBootstrap` for heartbeat-based registration.
-- **Iceberg Catalog** (`CatalogManager`): SQLite-backed SQL catalog named `"signaldb"` for Iceberg table metadata (schemas, snapshots, manifests). Shared across all services via `Arc<dyn IcebergCatalog>`.
+- **Iceberg Catalog** (`CatalogManager`): SQL catalog named `"signaldb"` for Iceberg table metadata (schemas, snapshots, manifests). Only SQLite URIs are accepted (file-backed or in-memory; PostgreSQL is rejected -- see `create_sql_catalog_with_builder` in `src/common/src/iceberg/mod.rs`). Shared across all services via `Arc<dyn IcebergCatalog>`.
 
 ### 4. Apache Iceberg Table Format
 
@@ -68,13 +74,14 @@ Parquet storage with DataFusion query processing:
 | **router** | `src/router/` | Binary + Library | HTTP API + Flight routing layer |
 | **writer** | `src/writer/` | Binary + Library | Iceberg-based data persistence (the "Ingester") |
 | **querier** | `src/querier/` | Binary + Library | Query execution engine via DataFusion |
+| **compactor** | `src/compactor/` | Binary + Library | Storage maintenance: compaction, retention (bin `signaldb-compactor`) |
 | **common** | `src/common/` | Library | Shared config, auth, WAL, Flight, catalog, schema |
 | **tempo-api** | `src/tempo-api/` | Library | Grafana Tempo API types and protobuf definitions |
 | **signaldb-bin** | `src/signaldb-bin/` | Binary | Monolithic mode runner (all services in one process) |
 | **signaldb-api** | `src/signaldb-api/` | Library | OpenAPI-generated admin API types |
-| **signaldb-cli** | `src/signaldb-cli/` | Binary | CLI for tenant, API key, and dataset management |
+| **signaldb-cli** | `src/signaldb-cli/` | Binary | CLI and TUI for tenant, API key, and dataset management |
 | **signaldb-sdk** | `src/signaldb-sdk/` | Library | Generated SDK client |
-| **grafana-plugin** | `src/grafana-plugin/` | Plugin | Grafana datasource (TypeScript frontend + Rust backend) |
+| **grafana-plugin** | `src/grafana-plugin/backend` | Plugin | Grafana datasource (TypeScript frontend + Rust backend; the backend crate is the workspace member) |
 | **signal-producer** | `src/signal-producer/` | Binary | Test data generator (OTLP traces) |
 | **tests-integration** | `tests-integration/` | Test crate | Integration test suite |
 | **xtask** | `xtask/` | Binary | Build automation tasks |
@@ -90,7 +97,7 @@ flowchart LR
     Acceptor -->|"append + flush"| AWal[("Acceptor WAL")]
     Acceptor -->|"Flight do_put"| Writer["Writer :50061"]
     Writer -->|"append (v2 schema)"| WWal[("Writer WAL")]
-    WWal -->|"WalProcessor (1s loop)"| Iceberg["Iceberg commit"]
+    WWal -->|"WalProcessor (5s loop, backoff on failure)"| Iceberg["Iceberg commit"]
     Iceberg --> Store[("Object store (Parquet)")]
     Iceberg --> Cat[("Iceberg catalog (SQLite)")]
 ```
@@ -116,7 +123,7 @@ flowchart LR
 6. **Schema Transformation**: Writer transforms v1 Flight schema to v2 Iceberg schema (field renames, type conversions, computed partition fields).
 7. **Writer WAL Persistence**: Writer writes transformed data to its WAL (segmented by tenant/dataset/signal type) and confirms to the Acceptor.
 8. **Client Acknowledgment**: Acceptor marks its WAL entry processed and acknowledges to the client.
-9. **Background Flush**: Writer's `WalProcessor` reads WAL entries every second, creates/loads Iceberg tables, and writes Parquet files to the object store via DataFusion.
+9. **Background Flush**: Writer's `WalProcessor` reads WAL entries every 5 seconds (with exponential backoff up to 300s on repeated failures), creates/loads Iceberg tables, and writes Parquet files to the object store via DataFusion.
 10. **WAL Cleanup**: Processed WAL entries are marked and fully-processed segments are deleted.
 
 ### Query Path Detail
@@ -163,7 +170,7 @@ flowchart LR
 
 - `IcebergWriterFlightService`: Flight server accepting `do_put` for trace/log/metric data
 - Transforms v1 Flight schema to v2 Iceberg schema before WAL write
-- `WalProcessor`: Background task (1s interval) that reads WAL entries and writes to Iceberg tables
+- `WalProcessor`: Background task (5s interval, exponential backoff on failure) that reads WAL entries and writes to Iceberg tables
 - Caches `IcebergTableWriter` instances per `{tenant}:{dataset}:{table}` combination
 - Creates Iceberg tables on first write with schema and partition spec from `iceberg_schemas`
 
@@ -183,13 +190,14 @@ flowchart LR
 |----------|--------|
 | `GET /tempo/api/echo` | Implemented |
 | `GET /tempo/api/traces/{trace_id}` | Implemented -- routes to Querier |
+| `GET /tempo/api/v2/traces/{trace_id}` | Implemented -- same handler as v1 |
 | `GET /tempo/api/search` | Implemented -- routes to Querier |
-| `GET /tempo/api/search/tags` | Stub (returns empty) |
-| `GET /tempo/api/search/tag/{tag_name}/values` | Stub (returns empty) |
-| `GET /tempo/api/v2/search/tags` | Stub (returns empty) |
-| `GET /tempo/api/v2/search/tag/{tag_name}/values` | Stub (returns empty) |
-| `GET /tempo/api/metrics/query` | Stub (returns hardcoded) |
-| `GET /tempo/api/metrics/query_range` | Stub (returns hardcoded) |
+| `GET /tempo/api/search/tags` | Implemented -- static list of resource + intrinsic tag names |
+| `GET /tempo/api/search/tag/{tag_name}/values` | Implemented -- distinct column values via Querier; 501 for attribute tags without an index |
+| `GET /tempo/api/v2/search/tags` | Implemented -- same tag names, v2 scoped response |
+| `GET /tempo/api/v2/search/tag/{tag_name}/values` | Implemented -- same lookup, v2 response shape |
+| `GET /tempo/api/metrics/query` | 501 Not Implemented (TraceQL metrics) |
+| `GET /tempo/api/metrics/query_range` | 501 Not Implemented (TraceQL metrics) |
 
 **Admin API Endpoints** (requires `admin_api_key`):
 
@@ -220,6 +228,22 @@ flowchart LR
   - `search_traces:{tenant_slug}:{dataset_slug}:{params}` -- trace search with filters
 - Uses `TableReference::full(tenant_slug, dataset_slug, "traces")` with slug validation to prevent SQL injection
 
+### Compactor
+
+**Purpose**: Storage maintenance -- Parquet compaction and data lifecycle
+
+| Property | Value |
+|----------|-------|
+| **Ports** | Flight admin: 50055 (standalone, `COMPACTOR_FLIGHT_ADDR`), metrics HTTP: 9091 (`[compactor].metrics_addr`) |
+| **Capability** | `StorageMaintenance` |
+| **Binary** | `signaldb-compactor` |
+
+- Plans compaction candidates from Iceberg manifest data on a `tick_interval` loop
+- Distributed leases (`compactor_leases` catalog table) prevent concurrent compaction of the same partition
+- Flight admin interface exposes only `do_action` commands (`compact_now`, `compact_status`, `compact_dry_run`) and `list_actions`; all other Flight RPCs return `unimplemented`
+- Retention enforcement and orphan-file cleanup, configured via `[compactor.retention]` and `[compactor.orphan_cleanup]`
+- Disabled by default; enable with `[compactor].enabled = true`
+
 ## Multi-Tenancy and Authentication
 
 ### Tenant Model
@@ -237,7 +261,7 @@ Tenant (e.g., "acme")
 
 ### Authentication Flow
 
-1. Client sends `Authorization: Bearer <api-key>` with optional `X-Tenant-ID` and `X-Dataset-ID` headers
+1. Client sends `Authorization: Bearer <api-key>` with a required `X-Tenant-ID` header and an optional `X-Dataset-ID` header
 2. `Authenticator` hashes the key (SHA-256) and checks:
    - Config-based API keys first (from `signaldb.toml`)
    - Database-backed API keys second (from service catalog)
@@ -259,7 +283,6 @@ Tenant (e.g., "acme")
 
 ```toml
 [auth]
-enabled = true
 admin_api_key = "sk-admin-key"
 
 [[auth.tenants]]
@@ -297,6 +320,9 @@ Services register with specific capabilities enabling automatic routing:
 | Writer | `TraceIngestion`, `Storage` | Acceptors discover via `Storage` capability |
 | Router | `Routing` | Clients connect directly via HTTP |
 | Querier | `QueryExecution` | Routers discover via `QueryExecution` capability |
+| Compactor | `StorageMaintenance` | Registered for observability; not discovered by other services |
+
+The `ServiceCapability` enum (`src/common/src/flight/transport.rs`) defines six variants: `TraceIngestion`, `QueryExecution`, `Routing`, `Storage`, `KafkaIngestion`, and `StorageMaintenance`. `KafkaIngestion` is defined but not registered by any service today.
 
 ### ServiceBootstrap Pattern
 
@@ -312,7 +338,7 @@ Each service creates a `ServiceBootstrap` at startup which:
 
 - `InMemoryFlightTransport`: Provides connection pooling (max 50 connections, 30s timeout, 5min expiry) and capability-based client lookup
 - `ServiceRegistry` (Router-specific): Cached HashMap of services, polls catalog at configurable interval
-- Service selection: Currently picks the first available service (round-robin is planned but not yet implemented)
+- Service selection: round-robin across healthy instances (stable rotation order sorted by service id)
 - Automatic TTL-based cleanup removes stale services that stop heartbeating
 
 ## Schema Management
@@ -339,24 +365,25 @@ For full details on table schemas, partitioning, and the object store layout, se
 cargo run --bin signaldb
 ```
 
-Starts Acceptor, Router, and Writer in a single process:
+Starts Acceptor, Router, Writer, and Querier in a single process:
 - Acceptor: `0.0.0.0:4317` (gRPC), `0.0.0.0:4318` (HTTP)
 - Router: `0.0.0.0:3000` (HTTP), `0.0.0.0:50053` (Flight)
 - Writer: `0.0.0.0:50051` (Flight)
+- Querier: `0.0.0.0:50054` (Flight)
+
+When `[compactor].enabled = true`, the monolithic binary also runs the compactor planning loop (no compactor Flight/HTTP endpoints in this mode).
 
 Shared SQLite database for both service catalog and Iceberg catalog. Zero-config startup with sensible defaults.
-
-> **Known issue**: Monolithic mode does not currently start a Querier service. Query requests from the Router to a Querier will fail unless a standalone Querier is running separately. This is tracked as a bug.
 
 ### Microservices Mode
 
 **Use Cases**: Production, scalable deployments, cloud environments
 
 ```bash
-cargo run --bin acceptor   # OTLP ingestion (:4317, :4318)
-cargo run --bin router     # HTTP API (:3000, :50053)
-cargo run --bin writer     # Data persistence (:50061)
-cargo run --bin querier    # Query execution (:50054)
+cargo run --bin signaldb-acceptor   # OTLP ingestion (:4317, :4318)
+cargo run --bin signaldb-router     # HTTP API (:3000, :50053)
+cargo run --bin signaldb-writer     # Data persistence (:50061)
+cargo run --bin signaldb-querier    # Query execution (:50054)
 ```
 
 Independent processes with network Flight communication. Requires shared catalog access (PostgreSQL or shared SQLite) for service discovery.
@@ -379,7 +406,7 @@ The Grafana plugin (`src/grafana-plugin/`) provides a native datasource with:
 
 ### Tempo API Compatibility
 
-The Router exposes Tempo-compatible endpoints at `/tempo/api/...` for direct use with Grafana's built-in Tempo datasource. Currently supports trace lookup by ID and basic trace search. Tag search, tag values, and metrics query endpoints are stubs.
+The Router exposes Tempo-compatible endpoints at `/tempo/api/...` for direct use with Grafana's built-in Tempo datasource. Supports trace lookup by ID, trace search, tag-name listing, and tag-value lookup for indexed columns (v1 and v2 variants). TraceQL metrics endpoints (`/metrics/query`, `/metrics/query_range`) return 501 Not Implemented.
 
 ## Configuration
 
@@ -407,7 +434,7 @@ dsn = "file:///.data/storage"
 wal_dir = ".data/wal"
 max_segment_size = 67108864          # 64 MB
 max_buffer_entries = 1000
-flush_interval_secs = 30
+flush_interval = "30s"
 
 # Iceberg catalog
 [schema]
@@ -443,6 +470,8 @@ curl http://localhost:3000/health   # Router
 ### Security
 
 - **API Key Authentication**: SHA-256 hashed keys with config-based and database-backed storage
+- **Internal Flight Auth**: Optional `[auth].internal_service_key` shared secret gates service-to-service Flight calls (writer 50051, router 50053, querier 50054, compactor 50055); when unset, the Flight ports accept unauthenticated calls and must be restricted to a trusted network
+- **Rate Limits**: `[auth].default_limits` sets default per-tenant ingest limits, overridable per tenant
 - **Admin API**: Separate admin key for tenant/dataset management
 - **Input Validation**: Tenant/dataset slugs validated against alphanumeric + hyphen pattern; path traversal checks (`../`)
 - **TLS**: Flight supports gRPC-level TLS encryption
@@ -450,13 +479,13 @@ curl http://localhost:3000/health   # Router
 
 ## CLI Tool
 
-`signaldb-cli` provides command-line management for tenants, API keys, and datasets:
+`signaldb-cli` provides command-line management for tenants, API keys, and datasets, plus an interactive terminal UI (ratatui-based):
 
 ```bash
 signaldb-cli tenant list
-signaldb-cli tenant create --name "Acme Corp" --slug acme
-signaldb-cli api-key create --tenant acme --name "Production Key"
-signaldb-cli dataset create --tenant acme --name production --slug prod
+signaldb-cli tenant create acme --name "Acme Corp"
+signaldb-cli api-key create acme --name "Production Key"
+signaldb-cli dataset create acme --name production
 ```
 
 ## Testing

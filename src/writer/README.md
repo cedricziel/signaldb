@@ -1,9 +1,21 @@
 # SignalDB Writer
 
-The writer is SignalDB's stateful ingestion service (the "Ingester"). It consumes
-entries from the Write-Ahead Log, persists them to Apache Iceberg tables as
-Parquet files, and marks them processed — turning the acceptor's durable-but-raw
-WAL records into queryable columnar storage.
+The writer is SignalDB's stateful ingestion service (the "Ingester"). It
+receives Arrow record batches from acceptors via Apache Arrow Flight `do_put`,
+journals them in its own Write-Ahead Log, and a background `WalProcessor`
+(running every 5 seconds, with exponential backoff on repeated failures)
+persists accumulated entries to Apache Iceberg tables as Parquet files and
+marks them processed — turning durable-but-raw WAL records into queryable
+columnar storage.
+
+## Endpoint
+
+| Protocol | Port | Purpose |
+|----------|------|---------|
+| Flight (gRPC) | 50061 | `do_put` ingestion of trace/log/metric batches |
+
+The writer registers itself in the catalog with the `Storage` capability so
+acceptors can discover it.
 
 ## Design: one verified write path
 
@@ -42,7 +54,8 @@ Consequences:
   append-with-marker commit loop with exponential-backoff retries
   (`RetryConfig`).
 - **`IcebergWriterFlightService`** (`flight_iceberg.rs`): Arrow Flight endpoint
-  for inter-service ingestion.
+  for inter-service ingestion; drives the background `WalProcessor` loop
+  (5s base interval, exponential backoff up to 300s on repeated failures).
 - **Schema transformation** (`schema_transform.rs`): converts v1 wire-format
   batches (raw OTLP columns) into the Iceberg storage schema per signal type.
 
@@ -93,13 +106,30 @@ The writer is configured through the shared SignalDB configuration
 ```toml
 [schema]
 catalog_type = "sql"
-catalog_uri = "postgres://user:password@catalog-db:5432/iceberg"
+# Only SQLite catalog URIs are supported (create_sql_catalog_with_builder
+# rejects everything else).
+catalog_uri = "sqlite:///.data/catalog.db"
 
 [storage]
 dsn = "s3://my-data-bucket/iceberg-tables/"
 
 [wal]
 wal_dir = ".data/wal"
+```
+
+Key environment variables:
+
+- `WRITER_WAL_DIR`: WAL directory (default: `.wal/writer`)
+- `SIGNALDB_*`: standard configuration overrides (see `signaldb.dist.toml`)
+
+## Running
+
+```bash
+cargo run --bin signaldb-writer
+
+# Custom port and WAL directory
+cargo run --bin signaldb-writer -- --flight-port 50061
+WRITER_WAL_DIR=/custom/wal/path cargo run --bin signaldb-writer
 ```
 
 ## Testing
@@ -132,5 +162,11 @@ Watch for these log signals in production:
 
 ```bash
 # Debug logging
-RUST_LOG=writer=debug cargo run --bin writer
+RUST_LOG=writer=debug cargo run --bin signaldb-writer
 ```
+
+## Further reading
+
+- [docs/architecture/overview.md](../../docs/architecture/overview.md) — write path
+- [docs/architecture/storage-layout.md](../../docs/architecture/storage-layout.md) — WAL and Iceberg table layout
+- [docs/operations/wal-persistence.md](../../docs/operations/wal-persistence.md) — WAL durability and recovery

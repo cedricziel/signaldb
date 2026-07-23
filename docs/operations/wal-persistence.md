@@ -4,6 +4,8 @@ type: how-to
 status: living
 sources:
   - src/common/src/wal/**
+  - src/acceptor/src/main.rs
+  - src/writer/src/main.rs
 ---
 
 # WAL Persistence Configuration
@@ -44,24 +46,23 @@ OTLP Client → Acceptor → WAL (Disk) → Writer → Parquet Storage
 |----------|---------|-------------|
 | `ACCEPTOR_WAL_DIR` | `.wal/acceptor` | WAL directory for acceptor service |
 | `WRITER_WAL_DIR` | `.wal/writer` | WAL directory for writer service |
-| `WAL_MAX_SEGMENT_SIZE` | `1048576` (1MB) | Maximum size per WAL segment |
-| `WAL_MAX_BUFFER_ENTRIES` | `1000` | Buffer size before forced flush |
-| `WAL_FLUSH_INTERVAL_SECS` | `10` | Automatic flush interval in seconds |
+
+These are the only WAL-related environment variables. Per-service WAL directories are set exclusively through them (there are no `[wal.acceptor]`/`[wal.writer]` TOML subsections).
 
 ### TOML Configuration
 
+The `[wal]` section in `signaldb.toml` uses a single block:
+
 ```toml
 [wal]
-max_segment_size = 1048576      # 1MB segments
+wal_dir = ".data/wal"
+max_segment_size = 67108864     # 64MB segments
 max_buffer_entries = 1000       # Buffer 1000 entries
-flush_interval_secs = 10        # Flush every 10 seconds
-
-[wal.acceptor]
-wal_dir = "/data/wal/acceptor"   # Persistent storage path
-
-[wal.writer] 
-wal_dir = "/data/wal/writer"     # Persistent storage path
+flush_interval = "30s"          # Flush every 30 seconds
+max_buffer_size_bytes = 134217728  # 128MB
 ```
+
+Note: segment size, buffer, and flush tuning currently ship as built-in defaults compiled into the services (64MB segments, 1000-entry buffer, 30s flush; the acceptor uses more aggressive per-signal settings for logs and metrics). The `[wal]` TOML block matches these defaults but the services do not yet read the tuning knobs from it — only the directory env vars above change runtime behavior.
 
 ## Docker Compose Configuration
 
@@ -171,15 +172,19 @@ spec:
 
 ### Directory Structure
 
-The WAL uses a segment-based structure:
+The acceptor keeps one WAL per tenant/dataset/signal combination; the writer keeps a single WAL directly in its WAL directory. Each WAL directory uses a segment-based structure:
 
 ```
-/data/wal/
-├── segments/
-│   ├── 000001.wal        # Active segment
-│   ├── 000002.wal        # Completed segment
-│   └── 000003.wal        # Completed segment
-└── metadata.json         # WAL metadata
+/data/wal/                          # ACCEPTOR_WAL_DIR
+└── acme/                           # Tenant
+    └── production/                 # Dataset
+        └── traces/                 # Signal type
+            ├── wal-0000000000.log    # Segment entry records
+            ├── wal-0000000000.data   # Segment payload bytes
+            ├── wal-0000000000.index  # Processed-entry index
+            ├── writer.id             # Stable identity of this WAL directory
+            └── dead-letter/          # Entries that repeatedly failed processing
+                └── <entry_id>.bin
 ```
 
 ### Data Flow with WAL
@@ -234,29 +239,16 @@ spec:
 
 ## Performance Tuning
 
-### For High Throughput
+Segment size, buffer size, and flush interval are currently built-in per-signal defaults and are not runtime-configurable:
 
-```bash
-# Increase buffer size to reduce flush frequency
-export WAL_MAX_BUFFER_ENTRIES=10000
+| Service | Signal | Segment size | Buffer entries | Flush interval |
+|---------|--------|--------------|----------------|----------------|
+| Acceptor | Traces | 64MB | 1000 | 30s |
+| Acceptor | Logs | 64MB | 2000 | 15s |
+| Acceptor | Metrics | 128MB | 5000 | 10s |
+| Writer | All | 64MB | 1000 | 30s |
 
-# Use larger segments for efficiency  
-export WAL_MAX_SEGMENT_SIZE=10485760  # 10MB
-
-# Reduce flush interval for sustained writes
-export WAL_FLUSH_INTERVAL_SECS=5
-```
-
-### For Low Latency
-
-```bash
-# Immediate flushing (minimal buffering)
-export WAL_MAX_BUFFER_ENTRIES=1
-export WAL_FLUSH_INTERVAL_SECS=1
-
-# Smaller segments for faster rotation
-export WAL_MAX_SEGMENT_SIZE=1048576   # 1MB
-```
+Tuning WAL throughput today means tuning the storage underneath it (see Storage Requirements above).
 
 ## Monitoring and Alerting
 
@@ -270,21 +262,30 @@ export WAL_MAX_SEGMENT_SIZE=1048576   # 1MB
 
 ### Health Check Endpoints
 
-```bash
-# Check WAL status
-curl http://acceptor:8080/health | jq '.wal'
-curl http://writer:8080/health | jq '.wal'
+The health endpoints are simple liveness probes — they do not expose WAL status:
 
-# Example response
-{
-  "wal": {
-    "unprocessed_entries": 0,
-    "total_segments": 3,
-    "disk_usage_bytes": 2097152,
-    "last_flush": "2024-03-15T10:30:00Z"
-  }
-}
+```bash
+# Acceptor liveness (OTLP HTTP port, returns "ok")
+curl http://acceptor:4318/health
+
+# Router liveness (HTTP API port, returns 200)
+curl -i http://router:3000/health
 ```
+
+To observe WAL state, inspect the WAL directories directly:
+
+```bash
+# Disk usage per WAL directory
+du -sh /data/wal/*
+
+# Segment count (acceptor: per tenant/dataset/signal)
+find /data/wal -name 'wal-*.log' | wc -l
+
+# Dead-lettered entries (should be empty)
+find /data/wal -path '*/dead-letter/*' | wc -l
+```
+
+When `[self_monitoring]` is enabled, services also export `signaldb.wal.*` metrics (entries written/processed/pending, flush duration) via OTLP into SignalDB itself.
 
 ### Example Prometheus Alerts
 
@@ -298,14 +299,9 @@ groups:
       severity: warning
     annotations:
       summary: "WAL disk space usage is high"
-      
-  - alert: WALFlushLatencyHigh
-    expr: wal_flush_duration_seconds > 1.0
-    labels:
-      severity: warning
-    annotations:
-      summary: "WAL flush latency is high"
 ```
+
+(Alert on generic node/disk metrics for the WAL mount; SignalDB does not currently expose WAL metrics in Prometheus format.)
 
 ## Backup and Recovery
 
@@ -336,30 +332,27 @@ sudo chmod 755 /data/wal/
 
 #### "High WAL disk usage"
 ```bash
-# Check for stuck processing
-curl http://writer:8080/health | jq '.wal.unprocessed_entries'
-
 # Check segment count
-ls -la /data/wal/segments/ | wc -l
+find /data/wal -name 'wal-*.log' | wc -l
 
 # Check if writer is processing WAL entries
-tail -f /var/log/signaldb/writer.log | grep "WAL entry processed"
+tail -f /var/log/signaldb/writer.log | grep "WAL"
 ```
 
 #### "WAL segment corruption"
 ```bash
 # Service will log corruption and skip bad segments
-tail -f /var/log/signaldb/acceptor.log | grep "WAL corruption"
+tail -f /var/log/signaldb/acceptor.log | grep -i "corrupt"
 
 # Manual segment inspection (if needed)
-hexdump -C /data/wal/segments/000001.wal | head
+hexdump -C /data/wal/acme/production/traces/wal-0000000000.log | head
 ```
 
 ### Debug Commands
 
 ```bash
 # Enable WAL debug logging
-export RUST_LOG=signaldb_common::wal=debug
+export RUST_LOG=common::wal=debug
 
 # Check WAL directory structure
 tree /data/wal/
@@ -367,11 +360,8 @@ tree /data/wal/
 # Monitor real-time WAL activity
 tail -f /var/log/signaldb/*.log | grep WAL
 
-# Check WAL metadata
-cat /data/wal/metadata.json | jq
-
-# Monitor WAL processing
-watch 'curl -s http://acceptor:8080/health | jq .wal'
+# Monitor WAL disk usage
+watch 'du -sh /data/wal/*'
 ```
 
 ### Recovery Procedures
@@ -441,7 +431,7 @@ watch 'curl -s http://acceptor:8080/health | jq .wal'
 WAL Size ≈ Ingestion Rate × Flush Interval × Safety Factor
 
 Example:
-- 1000 spans/sec × 100 bytes/span × 10 sec flush = 1MB/flush
-- With 3x safety factor: 3MB WAL storage per flush cycle
-- Daily retention: 3MB × 8640 flushes = ~25GB
+- 1000 spans/sec × 100 bytes/span × 30 sec flush = 3MB/flush
+- With 3x safety factor: 9MB WAL storage per flush cycle
+- Daily retention: 9MB × 2880 flushes = ~25GB
 ```

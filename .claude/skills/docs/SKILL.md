@@ -22,8 +22,10 @@ Docs are organized by audience:
 | `docs/contributing/` | Changes SignalDB | Prescriptive standards (Rust coding rules); `@`-included from CLAUDE.md |
 | `.claude/skills/` | Agents | Condensed, derived views of docs + code; refreshed via `/refresh-skills` |
 
-Known gap: `docs/users/` is largely unwritten. When work touches user-visible
-behavior, prefer starting a doc there over bolting user guidance onto README.md.
+`docs/users/` covers OTLP ingestion, Prometheus remote_write, SQL querying,
+the Tempo API reference, the Grafana datasource, and client authentication.
+When work touches user-visible behavior, update the matching doc there (or add
+one) rather than bolting user guidance onto README.md.
 
 ## Routing a new or updated doc
 

@@ -4,7 +4,7 @@ type: how-to
 status: living
 sources:
   - Dockerfile
-  - docker-compose.yml
+  - compose.yml
 ---
 
 # Deploying SignalDB on Dokku
