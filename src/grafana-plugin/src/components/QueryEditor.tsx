@@ -10,6 +10,7 @@ const SIGNAL_TYPE_OPTIONS: Array<SelectableValue<SignalType>> = [
   { label: 'Traces', value: SignalType.Traces, description: 'Query trace data using TraceQL' },
   { label: 'Metrics', value: SignalType.Metrics, description: 'Query metrics using PromQL' },
   { label: 'Logs', value: SignalType.Logs, description: 'Query logs using LogQL' },
+  { label: 'Profiles', value: SignalType.Profiles, description: 'Query profiles as a flamegraph' },
 ];
 
 export function QueryEditor({ query, onChange, onRunQuery }: Props) {
@@ -38,6 +39,8 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
         return 'up{job="my-job"}';
       case SignalType.Logs:
         return '{app="my-app"} |= "error"';
+      case SignalType.Profiles:
+        return 'cpu{service_name="my-service"}';
       default:
         return 'Enter your query';
     }
@@ -51,6 +54,8 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
         return 'PromQL Query';
       case SignalType.Logs:
         return 'LogQL Query';
+      case SignalType.Profiles:
+        return 'Profile Query';
       default:
         return 'Query';
     }

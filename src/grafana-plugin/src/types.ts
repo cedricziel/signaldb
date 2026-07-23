@@ -8,6 +8,7 @@ export enum SignalType {
   Traces = 'traces',
   Metrics = 'metrics',
   Logs = 'logs',
+  Profiles = 'profiles',
 }
 
 /**
@@ -24,6 +25,7 @@ export interface SignalDBQuery extends DataQuery {
    * - For traces: TraceQL query
    * - For metrics: PromQL query or metric name
    * - For logs: LogQL query or search expression
+   * - For profiles: Pyroscope-style selector, e.g. cpu{service_name="checkout"}
    */
   queryText: string;
 

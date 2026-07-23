@@ -8,7 +8,7 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
 use grafana_plugin_sdk::data::{self, Field};
-use grafana_plugin_sdk::prelude::{IntoField, IntoOptField};
+use grafana_plugin_sdk::prelude::{IntoField, IntoFrame, IntoOptField};
 
 /// Error type for conversion operations.
 #[derive(Debug, thiserror::Error)]
@@ -691,5 +691,161 @@ mod tests {
         } else {
             panic!("Expected TypeMismatch error");
         }
+    }
+}
+
+/// One decoded flamebearer block with absolute offsets.
+#[derive(Debug, Clone)]
+struct FlameBlock {
+    start: i64,
+    total: i64,
+    self_value: i64,
+    name_index: usize,
+}
+
+/// Decode one flamebearer level (flat `[offset_delta, total, self,
+/// name_index]` quadruples with offsets delta-encoded against the previous
+/// block's end) into blocks with absolute start offsets.
+fn decode_level(level: &[i64]) -> Vec<FlameBlock> {
+    let mut blocks = Vec::with_capacity(level.len() / 4);
+    let mut cursor = 0i64;
+    for chunk in level.chunks_exact(4) {
+        let start = cursor + chunk[0];
+        blocks.push(FlameBlock {
+            start,
+            total: chunk[1],
+            self_value: chunk[2],
+            name_index: chunk[3] as usize,
+        });
+        cursor = start + chunk[1];
+    }
+    blocks
+}
+
+/// Convert a Pyroscope flamebearer (name table + delta-encoded levels)
+/// into the nested-set data frame Grafana's flamegraph panel expects:
+/// depth-first ordered rows with `level`, `value`, `self`, and `label`
+/// fields.
+pub fn flamebearer_to_nested_set_frame(
+    names: &[String],
+    levels: &[Vec<i64>],
+    frame_name: &str,
+) -> data::Frame {
+    let (out_levels, out_values, out_selfs, out_labels) = flamebearer_to_nested_set(names, levels);
+    [
+        out_levels.into_field("level"),
+        out_values.into_field("value"),
+        out_selfs.into_field("self"),
+        out_labels.into_field("label"),
+    ]
+    .into_frame(frame_name)
+}
+
+/// Depth-first traversal of the flamebearer levels producing parallel
+/// `(level, value, self, label)` columns.
+fn flamebearer_to_nested_set(
+    names: &[String],
+    levels: &[Vec<i64>],
+) -> (Vec<i64>, Vec<i64>, Vec<i64>, Vec<String>) {
+    let decoded: Vec<Vec<FlameBlock>> = levels.iter().map(|l| decode_level(l)).collect();
+
+    let mut out_levels: Vec<i64> = Vec::new();
+    let mut out_values: Vec<i64> = Vec::new();
+    let mut out_selfs: Vec<i64> = Vec::new();
+    let mut out_labels: Vec<String> = Vec::new();
+
+    // Depth-first traversal: children of a block at level N are the level
+    // N+1 blocks whose extent falls inside the parent's extent.
+    #[allow(clippy::too_many_arguments)]
+    fn visit(
+        decoded: &[Vec<FlameBlock>],
+        names: &[String],
+        depth: usize,
+        block: &FlameBlock,
+        out_levels: &mut Vec<i64>,
+        out_values: &mut Vec<i64>,
+        out_selfs: &mut Vec<i64>,
+        out_labels: &mut Vec<String>,
+    ) {
+        out_levels.push(depth as i64);
+        out_values.push(block.total);
+        out_selfs.push(block.self_value);
+        out_labels.push(
+            names
+                .get(block.name_index)
+                .cloned()
+                .unwrap_or_else(|| "<unknown>".to_string()),
+        );
+
+        if let Some(children) = decoded.get(depth + 1) {
+            let end = block.start + block.total;
+            for child in children
+                .iter()
+                .filter(|c| c.start >= block.start && c.start + c.total <= end)
+            {
+                visit(
+                    decoded,
+                    names,
+                    depth + 1,
+                    child,
+                    out_levels,
+                    out_values,
+                    out_selfs,
+                    out_labels,
+                );
+            }
+        }
+    }
+
+    if let Some(roots) = decoded.first() {
+        for root in roots {
+            visit(
+                &decoded,
+                names,
+                0,
+                root,
+                &mut out_levels,
+                &mut out_values,
+                &mut out_selfs,
+                &mut out_labels,
+            );
+        }
+    }
+
+    (out_levels, out_values, out_selfs, out_labels)
+}
+
+#[cfg(test)]
+mod flamegraph_tests {
+    use super::*;
+
+    #[test]
+    fn converts_flamebearer_to_depth_first_nested_set() {
+        // total(175) -> main(150) -> [work(100), idle(50)]; other_root(25).
+        let names: Vec<String> = ["total", "main", "other_root", "work", "idle"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let levels = vec![
+            vec![0, 175, 0, 0],
+            vec![0, 150, 0, 1, 0, 25, 25, 2],
+            vec![0, 100, 100, 3, 0, 50, 50, 4],
+        ];
+
+        let (out_levels, out_values, out_selfs, out_labels) =
+            flamebearer_to_nested_set(&names, &levels);
+
+        // Depth-first: total, main, work, idle, other_root.
+        assert_eq!(
+            out_labels,
+            vec!["total", "main", "work", "idle", "other_root"]
+        );
+        assert_eq!(out_levels, vec![0, 1, 2, 2, 1]);
+        assert_eq!(out_values, vec![175, 150, 100, 50, 25]);
+        assert_eq!(out_selfs, vec![0, 0, 100, 50, 25]);
+
+        // Frame construction succeeds and validates.
+        let frame = flamebearer_to_nested_set_frame(&names, &levels, "profiles");
+        assert!(frame.check().is_ok());
     }
 }
