@@ -36,7 +36,7 @@ thiserror = "2.0.12"
 tracing = "0.1"
 
 # Flight client
-arrow-flight = "58.3.0"
+arrow-flight = "59.1.0"
 tonic = { version = "0.14.2", features = ["transport", "channel"] }
 tokio = { version = "1.48.0", features = [
     "rt-multi-thread",
@@ -49,10 +49,10 @@ tokio = { version = "1.48.0", features = [
     "io-util",
 ] }
 
-# Arrow data handling
-datafusion = { version = "54.1.0", default-features = false, features = [
-    "parquet",
-] }
+# Arrow data handling — pinned to the same major as grafana-plugin-sdk so the
+# plugin compiles a single Arrow stack (we only need core array/schema types,
+# not the DataFusion query engine).
+arrow = "59.1.0"
 
 [profile.release]
 opt-level = 3
