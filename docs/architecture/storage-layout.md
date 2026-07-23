@@ -1,3 +1,14 @@
+---
+audience: contributor
+type: explanation
+status: living
+sources:
+  - src/common/src/storage.rs
+  - src/common/src/wal/**
+  - src/common/src/catalog_manager.rs
+  - src/common/src/schema/iceberg_schemas.rs
+---
+
 # Storage Layout Design
 
 ## Overview

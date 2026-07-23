@@ -1,3 +1,9 @@
+---
+audience: contributor
+type: decision-record
+status: record
+---
+
 # Compactor Phase 3: Orphan File Cleanup System Design
 
 ## Overview

@@ -1,3 +1,12 @@
+---
+audience: contributor
+type: explanation
+status: living
+sources:
+  - Cargo.toml
+  - src/signaldb-bin/src/**
+---
+
 # SignalDB Architecture Overview
 
 ## Introduction
@@ -328,7 +337,7 @@ Schema definitions are managed in `schemas.toml` at the repository root and comp
 
 The Flight wire format (v1) and Iceberg storage format (v2) differ intentionally. The Writer applies schema transformations at ingestion time via `transform_trace_v1_to_v2()`.
 
-For full details on table schemas, partitioning, and the object store layout, see [Storage Layout Design](design/storage-layout.md).
+For full details on table schemas, partitioning, and the object store layout, see [Storage Layout Design](storage-layout.md).
 
 ## Deployment Models
 

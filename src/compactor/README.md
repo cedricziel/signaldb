@@ -684,16 +684,16 @@ The compactor has comprehensive integration tests in `tests-integration/tests/co
 
 4. **Update Documentation:**
 
-   Update this README and `docs/compactor/phase3-implementation-plan.md`.
+   Update this README and the operator docs under `docs/operations/compactor/`.
 
 ### Phase 3 Implementation Details
 
 For detailed implementation information, see:
 
-- **Implementation Plan**: `/docs/compactor/phase3-implementation-plan.md`
-- **Retention Design**: `/docs/compactor-phase3-retention-design.md`
-- **Orphan Cleanup Design**: `/docs/design/compactor-phase3-orphan-cleanup.md`
-- **Test Strategy**: `/docs/compactor/phase3-integration-test-strategy.md`
+- **Configuration Reference**: `/docs/operations/compactor/phase3-configuration.md`
+- **Operations Guide**: `/docs/operations/compactor/phase3-operations.md`
+- **Troubleshooting**: `/docs/operations/compactor/phase3-troubleshooting.md`
+- **Orphan Cleanup Design**: `/docs/architecture/decisions/compactor-phase3-orphan-cleanup.md`
 
 ## License
 

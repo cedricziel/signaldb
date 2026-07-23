@@ -1,3 +1,11 @@
+---
+audience: contributor
+type: explanation
+status: living
+sources:
+  - src/common/src/flight/**
+---
+
 # SignalDB Flight Communication Design
 
 ## 1. Introduction

@@ -1,3 +1,12 @@
+---
+audience: operator
+type: how-to
+status: living
+sources:
+  - Dockerfile
+  - docker-compose.yml
+---
+
 # Deploying SignalDB on Dokku
 
 SignalDB can be deployed on [Dokku](https://dokku.com) using the monolithic Docker image from GHCR, or by building from source via git push.

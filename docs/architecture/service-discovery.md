@@ -1,3 +1,13 @@
+---
+audience: contributor
+type: explanation
+status: living
+sources:
+  - src/common/src/catalog.rs
+  - src/common/src/service_bootstrap.rs
+  - src/common/src/flight/transport.rs
+---
+
 # Service Discovery Design
 
 ## Context

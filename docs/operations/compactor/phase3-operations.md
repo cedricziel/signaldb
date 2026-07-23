@@ -1,3 +1,11 @@
+---
+audience: operator
+type: how-to
+status: living
+sources:
+  - src/compactor/src/**
+---
+
 # Phase 3 Operations Guide
 
 This guide covers day-to-day operations for SignalDB Compactor Phase 3: Retention Enforcement and Lifecycle Management.
@@ -668,5 +676,4 @@ export AWS_S3_USE_ACCELERATE_ENDPOINT=true
 
 - [Phase 3 Configuration Reference](phase3-configuration.md)
 - [Phase 3 Troubleshooting Guide](phase3-troubleshooting.md)
-- [Phase 3 Implementation Plan](phase3-implementation-plan.md)
 - [Compactor README](../../src/compactor/README.md)

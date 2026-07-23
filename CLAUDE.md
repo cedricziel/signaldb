@@ -269,9 +269,9 @@ curl -s localhost:9091/metrics | grep compactor
 
 **Documentation:**
 
-- Configuration: `docs/compactor/phase3-configuration.md`
-- Operations: `docs/compactor/phase3-operations.md`
-- Troubleshooting: `docs/compactor/phase3-troubleshooting.md`
+- Configuration: `docs/operations/compactor/phase3-configuration.md`
+- Operations: `docs/operations/compactor/phase3-operations.md`
+- Troubleshooting: `docs/operations/compactor/phase3-troubleshooting.md`
 - README: `src/compactor/README.md`
 
 **Important Notes:**

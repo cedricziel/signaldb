@@ -1,3 +1,11 @@
+---
+audience: operator
+type: how-to
+status: living
+sources:
+  - src/compactor/src/**
+---
+
 # Phase 3 Troubleshooting Guide
 
 Comprehensive troubleshooting guide for SignalDB Compactor Phase 3: Retention Enforcement and Lifecycle Management.

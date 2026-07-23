@@ -1,3 +1,9 @@
+---
+audience: contributor
+type: reference
+status: living
+---
+
 # Rust Best Practices
 
 This document defines the Rust coding standards for the SignalDB project.
