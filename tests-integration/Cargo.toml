@@ -54,9 +54,6 @@ iceberg-rust.workspace = true
 env_logger.workspace = true
 url.workspace = true
 testcontainers-modules.workspace = true
-aws-config.workspace = true
-aws-sdk-s3.workspace = true
-aws-credential-types.workspace = true
 
 [[test]]
 name = "self_monitoring"
