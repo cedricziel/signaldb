@@ -13,8 +13,12 @@ pub struct FindTraceByIdParams {
     pub end: Option<i64>,
 }
 
+/// Search parameters carried in the `search_traces` Flight ticket.
+///
+/// Mirrors the Tempo search API. `spss` (spans per span set) is applied by
+/// the router when shaping the HTTP response and is intentionally absent
+/// here; unknown JSON fields in the ticket are ignored on deserialization.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[allow(dead_code)]
 pub struct SearchQueryParams {
     pub q: Option<String>,
     pub tags: Option<String>,
@@ -23,5 +27,4 @@ pub struct SearchQueryParams {
     pub limit: Option<i32>,
     pub start: Option<i32>,
     pub end: Option<i32>,
-    pub spss: Option<i32>,
 }
