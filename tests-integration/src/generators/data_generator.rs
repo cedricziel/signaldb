@@ -34,7 +34,9 @@ pub async fn generate_traces(
                 file_idx,
             )?;
 
-            writer.write_batch(batch).await?;
+            writer
+                .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
+                .await?;
             total_rows += config.rows_per_file;
         }
 
@@ -73,7 +75,9 @@ pub async fn generate_logs(
                 file_idx,
             )?;
 
-            writer.write_batch(batch).await?;
+            writer
+                .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
+                .await?;
             total_rows += config.rows_per_file;
         }
 
@@ -112,7 +116,9 @@ pub async fn generate_metrics(
                 file_idx,
             )?;
 
-            writer.write_batch(batch).await?;
+            writer
+                .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
+                .await?;
             total_rows += config.rows_per_file;
         }
 

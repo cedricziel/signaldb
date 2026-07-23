@@ -1,2 +1,2 @@
 mod iceberg;
-pub use iceberg::{BatchOptimizationConfig, IcebergTableWriter, RetryConfig};
+pub use iceberg::{IcebergTableWriter, RetryConfig};

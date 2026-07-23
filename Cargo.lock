@@ -9915,7 +9915,6 @@ dependencies = [
  "common",
  "criterion",
  "datafusion",
- "datafusion_iceberg",
  "futures",
  "hex",
  "iceberg-rust",
