@@ -2,6 +2,10 @@
 name: multi-tenancy
 description: SignalDB multi-tenancy and authentication - tenant model, auth flow, isolation layers, slug-based naming, API keys, admin API, and CLI. Use when working with tenant isolation, authentication, API keys, or dataset management.
 user-invocable: false
+sources:
+  - src/common/src/auth.rs
+  - src/common/src/config/mod.rs
+  - src/router/src/admin.rs
 ---
 
 # SignalDB Multi-Tenancy & Authentication

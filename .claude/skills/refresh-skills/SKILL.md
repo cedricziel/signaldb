@@ -16,18 +16,15 @@ Do NOT rewrite skills that are already accurate. Only touch what changed.
 
 ### Skills and their source-of-truth files
 
-| Skill | Read these files to refresh |
-|-------|-----------------------------|
-| **architecture** | `docs/architecture/overview.md`, `src/signaldb-bin/src/main.rs`, `Cargo.toml` (workspace members) |
-| **storage-layout** | `docs/architecture/storage-layout.md`, `src/common/src/storage.rs`, `src/common/src/wal/mod.rs`, `src/common/src/catalog_manager.rs`, `src/common/src/schema/iceberg_schemas.rs` |
-| **flight-schemas** | `schemas.toml`, `src/common/src/flight/schema.rs`, `src/writer/src/schema_transform.rs`, `src/common/src/schema/schema_parser.rs`, `src/common/src/schema/iceberg_schemas.rs` |
-| **multi-tenancy** | `src/common/src/auth.rs`, `src/common/src/config/mod.rs`, `src/router/src/admin.rs`, `docs/architecture/overview.md` (Multi-Tenancy section) |
-| **service-discovery** | `docs/architecture/service-discovery.md`, `src/common/src/catalog.rs`, `src/common/src/service_bootstrap.rs`, `src/common/src/flight/transport.rs` |
-| **dev-workflow** | `CLAUDE.md`, `.serena/memories/task_completion_checklist.md`, `scripts/run-dev.sh`, `docker-compose.yml` |
-| **crate-map** | `Cargo.toml` (workspace members), then `src/*/src/lib.rs` or `src/*/src/main.rs` for each crate to check module structure |
-| **adding-new-signal** | Cross-reference with `architecture`, `flight-schemas`, and `storage-layout` skills for consistency |
-| **tempo-api** | `src/router/src/tempo.rs`, `src/router/src/admin.rs`, `src/grafana-plugin/` |
-| **configuration** | `src/common/src/config/mod.rs`, `signaldb.dist.toml`, `docs/architecture/overview.md` (Configuration section) |
+Each knowledge skill declares its source-of-truth files in the `sources:` list
+of its own frontmatter — read that list, not a central table. Additional notes:
+
+- **crate-map**: after `Cargo.toml` (workspace members), read `src/*/src/lib.rs`
+  or `src/*/src/main.rs` for each crate to check module structure
+- **adding-new-signal**: has no `sources:`; cross-reference with the
+  `architecture`, `flight-schemas`, and `storage-layout` skills for consistency
+- **multi-tenancy** / **configuration**: also check the Multi-Tenancy and
+  Configuration sections of `docs/architecture/overview.md`
 
 ### Refresh procedure
 

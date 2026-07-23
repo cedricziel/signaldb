@@ -2,6 +2,8 @@
 name: crate-map
 description: SignalDB crate map - workspace members, module locations within common/writer/querier/router crates, and key root files. Use when navigating the codebase, finding where code lives, or understanding module boundaries.
 user-invocable: false
+sources:
+  - Cargo.toml
 ---
 
 # SignalDB Crate Map

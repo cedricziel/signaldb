@@ -2,6 +2,10 @@
 name: tempo-api
 description: SignalDB Tempo API compatibility - implemented/stub endpoints, query flow, admin API, Grafana native plugin, and built-in Tempo datasource support. Use when working with HTTP API, Grafana integration, or query endpoints.
 user-invocable: false
+sources:
+  - src/router/src/tempo.rs
+  - src/router/src/admin.rs
+  - src/grafana-plugin/**
 ---
 
 # SignalDB Tempo API Compatibility

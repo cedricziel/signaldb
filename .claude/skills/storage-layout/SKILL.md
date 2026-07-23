@@ -2,6 +2,12 @@
 name: storage-layout
 description: SignalDB storage layout - WAL directory structure, Iceberg catalog, object store paths, table types, segment lifecycle, and per-dataset storage overrides. Use when working with WAL, Iceberg tables, Parquet files, or storage configuration.
 user-invocable: false
+sources:
+  - docs/architecture/storage-layout.md
+  - src/common/src/storage.rs
+  - src/common/src/wal/**
+  - src/common/src/catalog_manager.rs
+  - src/common/src/schema/iceberg_schemas.rs
 ---
 
 # SignalDB Storage Layout Reference
