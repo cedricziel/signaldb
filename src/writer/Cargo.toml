@@ -19,7 +19,6 @@ object_store.workspace = true
 
 # Iceberg table format support
 iceberg-rust.workspace = true
-datafusion_iceberg.workspace = true
 
 tokio.workspace = true
 futures.workspace = true
@@ -63,4 +62,4 @@ tokio-stream.workspace = true
 
 [package.metadata.cargo-machete]
 # async-trait is used by the trait implementations
-ignored = ["async-trait", "tracing", "tokio-stream"]
+ignored = ["async-trait", "tokio-stream"]

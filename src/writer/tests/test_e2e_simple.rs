@@ -117,82 +117,42 @@ fn create_simple_test_data(num_rows: usize) -> Result<RecordBatch> {
 }
 
 #[tokio::test]
-async fn test_simple_e2e_write() -> Result<()> {
+async fn test_simple_e2e_append_with_marker() -> Result<()> {
     let config = create_simple_test_config();
     let mut writer = create_writer(config, "simple_tenant").await?;
 
-    // Create simple test data
+    let entry_id = uuid::Uuid::new_v4();
     let test_data = create_simple_test_data(10)?;
-    let expected_rows = test_data.num_rows();
 
-    log::info!("Writing {expected_rows} rows to Iceberg table");
+    writer
+        .append_batches_with_marker("wal-e2e", vec![(entry_id, test_data)])
+        .await?;
 
-    // Write the data - this should succeed if our implementation is working
-    writer.write_batch(test_data).await?;
-
-    log::info!("Successfully wrote {expected_rows} rows");
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_simple_e2e_multi_batch() -> Result<()> {
-    let config = create_simple_test_config();
-    let mut writer = create_writer(config, "simple_tenant").await?;
-
-    // Create multiple small batches
-    let batch1 = create_simple_test_data(5)?;
-    let batch2 = create_simple_test_data(7)?;
-    let batch3 = create_simple_test_data(3)?;
-
-    let total_expected_rows = batch1.num_rows() + batch2.num_rows() + batch3.num_rows();
-
-    log::info!("Writing {total_expected_rows} total rows in 3 batches");
-
-    // Write batches transactionally
-    writer.write_batches(vec![batch1, batch2, batch3]).await?;
-
-    log::info!("Successfully wrote {total_expected_rows} rows in transaction");
+    // The marker is the commit's proof of durability: it must contain
+    // exactly the entry id we appended.
+    let committed = writer.load_committed_marker("wal-e2e").await?;
+    assert_eq!(committed, std::iter::once(entry_id).collect());
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_simple_e2e_transaction() -> Result<()> {
+async fn test_simple_e2e_append_multiple_entries() -> Result<()> {
     let config = create_simple_test_config();
     let mut writer = create_writer(config, "simple_tenant").await?;
 
-    // Test basic transaction flow
-    let txn_id = writer.begin_transaction().await?;
-    assert!(writer.has_active_transaction());
+    let entries: Vec<_> = [5usize, 7, 3]
+        .into_iter()
+        .map(|rows| Ok((uuid::Uuid::new_v4(), create_simple_test_data(rows)?)))
+        .collect::<Result<_>>()?;
+    let ids: std::collections::HashSet<uuid::Uuid> = entries.iter().map(|(id, _)| *id).collect();
 
-    let test_data = create_simple_test_data(5)?;
-    writer.write_batch(test_data).await?;
+    writer
+        .append_batches_with_marker("wal-e2e", entries)
+        .await?;
 
-    // Commit the transaction
-    writer.commit_transaction(&txn_id).await?;
-    assert!(!writer.has_active_transaction());
-
-    log::info!("Transaction test completed successfully");
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_simple_e2e_rollback() -> Result<()> {
-    let config = create_simple_test_config();
-    let mut writer = create_writer(config, "simple_tenant").await?;
-
-    // Test rollback
-    let txn_id = writer.begin_transaction().await?;
-    let test_data = create_simple_test_data(5)?;
-    writer.write_batch(test_data).await?;
-
-    // Rollback the transaction
-    writer.rollback_transaction(&txn_id).await?;
-    assert!(!writer.has_active_transaction());
-
-    log::info!("Rollback test completed successfully");
+    let committed = writer.load_committed_marker("wal-e2e").await?;
+    assert_eq!(committed, ids);
 
     Ok(())
 }

@@ -1,178 +1,96 @@
 # SignalDB Writer
 
-The writer component of SignalDB is responsible for consuming messages from the queue system and persisting them to Iceberg tables with full ACID transaction support. It provides reliable, high-performance data storage with advanced optimization features.
+The writer is SignalDB's stateful ingestion service (the "Ingester"). It consumes
+entries from the Write-Ahead Log, persists them to Apache Iceberg tables as
+Parquet files, and marks them processed — turning the acceptor's durable-but-raw
+WAL records into queryable columnar storage.
 
-## Goals
+## Design: one verified write path
 
-1. **ACID Transaction Support**
-   - Full transaction semantics with commit/rollback operations
-   - Multi-batch transactional writes for data consistency
-   - Atomic operations across multiple data ingestion requests
-   - Isolation and durability guarantees for concurrent access
+All data reaches Iceberg through a single entry point,
+`IcebergTableWriter::append_batches_with_marker`. It writes Parquet data files
+and commits them together with a WAL idempotency marker in **one Iceberg
+snapshot** (a single catalog compare-and-swap), then **verifies the commit
+against the catalog** before reporting success.
 
-2. **High-Performance Data Storage**
-   - Apache Iceberg table format for efficient metadata management
-   - Intelligent batch processing with automatic splitting (50K rows, 128MB default)
-   - Memory-aware processing to prevent OOM issues
-   - Configurable concurrent batch processing
+The verification exists because the SQL catalog's CAS
+(`UPDATE ... WHERE metadata_location = <previous>`) does not report a lost
+race: if a concurrent committer (another writer node, the compactor) moved the
+table's metadata pointer first, the losing commit matches zero rows and
+`commit()` still returns `Ok`. The writer therefore never trusts the return
+value — after every attempt it reloads the table and checks that its marker
+landed. Only the marker decides success, so retries can never double-append and
+a lost race can never silently drop data.
 
-3. **Production Reliability**
-   - Exponential backoff retry logic for transient failures
-   - Comprehensive error handling and recovery mechanisms
-   - Performance monitoring and optimization metrics
-   - Graceful degradation under high load
+Consequences:
 
-4. **Operational Excellence**
-   - Run as both a standalone service and an embedded library
-   - Extensive logging and observability features
-   - Support for graceful shutdown and cleanup
-   - Comprehensive testing with 20+ integration tests
-   - Production-ready configuration and tuning options
+- **Do not add a write path that trusts `commit()`** — it can silently lose
+  data under concurrent commits.
+- Replay after a crash consults the marker
+  (`IcebergTableWriter::load_committed_marker`) to distinguish "committed but
+  not yet marked processed" from "never committed", making WAL processing
+  idempotent end to end.
 
 ## Architecture
 
-The writer consists of several key components:
-
-### 1. IcebergTableWriter
-The core component that provides ACID transaction support:
-- **Transaction Management**: Begin, commit, and rollback operations
-- **Batch Optimization**: Intelligent splitting and memory management
-- **Retry Logic**: Configurable exponential backoff for reliability
-
-### 2. SQL Catalog
-Manages Iceberg table metadata and catalog operations:
-- **Catalog Configuration**: SQLite and PostgreSQL backend support
-- **DataFusion Integration**: Seamless query engine integration
-
-### 3. Performance Optimization
-Advanced features for production workloads:
-- **Batch Splitting**: Automatic division of large batches for optimal processing
-- **Memory Management**: Memory-aware batch processing
-- **Concurrent Processing**: Configurable parallel batch execution
-
-### 4. Error Handling & Recovery
-Robust error handling for production reliability:
-- **Retry Logic**: Exponential backoff with configurable policies
-- **Transaction Recovery**: Automatic rollback on failures
-- **Graceful Degradation**: Continued operation under partial failures
-- **Comprehensive Logging**: Detailed error context and debugging information
+- **`WalProcessor`** (`processor.rs`): drains WAL entries per
+  tenant/dataset/table, dedupes against the committed marker, and commits fresh
+  entries in bounded chunks (`MAX_ENTRIES_PER_COMMIT`), marking each chunk
+  processed before the next commit.
+- **`IcebergTableWriter`** (`storage/iceberg.rs`): table handle management,
+  wire→storage schema transformation, Parquet writing, and the verified
+  append-with-marker commit loop with exponential-backoff retries
+  (`RetryConfig`).
+- **`IcebergWriterFlightService`** (`flight_iceberg.rs`): Arrow Flight endpoint
+  for inter-service ingestion.
+- **Schema transformation** (`schema_transform.rs`): converts v1 wire-format
+  batches (raw OTLP columns) into the Iceberg storage schema per signal type.
 
 ## Usage
 
-### Basic Usage
-
 ```rust
-use writer::{IcebergTableWriter, create_iceberg_writer};
-use common::config::Configuration;
-use object_store::memory::InMemory;
-use std::sync::Arc;
+use writer::IcebergTableWriter;
 
-// Create configuration
-let config = Configuration::default();
-let object_store = Arc::new(InMemory::new());
-
-// Create Iceberg writer
-let mut writer = create_iceberg_writer(
-    &config,
+let mut writer = IcebergTableWriter::new(
+    &catalog_manager,
     object_store,
-    "my_tenant",
-    "my_dataset",
-    "metrics_gauge"
-).await?;
+    "my_tenant".to_string(),
+    "my_dataset".to_string(),
+    "metrics_gauge".to_string(),
+)
+.await?;
 
-// Write data with automatic optimization
-writer.write_batch(record_batch).await?;
+// Appends the batches and records the WAL entry ids as the idempotency
+// marker in one verified Iceberg commit.
+writer
+    .append_batches_with_marker("wal-writer-id", vec![(entry_id, record_batch)])
+    .await?;
+
+// After a crash: ids in the marker are durably committed even if the WAL
+// never marked them processed.
+let committed = writer.load_committed_marker("wal-writer-id").await?;
 ```
 
-### Advanced Configuration
+### Retry configuration
 
 ```rust
-use writer::{BatchOptimizationConfig, RetryConfig, create_iceberg_writer};
+use std::time::Duration;
+use writer::RetryConfig;
 
-let mut writer = create_iceberg_writer(
-    &config,
-    object_store,
-    "my_tenant",
-    "my_dataset",
-    "metrics_gauge",
-).await?;
-
-// Configure batch optimization
-let batch_config = BatchOptimizationConfig {
-    max_rows_per_batch: 100_000,           // Larger batches
-    max_memory_per_batch_bytes: 256 * 1024 * 1024, // 256MB
-    enable_auto_split: true,
-    target_concurrent_batches: 8,          // More concurrency
-    enable_catalog_caching: true,
-    catalog_cache_ttl_seconds: 600,        // 10 minute cache
-};
-
-writer.set_batch_config(batch_config);
-
-// Configure retry behavior
-let retry_config = RetryConfig {
+writer.set_retry_config(RetryConfig {
     max_attempts: 5,
     initial_delay: Duration::from_millis(200),
     max_delay: Duration::from_secs(10),
     backoff_multiplier: 2.5,
-};
-
-writer.set_retry_config(retry_config);
-```
-
-### Transaction Usage
-
-```rust
-// Manual transaction management
-let transaction_id = writer.begin_transaction().await?;
-
-// Write multiple batches within transaction
-writer.write_batch(batch1).await?;
-writer.write_batch(batch2).await?;
-writer.write_batch(batch3).await?;
-
-// Commit all changes atomically
-writer.commit_transaction(&transaction_id).await?;
-
-// Or rollback on error
-// writer.rollback_transaction(&transaction_id).await?;
-
-// Automatic transactional batch writing
-let batches = vec![batch1, batch2, batch3];
-writer.write_batches(batches).await?; // Automatically wrapped in transaction
-```
-
-### Performance Monitoring
-
-```rust
-// Get current configuration
-let batch_config = writer.batch_config();
-println!("Max rows per batch: {}", batch_config.max_rows_per_batch);
-println!("Catalog caching: {}", batch_config.enable_catalog_caching);
+});
 ```
 
 ## Configuration
 
-### Environment Variables
-
-The writer can be configured through environment variables:
-
-- `SIGNALDB_SCHEMA_CATALOG_TYPE`: Catalog backend (sql, memory)
-- `SIGNALDB_SCHEMA_CATALOG_URI`: Catalog database connection string
-- `SIGNALDB_STORAGE_DSN`: Object storage configuration
-
-### Performance Tuning
-
-For production workloads, consider these optimizations:
-
-1. **Batch Size**: Adjust based on available memory and data characteristics
-2. **Retry Configuration**: Tune for your network and storage characteristics
-3. **Concurrent Batches**: Scale based on CPU cores and I/O capacity
-
-### Production Deployment
+The writer is configured through the shared SignalDB configuration
+(`signaldb.toml` / `SIGNALDB_*` environment variables):
 
 ```toml
-# signaldb.toml - Production configuration
 [schema]
 catalog_type = "sql"
 catalog_uri = "postgres://user:password@catalog-db:5432/iceberg"
@@ -180,132 +98,39 @@ catalog_uri = "postgres://user:password@catalog-db:5432/iceberg"
 [storage]
 dsn = "s3://my-data-bucket/iceberg-tables/"
 
-# Performance optimizations are automatic but can be tuned via API
+[wal]
+wal_dir = ".data/wal"
 ```
 
 ## Testing
 
-### Unit Tests
 ```bash
-# Core functionality tests
-cargo test -p writer --lib
+# Unit + crate tests
+cargo test -p writer
 
-# Integration tests
-cargo test -p writer --test test_sql_insert
-cargo test -p writer --test test_transactions  
-cargo test -p writer --test test_retry_logic
-cargo test -p writer --test test_batch_optimization
-```
-
-### End-to-End Tests
-```bash
-# Complete workflow validation
+# End-to-end write path (append + marker verification)
 cargo test -p writer --test test_e2e_simple
+cargo test -p writer --test test_retry_logic
 
-# Performance benchmarks
+# Crash-replay idempotency (workspace integration suite)
+cargo test -p tests-integration --test wal_replay_idempotency
+
+# Benchmarks
 cargo bench -p writer --bench iceberg_benchmarks --features benchmarks
-cargo bench -p writer --bench connection_pool_benchmarks --features benchmarks  # Writer creation and write benchmarks
+cargo bench -p writer --bench connection_pool_benchmarks --features benchmarks
 ```
 
-### Performance Testing
-```bash
-# Run all benchmarks
-./src/writer/run_benchmarks.sh
+## Observability
 
-# Individual benchmark categories
-cargo bench --bench iceberg_benchmarks --features benchmarks -- "single_batch"
-cargo bench --bench iceberg_benchmarks --features benchmarks -- "transaction_overhead"
-cargo bench --bench connection_pool_benchmarks --features benchmarks -- "concurrent"  # Concurrent writer creation
-```
+Watch for these log signals in production:
 
-## Monitoring & Observability
-
-### Key Metrics
-
-Monitor these aspects of writer performance:
-
-1. **Transaction Metrics**
-   - Transaction success/failure rates
-   - Transaction duration and latency
-   - Rollback frequency and causes
-
-2. **Batch Processing**
-   - Batch size distribution
-   - Splitting frequency and patterns
-   - Memory usage per batch
-
-3. **Retry Behavior**
-   - Retry attempt frequency
-   - Success rates after retries
-   - Backoff timing effectiveness
-
-### Logging
-
-The writer provides comprehensive logging at multiple levels:
-
-```rust
-// Enable debug logging for detailed operation tracking
-RUST_LOG=writer=debug cargo run
-
-// Production logging (info level)
-RUST_LOG=writer=info cargo run
-```
-
-## Migration Guide
-
-### From Direct Parquet Usage
-
-If migrating from direct Parquet writes:
-
-1. **API Compatibility**: Existing `write_batch()` calls continue to work
-2. **Configuration**: Add Iceberg catalog configuration
-3. **Benefits**: Gain ACID transactions and performance optimizations
-4. **Testing**: Use integration tests to validate data consistency
-
-### Performance Comparison
-
-Iceberg integration provides several advantages over direct Parquet:
-
-- **ACID Transactions**: Data consistency guarantees
-- **Metadata Management**: Efficient schema evolution and partitioning
-- **Query Performance**: Optimized for analytical workloads
-- **Operational Benefits**: Better monitoring and debugging capabilities
-
-## Future Enhancements
-
-### Planned Features
-
-1. **Enhanced Performance**
-   - Adaptive batch sizing based on data characteristics
-   - Intelligent partition pruning and compaction
-   - Advanced caching strategies
-
-2. **Operational Improvements**
-   - Metrics export (Prometheus integration)
-   - Health check endpoints
-   - Dynamic configuration updates
-   - Advanced monitoring dashboards
-
-3. **Advanced Features**
-   - Schema evolution automation
-   - Data lifecycle management
-   - Cross-table transaction support
-   - Multi-region replication
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Transaction Timeouts**: Increase timeout configuration
-2. **Memory Usage**: Reduce batch sizes or enable auto-splitting
-3. **Catalog Connectivity**: Check catalog database availability
-
-### Debug Information
-
-Enable detailed logging for troubleshooting:
+- `Iceberg commit reported an error but the marker landed` — an ambiguous
+  commit resolved as success by verification; harmless but worth tracking.
+- `Iceberg commit reported success but the marker is absent (catalog CAS
+  silently lost)` — a concurrent commit won the race; the writer retries with
+  fresh metadata. Sustained occurrences indicate commit contention on a table.
 
 ```bash
-RUST_LOG=writer=debug,iceberg_rust=debug,datafusion=debug cargo test
+# Debug logging
+RUST_LOG=writer=debug cargo run --bin writer
 ```
-
-For production debugging, use structured logging with correlation IDs and transaction tracking.

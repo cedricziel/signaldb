@@ -156,7 +156,13 @@ fn bench_single_batch_writes(c: &mut Criterion) {
                             .await;
 
                     let batch_clone = batch.clone();
-                    writer.write_batch(batch_clone).await.expect("Write failed");
+                    writer
+                        .append_batches_with_marker(
+                            "bench",
+                            vec![(uuid::Uuid::new_v4(), batch_clone)],
+                        )
+                        .await
+                        .expect("Write failed");
                     black_box(());
                 });
             },
@@ -165,7 +171,7 @@ fn bench_single_batch_writes(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark multi-batch transactional writes
+/// Benchmark multi-batch writes committed in one verified snapshot
 fn bench_multi_batch_writes(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let config = create_benchmark_config();
@@ -189,9 +195,13 @@ fn bench_multi_batch_writes(c: &mut Criterion) {
                         create_writer(&config, format!("bench_tenant_{}", rand::random::<u32>()))
                             .await;
 
-                    let batches_clone = batches.clone();
+                    let entries: Vec<_> = batches
+                        .iter()
+                        .cloned()
+                        .map(|batch| (uuid::Uuid::new_v4(), batch))
+                        .collect();
                     writer
-                        .write_batches(batches_clone)
+                        .append_batches_with_marker("bench", entries)
                         .await
                         .expect("Write failed");
                     black_box(());
@@ -199,46 +209,6 @@ fn bench_multi_batch_writes(c: &mut Criterion) {
             },
         );
     }
-    group.finish();
-}
-
-/// Benchmark transaction overhead
-fn bench_transaction_overhead(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
-    let config = create_benchmark_config();
-
-    let mut group = c.benchmark_group("transaction_overhead");
-    let batch = create_benchmark_data(1_000);
-
-    // Benchmark immediate writes (no transaction)
-    group.bench_function("immediate_write", |b| {
-        b.to_async(&rt).iter(|| async {
-            let mut writer =
-                create_writer(&config, format!("bench_tenant_{}", rand::random::<u32>())).await;
-
-            let batch_clone = batch.clone();
-            writer.write_batch(batch_clone).await.expect("Write failed");
-            black_box(());
-        });
-    });
-
-    // Benchmark transactional writes
-    group.bench_function("transactional_write", |b| {
-        b.to_async(&rt).iter(|| async {
-            let mut writer =
-                create_writer(&config, format!("bench_tenant_{}", rand::random::<u32>())).await;
-
-            let txn_id = writer.begin_transaction().await.expect("Begin failed");
-            let batch_clone = batch.clone();
-            writer.write_batch(batch_clone).await.expect("Write failed");
-            writer
-                .commit_transaction(&txn_id)
-                .await
-                .expect("Commit failed");
-            black_box(());
-        });
-    });
-
     group.finish();
 }
 
@@ -283,7 +253,13 @@ fn bench_concurrent_writes(c: &mut Criterion) {
                             )
                             .await;
 
-                            writer.write_batch(batch).await.expect("Write failed");
+                            writer
+                                .append_batches_with_marker(
+                                    "bench",
+                                    vec![(uuid::Uuid::new_v4(), batch)],
+                                )
+                                .await
+                                .expect("Write failed");
                         });
                         handles.push(handle);
                     }
@@ -322,7 +298,13 @@ fn bench_memory_patterns(c: &mut Criterion) {
                             .await;
 
                     let batch_clone = batch.clone();
-                    writer.write_batch(batch_clone).await.expect("Write failed");
+                    writer
+                        .append_batches_with_marker(
+                            "bench",
+                            vec![(uuid::Uuid::new_v4(), batch_clone)],
+                        )
+                        .await
+                        .expect("Write failed");
                     black_box(());
                 });
             },
@@ -335,7 +317,6 @@ criterion_group!(
     benches,
     bench_single_batch_writes,
     bench_multi_batch_writes,
-    bench_transaction_overhead,
     bench_writer_creation,
     bench_concurrent_writes,
     bench_memory_patterns

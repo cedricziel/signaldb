@@ -98,7 +98,10 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
     // Write 10 small batches (100 rows each = 1000 rows total)
     for i in 0..10 {
         let batch = create_trace_batch(&format!("initial-{i}"), 100)?;
-        if let Err(e) = writer.write_batch(batch).await {
+        if let Err(e) = writer
+            .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
+            .await
+        {
             log::warn!("Failed to write initial batch {i}: {e}");
             return Ok(()); // Skip test if writes fail
         }
@@ -164,7 +167,10 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
         // Write 5 new batches concurrently
         for i in 0..5 {
             let batch = create_trace_batch(&format!("concurrent-{i}"), 100)?;
-            if let Err(e) = concurrent_writer.write_batch(batch).await {
+            if let Err(e) = concurrent_writer
+                .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
+                .await
+            {
                 log::warn!("Failed to write concurrent batch {i}: {e}");
                 // Continue anyway
             } else {
@@ -293,7 +299,10 @@ async fn test_concurrent_compactions_different_partitions() -> Result<()> {
     // Write data (simulating two logical partitions)
     for i in 0..10 {
         let batch = create_trace_batch(&format!("trace-{i}"), 100)?;
-        if let Err(e) = writer.write_batch(batch).await {
+        if let Err(e) = writer
+            .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
+            .await
+        {
             log::warn!("Write failed: {e}");
             return Ok(());
         }
