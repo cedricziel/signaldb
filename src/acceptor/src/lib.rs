@@ -97,6 +97,7 @@ pub struct AcceptorResources {
     pub wal_manager: Arc<WalManager>,
     pub authenticator: Arc<Authenticator>,
     pub rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
+    pub storage_usage: Arc<common::storage_usage::StorageUsageTracker>,
 }
 
 /// Initialize shared resources for acceptor services
@@ -105,6 +106,10 @@ pub async fn init_acceptor_resources(
     advertise_addr: String,
     wal_dir: std::path::PathBuf,
 ) -> Result<AcceptorResources, anyhow::Error> {
+    // Keep a copy for the storage usage refresher, which needs the full
+    // configuration to open the Iceberg catalog.
+    let full_config = config.clone();
+
     // Initialize service bootstrap for catalog-based discovery
     let service_bootstrap = ServiceBootstrap::new(config, ServiceType::Acceptor, advertise_addr)
         .await
@@ -175,6 +180,37 @@ pub async fn init_acceptor_resources(
         &auth_config,
     ));
 
+    // Per-tenant storage quota enforcement. The tracker itself is a cheap
+    // cache; the Iceberg-metadata accounting loop only runs when at least
+    // one max_storage_bytes quota is configured.
+    let storage_usage =
+        Arc::new(common::storage_usage::StorageUsageTracker::from_auth_config(&auth_config));
+    if storage_usage.quotas_configured() {
+        let refresh_interval = full_config.auth.storage_usage_refresh_interval;
+        // Failing to build the catalog here must fail startup: the
+        // configuration promises storage quotas, and starting without
+        // accounting would silently not enforce them.
+        let catalog_manager = Arc::new(
+            common::catalog_manager::CatalogManager::new(full_config)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "max_storage_bytes is configured but the Iceberg catalog for \
+                         storage usage accounting could not be initialized: {e:#}"
+                    )
+                })?,
+        );
+        common::storage_usage::spawn_usage_refresher(
+            catalog_manager,
+            storage_usage.clone(),
+            refresh_interval,
+        );
+        tracing::info!(
+            refresh_interval = ?refresh_interval,
+            "Started per-tenant storage usage refresher for quota enforcement"
+        );
+    }
+
     // Create Authenticator for multi-tenant authentication
     let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
@@ -185,6 +221,7 @@ pub async fn init_acceptor_resources(
         wal_manager,
         authenticator,
         rate_limiter,
+        storage_usage,
     })
 }
 
@@ -207,27 +244,32 @@ pub async fn serve_otlp_grpc(
         wal_manager,
         authenticator,
         rate_limiter,
+        storage_usage,
     } = config.resources;
 
     // Set up OTLP/gRPC services with handler pattern, WAL Manager integration, and auth interceptor
     let log_handler = LogHandler::new(flight_transport.clone(), wal_manager.clone());
-    let log_service = LogAcceptorService::new(log_handler).with_rate_limiter(rate_limiter.clone());
+    let log_service = LogAcceptorService::new(log_handler)
+        .with_rate_limiter(rate_limiter.clone())
+        .with_storage_quota(storage_usage.clone());
     let auth_for_logs = authenticator.clone();
     let log_server = LogsServiceServer::with_interceptor(log_service, move |req| {
         grpc_auth_interceptor(auth_for_logs.clone(), req)
     });
 
     let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
-    let trace_service =
-        TraceAcceptorService::new(trace_handler).with_rate_limiter(rate_limiter.clone());
+    let trace_service = TraceAcceptorService::new(trace_handler)
+        .with_rate_limiter(rate_limiter.clone())
+        .with_storage_quota(storage_usage.clone());
     let auth_for_traces = authenticator.clone();
     let trace_server = TraceServiceServer::with_interceptor(trace_service, move |req| {
         grpc_auth_interceptor(auth_for_traces.clone(), req)
     });
 
     let metrics_handler = MetricsHandler::new(flight_transport.clone(), wal_manager.clone());
-    let metrics_service =
-        MetricsAcceptorService::new(metrics_handler).with_rate_limiter(rate_limiter.clone());
+    let metrics_service = MetricsAcceptorService::new(metrics_handler)
+        .with_rate_limiter(rate_limiter.clone())
+        .with_storage_quota(storage_usage.clone());
     let auth_for_metrics = authenticator.clone();
     let metric_server = MetricsServiceServer::with_interceptor(metrics_service, move |req| {
         grpc_auth_interceptor(auth_for_metrics.clone(), req)
@@ -347,6 +389,7 @@ pub struct HttpAcceptorConfig {
     pub wal_manager: Arc<WalManager>,
     pub authenticator: Arc<Authenticator>,
     pub rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
+    pub storage_usage: Arc<common::storage_usage::StorageUsageTracker>,
 }
 
 pub async fn serve_otlp_http(
@@ -360,7 +403,8 @@ pub async fn serve_otlp_http(
     // Create Prometheus handler with shared resources
     let prometheus_handler = Arc::new(
         PrometheusHandler::new(config.flight_transport.clone(), config.wal_manager.clone())
-            .with_rate_limiter(config.rate_limiter.clone()),
+            .with_rate_limiter(config.rate_limiter.clone())
+            .with_storage_quota(config.storage_usage.clone()),
     );
 
     // Build combined router with health, traces, and Prometheus endpoints
