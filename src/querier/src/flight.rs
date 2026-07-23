@@ -25,6 +25,9 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use tracing::Instrument;
 
+use crate::query::profile::{
+    FindProfileByIdParams, ProfileDiscoveryParams, ProfileSearchParams, ProfileService,
+};
 use crate::query::trace::TraceService;
 use crate::query::{FindTraceByIdParams, SearchQueryParams};
 
@@ -159,6 +162,32 @@ enum TicketRequest {
     SqlQuery {
         sql: String,
     },
+    FindProfile {
+        tenant_slug: String,
+        dataset_slug: String,
+        profile_id: String,
+    },
+    SearchProfiles {
+        tenant_slug: String,
+        dataset_slug: String,
+        params: ProfileSearchParams,
+    },
+    ProfileTypes {
+        tenant_slug: String,
+        dataset_slug: String,
+        params: ProfileDiscoveryParams,
+    },
+    ProfileLabelNames {
+        tenant_slug: String,
+        dataset_slug: String,
+        params: ProfileDiscoveryParams,
+    },
+    ProfileLabelValues {
+        tenant_slug: String,
+        dataset_slug: String,
+        label_name: String,
+        params: ProfileDiscoveryParams,
+    },
 }
 
 /// Flight service for query execution against stored data
@@ -170,6 +199,7 @@ pub struct QuerierFlightService {
     schemas: FlightSchemas,
     session_ctx: Arc<SessionContext>,
     trace_service: TraceService,
+    profile_service: ProfileService,
     #[allow(dead_code)]
     iceberg_catalog: Option<Arc<dyn iceberg_rust::catalog::Catalog>>,
     limits: QuerierConfig,
@@ -248,6 +278,8 @@ impl QuerierFlightService {
         // Create trace service for specialized trace queries
         let trace_service = TraceService::new(session_ctx.as_ref().clone(), "traces".to_string())
             .with_max_search_limit(limits.max_search_limit);
+        let profile_service = ProfileService::new(session_ctx.as_ref().clone())
+            .with_max_search_limit(limits.max_search_limit);
 
         Self {
             object_store,
@@ -255,6 +287,7 @@ impl QuerierFlightService {
             schemas: FlightSchemas::new(),
             session_ctx,
             trace_service,
+            profile_service,
             iceberg_catalog: None,
             limits,
             query_permits: dashmap::DashMap::new(),
@@ -340,6 +373,8 @@ impl QuerierFlightService {
         // Create trace service for specialized trace queries
         let trace_service = TraceService::new(session_ctx.as_ref().clone(), "traces".to_string())
             .with_max_search_limit(limits.max_search_limit);
+        let profile_service = ProfileService::new(session_ctx.as_ref().clone())
+            .with_max_search_limit(limits.max_search_limit);
 
         Ok(Self {
             object_store,
@@ -347,6 +382,7 @@ impl QuerierFlightService {
             schemas: FlightSchemas::new(),
             session_ctx,
             trace_service,
+            profile_service,
             iceberg_catalog: Some(iceberg_catalog),
             limits,
             query_permits: dashmap::DashMap::new(),
@@ -454,6 +490,83 @@ impl QuerierFlightService {
                     "Invalid search_traces ticket format. Expected: search_traces:tenant_slug:dataset_slug:params",
                 ));
             }
+        }
+
+        if let Some(remainder) = ticket_content.strip_prefix("find_profile:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                return Ok(TicketRequest::FindProfile {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    profile_id: parts[2].to_string(),
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid find_profile ticket format. Expected: find_profile:tenant_slug:dataset_slug:profile_id",
+            ));
+        }
+
+        if let Some(remainder) = ticket_content.strip_prefix("search_profiles:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                let params: ProfileSearchParams = serde_json::from_str(parts[2]).map_err(|e| {
+                    Status::invalid_argument(format!("Invalid profile search parameters: {e}"))
+                })?;
+                return Ok(TicketRequest::SearchProfiles {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    params,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid search_profiles ticket format. Expected: search_profiles:tenant_slug:dataset_slug:params",
+            ));
+        }
+
+        if let Some(remainder) = ticket_content.strip_prefix("profile_types:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() >= 2 {
+                let params = parse_discovery_params(parts.get(2).copied())?;
+                return Ok(TicketRequest::ProfileTypes {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    params,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid profile_types ticket format. Expected: profile_types:tenant_slug:dataset_slug[:params]",
+            ));
+        }
+
+        if let Some(remainder) = ticket_content.strip_prefix("label_names:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() >= 2 {
+                let params = parse_discovery_params(parts.get(2).copied())?;
+                return Ok(TicketRequest::ProfileLabelNames {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    params,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid label_names ticket format. Expected: label_names:tenant_slug:dataset_slug[:params]",
+            ));
+        }
+
+        if let Some(remainder) = ticket_content.strip_prefix("label_values:") {
+            let parts: Vec<&str> = remainder.splitn(4, ':').collect();
+            if parts.len() >= 3 {
+                let params = parse_discovery_params(parts.get(3).copied())?;
+                return Ok(TicketRequest::ProfileLabelValues {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    label_name: parts[2].to_string(),
+                    params,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid label_values ticket format. Expected: label_values:tenant_slug:dataset_slug:label_name[:params]",
+            ));
         }
 
         // Fall back to raw SQL query
@@ -742,7 +855,12 @@ impl FlightService for QuerierFlightService {
             if let Some(ctx) = &caller_tenant {
                 let ticket_tenant = match &ticket_request {
                     TicketRequest::FindTrace { tenant_slug, .. }
-                    | TicketRequest::SearchTraces { tenant_slug, .. } => Some(tenant_slug),
+                    | TicketRequest::SearchTraces { tenant_slug, .. }
+                    | TicketRequest::FindProfile { tenant_slug, .. }
+                    | TicketRequest::SearchProfiles { tenant_slug, .. }
+                    | TicketRequest::ProfileTypes { tenant_slug, .. }
+                    | TicketRequest::ProfileLabelNames { tenant_slug, .. }
+                    | TicketRequest::ProfileLabelValues { tenant_slug, .. } => Some(tenant_slug),
                     TicketRequest::SqlQuery { .. } => None,
                 };
                 if let Some(ticket_tenant) = ticket_tenant
@@ -761,6 +879,11 @@ impl FlightService for QuerierFlightService {
             let query_type = match &ticket_request {
                 TicketRequest::FindTrace { .. } => "trace_by_id",
                 TicketRequest::SearchTraces { .. } => "trace_search",
+                TicketRequest::FindProfile { .. } => "profile_by_id",
+                TicketRequest::SearchProfiles { .. } => "profile_search",
+                TicketRequest::ProfileTypes { .. } => "profile_types",
+                TicketRequest::ProfileLabelNames { .. } => "profile_label_names",
+                TicketRequest::ProfileLabelValues { .. } => "profile_label_values",
                 TicketRequest::SqlQuery { .. } => "sql",
             };
 
@@ -773,7 +896,14 @@ impl FlightService for QuerierFlightService {
                 .map(|ctx| ctx.tenant_id.clone())
                 .or_else(|| match &ticket_request {
                     TicketRequest::FindTrace { tenant_slug, .. }
-                    | TicketRequest::SearchTraces { tenant_slug, .. } => Some(tenant_slug.clone()),
+                    | TicketRequest::SearchTraces { tenant_slug, .. }
+                    | TicketRequest::FindProfile { tenant_slug, .. }
+                    | TicketRequest::SearchProfiles { tenant_slug, .. }
+                    | TicketRequest::ProfileTypes { tenant_slug, .. }
+                    | TicketRequest::ProfileLabelNames { tenant_slug, .. }
+                    | TicketRequest::ProfileLabelValues { tenant_slug, .. } => {
+                        Some(tenant_slug.clone())
+                    }
                     TicketRequest::SqlQuery { .. } => None,
                 });
             // Held until the query's batches are fully computed.
@@ -892,6 +1022,89 @@ impl FlightService for QuerierFlightService {
                                 });
                             }
                         }
+                    }
+                    TicketRequest::FindProfile {
+                        tenant_slug,
+                        dataset_slug,
+                        profile_id,
+                    } => {
+                        tracing::info!(
+                            tenant_slug = %tenant_slug,
+                            dataset_slug = %dataset_slug,
+                            profile_id = %profile_id,
+                            "Executing find_profile"
+                        );
+                        let batches = self
+                            .profile_service
+                            .find_by_id_with_tenant(
+                                FindProfileByIdParams { profile_id },
+                                &tenant_slug,
+                                &dataset_slug,
+                            )
+                            .await
+                            .map_err(querier_error_to_status)?;
+                        if batches.is_empty() {
+                            return Err(Status::not_found("Profile not found"));
+                        }
+                        batches
+                    }
+                    TicketRequest::SearchProfiles {
+                        tenant_slug,
+                        dataset_slug,
+                        params,
+                    } => {
+                        tracing::info!(
+                            tenant_slug = %tenant_slug,
+                            dataset_slug = %dataset_slug,
+                            params = ?params,
+                            "Executing search_profiles"
+                        );
+                        self.profile_service
+                            .search_with_tenant(params, &tenant_slug, &dataset_slug)
+                            .await
+                            .map_err(querier_error_to_status)?
+                    }
+                    TicketRequest::ProfileTypes {
+                        tenant_slug,
+                        dataset_slug,
+                        params,
+                    } => {
+                        let types = self
+                            .profile_service
+                            .profile_types_with_tenant(params, &tenant_slug, &dataset_slug)
+                            .await
+                            .map_err(querier_error_to_status)?;
+                        vec![strings_to_batch("profile_type", types)?]
+                    }
+                    TicketRequest::ProfileLabelNames {
+                        tenant_slug,
+                        dataset_slug,
+                        params,
+                    } => {
+                        let names = self
+                            .profile_service
+                            .label_names_with_tenant(params, &tenant_slug, &dataset_slug)
+                            .await
+                            .map_err(querier_error_to_status)?;
+                        vec![strings_to_batch("label_name", names)?]
+                    }
+                    TicketRequest::ProfileLabelValues {
+                        tenant_slug,
+                        dataset_slug,
+                        label_name,
+                        params,
+                    } => {
+                        let values = self
+                            .profile_service
+                            .label_values_with_tenant(
+                                &label_name,
+                                params,
+                                &tenant_slug,
+                                &dataset_slug,
+                            )
+                            .await
+                            .map_err(querier_error_to_status)?;
+                        vec![strings_to_batch("label_value", values)?]
                     }
                     TicketRequest::SqlQuery { sql } => {
                         // Tenant-scoped callers are pinned to their
@@ -1015,6 +1228,42 @@ impl FlightService for QuerierFlightService {
     ) -> Result<Response<Self::ListActionsStream>, Status> {
         let out = stream::empty().boxed();
         Ok(Response::new(out))
+    }
+}
+
+/// Parse the optional JSON tail of a profile discovery ticket.
+#[allow(clippy::result_large_err)]
+fn parse_discovery_params(raw: Option<&str>) -> Result<ProfileDiscoveryParams, Status> {
+    match raw {
+        None | Some("") => Ok(ProfileDiscoveryParams::default()),
+        Some(json) => serde_json::from_str(json).map_err(|e| {
+            Status::invalid_argument(format!("Invalid profile discovery parameters: {e}"))
+        }),
+    }
+}
+
+/// Encode a list of strings as a single-column RecordBatch.
+#[allow(clippy::result_large_err)]
+fn strings_to_batch(column_name: &str, values: Vec<String>) -> Result<RecordBatch, Status> {
+    use datafusion::arrow::array::StringArray;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        column_name,
+        DataType::Utf8,
+        false,
+    )]));
+    RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(values))])
+        .map_err(|e| Status::internal(format!("Failed to build result batch: {e}")))
+}
+
+/// Map querier errors onto gRPC statuses: caller errors surface as
+/// INVALID_ARGUMENT/UNIMPLEMENTED instead of a blanket internal error.
+fn querier_error_to_status(e: crate::query::error::QuerierError) -> Status {
+    match e {
+        crate::query::error::QuerierError::InvalidInput(msg) => Status::invalid_argument(msg),
+        crate::query::error::QuerierError::Unsupported(msg) => Status::unimplemented(msg),
+        other => Status::internal(format!("Profile query failed: {other:?}")),
     }
 }
 
