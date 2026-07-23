@@ -32,6 +32,7 @@ fn create_simple_test_config() -> Configuration {
                 traces_enabled: true,
                 logs_enabled: true,
                 metrics_enabled: true,
+                profiles_enabled: true,
                 custom_schemas: Default::default(),
             },
         },

@@ -281,6 +281,44 @@ pub fn create_metrics_summary_schema() -> Result<Schema> {
     Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
 
+/// Create Iceberg schema for the profiles table
+///
+/// Storage format for OpenTelemetry profiles with the OTLP dictionary
+/// resolved at ingest. Identifiers (profile_id, trace_id, span_id) are
+/// stored as hex strings to stay joinable with the traces and logs tables.
+pub fn create_profiles_schema() -> Result<Schema> {
+    let fields = vec![
+        // Identity and timing
+        required_field(1, "profile_id", PrimitiveType::String), // hex encoded
+        required_field(2, "timestamp", PrimitiveType::Timestamp),
+        required_field(3, "duration_nano", PrimitiveType::Long),
+        // Sample value type/unit (e.g. cpu/nanoseconds)
+        required_field(4, "sample_type", PrimitiveType::String),
+        required_field(5, "sample_unit", PrimitiveType::String),
+        // Sampling period
+        optional_field(6, "period_type", PrimitiveType::String),
+        optional_field(7, "period_unit", PrimitiveType::String),
+        optional_field(8, "period", PrimitiveType::Long),
+        // Service context
+        required_field(9, "service_name", PrimitiveType::String),
+        // Resolved stack traces and samples
+        required_field(10, "stacktraces_json", PrimitiveType::String), // JSON array
+        required_field(11, "samples_json", PrimitiveType::String),     // JSON array
+        // Attribute context
+        optional_field(12, "resource_attributes", PrimitiveType::String), // JSON string
+        optional_field(13, "scope_attributes", PrimitiveType::String),    // JSON string
+        optional_field(14, "profile_attributes", PrimitiveType::String),  // JSON string
+        // Trace correlation (primary span link), hex encoded
+        optional_field(15, "trace_id", PrimitiveType::String),
+        optional_field(16, "span_id", PrimitiveType::String),
+        // Additional fields for query optimization
+        required_field(17, "date_day", PrimitiveType::Date), // Partition key
+        required_field(18, "hour", PrimitiveType::Int),      // Sub-partition key
+    ];
+
+    Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
+}
+
 /// Create partition specification for traces table
 /// Partitions by hour using Iceberg's built-in Hour transform on the timestamp column.
 /// Hour-level partitioning also enables day/month/year pruning automatically.
@@ -306,6 +344,14 @@ pub fn create_metrics_partition_spec() -> Result<PartitionSpec> {
     create_hour_partition_spec(&schema, "timestamp", "timestamp_hour")
 }
 
+/// Create partition specification for profiles table
+/// Partitions by hour using Iceberg's built-in Hour transform on the timestamp column.
+/// Hour-level partitioning also enables day/month/year pruning automatically.
+pub fn create_profiles_partition_spec() -> Result<PartitionSpec> {
+    let schema = create_profiles_schema()?;
+    create_hour_partition_spec(&schema, "timestamp", "timestamp_hour")
+}
+
 /// All available table schemas
 #[derive(Debug, Clone)]
 pub enum TableSchema {
@@ -316,6 +362,7 @@ pub enum TableSchema {
     MetricsHistogram,
     MetricsExponentialHistogram,
     MetricsSummary,
+    Profiles,
     Custom(String), // For custom schemas from configuration
 }
 
@@ -332,6 +379,7 @@ impl TableSchema {
                 create_metrics_exponential_histogram_schema()
             }
             TableSchema::MetricsSummary => create_metrics_summary_schema(),
+            TableSchema::Profiles => create_profiles_schema(),
             TableSchema::Custom(_) => Err(anyhow::anyhow!(
                 "Custom schemas must be loaded from configuration"
             )),
@@ -348,6 +396,7 @@ impl TableSchema {
             | TableSchema::MetricsHistogram
             | TableSchema::MetricsExponentialHistogram
             | TableSchema::MetricsSummary => create_metrics_partition_spec(),
+            TableSchema::Profiles => create_profiles_partition_spec(),
             TableSchema::Custom(_) => Err(anyhow::anyhow!(
                 "Custom partition specs must be defined in configuration"
             )),
@@ -364,6 +413,7 @@ impl TableSchema {
             TableSchema::MetricsHistogram => "metrics_histogram",
             TableSchema::MetricsExponentialHistogram => "metrics_exponential_histogram",
             TableSchema::MetricsSummary => "metrics_summary",
+            TableSchema::Profiles => "profiles",
             TableSchema::Custom(name) => name,
         }
     }
@@ -388,6 +438,10 @@ impl TableSchema {
             schemas.push(TableSchema::MetricsSummary);
         }
 
+        if config.profiles_enabled {
+            schemas.push(TableSchema::Profiles);
+        }
+
         // Add custom schemas
         for name in config.custom_schemas.keys() {
             schemas.push(TableSchema::Custom(name.clone()));
@@ -406,6 +460,7 @@ impl TableSchema {
             TableSchema::MetricsHistogram,
             TableSchema::MetricsExponentialHistogram,
             TableSchema::MetricsSummary,
+            TableSchema::Profiles,
         ]
     }
 }
@@ -441,6 +496,50 @@ mod tests {
         assert!(has_field(&schema, "severity_text"));
         assert!(has_field(&schema, "body"));
         assert!(has_field(&schema, "date_day"));
+    }
+
+    #[test]
+    fn test_profiles_schema_creation() {
+        let schema = create_profiles_schema().unwrap();
+
+        // Check for key fields
+        assert!(has_field(&schema, "profile_id"));
+        assert!(has_field(&schema, "timestamp"));
+        assert!(has_field(&schema, "sample_type"));
+        assert!(has_field(&schema, "service_name"));
+        assert!(has_field(&schema, "stacktraces_json"));
+        assert!(has_field(&schema, "samples_json"));
+        assert!(has_field(&schema, "trace_id"));
+        assert!(has_field(&schema, "span_id"));
+        assert!(has_field(&schema, "date_day"));
+    }
+
+    #[test]
+    fn test_profiles_partition_spec() {
+        let spec = create_profiles_partition_spec().unwrap();
+        assert_eq!(spec.fields().len(), 1);
+        assert_eq!(spec.fields()[0].name(), "timestamp_hour");
+    }
+
+    #[test]
+    fn test_profiles_respects_config_toggle() {
+        let mut config = DefaultSchemas::default();
+        let names: Vec<&str> = TableSchema::all_from_config(&config)
+            .iter()
+            .map(|s| match s {
+                TableSchema::Profiles => "profiles",
+                _ => "",
+            })
+            .filter(|n| !n.is_empty())
+            .collect();
+        assert_eq!(names, vec!["profiles"]);
+
+        config.profiles_enabled = false;
+        assert!(
+            !TableSchema::all_from_config(&config)
+                .iter()
+                .any(|s| matches!(s, TableSchema::Profiles))
+        );
     }
 
     #[test]

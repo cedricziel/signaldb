@@ -397,6 +397,9 @@ pub struct DefaultSchemas {
     /// Enable creation of metrics tables
     #[serde(default = "default_true")]
     pub metrics_enabled: bool,
+    /// Enable creation of profiles table
+    #[serde(default = "default_true")]
+    pub profiles_enabled: bool,
     /// Custom schema definitions (table_name -> schema_json)
     #[serde(default)]
     pub custom_schemas: HashMap<String, serde_json::Value>,
@@ -408,6 +411,7 @@ impl Default for DefaultSchemas {
             traces_enabled: true,
             logs_enabled: true,
             metrics_enabled: true,
+            profiles_enabled: true,
             custom_schemas: HashMap::new(),
         }
     }

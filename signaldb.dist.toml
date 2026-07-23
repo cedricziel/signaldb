@@ -144,6 +144,7 @@ catalog_uri = "sqlite::memory:"        # In-memory SQLite catalog (monolithic on
 traces_enabled = true
 logs_enabled = true
 metrics_enabled = true
+profiles_enabled = true
 
 # Custom schema definitions (optional)
 # [schema.default_schemas.custom_schemas]
