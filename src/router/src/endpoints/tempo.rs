@@ -74,7 +74,7 @@ fn flight_data_to_tempo_trace(
     let trace = record_batches_to_trace(batches, trace_id)?;
 
     // Convert internal trace model to Tempo API format
-    let tempo_trace = internal_trace_to_tempo(&trace);
+    let tempo_trace = internal_trace_to_tempo(&trace, None);
 
     Ok(Some(tempo_trace))
 }
@@ -222,8 +222,15 @@ fn record_batches_to_trace(
     })
 }
 
-/// Convert internal trace model to Tempo API format
-fn internal_trace_to_tempo(trace: &common::model::trace::Trace) -> tempo_api::Trace {
+/// Convert internal trace model to Tempo API format.
+///
+/// `span_cap` limits how many spans are included in the returned span set
+/// (Tempo's `spss`, spans-per-spanset); `matched` still reports the full
+/// span count. `None` includes every span.
+fn internal_trace_to_tempo(
+    trace: &common::model::trace::Trace,
+    span_cap: Option<usize>,
+) -> tempo_api::Trace {
     use std::collections::HashMap;
 
     // Find the earliest start time and calculate total duration
@@ -266,9 +273,10 @@ fn internal_trace_to_tempo(trace: &common::model::trace::Trace) -> tempo_api::Tr
         0
     };
 
-    // Convert spans to Tempo format
+    // Convert spans to Tempo format, capped at spss when requested
     let tempo_spans: Vec<tempo_api::Span> = all_spans
         .iter()
+        .take(span_cap.unwrap_or(usize::MAX))
         .map(|span| {
             let mut attributes = HashMap::new();
 
@@ -348,10 +356,19 @@ fn internal_trace_to_tempo(trace: &common::model::trace::Trace) -> tempo_api::Tr
     }
 }
 
-/// Convert Arrow FlightData to Tempo search results
+/// Convert Arrow FlightData to Tempo search results.
+///
+/// `spss` is Tempo's spans-per-spanset limit; non-positive values are
+/// ignored. When absent, every matched span is returned (Tempo itself
+/// defaults to 3, but SignalDB preserves its historical full-span
+/// responses unless the client asks for a cap).
 fn flight_data_to_search_results(
     flight_data: Vec<FlightData>,
+    spss: Option<i32>,
 ) -> Result<tempo_api::SearchResult, Box<dyn std::error::Error + Send + Sync>> {
+    let span_cap = spss
+        .and_then(|v| usize::try_from(v).ok())
+        .filter(|v| *v > 0);
     if flight_data.is_empty() {
         return Ok(tempo_api::SearchResult {
             traces: vec![],
@@ -496,7 +513,7 @@ fn flight_data_to_search_results(
     let mut traces = Vec::new();
     for (trace_id, spans) in traces_map {
         let trace = common::model::trace::Trace { trace_id, spans };
-        traces.push(internal_trace_to_tempo(&trace));
+        traces.push(internal_trace_to_tempo(&trace, span_cap));
     }
 
     let metrics = HashMap::new(); // TODO: Add metrics if needed
@@ -693,7 +710,7 @@ pub async fn search<S: RouterState>(
             }
 
             // Convert flight data to search results
-            match flight_data_to_search_results(search_results) {
+            match flight_data_to_search_results(search_results, query.spss) {
                 Ok(search_result) => {
                     tracing::info!(
                         trace_count = search_result.traces.len(),
@@ -945,6 +962,43 @@ mod tests {
         // 2. Create a mock catalog implementation
         // 3. Use dependency injection for testability
         panic!("Catalog tests require database setup - skipping for now")
+    }
+
+    fn make_span(span_id: &str, start: u64) -> common::model::span::Span {
+        common::model::span::Span {
+            trace_id: "trace-1".to_string(),
+            span_id: span_id.to_string(),
+            parent_span_id: String::new(),
+            status: common::model::span::SpanStatus::Unspecified,
+            is_root: span_id == "root",
+            name: format!("span-{span_id}"),
+            service_name: "svc".to_string(),
+            span_kind: common::model::span::SpanKind::Internal,
+            start_time_unix_nano: start,
+            duration_nano: 1_000,
+            attributes: Default::default(),
+            resource: Default::default(),
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn span_cap_limits_returned_spans_but_not_matched_count() {
+        let trace = common::model::trace::Trace {
+            trace_id: "trace-1".to_string(),
+            spans: (0..5)
+                .map(|i| make_span(if i == 0 { "root" } else { "child" }, 1_000 + i))
+                .collect(),
+        };
+
+        let capped = internal_trace_to_tempo(&trace, Some(3));
+        assert_eq!(capped.span_sets.len(), 1);
+        assert_eq!(capped.span_sets[0].spans.len(), 3);
+        assert_eq!(capped.span_sets[0].matched, 5);
+
+        let uncapped = internal_trace_to_tempo(&trace, None);
+        assert_eq!(uncapped.span_sets[0].spans.len(), 5);
+        assert_eq!(uncapped.span_sets[0].matched, 5);
     }
 
     #[tokio::test]
