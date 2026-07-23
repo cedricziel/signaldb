@@ -2,7 +2,7 @@ use crate::schema_transform::{
     transform_logs_v1_to_iceberg, transform_metrics_exponential_histogram_v1_to_iceberg,
     transform_metrics_gauge_v1_to_iceberg, transform_metrics_histogram_v1_to_iceberg,
     transform_metrics_sum_v1_to_iceberg, transform_metrics_summary_v1_to_iceberg,
-    transform_trace_v1_to_v2,
+    transform_profiles_v1_to_iceberg, transform_trace_v1_to_v2,
 };
 use anyhow::Result;
 use common::CatalogManager;
@@ -151,6 +151,14 @@ impl IcebergTableWriter {
             }
             "metrics_summary" if has_field("data_json") => {
                 transform_metrics_summary_v1_to_iceberg(batch)
+            }
+            // Wire-format profiles carry raw OTLP "time_unix_nano"; the
+            // storage schema uses computed "timestamp"/"date_day"/"hour".
+            "profiles" if has_field("time_unix_nano") => {
+                log::debug!(
+                    "Detected v1 profiles batch, applying profiles->iceberg transformation"
+                );
+                transform_profiles_v1_to_iceberg(batch)
             }
             _ => Ok(batch),
         }
