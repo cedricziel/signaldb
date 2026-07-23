@@ -217,6 +217,7 @@ async fn setup_test_services() -> TestServices {
         wal_config.clone(), // traces config
         wal_config.clone(), // logs config
         wal_config.clone(), // metrics config
+        wal_config.clone(), // profiles config
     ));
     let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
     let acceptor_service = TraceAcceptorService::new(trace_handler);
@@ -993,6 +994,7 @@ async fn setup_multi_tenant_test_services() -> TestServices {
         acme_wal_config.clone(), // traces config (acme)
         acme_wal_config.clone(), // logs config
         acme_wal_config.clone(), // metrics config
+        acme_wal_config.clone(), // profiles config
     ));
 
     // Create acceptor with gRPC authentication interceptor

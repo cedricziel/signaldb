@@ -211,6 +211,7 @@ mod tests {
             test_config(base_dir),
             test_config(base_dir),
             test_config(base_dir),
+            test_config(base_dir),
         )
     }
 

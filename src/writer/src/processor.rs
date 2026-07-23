@@ -321,6 +321,7 @@ impl WalProcessor {
                         "metrics_gauge".to_string()
                     })
             }
+            common::wal::WalOperation::WriteProfiles => "profiles".to_string(),
             common::wal::WalOperation::Flush => {
                 return Err(anyhow::anyhow!(
                     "Flush operations should not be processed as table writes"
