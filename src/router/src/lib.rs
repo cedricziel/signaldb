@@ -201,6 +201,13 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
                 .layer(query_rate_layer.clone())
                 .layer(auth_layer.clone()),
         )
+        // Pyroscope-compatible profile query API
+        .nest(
+            "/pyroscope",
+            endpoints::pyroscope::router()
+                .layer(query_rate_layer.clone())
+                .layer(auth_layer.clone()),
+        )
         // Admin routes with admin authentication
         .nest("/api/v1/admin", admin_router)
         .nest(

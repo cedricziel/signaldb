@@ -6021,6 +6021,7 @@ dependencies = [
  "datafusion",
  "futures",
  "log",
+ "pyroscope-api",
  "serde",
  "serde_json",
  "signaldb-api",
