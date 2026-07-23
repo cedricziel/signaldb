@@ -1,0 +1,6 @@
+# The plugin backend is a standalone workspace; keep its build artifacts in
+# its own target/ dir. Without this, the repo-root .cargo/config.toml applies:
+# its relative target-dir resolves against the root config's directory, so
+# plugin builds would land in the repo-root target/.
+[build]
+target-dir = "target"

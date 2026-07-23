@@ -23,7 +23,7 @@ sources:
 | **signaldb-api** | `src/signaldb-api/` | Library | OpenAPI-generated admin API types |
 | **signaldb-cli** | `src/signaldb-cli/` | Binary | CLI for tenant, API key, dataset management |
 | **signaldb-sdk** | `src/signaldb-sdk/` | Library | Generated SDK client |
-| **grafana-plugin** | `src/grafana-plugin/` | Plugin | Grafana datasource (TypeScript frontend + Rust backend) |
+| **grafana-plugin** | `src/grafana-plugin/` | Plugin | Grafana datasource (TypeScript frontend + Rust backend); the backend is a standalone cargo workspace, not a root workspace member |
 | **signal-producer** | `src/signal-producer/` | Binary | Test data generator (OTLP traces) |
 | **tests-integration** | `tests-integration/` | Test crate | End-to-end integration tests |
 | **xtask** | `xtask/` | Binary | Build automation tasks |

@@ -1,8 +1,6 @@
 use anyhow::Result;
-use aws_config::Region;
-use aws_credential_types::Credentials;
-use aws_sdk_s3::Client;
 use testcontainers_modules::minio::MinIO;
+use testcontainers_modules::testcontainers::core::ExecCommand;
 use testcontainers_modules::testcontainers::{ContainerAsync, runners::AsyncRunner};
 use url::Url;
 
@@ -33,51 +31,28 @@ impl MinioTestContext {
         }
 
         // Create the test bucket
-        create_test_bucket(&dsn).await?;
+        create_test_bucket(&container, "signaldb-test").await?;
 
         Ok(Self { container, dsn })
     }
 }
 
-async fn create_test_bucket(dsn: &Url) -> Result<()> {
-    // Extract connection details from DSN
-    let endpoint = format!(
-        "http://{}:{}",
-        dsn.host_str().unwrap(),
-        dsn.port().unwrap_or(9000)
+/// Creates a bucket using the `mc` client that ships inside the official
+/// minio/minio image — avoids pulling the AWS SDK (and its legacy hyper 0.14
+/// stack) into the dependency graph just to issue one CreateBucket call.
+async fn create_test_bucket(container: &ContainerAsync<MinIO>, bucket: &str) -> Result<()> {
+    let cmd = format!(
+        "MC_HOST_local=http://minioadmin:minioadmin@127.0.0.1:9000 \
+         mc mb --ignore-existing local/{bucket}"
     );
-    let bucket = dsn.path().trim_start_matches('/');
+    let mut result = container.exec(ExecCommand::new(["sh", "-c", &cmd])).await?;
 
-    // Create S3 client configuration using environment variables
-    let shared_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .endpoint_url(&endpoint)
-        .credentials_provider(Credentials::new(
-            "minioadmin",
-            "minioadmin",
-            None,
-            None,
-            "minio",
-        ))
-        .region(Region::new("us-east-1"))
-        .load()
-        .await;
-
-    let client = Client::new(&shared_config);
-
-    // Create bucket
-    match client.create_bucket().bucket(bucket).send().await {
-        Ok(_) => {
-            log::info!("Created test bucket: {bucket}");
-            Ok(())
-        }
-        Err(e) => {
-            // If bucket already exists, that's fine
-            if e.to_string().contains("BucketAlreadyOwnedByYou") {
-                log::info!("Test bucket already exists: {bucket}");
-                Ok(())
-            } else {
-                Err(anyhow::anyhow!("Failed to create bucket: {}", e))
-            }
-        }
+    let exit_code = result.exit_code().await?;
+    if exit_code != Some(0) {
+        let stderr = String::from_utf8_lossy(&result.stderr_to_vec().await?).into_owned();
+        anyhow::bail!("Failed to create bucket {bucket} (exit {exit_code:?}): {stderr}");
     }
+
+    log::info!("Created test bucket: {bucket}");
+    Ok(())
 }

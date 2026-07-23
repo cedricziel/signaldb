@@ -33,7 +33,6 @@ COPY src/signaldb-api/Cargo.toml src/signaldb-api/
 COPY src/signaldb-sdk/Cargo.toml src/signaldb-sdk/
 COPY src/signaldb-cli/Cargo.toml src/signaldb-cli/
 COPY src/signal-producer/Cargo.toml src/signal-producer/
-COPY src/grafana-plugin/backend/Cargo.toml src/grafana-plugin/backend/
 COPY tests-integration/Cargo.toml tests-integration/
 COPY xtask/Cargo.toml xtask/
 
@@ -53,7 +52,6 @@ RUN mkdir -p src/acceptor/src && echo "fn main() {}" > src/acceptor/src/main.rs 
     mkdir -p src/signaldb-sdk/src && echo "pub fn dummy() {}" > src/signaldb-sdk/src/lib.rs && \
     mkdir -p src/signaldb-cli/src && echo "fn main() {}" > src/signaldb-cli/src/main.rs && \
     mkdir -p src/signal-producer/src && echo "fn main() {}" > src/signal-producer/src/main.rs && \
-    mkdir -p src/grafana-plugin/backend/src && echo "fn main() {}" > src/grafana-plugin/backend/src/main.rs && \
     mkdir -p tests-integration/src && echo "pub fn dummy() {}" > tests-integration/src/lib.rs && \
     mkdir -p xtask/src && echo "fn main() {}" > xtask/src/main.rs
 

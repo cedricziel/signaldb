@@ -281,9 +281,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: grafana-plugin-${{ matrix.target.rust-target }}
+          workspaces: src/grafana-plugin/backend
 
       - name: Build backend
-        run: cargo build --release -p signaldb-grafana-datasource --target ${{ matrix.target.rust-target }}
+        # Run from inside the backend workspace — the repo-level
+        # .cargo/config.toml sets a relative target-dir, so cargo's output
+        # lands under $CWD/target.
+        working-directory: src/grafana-plugin/backend
+        run: cargo build --release --target ${{ matrix.target.rust-target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
@@ -291,14 +296,14 @@ jobs:
         if: matrix.target.os != 'windows'
         run: |
           mkdir -p artifact
-          cp target/${{ matrix.target.rust-target }}/release/gpx_signaldb_datasource artifact/gpx_signaldb_datasource_${{ matrix.target.os }}_${{ matrix.target.arch }}
+          cp src/grafana-plugin/backend/target/${{ matrix.target.rust-target }}/release/gpx_signaldb_datasource artifact/gpx_signaldb_datasource_${{ matrix.target.os }}_${{ matrix.target.arch }}
 
       - name: Prepare artifact (Windows)
         if: matrix.target.os == 'windows'
         shell: bash
         run: |
           mkdir -p artifact
-          cp target/${{ matrix.target.rust-target }}/release/gpx_signaldb_datasource.exe artifact/gpx_signaldb_datasource_${{ matrix.target.os }}_${{ matrix.target.arch }}.exe
+          cp src/grafana-plugin/backend/target/${{ matrix.target.rust-target }}/release/gpx_signaldb_datasource.exe artifact/gpx_signaldb_datasource_${{ matrix.target.os }}_${{ matrix.target.arch }}.exe
 
       - name: Upload backend binary
         uses: actions/upload-artifact@v7

@@ -81,7 +81,7 @@ Parquet storage with DataFusion query processing:
 | **signaldb-api** | `src/signaldb-api/` | Library | OpenAPI-generated admin API types |
 | **signaldb-cli** | `src/signaldb-cli/` | Binary | CLI and TUI for tenant, API key, and dataset management |
 | **signaldb-sdk** | `src/signaldb-sdk/` | Library | Generated SDK client |
-| **grafana-plugin** | `src/grafana-plugin/backend` | Plugin | Grafana datasource (TypeScript frontend + Rust backend; the backend crate is the workspace member) |
+| **grafana-plugin** | `src/grafana-plugin/backend` | Plugin | Grafana datasource (TypeScript frontend + Rust backend; the backend is a standalone cargo workspace excluded from the root workspace, since grafana-plugin-sdk pins its own Arrow major) |
 | **signal-producer** | `src/signal-producer/` | Binary | Test data generator (OTLP traces) |
 | **tests-integration** | `tests-integration/` | Test crate | Integration test suite |
 | **xtask** | `xtask/` | Binary | Build automation tasks |

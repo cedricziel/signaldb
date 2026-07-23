@@ -6,7 +6,9 @@
  */
 
 import { defineConfig } from 'eslint/config';
-import grafanaConfig from '@grafana/eslint-config/flat.js';
+// @grafana/eslint-config v8+ ships the flat config as its root export; the
+// ./flat.js subpath no longer exists in the package's exports map.
+import grafanaConfig from '@grafana/eslint-config';
 
 export default defineConfig([
   ...grafanaConfig,

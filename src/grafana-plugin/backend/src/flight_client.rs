@@ -3,8 +3,8 @@
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::flight_service_client::FlightServiceClient;
-use datafusion::arrow::datatypes::Schema;
-use datafusion::arrow::record_batch::RecordBatch;
+use arrow::datatypes::Schema;
+use arrow::record_batch::RecordBatch;
 use futures::TryStreamExt;
 use futures::stream::StreamExt;
 use std::sync::Arc;

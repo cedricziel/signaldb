@@ -20,13 +20,15 @@ case "$ARCH" in
         ;;
 esac
 
-# Build the Rust binary (from workspace root)
-cargo build --release -p signaldb-grafana-datasource
+# Build the Rust binary (standalone workspace in backend/).
+# Run from inside backend/ — the repo-level .cargo/config.toml sets a
+# relative target-dir, so cargo's output lands under $CWD/target.
+(cd backend && cargo build --release)
 
 # Create dist directory if it doesn't exist
 mkdir -p dist
 
 # Copy binary to dist with Grafana's expected naming convention
-cp ../../target/release/gpx_signaldb_datasource "dist/gpx_signaldb_datasource_${OS}_${GOARCH}"
+cp backend/target/release/gpx_signaldb_datasource "dist/gpx_signaldb_datasource_${OS}_${GOARCH}"
 
 echo "Backend built successfully: dist/gpx_signaldb_datasource_${OS}_${GOARCH}"

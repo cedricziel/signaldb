@@ -1,12 +1,12 @@
 //! Conversion utilities from Arrow RecordBatch to Grafana Frame.
 
 use chrono::{DateTime, TimeZone, Utc};
-use datafusion::arrow::array::{
+use arrow::array::{
     Array, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray, UInt32Array,
     UInt64Array,
 };
-use datafusion::arrow::datatypes::{DataType, Schema};
-use datafusion::arrow::record_batch::RecordBatch;
+use arrow::datatypes::{DataType, Schema};
+use arrow::record_batch::RecordBatch;
 use grafana_plugin_sdk::data::{self, Field};
 use grafana_plugin_sdk::prelude::{IntoField, IntoOptField};
 
@@ -400,11 +400,11 @@ pub fn convert_timestamp_column_to_time_field(
 mod tests {
     use super::*;
     use chrono::Datelike;
-    use datafusion::arrow::array::{
+    use arrow::array::{
         ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray, UInt32Array,
         UInt64Array,
     };
-    use datafusion::arrow::datatypes::Field as ArrowField;
+    use arrow::datatypes::Field as ArrowField;
     use std::sync::Arc;
 
     /// Helper to create a simple test schema

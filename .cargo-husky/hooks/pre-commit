@@ -9,14 +9,7 @@ set -o pipefail
 echo "Running pre-commit hooks..."
 echo "Note: All checks are fatal - any failure will prevent commit"
 
-# Check that code compiles
-echo "Checking code compilation..."
-cargo check --all-targets --all-features || {
-    echo "❌ FATAL: Code compilation failed! Fix compilation errors before committing."
-    exit 1
-}
-
-# Check code formatting
+# Check code formatting first (fastest check, most common failure)
 echo "Checking code formatting..."
 cargo fmt --all -- --check || {
     echo "❌ FATAL: Code formatting check failed!"
@@ -24,7 +17,9 @@ cargo fmt --all -- --check || {
     exit 1
 }
 
-# Run clippy with warnings as errors
+# Run clippy with warnings as errors. Clippy is `cargo check` plus lints with
+# the same flags, so a separate check pass would only duplicate a full
+# workspace compile.
 echo "Running clippy..."
 cargo clippy --workspace --all-targets --all-features -- -D warnings || {
     echo "❌ FATAL: Clippy found issues!"

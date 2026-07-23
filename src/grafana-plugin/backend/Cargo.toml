@@ -1,8 +1,14 @@
+# Standalone workspace: intentionally NOT a member of the root SignalDB
+# workspace. grafana-plugin-sdk pins its own Arrow major version; keeping this
+# crate separate stops root --workspace builds from compiling a second Arrow
+# stack. Built via `npm run build:backend` / the grafana-plugin-*.yml workflows.
+[workspace]
+
 [package]
 name = "signaldb-grafana-datasource"
 version = "0.1.0"
-edition.workspace = true
-license.workspace = true
+edition = "2024"
+license = "AGPL-3.0"
 
 [[bin]]
 name = "gpx_signaldb_datasource"
@@ -15,24 +21,43 @@ path = "src/main.rs"
 grafana-plugin-sdk = { git = "https://github.com/grafana/grafana-plugin-sdk-rust", rev = "0788a84b5e32cff8b59631f33d74ca67de3d31ef" }
 
 # Async runtime
-async-trait = { workspace = true }
-futures = { workspace = true }
+async-trait = "0.1.88"
+futures = "0.3.31"
 
 # Serialization
-serde = { workspace = true }
-chrono = { workspace = true }
+serde = { version = "1.0.219", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 # Error handling
-anyhow = { workspace = true }
-thiserror = { workspace = true }
+anyhow = "1.0.102"
+thiserror = "2.0.12"
 
 # Logging
-tracing = { workspace = true }
+tracing = "0.1"
 
 # Flight client
-arrow-flight = { workspace = true }
-tonic = { workspace = true }
-tokio = { workspace = true }
+arrow-flight = "59.1.0"
+tonic = { version = "0.14.2", features = ["transport", "channel"] }
+tokio = { version = "1.48.0", features = [
+    "rt-multi-thread",
+    "net",
+    "fs",
+    "sync",
+    "time",
+    "macros",
+    "signal",
+    "io-util",
+] }
 
-# Arrow data handling
-datafusion = { workspace = true }
+# Arrow data handling — pinned to the same major as grafana-plugin-sdk so the
+# plugin compiles a single Arrow stack (we only need core array/schema types,
+# not the DataFusion query engine).
+arrow = "59.1.0"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 8
+panic = "abort"
+debug = 0
+strip = "symbols"

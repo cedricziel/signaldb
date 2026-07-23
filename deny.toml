@@ -72,15 +72,9 @@ feature-depth = 1
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste 1.x is unmaintained but is a dependency of datafusion. No security issues reported." },
     { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.8 is a transitive dependency of sqlx-mysql. We don't use MySQL features and the vulnerability is timing-based which isn't relevant for our use case." },
-    { id = "RUSTSEC-2025-0038", reason = "arrow2 0.18.0 is a transitive dependency of grafana-plugin-sdk v0.5.0. arrow2 is unmaintained and we cannot control this dependency. The Grafana plugin is for development/testing only." },
-    { id = "RUSTSEC-2025-0111", reason = "tokio-tar is a transitive dependency of testcontainers (dev-only). The crate is archived with no safe upgrade available. Only used in integration tests." },
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.x is unmaintained but widely used. It's a transitive dependency from datafusion and other crates. No security issues, just maintenance status." },
-    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 1.x/2.x is unmaintained but transitioning. It's a transitive dependency from AWS SDK and other TLS-related crates." },
     { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39 is pinned by object_store 0.13; the fix (quick-xml 0.41) is only used by object_store 0.14.1, but datafusion 54 requires object_store ^0.13.2 so we cannot upgrade yet. Remove this exception when moving to a datafusion release that uses object_store 0.14+. XML parsing only used for S3 list responses from trusted endpoints." },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.39 is pinned by object_store 0.13; the fix (quick-xml 0.41) is only used by object_store 0.14.1, but datafusion 54 requires object_store ^0.13.2 so we cannot upgrade yet. Remove this exception when moving to a datafusion release that uses object_store 0.14+. XML parsing only used for S3 list responses from trusted endpoints." },
-    { id = "RUSTSEC-2026-0098", reason = "rustls-webpki 0.101 comes via rustls 0.21, a legacy TLS path in aws-smithy-http-client. Only pulled in by aws-config in tests-integration (dev-only). The 0.103 copy used in production paths is updated to the fixed 0.103.13." },
-    { id = "RUSTSEC-2026-0099", reason = "rustls-webpki 0.101 comes via rustls 0.21, a legacy TLS path in aws-smithy-http-client. Only pulled in by aws-config in tests-integration (dev-only). The 0.103 copy used in production paths is updated to the fixed 0.103.13." },
-    { id = "RUSTSEC-2026-0104", reason = "rustls-webpki 0.101 comes via rustls 0.21, a legacy TLS path in aws-smithy-http-client. Only pulled in by aws-config in tests-integration (dev-only). The 0.103 copy used in production paths is updated to the fixed 0.103.13." },
     #"RUSTSEC-0000-0000",
     #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
     #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish
@@ -273,8 +267,6 @@ skip = [
     { crate = "quick-xml", reason = "quick-xml has multiple versions from different dependencies" },
     { crate = "strum", reason = "strum has multiple versions from different dependencies" },
     { crate = "strum_macros", reason = "strum_macros has multiple versions due to strum version differences" },
-    { crate = "typed-builder", reason = "typed-builder has multiple versions from different dependencies" },
-    { crate = "typed-builder-macro", reason = "typed-builder-macro has multiple versions due to typed-builder version differences" },
     #"ansi_term@0.11.0",
     #{ crate = "ansi_term@0.11.0", reason = "you can specify a reason why it can't be updated/removed" },
 ]

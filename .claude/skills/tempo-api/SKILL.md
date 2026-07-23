@@ -70,7 +70,7 @@ A separate tenant self-service API is mounted at `/api/v1` (see the
 ### Native Datasource Plugin (`src/grafana-plugin/`)
 
 - **Frontend**: TypeScript React-based query/config editors (`@grafana/data`, `@grafana/ui`)
-- **Backend**: Rust via `grafana-plugin-sdk`, connects to Router's Flight service (default `http://localhost:50053`)
+- **Backend**: Rust via `grafana-plugin-sdk`, connects to Router's Flight service (default `http://localhost:50053`); standalone cargo workspace (own lockfile/target), built via `npm run build:backend`
 - **Auth passthrough**: API key, tenant ID, dataset ID from Grafana secure JSON -> Flight headers
 - **Signal support**: Traces, metrics, logs query types
 - **Arrow conversion**: Direct RecordBatch -> Grafana Frame
