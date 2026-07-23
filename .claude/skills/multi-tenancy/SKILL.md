@@ -3,9 +3,10 @@ name: multi-tenancy
 description: SignalDB multi-tenancy and authentication - tenant model, auth flow, isolation layers, slug-based naming, API keys, admin API, and CLI. Use when working with tenant isolation, authentication, API keys, or dataset management.
 user-invocable: false
 sources:
-  - src/common/src/auth.rs
+  - src/common/src/auth/**
   - src/common/src/config/mod.rs
-  - src/router/src/admin.rs
+  - src/common/src/ratelimit.rs
+  - src/router/src/endpoints/admin.rs
 ---
 
 # SignalDB Multi-Tenancy & Authentication
@@ -59,7 +60,6 @@ All storage paths and Iceberg identifiers use **slugs** (URL-friendly), not raw 
 
 ```toml
 [auth]
-enabled = true
 admin_api_key = "sk-admin-key"
 
 [[auth.tenants]]
@@ -83,6 +83,24 @@ dsn = "s3://acme-archive/signals"    # Per-dataset override
 key = "sk-acme-prod-key-123"
 name = "Production Key"
 ```
+
+## Rate Limits & Quotas
+
+`TenantLimits` (`[auth.default_limits]`, overridable per tenant via
+`[[auth.tenants]].limits`; resolved by `AuthConfig::limits_for`). Unset
+fields mean unlimited; DB-provisioned tenants get the defaults.
+
+| Limit | Enforced at | On exceed |
+|-------|-------------|-----------|
+| `max_ingest_requests_per_sec` / `max_ingest_bytes_per_sec` | Acceptor (OTLP gRPC, remote_write) | 429 / RESOURCE_EXHAUSTED |
+| `max_query_requests_per_sec` | Router HTTP query API (`/tempo`, `/api/v1`) | 429 |
+| `max_api_keys` (active keys only) | Admin API key creation | 429 `quota_exceeded` |
+| `max_datasets` | Admin API dataset creation | 429 `quota_exceeded` |
+| `[querier] max_concurrent_queries_per_tenant` | Querier | query rejected |
+
+Token buckets per dimension (`common::ratelimit::TenantRateLimiter`);
+ingest and query budgets are independent. Storage quotas: not yet
+implemented (#610).
 
 ## Admin API (Router)
 
@@ -108,7 +126,8 @@ signaldb-cli dataset create --tenant acme --name production --slug prod
 | File | Purpose |
 |------|---------|
 | `src/common/src/config/mod.rs` | Tenant/dataset config structs |
-| `src/common/src/auth.rs` | Authenticator, TenantContext |
+| `src/common/src/auth/` | Authenticator, TenantContext, middleware |
 | `src/common/src/catalog_manager.rs` | Slug resolution |
-| `src/router/src/admin.rs` | Admin API endpoints |
+| `src/router/src/endpoints/admin.rs` | Admin API endpoints (incl. quota checks) |
+| `src/common/src/ratelimit.rs` | Per-tenant token-bucket rate limiter |
 | `src/signaldb-cli/` | CLI for tenant management |
