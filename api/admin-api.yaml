@@ -15,6 +15,8 @@ tags:
     description: API key management
   - name: datasets
     description: Dataset management
+  - name: profiles
+    description: Pyroscope-compatible profile queries
 paths:
   /tenants:
     get:
@@ -280,6 +282,162 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApiError"
+  /pyroscope/render:
+    servers:
+      - url: /
+        description: Served at the router root, not under the admin prefix
+    get:
+      operationId: render_profile_flamegraph
+      summary: Render a flamegraph for a profile query and time range
+      tags: [profiles]
+      parameters:
+        - name: query
+          in: query
+          description: "Pyroscope query, e.g. process_cpu:cpu:nanoseconds{service_name=\"checkout\"}"
+          schema:
+            type: string
+        - name: from
+          in: query
+          description: Range start (unix seconds, unix milliseconds, or now-<N><s|m|h|d>)
+          schema:
+            type: string
+        - name: until
+          in: query
+          description: Range end (same formats as from)
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Flamegraph in flamebearer encoding
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PyroscopeRenderResponse"
+  /pyroscope/render-diff:
+    servers:
+      - url: /
+        description: Served at the router root, not under the admin prefix
+    get:
+      operationId: render_profile_diff
+      summary: Render a differential flamegraph between two time ranges
+      tags: [profiles]
+      parameters:
+        - name: query
+          in: query
+          schema:
+            type: string
+        - name: leftFrom
+          in: query
+          description: Baseline range start
+          schema:
+            type: string
+        - name: leftUntil
+          in: query
+          description: Baseline range end
+          schema:
+            type: string
+        - name: rightFrom
+          in: query
+          description: Comparison range start
+          schema:
+            type: string
+        - name: rightUntil
+          in: query
+          description: Comparison range end
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Differential flamegraph in double flamebearer encoding
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PyroscopeRenderResponse"
+  /pyroscope/label-names:
+    servers:
+      - url: /
+        description: Served at the router root, not under the admin prefix
+    get:
+      operationId: list_profile_label_names
+      summary: List label names present on stored profiles
+      tags: [profiles]
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: string
+        - name: until
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Available label names
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PyroscopeLabelsResponse"
+  /pyroscope/label-values:
+    servers:
+      - url: /
+        description: Served at the router root, not under the admin prefix
+    get:
+      operationId: list_profile_label_values
+      summary: List values for a profile label
+      tags: [profiles]
+      parameters:
+        - name: label
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: from
+          in: query
+          schema:
+            type: string
+        - name: until
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Values for the label
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PyroscopeLabelsResponse"
+        "400":
+          description: Missing label parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /pyroscope/profile-types:
+    servers:
+      - url: /
+        description: Served at the router root, not under the admin prefix
+    get:
+      operationId: list_profile_types
+      summary: List available profile types
+      tags: [profiles]
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: string
+        - name: until
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Available profile types
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PyroscopeProfileType"
 components:
   securitySchemes:
     bearerAuth:
@@ -463,3 +621,136 @@ components:
           description: List of dataset records
           items:
             $ref: "#/components/schemas/DatasetResponse"
+
+    PyroscopeFlamebearer:
+      type: object
+      description: Flamegraph payload in flamebearer encoding
+      required:
+        - names
+        - levels
+        - numTicks
+        - maxSelf
+      properties:
+        names:
+          type: array
+          description: Function name table referenced by block name indices
+          items:
+            type: string
+        levels:
+          type: array
+          description: >-
+            One flat array per depth level; single format uses
+            [offset_delta, total, self, name_index] quadruples, double format
+            uses septuples carrying baseline and comparison values
+          items:
+            type: array
+            items:
+              type: integer
+              format: int64
+        numTicks:
+          type: integer
+          format: int64
+          description: Total number of ticks (root width)
+        maxSelf:
+          type: integer
+          format: int64
+          description: Largest self value of any block
+    PyroscopeFlamebearerMetadata:
+      type: object
+      description: How to interpret flamebearer values
+      required:
+        - format
+        - sampleRate
+        - units
+        - name
+      properties:
+        format:
+          type: string
+          description: single for one profile set, double for a diff
+        spyName:
+          type: string
+          description: Profiler that produced the data
+        sampleRate:
+          type: integer
+          format: int32
+          description: Sample rate in Hz
+        units:
+          type: string
+          description: Value units (samples, objects, bytes)
+        name:
+          type: string
+          description: Display name of the rendered query
+    PyroscopeTimeline:
+      type: object
+      description: Per-interval sample counts for the render timeline
+      required:
+        - startTime
+        - samples
+        - durationDelta
+      properties:
+        startTime:
+          type: integer
+          format: int64
+          description: Start of the timeline, unix seconds
+        samples:
+          type: array
+          items:
+            type: integer
+            format: int64
+        durationDelta:
+          type: integer
+          format: int64
+          description: Interval width in seconds
+    PyroscopeRenderResponse:
+      type: object
+      description: Response of the render and render-diff endpoints
+      required:
+        - flamebearer
+        - metadata
+      properties:
+        flamebearer:
+          $ref: "#/components/schemas/PyroscopeFlamebearer"
+        metadata:
+          $ref: "#/components/schemas/PyroscopeFlamebearerMetadata"
+        timeline:
+          $ref: "#/components/schemas/PyroscopeTimeline"
+        leftTicks:
+          type: integer
+          format: int64
+          description: Total baseline ticks (double format only)
+        rightTicks:
+          type: integer
+          format: int64
+          description: Total comparison ticks (double format only)
+    PyroscopeProfileType:
+      type: object
+      description: An available profile type
+      required:
+        - ID
+        - name
+        - sampleType
+        - sampleUnit
+      properties:
+        ID:
+          type: string
+          description: Canonical profile type ID
+        name:
+          type: string
+        sampleType:
+          type: string
+        sampleUnit:
+          type: string
+        periodType:
+          type: string
+        periodUnit:
+          type: string
+    PyroscopeLabelsResponse:
+      type: object
+      description: Label names or values
+      required:
+        - names
+      properties:
+        names:
+          type: array
+          items:
+            type: string

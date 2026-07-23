@@ -431,6 +431,344 @@ pub mod types {
             Default::default()
         }
     }
+    ///Flamegraph payload in flamebearer encoding
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Flamegraph payload in flamebearer encoding",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "levels",
+    ///    "maxSelf",
+    ///    "names",
+    ///    "numTicks"
+    ///  ],
+    ///  "properties": {
+    ///    "levels": {
+    ///      "description": "One flat array per depth level; single format uses [offset_delta, total, self, name_index] quadruples, double format uses septuples carrying baseline and comparison values",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "array",
+    ///        "items": {
+    ///          "type": "integer",
+    ///          "format": "int64"
+    ///        }
+    ///      }
+    ///    },
+    ///    "maxSelf": {
+    ///      "description": "Largest self value of any block",
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    },
+    ///    "names": {
+    ///      "description": "Function name table referenced by block name indices",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "numTicks": {
+    ///      "description": "Total number of ticks (root width)",
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PyroscopeFlamebearer {
+        ///One flat array per depth level; single format uses [offset_delta, total, self, name_index] quadruples, double format uses septuples carrying baseline and comparison values
+        pub levels: ::std::vec::Vec<::std::vec::Vec<i64>>,
+        ///Largest self value of any block
+        #[serde(rename = "maxSelf")]
+        pub max_self: i64,
+        ///Function name table referenced by block name indices
+        pub names: ::std::vec::Vec<::std::string::String>,
+        ///Total number of ticks (root width)
+        #[serde(rename = "numTicks")]
+        pub num_ticks: i64,
+    }
+    impl PyroscopeFlamebearer {
+        pub fn builder() -> builder::PyroscopeFlamebearer {
+            Default::default()
+        }
+    }
+    ///How to interpret flamebearer values
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "How to interpret flamebearer values",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "format",
+    ///    "name",
+    ///    "sampleRate",
+    ///    "units"
+    ///  ],
+    ///  "properties": {
+    ///    "format": {
+    ///      "description": "single for one profile set, double for a diff",
+    ///      "type": "string"
+    ///    },
+    ///    "name": {
+    ///      "description": "Display name of the rendered query",
+    ///      "type": "string"
+    ///    },
+    ///    "sampleRate": {
+    ///      "description": "Sample rate in Hz",
+    ///      "type": "integer",
+    ///      "format": "int32"
+    ///    },
+    ///    "spyName": {
+    ///      "description": "Profiler that produced the data",
+    ///      "type": "string"
+    ///    },
+    ///    "units": {
+    ///      "description": "Value units (samples, objects, bytes)",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PyroscopeFlamebearerMetadata {
+        ///single for one profile set, double for a diff
+        pub format: ::std::string::String,
+        ///Display name of the rendered query
+        pub name: ::std::string::String,
+        ///Sample rate in Hz
+        #[serde(rename = "sampleRate")]
+        pub sample_rate: i32,
+        ///Profiler that produced the data
+        #[serde(
+            rename = "spyName",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        pub spy_name: ::std::option::Option<::std::string::String>,
+        ///Value units (samples, objects, bytes)
+        pub units: ::std::string::String,
+    }
+    impl PyroscopeFlamebearerMetadata {
+        pub fn builder() -> builder::PyroscopeFlamebearerMetadata {
+            Default::default()
+        }
+    }
+    ///Label names or values
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Label names or values",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "names"
+    ///  ],
+    ///  "properties": {
+    ///    "names": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PyroscopeLabelsResponse {
+        pub names: ::std::vec::Vec<::std::string::String>,
+    }
+    impl PyroscopeLabelsResponse {
+        pub fn builder() -> builder::PyroscopeLabelsResponse {
+            Default::default()
+        }
+    }
+    ///An available profile type
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "An available profile type",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "ID",
+    ///    "name",
+    ///    "sampleType",
+    ///    "sampleUnit"
+    ///  ],
+    ///  "properties": {
+    ///    "ID": {
+    ///      "description": "Canonical profile type ID",
+    ///      "type": "string"
+    ///    },
+    ///    "name": {
+    ///      "type": "string"
+    ///    },
+    ///    "periodType": {
+    ///      "type": "string"
+    ///    },
+    ///    "periodUnit": {
+    ///      "type": "string"
+    ///    },
+    ///    "sampleType": {
+    ///      "type": "string"
+    ///    },
+    ///    "sampleUnit": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PyroscopeProfileType {
+        ///Canonical profile type ID
+        #[serde(rename = "ID")]
+        pub id: ::std::string::String,
+        pub name: ::std::string::String,
+        #[serde(
+            rename = "periodType",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        pub period_type: ::std::option::Option<::std::string::String>,
+        #[serde(
+            rename = "periodUnit",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        pub period_unit: ::std::option::Option<::std::string::String>,
+        #[serde(rename = "sampleType")]
+        pub sample_type: ::std::string::String,
+        #[serde(rename = "sampleUnit")]
+        pub sample_unit: ::std::string::String,
+    }
+    impl PyroscopeProfileType {
+        pub fn builder() -> builder::PyroscopeProfileType {
+            Default::default()
+        }
+    }
+    ///Response of the render and render-diff endpoints
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Response of the render and render-diff endpoints",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "flamebearer",
+    ///    "metadata"
+    ///  ],
+    ///  "properties": {
+    ///    "flamebearer": {
+    ///      "$ref": "#/components/schemas/PyroscopeFlamebearer"
+    ///    },
+    ///    "leftTicks": {
+    ///      "description": "Total baseline ticks (double format only)",
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    },
+    ///    "metadata": {
+    ///      "$ref": "#/components/schemas/PyroscopeFlamebearerMetadata"
+    ///    },
+    ///    "rightTicks": {
+    ///      "description": "Total comparison ticks (double format only)",
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    },
+    ///    "timeline": {
+    ///      "$ref": "#/components/schemas/PyroscopeTimeline"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PyroscopeRenderResponse {
+        pub flamebearer: PyroscopeFlamebearer,
+        ///Total baseline ticks (double format only)
+        #[serde(
+            rename = "leftTicks",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        pub left_ticks: ::std::option::Option<i64>,
+        pub metadata: PyroscopeFlamebearerMetadata,
+        ///Total comparison ticks (double format only)
+        #[serde(
+            rename = "rightTicks",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        pub right_ticks: ::std::option::Option<i64>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub timeline: ::std::option::Option<PyroscopeTimeline>,
+    }
+    impl PyroscopeRenderResponse {
+        pub fn builder() -> builder::PyroscopeRenderResponse {
+            Default::default()
+        }
+    }
+    ///Per-interval sample counts for the render timeline
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Per-interval sample counts for the render timeline",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "durationDelta",
+    ///    "samples",
+    ///    "startTime"
+    ///  ],
+    ///  "properties": {
+    ///    "durationDelta": {
+    ///      "description": "Interval width in seconds",
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    },
+    ///    "samples": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "integer",
+    ///        "format": "int64"
+    ///      }
+    ///    },
+    ///    "startTime": {
+    ///      "description": "Start of the timeline, unix seconds",
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PyroscopeTimeline {
+        ///Interval width in seconds
+        #[serde(rename = "durationDelta")]
+        pub duration_delta: i64,
+        pub samples: ::std::vec::Vec<i64>,
+        ///Start of the timeline, unix seconds
+        #[serde(rename = "startTime")]
+        pub start_time: i64,
+    }
+    impl PyroscopeTimeline {
+        pub fn builder() -> builder::PyroscopeTimeline {
+            Default::default()
+        }
+    }
     ///Tenant information returned by the API
     ///
     /// <details><summary>JSON schema</summary>
@@ -1130,6 +1468,518 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct PyroscopeFlamebearer {
+            levels:
+                ::std::result::Result<::std::vec::Vec<::std::vec::Vec<i64>>, ::std::string::String>,
+            max_self: ::std::result::Result<i64, ::std::string::String>,
+            names: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            num_ticks: ::std::result::Result<i64, ::std::string::String>,
+        }
+        impl ::std::default::Default for PyroscopeFlamebearer {
+            fn default() -> Self {
+                Self {
+                    levels: Err("no value supplied for levels".to_string()),
+                    max_self: Err("no value supplied for max_self".to_string()),
+                    names: Err("no value supplied for names".to_string()),
+                    num_ticks: Err("no value supplied for num_ticks".to_string()),
+                }
+            }
+        }
+        impl PyroscopeFlamebearer {
+            pub fn levels<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::vec::Vec<i64>>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.levels = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for levels: {e}"));
+                self
+            }
+            pub fn max_self<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.max_self = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for max_self: {e}"));
+                self
+            }
+            pub fn names<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.names = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for names: {e}"));
+                self
+            }
+            pub fn num_ticks<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.num_ticks = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for num_ticks: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<PyroscopeFlamebearer> for super::PyroscopeFlamebearer {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: PyroscopeFlamebearer,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    levels: value.levels?,
+                    max_self: value.max_self?,
+                    names: value.names?,
+                    num_ticks: value.num_ticks?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::PyroscopeFlamebearer> for PyroscopeFlamebearer {
+            fn from(value: super::PyroscopeFlamebearer) -> Self {
+                Self {
+                    levels: Ok(value.levels),
+                    max_self: Ok(value.max_self),
+                    names: Ok(value.names),
+                    num_ticks: Ok(value.num_ticks),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct PyroscopeFlamebearerMetadata {
+            format: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            sample_rate: ::std::result::Result<i32, ::std::string::String>,
+            spy_name: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            units: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for PyroscopeFlamebearerMetadata {
+            fn default() -> Self {
+                Self {
+                    format: Err("no value supplied for format".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                    sample_rate: Err("no value supplied for sample_rate".to_string()),
+                    spy_name: Ok(Default::default()),
+                    units: Err("no value supplied for units".to_string()),
+                }
+            }
+        }
+        impl PyroscopeFlamebearerMetadata {
+            pub fn format<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.format = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for format: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn sample_rate<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i32>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.sample_rate = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for sample_rate: {e}"));
+                self
+            }
+            pub fn spy_name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.spy_name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for spy_name: {e}"));
+                self
+            }
+            pub fn units<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.units = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for units: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<PyroscopeFlamebearerMetadata> for super::PyroscopeFlamebearerMetadata {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: PyroscopeFlamebearerMetadata,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    format: value.format?,
+                    name: value.name?,
+                    sample_rate: value.sample_rate?,
+                    spy_name: value.spy_name?,
+                    units: value.units?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::PyroscopeFlamebearerMetadata> for PyroscopeFlamebearerMetadata {
+            fn from(value: super::PyroscopeFlamebearerMetadata) -> Self {
+                Self {
+                    format: Ok(value.format),
+                    name: Ok(value.name),
+                    sample_rate: Ok(value.sample_rate),
+                    spy_name: Ok(value.spy_name),
+                    units: Ok(value.units),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct PyroscopeLabelsResponse {
+            names: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for PyroscopeLabelsResponse {
+            fn default() -> Self {
+                Self {
+                    names: Err("no value supplied for names".to_string()),
+                }
+            }
+        }
+        impl PyroscopeLabelsResponse {
+            pub fn names<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.names = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for names: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<PyroscopeLabelsResponse> for super::PyroscopeLabelsResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: PyroscopeLabelsResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    names: value.names?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::PyroscopeLabelsResponse> for PyroscopeLabelsResponse {
+            fn from(value: super::PyroscopeLabelsResponse) -> Self {
+                Self {
+                    names: Ok(value.names),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct PyroscopeProfileType {
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            period_type: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            period_unit: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            sample_type: ::std::result::Result<::std::string::String, ::std::string::String>,
+            sample_unit: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for PyroscopeProfileType {
+            fn default() -> Self {
+                Self {
+                    id: Err("no value supplied for id".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                    period_type: Ok(Default::default()),
+                    period_unit: Ok(Default::default()),
+                    sample_type: Err("no value supplied for sample_type".to_string()),
+                    sample_unit: Err("no value supplied for sample_unit".to_string()),
+                }
+            }
+        }
+        impl PyroscopeProfileType {
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn period_type<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.period_type = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for period_type: {e}"));
+                self
+            }
+            pub fn period_unit<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.period_unit = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for period_unit: {e}"));
+                self
+            }
+            pub fn sample_type<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.sample_type = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for sample_type: {e}"));
+                self
+            }
+            pub fn sample_unit<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.sample_unit = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for sample_unit: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<PyroscopeProfileType> for super::PyroscopeProfileType {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: PyroscopeProfileType,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    id: value.id?,
+                    name: value.name?,
+                    period_type: value.period_type?,
+                    period_unit: value.period_unit?,
+                    sample_type: value.sample_type?,
+                    sample_unit: value.sample_unit?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::PyroscopeProfileType> for PyroscopeProfileType {
+            fn from(value: super::PyroscopeProfileType) -> Self {
+                Self {
+                    id: Ok(value.id),
+                    name: Ok(value.name),
+                    period_type: Ok(value.period_type),
+                    period_unit: Ok(value.period_unit),
+                    sample_type: Ok(value.sample_type),
+                    sample_unit: Ok(value.sample_unit),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct PyroscopeRenderResponse {
+            flamebearer: ::std::result::Result<super::PyroscopeFlamebearer, ::std::string::String>,
+            left_ticks: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+            metadata:
+                ::std::result::Result<super::PyroscopeFlamebearerMetadata, ::std::string::String>,
+            right_ticks: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+            timeline: ::std::result::Result<
+                ::std::option::Option<super::PyroscopeTimeline>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for PyroscopeRenderResponse {
+            fn default() -> Self {
+                Self {
+                    flamebearer: Err("no value supplied for flamebearer".to_string()),
+                    left_ticks: Ok(Default::default()),
+                    metadata: Err("no value supplied for metadata".to_string()),
+                    right_ticks: Ok(Default::default()),
+                    timeline: Ok(Default::default()),
+                }
+            }
+        }
+        impl PyroscopeRenderResponse {
+            pub fn flamebearer<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::PyroscopeFlamebearer>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.flamebearer = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for flamebearer: {e}"));
+                self
+            }
+            pub fn left_ticks<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.left_ticks = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for left_ticks: {e}"));
+                self
+            }
+            pub fn metadata<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::PyroscopeFlamebearerMetadata>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.metadata = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for metadata: {e}"));
+                self
+            }
+            pub fn right_ticks<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.right_ticks = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for right_ticks: {e}"));
+                self
+            }
+            pub fn timeline<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::PyroscopeTimeline>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.timeline = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for timeline: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<PyroscopeRenderResponse> for super::PyroscopeRenderResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: PyroscopeRenderResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    flamebearer: value.flamebearer?,
+                    left_ticks: value.left_ticks?,
+                    metadata: value.metadata?,
+                    right_ticks: value.right_ticks?,
+                    timeline: value.timeline?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::PyroscopeRenderResponse> for PyroscopeRenderResponse {
+            fn from(value: super::PyroscopeRenderResponse) -> Self {
+                Self {
+                    flamebearer: Ok(value.flamebearer),
+                    left_ticks: Ok(value.left_ticks),
+                    metadata: Ok(value.metadata),
+                    right_ticks: Ok(value.right_ticks),
+                    timeline: Ok(value.timeline),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct PyroscopeTimeline {
+            duration_delta: ::std::result::Result<i64, ::std::string::String>,
+            samples: ::std::result::Result<::std::vec::Vec<i64>, ::std::string::String>,
+            start_time: ::std::result::Result<i64, ::std::string::String>,
+        }
+        impl ::std::default::Default for PyroscopeTimeline {
+            fn default() -> Self {
+                Self {
+                    duration_delta: Err("no value supplied for duration_delta".to_string()),
+                    samples: Err("no value supplied for samples".to_string()),
+                    start_time: Err("no value supplied for start_time".to_string()),
+                }
+            }
+        }
+        impl PyroscopeTimeline {
+            pub fn duration_delta<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.duration_delta = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for duration_delta: {e}")
+                });
+                self
+            }
+            pub fn samples<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.samples = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for samples: {e}"));
+                self
+            }
+            pub fn start_time<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.start_time = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for start_time: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<PyroscopeTimeline> for super::PyroscopeTimeline {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: PyroscopeTimeline,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    duration_delta: value.duration_delta?,
+                    samples: value.samples?,
+                    start_time: value.start_time?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::PyroscopeTimeline> for PyroscopeTimeline {
+            fn from(value: super::PyroscopeTimeline) -> Self {
+                Self {
+                    duration_delta: Ok(value.duration_delta),
+                    samples: Ok(value.samples),
+                    start_time: Ok(value.start_time),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct TenantResponse {
             created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
             default_dataset: ::std::result::Result<
@@ -1361,6 +2211,91 @@ impl ClientInfo<()> for Client {
 }
 impl ClientHooks<()> for &Client {}
 impl Client {
+    /**List label names present on stored profiles
+
+    Sends a `GET` request to `/pyroscope/label-names`
+
+    ```ignore
+    let response = client.list_profile_label_names()
+        .from(from)
+        .until(until)
+        .send()
+        .await;
+    ```*/
+    pub fn list_profile_label_names(&self) -> builder::ListProfileLabelNames<'_> {
+        builder::ListProfileLabelNames::new(self)
+    }
+    /**List values for a profile label
+
+    Sends a `GET` request to `/pyroscope/label-values`
+
+    ```ignore
+    let response = client.list_profile_label_values()
+        .from(from)
+        .label(label)
+        .until(until)
+        .send()
+        .await;
+    ```*/
+    pub fn list_profile_label_values(&self) -> builder::ListProfileLabelValues<'_> {
+        builder::ListProfileLabelValues::new(self)
+    }
+    /**List available profile types
+
+    Sends a `GET` request to `/pyroscope/profile-types`
+
+    ```ignore
+    let response = client.list_profile_types()
+        .from(from)
+        .until(until)
+        .send()
+        .await;
+    ```*/
+    pub fn list_profile_types(&self) -> builder::ListProfileTypes<'_> {
+        builder::ListProfileTypes::new(self)
+    }
+    /**Render a flamegraph for a profile query and time range
+
+    Sends a `GET` request to `/pyroscope/render`
+
+    Arguments:
+    - `from`: Range start (unix seconds, unix milliseconds, or now-<N><s|m|h|d>)
+    - `query`: Pyroscope query, e.g. process_cpu:cpu:nanoseconds{service_name="checkout"}
+    - `until`: Range end (same formats as from)
+    ```ignore
+    let response = client.render_profile_flamegraph()
+        .from(from)
+        .query(query)
+        .until(until)
+        .send()
+        .await;
+    ```*/
+    pub fn render_profile_flamegraph(&self) -> builder::RenderProfileFlamegraph<'_> {
+        builder::RenderProfileFlamegraph::new(self)
+    }
+    /**Render a differential flamegraph between two time ranges
+
+    Sends a `GET` request to `/pyroscope/render-diff`
+
+    Arguments:
+    - `left_from`: Baseline range start
+    - `left_until`: Baseline range end
+    - `query`
+    - `right_from`: Comparison range start
+    - `right_until`: Comparison range end
+    ```ignore
+    let response = client.render_profile_diff()
+        .left_from(left_from)
+        .left_until(left_until)
+        .query(query)
+        .right_from(right_from)
+        .right_until(right_until)
+        .send()
+        .await;
+    ```*/
+    pub fn render_profile_diff(&self) -> builder::RenderProfileDiff<'_> {
+        builder::RenderProfileDiff::new(self)
+    }
     /**List all tenants
 
     Sends a `GET` request to `/tenants`
@@ -1541,6 +2476,474 @@ pub mod builder {
         ByteStream, ClientHooks, ClientInfo, Error, OperationInfo, RequestBuilderExt,
         ResponseValue, encode_path,
     };
+    /**Builder for [`Client::list_profile_label_names`]
+
+    [`Client::list_profile_label_names`]: super::Client::list_profile_label_names*/
+    #[derive(Debug, Clone)]
+    pub struct ListProfileLabelNames<'a> {
+        client: &'a super::Client,
+        from: Result<Option<::std::string::String>, String>,
+        until: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> ListProfileLabelNames<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                from: Ok(None),
+                until: Ok(None),
+            }
+        }
+        pub fn from<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.from = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for from failed".to_string()
+            });
+            self
+        }
+        pub fn until<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.until = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for until failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/pyroscope/label-names`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::PyroscopeLabelsResponse>, Error<()>> {
+            let Self {
+                client,
+                from,
+                until,
+            } = self;
+            let from = from.map_err(Error::InvalidRequest)?;
+            let until = until.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/pyroscope/label-names", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("from", &from))
+                .query(&progenitor_client::QueryParam::new("until", &until))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "list_profile_label_names",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::list_profile_label_values`]
+
+    [`Client::list_profile_label_values`]: super::Client::list_profile_label_values*/
+    #[derive(Debug, Clone)]
+    pub struct ListProfileLabelValues<'a> {
+        client: &'a super::Client,
+        from: Result<Option<::std::string::String>, String>,
+        label: Result<::std::string::String, String>,
+        until: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> ListProfileLabelValues<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                from: Ok(None),
+                label: Err("label was not initialized".to_string()),
+                until: Ok(None),
+            }
+        }
+        pub fn from<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.from = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for from failed".to_string()
+            });
+            self
+        }
+        pub fn label<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.label = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for label failed".to_string()
+            });
+            self
+        }
+        pub fn until<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.until = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for until failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/pyroscope/label-values`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::PyroscopeLabelsResponse>, Error<types::ApiError>> {
+            let Self {
+                client,
+                from,
+                label,
+                until,
+            } = self;
+            let from = from.map_err(Error::InvalidRequest)?;
+            let label = label.map_err(Error::InvalidRequest)?;
+            let until = until.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/pyroscope/label-values", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("from", &from))
+                .query(&progenitor_client::QueryParam::new("label", &label))
+                .query(&progenitor_client::QueryParam::new("until", &until))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "list_profile_label_values",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::list_profile_types`]
+
+    [`Client::list_profile_types`]: super::Client::list_profile_types*/
+    #[derive(Debug, Clone)]
+    pub struct ListProfileTypes<'a> {
+        client: &'a super::Client,
+        from: Result<Option<::std::string::String>, String>,
+        until: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> ListProfileTypes<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                from: Ok(None),
+                until: Ok(None),
+            }
+        }
+        pub fn from<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.from = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for from failed".to_string()
+            });
+            self
+        }
+        pub fn until<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.until = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for until failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/pyroscope/profile-types`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<::std::vec::Vec<types::PyroscopeProfileType>>, Error<()>>
+        {
+            let Self {
+                client,
+                from,
+                until,
+            } = self;
+            let from = from.map_err(Error::InvalidRequest)?;
+            let until = until.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/pyroscope/profile-types", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("from", &from))
+                .query(&progenitor_client::QueryParam::new("until", &until))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "list_profile_types",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::render_profile_flamegraph`]
+
+    [`Client::render_profile_flamegraph`]: super::Client::render_profile_flamegraph*/
+    #[derive(Debug, Clone)]
+    pub struct RenderProfileFlamegraph<'a> {
+        client: &'a super::Client,
+        from: Result<Option<::std::string::String>, String>,
+        query: Result<Option<::std::string::String>, String>,
+        until: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> RenderProfileFlamegraph<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                from: Ok(None),
+                query: Ok(None),
+                until: Ok(None),
+            }
+        }
+        pub fn from<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.from = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for from failed".to_string()
+            });
+            self
+        }
+        pub fn query<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.query = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for query failed".to_string()
+            });
+            self
+        }
+        pub fn until<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.until = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for until failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/pyroscope/render`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::PyroscopeRenderResponse>, Error<()>> {
+            let Self {
+                client,
+                from,
+                query,
+                until,
+            } = self;
+            let from = from.map_err(Error::InvalidRequest)?;
+            let query = query.map_err(Error::InvalidRequest)?;
+            let until = until.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/pyroscope/render", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("from", &from))
+                .query(&progenitor_client::QueryParam::new("query", &query))
+                .query(&progenitor_client::QueryParam::new("until", &until))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "render_profile_flamegraph",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::render_profile_diff`]
+
+    [`Client::render_profile_diff`]: super::Client::render_profile_diff*/
+    #[derive(Debug, Clone)]
+    pub struct RenderProfileDiff<'a> {
+        client: &'a super::Client,
+        left_from: Result<Option<::std::string::String>, String>,
+        left_until: Result<Option<::std::string::String>, String>,
+        query: Result<Option<::std::string::String>, String>,
+        right_from: Result<Option<::std::string::String>, String>,
+        right_until: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> RenderProfileDiff<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                left_from: Ok(None),
+                left_until: Ok(None),
+                query: Ok(None),
+                right_from: Ok(None),
+                right_until: Ok(None),
+            }
+        }
+        pub fn left_from<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.left_from = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for left_from failed".to_string()
+            });
+            self
+        }
+        pub fn left_until<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.left_until = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for left_until failed".to_string()
+            });
+            self
+        }
+        pub fn query<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.query = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for query failed".to_string()
+            });
+            self
+        }
+        pub fn right_from<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.right_from = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for right_from failed".to_string()
+            });
+            self
+        }
+        pub fn right_until<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.right_until = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for right_until failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/pyroscope/render-diff`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::PyroscopeRenderResponse>, Error<()>> {
+            let Self {
+                client,
+                left_from,
+                left_until,
+                query,
+                right_from,
+                right_until,
+            } = self;
+            let left_from = left_from.map_err(Error::InvalidRequest)?;
+            let left_until = left_until.map_err(Error::InvalidRequest)?;
+            let query = query.map_err(Error::InvalidRequest)?;
+            let right_from = right_from.map_err(Error::InvalidRequest)?;
+            let right_until = right_until.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/pyroscope/render-diff", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("leftFrom", &left_from))
+                .query(&progenitor_client::QueryParam::new(
+                    "leftUntil",
+                    &left_until,
+                ))
+                .query(&progenitor_client::QueryParam::new("query", &query))
+                .query(&progenitor_client::QueryParam::new(
+                    "rightFrom",
+                    &right_from,
+                ))
+                .query(&progenitor_client::QueryParam::new(
+                    "rightUntil",
+                    &right_until,
+                ))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "render_profile_diff",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
     /**Builder for [`Client::list_tenants`]
 
     [`Client::list_tenants`]: super::Client::list_tenants*/

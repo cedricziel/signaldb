@@ -374,6 +374,314 @@ pub struct ListTenantsResponse {
     ///List of tenant records
     pub tenants: ::std::vec::Vec<TenantResponse>,
 }
+///Flamegraph payload in flamebearer encoding
+///
+/// <details><summary>JSON schema</summary>
+///
+/// ```json
+///{
+///  "description": "Flamegraph payload in flamebearer encoding",
+///  "type": "object",
+///  "required": [
+///    "levels",
+///    "maxSelf",
+///    "names",
+///    "numTicks"
+///  ],
+///  "properties": {
+///    "levels": {
+///      "description": "One flat array per depth level; single format uses [offset_delta, total, self, name_index] quadruples, double format uses septuples carrying baseline and comparison values",
+///      "type": "array",
+///      "items": {
+///        "type": "array",
+///        "items": {
+///          "type": "integer",
+///          "format": "int64"
+///        }
+///      }
+///    },
+///    "maxSelf": {
+///      "description": "Largest self value of any block",
+///      "type": "integer",
+///      "format": "int64"
+///    },
+///    "names": {
+///      "description": "Function name table referenced by block name indices",
+///      "type": "array",
+///      "items": {
+///        "type": "string"
+///      }
+///    },
+///    "numTicks": {
+///      "description": "Total number of ticks (root width)",
+///      "type": "integer",
+///      "format": "int64"
+///    }
+///  }
+///}
+/// ```
+/// </details>
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct PyroscopeFlamebearer {
+    ///One flat array per depth level; single format uses [offset_delta, total, self, name_index] quadruples, double format uses septuples carrying baseline and comparison values
+    pub levels: ::std::vec::Vec<::std::vec::Vec<i64>>,
+    ///Largest self value of any block
+    #[serde(rename = "maxSelf")]
+    pub max_self: i64,
+    ///Function name table referenced by block name indices
+    pub names: ::std::vec::Vec<::std::string::String>,
+    ///Total number of ticks (root width)
+    #[serde(rename = "numTicks")]
+    pub num_ticks: i64,
+}
+///How to interpret flamebearer values
+///
+/// <details><summary>JSON schema</summary>
+///
+/// ```json
+///{
+///  "description": "How to interpret flamebearer values",
+///  "type": "object",
+///  "required": [
+///    "format",
+///    "name",
+///    "sampleRate",
+///    "units"
+///  ],
+///  "properties": {
+///    "format": {
+///      "description": "single for one profile set, double for a diff",
+///      "type": "string"
+///    },
+///    "name": {
+///      "description": "Display name of the rendered query",
+///      "type": "string"
+///    },
+///    "sampleRate": {
+///      "description": "Sample rate in Hz",
+///      "type": "integer",
+///      "format": "int32"
+///    },
+///    "spyName": {
+///      "description": "Profiler that produced the data",
+///      "type": "string"
+///    },
+///    "units": {
+///      "description": "Value units (samples, objects, bytes)",
+///      "type": "string"
+///    }
+///  }
+///}
+/// ```
+/// </details>
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct PyroscopeFlamebearerMetadata {
+    ///single for one profile set, double for a diff
+    pub format: ::std::string::String,
+    ///Display name of the rendered query
+    pub name: ::std::string::String,
+    ///Sample rate in Hz
+    #[serde(rename = "sampleRate")]
+    pub sample_rate: i32,
+    ///Profiler that produced the data
+    #[serde(
+        rename = "spyName",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub spy_name: ::std::option::Option<::std::string::String>,
+    ///Value units (samples, objects, bytes)
+    pub units: ::std::string::String,
+}
+///Label names or values
+///
+/// <details><summary>JSON schema</summary>
+///
+/// ```json
+///{
+///  "description": "Label names or values",
+///  "type": "object",
+///  "required": [
+///    "names"
+///  ],
+///  "properties": {
+///    "names": {
+///      "type": "array",
+///      "items": {
+///        "type": "string"
+///      }
+///    }
+///  }
+///}
+/// ```
+/// </details>
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct PyroscopeLabelsResponse {
+    pub names: ::std::vec::Vec<::std::string::String>,
+}
+///An available profile type
+///
+/// <details><summary>JSON schema</summary>
+///
+/// ```json
+///{
+///  "description": "An available profile type",
+///  "type": "object",
+///  "required": [
+///    "ID",
+///    "name",
+///    "sampleType",
+///    "sampleUnit"
+///  ],
+///  "properties": {
+///    "ID": {
+///      "description": "Canonical profile type ID",
+///      "type": "string"
+///    },
+///    "name": {
+///      "type": "string"
+///    },
+///    "periodType": {
+///      "type": "string"
+///    },
+///    "periodUnit": {
+///      "type": "string"
+///    },
+///    "sampleType": {
+///      "type": "string"
+///    },
+///    "sampleUnit": {
+///      "type": "string"
+///    }
+///  }
+///}
+/// ```
+/// </details>
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct PyroscopeProfileType {
+    ///Canonical profile type ID
+    #[serde(rename = "ID")]
+    pub id: ::std::string::String,
+    pub name: ::std::string::String,
+    #[serde(
+        rename = "periodType",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub period_type: ::std::option::Option<::std::string::String>,
+    #[serde(
+        rename = "periodUnit",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub period_unit: ::std::option::Option<::std::string::String>,
+    #[serde(rename = "sampleType")]
+    pub sample_type: ::std::string::String,
+    #[serde(rename = "sampleUnit")]
+    pub sample_unit: ::std::string::String,
+}
+///Response of the render and render-diff endpoints
+///
+/// <details><summary>JSON schema</summary>
+///
+/// ```json
+///{
+///  "description": "Response of the render and render-diff endpoints",
+///  "type": "object",
+///  "required": [
+///    "flamebearer",
+///    "metadata"
+///  ],
+///  "properties": {
+///    "flamebearer": {
+///      "$ref": "#/definitions/PyroscopeFlamebearer"
+///    },
+///    "leftTicks": {
+///      "description": "Total baseline ticks (double format only)",
+///      "type": "integer",
+///      "format": "int64"
+///    },
+///    "metadata": {
+///      "$ref": "#/definitions/PyroscopeFlamebearerMetadata"
+///    },
+///    "rightTicks": {
+///      "description": "Total comparison ticks (double format only)",
+///      "type": "integer",
+///      "format": "int64"
+///    },
+///    "timeline": {
+///      "$ref": "#/definitions/PyroscopeTimeline"
+///    }
+///  }
+///}
+/// ```
+/// </details>
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct PyroscopeRenderResponse {
+    pub flamebearer: PyroscopeFlamebearer,
+    ///Total baseline ticks (double format only)
+    #[serde(
+        rename = "leftTicks",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub left_ticks: ::std::option::Option<i64>,
+    pub metadata: PyroscopeFlamebearerMetadata,
+    ///Total comparison ticks (double format only)
+    #[serde(
+        rename = "rightTicks",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub right_ticks: ::std::option::Option<i64>,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub timeline: ::std::option::Option<PyroscopeTimeline>,
+}
+///Per-interval sample counts for the render timeline
+///
+/// <details><summary>JSON schema</summary>
+///
+/// ```json
+///{
+///  "description": "Per-interval sample counts for the render timeline",
+///  "type": "object",
+///  "required": [
+///    "durationDelta",
+///    "samples",
+///    "startTime"
+///  ],
+///  "properties": {
+///    "durationDelta": {
+///      "description": "Interval width in seconds",
+///      "type": "integer",
+///      "format": "int64"
+///    },
+///    "samples": {
+///      "type": "array",
+///      "items": {
+///        "type": "integer",
+///        "format": "int64"
+///      }
+///    },
+///    "startTime": {
+///      "description": "Start of the timeline, unix seconds",
+///      "type": "integer",
+///      "format": "int64"
+///    }
+///  }
+///}
+/// ```
+/// </details>
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct PyroscopeTimeline {
+    ///Interval width in seconds
+    #[serde(rename = "durationDelta")]
+    pub duration_delta: i64,
+    pub samples: ::std::vec::Vec<i64>,
+    ///Start of the timeline, unix seconds
+    #[serde(rename = "startTime")]
+    pub start_time: i64,
+}
 ///Tenant information returned by the API
 ///
 /// <details><summary>JSON schema</summary>
