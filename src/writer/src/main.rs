@@ -201,12 +201,20 @@ async fn main() -> anyhow::Result<()> {
             tracing::error!(error = %e, "Flight server exited with error");
         }
     });
+    let mut flight_handle = flight_handle;
 
-    // Await shutdown signal
-    signal::ctrl_c()
-        .await
-        .context("Failed to listen for shutdown signal")?;
-    tracing::info!("Shutting down writer service");
+    // Await shutdown signal — or the Flight server dying. A writer whose
+    // ingest port is gone must exit (so the orchestrator restarts it)
+    // instead of idling as a zombie that accepts nothing.
+    tokio::select! {
+        result = signal::ctrl_c() => {
+            result.context("Failed to listen for shutdown signal")?;
+            tracing::info!("Shutting down writer service");
+        }
+        _ = &mut flight_handle => {
+            anyhow::bail!("Writer Flight server terminated unexpectedly; exiting so the process can be restarted");
+        }
+    }
 
     // Graceful shutdown: unregister Flight service
     flight_transport

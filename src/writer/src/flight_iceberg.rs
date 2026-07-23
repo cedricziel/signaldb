@@ -55,15 +55,31 @@ impl IcebergWriterFlightService {
         let processor = self.processor.clone();
 
         let handle = tokio::spawn(async move {
+            const BASE_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
+            const MAX_BACKOFF: tokio::time::Duration = tokio::time::Duration::from_secs(300);
+            let mut consecutive_failures: u32 = 0;
             loop {
                 let mut processor_guard = processor.lock().await;
-                if let Err(e) = processor_guard.process_pending_entries().await {
-                    tracing::error!(error = %e, "Background WAL processing error");
+                match processor_guard.process_pending_entries().await {
+                    Ok(()) => consecutive_failures = 0,
+                    Err(e) => {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        tracing::error!(
+                            error = %e,
+                            consecutive_failures,
+                            "Background WAL processing error"
+                        );
+                    }
                 }
                 drop(processor_guard);
 
-                // Process every 5 seconds
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                // Exponential backoff on repeated failures so a persistently
+                // failing catalog/store is not hammered every 5 seconds.
+                let delay = BASE_INTERVAL
+                    .saturating_mul(1u32 << consecutive_failures.min(6))
+                    .min(MAX_BACKOFF)
+                    .max(BASE_INTERVAL);
+                tokio::time::sleep(delay).await;
             }
         });
 

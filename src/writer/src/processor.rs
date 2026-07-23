@@ -13,6 +13,11 @@ use uuid::Uuid;
 /// of the idempotency marker written with each commit (one uuid per entry).
 const MAX_ENTRIES_PER_COMMIT: usize = 1024;
 
+/// Consecutive failures after which an entry is dead-lettered: its raw
+/// payload is preserved under `<wal_dir>/dead-letter/` and the entry is
+/// marked processed so it stops blocking ingestion.
+const MAX_ENTRY_FAILURES: u32 = 10;
+
 /// WAL processor that reads entries and writes them to Iceberg tables
 /// Replaces the direct Parquet writing approach with transaction-based Iceberg writes
 pub struct WalProcessor {
@@ -21,6 +26,12 @@ pub struct WalProcessor {
     object_store: Arc<dyn ObjectStore>,
     // Cache of table writers per tenant/table combination
     table_writers: HashMap<String, IcebergTableWriter>,
+    /// Consecutive processing failures per entry. Entries that keep
+    /// failing are dead-lettered so one poison entry cannot wedge the
+    /// processing loop forever (in-memory: a restart grants a fresh set
+    /// of attempts, which is fine — dead-lettering only needs to happen
+    /// eventually).
+    entry_failures: HashMap<Uuid, u32>,
 }
 
 impl WalProcessor {
@@ -35,6 +46,7 @@ impl WalProcessor {
             catalog_manager,
             object_store,
             table_writers: HashMap::new(),
+            entry_failures: HashMap::new(),
         }
     }
 
@@ -77,8 +89,26 @@ impl WalProcessor {
                 continue;
             }
 
-            let (tenant_id, dataset_id, table_name) = self.determine_target_table(&entry)?;
-            let batch = self.deserialize_entry_data(&entry).await?;
+            // A poison entry (unroutable or undeserializable) must not
+            // abort the whole cycle: record the failure, skip it this
+            // round, and dead-letter it once it exhausts its attempts.
+            let routed = match self.determine_target_table(&entry) {
+                Ok(routed) => routed,
+                Err(e) => {
+                    tracing::warn!(entry_id = %entry.id, error = %e, "Failed to route WAL entry");
+                    self.record_entry_failure(entry.id).await;
+                    continue;
+                }
+            };
+            let batch = match self.deserialize_entry_data(&entry).await {
+                Ok(batch) => batch,
+                Err(e) => {
+                    tracing::warn!(entry_id = %entry.id, error = %e, "Failed to deserialize WAL entry");
+                    self.record_entry_failure(entry.id).await;
+                    continue;
+                }
+            };
+            let (tenant_id, dataset_id, table_name) = routed;
 
             grouped_entries
                 .entry((tenant_id, dataset_id, table_name))
@@ -90,11 +120,15 @@ impl WalProcessor {
         // process_batch_for_table, interleaved with commits to preserve
         // the idempotency-marker invariant.
         for ((tenant_id, dataset_id, table_name), entries) in grouped_entries {
+            let group_ids: Vec<Uuid> = entries.iter().map(|(id, _)| *id).collect();
             match self
                 .process_batch_for_table(&tenant_id, &dataset_id, &table_name, entries)
                 .await
             {
                 Ok(processed_ids) => {
+                    for entry_id in &processed_ids {
+                        self.entry_failures.remove(entry_id);
+                    }
                     tracing::debug!(
                         entry_count = processed_ids.len(),
                         tenant_id = %tenant_id,
@@ -104,6 +138,9 @@ impl WalProcessor {
                 }
                 Err(e) => {
                     tracing::error!(tenant_id = %tenant_id, table_name = %table_name, error = %e, "Failed to process batch for table");
+                    for entry_id in group_ids {
+                        self.record_entry_failure(entry_id).await;
+                    }
                 }
             }
         }
@@ -200,6 +237,34 @@ impl WalProcessor {
         }
 
         Ok(processed_ids)
+    }
+
+    /// Record a processing failure for an entry, dead-lettering it once
+    /// it exhausts its attempts.
+    async fn record_entry_failure(&mut self, entry_id: Uuid) {
+        let failures = self.entry_failures.entry(entry_id).or_insert(0);
+        *failures += 1;
+        if *failures < MAX_ENTRY_FAILURES {
+            return;
+        }
+        match self.wal.dead_letter(entry_id).await {
+            Ok(path) => {
+                tracing::error!(
+                    entry_id = %entry_id,
+                    failures = *failures,
+                    path = %path.display(),
+                    "WAL entry exhausted its retries; payload preserved in the                      dead-letter directory and entry marked processed"
+                );
+                self.entry_failures.remove(&entry_id);
+            }
+            Err(e) => {
+                tracing::error!(
+                    entry_id = %entry_id,
+                    error = %e,
+                    "Failed to dead-letter WAL entry; it will be retried"
+                );
+            }
+        }
     }
 
     /// Determine which tenant, dataset, and table an entry should go to
@@ -437,6 +502,54 @@ mod tests {
         assert_eq!(tenant, "globex");
         assert_eq!(dataset, "staging");
         assert_eq!(table, "logs");
+    }
+
+    #[tokio::test]
+    async fn poison_entry_is_dead_lettered_after_exhausting_retries() {
+        let temp_dir = tempdir().unwrap();
+        let wal_config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            max_segment_size: 1024 * 1024,
+            max_buffer_entries: 1000,
+            flush_interval_secs: 5,
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+        let wal = Arc::new(Wal::new(wal_config).await.unwrap());
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+
+        // Garbage bytes: deserialization fails on every attempt. Before
+        // the dead-letter path this aborted every processing cycle
+        // forever.
+        let entry_id = wal
+            .append(WalOperation::WriteTraces, b"not arrow ipc".to_vec(), None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        let mut processor = WalProcessor::new(wal.clone(), catalog_manager, object_store);
+        for _ in 0..super::MAX_ENTRY_FAILURES {
+            processor
+                .process_pending_entries()
+                .await
+                .expect("a poison entry must not abort the cycle");
+        }
+
+        // The entry is out of the way and its payload is preserved.
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "poison entry must be dead-lettered and marked processed"
+        );
+        let dead_letter_path = temp_dir
+            .path()
+            .join("dead-letter")
+            .join(format!("{}.bin", entry_id.simple()));
+        let preserved = tokio::fs::read(&dead_letter_path).await.unwrap();
+        assert_eq!(preserved, b"not arrow ipc");
     }
 
     #[tokio::test]
