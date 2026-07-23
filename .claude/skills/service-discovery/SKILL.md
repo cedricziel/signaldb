@@ -21,6 +21,11 @@ Services register with specific capabilities for automatic routing:
 | Writer | `TraceIngestion`, `Storage` | Acceptors discover via `Storage` capability |
 | Router | `Routing` | Clients connect directly via HTTP |
 | Querier | `QueryExecution` | Routers discover via `QueryExecution` capability |
+| Compactor | `StorageMaintenance` | Registers for compaction/cleanup coordination |
+
+`ServiceCapability` has 6 variants (`src/common/src/flight/transport.rs`):
+`TraceIngestion`, `QueryExecution`, `Routing`, `Storage`, `KafkaIngestion`,
+`StorageMaintenance`.
 
 ## ServiceBootstrap Pattern
 
@@ -33,10 +38,11 @@ Every service uses `ServiceBootstrap` at startup:
 5. On shutdown: deregisters and stops heartbeat
 
 ```rust
-let bootstrap = ServiceBootstrap::new(config).await?;
-bootstrap.register().await?;
+// Registers in the catalog and starts the heartbeat task
+let bootstrap =
+    ServiceBootstrap::new(config, ServiceType::Writer, "0.0.0.0:50061".to_string()).await?;
 // ... service runs ...
-// Automatic deregistration on drop/shutdown
+// bootstrap.shutdown().await? deregisters gracefully; Drop also deregisters
 ```
 
 ## Service Catalog Schema
@@ -46,7 +52,8 @@ CREATE TABLE ingesters (
     id UUID PRIMARY KEY,
     address TEXT NOT NULL,
     last_seen TIMESTAMP WITH TIME ZONE,
-    stopped_at TIMESTAMP WITH TIME ZONE
+    service_type TEXT NOT NULL DEFAULT 'Writer',
+    capabilities TEXT NOT NULL DEFAULT 'TraceIngestion,Storage'
 );
 ```
 
@@ -54,7 +61,7 @@ CREATE TABLE ingesters (
 
 - **InMemoryFlightTransport**: Connection pooling (max 50 connections, 30s timeout, 5min expiry) + capability-based client lookup
 - **ServiceRegistry** (Router-specific): Cached HashMap of services, polls catalog at configurable interval
-- **Service selection**: Currently picks first available (round-robin planned)
+- **Service selection**: Round-robin across capable services (`AtomicUsize` counter with `fetch_add` in `transport.rs`)
 - **TTL-based cleanup**: Stale services auto-removed
 
 ## Configuration
@@ -77,4 +84,4 @@ ttl = "300s"
 | `src/common/src/catalog.rs` | Catalog trait + implementations |
 | `src/common/src/service_bootstrap.rs` | ServiceBootstrap registration |
 | `src/common/src/flight/transport.rs` | InMemoryFlightTransport, connection pooling |
-| `src/router/src/service_registry.rs` | Router's cached service registry |
+| `src/router/src/discovery.rs` | Router's cached service registry |

@@ -47,7 +47,7 @@ For **metrics** (hardcoded schemas):
 
 ## Step 6: Update Writer
 
-- Edit `src/writer/src/flight.rs` -- handle new signal in `do_put`
+- Edit `src/writer/src/flight_iceberg.rs` (IcebergWriterFlightService) -- handle new signal in `do_put`
 - If schema differs between Flight v1 and Iceberg v2:
   - Add transformation in `src/writer/src/schema_transform.rs`
 - Edit `src/writer/src/processor.rs` -- handle new WalOperation in WalProcessor
@@ -60,7 +60,7 @@ For **metrics** (hardcoded schemas):
 
 ## Step 8: Update Router (API)
 
-- Add HTTP endpoints in `src/router/src/tempo.rs` or new handler module
+- Add HTTP endpoints in `src/router/src/endpoints/tempo.rs` or a new module under `src/router/src/endpoints/`
 - Add Flight forwarding for new query types
 
 ## Step 9: Update Configuration
@@ -85,5 +85,5 @@ For **metrics** (hardcoded schemas):
 ## Reference: Existing Signal Implementations
 
 - **Traces**: Most complete. Look at the full write path from `src/acceptor/` through `src/writer/` to `src/querier/`.
-- **Logs**: Similar to traces but simpler (no v1->v2 transform needed).
+- **Logs**: Similar to traces but simpler -- no schema version bump (still v1), though wire batches still pass through `transform_logs_v1_to_iceberg` for Iceberg type conversion (`src/writer/src/schema_transform.rs`).
 - **Metrics**: Multiple table types from single signal. Table routing via WAL entry `metadata.target_table`.

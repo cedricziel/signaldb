@@ -4,7 +4,7 @@ description: SignalDB development workflow - build, test, lint, format, run serv
 sources:
   - CLAUDE.md
   - scripts/run-dev.sh
-  - docker-compose.yml
+  - compose.yml
 ---
 
 # SignalDB Development Workflow
@@ -53,10 +53,11 @@ cargo run --bin signaldb                              # All services in one proc
 
 ### Microservices Mode
 ```bash
-cargo run --bin acceptor   # OTLP ingestion (:4317/:4318)
-cargo run --bin router     # HTTP router (:3000) + Flight (:50053)
-cargo run --bin writer     # Data persistence (Flight :50061)
-cargo run --bin querier    # Query execution (Flight :50054)
+cargo run --bin signaldb-acceptor   # OTLP ingestion (:4317/:4318)
+cargo run --bin signaldb-router     # HTTP router (:3000) + Flight (:50053)
+cargo run --bin signaldb-writer     # Data persistence (Flight :50061)
+cargo run --bin signaldb-querier    # Query execution (Flight :50054)
+cargo run --bin signaldb-compactor  # Compaction/retention (Flight :50055, metrics :9091)
 ```
 
 ```bash
@@ -70,8 +71,11 @@ cargo run --bin querier    # Query execution (Flight :50054)
 
 ## Docker
 
+Compose file: `compose.yml`. The stack runs PostgreSQL, Grafana, Pyroscope,
+MinIO, and the SignalDB services (writer, acceptor, querier, router, compactor).
+
 ```bash
-docker compose up          # Start PostgreSQL, Grafana, MinIO, SignalDB
+docker compose up          # Start the full stack
 docker compose up --build  # Build images first
 docker compose build       # Build only
 ```

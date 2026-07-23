@@ -7,7 +7,7 @@ sources:
   - src/common/src/flight/schema.rs
   - src/writer/src/schema_transform.rs
   - src/common/src/schema/schema_parser.rs
-  - src/common/src/schema/iceberg_schemas.rs
+  - src/common/src/iceberg/schemas.rs
 ---
 
 # SignalDB Flight Schemas & Schema Versioning
@@ -82,12 +82,20 @@ Key fields: `timestamp` (partition), `trace_id`, `span_id`, `severity_text`, `se
 
 ## Metrics Schemas
 
-Defined in `src/common/src/iceberg/schemas.rs` (hardcoded, not in schemas.toml):
+Two definitions coexist:
+- `schemas.toml` defines v1 schemas for `metrics_gauge`, `metrics_sum`, and
+  `metrics_histogram` (used by the TOML schema parser / wire side).
+- The **Iceberg** metrics table schemas are built by hardcoded Rust functions in
+  `src/common/src/iceberg/schemas.rs` (`create_metrics_*_schema()`) that do
+  **not** read the TOML. `metrics_exponential_histogram` and `metrics_summary`
+  exist only in Rust -- they have no schemas.toml entry.
+
+Tables:
 - `metrics_gauge`: timestamp, service_name, metric_name, value, attributes
 - `metrics_sum`: extends gauge with `aggregation_temporality`, `is_monotonic`
 - `metrics_histogram`: count, sum, min, max, bucket_counts, explicit_bounds
-- `metrics_exponential_histogram`: scale, zero_count, positive/negative buckets
-- `metrics_summary`: count, sum, quantile_values
+- `metrics_exponential_histogram`: scale, zero_count, positive/negative buckets (Rust only)
+- `metrics_summary`: count, sum, quantile_values (Rust only)
 
 All partitioned by `Hour(timestamp)`.
 
@@ -96,14 +104,16 @@ All partitioned by `Hour(timestamp)`.
 | Method | Router | Querier | Writer |
 |--------|--------|---------|--------|
 | `Handshake` | Yes | Yes | Yes |
-| `ListFlights` | Yes | Yes | No |
+| `ListFlights` | Yes | Yes | Yes (empty) |
 | `GetFlightInfo` | Yes | No | No |
 | `GetSchema` | Yes | Yes | No |
 | `DoGet` | Yes | Yes | No |
 | `DoPut` | No | No | Yes |
 
+Writer `ListFlights` succeeds with an empty stream (no predefined flights) rather than returning `Unimplemented`; its `GetSchema`/`DoGet` do return `Status::unimplemented`.
+
 ## Flight Schemas Code Location
 
-- Schema definitions: `src/common/flight/schema.rs`
-- Conversions: `src/common/flight/conversion/` subdirectory
+- Schema definitions: `src/common/src/flight/schema.rs`
+- Conversions: `src/common/src/flight/conversion/` subdirectory
 - Schema transform: `src/writer/src/schema_transform.rs`

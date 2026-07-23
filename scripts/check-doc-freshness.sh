@@ -80,6 +80,28 @@ while IFS= read -r doc; do
     fi
 done < <(find docs -name '*.md' -type f 2>/dev/null | sort)
 
+# --- Sources validation ------------------------------------------------------
+# Every `sources:` glob in every doc/skill frontmatter must match at least one
+# existing file; a dead glob silently opts the doc out of freshness tracking.
+while IFS= read -r doc; do
+    fm=$(awk 'NR==1 && $0!="---"{exit} /^---$/{n++; next} n==1{print} n>=2{exit}' "$doc")
+    [[ -z "$fm" ]] && continue
+    globs=$(awk '
+        /^sources:/ {f=1; next}
+        f && /^[[:space:]]+-[[:space:]]/ {sub(/^[[:space:]]+-[[:space:]]+/, ""); print; next}
+        f {exit}
+    ' <<<"$fm")
+    [[ -z "$globs" ]] && continue
+    while IFS= read -r glob; do
+        [[ -z "$glob" ]] && continue
+        pattern="${glob//\*\*/*}"
+        if ! compgen -G "$pattern" > /dev/null; then
+            echo "INVALID $doc: source glob $glob matches no files"
+            errors=1
+        fi
+    done <<<"$globs"
+done < <(find docs .claude/skills -name '*.md' -type f 2>/dev/null | sort)
+
 # --- Freshness: changed sources without a doc update ------------------------
 stale=0
 while IFS= read -r doc; do

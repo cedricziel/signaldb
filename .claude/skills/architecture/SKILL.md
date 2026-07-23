@@ -43,7 +43,7 @@ Key details:
 1. Acceptor writes to WAL before acknowledging client
 2. Acceptor converts OTLP protobuf -> Arrow RecordBatches using Flight schemas (v1)
 3. Writer transforms v1 Flight schema -> v2 Iceberg schema (field renames, type conversions, computed partition fields)
-4. Writer's WalProcessor reads WAL entries every 5s, writes Parquet via DataFusion
+4. Writer's WalProcessor reads WAL entries every 5s (exponential backoff on failure), writes Parquet via DataFusion
 5. Processed WAL entries are marked and cleaned up
 
 ## Query Path

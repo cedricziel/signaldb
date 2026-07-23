@@ -3,8 +3,8 @@ name: tempo-api
 description: SignalDB Tempo API compatibility - implemented/stub endpoints, query flow, admin API, Grafana native plugin, and built-in Tempo datasource support. Use when working with HTTP API, Grafana integration, or query endpoints.
 user-invocable: false
 sources:
-  - src/router/src/tempo.rs
-  - src/router/src/admin.rs
+  - src/router/src/endpoints/tempo.rs
+  - src/router/src/endpoints/admin.rs
   - src/grafana-plugin/**
 ---
 
@@ -16,13 +16,14 @@ sources:
 |----------|--------|-------------|
 | `GET /tempo/api/echo` | Implemented | Health check |
 | `GET /tempo/api/traces/{trace_id}` | Implemented | Single trace lookup -> routes to Querier |
+| `GET /tempo/api/v2/traces/{trace_id}` | Implemented | Same handler as v1 for now |
 | `GET /tempo/api/search` | Implemented | Trace search with filters -> routes to Querier |
-| `GET /tempo/api/search/tags` | Stub (empty) | |
-| `GET /tempo/api/search/tag/{tag_name}/values` | Stub (empty) | |
-| `GET /tempo/api/v2/search/tags` | Stub (empty) | |
-| `GET /tempo/api/v2/search/tag/{tag_name}/values` | Stub (empty) | |
-| `GET /tempo/api/metrics/query` | Stub (hardcoded) | |
-| `GET /tempo/api/metrics/query_range` | Stub (hardcoded) | |
+| `GET /tempo/api/search/tags` | Implemented | Static tag set of actually-queryable tags (`service.name`, `name`, `status`) |
+| `GET /tempo/api/search/tag/{tag_name}/values` | Implemented | Real data: distinct column values via Flight SQL for supported tags; static values for `status`; 501 for unindexed attribute tags |
+| `GET /tempo/api/v2/search/tags` | Implemented | Same tag set, scoped (resource/intrinsic) |
+| `GET /tempo/api/v2/search/tag/{tag_name}/values` | Implemented | Same backing as v1 tag values |
+| `GET /tempo/api/metrics/query` | 501 Not Implemented | TraceQL metrics not implemented (returns 501 since #552, no fabricated series) |
+| `GET /tempo/api/metrics/query_range` | 501 Not Implemented | Same as above |
 
 ## Query Flow
 
@@ -44,7 +45,12 @@ Requires `admin_api_key` from config:
 | `/api/v1/admin/tenants` | GET/POST | List/create tenants |
 | `/api/v1/admin/tenants/{id}` | GET/PUT/DELETE | Manage tenant |
 | `/api/v1/admin/tenants/{id}/api-keys` | GET/POST | List/create API keys |
+| `/api/v1/admin/tenants/{id}/api-keys/{key_id}` | DELETE | Revoke API key |
 | `/api/v1/admin/tenants/{id}/datasets` | GET/POST | List/create datasets |
+| `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE | Delete dataset |
+
+A separate tenant self-service API is mounted at `/api/v1` (see the
+`multi-tenancy` skill).
 
 ## Grafana Integration
 
@@ -64,8 +70,8 @@ The Router's Tempo-compatible endpoints at `/tempo/api/...` work directly with G
 
 | File | Purpose |
 |------|---------|
-| `src/router/src/tempo.rs` | Tempo API HTTP handlers |
-| `src/router/src/admin.rs` | Admin API handlers |
+| `src/router/src/endpoints/tempo.rs` | Tempo API HTTP handlers |
+| `src/router/src/endpoints/admin.rs` | Admin API handlers |
 | `src/tempo-api/` | Protobuf definitions and Tempo types |
 | `src/querier/src/flight.rs` | Query execution, ticket parsing |
 | `src/grafana-plugin/` | Native Grafana plugin |

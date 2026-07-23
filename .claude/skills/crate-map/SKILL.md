@@ -17,7 +17,7 @@ sources:
 | **writer** | `src/writer/` | Binary + Library | Iceberg-based data persistence (the "Ingester") |
 | **router** | `src/router/` | Binary + Library | HTTP API gateway + Flight routing layer |
 | **querier** | `src/querier/` | Binary + Library | DataFusion query execution engine |
-| **compactor** | `src/compactor/` | Library | Complete data lifecycle: compaction planning/execution (Phase 1-2), retention enforcement, snapshot expiration, orphan cleanup (Phase 3) |
+| **compactor** | `src/compactor/` | Binary + Library | Complete data lifecycle: compaction planning/execution (Phase 1-2), retention enforcement, snapshot expiration, orphan cleanup (Phase 3); binary is `signaldb-compactor` |
 | **tempo-api** | `src/tempo-api/` | Library | Grafana Tempo API types and protobuf definitions |
 | **signaldb-bin** | `src/signaldb-bin/` | Binary | Monolithic mode runner (all services in one process) |
 | **signaldb-api** | `src/signaldb-api/` | Library | OpenAPI-generated admin API types |
@@ -35,8 +35,15 @@ This is the shared foundation. Key modules:
 | Module | Path | Purpose |
 |--------|------|---------|
 | `config` | `src/common/src/config/mod.rs` | Configuration structs, TOML parsing, env vars |
-| `auth` | `src/common/src/auth.rs` | Authenticator, TenantContext, API key validation |
+| `auth` | `src/common/src/auth/` | Authenticator, middleware, validation, TenantContext |
 | `catalog` | `src/common/src/catalog.rs` | Service catalog (PostgreSQL/SQLite) |
+| `cli` | `src/common/src/cli.rs` | Common CLI functionality shared across binaries |
+| `dataset` | `src/common/src/dataset.rs` | `DataSetType` enum (signal type naming) |
+| `model` | `src/common/src/model/` | Trace/span data models |
+| `ratelimit` | `src/common/src/ratelimit.rs` | Per-tenant token-bucket ingest rate limiting |
+| `self_monitoring` | `src/common/src/self_monitoring/` | Dogfooding: app metrics, profiling, suppression |
+| `tenant_api` | `src/common/src/tenant_api.rs` | Tenant API shared types and validation |
+| `testing` | `src/common/src/testing/` | Test utilities (config builder) |
 | `catalog_manager` | `src/common/src/catalog_manager.rs` | CatalogManager singleton for Iceberg catalog |
 | `wal` | `src/common/src/wal/mod.rs` | Write-Ahead Log implementation |
 | `flight` | `src/common/src/flight/` | Flight schemas, conversions, transport |
@@ -70,23 +77,32 @@ This is the shared foundation. Key modules:
 | `query/table_ref.rs` | `src/querier/src/query/table_ref.rs` | Safe table reference with slug validation |
 | `query/trace.rs` | `src/querier/src/query/trace.rs` | Trace query handlers |
 | `query/error.rs` | `src/querier/src/query/error.rs` | Query error types |
-| `query/promql` | `src/querier/src/query/promql/` | PromQL query support |
+| `query/search_filter.rs` | `src/querier/src/query/search_filter.rs` | Search filter parsing/handling |
 | `services` | `src/querier/src/services/` | Service implementations |
 
 ## The `router` Crate
 
 | Module | Path | Purpose |
 |--------|------|---------|
-| `tempo.rs` | `src/router/src/tempo.rs` | Tempo-compatible API handlers |
-| `admin.rs` | `src/router/src/admin.rs` | Admin API for tenant/key/dataset CRUD |
-| `service_registry.rs` | `src/router/src/service_registry.rs` | Cached service discovery |
+| `lib.rs` | `src/router/src/lib.rs` | Router assembly: route mounting, auth layers |
+| `main.rs` | `src/router/src/main.rs` | Standalone router binary |
+| `discovery.rs` | `src/router/src/discovery.rs` | Cached service discovery for the router |
+| `endpoints/tempo.rs` | `src/router/src/endpoints/tempo.rs` | Tempo-compatible API handlers |
+| `endpoints/admin.rs` | `src/router/src/endpoints/admin.rs` | Admin API for tenant/key/dataset CRUD |
+| `endpoints/tenant.rs` | `src/router/src/endpoints/tenant.rs` | Tenant self-service API |
+| `endpoints/flight.rs` | `src/router/src/endpoints/flight.rs` | Router Flight service |
 
 ## The `compactor` Crate
 
 | Module | Path | Purpose |
 |--------|------|---------|
+| `main.rs` | `src/compactor/src/main.rs` | `signaldb-compactor` binary entry point |
 | `planner.rs` | `src/compactor/src/planner.rs` | Compaction planning -- identifies candidates |
 | `executor.rs` | `src/compactor/src/executor.rs` | Compaction execution -- rewrites Parquet files |
+| `scheduler/` | `src/compactor/src/scheduler/` | Round-robin per-tenant scheduling (Phase 4) |
+| `lease/` | `src/compactor/src/lease/` | Distributed leases for multi-instance safety (Phase 4) |
+| `flight.rs` | `src/compactor/src/flight.rs` | CompactorFlightService (Flight :50055) |
+| `http.rs` | `src/compactor/src/http.rs` | Observability HTTP endpoint (/metrics, /status, /health) |
 | `rewriter.rs` | `src/compactor/src/rewriter.rs` | Parquet file rewriting logic |
 | `commit.rs` | `src/compactor/src/commit.rs` | Atomic commit to Iceberg tables |
 | `metrics.rs` | `src/compactor/src/metrics.rs` | Prometheus metrics for compactor operations |
@@ -108,5 +124,5 @@ This is the shared foundation. Key modules:
 | `Cargo.toml` | Workspace definition + shared dependencies |
 | `schemas.toml` | Signal type schema definitions (compiled into binary) |
 | `signaldb.dist.toml` | Example configuration file |
-| `docker-compose.yml` | Development environment setup |
+| `compose.yml` | Development environment setup |
 | `Dockerfile` | Multi-stage build for all services |
