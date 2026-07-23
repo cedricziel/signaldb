@@ -15,9 +15,9 @@ sources:
 | Endpoint | Status | Description |
 |----------|--------|-------------|
 | `GET /tempo/api/echo` | Implemented | Health check |
-| `GET /tempo/api/traces/{trace_id}` | Implemented | Single trace lookup -> routes to Querier |
+| `GET /tempo/api/traces/{trace_id}` | Implemented | Single trace lookup -> routes to Querier; `start`/`end` time hints prune the scanned range |
 | `GET /tempo/api/v2/traces/{trace_id}` | Implemented | Same handler as v1 for now |
-| `GET /tempo/api/search` | Implemented | Trace search with filters -> routes to Querier |
+| `GET /tempo/api/search` | Implemented | Trace search with filters -> routes to Querier; `spss` caps spans per span set in the response |
 | `GET /tempo/api/search/tags` | Implemented | Static tag set of actually-queryable tags (`service.name`, `name`, `status`) |
 | `GET /tempo/api/search/tag/{tag_name}/values` | Implemented | Real data: distinct column values via Flight SQL for supported tags; static values for `status`; 501 for unindexed attribute tags |
 | `GET /tempo/api/v2/search/tags` | Implemented | Same tag set, scoped (resource/intrinsic) |
@@ -31,10 +31,23 @@ sources:
 2. Router validates auth (API key -> TenantContext)
 3. Router discovers Querier via `QueryExecution` capability
 4. Router sends Flight `do_get` ticket to Querier
-5. Ticket format: `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}` or `search_traces:{tenant_slug}:{dataset_slug}:{params}`
+5. Ticket format: `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}[:{start}:{end}]` (unix-second time hints, appended only when present) or `search_traces:{tenant_slug}:{dataset_slug}:{params}`
 6. Querier executes DataFusion SQL against Iceberg tables
-7. Results stream back as Arrow RecordBatches
+7. Results stream back as Arrow RecordBatches (trace not found -> Flight `not_found` status -> HTTP 404)
 8. Router formats as Tempo JSON response
+
+## Tempo gRPC Querier Protocol (standalone querier)
+
+The standalone querier serves Tempo's internal `tempopb.Querier` gRPC
+protocol on its Flight port (default :50054) so a Tempo query-frontend can
+use SignalDB as a querier (`src/querier/src/services/tempo.rs`):
+
+- `FindTraceByID` / `SearchRecent`: implemented, backed by `TraceService`
+- Tenant: authenticated `TenantContext` extension wins, else `X-Scope-OrgID`
+  header (dataset `default`), else `default`/`default`
+- `SearchBlock`: `Unimplemented` (no Tempo block model in SignalDB)
+- Tag endpoints: static queryable tag set; tag values empty (HTTP API serves
+  real values via Flight SQL)
 
 ## Admin API Endpoints
 
