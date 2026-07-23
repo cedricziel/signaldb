@@ -219,10 +219,9 @@ sum by (tenant) (
 ### Documentation
 
 * **Comprehensive README**: [`src/compactor/README.md`](src/compactor/README.md)
-* **Configuration Reference**: [`docs/compactor/phase3-configuration.md`](docs/compactor/phase3-configuration.md)
-* **Operations Guide**: [`docs/compactor/phase3-operations.md`](docs/compactor/phase3-operations.md)
-* **Troubleshooting**: [`docs/compactor/phase3-troubleshooting.md`](docs/compactor/phase3-troubleshooting.md)
-* **Implementation Plan**: [`docs/compactor/phase3-implementation-plan.md`](docs/compactor/phase3-implementation-plan.md)
+* **Configuration Reference**: [`docs/operations/compactor/phase3-configuration.md`](docs/operations/compactor/phase3-configuration.md)
+* **Operations Guide**: [`docs/operations/compactor/phase3-operations.md`](docs/operations/compactor/phase3-operations.md)
+* **Troubleshooting**: [`docs/operations/compactor/phase3-troubleshooting.md`](docs/operations/compactor/phase3-troubleshooting.md)
 
 ### Safety Best Practices
 
@@ -571,7 +570,7 @@ spec:
       claimName: writer-wal-pvc
 ```
 
-For detailed WAL persistence configuration, see [docs/deployment/wal-persistence.md](docs/deployment/wal-persistence.md).
+For detailed WAL persistence configuration, see [docs/operations/wal-persistence.md](docs/operations/wal-persistence.md).
 
 ## What is the FDAP stack?
 

@@ -1,3 +1,9 @@
+---
+audience: contributor
+type: decision-record
+status: record
+---
+
 How service discovery works for routing and queries
 
 The mechanism is intentionally configuration-light so that you can add or remove services without touching client-facing endpoints. It supports both catalog-based and NATS-based discovery mechanisms.

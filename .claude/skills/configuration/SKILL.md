@@ -2,6 +2,9 @@
 name: configuration
 description: SignalDB configuration reference - all TOML sections, environment variables, database/discovery/storage/WAL/schema/auth/queue settings, and service ports. Use when working with configuration, environment variables, or TOML settings.
 user-invocable: false
+sources:
+  - src/common/src/config/mod.rs
+  - signaldb.dist.toml
 ---
 
 # SignalDB Configuration Reference

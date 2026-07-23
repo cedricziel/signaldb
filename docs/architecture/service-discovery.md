@@ -1,3 +1,13 @@
+---
+audience: contributor
+type: explanation
+status: living
+sources:
+  - src/common/src/catalog.rs
+  - src/common/src/service_bootstrap.rs
+  - src/common/src/flight/transport.rs
+---
+
 # Service Discovery Design
 
 ## Context
@@ -60,6 +70,22 @@ CREATE TABLE shard_owners (
 | **querier** | Catalog | Database via `ServiceBootstrap` | ✅ Implemented |
 
 ## Registration Process ✅ **Current Implementation**
+
+```mermaid
+sequenceDiagram
+    participant S as Service
+    participant Cat as Service catalog (PostgreSQL/SQLite)
+    participant P as Peer service
+
+    S->>Cat: ServiceBootstrap register (id, address, capabilities)
+    loop heartbeat interval
+        S->>Cat: heartbeat, refresh last_seen
+    end
+    P->>Cat: discover by capability
+    Cat-->>P: endpoints with fresh last_seen
+    P->>S: pooled Flight connection
+    S->>Cat: set stopped_at on graceful shutdown
+```
 
 ### 1. Service Startup
 ```rust

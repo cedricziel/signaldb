@@ -1,3 +1,9 @@
+---
+audience: contributor
+type: decision-record
+status: record
+---
+
 Deep-dive: the Ingest layer
 
 The ingest tier is the write-front of the FDAP architecture, turning a bursty stream of client writes into well-formed, query-ready Parquet files while guaranteeing durability and low-latency visibility. It is split into two logical services—**Acceptor** and **Writer**—so that each concern can scale or fail independently.

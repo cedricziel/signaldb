@@ -1,3 +1,12 @@
+---
+audience: operator
+type: reference
+status: living
+sources:
+  - src/compactor/src/**
+  - src/common/src/config/mod.rs
+---
+
 # Phase 3 Configuration Reference
 
 Complete reference for configuring SignalDB Compactor Phase 3: Retention Enforcement and Lifecycle Management.

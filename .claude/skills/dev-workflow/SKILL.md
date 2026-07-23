@@ -1,6 +1,10 @@
 ---
 name: dev-workflow
 description: SignalDB development workflow - build, test, lint, format, run services, Docker, Grafana plugin, health checks, and semantic commits. Use when building, testing, running, or deploying SignalDB.
+sources:
+  - CLAUDE.md
+  - scripts/run-dev.sh
+  - docker-compose.yml
 ---
 
 # SignalDB Development Workflow

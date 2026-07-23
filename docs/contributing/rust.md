@@ -1,6 +1,34 @@
+---
+audience: contributor
+type: reference
+status: living
+---
+
 # Rust Best Practices
 
 This document defines the Rust coding standards for the SignalDB project.
+
+## Edition & Toolchain
+
+- Rust Edition **2024**
+- Project tracks stable Rust (no MSRV policy — SignalDB ships binaries, not a library)
+
+## Clippy Compliance
+
+```rust
+// ✅ Direct variable interpolation
+format!("Service {service_id} at {address}")
+log::info!("Discovered {count} services")
+
+// ✅ Use vec! macro
+let items = vec![item1, item2, item3];
+
+// ✅ Prefer !is_empty() over len() > 0
+if !items.is_empty() { ... }
+
+// ✅ Use panic! for intentional panics
+panic!("Failed to initialize: {error}");
+```
 
 ## Error Handling
 

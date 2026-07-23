@@ -2,6 +2,10 @@
 name: architecture
 description: SignalDB architecture reference - FDAP stack, write/query data flow, service components, deployment models, and dual catalog system. Use when understanding how components fit together, data flow, or system design.
 user-invocable: false
+sources:
+  - docs/architecture/overview.md
+  - src/signaldb-bin/src/**
+  - Cargo.toml
 ---
 
 # SignalDB Architecture Reference

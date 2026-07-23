@@ -1,3 +1,14 @@
+---
+audience: contributor
+type: explanation
+status: living
+sources:
+  - src/common/src/storage.rs
+  - src/common/src/wal/**
+  - src/common/src/catalog_manager.rs
+  - src/common/src/schema/iceberg_schemas.rs
+---
+
 # Storage Layout Design
 
 ## Overview
@@ -491,6 +502,17 @@ pub struct WalEntry {
 ```
 
 ### Segment Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Active: segment created (incremented ID)
+    Active --> Active: append entries to .log and .data
+    Active --> Rotated: size exceeds max_segment_size
+    Rotated --> Rotated: WalProcessor marks entries processed in .index
+    Rotated --> Compacted: partially processed, above compaction threshold
+    Rotated --> [*]: fully processed, segment deleted
+    Compacted --> [*]: fully processed, segment deleted
+```
 
 1. **Write**: New entries appended to current segment's `.log` and `.data` files
 2. **Rotation**: When segment exceeds `max_segment_size` (64MB default), a new segment is created with incremented ID

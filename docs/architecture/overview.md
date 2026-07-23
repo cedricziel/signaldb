@@ -1,3 +1,12 @@
+---
+audience: contributor
+type: explanation
+status: living
+sources:
+  - Cargo.toml
+  - src/signaldb-bin/src/**
+---
+
 # SignalDB Architecture Overview
 
 ## Introduction
@@ -72,40 +81,29 @@ Parquet storage with DataFusion query processing:
 
 ### Data Flow Overview
 
+Write path — both the Acceptor and the Writer keep their own WAL; the client is
+acknowledged once data is durable in both, and Parquet is written asynchronously:
+
+```mermaid
+flowchart LR
+    Client["OTLP client"] -->|"gRPC :4317 / HTTP :4318"| Acceptor
+    Acceptor -->|"append + flush"| AWal[("Acceptor WAL")]
+    Acceptor -->|"Flight do_put"| Writer["Writer :50061"]
+    Writer -->|"append (v2 schema)"| WWal[("Writer WAL")]
+    WWal -->|"WalProcessor (1s loop)"| Iceberg["Iceberg commit"]
+    Iceberg --> Store[("Object store (Parquet)")]
+    Iceberg --> Cat[("Iceberg catalog (SQLite)")]
 ```
-Write Path:
 
-  OTLP Client (gRPC/HTTP)
-       |
-       v
-  ┌──────────┐      Flight       ┌──────────┐      Parquet      ┌──────────────┐
-  │ Acceptor │ ────────────────> │  Writer  │ ────────────────> │ Object Store │
-  │ :4317/18 │                   │  :50061  │                   │ (file/s3)    │
-  └──────────┘                   └──────────┘                   └──────────────┘
-                                      |                               |
-                                      v                               v
-                                 ┌──────────┐                  ┌──────────────┐
-                                 │   WAL    │                  │   Iceberg    │
-                                 │ (Disk)   │                  │   Catalog    │
-                                 └──────────┘                  │  (SQLite)   │
-                                                               └──────────────┘
+Query path:
 
-Query Path:
-
-  HTTP Client (Tempo API)
-       |
-       v
-  ┌──────────┐      Flight       ┌──────────┐    DataFusion     ┌──────────────┐
-  │  Router  │ ────────────────> │ Querier  │ ────────────────> │ Object Store │
-  │  :3000   │                   │  :50054  │                   │  (Parquet)   │
-  │  :50053  │                   └──────────┘                   └──────────────┘
-  └──────────┘                        |
-                                      v
-                                 ┌──────────────┐
-                                 │   Iceberg    │
-                                 │   Catalog    │
-                                 │  (SQLite)    │
-                                 └──────────────┘
+```mermaid
+flowchart LR
+    Client["Tempo API client"] -->|"HTTP :3000"| Router["Router :3000 / :50053"]
+    Router -->|"Flight do_get"| Querier["Querier :50054"]
+    Querier -->|"table metadata"| Cat[("Iceberg catalog (SQLite)")]
+    Querier -->|"DataFusion scan"| Store[("Object store (Parquet)")]
+    Router -->|"JSON (Tempo format)"| Client
 ```
 
 ### Write Path Detail
@@ -113,12 +111,13 @@ Query Path:
 1. **OTLP Ingestion**: Client sends traces/logs/metrics via gRPC (port 4317) or HTTP (port 4318) to the Acceptor. The Acceptor also supports Prometheus remote_write at `/api/v1/write`.
 2. **Authentication**: Acceptor validates the API key via `Authorization: Bearer <key>` header, resolves tenant and dataset context.
 3. **OTLP-to-Arrow Conversion**: Acceptor converts OTLP protobuf data to Arrow RecordBatches using Flight schemas (v1 format).
-4. **Flight Transfer**: Acceptor sends Arrow RecordBatches to a Writer via Flight `do_put`, discovered by `Storage` capability.
-5. **Schema Transformation**: Writer transforms v1 Flight schema to v2 Iceberg schema (field renames, type conversions, computed partition fields).
-6. **WAL Persistence**: Writer writes transformed data to its WAL (segmented by tenant/dataset/signal type).
-7. **Client Acknowledgment**: Acceptor receives success from Writer and acknowledges to the client.
-8. **Background Flush**: Writer's `WalProcessor` reads WAL entries every 5 seconds, creates/loads Iceberg tables, and writes Parquet files to the object store via DataFusion.
-9. **WAL Cleanup**: Processed WAL entries are marked and fully-processed segments are deleted.
+4. **Acceptor WAL**: Acceptor appends the Arrow batch to its own WAL (per tenant/dataset/signal type) and flushes it before forwarding.
+5. **Flight Transfer**: Acceptor sends Arrow RecordBatches to a Writer via Flight `do_put`, discovered by `Storage` capability.
+6. **Schema Transformation**: Writer transforms v1 Flight schema to v2 Iceberg schema (field renames, type conversions, computed partition fields).
+7. **Writer WAL Persistence**: Writer writes transformed data to its WAL (segmented by tenant/dataset/signal type) and confirms to the Acceptor.
+8. **Client Acknowledgment**: Acceptor marks its WAL entry processed and acknowledges to the client.
+9. **Background Flush**: Writer's `WalProcessor` reads WAL entries every second, creates/loads Iceberg tables, and writes Parquet files to the object store via DataFusion.
+10. **WAL Cleanup**: Processed WAL entries are marked and fully-processed segments are deleted.
 
 ### Query Path Detail
 
@@ -164,7 +163,7 @@ Query Path:
 
 - `IcebergWriterFlightService`: Flight server accepting `do_put` for trace/log/metric data
 - Transforms v1 Flight schema to v2 Iceberg schema before WAL write
-- `WalProcessor`: Background task (5s interval) that reads WAL entries and writes to Iceberg tables
+- `WalProcessor`: Background task (1s interval) that reads WAL entries and writes to Iceberg tables
 - Caches `IcebergTableWriter` instances per `{tenant}:{dataset}:{table}` combination
 - Creates Iceberg tables on first write with schema and partition spec from `iceberg_schemas`
 
@@ -328,7 +327,7 @@ Schema definitions are managed in `schemas.toml` at the repository root and comp
 
 The Flight wire format (v1) and Iceberg storage format (v2) differ intentionally. The Writer applies schema transformations at ingestion time via `transform_trace_v1_to_v2()`.
 
-For full details on table schemas, partitioning, and the object store layout, see [Storage Layout Design](design/storage-layout.md).
+For full details on table schemas, partitioning, and the object store layout, see [Storage Layout Design](storage-layout.md).
 
 ## Deployment Models
 

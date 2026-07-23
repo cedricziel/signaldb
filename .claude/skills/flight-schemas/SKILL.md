@@ -2,6 +2,12 @@
 name: flight-schemas
 description: SignalDB Flight schemas and schema versioning - v1 wire format vs v2 storage format, schema inheritance, write-time transformations, traces/logs/metrics table schemas, and Flight RPC methods per service. Use when working with Arrow schemas, OTLP conversion, schema transforms, or Iceberg table schemas.
 user-invocable: false
+sources:
+  - schemas.toml
+  - src/common/src/flight/schema.rs
+  - src/writer/src/schema_transform.rs
+  - src/common/src/schema/schema_parser.rs
+  - src/common/src/schema/iceberg_schemas.rs
 ---
 
 # SignalDB Flight Schemas & Schema Versioning

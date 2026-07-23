@@ -1,3 +1,11 @@
+---
+audience: contributor
+type: explanation
+status: living
+sources:
+  - src/common/src/flight/**
+---
+
 # SignalDB Flight Communication Design
 
 ## 1. Introduction
@@ -151,15 +159,50 @@ let stream = client.do_get(Ticket::new(descriptor.cmd)).await?;
 ### 5.1 Current Data Flow ✅ **Working**
 
 #### Trace Ingestion Flow:
+
+```mermaid
+sequenceDiagram
+    participant C as OTLP client
+    participant A as Acceptor
+    participant W as Writer (Storage capability)
+    participant O as Object store
+
+    C->>A: OTLP traces (gRPC)
+    A->>A: convert to Arrow (otlp_traces_to_arrow)
+    A->>A: append to Acceptor WAL + flush
+    A->>W: Flight DoPut (Arrow batches)
+    W->>W: transform v1 to v2, append to Writer WAL
+    W-->>A: confirm
+    A->>A: mark WAL entry processed
+    A-->>C: acknowledge
+    Note over W,O: asynchronous, WalProcessor 1s loop
+    W->>O: Iceberg commit (Parquet files)
+```
+
 1. Acceptor receives OTLP trace data via gRPC
-2. Acceptor writes data to WAL for durability (fsync to disk)
-3. Acceptor converts OTLP to Arrow format using `otlp_traces_to_arrow`
+2. Acceptor converts OTLP to Arrow format using `otlp_traces_to_arrow`
+3. Acceptor appends the batch to its WAL and flushes for durability
 4. Acceptor uses Flight `DoPut` to send Arrow data to Writer (Storage capability)
-5. Writer persists data to Parquet storage via object_store
-6. Writer confirms successful storage
-7. Acceptor marks WAL entry as processed
+5. Writer transforms to the v2 storage schema and appends to its own WAL
+6. Writer confirms; Acceptor marks its WAL entry as processed
+7. Writer's `WalProcessor` asynchronously commits WAL entries to Iceberg (Parquet in the object store)
 
 #### Query Flow:
+
+```mermaid
+sequenceDiagram
+    participant C as HTTP client
+    participant R as Router
+    participant Q as Querier
+    participant O as Object store
+
+    C->>R: Tempo API query (HTTP)
+    R->>Q: Flight do_get ticket
+    Q->>O: DataFusion scan (Parquet)
+    Q-->>R: Arrow RecordBatch stream
+    R-->>C: JSON response
+```
+
 1. Client sends HTTP query to Router
 2. Router forwards query to Querier via Flight
 3. Querier executes query using DataFusion against Parquet files

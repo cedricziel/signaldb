@@ -1,3 +1,11 @@
+---
+audience: operator
+type: how-to
+status: living
+sources:
+  - src/common/src/wal/**
+---
+
 # WAL Persistence Configuration
 
 SignalDB implements Write-Ahead Logging (WAL) to provide durability guarantees for incoming observability data. This document describes WAL configuration, deployment patterns, and operational best practices.
