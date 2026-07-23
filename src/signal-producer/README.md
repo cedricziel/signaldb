@@ -68,7 +68,7 @@ cargo run --bin signal-producer
 ### Integration with SignalDB
 ```bash
 # Start SignalDB acceptor
-cargo run --bin acceptor
+cargo run --bin signaldb-acceptor
 
 # In another terminal, run signal producer
 cargo run --bin signal-producer
@@ -193,7 +193,7 @@ wait
 # Example GitHub Actions step
 - name: Generate test signals
   run: |
-    cargo run --bin acceptor &
+    cargo run --bin signaldb-acceptor &
     sleep 5
     cargo run --bin signal-producer
     
