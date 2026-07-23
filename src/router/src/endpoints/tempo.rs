@@ -602,13 +602,13 @@ pub async fn query_single_trace<S: RouterState>(
             let mut stream = response.into_inner();
             let mut trace_data = Vec::new();
 
-            // Collect all flight data
+            // Collect all flight data. The querier's terminal status can
+            // surface here rather than at do_get, so map it in both places.
             while let Some(flight_data) = stream.next().await {
                 match flight_data {
                     Ok(data) => trace_data.push(data),
                     Err(e) => {
-                        tracing::error!(error = %e, "Error reading flight data");
-                        return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+                        return Err(trace_lookup_status_to_http(&trace_id, &e));
                     }
                 }
             }
@@ -629,14 +629,41 @@ pub async fn query_single_trace<S: RouterState>(
             }
         }
         Err(e) => {
-            tracing::error!(trace_id = %trace_id, error = %e, "Flight query failed for trace");
-            return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+            return Err(trace_lookup_status_to_http(&trace_id, &e));
         }
     }
 
     // Return 404 when no trace data is found
     tracing::info!(trace_id = %trace_id, "Trace not found");
     Err(axum::http::StatusCode::NOT_FOUND)
+}
+
+/// Map the querier's Flight status for a trace lookup onto an HTTP status.
+/// Not-found is an expected outcome and logged at info; everything else is
+/// an error.
+fn trace_lookup_status_to_http(trace_id: &str, status: &tonic::Status) -> axum::http::StatusCode {
+    match status.code() {
+        tonic::Code::NotFound => {
+            tracing::info!(trace_id = %trace_id, "Trace not found");
+            axum::http::StatusCode::NOT_FOUND
+        }
+        tonic::Code::InvalidArgument => {
+            tracing::warn!(trace_id = %trace_id, error = %status, "Invalid trace query");
+            axum::http::StatusCode::BAD_REQUEST
+        }
+        tonic::Code::ResourceExhausted => {
+            tracing::warn!(trace_id = %trace_id, error = %status, "Trace query throttled");
+            axum::http::StatusCode::TOO_MANY_REQUESTS
+        }
+        tonic::Code::DeadlineExceeded => {
+            tracing::error!(trace_id = %trace_id, error = %status, "Trace query timed out");
+            axum::http::StatusCode::GATEWAY_TIMEOUT
+        }
+        _ => {
+            tracing::error!(trace_id = %trace_id, error = %status, "Flight query failed for trace");
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
 }
 
 /// GET https://grafana.com/docs/tempo/latest/api_docs/#search

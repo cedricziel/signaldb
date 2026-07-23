@@ -815,11 +815,24 @@ impl FlightService for QuerierFlightService {
                             }
                             Ok(None) => {
                                 tracing::info!("No trace found");
-                                vec![]
+                                let e = crate::query::error::QuerierError::TraceNotFound;
+                                return Err(Status::not_found(e.to_string()));
                             }
                             Err(e) => {
                                 tracing::error!(error = ?e, "Error querying trace");
-                                return Err(Status::internal(format!("Trace query failed: {e:?}")));
+                                // Mirror the search arm: caller errors are
+                                // surfaced as such instead of a blanket 500.
+                                return Err(match e {
+                                    crate::query::error::QuerierError::InvalidInput(msg) => {
+                                        Status::invalid_argument(msg)
+                                    }
+                                    crate::query::error::QuerierError::Unsupported(msg) => {
+                                        Status::unimplemented(msg)
+                                    }
+                                    other => {
+                                        Status::internal(format!("Trace query failed: {other:?}"))
+                                    }
+                                });
                             }
                         }
                     }
