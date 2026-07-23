@@ -409,9 +409,7 @@ mod tests {
                 schema_config: None,
                 limits: None,
             }],
-            admin_api_key: None,
-            internal_service_key: None,
-            default_limits: Default::default(),
+            ..Default::default()
         };
         let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 

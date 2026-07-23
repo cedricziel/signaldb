@@ -191,9 +191,8 @@ mod tests {
                 schema_config: None,
                 limits: None,
             }],
-            admin_api_key: None,
             internal_service_key: Some("internal-secret".to_string()),
-            default_limits: Default::default(),
+            ..Default::default()
         };
         let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
         FlightAuthInterceptor::new(authenticator, "internal-secret".to_string())

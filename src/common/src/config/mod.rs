@@ -545,6 +545,11 @@ pub struct TenantLimits {
     pub max_api_keys: Option<u32>,
     /// Maximum number of datasets.
     pub max_datasets: Option<u32>,
+    /// Maximum total storage (live Iceberg data-file bytes) the tenant may
+    /// hold. Ingest is rejected while usage is at or above this cap.
+    /// Enforcement is eventually consistent: usage is refreshed
+    /// periodically from table metadata, not on the hot path.
+    pub max_storage_bytes: Option<u64>,
     /// Burst allowance in seconds of budget (minimum 1.0).
     pub burst_seconds: f64,
 }
@@ -557,6 +562,7 @@ impl Default for TenantLimits {
             max_query_requests_per_sec: None,
             max_api_keys: None,
             max_datasets: None,
+            max_storage_bytes: None,
             burst_seconds: 2.0,
         }
     }
@@ -568,12 +574,19 @@ impl Default for TenantLimits {
 /// query surfaces; there is no off switch (the former `enabled` flag was
 /// dead config that never gated anything, issue #553). The internal
 /// Flight mesh is separately controlled by `internal_service_key`.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AuthConfig {
     /// Default rate limits and quotas applied to every tenant without an
     /// explicit `limits` override. Unset fields mean unlimited.
     #[serde(default)]
     pub default_limits: TenantLimits,
+    /// How often per-tenant storage usage is recomputed from Iceberg table
+    /// metadata when any `max_storage_bytes` quota is configured.
+    #[serde(
+        default = "default_storage_usage_refresh_interval",
+        with = "humantime_serde"
+    )]
+    pub storage_usage_refresh_interval: Duration,
     /// List of configured tenants
     #[serde(default)]
     pub tenants: Vec<TenantConfig>,
@@ -589,6 +602,22 @@ pub struct AuthConfig {
     /// network.
     #[serde(default)]
     pub internal_service_key: Option<String>,
+}
+
+fn default_storage_usage_refresh_interval() -> Duration {
+    Duration::from_secs(60)
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            default_limits: TenantLimits::default(),
+            storage_usage_refresh_interval: default_storage_usage_refresh_interval(),
+            tenants: Vec::new(),
+            admin_api_key: None,
+            internal_service_key: None,
+        }
+    }
 }
 
 impl AuthConfig {

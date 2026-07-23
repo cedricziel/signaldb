@@ -114,6 +114,7 @@ async fn setup_prometheus_test() -> (axum::Router, TempDir) {
         admin_api_key: None,
         internal_service_key: None,
         default_limits: Default::default(),
+        storage_usage_refresh_interval: std::time::Duration::from_secs(60),
         tenants: vec![common::config::TenantConfig {
             id: "test-tenant".to_string(),
             slug: "test-tenant".to_string(),
