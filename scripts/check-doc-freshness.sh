@@ -29,6 +29,58 @@ else
 fi
 [[ -z "$changed" ]] && exit 0
 
+# --- Frontmatter validation -------------------------------------------------
+# Every doc under docs/ must declare audience/type/status; without valid
+# frontmatter a doc would silently opt out of the freshness system.
+errors=0
+while IFS= read -r doc; do
+    fm=$(awk 'NR==1 && $0!="---"{exit} /^---$/{n++; next} n==1{print} n>=2{exit}' "$doc")
+    if [[ -z "$fm" ]]; then
+        echo "INVALID $doc: missing frontmatter (audience, type, status required)"
+        errors=1
+        continue
+    fi
+    audience=$(sed -n 's/^audience:[[:space:]]*//p' <<<"$fm")
+    doctype=$(sed -n 's/^type:[[:space:]]*//p' <<<"$fm")
+    status=$(sed -n 's/^status:[[:space:]]*//p' <<<"$fm")
+    case "$audience" in
+        user | operator | contributor) ;;
+        *)
+            echo "INVALID $doc: audience '$audience' not one of user|operator|contributor"
+            errors=1
+            ;;
+    esac
+    case "$doctype" in
+        tutorial | how-to | reference | explanation | decision-record) ;;
+        *)
+            echo "INVALID $doc: type '$doctype' not one of tutorial|how-to|reference|explanation|decision-record"
+            errors=1
+            ;;
+    esac
+    case "$status" in
+        living | record) ;;
+        *)
+            echo "INVALID $doc: status '$status' not one of living|record"
+            errors=1
+            ;;
+    esac
+    case "$doc" in
+        docs/users/*) want=user ;;
+        docs/operations/*) want=operator ;;
+        docs/architecture/* | docs/contributing/*) want=contributor ;;
+        *) want="" ;;
+    esac
+    if [[ -n "$want" && -n "$audience" && "$audience" != "$want" ]]; then
+        echo "INVALID $doc: audience '$audience' but its directory implies '$want'"
+        errors=1
+    fi
+    if [[ "$doc" == docs/architecture/decisions/* && "$status" != "record" ]]; then
+        echo "INVALID $doc: decision records must have status: record"
+        errors=1
+    fi
+done < <(find docs -name '*.md' -type f 2>/dev/null | sort)
+
+# --- Freshness: changed sources without a doc update ------------------------
 stale=0
 while IFS= read -r doc; do
     # Frontmatter = lines between the first pair of --- markers.
@@ -65,4 +117,5 @@ while IFS= read -r doc; do
     fi
 done < <(find docs .claude/skills -name '*.md' -type f 2>/dev/null | sort)
 
-exit $stale
+[[ $stale -eq 1 || $errors -eq 1 ]] && exit 1
+exit 0

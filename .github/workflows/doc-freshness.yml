@@ -17,12 +17,14 @@ jobs:
       - name: Check doc freshness
         run: |
           if ! ./scripts/check-doc-freshness.sh "origin/${{ github.base_ref }}...HEAD" > report.txt; then
-            echo "This PR changes files that the following living docs declare as sources," >&2
-            echo "but the docs were not updated in the same PR:" >&2
+            echo "Doc hygiene check failed:" >&2
             echo >&2
             cat report.txt >&2
             echo >&2
-            echo "Update the listed docs/skills, or add the 'docs-not-needed' label if no" >&2
-            echo "documentation change is genuinely required." >&2
+            echo "Lines marked INVALID are frontmatter problems - fix the doc's" >&2
+            echo "audience/type/status frontmatter (see .claude/skills/docs/SKILL.md)." >&2
+            echo "Other lines are living docs whose declared sources changed in this PR" >&2
+            echo "without a doc update - update them, or add the 'docs-not-needed' label" >&2
+            echo "if no documentation change is genuinely required." >&2
             exit 1
           fi
