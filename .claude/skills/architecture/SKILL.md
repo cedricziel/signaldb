@@ -59,9 +59,10 @@ HTTP Client (Tempo API)
 
 Key details:
 1. Router validates auth, discovers Queriers via `QueryExecution` capability
-2. Flight tickets encode query type + tenant context: `find_trace:{tenant}:{dataset}:{trace_id}`
+2. Flight tickets encode query type + tenant context: `find_trace:{tenant}:{dataset}:{trace_id}[:{start}:{end}]` (optional unix-second time hints)
 3. Querier uses `TenantCatalog` to bridge DataFusion 3-level model to Iceberg 2-level namespace
-4. Results stream back as Arrow RecordBatches via Flight
+4. Results stream back as Arrow RecordBatches via Flight (trace not found -> Flight `not_found` status)
+5. Standalone querier also serves Tempo's `tempopb.Querier` gRPC protocol on the Flight port (see `tempo-api` skill)
 
 ## Service Components
 
