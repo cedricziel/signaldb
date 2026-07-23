@@ -38,6 +38,11 @@ pub fn router<S: RouterState>() -> Router<S> {
         .route("/profile-types", get(profile_types::<S>))
 }
 
+/// Routes for trace-to-profile correlation, nested at `/api/profiles`.
+pub fn profiles_router<S: RouterState>() -> Router<S> {
+    Router::new().route("/trace/{trace_id}", get(profiles_by_trace::<S>))
+}
+
 /// Query parameters for `/render` and `/render-diff`.
 #[derive(Debug, Default, Deserialize)]
 pub struct RenderParams {
@@ -425,6 +430,107 @@ pub async fn profile_types<S: RouterState>(
         })
         .collect();
     Ok(axum::Json(types))
+}
+
+/// Decode profile summary batches (the querier's search/by-trace column
+/// set) into API summaries.
+pub(crate) fn batches_to_profile_summaries(
+    batches: &[RecordBatch],
+) -> Vec<tempo_api::ProfileSummary> {
+    use datafusion::arrow::array::{Int64Array, TimestampNanosecondArray};
+
+    let mut summaries = Vec::new();
+    for batch in batches {
+        let get_string = |name: &str| {
+            batch
+                .column_by_name(name)
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+        };
+        let Some(profile_ids) = get_string("profile_id") else {
+            continue;
+        };
+        let timestamps = batch
+            .column_by_name("timestamp")
+            .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>());
+        let durations = batch
+            .column_by_name("duration_nano")
+            .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
+        let sample_types = get_string("sample_type");
+        let sample_units = get_string("sample_unit");
+        let service_names = get_string("service_name");
+        let span_ids = get_string("span_id");
+
+        let value = |col: Option<&StringArray>, i: usize| -> String {
+            col.map(|c| {
+                if c.is_null(i) {
+                    String::new()
+                } else {
+                    c.value(i).to_string()
+                }
+            })
+            .unwrap_or_default()
+        };
+
+        for i in 0..batch.num_rows() {
+            summaries.push(tempo_api::ProfileSummary {
+                profile_id: value(Some(profile_ids), i),
+                time_unix_nano: timestamps
+                    .map(|t| if t.is_null(i) { 0 } else { t.value(i) })
+                    .unwrap_or(0)
+                    .to_string(),
+                duration_nano: durations
+                    .map(|d| if d.is_null(i) { 0 } else { d.value(i) })
+                    .unwrap_or(0)
+                    .to_string(),
+                sample_type: value(sample_types, i),
+                sample_unit: value(sample_units, i),
+                service_name: value(service_names, i),
+                span_id: span_ids.and_then(|c| {
+                    if c.is_null(i) || c.value(i).is_empty() {
+                        None
+                    } else {
+                        Some(c.value(i).to_string())
+                    }
+                }),
+            });
+        }
+    }
+    summaries
+}
+
+/// Fetch summaries of profiles linked to a trace via the querier.
+pub(crate) async fn fetch_profiles_for_trace<S: RouterState>(
+    state: &S,
+    tenant_slug: &str,
+    dataset_slug: &str,
+    trace_id: &str,
+) -> Result<Vec<tempo_api::ProfileSummary>, StatusCode> {
+    let ticket = format!("profiles_by_trace:{tenant_slug}:{dataset_slug}:{trace_id}");
+    let batches = execute_ticket(state, ticket).await?;
+    Ok(batches_to_profile_summaries(&batches))
+}
+
+/// GET /api/profiles/trace/{trace_id} — profiles linked to a trace.
+#[tracing::instrument(
+    skip(state, tenant_ctx),
+    fields(
+        tenant_id = %tenant_ctx.0.tenant_id,
+        dataset_id = %tenant_ctx.0.dataset_id
+    )
+)]
+pub async fn profiles_by_trace<S: RouterState>(
+    State(state): State<S>,
+    tenant_ctx: TenantContextExtractor,
+    axum::extract::Path(trace_id): axum::extract::Path<String>,
+) -> Result<axum::Json<Vec<tempo_api::ProfileSummary>>, StatusCode> {
+    let summaries = fetch_profiles_for_trace(
+        &state,
+        &tenant_ctx.0.tenant_slug,
+        &tenant_ctx.0.dataset_slug,
+        &trace_id,
+    )
+    .await?;
+    Ok(axum::Json(summaries))
 }
 
 #[cfg(test)]

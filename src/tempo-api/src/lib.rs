@@ -35,6 +35,9 @@ pub mod v2;
 pub struct TraceQueryParams {
     pub start: Option<i64>,
     pub end: Option<i64>,
+    /// When true, attach summaries of profiles linked to this trace.
+    #[serde(default)]
+    pub include_profiles: Option<bool>,
 }
 
 /// Parameters for TraceQL metrics queries
@@ -154,6 +157,30 @@ pub struct Trace {
     pub duration_ms: u64,
     #[serde(rename = "spanSets")]
     pub span_sets: Vec<SpanSet>,
+    /// Summaries of profiles linked to this trace; present only when the
+    /// client asked for them via `include_profiles`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profiles: Option<Vec<ProfileSummary>>,
+}
+
+/// Summary of a stored profile linked to a trace, without the bulky
+/// stack/sample payloads.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ProfileSummary {
+    #[serde(rename = "profileID")]
+    pub profile_id: String,
+    #[serde(rename = "timeUnixNano")]
+    pub time_unix_nano: String,
+    #[serde(rename = "durationNano")]
+    pub duration_nano: String,
+    #[serde(rename = "sampleType")]
+    pub sample_type: String,
+    #[serde(rename = "sampleUnit")]
+    pub sample_unit: String,
+    #[serde(rename = "serviceName")]
+    pub service_name: String,
+    #[serde(rename = "spanID", default, skip_serializing_if = "Option::is_none")]
+    pub span_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -261,6 +288,7 @@ mod tests {
                 }],
                 matched: 1,
             }],
+            profiles: None,
         }];
 
         let metrics = vec![("error".to_string(), 1)].into_iter().collect();
@@ -294,6 +322,7 @@ mod tests {
                 }],
                 matched: 1,
             }],
+            profiles: None,
         };
 
         assert_eq!(trace.trace_id, "2f3e0cee77ae5dc9c17ade3689eb2e54");

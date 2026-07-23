@@ -834,6 +834,82 @@ pub mod types {
             Default::default()
         }
     }
+    ///Summary of a stored profile linked to a trace
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Summary of a stored profile linked to a trace",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "durationNano",
+    ///    "profileID",
+    ///    "sampleType",
+    ///    "sampleUnit",
+    ///    "serviceName",
+    ///    "timeUnixNano"
+    ///  ],
+    ///  "properties": {
+    ///    "durationNano": {
+    ///      "description": "Profile duration in nanoseconds as string",
+    ///      "type": "string"
+    ///    },
+    ///    "profileID": {
+    ///      "description": "Hex-encoded profile ID",
+    ///      "type": "string"
+    ///    },
+    ///    "sampleType": {
+    ///      "type": "string"
+    ///    },
+    ///    "sampleUnit": {
+    ///      "type": "string"
+    ///    },
+    ///    "serviceName": {
+    ///      "type": "string"
+    ///    },
+    ///    "spanID": {
+    ///      "description": "Hex-encoded span ID when the link names a span",
+    ///      "type": "string"
+    ///    },
+    ///    "timeUnixNano": {
+    ///      "description": "Collection time, unix nanoseconds as string",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct TraceProfileSummary {
+        ///Profile duration in nanoseconds as string
+        #[serde(rename = "durationNano")]
+        pub duration_nano: ::std::string::String,
+        ///Hex-encoded profile ID
+        #[serde(rename = "profileID")]
+        pub profile_id: ::std::string::String,
+        #[serde(rename = "sampleType")]
+        pub sample_type: ::std::string::String,
+        #[serde(rename = "sampleUnit")]
+        pub sample_unit: ::std::string::String,
+        #[serde(rename = "serviceName")]
+        pub service_name: ::std::string::String,
+        ///Hex-encoded span ID when the link names a span
+        #[serde(
+            rename = "spanID",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        pub span_id: ::std::option::Option<::std::string::String>,
+        ///Collection time, unix nanoseconds as string
+        #[serde(rename = "timeUnixNano")]
+        pub time_unix_nano: ::std::string::String,
+    }
+    impl TraceProfileSummary {
+        pub fn builder() -> builder::TraceProfileSummary {
+            Default::default()
+        }
+    }
     ///Request body for updating an existing tenant
     ///
     /// <details><summary>JSON schema</summary>
@@ -2093,6 +2169,133 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct TraceProfileSummary {
+            duration_nano: ::std::result::Result<::std::string::String, ::std::string::String>,
+            profile_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            sample_type: ::std::result::Result<::std::string::String, ::std::string::String>,
+            sample_unit: ::std::result::Result<::std::string::String, ::std::string::String>,
+            service_name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            span_id: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            time_unix_nano: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for TraceProfileSummary {
+            fn default() -> Self {
+                Self {
+                    duration_nano: Err("no value supplied for duration_nano".to_string()),
+                    profile_id: Err("no value supplied for profile_id".to_string()),
+                    sample_type: Err("no value supplied for sample_type".to_string()),
+                    sample_unit: Err("no value supplied for sample_unit".to_string()),
+                    service_name: Err("no value supplied for service_name".to_string()),
+                    span_id: Ok(Default::default()),
+                    time_unix_nano: Err("no value supplied for time_unix_nano".to_string()),
+                }
+            }
+        }
+        impl TraceProfileSummary {
+            pub fn duration_nano<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.duration_nano = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for duration_nano: {e}"));
+                self
+            }
+            pub fn profile_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.profile_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for profile_id: {e}"));
+                self
+            }
+            pub fn sample_type<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.sample_type = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for sample_type: {e}"));
+                self
+            }
+            pub fn sample_unit<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.sample_unit = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for sample_unit: {e}"));
+                self
+            }
+            pub fn service_name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.service_name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for service_name: {e}"));
+                self
+            }
+            pub fn span_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.span_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for span_id: {e}"));
+                self
+            }
+            pub fn time_unix_nano<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.time_unix_nano = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for time_unix_nano: {e}")
+                });
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<TraceProfileSummary> for super::TraceProfileSummary {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: TraceProfileSummary,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    duration_nano: value.duration_nano?,
+                    profile_id: value.profile_id?,
+                    sample_type: value.sample_type?,
+                    sample_unit: value.sample_unit?,
+                    service_name: value.service_name?,
+                    span_id: value.span_id?,
+                    time_unix_nano: value.time_unix_nano?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::TraceProfileSummary> for TraceProfileSummary {
+            fn from(value: super::TraceProfileSummary) -> Self {
+                Self {
+                    duration_nano: Ok(value.duration_nano),
+                    profile_id: Ok(value.profile_id),
+                    sample_type: Ok(value.sample_type),
+                    sample_unit: Ok(value.sample_unit),
+                    service_name: Ok(value.service_name),
+                    span_id: Ok(value.span_id),
+                    time_unix_nano: Ok(value.time_unix_nano),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct UpdateTenantRequest {
             default_dataset: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
@@ -2211,6 +2414,21 @@ impl ClientInfo<()> for Client {
 }
 impl ClientHooks<()> for &Client {}
 impl Client {
+    /**List summaries of profiles linked to a trace
+
+    Sends a `GET` request to `/api/profiles/trace/{trace_id}`
+
+    Arguments:
+    - `trace_id`: Hex-encoded trace ID
+    ```ignore
+    let response = client.list_profiles_for_trace()
+        .trace_id(trace_id)
+        .send()
+        .await;
+    ```*/
+    pub fn list_profiles_for_trace(&self) -> builder::ListProfilesForTrace<'_> {
+        builder::ListProfilesForTrace::new(self)
+    }
     /**List label names present on stored profiles
 
     Sends a `GET` request to `/pyroscope/label-names`
@@ -2476,6 +2694,75 @@ pub mod builder {
         ByteStream, ClientHooks, ClientInfo, Error, OperationInfo, RequestBuilderExt,
         ResponseValue, encode_path,
     };
+    /**Builder for [`Client::list_profiles_for_trace`]
+
+    [`Client::list_profiles_for_trace`]: super::Client::list_profiles_for_trace*/
+    #[derive(Debug, Clone)]
+    pub struct ListProfilesForTrace<'a> {
+        client: &'a super::Client,
+        trace_id: Result<::std::string::String, String>,
+    }
+    impl<'a> ListProfilesForTrace<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                trace_id: Err("trace_id was not initialized".to_string()),
+            }
+        }
+        pub fn trace_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.trace_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for trace_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/profiles/trace/{trace_id}`
+        pub async fn send(
+            self,
+        ) -> Result<
+            ResponseValue<::std::vec::Vec<types::TraceProfileSummary>>,
+            Error<types::ApiError>,
+        > {
+            let Self { client, trace_id } = self;
+            let trace_id = trace_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/profiles/trace/{}",
+                client.baseurl,
+                encode_path(&trace_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "list_profiles_for_trace",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
     /**Builder for [`Client::list_profile_label_names`]
 
     [`Client::list_profile_label_names`]: super::Client::list_profile_label_names*/

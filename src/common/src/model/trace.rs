@@ -26,6 +26,7 @@ impl From<Trace> for tempo_api::Trace {
             start_time_unix_nano: root_span.start_time_unix_nano.to_string(),
             duration_ms,
             span_sets: vec![],
+            profiles: None,
         }
     }
 }

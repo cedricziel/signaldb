@@ -438,6 +438,36 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/PyroscopeProfileType"
+  /api/profiles/trace/{trace_id}:
+    servers:
+      - url: /
+        description: Served at the router root, not under the admin prefix
+    get:
+      operationId: list_profiles_for_trace
+      summary: List summaries of profiles linked to a trace
+      tags: [profiles]
+      parameters:
+        - name: trace_id
+          in: path
+          required: true
+          description: Hex-encoded trace ID
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Profiles linked to the trace
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TraceProfileSummary"
+        "400":
+          description: Invalid trace ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
 components:
   securitySchemes:
     bearerAuth:
@@ -754,3 +784,33 @@ components:
           type: array
           items:
             type: string
+
+    TraceProfileSummary:
+      type: object
+      description: Summary of a stored profile linked to a trace
+      required:
+        - profileID
+        - timeUnixNano
+        - durationNano
+        - sampleType
+        - sampleUnit
+        - serviceName
+      properties:
+        profileID:
+          type: string
+          description: Hex-encoded profile ID
+        timeUnixNano:
+          type: string
+          description: Collection time, unix nanoseconds as string
+        durationNano:
+          type: string
+          description: Profile duration in nanoseconds as string
+        sampleType:
+          type: string
+        sampleUnit:
+          type: string
+        serviceName:
+          type: string
+        spanID:
+          type: string
+          description: Hex-encoded span ID when the link names a span

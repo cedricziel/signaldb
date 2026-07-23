@@ -742,6 +742,77 @@ pub struct TenantResponse {
     ///ISO 8601 last-updated timestamp
     pub updated_at: ::std::string::String,
 }
+///Summary of a stored profile linked to a trace
+///
+/// <details><summary>JSON schema</summary>
+///
+/// ```json
+///{
+///  "description": "Summary of a stored profile linked to a trace",
+///  "type": "object",
+///  "required": [
+///    "durationNano",
+///    "profileID",
+///    "sampleType",
+///    "sampleUnit",
+///    "serviceName",
+///    "timeUnixNano"
+///  ],
+///  "properties": {
+///    "durationNano": {
+///      "description": "Profile duration in nanoseconds as string",
+///      "type": "string"
+///    },
+///    "profileID": {
+///      "description": "Hex-encoded profile ID",
+///      "type": "string"
+///    },
+///    "sampleType": {
+///      "type": "string"
+///    },
+///    "sampleUnit": {
+///      "type": "string"
+///    },
+///    "serviceName": {
+///      "type": "string"
+///    },
+///    "spanID": {
+///      "description": "Hex-encoded span ID when the link names a span",
+///      "type": "string"
+///    },
+///    "timeUnixNano": {
+///      "description": "Collection time, unix nanoseconds as string",
+///      "type": "string"
+///    }
+///  }
+///}
+/// ```
+/// </details>
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct TraceProfileSummary {
+    ///Profile duration in nanoseconds as string
+    #[serde(rename = "durationNano")]
+    pub duration_nano: ::std::string::String,
+    ///Hex-encoded profile ID
+    #[serde(rename = "profileID")]
+    pub profile_id: ::std::string::String,
+    #[serde(rename = "sampleType")]
+    pub sample_type: ::std::string::String,
+    #[serde(rename = "sampleUnit")]
+    pub sample_unit: ::std::string::String,
+    #[serde(rename = "serviceName")]
+    pub service_name: ::std::string::String,
+    ///Hex-encoded span ID when the link names a span
+    #[serde(
+        rename = "spanID",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub span_id: ::std::option::Option<::std::string::String>,
+    ///Collection time, unix nanoseconds as string
+    #[serde(rename = "timeUnixNano")]
+    pub time_unix_nano: ::std::string::String,
+}
 ///Request body for updating an existing tenant
 ///
 /// <details><summary>JSON schema</summary>
