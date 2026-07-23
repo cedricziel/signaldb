@@ -43,8 +43,8 @@ Independent services for scalable production deployments:
 
 * **signaldb-acceptor**: OTLP data ingestion (gRPC port 4317, HTTP port 4318)
 * **signaldb-router**: Query routing and Tempo API compatibility (HTTP port 3000, Flight port 50053)
-* **signaldb-writer**: Data persistence with WAL durability (Flight port 50051)
-* **signaldb-querier**: DataFusion-powered query execution (Flight port 9000)
+* **signaldb-writer**: Data persistence with WAL durability (Flight port 50061)
+* **signaldb-querier**: DataFusion-powered query execution (Flight port 50054)
 
 ### Data Flow Architecture
 
@@ -133,20 +133,18 @@ dry_run = false  # Always test with true first!
 retention_check_interval = "1h"
 grace_period = "1h"  # Safety margin
 
-# Global defaults (all tenants)
+# Global defaults (all tenants) - these are the built-in defaults
 traces = "7d"
-logs = "3d"
-metrics = "30d"
-snapshots_to_keep = 5
+logs = "30d"
+metrics = "90d"
+snapshots_to_keep = 10
 
-# Production tenant override
-[[compactor.retention.tenant_overrides]]
-tenant_id = "production"
+# Production tenant override (tables keyed by tenant ID)
+[compactor.retention.tenant_overrides.production]
 traces = "30d"  # Keep production traces longer
 
-# Critical dataset override (highest priority)
-[[compactor.retention.tenant_overrides.dataset_overrides]]
-dataset_id = "critical"
+# Critical dataset override (highest priority, keyed by dataset ID)
+[compactor.retention.tenant_overrides.production.dataset_overrides.critical]
 traces = "90d"  # Critical data kept 90 days
 ```
 
@@ -186,7 +184,7 @@ revalidate_before_delete = true  # Extra safety
 cargo run --bin signaldb
 
 # Standalone compactor service
-cargo run --bin compactor
+cargo run --bin signaldb-compactor
 
 # Development with local storage
 ./scripts/run-dev.sh
@@ -197,23 +195,21 @@ cargo run --bin compactor
 Key metrics exposed on port 9091 (Prometheus format):
 
 **Retention Metrics:**
-* `compactor_partitions_dropped_total` - Partitions dropped per tenant/signal
-* `compactor_snapshots_expired_total` - Snapshots expired per table
-* `compactor_retention_enforcement_duration_seconds` - Enforcement duration
+* `compactor_partitions_dropped_total` - Partitions dropped
+* `compactor_snapshots_expired_total` - Snapshots expired
+* `compactor_retention_duration_ms_total` - Enforcement duration
 
 **Orphan Cleanup Metrics:**
 * `compactor_files_deleted_total` - Files successfully deleted
 * `compactor_bytes_freed_total` - Storage reclaimed
-* `compactor_orphans_identified_total` - Orphan files detected
+* `compactor_orphan_candidates_identified_total` - Orphan files detected
 * `compactor_deletion_failures_total` - Deletion errors (should be 0)
 
 **Example Prometheus Query:**
 
 ```promql
-# Storage reclaimed per tenant (last 24h)
-sum by (tenant) (
-  increase(compactor_bytes_freed_total[24h])
-)
+# Storage reclaimed (last 24h)
+increase(compactor_bytes_freed_total[24h])
 ```
 
 ### Documentation
@@ -270,6 +266,7 @@ Configure multi-tenancy in `signaldb.toml`:
 
 [[auth.tenants]]
 id = "acme"
+slug = "acme"
 name = "Acme Corporation"
 default_dataset = "production"
 
@@ -279,6 +276,7 @@ name = "Production Key"
 
 [[auth.tenants.datasets]]
 id = "production"
+slug = "production"
 is_default = true
 ```
 
@@ -325,12 +323,9 @@ curl -X POST http://localhost:4318/v1/traces \
 ```bash
 # Monolithic deployment - zero configuration required
 cargo run --bin signaldb
-
-# Microservices deployment
-cargo run --bin signaldb-acceptor &
-cargo run --bin signaldb-router &
-cargo run --bin signaldb-writer &
 ```
+
+Only the monolithic `signaldb` binary runs configless. The standalone microservices binaries (`signaldb-acceptor`, `signaldb-router`, `signaldb-writer`, `signaldb-querier`) validate their configuration at startup and refuse to run with the in-memory defaults: they require a shared `[discovery]` DSN and a SQL-backed `[schema]` catalog (for example the PostgreSQL configuration below, or use `./scripts/run-dev.sh services` which sets this up for you).
 
 ### PostgreSQL Configuration
 
@@ -350,7 +345,7 @@ ttl = "300s"
 
 ### Prerequisites
 
-* Rust 1.86.0+ (required for edition 2024 and AWS SDK compatibility)
+* Rust stable toolchain (the project tracks stable Rust with edition 2024; no MSRV policy)
 
 * Protocol Buffers compiler
 
@@ -380,7 +375,7 @@ cargo test -p common catalog_integration
 ./scripts/test-deployment.sh
 
 # Docker-based testing
-docker-compose -f docker-compose.test.yml up
+docker compose -f docker-compose.test.yml up
 ```
 
 ## Configuration
@@ -406,9 +401,11 @@ ttl = "300s"                           # Service timeout threshold
 Environment variables:
 
 * `SIGNALDB_DISCOVERY_DSN`: Database connection string
-* `SIGNALDB_DISCOVERY_HEARTBEAT_INTERVAL`: Heartbeat interval
-* `SIGNALDB_DISCOVERY_POLL_INTERVAL`: Polling interval
+* `SIGNALDB__DISCOVERY__HEARTBEAT_INTERVAL`: Heartbeat interval
+* `SIGNALDB__DISCOVERY__POLL_INTERVAL`: Polling interval
 * `SIGNALDB_DISCOVERY_TTL`: Service TTL
+
+Note: field names containing underscores (like `heartbeat_interval`) must use the double-underscore form (`SIGNALDB__SECTION__FIELD_NAME`); the single-underscore prefix only works for fields without underscores in their names.
 
 ### Database Configuration
 
@@ -440,8 +437,8 @@ metrics_enabled = true
 
 Environment variables:
 
-* `SIGNALDB_SCHEMA_CATALOG_TYPE`: Catalog backend type (sql or memory)
-* `SIGNALDB_SCHEMA_CATALOG_URI`: Catalog database connection string
+* `SIGNALDB__SCHEMA__CATALOG_TYPE`: Catalog backend type (sql or memory)
+* `SIGNALDB__SCHEMA__CATALOG_URI`: Catalog database connection string
 
 ### Performance Optimization Configuration
 
@@ -452,10 +449,7 @@ Configure batch processing and connection pooling for optimal performance:
 # These settings are automatically optimized and typically don't need adjustment
 
 # Connection pooling (managed automatically)
-# - Min connections: 2
-# - Max connections: 10
-# - Connection timeout: 5 seconds
-# - Pool lifetime: 30 minutes
+# - Catalog connections use sqlx default pool settings
 
 # Batch optimization (automatic)
 # - Max rows per batch: 50,000
@@ -467,47 +461,18 @@ Configure batch processing and connection pooling for optimal performance:
 
 These optimizations are enabled by default and automatically tuned for most workloads.
 
-### Queue Configuration
-
-SignalDB uses an internal queue system for processing incoming data. The queue can be configured with the following options:
-
-```toml
-[queue]
-dsn = "memory://"             # Queue backend DSN (default: memory://)
-max_batch_size = 1000         # Maximum number of items per batch
-max_batch_wait = "10s"        # Maximum time to wait before processing a non-full batch
-```
-
-Environment variables:
-
-* `SIGNALDB_QUEUE_DSN`: Queue backend DSN
-* `SIGNALDB_QUEUE_MAX_BATCH_SIZE`: Maximum batch size
-* `SIGNALDB_QUEUE_MAX_BATCH_WAIT`: Maximum batch wait time (supports human-readable durations like "10s", "1m")
-
-Currently supported queue backends:
-
-* `memory://`: In-memory queue for single-node deployments
-
 ### Storage Configuration
 
-SignalDB supports multiple storage backends for storing observability data:
+SignalDB stores observability data (Parquet files) in an object store selected by a single DSN:
 
 ```toml
 [storage]
-default = "local"  # Name of the default storage adapter to use
-
-[storage.adapters.local]  # Configure a storage adapter named "local"
-type = "filesystem"  # Storage backend type
-url = "file:///data"  # Storage URL
-prefix = "traces"  # Prefix for all objects in this storage
+dsn = "file:///.data/storage"          # Local filesystem
+# dsn = "memory://"                    # In-memory storage for testing (default)
+# dsn = "s3://my-bucket/signaldb/"     # S3-compatible object storage
 ```
 
-Environment variables:
-
-* `SIGNALDB_STORAGE_DEFAULT`: Name of the default storage adapter
-* `SIGNALDB_STORAGE_ADAPTERS_<NAME>_TYPE`: Storage type for adapter
-* `SIGNALDB_STORAGE_ADAPTERS_<NAME>_URL`: Storage URL for adapter
-* `SIGNALDB_STORAGE_ADAPTERS_<NAME>_PREFIX`: Storage prefix for adapter
+Environment variable: `SIGNALDB_STORAGE_DSN`
 
 ### WAL (Write-Ahead Log) Configuration
 
@@ -524,9 +489,19 @@ SignalDB implements Write-Ahead Logging for data durability and crash recovery. 
 
 * `WRITER_WAL_DIR`: WAL directory for writer service (default: `.wal/writer`)
 * `ACCEPTOR_WAL_DIR`: WAL directory for acceptor service (default: `.wal/acceptor`)
-* `WAL_MAX_SEGMENT_SIZE`: Maximum size per WAL segment (default: 1MB)
-* `WAL_MAX_BUFFER_ENTRIES`: Buffer size before forced flush (default: 1000)
-* `WAL_FLUSH_INTERVAL`: Automatic flush interval (default: 10s)
+
+**TOML Configuration:**
+
+```toml
+[wal]
+wal_dir = ".data/wal"
+max_segment_size = 67108864           # 64MB
+max_buffer_entries = 1000
+flush_interval = "30s"
+max_buffer_size_bytes = 134217728     # 128MB
+```
+
+The built-in defaults are 64MB segments, a 1000-entry buffer, and a 30s flush interval.
 
 ⚠️ **Production Warning**: Default WAL directories use local paths that **do not persist** across container restarts. Configure persistent volumes for production deployments.
 
