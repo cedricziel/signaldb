@@ -19,6 +19,12 @@ use datafusion::{
     scalar::ScalarValue,
 };
 
+use common::model::profile::{Profile, ProfileLink, Sample, Stacktrace, ValueType};
+use common::profile::{
+    DiffFlamegraph, Flamegraph, aggregate_profiles_to_diff_flamegraph,
+    aggregate_profiles_to_flamegraph,
+};
+
 use super::{error::QuerierError, table_ref::build_table_reference};
 
 /// Parameters for single-profile lookup.
@@ -52,6 +58,14 @@ pub struct ProfileDiscoveryParams {
     pub start: Option<i64>,
     /// Window end (unix seconds, inclusive).
     pub end: Option<i64>,
+}
+
+/// Parameters carried in the `profile_diff` Flight ticket: two profile
+/// selections to compare.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct ProfileDiffParams {
+    pub baseline: ProfileSearchParams,
+    pub comparison: ProfileSearchParams,
 }
 
 /// Upper bound on distinct attribute documents scanned when deriving
@@ -371,6 +385,201 @@ impl ProfileService {
     }
 }
 
+impl ProfileService {
+    /// Fetch full profile rows matching the search selection and decode
+    /// them into model profiles for aggregation.
+    async fn fetch_models(
+        &self,
+        params: &ProfileSearchParams,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<Profile>, QuerierError> {
+        let mut df = self.profiles_table(tenant_slug, dataset_slug).await?;
+        if let Some(service_name) = &params.service_name {
+            df = df
+                .filter(col("service_name").eq(lit(service_name)))
+                .map_err(QuerierError::QueryFailed)?;
+        }
+        if let Some(sample_type) = &params.sample_type {
+            df = df
+                .filter(col("sample_type").eq(lit(sample_type)))
+                .map_err(QuerierError::QueryFailed)?;
+        }
+        df = Self::apply_time_window(df, params.start, params.end)?;
+
+        let limit = params
+            .limit
+            .and_then(|l| usize::try_from(l).ok())
+            .filter(|l| *l > 0)
+            .unwrap_or(self.max_search_limit)
+            .min(self.max_search_limit);
+        let df = df
+            .sort(vec![col("timestamp").sort(false, true)])
+            .map_err(QuerierError::QueryFailed)?
+            .limit(0, Some(limit))
+            .map_err(QuerierError::QueryFailed)?;
+
+        let batches = df.collect().await.map_err(QuerierError::QueryFailed)?;
+        Ok(batches.iter().flat_map(batch_to_models).collect())
+    }
+
+    /// Aggregate the selected profiles into a flamegraph.
+    pub async fn flamegraph_with_tenant(
+        &self,
+        params: ProfileSearchParams,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Flamegraph, QuerierError> {
+        let profiles = self
+            .fetch_models(&params, tenant_slug, dataset_slug)
+            .await?;
+        Ok(aggregate_profiles_to_flamegraph(&profiles))
+    }
+
+    /// Compare two profile selections as a differential flamegraph.
+    pub async fn diff_with_tenant(
+        &self,
+        params: ProfileDiffParams,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<DiffFlamegraph, QuerierError> {
+        let baseline = self
+            .fetch_models(&params.baseline, tenant_slug, dataset_slug)
+            .await?;
+        let comparison = self
+            .fetch_models(&params.comparison, tenant_slug, dataset_slug)
+            .await?;
+        Ok(aggregate_profiles_to_diff_flamegraph(
+            &baseline,
+            &comparison,
+        ))
+    }
+}
+
+/// Decode storage-format profile rows into model profiles. Rows with
+/// unparseable payload columns are skipped with a warning rather than
+/// failing the whole aggregation.
+fn batch_to_models(batch: &RecordBatch) -> Vec<Profile> {
+    use datafusion::arrow::array::{Int64Array, TimestampNanosecondArray};
+
+    let Some(profile_ids) = batch
+        .column_by_name("profile_id")
+        .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+    else {
+        return Vec::new();
+    };
+    let timestamps = batch
+        .column_by_name("timestamp")
+        .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>());
+    let durations = batch
+        .column_by_name("duration_nano")
+        .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
+    let get_string = |name: &str| {
+        batch
+            .column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+    };
+    let sample_types = get_string("sample_type");
+    let sample_units = get_string("sample_unit");
+    let period_types = get_string("period_type");
+    let period_units = get_string("period_unit");
+    let periods = batch
+        .column_by_name("period")
+        .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
+    let service_names = get_string("service_name");
+    let stacktraces_col = get_string("stacktraces_json");
+    let samples_col = get_string("samples_json");
+    let trace_ids = get_string("trace_id");
+    let span_ids = get_string("span_id");
+    let profile_attrs = get_string("profile_attributes");
+    let resource_attrs = get_string("resource_attributes");
+    let scope_attrs = get_string("scope_attributes");
+
+    let opt_str = |col: Option<&StringArray>, i: usize| -> Option<String> {
+        col.and_then(|c| {
+            if c.is_null(i) || c.value(i).is_empty() {
+                None
+            } else {
+                Some(c.value(i).to_string())
+            }
+        })
+    };
+
+    let mut profiles = Vec::with_capacity(batch.num_rows());
+    for i in 0..batch.num_rows() {
+        let stacktraces: Vec<Stacktrace> =
+            match opt_str(stacktraces_col, i).map(|s| serde_json::from_str(&s)) {
+                Some(Ok(stacktraces)) => stacktraces,
+                Some(Err(e)) => {
+                    log::warn!("Skipping profile row with invalid stacktraces_json: {e}");
+                    continue;
+                }
+                None => Vec::new(),
+            };
+        let samples: Vec<Sample> = match opt_str(samples_col, i).map(|s| serde_json::from_str(&s)) {
+            Some(Ok(samples)) => samples,
+            Some(Err(e)) => {
+                log::warn!("Skipping profile row with invalid samples_json: {e}");
+                continue;
+            }
+            None => Vec::new(),
+        };
+
+        let mut profile_id = [0u8; 16];
+        if !profile_ids.is_null(i)
+            && let Ok(bytes) = hex::decode(profile_ids.value(i))
+            && bytes.len() == 16
+        {
+            profile_id.copy_from_slice(&bytes);
+        }
+
+        let mut links = Vec::new();
+        if let (Some(trace_hex), Some(span_hex)) = (opt_str(trace_ids, i), opt_str(span_ids, i))
+            && let (Ok(trace_bytes), Ok(span_bytes)) =
+                (hex::decode(&trace_hex), hex::decode(&span_hex))
+            && trace_bytes.len() == 16
+            && span_bytes.len() == 8
+        {
+            let mut trace_id = [0u8; 16];
+            trace_id.copy_from_slice(&trace_bytes);
+            let mut span_id = [0u8; 8];
+            span_id.copy_from_slice(&span_bytes);
+            links.push(ProfileLink { trace_id, span_id });
+        }
+
+        profiles.push(Profile {
+            profile_id,
+            time_unix_nano: timestamps
+                .map(|t| if t.is_null(i) { 0 } else { t.value(i) as u64 })
+                .unwrap_or(0),
+            duration_nano: durations
+                .map(|d| if d.is_null(i) { 0 } else { d.value(i) as u64 })
+                .unwrap_or(0),
+            sample_type: ValueType {
+                type_: opt_str(sample_types, i).unwrap_or_default(),
+                unit: opt_str(sample_units, i).unwrap_or_default(),
+            },
+            period_type: opt_str(period_types, i).map(|type_| ValueType {
+                type_,
+                unit: opt_str(period_units, i).unwrap_or_default(),
+            }),
+            period: periods
+                .map(|p| if p.is_null(i) { 0 } else { p.value(i) })
+                .unwrap_or(0),
+            service_name: opt_str(service_names, i).unwrap_or_default(),
+            stacktraces,
+            samples,
+            links,
+            resource_attributes: opt_str(resource_attrs, i)
+                .and_then(|s| serde_json::from_str(&s).ok()),
+            scope_attributes: opt_str(scope_attrs, i).and_then(|s| serde_json::from_str(&s).ok()),
+            attributes: opt_str(profile_attrs, i).and_then(|s| serde_json::from_str(&s).ok()),
+            dropped_attributes_count: 0,
+        });
+    }
+    profiles
+}
+
 fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray, QuerierError> {
     batch
         .column_by_name(name)
@@ -463,8 +672,14 @@ mod tests {
                 Arc::new(StringArray::from(vec![None::<&str>, None])),
                 Arc::new(Int64Array::from(vec![None::<i64>, None])),
                 Arc::new(StringArray::from(vec!["checkout", "billing"])),
-                Arc::new(StringArray::from(vec!["[]", "[]"])),
-                Arc::new(StringArray::from(vec!["[]", "[]"])),
+                Arc::new(StringArray::from(vec![
+                    r#"[{"frames":[{"function_name":"work"},{"function_name":"main"}]}]"#,
+                    r#"[{"frames":[{"function_name":"alloc"},{"function_name":"main"}]}]"#,
+                ])),
+                Arc::new(StringArray::from(vec![
+                    r#"[{"stacktrace_index":0,"values":[100]}]"#,
+                    r#"[{"stacktrace_index":0,"values":[40]}]"#,
+                ])),
                 Arc::new(StringArray::from(vec![None::<&str>, None])),
                 Arc::new(StringArray::from(vec![None::<&str>, None])),
                 Arc::new(StringArray::from(vec![
@@ -574,6 +789,46 @@ mod tests {
             .await
             .expect("windowed search");
         assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+    }
+
+    #[tokio::test]
+    async fn aggregates_flamegraph_and_diff_from_registered_table() {
+        let service = ProfileService::new(context_with_profiles().await);
+
+        let flamegraph = service
+            .flamegraph_with_tenant(
+                ProfileSearchParams {
+                    service_name: Some("checkout".to_string()),
+                    ..ProfileSearchParams::default()
+                },
+                "acme",
+                "prod",
+            )
+            .await
+            .expect("flamegraph");
+        assert_eq!(flamegraph.total, 100);
+        assert!(flamegraph.names.iter().any(|n| n == "work"));
+
+        let diff = service
+            .diff_with_tenant(
+                ProfileDiffParams {
+                    baseline: ProfileSearchParams {
+                        service_name: Some("checkout".to_string()),
+                        ..ProfileSearchParams::default()
+                    },
+                    comparison: ProfileSearchParams {
+                        service_name: Some("billing".to_string()),
+                        ..ProfileSearchParams::default()
+                    },
+                },
+                "acme",
+                "prod",
+            )
+            .await
+            .expect("diff");
+        assert_eq!(diff.left_ticks, 100);
+        assert_eq!(diff.right_ticks, 40);
+        assert!(diff.names.iter().any(|n| n == "alloc"));
     }
 
     #[tokio::test]
