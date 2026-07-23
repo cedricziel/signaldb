@@ -1740,7 +1740,7 @@ mod multi_tenancy_tests {
     fn hash_api_key(key: &str) -> String {
         let mut hasher = Sha256::new();
         hasher.update(key.as_bytes());
-        format!("{:x}", hasher.finalize())
+        hex::encode(hasher.finalize())
     }
 
     #[tokio::test]
