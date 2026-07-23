@@ -18,9 +18,9 @@ authentication headers described in [Authentication](authentication.md)
 | Method | Path (under `/tempo`) | Status | Notes |
 |---|---|---|---|
 | GET | `/api/echo` | implemented | Returns `echo`; still requires auth headers |
-| GET | `/api/traces/{trace_id}` | implemented | Trace by ID; `start`/`end` params accepted but not applied |
+| GET | `/api/traces/{trace_id}` | implemented | Trace by ID; optional `start`/`end` (unix seconds) prune the scanned time range — pass a window bracketing the whole trace |
 | GET | `/api/v2/traces/{trace_id}` | implemented | Same handler as v1 |
-| GET | `/api/search` | implemented | Trace search, executed by the querier |
+| GET | `/api/search` | implemented | Trace search, executed by the querier; `spss` caps spans per span set (`matched` still reports the full count; omitted = all spans) |
 | GET | `/api/search/tags` | implemented | Static list of searchable tags: `service.name`, `name`, `status` |
 | GET | `/api/v2/search/tags` | implemented | Same tags, grouped into `resource` and `intrinsic` scopes |
 | GET | `/api/search/tag/{tag}/values` | partial | Real distinct values for `service.name` and `name` (also `resource.`/`span.`-scoped forms); static `ok`/`error`/`unset` for `status`; **501** for any other tag |
@@ -39,6 +39,24 @@ authentication headers described in [Authentication](authentication.md)
 | 501 | Feature not implemented (TraceQL metrics, unindexed tag values) |
 | 503 | No querier service available |
 | 504 | Query deadline exceeded |
+
+## Tempo gRPC querier protocol
+
+A standalone querier also serves Tempo's internal `tempopb.Querier` gRPC
+protocol on its Flight port (default `50054`), so a Tempo query-frontend
+can use SignalDB as a querier backend:
+
+- `FindTraceByID` and `SearchRecent` are fully implemented (including
+  `spans_per_span_set`).
+- The tenant is taken from Tempo's `X-Scope-OrgID` header (dataset
+  `default`), or from the authenticated tenant context when
+  `[auth].internal_service_key` is configured. Note that with an internal
+  service key set, the port requires SignalDB's internal auth headers,
+  which a stock Tempo query-frontend cannot send — run without the key on
+  a trusted network for Tempo interop.
+- `SearchBlock` returns `Unimplemented` (SignalDB stores data in Iceberg
+  tables, not Tempo blocks). Tag endpoints advertise the same static tag
+  set as the HTTP API; tag *value* enumeration is HTTP-only.
 
 ## Related
 
