@@ -77,7 +77,7 @@ impl TraceService {
             .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
 
         // Use DataFrame API with parameterized filter (prevents SQL injection)
-        let df = self
+        let mut df = self
             .session_context
             .table(table_ref)
             .await
@@ -99,6 +99,33 @@ impl TraceService {
                 );
                 QuerierError::QueryFailed(e)
             })?;
+
+        // Apply the Tempo time hints as span-start bounds. Callers are
+        // expected to pass a window bracketing the whole trace (Grafana's
+        // Tempo datasource pads it by 30 minutes on each side), so this
+        // prunes the scanned time range without truncating traces.
+        if let Some(start) = params.start {
+            df = df
+                .filter(col("start_time_unix_nano").gt_eq(lit(start.saturating_mul(1_000_000_000))))
+                .map_err(|e| {
+                    log::error!(
+                        "Failed to apply start hint for trace_id={}: {e}",
+                        params.trace_id
+                    );
+                    QuerierError::QueryFailed(e)
+                })?;
+        }
+        if let Some(end) = params.end {
+            df = df
+                .filter(col("start_time_unix_nano").lt_eq(lit(end.saturating_mul(1_000_000_000))))
+                .map_err(|e| {
+                    log::error!(
+                        "Failed to apply end hint for trace_id={}: {e}",
+                        params.trace_id
+                    );
+                    QuerierError::QueryFailed(e)
+                })?;
+        }
 
         let results = df.collect().await.map_err(|e| {
             log::error!(

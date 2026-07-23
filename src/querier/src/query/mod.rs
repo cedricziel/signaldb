@@ -3,12 +3,14 @@ pub mod search_filter;
 pub mod table_ref;
 pub mod trace;
 
+/// Parameters for single-trace lookup.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct FindTraceByIdParams {
     pub trace_id: String,
-    pub start: Option<String>,
-    pub end: Option<String>,
+    /// Optional unix-second hint: only consider spans starting at or after this time.
+    pub start: Option<i64>,
+    /// Optional unix-second hint: only consider spans starting at or before this time.
+    pub end: Option<i64>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
