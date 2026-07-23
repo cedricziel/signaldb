@@ -4,6 +4,10 @@ type: explanation
 status: living
 sources:
   - src/common/src/flight/**
+  - src/router/src/endpoints/flight.rs
+  - src/querier/src/flight.rs
+  - src/writer/src/flight_iceberg.rs
+  - src/compactor/src/flight.rs
 ---
 
 # SignalDB Flight Communication Design
@@ -98,10 +102,11 @@ All data-intensive communication between components uses Flight.
 
 Each component implements a Flight service:
 
-- **AcceptorFlightService**: Not exposed externally; forwards data to Writer via Flight client
+- **Acceptor**: no Flight server; acts as a Flight client forwarding data to the Writer
 - **IcebergWriterFlightService**: Receives data from Acceptor and writes to Iceberg tables
 - **QuerierFlightService**: Executes queries against storage and returns results
-- **RouterFlightService**: Exposes HTTP API and forwards requests to Querier via Flight
+- **SignalDBFlightService** (Router): Exposes HTTP API and forwards requests to Querier via Flight
+- **CompactorFlightService**: Admin-only `DoAction` interface for compaction management
 
 ### 4.3 External Flight Interface
 
@@ -114,45 +119,46 @@ The Router exposes Flight capabilities via HTTP endpoints, providing:
 
 The following table shows the Flight RPC methods supported by each service:
 
-| Method | Router | Querier | Writer | Description |
-|--------|--------|---------|--------|-------------|
-| `Handshake` | ✅ | ✅ | ✅ | Protocol version exchange |
-| `ListFlights` | ✅ | ✅ | ❌ | List available query types |
-| `GetFlightInfo` | ✅ | ❌ | ❌ | Get metadata for a query |
-| `GetSchema` | ✅ | ✅ | ❌ | Get schema for a query type |
-| `DoGet` | ✅ | ✅ | ❌ | Execute query and stream results |
-| `DoPut` | ❌ | ❌ | ✅ | Write data to storage |
-| `DoExchange` | ❌ | ❌ | ❌ | Not implemented |
-| `DoAction` | ❌ | ❌ | ❌ | Not implemented |
+| Method | Router | Querier | Writer | Compactor | Description |
+|--------|--------|---------|--------|-----------|-------------|
+| `Handshake` | ✅ | ✅ | ✅ | ❌ | Protocol version exchange |
+| `ListFlights` | ✅ | ✅ | Empty stream | ❌ | List available query types |
+| `GetFlightInfo` | ✅ | ❌ | ❌ | ❌ | Get metadata for a query |
+| `GetSchema` | ✅ | ✅ | ❌ | ❌ | Get schema for a query type |
+| `DoGet` | ✅ | ✅ | ❌ | ❌ | Execute query and stream results |
+| `DoPut` | ❌ | ❌ | ✅ | ❌ | Write data to storage |
+| `DoExchange` | ❌ | ❌ | ❌ | ❌ | Not implemented |
+| `DoAction` | ❌ | ❌ | ❌ | ✅ | Admin commands (compactor only) |
+| `ListActions` | Empty stream | Empty stream | Empty stream | ✅ | List admin commands |
 
-**Note**: The Router is the primary client-facing Flight interface. Clients typically connect to the Router for all query operations. The Querier provides `GetSchema` for internal use but clients should use the Router's implementation.
+Legend: ✅ implemented, ❌ returns `unimplemented`, "Empty stream" succeeds but yields nothing (a no-op, not an error).
 
-#### Supported Query Types (via FlightDescriptor command)
+**Note**: The Router is the primary client-facing Flight interface. Clients typically connect to the Router for all query operations. The Compactor's Flight service (`src/compactor/src/flight.rs`) is an admin interface only: `do_action` supports `compact_now`, `compact_status`, and `compact_dry_run`; every other RPC returns `unimplemented`.
 
-The Router supports the following query types via the FlightDescriptor `cmd` field:
+#### Ticket and Command Grammar
 
-| Query Type | Description | Required Parameters |
-|------------|-------------|---------------------|
-| `traces` | Query all trace/span data | None |
-| `trace_by_id` | Get a specific trace by ID | `id` (trace ID) |
-| `logs` | Query log data | None |
-| `metrics` | Query metric data | None |
+There are two layers with different grammars -- the Router's descriptor commands and the Querier's `do_get` tickets:
 
-**Example Usage**:
+**Router** (`src/router/src/endpoints/flight.rs`) -- `get_flight_info`, `get_schema`, and `list_flights` recognize these `FlightDescriptor` `cmd` values:
 
-```rust
-// Get flight info for traces query
-let descriptor = FlightDescriptor::new_cmd("traces");
-let flight_info = client.get_flight_info(descriptor).await?;
+| Command | Description | Notes |
+|---------|-------------|-------|
+| `traces` | Trace/span schema and metadata | `do_get` currently returns an **empty stream** (placeholder) |
+| `trace_by_id?id={id}` | Single-trace schema and metadata | `do_get` currently returns an **empty stream** (placeholder) |
+| `logs` | Log schema and metadata | `do_get` currently returns an **empty stream** (placeholder) |
+| `metrics` | Metric schema and metadata | `do_get` currently returns an **empty stream** (placeholder) |
 
-// Get schema for trace_by_id query
-let descriptor = FlightDescriptor::new_cmd("trace_by_id");
-let schema = client.get_schema(descriptor).await?;
+Any other `do_get` ticket (including `find_trace:...`, `search_traces:...`, and raw SQL) is proxied verbatim to a Querier discovered via the `QueryExecution` capability, with request metadata forwarded.
 
-// Execute query with parameters
-let descriptor = FlightDescriptor::new_cmd("trace_by_id?id=abc123");
-let stream = client.do_get(Ticket::new(descriptor.cmd)).await?;
-```
+**Querier** (`parse_ticket` in `src/querier/src/flight.rs`) -- `do_get` tickets use this grammar:
+
+| Ticket | Description |
+|--------|-------------|
+| `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}` | Single trace lookup |
+| `search_traces:{tenant_slug}:{dataset_slug}:{params_json}` | Trace search (`SearchQueryParams` as JSON) |
+| anything else | Treated as a raw SQL query executed via DataFusion |
+
+There is no `trace_by_id?id=...` ticket form at the Querier; that command exists only in the Router's metadata path. The Tempo HTTP endpoints bypass the Router's Flight commands entirely and send `find_trace:`/`search_traces:`/SQL tickets straight to the Querier.
 
 ## 5. Implementation Details
 
@@ -175,7 +181,7 @@ sequenceDiagram
     W-->>A: confirm
     A->>A: mark WAL entry processed
     A-->>C: acknowledge
-    Note over W,O: asynchronous, WalProcessor 1s loop
+    Note over W,O: asynchronous, WalProcessor 5s loop
     W->>O: Iceberg commit (Parquet files)
 ```
 
@@ -210,7 +216,7 @@ sequenceDiagram
 
 ### 5.2 Schema Design ✅ **Implemented**
 
-Flight schemas are defined in `src/common/flight/schema.rs` with conversions for:
+Flight schemas are defined in `src/common/src/flight/schema.rs` with conversions for:
 - OTLP traces → Arrow schema
 - OTLP metrics → Arrow schema
 - OTLP logs → Arrow schema
@@ -262,7 +268,7 @@ For high availability:
 
 ## 7. Monolithic Binary Implementation ✅ **Current**
 
-The current monolithic binary (`cargo run`) starts all services in a single process:
+The current monolithic binary (`cargo run --bin signaldb`) starts all services in a single process:
 - Services communicate via Flight using localhost endpoints
 - Automatic service discovery via catalog
 - Single configuration file for all components
@@ -293,7 +299,7 @@ Current implementation provides:
 ### 10.2 Microservices Mode ✅ **Supported**
 - Services deployed independently
 - Flight communication via network
-- Service discovery via catalog/NATS
+- Service discovery via the shared catalog database
 - Individual scaling and failure isolation
 
 ## 11. Conclusion
@@ -306,7 +312,7 @@ Current implementation provides:
 - Catalog-based service discovery with capability routing
 - Complete elimination of message bus dependencies
 - Support for both monolithic and distributed deployments
-- Comprehensive integration test coverage (15/15 passing)
+- Integration test coverage in `tests-integration/`
 
 **Performance Benefits:**
 - Zero-copy data transfer via Arrow Flight

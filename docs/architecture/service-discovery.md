@@ -33,18 +33,19 @@ sources:
 
 **Implementation**:
 - PostgreSQL or SQLite database stores service instances
-- Services register on startup with `ServiceBootstrap::register()`
+- Services register on startup via `ServiceBootstrap::new()`, which registers the row and internally spawns the heartbeat task
 - Periodic heartbeats maintain liveness via `last_seen` timestamp updates
-- Other services query catalog for active service endpoints
-- Graceful shutdown updates `stopped_at` timestamp
+- Other services query the catalog for active service endpoints, filtering out rows whose `last_seen` is older than the discovery TTL
+- Graceful shutdown deletes the row (`deregister_ingester`); crashed services never deregister, so a background reaper (`reap_stale_ingesters`, issue #555) deletes rows whose heartbeat is 2x TTL stale
 
-**Current Service Registry Schema**:
+**Current Service Registry Schema** (PostgreSQL flavor; SQLite uses TEXT columns):
 ```sql
 CREATE TABLE ingesters (
     id UUID PRIMARY KEY,
     address TEXT NOT NULL,
-    last_seen TIMESTAMP WITH TIME ZONE,
-    stopped_at TIMESTAMP WITH TIME ZONE
+    last_seen TIMESTAMP WITH TIME ZONE NOT NULL,
+    service_type TEXT NOT NULL,
+    capabilities TEXT NOT NULL          -- comma-separated ServiceCapability list
 );
 
 CREATE TABLE shards (
@@ -68,6 +69,7 @@ CREATE TABLE shard_owners (
 | **writer** | Catalog | Database via `ServiceBootstrap` | ✅ Implemented |
 | **router** | Catalog | Database via `ServiceBootstrap` | ✅ Implemented |
 | **querier** | Catalog | Database via `ServiceBootstrap` | ✅ Implemented |
+| **compactor** | Catalog | Database via `ServiceBootstrap` | ✅ Implemented |
 
 ## Registration Process ✅ **Current Implementation**
 
@@ -77,29 +79,33 @@ sequenceDiagram
     participant Cat as Service catalog (PostgreSQL/SQLite)
     participant P as Peer service
 
-    S->>Cat: ServiceBootstrap register (id, address, capabilities)
+    S->>Cat: ServiceBootstrap::new registers (id, address, service_type, capabilities)
     loop heartbeat interval
         S->>Cat: heartbeat, refresh last_seen
+    end
+    loop reaper interval
+        S->>Cat: reap rows with last_seen older than 2x TTL
     end
     P->>Cat: discover by capability
     Cat-->>P: endpoints with fresh last_seen
     P->>S: pooled Flight connection
-    S->>Cat: set stopped_at on graceful shutdown
+    S->>Cat: DELETE row on graceful shutdown (deregister_ingester)
 ```
 
 ### 1. Service Startup
 ```rust
-// Each service registers with catalog database
-let bootstrap = ServiceBootstrap::new(config).await?;
-bootstrap.register().await?;
+// Registers with the catalog, spawns the heartbeat task and the stale-row
+// reaper internally. The service id is a generated UUID.
+let bootstrap = ServiceBootstrap::new(config, ServiceType::Querier, address).await?;
 ```
 
 ### 2. Health Monitoring
 - **Catalog**: Periodic heartbeat updates to `last_seen` column
-- **TTL**: Services with stale `last_seen` timestamps are considered unavailable
+- **TTL**: Consumers filter out rows whose `last_seen` is older than `[discovery].ttl` (`list_active_ingesters`)
+- **Reaper**: Each service also runs `reap_stale_ingesters`, deleting rows whose `last_seen` is 2x TTL stale (crashed services never deregister themselves)
 
 ### 3. Graceful Shutdown
-- **Catalog**: Update `stopped_at` timestamp to mark service as intentionally stopped
+- **Catalog**: `bootstrap.shutdown()` deletes the row (`deregister_ingester`) and aborts the heartbeat and reaper tasks
 
 ## Discovery API ✅ **Implemented**
 
@@ -110,42 +116,71 @@ Current discovery functionality in `src/common/src/catalog.rs` and `src/common/s
 pub struct Ingester {
     pub id: Uuid,
     pub address: String,
-    pub last_seen: Option<DateTime<Utc>>,
-    pub stopped_at: Option<DateTime<Utc>>,
+    pub last_seen: DateTime<Utc>,
+    pub service_type: ServiceType,
+    pub capabilities: Vec<ServiceCapability>,
 }
 
 /// Catalog-based discovery
 impl Catalog {
-    async fn register_ingester(&self, id: Uuid, address: &str) -> Result<()>;
-    async fn list_ingesters(&self) -> Result<Vec<Ingester>>;
-    async fn heartbeat(&self, id: Uuid) -> Result<()>;
+    async fn register_ingester(
+        &self,
+        id: Uuid,
+        address: &str,
+        service_type: ServiceType,
+        capabilities: &[ServiceCapability],
+    ) -> Result<(), sqlx::Error>;
+    async fn heartbeat(&self, id: Uuid) -> Result<(), sqlx::Error>;
+    async fn list_ingesters(&self) -> Result<Vec<Ingester>, sqlx::Error>;
+    async fn list_active_ingesters(&self, ttl: Duration) -> Result<Vec<Ingester>, sqlx::Error>;
+    async fn discover_services_by_capability(
+        &self,
+        capability: ServiceCapability,
+    ) -> Result<Vec<Ingester>, sqlx::Error>;
+    async fn reap_stale_ingesters(&self, cutoff: DateTime<Utc>) -> Result<u64, sqlx::Error>;
+    async fn deregister_ingester(&self, id: Uuid) -> Result<(), sqlx::Error>;
 }
 
-/// Service bootstrap handles registration
+/// Service bootstrap: registration + heartbeat + reaper in one constructor.
+/// There is no separate register() or start_heartbeat() method.
 impl ServiceBootstrap {
-    async fn register(&self) -> Result<()>;
-    async fn start_heartbeat(&self) -> Result<()>;
+    async fn new(config: Configuration, service_type: ServiceType, address: String) -> Result<Self>;
+    async fn discover_services_by_capability(
+        &self,
+        capability: ServiceCapability,
+    ) -> Result<Vec<Ingester>>;
+    async fn shutdown(self) -> Result<()>;
 }
 ```
+
+### Service Capabilities
+
+`ServiceCapability` (`src/common/src/flight/transport.rs`) has six variants:
+
+| Capability | Registered by default by |
+|------------|--------------------------|
+| `TraceIngestion` | Acceptor, Writer |
+| `Storage` | Writer |
+| `Routing` | Router |
+| `QueryExecution` | Querier |
+| `StorageMaintenance` | Compactor |
+| `KafkaIngestion` | (defined, not registered by any service today) |
 
 ## Configuration ✅ **Current Options**
 
 ### Catalog Configuration
 ```toml
 [database]
-url = "sqlite://signaldb.db"  # or PostgreSQL URL
+dsn = "sqlite://.data/signaldb.db"   # or PostgreSQL DSN
 
 [discovery]
-enabled = true
+dsn = "sqlite://.data/signaldb.db"   # Falls back to [database].dsn when [discovery] is absent
 heartbeat_interval = "30s"
+poll_interval = "60s"
+ttl = "300s"
 ```
 
-### Service Configuration
-```toml
-[service]
-id = "unique-service-id"        # Auto-generated if not provided
-address = "127.0.0.1:8080"      # Service endpoint address
-```
+There is no `[service]` config section: the service address is passed programmatically to `ServiceBootstrap::new()`, and the service id is a generated UUID.
 
 ## Integration Patterns
 
@@ -169,11 +204,10 @@ address = "127.0.0.1:8080"      # Service endpoint address
 Services discover dependencies via:
 
 ```rust
-// Router discovers queriers
-let queriers = catalog.list_ingesters().await?
-    .into_iter()
-    .filter(|i| i.stopped_at.is_none())
-    .collect();
+// Router discovers queriers by capability (staleness-filtered by TTL upstream)
+let queriers = bootstrap
+    .discover_services_by_capability(ServiceCapability::QueryExecution)
+    .await?;
 
 // Flight client connection to discovered service
 let endpoint = format!("http://{}", querier.address);
@@ -201,16 +235,17 @@ let flight_client = FlightServiceClient::connect(endpoint).await?;
 ### Monolithic Deployment
 ```bash
 # Single binary with embedded discovery
-cargo run
+cargo run --bin signaldb
 ```
 
 ### Microservices Deployment  
 ```bash
 # Each service discovers others via catalog
 cargo run --bin signaldb-acceptor
-cargo run --bin signaldb-writer  
+cargo run --bin signaldb-writer
 cargo run --bin signaldb-router
 cargo run --bin signaldb-querier
+cargo run --bin signaldb-compactor
 ```
 
 ## Future Enhancements *(Planned)*
@@ -230,22 +265,9 @@ cargo run --bin signaldb-querier
 - Geographic proximity-based routing
 - Disaster recovery and failover
 
-## Integration Test Coverage ✅ **Complete**
+## Integration Test Coverage
 
-The service discovery system has comprehensive test coverage across all deployment scenarios:
-
-### Test Coverage
-- **✅ 15/15 Integration Tests Passing**: All component integration tests validate service discovery
-- **✅ Capability-Based Routing**: Tests verify proper capability-based service selection
-- **✅ Catalog Sharing**: Tests use shared SQLite catalogs for proper service coordination
-- **✅ Flight Communication**: Tests validate end-to-end Flight-based service communication
-- **✅ WAL Integration**: Tests verify WAL durability with service discovery
-
-### Deployment Validation
-- **✅ Monolithic Mode**: Single process with localhost service discovery
-- **✅ Microservices Mode**: Distributed services with networked discovery
-- **✅ Mixed Deployments**: Combination of local and remote services
-- **✅ Service Failures**: Automatic cleanup and failover handling
+Service discovery is exercised by the `tests-integration/` suite: capability-based routing, shared-catalog coordination, end-to-end Flight communication, and WAL durability with discovery. Run with `cargo test -p tests-integration`.
 
 ## Current Status Summary
 
@@ -256,14 +278,11 @@ The service discovery system has comprehensive test coverage across all deployme
 - **Flight transport integration** with connection pooling
 - **Automatic heartbeat and health monitoring** with TTL-based cleanup
 - **Graceful service registration/deregistration** with proper shutdown handling
-- **Comprehensive integration test coverage** validating all scenarios
 - **Support for both monolithic and microservices deployment** patterns
 
 🚀 **Performance Characteristics**:
-- **Sub-millisecond discovery latency** with in-memory caching
 - **Connection pooling** for Flight clients reducing connection overhead
-- **Automatic failover** when services become unavailable
-- **Efficient capability filtering** reducing unnecessary service queries
+- **Capability filtering** reducing unnecessary service queries
 
 🔄 **Future Enhancements**:
 - **Service mesh integration** (Consul, etcd, Kubernetes)
@@ -271,4 +290,4 @@ The service discovery system has comprehensive test coverage across all deployme
 - **Multi-region capabilities** with geographic routing
 - **Load balancing strategies** beyond round-robin
 
-The catalog-based discovery system with ServiceBootstrap pattern provides a production-ready, database-backed foundation that has been thoroughly tested and validated across all deployment scenarios.
+The catalog-based discovery system with ServiceBootstrap pattern provides a database-backed foundation used by every deployment mode.

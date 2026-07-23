@@ -6,7 +6,7 @@ sources:
   - src/common/src/storage.rs
   - src/common/src/wal/**
   - src/common/src/catalog_manager.rs
-  - src/common/src/schema/iceberg_schemas.rs
+  - src/common/src/iceberg/**
 ---
 
 # Storage Layout Design
@@ -176,7 +176,7 @@ Examples:
 | acme | archive | logs | `Identifier(["acme", "archive"], "logs")` |
 | beta | staging | metrics_gauge | `Identifier(["beta", "staging"], "metrics_gauge")` |
 
-Namespaces are implicitly created when tables are created -- there is no explicit `create_namespace` call.
+Namespaces are created explicitly: `IcebergTableManager::ensure_table()` (`src/common/src/iceberg/table_manager.rs`) calls `create_namespace` before creating a table, treating "already exists" errors from concurrent creators as success.
 
 ### CatalogManager
 
@@ -186,12 +186,14 @@ Namespaces are implicitly created when tables are created -- there is no explici
 pub struct CatalogManager {
     catalog: Arc<dyn IcebergCatalog>,
     config: Configuration,
+    table_manager: IcebergTableManager,
 }
 ```
 
 Key methods:
 
 - `catalog()` -- returns `Arc<dyn IcebergCatalog>` for direct Iceberg operations
+- `ensure_table(tenant_id, dataset_id, table_name)` -- resolves slugs and delegates to `IcebergTableManager::ensure_table()`
 - `get_tenant_slug(tenant_id)` -- resolves slug from config (falls back to tenant_id)
 - `get_dataset_slug(tenant_id, dataset_id)` -- resolves slug from config (falls back to dataset_id)
 - `get_dataset_storage_config(tenant_id, dataset_id)` -- resolves per-dataset or global storage config
@@ -215,7 +217,7 @@ Iceberg:      Identifier(["acme", "prod"], "traces")
 - `schema_names()`: Filters Iceberg namespaces to those starting with `{tenant_slug}.`, strips the prefix
 - `schema(name)`: Prepends `{tenant_slug}.` to look up the full namespace `{tenant_slug}.{dataset_slug}`
 
-At startup, the Querier registers a `TenantCatalog` per enabled tenant, plus a backward-compatible `"iceberg"` catalog.
+At startup, the Querier registers a `TenantCatalog` per enabled tenant, named by the tenant's slug.
 
 ## Table Types
 
@@ -227,11 +229,11 @@ SignalDB creates up to 7 table types per tenant-dataset combination. Table creat
 |-------------|-----------|--------------|---------------|
 | Traces | `traces` | `WriteTraces` | `schemas.toml` (v2, inherits v1) |
 | Logs | `logs` | `WriteLogs` | `schemas.toml` (v1) |
-| Metrics (Gauge) | `metrics_gauge` | `WriteMetrics` | `iceberg_schemas.rs` (hardcoded) |
-| Metrics (Sum) | `metrics_sum` | `WriteMetrics` | `iceberg_schemas.rs` (hardcoded) |
-| Metrics (Histogram) | `metrics_histogram` | `WriteMetrics` | `iceberg_schemas.rs` (hardcoded) |
-| Metrics (Exp. Histogram) | `metrics_exponential_histogram` | `WriteMetrics` | `iceberg_schemas.rs` (hardcoded) |
-| Metrics (Summary) | `metrics_summary` | `WriteMetrics` | `iceberg_schemas.rs` (hardcoded) |
+| Metrics (Gauge) | `metrics_gauge` | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
+| Metrics (Sum) | `metrics_sum` | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
+| Metrics (Histogram) | `metrics_histogram` | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
+| Metrics (Exp. Histogram) | `metrics_exponential_histogram` | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
+| Metrics (Summary) | `metrics_summary` | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
 
 For metrics, the target table name is extracted from the WAL entry's `metadata` JSON field (`target_table`), defaulting to `metrics_gauge`.
 
@@ -255,7 +257,7 @@ Hour-level partitioning automatically enables day/month/year pruning in DataFusi
 Schema definitions come from two sources:
 
 - **`schemas.toml`** (compiled into the binary): Traces and Logs schemas with versioning and inheritance
-- **`iceberg_schemas.rs`** (hardcoded): Metric table schemas
+- **`src/common/src/iceberg/schemas.rs`** (hardcoded): Metric table schemas
 
 #### Traces Table (v2 -- current)
 
@@ -320,7 +322,7 @@ Defined in `schemas.toml`.
 
 #### Metrics Gauge Table (v1 -- current)
 
-Defined in `iceberg_schemas.rs`.
+Defined in `src/common/src/iceberg/schemas.rs`.
 
 | # | Field | Iceberg Type | Required | Notes |
 |---|-------|-------------|----------|-------|
@@ -432,7 +434,7 @@ The WAL is organized by tenant, dataset, and signal type under the configured ba
 
 ### Concrete Example
 
-With default `wal_dir = ".data/wal"`:
+The runtime `WalConfig` (`src/common/src/wal/mod.rs`) defaults to `wal_dir = ".wal"`; the `.data/wal` path shown below is the `[wal]` config-file default used by the dev scripts. With `wal_dir = ".data/wal"`:
 
 ```
 .data/wal/
@@ -463,13 +465,15 @@ With default `wal_dir = ".data/wal"`:
 
 ```rust
 pub struct WalConfig {
-    pub wal_dir: PathBuf,
+    pub wal_dir: PathBuf,            // Default: ".wal"
     pub max_segment_size: u64,       // Default: 64 MB (67108864 bytes)
     pub max_buffer_entries: usize,   // Default: 1000
     pub flush_interval_secs: u64,    // Default: 30 seconds
-    pub max_buffer_size: usize,      // Default: 128 MB
     pub tenant_id: String,           // Required, non-empty
     pub dataset_id: String,          // Required, non-empty
+    pub retention_secs: u64,         // Default: 3600 (keep processed entries 1 hour)
+    pub cleanup_interval_secs: u64,  // Default: 300 (cleanup pass every 5 minutes)
+    pub compaction_threshold: f64,   // Default: 0.5 (compact segment at 50% processed)
 }
 ```
 
@@ -619,13 +623,18 @@ When the `WalProcessor` encounters data for a new tenant/dataset/table combinati
 
 1. Resolve `tenant_slug` and `dataset_slug` from `CatalogManager`
 2. Resolve `StorageConfig` (per-dataset override or global)
-3. Compute table location: `{storage_base}/{tenant_slug}/{dataset_slug}/{table_name}`
-4. Check if table exists in Iceberg catalog: `catalog.tabular_exists(&table_ident)`
-5. If not, create with `CreateTableBuilder`:
-   - Schema from `iceberg_schemas` (matched by table name)
-   - Partition spec (Hour on timestamp)
-   - Table location pointing to the object store path
-6. Cache the `IcebergTableWriter` for future writes to the same combination
+3. Call `CatalogManager::ensure_table()`, which delegates to `IcebergTableManager::ensure_table()`:
+   - Try `load_tabular()` -- a single catalog round-trip returning fresh metadata
+   - On not-found, `create_namespace` (idempotent) then create with `CreateTableBuilder`:
+     schema and partition spec (Hour on timestamp) from `iceberg/schemas.rs` matched by
+     table name, location `{tenant_slug}/{dataset_slug}/{table_name}` relative to the
+     object store root
+   - Concurrent "already exists" errors resolve by reloading the table
+4. The returned `Table` handle is deliberately **not cached** (issue #537): a handle carries
+   metadata as of load time, and a cached handle would hide snapshots committed by other
+   writers. Callers re-call `ensure_table` whenever they need a current view. (The
+   `WalProcessor` does cache `IcebergTableWriter` instances per combination, but each
+   write re-resolves the table through `ensure_table`.)
 
 ### Configuration Toggles
 
@@ -644,9 +653,12 @@ metrics_enabled = true
 | File | Purpose |
 |------|---------|
 | `schemas.toml` | Schema definitions with versioning and inheritance |
-| `src/common/src/schema/mod.rs` | Iceberg catalog creation, `TenantSchemaRegistry` |
+| `src/common/src/iceberg/mod.rs` | Iceberg catalog creation (SQLite `SqlCatalog`) |
+| `src/common/src/iceberg/schemas.rs` | Table schemas, partition specs, `TableSchema` enum |
+| `src/common/src/iceberg/names.rs` | Namespace/identifier/location builders |
+| `src/common/src/iceberg/table_manager.rs` | `IcebergTableManager::ensure_table()` -- load-or-create tables |
 | `src/common/src/schema/schema_parser.rs` | TOML schema parser with inheritance resolution |
-| `src/common/src/schema/iceberg_schemas.rs` | Hardcoded metric schemas, partition specs, `TableSchema` enum |
+| `src/common/src/schema/iceberg_schemas.rs` | Backward-compatibility re-export of `iceberg/schemas.rs` |
 | `src/common/src/catalog_manager.rs` | `CatalogManager` singleton for shared Iceberg catalog |
 | `src/common/src/storage.rs` | Object store creation from DSN, path resolution |
 | `src/common/src/wal/mod.rs` | WAL implementation (segments, entries, flush, cleanup) |
