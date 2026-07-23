@@ -1,8 +1,3 @@
-use common::model;
-
-use async_trait::async_trait;
-use error::QuerierError;
-
 pub mod error;
 pub mod search_filter;
 pub mod table_ref;
@@ -27,21 +22,4 @@ pub struct SearchQueryParams {
     pub start: Option<i32>,
     pub end: Option<i32>,
     pub spss: Option<i32>,
-}
-
-#[async_trait]
-#[allow(dead_code)]
-pub trait TraceQuerier: Send + Sync + Clone {
-    async fn find_shallow_by_id(
-        &self,
-        params: FindTraceByIdParams,
-    ) -> Result<Option<model::trace::Trace>, QuerierError>;
-    async fn find_by_id(
-        &self,
-        params: FindTraceByIdParams,
-    ) -> Result<Option<model::trace::Trace>, QuerierError>;
-    async fn find_traces(
-        &self,
-        query: SearchQueryParams,
-    ) -> Result<Vec<model::trace::Trace>, QuerierError>;
 }
