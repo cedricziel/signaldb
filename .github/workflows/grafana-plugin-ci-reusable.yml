@@ -79,6 +79,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: grafana-plugin-ci
+          workspaces: src/grafana-plugin/backend
 
       - name: Build backend
         if: steps.check-for-backend.outputs.has-backend == 'true'
