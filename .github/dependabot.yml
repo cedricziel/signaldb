@@ -36,6 +36,23 @@ updates:
           - "openapiv3"
           - "schemars"
 
+  # The Grafana plugin backend is a standalone cargo workspace (excluded from
+  # the root workspace), so it needs its own entry. Note: grafana-plugin-sdk
+  # is a rev-pinned git dependency, which Dependabot skips — that pin is
+  # updated manually.
+  - package-ecosystem: "cargo"
+    directory: "/src/grafana-plugin/backend"
+    schedule:
+      interval: "daily"
+    assignees:
+      - cedricziel
+    groups:
+      # arrow must track grafana-plugin-sdk's arrow major; grouped so the
+      # bump arrives as one PR that can be declined until the SDK moves.
+      arrow-ecosystem:
+        patterns:
+          - "arrow*"
+
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
