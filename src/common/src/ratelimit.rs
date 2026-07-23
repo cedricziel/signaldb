@@ -2,7 +2,8 @@
 //!
 //! Token-bucket rate limiting keyed by tenant id, used by the ingest
 //! paths (OTLP gRPC, Prometheus remote_write) to keep one tenant from
-//! exhausting shared acceptor throughput.
+//! exhausting shared acceptor throughput, and by the router's query API
+//! to keep one tenant from monopolizing shared query capacity.
 //!
 //! Limits come from `[auth].default_limits` with optional per-tenant
 //! overrides (`[[auth.tenants]].limits`). Unset limits mean unlimited,
@@ -55,6 +56,7 @@ impl TokenBucket {
 struct TenantBuckets {
     requests: Option<TokenBucket>,
     bytes: Option<TokenBucket>,
+    query_requests: Option<TokenBucket>,
 }
 
 /// The dimension that rejected a request.
@@ -64,6 +66,8 @@ pub enum RateLimitKind {
     Requests,
     /// The per-tenant ingest bytes/second limit.
     Bytes,
+    /// The per-tenant query API requests/second limit.
+    QueryRequests,
 }
 
 /// Error returned when a tenant exceeds an ingest limit.
@@ -78,6 +82,7 @@ impl std::fmt::Display for RateLimitExceeded {
         let what = match self.kind {
             RateLimitKind::Requests => "request rate",
             RateLimitKind::Bytes => "ingest byte rate",
+            RateLimitKind::QueryRequests => "query request rate",
         };
         write!(
             f,
@@ -141,22 +146,7 @@ impl TenantRateLimiter {
             return Ok(());
         }
 
-        let entry = self
-            .buckets
-            .entry(tenant_id.to_string())
-            .or_insert_with(|| {
-                let burst_secs = limits.burst_seconds.max(1.0);
-                Mutex::new(TenantBuckets {
-                    requests: limits.max_ingest_requests_per_sec.map(|rps| {
-                        let rate = f64::from(rps);
-                        TokenBucket::new(rate, rate * burst_secs, now)
-                    }),
-                    bytes: limits.max_ingest_bytes_per_sec.map(|bps| {
-                        let rate = bps as f64;
-                        TokenBucket::new(rate, rate * burst_secs, now)
-                    }),
-                })
-            });
+        let entry = self.bucket_entry(tenant_id, now);
         let mut buckets = entry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -178,6 +168,63 @@ impl TenantRateLimiter {
             });
         }
         Ok(())
+    }
+
+    /// Record one query API request for the tenant, rejecting it if the
+    /// query request-rate budget is exhausted.
+    pub fn check_query(&self, tenant_id: &str) -> Result<(), RateLimitExceeded> {
+        self.check_query_at(tenant_id, Instant::now())
+    }
+
+    /// [`Self::check_query`] with an injectable clock for tests.
+    fn check_query_at(&self, tenant_id: &str, now: Instant) -> Result<(), RateLimitExceeded> {
+        let limits = self.limits_for(tenant_id);
+        if limits.max_query_requests_per_sec.is_none() {
+            return Ok(());
+        }
+
+        let entry = self.bucket_entry(tenant_id, now);
+        let mut buckets = entry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        if let Some(bucket) = buckets.query_requests.as_mut()
+            && !bucket.try_acquire(1.0, now)
+        {
+            return Err(RateLimitExceeded {
+                tenant_id: tenant_id.to_string(),
+                kind: RateLimitKind::QueryRequests,
+            });
+        }
+        Ok(())
+    }
+
+    /// The tenant's bucket set, created from its limits on first use.
+    fn bucket_entry(
+        &self,
+        tenant_id: &str,
+        now: Instant,
+    ) -> dashmap::mapref::one::RefMut<'_, String, Mutex<TenantBuckets>> {
+        let limits = self.limits_for(tenant_id);
+        self.buckets
+            .entry(tenant_id.to_string())
+            .or_insert_with(|| {
+                let burst_secs = limits.burst_seconds.max(1.0);
+                Mutex::new(TenantBuckets {
+                    requests: limits.max_ingest_requests_per_sec.map(|rps| {
+                        let rate = f64::from(rps);
+                        TokenBucket::new(rate, rate * burst_secs, now)
+                    }),
+                    bytes: limits.max_ingest_bytes_per_sec.map(|bps| {
+                        let rate = bps as f64;
+                        TokenBucket::new(rate, rate * burst_secs, now)
+                    }),
+                    query_requests: limits.max_query_requests_per_sec.map(|qps| {
+                        let rate = f64::from(qps);
+                        TokenBucket::new(rate, rate * burst_secs, now)
+                    }),
+                })
+            })
     }
 }
 
@@ -215,6 +262,75 @@ mod tests {
         for _ in 0..10_000 {
             assert!(limiter.check_ingest("acme", 1_000_000).is_ok());
         }
+    }
+
+    #[test]
+    fn query_rate_is_enforced_and_refills() {
+        let limiter = limiter(
+            TenantLimits {
+                max_query_requests_per_sec: Some(4),
+                burst_seconds: 1.0,
+                ..Default::default()
+            },
+            vec![],
+        );
+
+        let start = Instant::now();
+        for _ in 0..4 {
+            assert!(limiter.check_query_at("acme", start).is_ok());
+        }
+        let denied = limiter.check_query_at("acme", start).unwrap_err();
+        assert_eq!(denied.kind, RateLimitKind::QueryRequests);
+
+        // Half a second refills two tokens.
+        let later = start + Duration::from_millis(500);
+        for _ in 0..2 {
+            assert!(limiter.check_query_at("acme", later).is_ok());
+        }
+        assert!(limiter.check_query_at("acme", later).is_err());
+    }
+
+    #[test]
+    fn query_rate_unlimited_when_unset_even_with_ingest_limits() {
+        let limiter = limiter(
+            TenantLimits {
+                max_ingest_requests_per_sec: Some(1),
+                burst_seconds: 1.0,
+                ..Default::default()
+            },
+            vec![],
+        );
+
+        let start = Instant::now();
+        // Exhaust the ingest budget; queries must be unaffected.
+        assert!(limiter.check_ingest_at("acme", 0, start).is_ok());
+        assert!(limiter.check_ingest_at("acme", 0, start).is_err());
+        for _ in 0..1_000 {
+            assert!(limiter.check_query_at("acme", start).is_ok());
+        }
+    }
+
+    #[test]
+    fn query_and_ingest_budgets_are_independent() {
+        let limiter = limiter(
+            TenantLimits {
+                max_ingest_requests_per_sec: Some(2),
+                max_query_requests_per_sec: Some(2),
+                burst_seconds: 1.0,
+                ..Default::default()
+            },
+            vec![],
+        );
+
+        let start = Instant::now();
+        assert!(limiter.check_query_at("acme", start).is_ok());
+        assert!(limiter.check_query_at("acme", start).is_ok());
+        assert!(limiter.check_query_at("acme", start).is_err());
+
+        // The exhausted query budget must not consume ingest tokens.
+        assert!(limiter.check_ingest_at("acme", 0, start).is_ok());
+        assert!(limiter.check_ingest_at("acme", 0, start).is_ok());
+        assert!(limiter.check_ingest_at("acme", 0, start).is_err());
     }
 
     #[test]

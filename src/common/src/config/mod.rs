@@ -528,7 +528,7 @@ pub struct TenantConfig {
     pub limits: Option<TenantLimits>,
 }
 
-/// Per-tenant ingest rate limits.
+/// Per-tenant rate limits and quotas.
 ///
 /// Unset fields mean unlimited. `burst_seconds` controls how many
 /// seconds' worth of budget a tenant may consume in a burst.
@@ -539,6 +539,12 @@ pub struct TenantLimits {
     pub max_ingest_requests_per_sec: Option<u32>,
     /// Maximum ingest payload bytes per second.
     pub max_ingest_bytes_per_sec: Option<u64>,
+    /// Maximum query API requests per second (router HTTP endpoints).
+    pub max_query_requests_per_sec: Option<u32>,
+    /// Maximum number of active (non-revoked) API keys.
+    pub max_api_keys: Option<u32>,
+    /// Maximum number of datasets.
+    pub max_datasets: Option<u32>,
     /// Burst allowance in seconds of budget (minimum 1.0).
     pub burst_seconds: f64,
 }
@@ -548,6 +554,9 @@ impl Default for TenantLimits {
         Self {
             max_ingest_requests_per_sec: None,
             max_ingest_bytes_per_sec: None,
+            max_query_requests_per_sec: None,
+            max_api_keys: None,
+            max_datasets: None,
             burst_seconds: 2.0,
         }
     }
@@ -561,7 +570,7 @@ impl Default for TenantLimits {
 /// Flight mesh is separately controlled by `internal_service_key`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AuthConfig {
-    /// Default ingest rate limits applied to every tenant without an
+    /// Default rate limits and quotas applied to every tenant without an
     /// explicit `limits` override. Unset fields mean unlimited.
     #[serde(default)]
     pub default_limits: TenantLimits,
@@ -580,6 +589,19 @@ pub struct AuthConfig {
     /// network.
     #[serde(default)]
     pub internal_service_key: Option<String>,
+}
+
+impl AuthConfig {
+    /// Effective limits for `tenant_id`: the tenant's `limits` override
+    /// when configured, otherwise `default_limits`. Tenants provisioned
+    /// at runtime (DB-backed) have no config entry and get the defaults.
+    pub fn limits_for(&self, tenant_id: &str) -> &TenantLimits {
+        self.tenants
+            .iter()
+            .find(|t| t.id == tenant_id)
+            .and_then(|t| t.limits.as_ref())
+            .unwrap_or(&self.default_limits)
+    }
 }
 
 fn default_self_monitoring_endpoint() -> String {
