@@ -28,17 +28,24 @@ Comprehensive troubleshooting guide for SignalDB Compactor Phase 3: Retention En
 # Check compactor is running
 ps aux | grep compactor
 
-# Check logs for errors
-tail -100 .data/logs/compactor.log | grep ERROR
+# Check logs for errors. The standalone compactor logs to stdout —
+# use journalctl for systemd units, or .data/logs/monolithic.log when
+# running via ./scripts/run-dev.sh
+journalctl -u signaldb-compactor -n 100 | grep ERROR
+# or
+tail -100 .data/logs/monolithic.log | grep ERROR
+
+# JSON status snapshot (counters + instance metadata)
+curl -s localhost:9091/status | jq .
 
 # Check metrics endpoint
 curl -s localhost:9091/metrics | grep compactor
 
-# Check retention last run
-curl -s localhost:9091/metrics | grep compactor_retention_last_run
+# Check retention activity (counter increments every retention cycle)
+curl -s localhost:9091/metrics | grep compactor_retention_cutoffs_computed_total
 
 # Check recent orphan cleanup
-curl -s localhost:9091/metrics | grep compactor_orphan_cleanup_runs_total
+curl -s localhost:9091/metrics | grep compactor_orphan_candidates_identified_total
 ```
 
 ### Quick Status Check
@@ -50,14 +57,14 @@ cat << 'EOF' > /tmp/compactor_status.sh
 echo "=== Compactor Status ==="
 echo "Process: $(pgrep -f compactor | wc -l) running"
 echo ""
-echo "=== Recent Errors ==="
-tail -50 .data/logs/compactor.log | grep ERROR | tail -5
+echo "=== Status Snapshot ==="
+curl -s localhost:9091/status
 echo ""
 echo "=== Retention Metrics ==="
-curl -s localhost:9091/metrics | grep -E "compactor_(partitions_dropped|retention_enforcement)" | tail -3
+curl -s localhost:9091/metrics | grep -E "compactor_(partitions_dropped|retention_duration_ms|bytes_reclaimed)" | tail -3
 echo ""
 echo "=== Orphan Cleanup Metrics ==="
-curl -s localhost:9091/metrics | grep -E "compactor_(files_deleted|orphans_identified)" | tail -3
+curl -s localhost:9091/metrics | grep -E "compactor_(files_deleted|orphan_candidates_identified)" | tail -3
 EOF
 
 chmod +x /tmp/compactor_status.sh
@@ -82,18 +89,16 @@ grep -A 5 "compactor.retention" signaldb.toml
 # 2. Check for dry-run mode
 grep "dry_run" signaldb.toml | grep retention
 
-# 3. Check computed cutoff in logs
-RUST_LOG=debug,compactor::retention=trace cargo run --bin signaldb-compactor &
-sleep 60 && tail -50 .data/logs/compactor.log | grep "retention cutoff"
+# 3. Check computed cutoff in logs (compactor logs to stdout)
+RUST_LOG=debug,compactor::retention=trace cargo run --bin signaldb-compactor 2>&1 | \
+  grep "Retention cutoff computed"
 
-# 4. List actual partitions
-psql -h localhost -U signaldb signaldb -c "
-  SELECT table_name, hour, file_count, total_bytes
-  FROM iceberg_partitions
-  WHERE hour < NOW() - INTERVAL '7 days'
-  ORDER BY hour
-  LIMIT 10;
-"
+# 4. Check retention counters via the status endpoint
+curl -s localhost:9091/status | jq .retention
+
+# 5. Inspect the actual data files on the object store
+# (partition metadata is in Iceberg metadata files, not in PostgreSQL)
+find .data/storage/<tenant>/<dataset>/traces -name "*.parquet" -mtime +7 | head
 ```
 
 **Common Causes and Solutions:**
@@ -102,9 +107,9 @@ psql -h localhost -U signaldb signaldb -c "
 |-------|-------------|----------|
 | Retention disabled | `enabled = false` in config | Set `enabled = true` |
 | Dry-run mode enabled | `dry_run = true` in config | Set `dry_run = false` |
-| Grace period too large | Check `grace_period_hours` | Reduce grace period |
+| Grace period too large | Check `grace_period` | Reduce grace period |
 | No data old enough | Check partition timestamps | Wait for data to age |
-| Retention check hasn't run | Check `compactor_retention_last_run` | Restart compactor or wait for interval |
+| Retention check hasn't run | Check `compactor_retention_cutoffs_computed_total` | Restart compactor or wait for interval |
 
 **Example Fix:**
 
@@ -117,8 +122,8 @@ enabled = false  # ← Problem: disabled
 [compactor.retention]
 enabled = true
 dry_run = false
-retention_check_interval_secs = 3600
-traces_retention_days = 7
+retention_check_interval = "1h"
+traces = "7d"
 ```
 
 ### Issue 2: Partitions Dropped Too Aggressively
@@ -131,15 +136,17 @@ traces_retention_days = 7
 **Diagnostic Steps:**
 
 ```bash
-# 1. Check effective retention configuration
-RUST_LOG=debug,compactor::retention=trace cargo run --bin signaldb-compactor &
-sleep 30 && tail -100 .data/logs/compactor.log | grep -E "(tenant_override|dataset_override|retention cutoff)"
+# 1. Check effective retention configuration (compactor logs to stdout)
+RUST_LOG=debug,compactor::retention=trace cargo run --bin signaldb-compactor 2>&1 | \
+  grep "Retention cutoff computed"
+# The source field shows which level applied: source=Global, source=Tenant,
+# or source=Dataset
 
 # 2. Check for configuration errors
 grep -A 20 "compactor.retention" signaldb.toml
 
 # 3. Verify grace period
-grep "grace_period_hours" signaldb.toml
+grep "grace_period" signaldb.toml
 ```
 
 **Common Causes:**
@@ -148,13 +155,11 @@ grep "grace_period_hours" signaldb.toml
 
 ```toml
 # Problem: Dataset override shorter than intended
-[[compactor.retention.tenant_overrides]]
-tenant_id = "production"
-traces_retention_days = 30
+[compactor.retention.tenant_overrides.production]
+traces = "30d"
 
-[[compactor.retention.tenant_overrides.dataset_overrides]]
-dataset_id = "critical"
-traces_retention_days = 3  # ← Accidentally 3 instead of 90
+[compactor.retention.tenant_overrides.production.dataset_overrides.critical]
+traces = "3d"  # ← Accidentally 3d instead of 90d
 ```
 
 **Solution:** Review and fix retention periods in configuration.
@@ -163,10 +168,10 @@ traces_retention_days = 3  # ← Accidentally 3 instead of 90
 
 ```bash
 # Check for unexpected environment variables
-env | grep SIGNALDB_COMPACTOR_RETENTION
+env | grep SIGNALDB__COMPACTOR__RETENTION
 
 # Example problem:
-# SIGNALDB_COMPACTOR_RETENTION_TRACES_RETENTION_DAYS=1  ← Overriding config file
+# SIGNALDB__COMPACTOR__RETENTION__TRACES=1d  ← Overriding config file
 ```
 
 **Solution:** Remove or correct environment variable overrides.
@@ -174,7 +179,7 @@ env | grep SIGNALDB_COMPACTOR_RETENTION
 3. **Zero Grace Period:**
 
 ```toml
-grace_period_hours = 0  # ← No safety margin
+grace_period = "0s"  # ← No safety margin
 ```
 
 **Solution:** Use at least 1 hour grace period for production.
@@ -182,7 +187,7 @@ grace_period_hours = 0  # ← No safety margin
 ### Issue 3: Retention Check Not Running
 
 **Symptoms:**
-- `compactor_retention_last_run_timestamp` not updating
+- `compactor_retention_cutoffs_computed_total` not increasing
 - No retention logs in recent time window
 - Partitions not being evaluated
 
@@ -192,14 +197,15 @@ grace_period_hours = 0  # ← No safety margin
 # 1. Check compactor process is running
 ps aux | grep compactor
 
-# 2. Check for fatal errors at startup
-head -100 .data/logs/compactor.log | grep -E "(ERROR|FATAL)"
+# 2. Check for fatal errors at startup (stdout/journalctl, or
+#    .data/logs/monolithic.log when using ./scripts/run-dev.sh)
+journalctl -u signaldb-compactor -n 100 | grep -E "(ERROR|FATAL)"
 
-# 3. Check retention scheduler logs
-grep "retention scheduler" .data/logs/compactor.log
+# 3. Check retention run logs
+journalctl -u signaldb-compactor | grep "Retention enforcement run completed"
 
-# 4. Check metrics for last run time
-curl -s localhost:9091/metrics | grep compactor_retention_last_run_timestamp
+# 4. Check the retention-cycle counter (should increase every cycle)
+curl -s localhost:9091/metrics | grep compactor_retention_cutoffs_computed_total
 ```
 
 **Common Causes:**
@@ -218,8 +224,8 @@ pgrep -f compactor
 2. **Configuration Validation Failed:**
 
 ```bash
-# Check startup logs
-head -50 .data/logs/compactor.log | grep -E "(validation|config|failed)"
+# Check startup logs (stdout/journalctl)
+journalctl -u signaldb-compactor -n 50 | grep -E "(validation|config|failed)"
 ```
 
 **Solution:** Fix configuration errors and restart.
@@ -227,7 +233,7 @@ head -50 .data/logs/compactor.log | grep -E "(validation|config|failed)"
 3. **Retention Check Interval Too Long:**
 
 ```toml
-retention_check_interval_secs = 86400  # 24 hours - won't run often
+retention_check_interval = "24h"  # Won't run often
 ```
 
 **Solution:** Reduce interval for more frequent checks or wait longer.
@@ -242,18 +248,17 @@ retention_check_interval_secs = 86400  # 24 hours - won't run often
 **Diagnostic Steps:**
 
 ```bash
-# 1. Check snapshot count
-psql -h localhost -U signaldb signaldb -c "
-  SELECT table_name, COUNT(*) as snapshot_count
-  FROM iceberg_snapshots
-  GROUP BY table_name;
-"
+# 1. Check snapshot count from the Iceberg metadata on the object store
+#    (there is no iceberg_snapshots table in the catalog database)
+jq '.snapshots | length' \
+  .data/storage/<tenant>/<dataset>/traces/metadata/<latest>.metadata.json
 
 # 2. Check snapshots_to_keep config
 grep "snapshots_to_keep" signaldb.toml
 
-# 3. Check logs for snapshot expiration
-grep "snapshot expiration" .data/logs/compactor.log | tail -20
+# 3. Check logs for snapshot expiration (stdout/journalctl/monolithic.log)
+journalctl -u signaldb-compactor | \
+  grep -E "(Expired old snapshots|No snapshots to expire|Found snapshots to expire)" | tail -20
 ```
 
 **Common Causes:**
@@ -271,7 +276,8 @@ snapshots_to_keep = 1000  # ← Never expires if < 1000 snapshots
 Check if snapshot expiration is actually running:
 
 ```bash
-grep "expire.*snapshot" .data/logs/compactor.log
+journalctl -u signaldb-compactor | grep -iE "expire.*snapshot"
+curl -s localhost:9091/metrics | grep compactor_snapshots_expired_total
 ```
 
 **Solution:** Verify Phase 3 is fully deployed.
@@ -281,7 +287,7 @@ grep "expire.*snapshot" .data/logs/compactor.log
 ### Issue 5: Orphan Files Not Being Deleted
 
 **Symptoms:**
-- `compactor_orphans_identified_total` > 0
+- `compactor_orphan_candidates_identified_total` > 0
 - `compactor_files_deleted_total` = 0
 - Orphan files identified but not removed
 
@@ -291,11 +297,11 @@ grep "expire.*snapshot" .data/logs/compactor.log
 # 1. Check if cleanup is enabled and not in dry-run
 grep -A 5 "compactor.orphan_cleanup" signaldb.toml
 
-# 2. Check for deletion errors
-grep -E "(orphan|delete|failed)" .data/logs/compactor.log | tail -20
+# 2. Check for deletion errors (stdout/journalctl/monolithic.log)
+journalctl -u signaldb-compactor | grep -E "(orphan|delete|failed)" | tail -20
 
 # 3. Check revalidation logs
-grep "revalidation" .data/logs/compactor.log | tail -10
+journalctl -u signaldb-compactor | grep -i "revalidation" | tail -10
 ```
 
 **Common Causes:**
@@ -337,8 +343,8 @@ revalidate_before_delete = true
 # 1. Check grace period configuration
 grep "grace_period_hours" signaldb.toml | grep orphan_cleanup
 
-# 2. Check file ages in orphan logs
-grep "DRY-RUN.*Would delete" .data/logs/compactor.log | tail -10
+# 2. Check file ages in orphan logs (stdout/journalctl/monolithic.log)
+journalctl -u signaldb-compactor | grep "DRY-RUN.*Would delete" | tail -10
 
 # 3. Check max_snapshot_age_hours
 grep "max_snapshot_age_hours" signaldb.toml
@@ -373,16 +379,16 @@ Compaction creates new files that reference data from old files. The old files b
 **Symptoms:**
 - Cleanup runs for hours
 - High memory usage during cleanup
-- `compactor_orphan_cleanup_duration_seconds` very high
+- Cleanup skipped with `compactor_orphan_cleanup_skipped_total` increasing
 
 **Diagnostic Steps:**
 
 ```bash
-# 1. Check file count being scanned
-curl -s localhost:9091/metrics | grep compactor_files_scanned_total
+# 1. Check how many orphan candidates were identified
+curl -s localhost:9091/metrics | grep compactor_orphan_candidates_identified_total
 
-# 2. Check batch size and rate limiting
-grep -E "(batch_size|rate_limit)" signaldb.toml
+# 2. Check batch size and live-file threshold
+grep -E "(batch_size|max_live_files_threshold)" signaldb.toml
 
 # 3. Monitor memory usage
 ps aux | grep compactor | awk '{print $4, $6}'
@@ -403,17 +409,17 @@ batch_size = 500  # Down from 1000
 max_snapshot_age_hours = 168  # 7 days instead of 30
 ```
 
-3. **Add Rate Limiting:**
-
-```toml
-rate_limit_delay_ms = 1000  # 1 second between batches
-```
-
-4. **Run Less Frequently:**
+3. **Run Less Frequently:**
 
 ```toml
 cleanup_interval_hours = 48  # Every 2 days instead of daily
 ```
+
+4. **Reduce Live Files First:**
+
+If cleanup is being skipped because the estimated live file count exceeds
+`max_live_files_threshold`, run snapshot expiration and compaction first to
+reduce file counts before raising the threshold.
 
 ## Performance Issues
 
@@ -428,17 +434,16 @@ cleanup_interval_hours = 48  # Every 2 days instead of daily
 
 ```bash
 # 1. Check retention duration
-curl -s localhost:9091/metrics | grep compactor_retention_enforcement_duration
+curl -s localhost:9091/metrics | grep compactor_retention_duration_ms_total
 
 # 2. Profile with CPU profiling
 RUST_LOG=info cargo flamegraph --bin signaldb-compactor
 
-# 3. Check partition counts
-psql -h localhost -U signaldb signaldb -c "
-  SELECT table_name, COUNT(*) as partition_count
-  FROM iceberg_partitions
-  GROUP BY table_name;
-"
+# 3. Check data file counts per table on the object store
+#    (partition metadata lives in Iceberg metadata files, not PostgreSQL)
+for t in .data/storage/*/*/*; do
+  echo "$t: $(find "$t" -name '*.parquet' | wc -l) files"
+done
 ```
 
 **Solutions:**
@@ -446,7 +451,7 @@ psql -h localhost -U signaldb signaldb -c "
 1. **Increase Check Interval:**
 
 ```toml
-retention_check_interval_secs = 7200  # Every 2 hours
+retention_check_interval = "2h"
 ```
 
 2. **Reduce Snapshots to Keep:**
@@ -472,11 +477,11 @@ If many partitions exist, consider implementing partition pruning in the query p
 # 1. Monitor memory usage
 watch -n 5 'ps aux | grep compactor | awk "{print \$4, \$6}"'
 
-# 2. Check reference set size
-grep "reference set" .data/logs/compactor.log
+# 2. Check reference set size (stdout/journalctl/monolithic.log)
+journalctl -u signaldb-compactor | grep -i "reference set"
 
-# 3. Check file count
-curl -s localhost:9091/metrics | grep compactor_files_scanned_total
+# 3. Check whether cleanup was skipped by the live-file threshold
+curl -s localhost:9091/metrics | grep compactor_orphan_cleanup_skipped_total
 ```
 
 **Solutions:**
@@ -496,7 +501,7 @@ max_snapshot_age_hours = 168  # 7 days
 3. **Increase Container Memory:**
 
 ```yaml
-# docker-compose.yml
+# compose.yml
 services:
   compactor:
     mem_limit: 4g  # Increase from default
@@ -514,11 +519,11 @@ services:
 **Diagnostic Steps:**
 
 ```bash
-# 1. Check recent partition drops
-grep "dropped partition" .data/logs/compactor.log | tail -20
+# 1. Check recent partition drops (stdout/journalctl/monolithic.log)
+journalctl -u signaldb-compactor | grep "Dropped expired partitions" | tail -20
 
 # 2. Check snapshot expiration
-grep "expired snapshot" .data/logs/compactor.log | tail -20
+journalctl -u signaldb-compactor | grep "Expired old snapshots" | tail -20
 
 # 3. Check query timestamps
 # Queries using old snapshots may fail if snapshot expired
@@ -535,7 +540,7 @@ snapshots_to_keep = 10  # Keep more snapshots
 2. **Increase Retention Check Interval:**
 
 ```toml
-retention_check_interval_secs = 7200  # Less frequent
+retention_check_interval = "2h"  # Less frequent
 ```
 
 3. **Ensure Queries Use Recent Snapshots:**
@@ -565,8 +570,8 @@ systemctl stop signaldb-compactor
 2. **Identify Affected Data:**
 
 ```bash
-# Check recent drops in logs
-grep "dropped partition" .data/logs/compactor.log | \
+# Check recent drops in logs (stdout/journalctl/monolithic.log)
+journalctl -u signaldb-compactor | grep "Dropped expired partitions" | \
   grep "$(date +%Y-%m-%d)" > /tmp/dropped_today.txt
 
 # Review what was dropped
@@ -575,20 +580,15 @@ cat /tmp/dropped_today.txt
 
 3. **Attempt Recovery:**
 
-```sql
--- Check for snapshots before deletion
-SELECT snapshot_id, committed_at, summary
-FROM iceberg_snapshots
-WHERE table_name = 'traces'
-  AND committed_at < '2026-02-09 10:00:00'
-ORDER BY committed_at DESC
-LIMIT 10;
+Partition drops are Iceberg commits, so the pre-drop snapshot survives until snapshot expiration removes it. There is currently no supported way to query it from SignalDB: snapshot metadata is not in the catalog database, and time-travel SQL (`FOR SYSTEM_TIME AS OF`) is not supported by the query path. Instead, inspect the Iceberg metadata on the object store:
 
--- Time-travel query to verify data exists
-SELECT COUNT(*) FROM traces
-FOR SYSTEM_TIME AS OF '2026-02-09 09:00:00'
-WHERE hour = '2026-01-25-10';
+```bash
+# List snapshots for the table (snapshot-id, timestamp-ms, summary)
+jq '.snapshots[] | {snapshot_id: ."snapshot-id", timestamp_ms: ."timestamp-ms", summary}' \
+  .data/storage/<tenant>/<dataset>/traces/metadata/<latest>.metadata.json
 ```
+
+If a pre-drop snapshot still exists, rolling the table back to it requires manual Iceberg surgery with external Iceberg tooling — keep the compactor stopped so snapshot expiration and orphan cleanup cannot delete the referenced files in the meantime.
 
 **Prevention:**
 
@@ -602,9 +602,8 @@ dry_run = true  # Test first
 2. **Test on Non-Production Tenant:**
 
 ```toml
-[[compactor.retention.tenant_overrides]]
-tenant_id = "test"
-traces_retention_days = 1  # Test here first
+[compactor.retention.tenant_overrides.test]
+traces = "1d"  # Test here first
 ```
 
 3. **Monitor Metrics:**
@@ -626,37 +625,19 @@ rate(compactor_partitions_dropped_total[5m]) > 20
 RUST_LOG=debug,compactor=trace cargo run --bin signaldb-compactor
 ```
 
-**Persistent (config file):**
+**Persistent:**
+
+The compactor initializes `tracing-subscriber` with a standard `RUST_LOG` env filter and writes to stdout — there is no logging config file. For persistent debug logging, set `RUST_LOG` in the process environment and capture stdout:
 
 ```bash
-# Create logging config
-cat > /tmp/log4rs.yml << EOF
-appenders:
-  stdout:
-    kind: console
-  file:
-    kind: file
-    path: .data/logs/compactor.log
-    encoder:
-      pattern: "[{d}] {l} {t} - {m}{n}"
+# Shell: redirect stdout to a file
+RUST_LOG=info,compactor::retention=trace,compactor::orphan=trace \
+  cargo run --bin signaldb-compactor 2>&1 | tee compactor-debug.log
 
-root:
-  level: info
-  appenders:
-    - stdout
-    - file
-
-loggers:
-  compactor:
-    level: trace  # Debug logging for compactor
-  compactor::retention:
-    level: trace  # Detailed retention logs
-  compactor::orphan:
-    level: trace  # Detailed orphan cleanup logs
-EOF
-
-# Run with logging config
-RUST_LOG_CONFIG=/tmp/log4rs.yml cargo run --bin signaldb-compactor
+# systemd: set the filter in the unit and read logs via journald
+#   [Service]
+#   Environment=RUST_LOG=info,compactor::retention=trace,compactor::orphan=trace
+journalctl -u signaldb-compactor -f
 ```
 
 ### Trace Specific Operation
@@ -679,29 +660,29 @@ RUST_LOG=info,compactor::orphan=trace cargo run --bin signaldb-compactor 2>&1 | 
 
 ### Verify Iceberg Operations
 
-**Check Iceberg Metadata:**
+The SQL catalog only stores the table registry (`iceberg_tables`, maintained by iceberg-rust's SQL catalog); snapshot, partition, and manifest metadata live in metadata files on the object store.
+
+**Check the Table Registry (SQL catalog):**
 
 ```sql
--- PostgreSQL catalog
-
--- List tables
+-- PostgreSQL (or SQLite) catalog: maps table identifiers to metadata locations
 SELECT * FROM iceberg_tables;
+```
 
--- List snapshots
-SELECT * FROM iceberg_snapshots
-WHERE table_name = 'traces'
-ORDER BY committed_at DESC
-LIMIT 10;
+**Check Snapshots, Manifests, and Partitions (object store):**
 
--- List partitions
-SELECT * FROM iceberg_partitions
-WHERE table_name = 'traces'
-ORDER BY hour DESC
-LIMIT 10;
+```bash
+# Table metadata JSON (local filesystem storage; adapt for S3/MinIO)
+ls .data/storage/<tenant>/<dataset>/traces/metadata/
 
--- Check manifest files
-SELECT * FROM iceberg_manifests
-WHERE snapshot_id = 'YOUR_SNAPSHOT_ID';
+# List snapshots
+jq '.snapshots[] | {snapshot_id: ."snapshot-id", timestamp_ms: ."timestamp-ms", summary}' \
+  .data/storage/<tenant>/<dataset>/traces/metadata/<latest>.metadata.json
+
+# Manifest lists and manifests are Avro files referenced from the
+# snapshot's "manifest-list" entry
+jq '.snapshots[-1]."manifest-list"' \
+  .data/storage/<tenant>/<dataset>/traces/metadata/<latest>.metadata.json
 ```
 
 ### Inspect Object Store
@@ -731,17 +712,16 @@ find .data/storage -name "*.parquet" -mtime -1 -ls
 
 ## Common Error Messages
 
-### Error: "Failed to drop partition"
+### Error: "Table retention enforcement failed"
 
 **Full Message:**
 ```
-ERROR compactor::retention: Failed to drop partition: tenant=acme dataset=prod table=traces hour=2026-01-25-10 error="Catalog error: ..."
+WARN compactor::retention::enforcer: Table retention enforcement failed tenant_id=acme dataset_id=prod table_name=traces error=Failed to commit partition drop: ...
 ```
 
 **Causes:**
 - Catalog connection lost
-- Invalid partition specification
-- Concurrent modification conflict
+- Concurrent modification conflict (snapshot conflicts are retried a few times first; look for "Partition drop hit a snapshot conflict; retrying against fresh metadata")
 
 **Solutions:**
 1. Check catalog connectivity:
@@ -749,24 +729,19 @@ ERROR compactor::retention: Failed to drop partition: tenant=acme dataset=prod t
    psql -h localhost -U signaldb -d signaldb -c "SELECT 1"
    ```
 
-2. Verify partition format:
-   ```sql
-   SELECT DISTINCT hour FROM traces ORDER BY hour LIMIT 5;
-   ```
+2. Retry - operations are idempotent; the next retention cycle will re-evaluate the same partitions.
 
-3. Retry - operations are idempotent.
-
-### Error: "Permission denied deleting file"
+### Error: "Failed to delete orphan file"
 
 **Full Message:**
 ```
-ERROR compactor::orphan: Failed to delete file: path=data/acme/prod/traces/hour=2026-01-01-10/data-001.parquet error="Permission denied"
+ERROR compactor::orphan::cleaner: Failed to delete orphan file path=acme/prod/traces/data/data-001.parquet error=Failed to delete file: ... table=acme/prod/traces
 ```
 
 **Causes:**
 - Insufficient object store permissions
-- File locked by another process
 - Object store credentials invalid
+- Object store unavailable
 
 **Solutions:**
 1. Check object store credentials:
@@ -782,43 +757,36 @@ ERROR compactor::orphan: Failed to delete file: path=data/acme/prod/traces/hour=
 
 3. Verify IAM permissions include `s3:DeleteObject`.
 
-### Error: "Snapshot not found"
+4. Monitor `compactor_deletion_failures_total` for recurring failures.
+
+### Warning: "File no longer orphan after revalidation, skipping deletion"
 
 **Full Message:**
 ```
-ERROR compactor::iceberg: Snapshot not found: snapshot_id=123456 table=traces
+WARN compactor::orphan::cleaner: File no longer orphan after revalidation, skipping deletion path=acme/prod/traces/data/data-001.parquet table=acme/prod/traces
 ```
 
-**Causes:**
-- Snapshot already expired
-- Catalog metadata out of sync
-- Concurrent snapshot expiration
+**Cause:** A concurrent write referenced the file between detection and deletion; revalidation caught it (this is the safety mechanism working as intended).
 
-**Solutions:**
-1. Reload table metadata:
-   ```sql
-   REFRESH TABLE traces;
-   ```
+**Solution:** No action needed. If this happens for most candidates, increase `grace_period_hours` so in-flight files stop being detected as candidates in the first place.
 
-2. Increase `snapshots_to_keep` to retain more snapshots.
-
-### Error: "Grace period violation"
+### Debug: "Skipping recent file (within grace period)"
 
 **Full Message:**
 ```
-WARN compactor::orphan: File younger than grace period: path=data/acme/prod/traces/hour=2026-02-09-09/data-001.parquet age=30m grace_period=24h
+DEBUG compactor::orphan::detector: Skipping recent file (within grace period) path=acme/prod/traces/data/data-001.parquet last_modified=2026-02-09T09:30:00Z cutoff_time=2026-02-08T10:00:00Z grace_period_hours=24
 ```
 
-**Cause:** File is too recent to be cleaned up (expected behavior).
+**Cause:** File is too recent to be cleaned up (expected behavior; only visible with `RUST_LOG=...,compactor::orphan=debug` or lower).
 
-**Solution:** This is a warning, not an error. File will be eligible after grace period elapses.
+**Solution:** Nothing to fix. The file becomes eligible after the grace period elapses.
 
 ## Additional Resources
 
 - [Phase 3 Operations Guide](phase3-operations.md)
 - [Phase 3 Configuration Reference](phase3-configuration.md)
-- [Compactor README](../../src/compactor/README.md)
-- [Integration Test Examples](../../tests-integration/tests/compactor/)
+- [Compactor README](../../../src/compactor/README.md)
+- [Integration Test Examples](../../../tests-integration/tests/compactor/)
 
 ## Getting Help
 
