@@ -64,6 +64,7 @@ impl IcebergTableManager {
             "metrics_histogram" => schemas::TableSchema::MetricsHistogram,
             "metrics_exponential_histogram" => schemas::TableSchema::MetricsExponentialHistogram,
             "metrics_summary" => schemas::TableSchema::MetricsSummary,
+            "profiles" => schemas::TableSchema::Profiles,
             _ => return Err(anyhow::anyhow!("Unknown table name: {table_name}")),
         };
 

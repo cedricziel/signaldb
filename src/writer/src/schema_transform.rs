@@ -103,6 +103,7 @@ pub fn determine_wal_operation(signal_type: Option<&str>) -> common::wal::WalOpe
         Some("traces") => common::wal::WalOperation::WriteTraces,
         Some("logs") => common::wal::WalOperation::WriteLogs,
         Some("metrics") => common::wal::WalOperation::WriteMetrics,
+        Some("profiles") => common::wal::WalOperation::WriteProfiles,
         _ => {
             log::warn!("Unknown signal_type: {signal_type:?}, defaulting to WriteTraces");
             common::wal::WalOperation::WriteTraces // Default fallback
@@ -1676,6 +1677,167 @@ pub fn transform_metrics_summary_v1_to_iceberg(batch: RecordBatch) -> Result<Rec
     })
 }
 
+/// Target Arrow schema for the profiles Iceberg table
+pub fn create_profiles_arrow_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("profile_id", DataType::Utf8, false),
+        Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new("duration_nano", DataType::Int64, false),
+        Field::new("sample_type", DataType::Utf8, false),
+        Field::new("sample_unit", DataType::Utf8, false),
+        Field::new("period_type", DataType::Utf8, true),
+        Field::new("period_unit", DataType::Utf8, true),
+        Field::new("period", DataType::Int64, true),
+        Field::new("service_name", DataType::Utf8, false),
+        Field::new("stacktraces_json", DataType::Utf8, false),
+        Field::new("samples_json", DataType::Utf8, false),
+        Field::new("resource_attributes", DataType::Utf8, true),
+        Field::new("scope_attributes", DataType::Utf8, true),
+        Field::new("profile_attributes", DataType::Utf8, true),
+        Field::new("trace_id", DataType::Utf8, true),
+        Field::new("span_id", DataType::Utf8, true),
+        Field::new("date_day", DataType::Date32, false),
+        Field::new("hour", DataType::Int32, false),
+    ]))
+}
+
+/// Transform a profiles RecordBatch from the Flight wire format (v1) to the
+/// Iceberg storage schema: binary identifiers become hex strings (joinable
+/// with traces/logs), `time_unix_nano` becomes `timestamp` plus computed
+/// `date_day`/`hour` partition helper columns.
+pub fn transform_profiles_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatch> {
+    let schema = create_profiles_arrow_schema();
+    let num_rows = batch.num_rows();
+
+    let time_col = get_column_by_name(&batch, "time_unix_nano")?;
+    let time_array = time_col
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .ok_or_else(|| anyhow!("time_unix_nano is not UInt64Array"))?;
+    let nanos: Vec<u64> = (0..num_rows)
+        .map(|i| {
+            if time_array.is_null(i) {
+                0
+            } else {
+                time_array.value(i)
+            }
+        })
+        .collect();
+
+    let binary_as_hex = |name: &str| -> Result<ArrayRef> {
+        let col = get_column_by_name(&batch, name)?;
+        let bin_array = col
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .ok_or_else(|| anyhow!("{name} is not BinaryArray"))?;
+        let values: Vec<Option<String>> = (0..bin_array.len())
+            .map(|i| {
+                if bin_array.is_null(i) {
+                    return None;
+                }
+                let bytes = bin_array.value(i);
+                if bytes.is_empty() {
+                    None
+                } else {
+                    Some(hex::encode(bytes))
+                }
+            })
+            .collect();
+        Ok(Arc::new(StringArray::from(values)))
+    };
+
+    // A required hex identifier: null/empty encodes as the empty string
+    // rather than null so the column satisfies the required constraint.
+    let required_hex = |name: &str| -> Result<ArrayRef> {
+        let col = get_column_by_name(&batch, name)?;
+        let bin_array = col
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .ok_or_else(|| anyhow!("{name} is not BinaryArray"))?;
+        let values: Vec<String> = (0..bin_array.len())
+            .map(|i| {
+                if bin_array.is_null(i) {
+                    String::new()
+                } else {
+                    hex::encode(bin_array.value(i))
+                }
+            })
+            .collect();
+        Ok(Arc::new(StringArray::from(values)))
+    };
+
+    let mut new_columns: Vec<ArrayRef> = Vec::new();
+    for field in schema.fields() {
+        let column: ArrayRef = match field.name().as_str() {
+            "profile_id" => required_hex("profile_id")?,
+            "timestamp" => {
+                let values: Vec<Option<i64>> = nanos.iter().map(|&n| Some(n as i64)).collect();
+                Arc::new(TimestampNanosecondArray::from(values))
+            }
+            "duration_nano" => {
+                let col = get_column_by_name(&batch, "duration_nano")?;
+                let uint_array = col
+                    .as_any()
+                    .downcast_ref::<UInt64Array>()
+                    .ok_or_else(|| anyhow!("duration_nano is not UInt64Array"))?;
+                let values: Vec<i64> = (0..uint_array.len())
+                    .map(|i| {
+                        if uint_array.is_null(i) {
+                            0
+                        } else {
+                            uint_array.value(i) as i64
+                        }
+                    })
+                    .collect();
+                Arc::new(Int64Array::from(values))
+            }
+            "sample_type" => get_column_by_name(&batch, "sample_type_type")?,
+            "sample_unit" => get_column_by_name(&batch, "sample_type_unit")?,
+            "period_type" => get_column_by_name(&batch, "period_type_type")?,
+            "period_unit" => get_column_by_name(&batch, "period_type_unit")?,
+            "period" | "service_name" | "stacktraces_json" | "samples_json" => {
+                get_column_by_name(&batch, field.name())?
+            }
+            "resource_attributes" => get_column_by_name(&batch, "resource_json")?,
+            "scope_attributes" => get_column_by_name(&batch, "scope_json")?,
+            "profile_attributes" => get_column_by_name(&batch, "attributes_json")?,
+            "trace_id" => binary_as_hex("trace_id")?,
+            "span_id" => binary_as_hex("span_id")?,
+            "date_day" => {
+                let dates: Vec<Option<i32>> = nanos
+                    .iter()
+                    .map(|&n| {
+                        let secs = (n / 1_000_000_000) as i64;
+                        let dt = DateTime::from_timestamp(secs, 0)?;
+                        Some(dt.naive_utc().date().num_days_from_ce() - 719163)
+                    })
+                    .collect();
+                Arc::new(Date32Array::from(dates))
+            }
+            "hour" => {
+                let hours: Vec<Option<i32>> = nanos
+                    .iter()
+                    .map(|&n| {
+                        let secs = (n / 1_000_000_000) as i64;
+                        let dt = DateTime::from_timestamp(secs, 0)?;
+                        Some(dt.hour() as i32)
+                    })
+                    .collect();
+                Arc::new(Int32Array::from(hours))
+            }
+            other => return Err(anyhow!("Unknown field in profiles schema: {other}")),
+        };
+        new_columns.push(column);
+    }
+
+    RecordBatch::try_new(schema, new_columns)
+        .map_err(|e| anyhow!("Failed to create transformed profiles batch: {e}"))
+}
+
 pub fn transform_for_signal(
     signal_type: Option<&str>,
     target_table: Option<&str>,
@@ -1684,6 +1846,7 @@ pub fn transform_for_signal(
     match (signal_type, target_table) {
         (Some("traces"), _) => transform_trace_v1_to_v2(batch),
         (Some("logs"), _) => transform_logs_v1_to_iceberg(batch),
+        (Some("profiles"), _) => transform_profiles_v1_to_iceberg(batch),
         (Some("metrics"), Some("metrics_gauge")) => transform_metrics_gauge_v1_to_iceberg(batch),
         (Some("metrics"), Some("metrics_sum")) => transform_metrics_sum_v1_to_iceberg(batch),
         (Some("metrics"), Some("metrics_histogram")) => {
@@ -1706,6 +1869,87 @@ pub fn transform_for_signal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transform_profiles_wire_batch_to_iceberg_schema() {
+        use common::model::profile::{Frame, Profile, ProfileLink, Sample, Stacktrace, ValueType};
+
+        let profile = Profile {
+            profile_id: [0xab; 16],
+            time_unix_nano: 1_700_003_600_000_000_000, // 2023-11-14T23:13:20Z area
+            duration_nano: 10_000_000_000,
+            sample_type: ValueType {
+                type_: "cpu".to_string(),
+                unit: "nanoseconds".to_string(),
+            },
+            period_type: None,
+            period: 0,
+            service_name: "checkout".to_string(),
+            stacktraces: vec![Stacktrace {
+                frames: vec![Frame {
+                    function_name: "work".to_string(),
+                    ..Frame::default()
+                }],
+            }],
+            samples: vec![Sample {
+                stacktrace_index: 0,
+                values: vec![100],
+                link_index: Some(0),
+                ..Sample::default()
+            }],
+            links: vec![ProfileLink {
+                trace_id: [0x11; 16],
+                span_id: [0x22; 8],
+            }],
+            ..Profile::default()
+        };
+
+        let wire_batch = common::flight::conversion::profiles_to_arrow(&[profile]);
+        let iceberg_batch = transform_profiles_v1_to_iceberg(wire_batch).unwrap();
+
+        assert_eq!(iceberg_batch.num_rows(), 1);
+        let schema = iceberg_batch.schema();
+        for name in [
+            "profile_id",
+            "timestamp",
+            "sample_type",
+            "sample_unit",
+            "stacktraces_json",
+            "samples_json",
+            "trace_id",
+            "span_id",
+            "date_day",
+            "hour",
+        ] {
+            assert!(schema.index_of(name).is_ok(), "missing column {name}");
+        }
+
+        let profile_ids = iceberg_batch
+            .column(schema.index_of("profile_id").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(profile_ids.value(0), "ab".repeat(16));
+
+        let trace_ids = iceberg_batch
+            .column(schema.index_of("trace_id").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(trace_ids.value(0), "11".repeat(16));
+
+        // Storage batches pass through unchanged (idempotent transform guard
+        // keys on the wire-only time_unix_nano column).
+        assert!(schema.index_of("time_unix_nano").is_err());
+    }
+
+    #[test]
+    fn determine_wal_operation_maps_profiles() {
+        assert!(matches!(
+            determine_wal_operation(Some("profiles")),
+            common::wal::WalOperation::WriteProfiles
+        ));
+    }
 
     #[test]
     fn test_extract_schema_version() {
