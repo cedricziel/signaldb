@@ -27,12 +27,14 @@ pub mod tempopb {
 
 pub mod v2;
 
+/// Query parameters for single-trace lookup.
+///
+/// `start`/`end` are optional unix-second hints bracketing the expected
+/// trace, used to prune the scanned time range.
 #[derive(Deserialize, Debug)]
 pub struct TraceQueryParams {
-    #[allow(dead_code)]
-    start: Option<String>,
-    #[allow(dead_code)]
-    end: Option<String>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
 }
 
 /// Parameters for TraceQL metrics queries

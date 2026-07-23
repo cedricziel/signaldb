@@ -147,6 +147,9 @@ enum TicketRequest {
         tenant_slug: String,
         dataset_slug: String,
         trace_id: String,
+        /// Optional unix-second time hints bracketing the expected trace
+        start: Option<i64>,
+        end: Option<i64>,
     },
     SearchTraces {
         tenant_slug: String,
@@ -378,24 +381,46 @@ impl QuerierFlightService {
     /// Parse ticket content to determine query type and parameters
     #[allow(clippy::result_large_err)]
     fn parse_ticket(&self, ticket_content: &str) -> Result<TicketRequest, Status> {
-        // New format: find_trace:{tenant_slug}:{dataset_slug}:{trace_id}
+        // Format: find_trace:{tenant_slug}:{dataset_slug}:{trace_id}[:{start}:{end}]
+        // The optional trailing segments are unix-second time hints; either
+        // may be empty. Routers only append them when a hint is present, so
+        // the short form remains valid.
         if let Some(remainder) = ticket_content.strip_prefix("find_trace:") {
-            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
-            if parts.len() == 3 {
+            let parts: Vec<&str> = remainder.splitn(5, ':').collect();
+            if parts.len() == 3 || parts.len() == 5 {
+                let parse_hint = |name: &str, value: &str| -> Result<Option<i64>, Status> {
+                    if value.is_empty() {
+                        return Ok(None);
+                    }
+                    value.parse::<i64>().map(Some).map_err(|_| {
+                        Status::invalid_argument(format!(
+                            "Invalid find_trace ticket: {name} '{value}' is not a unix timestamp"
+                        ))
+                    })
+                };
+                let (start, end) = if parts.len() == 5 {
+                    (parse_hint("start", parts[3])?, parse_hint("end", parts[4])?)
+                } else {
+                    (None, None)
+                };
                 tracing::info!(
                     tenant_slug = %parts[0],
                     dataset_slug = %parts[1],
                     trace_id = %parts[2],
+                    start = ?start,
+                    end = ?end,
                     "Parsing find_trace ticket"
                 );
                 return Ok(TicketRequest::FindTrace {
                     tenant_slug: parts[0].to_string(),
                     dataset_slug: parts[1].to_string(),
                     trace_id: parts[2].to_string(),
+                    start,
+                    end,
                 });
             } else {
                 return Err(Status::invalid_argument(
-                    "Invalid find_trace ticket format. Expected: find_trace:tenant_slug:dataset_slug:trace_id",
+                    "Invalid find_trace ticket format. Expected: find_trace:tenant_slug:dataset_slug:trace_id[:start:end]",
                 ));
             }
         }
@@ -757,18 +782,22 @@ impl FlightService for QuerierFlightService {
                         tenant_slug,
                         dataset_slug,
                         trace_id,
+                        start,
+                        end,
                     } => {
                         tracing::info!(
                             tenant_slug = %tenant_slug,
                             dataset_slug = %dataset_slug,
                             trace_id = %trace_id,
+                            start = ?start,
+                            end = ?end,
                             "Executing find_trace"
                         );
 
                         let params = FindTraceByIdParams {
                             trace_id,
-                            start: None,
-                            end: None,
+                            start,
+                            end,
                         };
 
                         match self
@@ -1182,6 +1211,66 @@ mod tests {
 
         let flight_transport = Arc::new(InMemoryFlightTransport::new(bootstrap));
         QuerierFlightService::new(object_store, flight_transport)
+    }
+
+    #[tokio::test]
+    async fn parse_find_trace_ticket_legacy_form_has_no_hints() {
+        let service = make_service().await;
+        match service.parse_ticket("find_trace:acme:prod:abc123").unwrap() {
+            TicketRequest::FindTrace {
+                tenant_slug,
+                dataset_slug,
+                trace_id,
+                start,
+                end,
+            } => {
+                assert_eq!(tenant_slug, "acme");
+                assert_eq!(dataset_slug, "prod");
+                assert_eq!(trace_id, "abc123");
+                assert_eq!(start, None);
+                assert_eq!(end, None);
+            }
+            other => panic!("expected FindTrace, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn parse_find_trace_ticket_with_time_hints() {
+        let service = make_service().await;
+        match service
+            .parse_ticket("find_trace:acme:prod:abc123:1700000000:1700003600")
+            .unwrap()
+        {
+            TicketRequest::FindTrace { start, end, .. } => {
+                assert_eq!(start, Some(1_700_000_000));
+                assert_eq!(end, Some(1_700_003_600));
+            }
+            other => panic!("expected FindTrace, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn parse_find_trace_ticket_allows_empty_hint_segments() {
+        let service = make_service().await;
+        match service
+            .parse_ticket("find_trace:acme:prod:abc123::1700003600")
+            .unwrap()
+        {
+            TicketRequest::FindTrace { start, end, .. } => {
+                assert_eq!(start, None);
+                assert_eq!(end, Some(1_700_003_600));
+            }
+            other => panic!("expected FindTrace, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn parse_find_trace_ticket_rejects_non_numeric_hint() {
+        let service = make_service().await;
+        let status = service
+            .parse_ticket("find_trace:acme:prod:abc123:soon:later")
+            .unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
     }
 
     /// Register a catalog `name` with schema `schema` containing a

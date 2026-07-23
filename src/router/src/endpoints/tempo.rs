@@ -516,7 +516,7 @@ pub async fn echo() -> &'static str {
 ///
 /// See https://grafana.com/docs/tempo/latest/api_docs/#query
 #[tracing::instrument(
-    skip(state, tenant_ctx, _params),
+    skip(state, tenant_ctx, params),
     fields(
         tenant_id = %tenant_ctx.0.tenant_id,
         dataset_id = %tenant_ctx.0.dataset_id
@@ -526,12 +526,14 @@ pub async fn query_single_trace<S: RouterState>(
     state: State<S>,
     tenant_ctx: TenantContextExtractor,
     Path(trace_id): Path<String>,
-    Query(_params): Query<TraceQueryParams>,
+    Query(params): Query<TraceQueryParams>,
 ) -> Result<axum::Json<tempo_api::Trace>, axum::http::StatusCode> {
     tracing::info!(
         trace_id = %trace_id,
         tenant_id = %tenant_ctx.0.tenant_id,
         dataset_id = %tenant_ctx.0.dataset_id,
+        start = ?params.start,
+        end = ?params.end,
         "Querying for trace"
     );
 
@@ -555,11 +557,23 @@ pub async fn query_single_trace<S: RouterState>(
         }
     };
 
-    // Create Flight query for trace lookup with tenant context (using slugs for Iceberg namespace)
-    let ticket = Ticket::new(format!(
-        "find_trace:{}:{}:{trace_id}",
-        tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
-    ));
+    // Create Flight query for trace lookup with tenant context (using slugs
+    // for the Iceberg namespace). Time-hint segments are only appended when
+    // present so tickets without hints keep the legacy 3-part form.
+    let ticket_content = match (params.start, params.end) {
+        (None, None) => format!(
+            "find_trace:{}:{}:{trace_id}",
+            tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
+        ),
+        (start, end) => format!(
+            "find_trace:{}:{}:{trace_id}:{}:{}",
+            tenant_ctx.0.tenant_slug,
+            tenant_ctx.0.dataset_slug,
+            start.map(|v| v.to_string()).unwrap_or_default(),
+            end.map(|v| v.to_string()).unwrap_or_default()
+        ),
+    };
+    let ticket = Ticket::new(ticket_content);
     let mut flight_request = tonic::Request::new(ticket);
     common::flight::trace_context::inject_context_into_request(&mut flight_request);
     if let Some(key) = &state.config().auth.internal_service_key {
