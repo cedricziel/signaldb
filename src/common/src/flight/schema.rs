@@ -10,6 +10,8 @@ pub struct FlightSchemas {
     pub log_schema: Schema,
     /// Schema for metric data
     pub metric_schema: Schema,
+    /// Schema for profile data
+    pub profile_schema: Schema,
 }
 
 impl Default for FlightSchemas {
@@ -25,6 +27,7 @@ impl FlightSchemas {
             trace_schema: Self::create_trace_schema(),
             log_schema: Self::create_log_schema(),
             metric_schema: Self::create_metric_schema(),
+            profile_schema: Self::create_profile_schema(),
         }
     }
 
@@ -143,6 +146,39 @@ impl FlightSchemas {
 
         Schema::new(Fields::from(fields))
     }
+
+    /// Create the schema for profile data based on the OpenTelemetry profiles
+    /// data model (`v1development`), with the request-level dictionary resolved
+    /// so each row is self-contained
+    fn create_profile_schema() -> Schema {
+        let fields = vec![
+            // Identity and timing
+            Field::new("profile_id", DataType::Binary, false),
+            Field::new("time_unix_nano", DataType::UInt64, false),
+            Field::new("duration_nano", DataType::UInt64, false),
+            // Sample value type/unit (resolved from the string table)
+            Field::new("sample_type_type", DataType::Utf8, false),
+            Field::new("sample_type_unit", DataType::Utf8, false),
+            // Sampling period
+            Field::new("period", DataType::Int64, true),
+            Field::new("period_type_type", DataType::Utf8, true),
+            Field::new("period_type_unit", DataType::Utf8, true),
+            // Service context
+            Field::new("service_name", DataType::Utf8, false),
+            // Resolved stack traces and samples as JSON documents
+            Field::new("stacktraces_json", DataType::Utf8, false),
+            Field::new("samples_json", DataType::Utf8, false),
+            // Attributes and resources as JSON strings
+            Field::new("resource_json", DataType::Utf8, true),
+            Field::new("scope_json", DataType::Utf8, true),
+            Field::new("attributes_json", DataType::Utf8, true),
+            // Trace correlation (primary link)
+            Field::new("trace_id", DataType::Binary, true),
+            Field::new("span_id", DataType::Binary, true),
+        ];
+
+        Schema::new(Fields::from(fields))
+    }
 }
 
 /// Create a schema for a batch of spans
@@ -236,6 +272,39 @@ mod tests {
                 .is_ok()
         );
         assert!(metric_schema.field_with_name("is_monotonic").is_ok());
+
+        // Verify profile schema
+        let profile_schema = schemas.profile_schema;
+        assert!(profile_schema.field_with_name("profile_id").is_ok());
+        assert!(profile_schema.field_with_name("time_unix_nano").is_ok());
+        assert!(profile_schema.field_with_name("duration_nano").is_ok());
+        assert!(profile_schema.field_with_name("sample_type_type").is_ok());
+        assert!(profile_schema.field_with_name("sample_type_unit").is_ok());
+        assert!(profile_schema.field_with_name("period").is_ok());
+        assert!(profile_schema.field_with_name("period_type_type").is_ok());
+        assert!(profile_schema.field_with_name("period_type_unit").is_ok());
+        assert!(profile_schema.field_with_name("service_name").is_ok());
+        assert!(profile_schema.field_with_name("stacktraces_json").is_ok());
+        assert!(profile_schema.field_with_name("samples_json").is_ok());
+        assert!(profile_schema.field_with_name("resource_json").is_ok());
+        assert!(profile_schema.field_with_name("scope_json").is_ok());
+        assert!(profile_schema.field_with_name("attributes_json").is_ok());
+        assert!(profile_schema.field_with_name("trace_id").is_ok());
+        assert!(profile_schema.field_with_name("span_id").is_ok());
+
+        // Correlation fields are nullable; identity fields are not.
+        assert!(
+            !profile_schema
+                .field_with_name("profile_id")
+                .unwrap()
+                .is_nullable()
+        );
+        assert!(
+            profile_schema
+                .field_with_name("trace_id")
+                .unwrap()
+                .is_nullable()
+        );
     }
 
     #[test]
