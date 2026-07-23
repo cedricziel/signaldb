@@ -71,6 +71,22 @@ CREATE TABLE shard_owners (
 
 ## Registration Process ✅ **Current Implementation**
 
+```mermaid
+sequenceDiagram
+    participant S as Service
+    participant Cat as Service catalog (PostgreSQL/SQLite)
+    participant P as Peer service
+
+    S->>Cat: ServiceBootstrap register (id, address, capabilities)
+    loop heartbeat interval
+        S->>Cat: heartbeat, refresh last_seen
+    end
+    P->>Cat: discover by capability
+    Cat-->>P: endpoints with fresh last_seen
+    P->>S: pooled Flight connection
+    S->>Cat: set stopped_at on graceful shutdown
+```
+
 ### 1. Service Startup
 ```rust
 // Each service registers with catalog database
