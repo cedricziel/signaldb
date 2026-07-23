@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use opentelemetry::global;
-use opentelemetry::metrics::{Counter, Histogram, UpDownCounter};
+use opentelemetry::metrics::{Counter, Gauge, Histogram, UpDownCounter};
 
 use super::suppress::is_self_monitoring_tenant;
 
@@ -53,6 +53,9 @@ pub struct AppMetrics {
     pub ingest_metrics_received: Counter<u64>,
     pub ingest_batches_written: Counter<u64>,
     pub ingest_batch_size: Histogram<u64>,
+
+    // Tenant storage accounting
+    pub tenant_storage_usage_bytes: Gauge<u64>,
 }
 
 static APP_METRICS: OnceLock<AppMetrics> = OnceLock::new();
@@ -181,6 +184,11 @@ impl AppMetrics {
                 .u64_histogram("signaldb.ingest.batch_size")
                 .with_description("Rows per forwarded record batch")
                 .with_unit("{row}")
+                .build(),
+            tenant_storage_usage_bytes: meter
+                .u64_gauge("signaldb.tenant.storage_usage")
+                .with_description("Live Iceberg data-file bytes stored per tenant")
+                .with_unit("By")
                 .build(),
         }
     }
