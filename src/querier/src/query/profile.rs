@@ -386,6 +386,60 @@ impl ProfileService {
 }
 
 impl ProfileService {
+    /// Find profile summaries linked to a trace (and optionally a span).
+    /// Returns the same summary columns as search, newest first.
+    pub async fn find_by_trace_with_tenant(
+        &self,
+        trace_id: &str,
+        span_id: Option<&str>,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<RecordBatch>, QuerierError> {
+        if trace_id.is_empty() || !trace_id.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(QuerierError::InvalidInput(format!(
+                "trace_id must be a hex string, got '{trace_id}'"
+            )));
+        }
+        if let Some(span_id) = span_id
+            && (span_id.is_empty() || !span_id.chars().all(|c| c.is_ascii_hexdigit()))
+        {
+            return Err(QuerierError::InvalidInput(format!(
+                "span_id must be a hex string, got '{span_id}'"
+            )));
+        }
+
+        let mut df = self
+            .profiles_table(tenant_slug, dataset_slug)
+            .await?
+            .filter(col("trace_id").eq(lit(trace_id)))
+            .map_err(QuerierError::QueryFailed)?;
+        if let Some(span_id) = span_id {
+            df = df
+                .filter(col("span_id").eq(lit(span_id)))
+                .map_err(QuerierError::QueryFailed)?;
+        }
+
+        let df = df
+            .select_columns(&[
+                "profile_id",
+                "timestamp",
+                "duration_nano",
+                "sample_type",
+                "sample_unit",
+                "period",
+                "service_name",
+                "trace_id",
+                "span_id",
+            ])
+            .map_err(QuerierError::QueryFailed)?
+            .sort(vec![col("timestamp").sort(false, true)])
+            .map_err(QuerierError::QueryFailed)?
+            .limit(0, Some(self.max_search_limit))
+            .map_err(QuerierError::QueryFailed)?;
+
+        df.collect().await.map_err(QuerierError::QueryFailed)
+    }
+
     /// Fetch full profile rows matching the search selection and decode
     /// them into model profiles for aggregation.
     async fn fetch_models(

@@ -406,6 +406,45 @@
         ],
         "type": "object"
       },
+      "TraceProfileSummary": {
+        "description": "Summary of a stored profile linked to a trace",
+        "properties": {
+          "durationNano": {
+            "description": "Profile duration in nanoseconds as string",
+            "type": "string"
+          },
+          "profileID": {
+            "description": "Hex-encoded profile ID",
+            "type": "string"
+          },
+          "sampleType": {
+            "type": "string"
+          },
+          "sampleUnit": {
+            "type": "string"
+          },
+          "serviceName": {
+            "type": "string"
+          },
+          "spanID": {
+            "description": "Hex-encoded span ID when the link names a span",
+            "type": "string"
+          },
+          "timeUnixNano": {
+            "description": "Collection time, unix nanoseconds as string",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profileID",
+          "timeUnixNano",
+          "durationNano",
+          "sampleType",
+          "sampleUnit",
+          "serviceName"
+        ],
+        "type": "object"
+      },
       "UpdateTenantRequest": {
         "description": "Request body for updating an existing tenant",
         "properties": {
@@ -436,6 +475,57 @@
   },
   "openapi": "3.0.3",
   "paths": {
+    "/api/profiles/trace/{trace_id}": {
+      "get": {
+        "operationId": "list_profiles_for_trace",
+        "parameters": [
+          {
+            "description": "Hex-encoded trace ID",
+            "in": "path",
+            "name": "trace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TraceProfileSummary"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Profiles linked to the trace"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid trace ID"
+          }
+        },
+        "summary": "List summaries of profiles linked to a trace",
+        "tags": [
+          "profiles"
+        ]
+      },
+      "servers": [
+        {
+          "description": "Served at the router root, not under the admin prefix",
+          "url": "/"
+        }
+      ]
+    },
     "/pyroscope/label-names": {
       "get": {
         "operationId": "list_profile_label_names",

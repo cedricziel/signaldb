@@ -353,6 +353,7 @@ fn internal_trace_to_tempo(
         start_time_unix_nano: earliest_start.to_string(),
         duration_ms,
         span_sets: vec![span_set],
+        profiles: None,
     }
 }
 
@@ -615,8 +616,29 @@ pub async fn query_single_trace<S: RouterState>(
 
             // Convert flight data to trace format
             match flight_data_to_tempo_trace(trace_data, &trace_id) {
-                Ok(Some(trace)) => {
+                Ok(Some(mut trace)) => {
                     tracing::info!(trace_id = %trace_id, "Successfully converted trace to Tempo format");
+                    // Optionally attach linked profile summaries. A failed
+                    // profile lookup must not fail the trace response.
+                    if params.include_profiles.unwrap_or(false) {
+                        match super::pyroscope::fetch_profiles_for_trace(
+                            &state.0,
+                            &tenant_ctx.0.tenant_slug,
+                            &tenant_ctx.0.dataset_slug,
+                            &trace_id,
+                        )
+                        .await
+                        {
+                            Ok(profiles) => trace.profiles = Some(profiles),
+                            Err(status) => {
+                                tracing::warn!(
+                                    trace_id = %trace_id,
+                                    status = ?status,
+                                    "Failed to fetch linked profiles for trace"
+                                );
+                            }
+                        }
+                    }
                     return Ok(axum::Json(trace));
                 }
                 Ok(None) => {

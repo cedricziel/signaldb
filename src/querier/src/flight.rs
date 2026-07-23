@@ -204,6 +204,12 @@ enum TicketRequest {
         dataset_slug: String,
         sql: String,
     },
+    ProfilesByTrace {
+        tenant_slug: String,
+        dataset_slug: String,
+        trace_id: String,
+        span_id: Option<String>,
+    },
 }
 
 /// Flight service for query execution against stored data
@@ -619,6 +625,24 @@ impl QuerierFlightService {
             ));
         }
 
+        if let Some(remainder) = ticket_content.strip_prefix("profiles_by_trace:") {
+            let parts: Vec<&str> = remainder.splitn(4, ':').collect();
+            if parts.len() >= 3 {
+                return Ok(TicketRequest::ProfilesByTrace {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    trace_id: parts[2].to_string(),
+                    span_id: parts
+                        .get(3)
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string()),
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid profiles_by_trace ticket format. Expected: profiles_by_trace:tenant_slug:dataset_slug:trace_id[:span_id]",
+            ));
+        }
+
         if let Some(remainder) = ticket_content.strip_prefix("sql_profiles:") {
             let parts: Vec<&str> = remainder.splitn(3, ':').collect();
             if parts.len() == 3 {
@@ -935,7 +959,8 @@ impl FlightService for QuerierFlightService {
                     | TicketRequest::ProfileLabelValues { tenant_slug, .. }
                     | TicketRequest::ProfileFlamegraph { tenant_slug, .. }
                     | TicketRequest::ProfileDiff { tenant_slug, .. }
-                    | TicketRequest::SqlProfiles { tenant_slug, .. } => Some(tenant_slug),
+                    | TicketRequest::SqlProfiles { tenant_slug, .. }
+                    | TicketRequest::ProfilesByTrace { tenant_slug, .. } => Some(tenant_slug),
                     TicketRequest::SqlQuery { .. } => None,
                 };
                 if let Some(ticket_tenant) = ticket_tenant
@@ -962,6 +987,7 @@ impl FlightService for QuerierFlightService {
                 TicketRequest::ProfileFlamegraph { .. } => "profile_flamegraph",
                 TicketRequest::ProfileDiff { .. } => "profile_diff",
                 TicketRequest::SqlProfiles { .. } => "sql_profiles",
+                TicketRequest::ProfilesByTrace { .. } => "profiles_by_trace",
                 TicketRequest::SqlQuery { .. } => "sql",
             };
 
@@ -982,7 +1008,10 @@ impl FlightService for QuerierFlightService {
                     | TicketRequest::ProfileLabelValues { tenant_slug, .. }
                     | TicketRequest::ProfileFlamegraph { tenant_slug, .. }
                     | TicketRequest::ProfileDiff { tenant_slug, .. }
-                    | TicketRequest::SqlProfiles { tenant_slug, .. } => Some(tenant_slug.clone()),
+                    | TicketRequest::SqlProfiles { tenant_slug, .. }
+                    | TicketRequest::ProfilesByTrace { tenant_slug, .. } => {
+                        Some(tenant_slug.clone())
+                    }
                     TicketRequest::SqlQuery { .. } => None,
                 });
             // Held until the query's batches are fully computed.
@@ -1208,6 +1237,29 @@ impl FlightService for QuerierFlightService {
                             .await
                             .map_err(querier_error_to_status)?;
                         vec![json_to_batch("diff", &diff)?]
+                    }
+                    TicketRequest::ProfilesByTrace {
+                        tenant_slug,
+                        dataset_slug,
+                        trace_id,
+                        span_id,
+                    } => {
+                        tracing::info!(
+                            tenant_slug = %tenant_slug,
+                            dataset_slug = %dataset_slug,
+                            trace_id = %trace_id,
+                            span_id = ?span_id,
+                            "Executing profiles_by_trace"
+                        );
+                        self.profile_service
+                            .find_by_trace_with_tenant(
+                                &trace_id,
+                                span_id.as_deref(),
+                                &tenant_slug,
+                                &dataset_slug,
+                            )
+                            .await
+                            .map_err(querier_error_to_status)?
                     }
                     TicketRequest::SqlProfiles {
                         tenant_slug,
