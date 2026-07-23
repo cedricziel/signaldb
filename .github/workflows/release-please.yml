@@ -284,7 +284,11 @@ jobs:
           workspaces: src/grafana-plugin/backend
 
       - name: Build backend
-        run: cargo build --release --manifest-path src/grafana-plugin/backend/Cargo.toml --target ${{ matrix.target.rust-target }}
+        # Run from inside the backend workspace — the repo-level
+        # .cargo/config.toml sets a relative target-dir, so cargo's output
+        # lands under $CWD/target.
+        working-directory: src/grafana-plugin/backend
+        run: cargo build --release --target ${{ matrix.target.rust-target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 

@@ -20,8 +20,10 @@ case "$ARCH" in
         ;;
 esac
 
-# Build the Rust binary (standalone workspace in backend/)
-cargo build --release --manifest-path backend/Cargo.toml
+# Build the Rust binary (standalone workspace in backend/).
+# Run from inside backend/ — the repo-level .cargo/config.toml sets a
+# relative target-dir, so cargo's output lands under $CWD/target.
+(cd backend && cargo build --release)
 
 # Create dist directory if it doesn't exist
 mkdir -p dist
