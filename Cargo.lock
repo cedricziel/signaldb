@@ -266,10 +266,10 @@ dependencies = [
  "arrow-array 58.3.0",
  "arrow-buffer 58.3.0",
  "arrow-cast 58.3.0",
- "arrow-csv",
+ "arrow-csv 58.3.0",
  "arrow-data 58.3.0",
  "arrow-ipc 58.3.0",
- "arrow-json",
+ "arrow-json 58.3.0",
  "arrow-ord 58.3.0",
  "arrow-row 58.3.0",
  "arrow-schema 58.3.0",
@@ -287,8 +287,10 @@ dependencies = [
  "arrow-array 59.1.0",
  "arrow-buffer 59.1.0",
  "arrow-cast 59.1.0",
+ "arrow-csv 59.1.0",
  "arrow-data 59.1.0",
  "arrow-ipc 59.1.0",
+ "arrow-json 59.1.0",
  "arrow-ord 59.1.0",
  "arrow-row 59.1.0",
  "arrow-schema 59.1.0",
@@ -422,6 +424,7 @@ dependencies = [
  "atoi",
  "base64",
  "chrono",
+ "comfy-table",
  "half",
  "lexical-core",
  "num-traits",
@@ -437,6 +440,21 @@ dependencies = [
  "arrow-array 58.3.0",
  "arrow-cast 58.3.0",
  "arrow-schema 58.3.0",
+ "chrono",
+ "csv",
+ "csv-core",
+ "regex",
+]
+
+[[package]]
+name = "arrow-csv"
+version = "59.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8aa7bf96d6141a7bcca2eed57c7c9767d2a2175281857b8a7b68308992864784"
+dependencies = [
+ "arrow-array 59.1.0",
+ "arrow-cast 59.1.0",
+ "arrow-schema 59.1.0",
  "chrono",
  "csv",
  "csv-core",
@@ -471,15 +489,16 @@ dependencies = [
 
 [[package]]
 name = "arrow-flight"
-version = "58.3.0"
+version = "59.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28abfe8bf9f124e5fc83b334af4fa58f8d0323ad25312ccb2d1da50178415704"
+checksum = "42115e09dbb694b5955da998912121451c6910b338228cb80a5701370dba43ff"
 dependencies = [
- "arrow-array 58.3.0",
- "arrow-buffer 58.3.0",
- "arrow-cast 58.3.0",
- "arrow-ipc 58.3.0",
- "arrow-schema 58.3.0",
+ "arrow-array 59.1.0",
+ "arrow-buffer 59.1.0",
+ "arrow-cast 59.1.0",
+ "arrow-data 59.1.0",
+ "arrow-ipc 59.1.0",
+ "arrow-schema 59.1.0",
  "base64",
  "bytes",
  "futures",
@@ -531,6 +550,31 @@ dependencies = [
  "arrow-ord 58.3.0",
  "arrow-schema 58.3.0",
  "arrow-select 58.3.0",
+ "chrono",
+ "half",
+ "indexmap 2.14.0",
+ "itoa",
+ "lexical-core",
+ "memchr",
+ "num-traits",
+ "ryu",
+ "serde_core",
+ "serde_json",
+ "simdutf8",
+]
+
+[[package]]
+name = "arrow-json"
+version = "59.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fe05e916ddc50f4c7a363cd69c0ef5894fcee063517e9a0b8582f0c56746af6"
+dependencies = [
+ "arrow-array 59.1.0",
+ "arrow-buffer 59.1.0",
+ "arrow-cast 59.1.0",
+ "arrow-ord 59.1.0",
+ "arrow-schema 59.1.0",
+ "arrow-select 59.1.0",
  "chrono",
  "half",
  "indexmap 2.14.0",
@@ -7625,7 +7669,7 @@ name = "signaldb-cli"
 version = "0.1.1"
 dependencies = [
  "anyhow",
- "arrow 58.3.0",
+ "arrow 59.1.0",
  "arrow-flight",
  "chrono",
  "clap",
