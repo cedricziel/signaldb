@@ -1,4 +1,5 @@
 pub mod error;
+pub mod profile;
 pub mod search_filter;
 pub mod table_ref;
 pub mod trace;
