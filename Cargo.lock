@@ -5405,6 +5405,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pyroscope-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "quad-rand"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

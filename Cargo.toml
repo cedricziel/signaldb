@@ -5,6 +5,7 @@ members = [
     "src/acceptor",
     "src/common",
     "src/compactor",
+    "src/pyroscope-api",
     "src/querier",
     "src/router",
     "src/signal-producer",
@@ -27,6 +28,7 @@ default-members = [
     "src/acceptor",
     "src/common",
     "src/compactor",
+    "src/pyroscope-api",
     "src/querier",
     "src/router",
     "src/signal-producer",
@@ -50,6 +52,7 @@ common = { path = "src/common" }
 compactor = { path = "src/compactor" }
 signaldb-api = { path = "src/signaldb-api" }
 signaldb-sdk = { path = "src/signaldb-sdk" }
+pyroscope-api = { path = "src/pyroscope-api" }
 tempo-api = { path = "src/tempo-api" }
 writer = { path = "src/writer" }
 
