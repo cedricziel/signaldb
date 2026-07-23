@@ -17,6 +17,7 @@ use datafusion::parquet::{
 use opentelemetry_proto::tonic::collector::{
     logs::v1::logs_service_server::LogsServiceServer,
     metrics::v1::metrics_service_server::MetricsServiceServer,
+    profiles::v1development::profiles_service_server::ProfilesServiceServer,
     trace::v1::trace_service_server::TraceServiceServer,
 };
 use tokio::net::TcpListener;
@@ -35,13 +36,14 @@ use common::wal::WalConfig;
 use crate::handler::otlp_grpc::TraceHandler;
 use crate::handler::otlp_log_handler::LogHandler;
 use crate::handler::otlp_metrics_handler::MetricsHandler;
+use crate::handler::otlp_profiles_handler::ProfileHandler;
 use crate::handler::{PrometheusHandler, PrometheusHandlerState};
 use crate::handler::{WalManager, WalRetryConsumer};
 use crate::middleware::auth_middleware;
 use crate::middleware::grpc_auth::grpc_auth_interceptor;
 use crate::services::{
     otlp_log_service::LogAcceptorService, otlp_metric_service::MetricsAcceptorService,
-    otlp_trace_service::TraceAcceptorService,
+    otlp_profile_service::ProfileAcceptorService, otlp_trace_service::TraceAcceptorService,
 };
 use common::auth::Authenticator;
 
@@ -282,6 +284,14 @@ pub async fn serve_otlp_grpc(
         grpc_auth_interceptor(auth_for_metrics.clone(), req)
     });
 
+    let profile_handler = ProfileHandler::new(flight_transport.clone(), wal_manager.clone());
+    let profile_service =
+        ProfileAcceptorService::new(profile_handler).with_rate_limiter(rate_limiter.clone());
+    let auth_for_profiles = authenticator.clone();
+    let profile_server = ProfilesServiceServer::with_interceptor(profile_service, move |req| {
+        grpc_auth_interceptor(auth_for_profiles.clone(), req)
+    });
+
     init_tx
         .send(())
         .expect("Unable to send init signal for OTLP/gRPC");
@@ -290,6 +300,7 @@ pub async fn serve_otlp_grpc(
         .add_service(log_server)
         .add_service(trace_server)
         .add_service(metric_server)
+        .add_service(profile_server)
         .serve_with_shutdown(config.addr, async {
             shutdown_rx.await.ok();
             tracing::info!("Shutting down OTLP/gRPC acceptor");
@@ -347,6 +358,116 @@ pub fn prometheus_router(
         .layer(middleware::from_fn(
             common::self_monitoring::http_metrics_middleware,
         ))
+}
+
+/// Shared state for the OTLP/HTTP profiles endpoint
+#[derive(Clone)]
+pub struct ProfilesHandlerState {
+    pub handler: Arc<ProfileHandler>,
+}
+
+/// Create a router for the OTLP/HTTP profiles ingestion endpoint with authentication
+///
+/// Handles `POST /v1development/profiles` (the OTLP development endpoint for
+/// the profiles signal) with protobuf or JSON request bodies.
+pub fn profiles_http_router(
+    authenticator: Arc<Authenticator>,
+    profile_handler: Arc<ProfileHandler>,
+) -> Router {
+    use axum::middleware;
+
+    let state = ProfilesHandlerState {
+        handler: profile_handler,
+    };
+
+    Router::new()
+        .route("/v1development/profiles", post(handle_http_profiles))
+        .layer(Extension(state))
+        .layer(middleware::from_fn(move |req, next| {
+            let auth = authenticator.clone();
+            async move { auth_middleware(auth, req, next).await }
+        }))
+        .layer(middleware::from_fn(
+            common::self_monitoring::http_metrics_middleware,
+        ))
+}
+
+/// OTLP/HTTP profiles export: decode by content type, hand off to the
+/// profile handler, and answer with an empty export response.
+#[tracing::instrument(
+    skip_all,
+    fields(
+        tenant_id = %tenant_context.tenant_id,
+        dataset_id = %tenant_context.dataset_id
+    )
+)]
+async fn handle_http_profiles(
+    Extension(state): Extension<ProfilesHandlerState>,
+    headers: axum::http::HeaderMap,
+    crate::middleware::TenantContextExtractor(tenant_context): crate::middleware::TenantContextExtractor,
+    body: axum::body::Bytes,
+) -> axum::response::Response<axum::body::Body> {
+    use opentelemetry_proto::tonic::collector::profiles::v1development::ExportProfilesServiceRequest;
+    use prost::Message;
+
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/x-protobuf");
+
+    let request = if content_type.starts_with("application/json") {
+        match serde_json::from_slice::<ExportProfilesServiceRequest>(&body) {
+            Ok(request) => request,
+            Err(e) => {
+                return otlp_http_error(
+                    axum::http::StatusCode::BAD_REQUEST,
+                    format!("invalid OTLP/JSON profiles payload: {e}"),
+                );
+            }
+        }
+    } else {
+        match ExportProfilesServiceRequest::decode(body.as_ref()) {
+            Ok(request) => request,
+            Err(e) => {
+                return otlp_http_error(
+                    axum::http::StatusCode::BAD_REQUEST,
+                    format!("invalid OTLP/protobuf profiles payload: {e}"),
+                );
+            }
+        }
+    };
+
+    match state
+        .handler
+        .handle_grpc_otlp_profiles(&tenant_context, request)
+        .await
+    {
+        Ok(()) => axum::response::Response::builder()
+            .status(axum::http::StatusCode::OK)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from("{}"))
+            .expect("static response must build"),
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to durably accept profiles export via HTTP");
+            otlp_http_error(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                format!("failed to durably accept profiles export: {e:#}"),
+            )
+        }
+    }
+}
+
+fn otlp_http_error(
+    status: axum::http::StatusCode,
+    message: String,
+) -> axum::response::Response<axum::body::Body> {
+    axum::response::Response::builder()
+        .status(status)
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(
+            serde_json::json!({ "message": message }).to_string(),
+        ))
+        .expect("error response must build")
 }
 
 /// Handler variant using Extension instead of State for simpler router composition
@@ -414,13 +535,25 @@ pub async fn serve_otlp_http(
             .with_storage_quota(config.storage_usage.clone()),
     );
 
-    // Build combined router with health, traces, and Prometheus endpoints
-    let app = acceptor_router().merge(prometheus_router(
-        config.authenticator.clone(),
-        prometheus_handler,
+    // Create profiles handler with shared resources
+    let profile_handler = Arc::new(ProfileHandler::new(
+        config.flight_transport.clone(),
+        config.wal_manager.clone(),
     ));
 
+    // Build combined router with health, traces, Prometheus, and profiles endpoints
+    let app = acceptor_router()
+        .merge(prometheus_router(
+            config.authenticator.clone(),
+            prometheus_handler,
+        ))
+        .merge(profiles_http_router(
+            config.authenticator.clone(),
+            profile_handler,
+        ));
+
     tracing::info!("Prometheus remote_write endpoint enabled at POST /api/v1/write");
+    tracing::info!("OTLP profiles endpoint enabled at POST /v1development/profiles");
 
     init_tx
         .send(())

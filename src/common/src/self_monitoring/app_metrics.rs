@@ -51,6 +51,7 @@ pub struct AppMetrics {
     pub ingest_spans_received: Counter<u64>,
     pub ingest_logs_received: Counter<u64>,
     pub ingest_metrics_received: Counter<u64>,
+    pub ingest_profiles_received: Counter<u64>,
     pub ingest_batches_written: Counter<u64>,
     pub ingest_batch_size: Histogram<u64>,
 
@@ -174,6 +175,11 @@ impl AppMetrics {
                 .u64_counter("signaldb.ingest.metrics_received")
                 .with_description("OTLP metric points received")
                 .with_unit("{metric}")
+                .build(),
+            ingest_profiles_received: meter
+                .u64_counter("signaldb.ingest.profiles_received")
+                .with_description("OTLP profiles received")
+                .with_unit("{profile}")
                 .build(),
             ingest_batches_written: meter
                 .u64_counter("signaldb.ingest.batches_written")
