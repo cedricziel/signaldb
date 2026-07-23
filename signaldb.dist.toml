@@ -28,12 +28,17 @@ dsn = "sqlite://.data/signaldb.db"
 # All SignalDB services must share the same value.
 # internal_service_key = "sk-internal-your-secret-key-here"
 
-# Default per-tenant ingest rate limits, applied to every tenant without an
-# explicit [auth.tenants.limits] override. Unset fields mean unlimited.
-# Exceeding a limit returns HTTP 429 / gRPC RESOURCE_EXHAUSTED (retryable).
+# Default per-tenant rate limits and quotas, applied to every tenant without
+# an explicit [auth.tenants.limits] override. Unset fields mean unlimited.
+# Exceeding a rate limit returns HTTP 429 / gRPC RESOURCE_EXHAUSTED
+# (retryable); exceeding a count quota returns HTTP 429 with error code
+# "quota_exceeded".
 # [auth.default_limits]
 # max_ingest_requests_per_sec = 100
 # max_ingest_bytes_per_sec = 10485760   # 10 MiB/s
+# max_query_requests_per_sec = 50       # router HTTP query API
+# max_api_keys = 10                     # active (non-revoked) keys per tenant
+# max_datasets = 25                     # datasets per tenant
 # burst_seconds = 2.0                   # burst allowance in seconds of budget
 
 # Tenant definitions with API keys and datasets
@@ -46,10 +51,13 @@ slug = "acme"
 name = "Acme Corporation"
 default_dataset = "production"  # Used when X-Dataset-ID header is not provided
 
-# Per-tenant rate-limit override (takes precedence over [auth.default_limits])
+# Per-tenant limits override (takes precedence over [auth.default_limits])
 # [auth.tenants.limits]
 # max_ingest_requests_per_sec = 500
 # max_ingest_bytes_per_sec = 52428800   # 50 MiB/s
+# max_query_requests_per_sec = 200
+# max_api_keys = 20
+# max_datasets = 50
 
 # API keys for the Acme tenant
 # Each key can have a descriptive name for auditing

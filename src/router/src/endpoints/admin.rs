@@ -423,6 +423,42 @@ pub async fn create_api_key<S: RouterState>(
         Ok(Some(_)) => {}
     }
 
+    // Enforce the tenant's API key quota (active keys only; revoked keys
+    // do not count against it).
+    if let Some(max_keys) = state.config().auth.limits_for(&tenant_id).max_api_keys {
+        match state.catalog().list_api_keys(&tenant_id).await {
+            Ok(keys) => {
+                let active = keys.iter().filter(|k| k.revoked_at.is_none()).count();
+                if active as u64 >= u64::from(max_keys) {
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(
+                            serde_json::to_value(ApiError::new(
+                                "quota_exceeded",
+                                format!(
+                                    "Tenant '{tenant_id}' already has {active} active API keys \
+                                     (limit {max_keys}); revoke a key or raise max_api_keys"
+                                ),
+                            ))
+                            .unwrap(),
+                        ),
+                    )
+                        .into_response();
+                }
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(
+                        serde_json::to_value(ApiError::new("internal_error", e.to_string()))
+                            .unwrap(),
+                    ),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     // Generate a new raw API key
     let raw_key = format!("sk-{}-{}", tenant_id, Uuid::new_v4());
     let key_hash = Authenticator::hash_api_key(&raw_key);
@@ -615,6 +651,42 @@ pub async fn create_dataset<S: RouterState>(
                 .into_response();
         }
         Ok(Some(_)) => {}
+    }
+
+    // Enforce the tenant's dataset quota.
+    if let Some(max_datasets) = state.config().auth.limits_for(&tenant_id).max_datasets {
+        match state.catalog().get_datasets(&tenant_id).await {
+            Ok(datasets) => {
+                let count = datasets.len();
+                if count as u64 >= u64::from(max_datasets) {
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(
+                            serde_json::to_value(ApiError::new(
+                                "quota_exceeded",
+                                format!(
+                                    "Tenant '{tenant_id}' already has {count} datasets \
+                                     (limit {max_datasets}); delete a dataset or raise \
+                                     max_datasets"
+                                ),
+                            ))
+                            .unwrap(),
+                        ),
+                    )
+                        .into_response();
+                }
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(
+                        serde_json::to_value(ApiError::new("internal_error", e.to_string()))
+                            .unwrap(),
+                    ),
+                )
+                    .into_response();
+            }
+        }
     }
 
     match state
@@ -862,6 +934,128 @@ mod tests {
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    async fn create_quota_test_state(limits: common::config::TenantLimits) -> InMemoryStateImpl {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let mut config = Configuration::default();
+        config.auth.default_limits = limits;
+        InMemoryStateImpl::new(catalog, config)
+    }
+
+    #[tokio::test]
+    async fn api_key_quota_rejects_creation_beyond_limit() {
+        let state = create_quota_test_state(common::config::TenantLimits {
+            max_api_keys: Some(2),
+            ..Default::default()
+        })
+        .await;
+        state
+            .catalog()
+            .upsert_tenant("acme", "Acme Corp", None, "database")
+            .await
+            .unwrap();
+        let app = admin_router(state);
+
+        let create = |name: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/tenants/acme/api-keys")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"name": "{name}"}}"#)))
+                .unwrap()
+        };
+
+        let mut first_key_id = String::new();
+        for name in ["one", "two"] {
+            let response = app.clone().oneshot(create(name)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::CREATED);
+            if name == "one" {
+                let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                    .await
+                    .unwrap();
+                let created: CreateApiKeyResponse = serde_json::from_slice(&body).unwrap();
+                first_key_id = created.id;
+            }
+        }
+
+        // Third key exceeds the quota.
+        let response = app.clone().oneshot(create("three")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let error: ApiError = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error.error, "quota_exceeded");
+
+        // Revoking a key frees quota: creation succeeds again.
+        let request = Request::builder()
+            .method("DELETE")
+            .uri(format!("/tenants/acme/api-keys/{first_key_id}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let response = app.clone().oneshot(create("three")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn dataset_quota_rejects_creation_beyond_limit() {
+        let state = create_quota_test_state(common::config::TenantLimits {
+            max_datasets: Some(1),
+            ..Default::default()
+        })
+        .await;
+        state
+            .catalog()
+            .upsert_tenant("acme", "Acme Corp", None, "database")
+            .await
+            .unwrap();
+        let app = admin_router(state);
+
+        let create = |name: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/tenants/acme/datasets")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"name": "{name}"}}"#)))
+                .unwrap()
+        };
+
+        let response = app.clone().oneshot(create("production")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let response = app.clone().oneshot(create("staging")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let error: ApiError = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error.error, "quota_exceeded");
+    }
+
+    #[tokio::test]
+    async fn quotas_unlimited_by_default() {
+        let state = create_admin_test_state().await;
+        state
+            .catalog()
+            .upsert_tenant("acme", "Acme Corp", None, "database")
+            .await
+            .unwrap();
+        let app = admin_router(state);
+
+        for i in 0..20 {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/tenants/acme/api-keys")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"name": "key-{i}"}}"#)))
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::CREATED);
+        }
     }
 
     #[tokio::test]
