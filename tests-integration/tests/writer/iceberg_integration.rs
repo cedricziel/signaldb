@@ -148,9 +148,7 @@ async fn test_iceberg_namespace_slug_based() -> Result<()> {
                 schema_config: None,
                 limits: None,
             }],
-            admin_api_key: None,
-            internal_service_key: None,
-            default_limits: Default::default(),
+            ..Default::default()
         },
         ..Default::default()
     };
@@ -310,9 +308,7 @@ async fn test_write_and_query_with_slugs() -> Result<()> {
                 schema_config: None,
                 limits: None,
             }],
-            admin_api_key: None,
-            internal_service_key: None,
-            default_limits: Default::default(),
+            ..Default::default()
         },
         ..Default::default()
     };

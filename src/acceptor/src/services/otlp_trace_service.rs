@@ -7,6 +7,7 @@ use crate::handler::otlp_grpc::TraceHandler;
 use crate::middleware::get_tenant_context;
 use common::auth::TenantContext;
 use common::ratelimit::TenantRateLimiter;
+use common::storage_usage::StorageUsageTracker;
 use prost::Message;
 use std::sync::Arc;
 
@@ -33,6 +34,7 @@ impl TraceHandlerTrait for TraceHandler {
 pub struct TraceAcceptorService<H: TraceHandlerTrait> {
     handler: H,
     rate_limiter: Option<Arc<TenantRateLimiter>>,
+    storage_quota: Option<Arc<StorageUsageTracker>>,
 }
 
 impl<H: TraceHandlerTrait> TraceAcceptorService<H> {
@@ -40,12 +42,19 @@ impl<H: TraceHandlerTrait> TraceAcceptorService<H> {
         Self {
             handler,
             rate_limiter: None,
+            storage_quota: None,
         }
     }
 
     /// Enforce per-tenant ingest rate limits on this service.
     pub fn with_rate_limiter(mut self, rate_limiter: Arc<TenantRateLimiter>) -> Self {
         self.rate_limiter = Some(rate_limiter);
+        self
+    }
+
+    /// Enforce per-tenant storage quotas on this service.
+    pub fn with_storage_quota(mut self, storage_quota: Arc<StorageUsageTracker>) -> Self {
+        self.storage_quota = Some(storage_quota);
         self
     }
 }
@@ -66,6 +75,14 @@ impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAccepto
         if let Some(limiter) = &self.rate_limiter {
             limiter
                 .check_ingest(&tenant_context.tenant_id, request_inner.encoded_len())
+                .map_err(|e| Status::resource_exhausted(e.to_string()))?;
+        }
+
+        // Per-tenant storage quota: a tenant at or over max_storage_bytes
+        // must free space (or get a raised quota) before ingesting more.
+        if let Some(quota) = &self.storage_quota {
+            quota
+                .check_ingest(&tenant_context.tenant_id)
                 .map_err(|e| Status::resource_exhausted(e.to_string()))?;
         }
 
@@ -237,6 +254,45 @@ mod tests {
 
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
         assert!(status.message().contains("request rate"));
+    }
+
+    #[tokio::test]
+    async fn export_rejects_with_resource_exhausted_when_over_storage_quota() {
+        use common::config::{AuthConfig, TenantLimits};
+        use common::storage_usage::StorageUsageTracker;
+        use std::collections::HashMap;
+
+        let tenant_id = test_tenant_context().tenant_id;
+        let tracker = Arc::new(StorageUsageTracker::from_auth_config(&AuthConfig {
+            default_limits: TenantLimits {
+                max_storage_bytes: Some(1_000),
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let service =
+            TraceAcceptorService::new(NoopTraceHandler).with_storage_quota(tracker.clone());
+
+        // Under quota: export passes.
+        tracker.replace_all(HashMap::from([(tenant_id.clone(), 999)]));
+        let mut under = Request::new(ExportTraceServiceRequest::default());
+        under.extensions_mut().insert(test_tenant_context());
+        service
+            .export(under)
+            .await
+            .expect("export under quota must pass");
+
+        // Usage refresh reports the tenant at its cap: export is rejected.
+        tracker.replace_all(HashMap::from([(tenant_id, 1_000)]));
+        let mut over = Request::new(ExportTraceServiceRequest::default());
+        over.extensions_mut().insert(test_tenant_context());
+        let status = service
+            .export(over)
+            .await
+            .expect_err("export at quota must be rejected");
+
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert!(status.message().contains("quota_exceeded"));
     }
 
     #[tokio::test]

@@ -272,9 +272,7 @@ mod tests {
                 schema_config: None,
                 limits: None,
             }],
-            admin_api_key: None,
-            internal_service_key: None,
-            default_limits: Default::default(),
+            ..Default::default()
         };
 
         let authenticator = Authenticator::new(auth_config, catalog);
@@ -307,9 +305,7 @@ mod tests {
         let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
         let auth_config = AuthConfig {
             tenants: vec![],
-            admin_api_key: None,
-            internal_service_key: None,
-            default_limits: Default::default(),
+            ..Default::default()
         };
         let authenticator = Authenticator::new(auth_config, catalog);
 
@@ -343,9 +339,7 @@ mod tests {
                 schema_config: None,
                 limits: None,
             }],
-            admin_api_key: None,
-            internal_service_key: None,
-            default_limits: Default::default(),
+            ..Default::default()
         };
         let authenticator = Authenticator::new(auth_config, catalog);
 
@@ -381,9 +375,7 @@ mod tests {
                 schema_config: None,
                 limits: None,
             }],
-            admin_api_key: None,
-            internal_service_key: None,
-            default_limits: Default::default(),
+            ..Default::default()
         };
         let authenticator = Authenticator::new(auth_config, catalog);
 
@@ -413,9 +405,7 @@ mod tests {
                 schema_config: None,
                 limits: None,
             }],
-            admin_api_key: None,
-            internal_service_key: None,
-            default_limits: Default::default(),
+            ..Default::default()
         };
         let authenticator = Authenticator::new(auth_config, catalog);
 

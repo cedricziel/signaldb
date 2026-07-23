@@ -8,6 +8,7 @@ use crate::handler::otlp_metrics_handler::MetricsHandler;
 use crate::middleware::get_tenant_context;
 use common::auth::TenantContext;
 use common::ratelimit::TenantRateLimiter;
+use common::storage_usage::StorageUsageTracker;
 use prost::Message;
 use std::sync::Arc;
 
@@ -34,6 +35,7 @@ impl MetricsHandlerTrait for MetricsHandler {
 pub struct MetricsAcceptorService<H: MetricsHandlerTrait> {
     handler: H,
     rate_limiter: Option<Arc<TenantRateLimiter>>,
+    storage_quota: Option<Arc<StorageUsageTracker>>,
 }
 
 impl<H: MetricsHandlerTrait> MetricsAcceptorService<H> {
@@ -41,12 +43,19 @@ impl<H: MetricsHandlerTrait> MetricsAcceptorService<H> {
         Self {
             handler,
             rate_limiter: None,
+            storage_quota: None,
         }
     }
 
     /// Enforce per-tenant ingest rate limits on this service.
     pub fn with_rate_limiter(mut self, rate_limiter: Arc<TenantRateLimiter>) -> Self {
         self.rate_limiter = Some(rate_limiter);
+        self
+    }
+
+    /// Enforce per-tenant storage quotas on this service.
+    pub fn with_storage_quota(mut self, storage_quota: Arc<StorageUsageTracker>) -> Self {
+        self.storage_quota = Some(storage_quota);
         self
     }
 }
@@ -67,6 +76,14 @@ impl<H: MetricsHandlerTrait + Send + Sync + 'static> MetricsService for MetricsA
         if let Some(limiter) = &self.rate_limiter {
             limiter
                 .check_ingest(&tenant_context.tenant_id, request_inner.encoded_len())
+                .map_err(|e| Status::resource_exhausted(e.to_string()))?;
+        }
+
+        // Per-tenant storage quota: a tenant at or over max_storage_bytes
+        // must free space (or get a raised quota) before ingesting more.
+        if let Some(quota) = &self.storage_quota {
+            quota
+                .check_ingest(&tenant_context.tenant_id)
                 .map_err(|e| Status::resource_exhausted(e.to_string()))?;
         }
 

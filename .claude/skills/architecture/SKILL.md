@@ -33,7 +33,7 @@ use arrow::array::StringArray;
 
 ```
 OTLP Client (gRPC :4317 / HTTP :4318)
-    -> Acceptor (validates auth, converts OTLP->Arrow, writes to WAL)
+    -> Acceptor (validates auth, enforces rate limits + storage quotas, converts OTLP->Arrow, writes to WAL)
     -> Writer via Flight do_put (transforms v1->v2 schema, writes to WAL)
     -> WalProcessor (background, 5s interval)
     -> Iceberg Tables (Parquet files in object store)

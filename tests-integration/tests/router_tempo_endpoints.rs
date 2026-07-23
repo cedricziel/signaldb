@@ -108,6 +108,7 @@ async fn setup_test_services() -> TestServices {
         admin_api_key: None,
         internal_service_key: None,
         default_limits: Default::default(),
+        storage_usage_refresh_interval: std::time::Duration::from_secs(60),
     };
 
     let wal_config = WalConfig {
@@ -759,6 +760,7 @@ async fn test_tempo_v2_trace_endpoint() {
         admin_api_key: None,
         internal_service_key: None,
         default_limits: Default::default(),
+        storage_usage_refresh_interval: std::time::Duration::from_secs(60),
     };
     let state = InMemoryStateImpl::new(catalog, config);
 
@@ -872,6 +874,7 @@ async fn setup_multi_tenant_test_services() -> TestServices {
         admin_api_key: None,
         internal_service_key: None,
         default_limits: Default::default(),
+        storage_usage_refresh_interval: std::time::Duration::from_secs(60),
     };
 
     // Create WAL configs for both tenants

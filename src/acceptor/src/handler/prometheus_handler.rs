@@ -32,6 +32,7 @@ use common::{
         transport::InMemoryFlightTransport,
     },
     ratelimit::TenantRateLimiter,
+    storage_usage::StorageUsageTracker,
     wal::{WalOperation, record_batch_to_bytes},
 };
 use opentelemetry_proto::tonic::metrics::v1::metric::Data;
@@ -64,6 +65,8 @@ pub struct PrometheusHandler {
     wal_manager: Arc<WalManager>,
     /// Per-tenant ingest rate limiter (no limiting when unset)
     rate_limiter: Option<Arc<TenantRateLimiter>>,
+    /// Per-tenant storage quota enforcement (no quotas when unset)
+    storage_quota: Option<Arc<StorageUsageTracker>>,
 }
 
 impl PrometheusHandler {
@@ -76,12 +79,19 @@ impl PrometheusHandler {
             flight_transport,
             wal_manager,
             rate_limiter: None,
+            storage_quota: None,
         }
     }
 
     /// Enforce per-tenant ingest rate limits on remote_write requests.
     pub fn with_rate_limiter(mut self, rate_limiter: Arc<TenantRateLimiter>) -> Self {
         self.rate_limiter = Some(rate_limiter);
+        self
+    }
+
+    /// Enforce per-tenant storage quotas on remote_write requests.
+    pub fn with_storage_quota(mut self, storage_quota: Arc<StorageUsageTracker>) -> Self {
+        self.storage_quota = Some(storage_quota);
         self
     }
 
@@ -111,6 +121,14 @@ impl PrometheusHandler {
             limiter
                 .check_ingest(&tenant_context.tenant_id, body.len())
                 .map_err(|e| PrometheusError::RateLimited(e.to_string()))?;
+        }
+
+        // Per-tenant storage quota: a tenant at or over max_storage_bytes
+        // must free space (or get a raised quota) before ingesting more.
+        if let Some(quota) = &self.storage_quota {
+            quota
+                .check_ingest(&tenant_context.tenant_id)
+                .map_err(|e| PrometheusError::QuotaExceeded(e.to_string()))?;
         }
 
         // Log request info
@@ -451,6 +469,7 @@ pub enum PrometheusError {
     WalError(String),
     InternalError(String),
     RateLimited(String),
+    QuotaExceeded(String),
 }
 
 impl std::fmt::Display for PrometheusError {
@@ -461,6 +480,7 @@ impl std::fmt::Display for PrometheusError {
             Self::WalError(msg) => write!(f, "WAL error: {msg}"),
             Self::InternalError(msg) => write!(f, "Internal error: {msg}"),
             Self::RateLimited(msg) => write!(f, "Rate limited: {msg}"),
+            Self::QuotaExceeded(msg) => write!(f, "Quota exceeded: {msg}"),
         }
     }
 }
@@ -475,6 +495,7 @@ impl IntoResponse for PrometheusError {
             Self::WalError(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
             Self::InternalError(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Self::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
+            Self::QuotaExceeded(_) => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
         };
 
         (status, message).into_response()

@@ -310,6 +310,7 @@ async fn main() -> Result<()> {
         wal_manager: Arc::clone(&acceptor_resources.wal_manager),
         authenticator: Arc::clone(&acceptor_resources.authenticator),
         rate_limiter: Arc::clone(&acceptor_resources.rate_limiter),
+        storage_usage: Arc::clone(&acceptor_resources.storage_usage),
     };
 
     let http_resources = AcceptorResources {
@@ -317,6 +318,7 @@ async fn main() -> Result<()> {
         wal_manager: Arc::clone(&acceptor_resources.wal_manager),
         authenticator: Arc::clone(&acceptor_resources.authenticator),
         rate_limiter: Arc::clone(&acceptor_resources.rate_limiter),
+        storage_usage: Arc::clone(&acceptor_resources.storage_usage),
     };
 
     // Start OTLP/gRPC server
@@ -342,6 +344,7 @@ async fn main() -> Result<()> {
         wal_manager: http_resources.wal_manager,
         authenticator: http_resources.authenticator,
         rate_limiter: http_resources.rate_limiter,
+        storage_usage: http_resources.storage_usage,
     };
     let http_handle = tokio::spawn(async move {
         serve_otlp_http(

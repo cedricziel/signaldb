@@ -219,9 +219,7 @@ mod tests {
                         limits: None,
                     },
                 ],
-                admin_api_key: None,
-                internal_service_key: None,
-                default_limits: Default::default(),
+                ..Default::default()
             },
             storage: StorageConfig {
                 dsn: "memory://".to_string(),
