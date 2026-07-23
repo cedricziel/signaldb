@@ -195,7 +195,10 @@ async fn test_metrics_gauge_compaction() -> Result<()> {
         let request = create_gauge_batch(i, 100)?;
         let batch = otlp_metrics_to_arrow(&request);
 
-        if let Err(e) = writer.write_batch(batch).await {
+        if let Err(e) = writer
+            .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
+            .await
+        {
             log::warn!("Failed to write gauge batch {i}: {e}");
             return Ok(()); // Skip test if writes fail
         }
@@ -304,7 +307,10 @@ async fn test_metrics_histogram_compaction() -> Result<()> {
         let request = create_histogram_batch(i, 100)?;
         let batch = otlp_metrics_to_arrow(&request);
 
-        if let Err(e) = writer.write_batch(batch).await {
+        if let Err(e) = writer
+            .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
+            .await
+        {
             log::warn!("Failed to write histogram batch {i}: {e}");
             return Ok(()); // Skip test if writes fail
         }

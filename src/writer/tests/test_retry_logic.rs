@@ -186,24 +186,15 @@ async fn test_retry_logic_with_valid_batch() -> Result<()> {
         ],
     )?;
 
-    // This should succeed (possibly after retries if there are transient issues)
-    let result = writer.write_batch(batch).await;
+    // The commit-with-verification loop should succeed for valid data
+    // (possibly after retries on transient issues).
+    let entry_id = uuid::Uuid::new_v4();
+    writer
+        .append_batches_with_marker("wal-retry", vec![(entry_id, batch)])
+        .await?;
 
-    // We expect success for valid data, but we allow for test environment issues
-    match result {
-        Ok(_) => {
-            // Success - retry logic worked correctly
-            println!("Retry logic test completed successfully");
-        }
-        Err(e) => {
-            // Expected failure in test environment - check that it's not a retry configuration issue
-            let error_msg = e.to_string();
-            // Make sure it's not a retry configuration error
-            assert!(!error_msg.contains("max_attempts"));
-            assert!(!error_msg.contains("backoff_multiplier"));
-            println!("Expected test environment failure: {e}");
-        }
-    }
+    let committed = writer.load_committed_marker("wal-retry").await?;
+    assert_eq!(committed, std::iter::once(entry_id).collect());
 
     Ok(())
 }

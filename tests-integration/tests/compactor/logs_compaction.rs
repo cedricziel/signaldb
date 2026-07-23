@@ -166,7 +166,10 @@ async fn test_logs_table_compaction() -> Result<()> {
     // Write 10 small batches (100 rows each = 1000 logs total)
     for i in 0..10 {
         let batch = create_logs_batch(i, 100);
-        if let Err(e) = writer.write_batch(batch).await {
+        if let Err(e) = writer
+            .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
+            .await
+        {
             log::warn!("Failed to write log batch {i}: {e}");
             return Ok(()); // Skip test if writes fail
         }
@@ -288,7 +291,10 @@ async fn test_logs_compaction_with_sorting_verification() -> Result<()> {
     // Write batches with different severity distributions
     for i in 0..10 {
         let batch = create_logs_batch(i, 100);
-        if let Err(e) = writer.write_batch(batch).await {
+        if let Err(e) = writer
+            .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
+            .await
+        {
             log::warn!("Write failed: {e}");
             return Ok(());
         }

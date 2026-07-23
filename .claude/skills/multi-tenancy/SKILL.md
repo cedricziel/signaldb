@@ -5,6 +5,7 @@ user-invocable: false
 sources:
   - src/common/src/auth/**
   - src/common/src/config/mod.rs
+  - src/common/src/ratelimit.rs
   - src/router/src/endpoints/admin.rs
   - src/router/src/endpoints/tenant.rs
 ---
@@ -87,6 +88,24 @@ key = "sk-acme-prod-key-123"
 name = "Production Key"
 ```
 
+## Rate Limits & Quotas
+
+`TenantLimits` (`[auth.default_limits]`, overridable per tenant via
+`[[auth.tenants]].limits`; resolved by `AuthConfig::limits_for`). Unset
+fields mean unlimited; DB-provisioned tenants get the defaults.
+
+| Limit | Enforced at | On exceed |
+|-------|-------------|-----------|
+| `max_ingest_requests_per_sec` / `max_ingest_bytes_per_sec` | Acceptor (OTLP gRPC, remote_write) | 429 / RESOURCE_EXHAUSTED |
+| `max_query_requests_per_sec` | Router HTTP query API (`/tempo`, `/api/v1`) | 429 |
+| `max_api_keys` (active keys only) | Admin API key creation | 429 `quota_exceeded` |
+| `max_datasets` | Admin API dataset creation | 429 `quota_exceeded` |
+| `[querier] max_concurrent_queries_per_tenant` | Querier | query rejected |
+
+Token buckets per dimension (`common::ratelimit::TenantRateLimiter`);
+ingest and query budgets are independent. Storage quotas: not yet
+implemented (#610).
+
 ## Admin API (Router)
 
 Mounted at `/api/v1/admin`, requires `admin_api_key` (`src/router/src/lib.rs`):
@@ -133,6 +152,7 @@ signaldb-cli tui                # Interactive terminal UI
 | `src/common/src/config/mod.rs` | Tenant/dataset config structs |
 | `src/common/src/auth/` | Authenticator, TenantContext, middleware, validation |
 | `src/common/src/catalog_manager.rs` | Slug resolution |
-| `src/router/src/endpoints/admin.rs` | Admin API endpoints |
+| `src/router/src/endpoints/admin.rs` | Admin API endpoints (incl. quota checks) |
 | `src/router/src/endpoints/tenant.rs` | Tenant self-service API endpoints |
+| `src/common/src/ratelimit.rs` | Per-tenant token-bucket rate limiter |
 | `src/signaldb-cli/` | CLI for tenant management |

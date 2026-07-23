@@ -82,10 +82,15 @@ internal_service_key = "sk-internal"     # Shared secret for service-to-service
                                          # Flight calls; unset = Flight ports
                                          # accept unauthenticated calls
 
-# Default per-tenant ingest rate limits (unset fields = unlimited)
+# Default per-tenant rate limits and quotas; unset fields = unlimited.
+# Rate limits return 429 / RESOURCE_EXHAUSTED; count quotas return
+# 429 with error code "quota_exceeded".
 [auth.default_limits]
 max_ingest_requests_per_sec = 100
-max_ingest_bytes_per_sec = 10485760      # 10 MiB/s
+max_ingest_bytes_per_sec = 10485760   # 10 MiB/s
+max_query_requests_per_sec = 50       # router HTTP query API
+max_api_keys = 10                     # active (non-revoked) keys
+max_datasets = 25
 burst_seconds = 2.0
 
 [[auth.tenants]]
@@ -108,6 +113,11 @@ dsn = "s3://acme-archive/signals"   # Per-dataset storage override
 [[auth.tenants.api_keys]]
 key = "sk-acme-prod-key-123"
 name = "Production Key"
+
+# Per-tenant override; takes precedence over [auth.default_limits]
+[auth.tenants.limits]
+max_ingest_requests_per_sec = 500
+max_query_requests_per_sec = 200
 ```
 
 ### Compactor

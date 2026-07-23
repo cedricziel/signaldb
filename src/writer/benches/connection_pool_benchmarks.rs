@@ -183,7 +183,10 @@ fn bench_write_performance(c: &mut Criterion) {
                 create_writer(&config, format!("tenant_{}", rand::random::<u32>())).await;
 
             let batch_clone = batch.clone();
-            writer.write_batch(batch_clone).await.expect("Write failed");
+            writer
+                .append_batches_with_marker("bench", vec![(uuid::Uuid::new_v4(), batch_clone)])
+                .await
+                .expect("Write failed");
             black_box(());
         });
     });

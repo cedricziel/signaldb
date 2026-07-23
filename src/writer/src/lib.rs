@@ -1,5 +1,5 @@
 pub mod storage;
-pub use storage::{BatchOptimizationConfig, IcebergTableWriter, RetryConfig};
+pub use storage::{IcebergTableWriter, RetryConfig};
 
 pub mod processor;
 pub use processor::{ProcessorStats, WalProcessor};
