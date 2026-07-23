@@ -199,6 +199,11 @@ enum TicketRequest {
         dataset_slug: String,
         params: ProfileDiffParams,
     },
+    SqlProfiles {
+        tenant_slug: String,
+        dataset_slug: String,
+        sql: String,
+    },
 }
 
 /// Flight service for query execution against stored data
@@ -614,6 +619,28 @@ impl QuerierFlightService {
             ));
         }
 
+        if let Some(remainder) = ticket_content.strip_prefix("sql_profiles:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                let sql = parts[2].trim();
+                let lowered = sql.trim_start().to_ascii_lowercase();
+                // Read-only entry point: only SELECT/WITH statements.
+                if !(lowered.starts_with("select") || lowered.starts_with("with")) {
+                    return Err(Status::invalid_argument(
+                        "sql_profiles only accepts SELECT or WITH statements",
+                    ));
+                }
+                return Ok(TicketRequest::SqlProfiles {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    sql: sql.to_string(),
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid sql_profiles ticket format. Expected: sql_profiles:tenant_slug:dataset_slug:sql",
+            ));
+        }
+
         // Fall back to raw SQL query
         Ok(TicketRequest::SqlQuery {
             sql: ticket_content.to_string(),
@@ -907,7 +934,8 @@ impl FlightService for QuerierFlightService {
                     | TicketRequest::ProfileLabelNames { tenant_slug, .. }
                     | TicketRequest::ProfileLabelValues { tenant_slug, .. }
                     | TicketRequest::ProfileFlamegraph { tenant_slug, .. }
-                    | TicketRequest::ProfileDiff { tenant_slug, .. } => Some(tenant_slug),
+                    | TicketRequest::ProfileDiff { tenant_slug, .. }
+                    | TicketRequest::SqlProfiles { tenant_slug, .. } => Some(tenant_slug),
                     TicketRequest::SqlQuery { .. } => None,
                 };
                 if let Some(ticket_tenant) = ticket_tenant
@@ -933,6 +961,7 @@ impl FlightService for QuerierFlightService {
                 TicketRequest::ProfileLabelValues { .. } => "profile_label_values",
                 TicketRequest::ProfileFlamegraph { .. } => "profile_flamegraph",
                 TicketRequest::ProfileDiff { .. } => "profile_diff",
+                TicketRequest::SqlProfiles { .. } => "sql_profiles",
                 TicketRequest::SqlQuery { .. } => "sql",
             };
 
@@ -952,7 +981,8 @@ impl FlightService for QuerierFlightService {
                     | TicketRequest::ProfileLabelNames { tenant_slug, .. }
                     | TicketRequest::ProfileLabelValues { tenant_slug, .. }
                     | TicketRequest::ProfileFlamegraph { tenant_slug, .. }
-                    | TicketRequest::ProfileDiff { tenant_slug, .. } => Some(tenant_slug.clone()),
+                    | TicketRequest::ProfileDiff { tenant_slug, .. }
+                    | TicketRequest::SqlProfiles { tenant_slug, .. } => Some(tenant_slug.clone()),
                     TicketRequest::SqlQuery { .. } => None,
                 });
             // Held until the query's batches are fully computed.
@@ -1178,6 +1208,28 @@ impl FlightService for QuerierFlightService {
                             .await
                             .map_err(querier_error_to_status)?;
                         vec![json_to_batch("diff", &diff)?]
+                    }
+                    TicketRequest::SqlProfiles {
+                        tenant_slug,
+                        dataset_slug,
+                        sql,
+                    } => {
+                        tracing::info!(
+                            tenant_slug = %tenant_slug,
+                            dataset_slug = %dataset_slug,
+                            sql = %sql,
+                            "Executing sql_profiles"
+                        );
+                        // Pin the session defaults to the ticket's
+                        // tenant/dataset so unqualified table names like
+                        // `profiles` resolve inside the tenant's catalog.
+                        let request_ctx =
+                            self.session_for_request(Some(&tenant_slug), Some(&dataset_slug));
+                        self.execute_distributed_query(&request_ctx, &sql)
+                            .await
+                            .map_err(|e| {
+                                Status::internal(format!("Profiles SQL query failed: {e}"))
+                            })?
                     }
                     TicketRequest::SqlQuery { sql } => {
                         // Tenant-scoped callers are pinned to their
