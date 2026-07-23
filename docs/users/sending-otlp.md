@@ -99,14 +99,18 @@ successful export response means the data is durable.
 | Traces | yes | `traces` table |
 | Logs | yes | `logs` table |
 | Metrics | yes | `metrics_gauge`, `metrics_sum`, `metrics_histogram` tables |
+| Profiles | yes | `profiles` table (see [profiles](profiles.md)) |
 
-## OTLP/HTTP is not implemented
+## OTLP/HTTP support is partial
 
-The HTTP server on port 4318 exposes only `POST /v1/traces`, and its
-handler is a stub: it logs the payload size and returns `200 OK` without
-writing anything. There are no `/v1/logs` or `/v1/metrics` routes. Do not
-point an `http/protobuf` or `http/json` OTLP exporter at SignalDB — the
-export will appear to succeed but no data is stored.
+The HTTP server on port 4318 exposes `POST /v1development/profiles` for
+the profiles signal (protobuf and JSON bodies, authenticated) — see
+[profiles](profiles.md). For the other signals it exposes only
+`POST /v1/traces`, and that handler is a stub: it logs the payload size
+and returns `200 OK` without writing anything. There are no `/v1/logs` or
+`/v1/metrics` routes. Do not point an `http/protobuf` or `http/json` OTLP
+exporter at SignalDB for traces, logs, or metrics — the export will
+appear to succeed but no data is stored.
 
 ## Troubleshooting
 
