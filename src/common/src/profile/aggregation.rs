@@ -165,6 +165,197 @@ fn flatten(root: &Node) -> Flamegraph {
     }
 }
 
+/// A differential flamegraph in Pyroscope "double" flamebearer encoding:
+/// every block carries baseline (left) and comparison (right) values.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffFlamegraph {
+    /// Function name table referenced by the blocks' name indices.
+    pub names: Vec<String>,
+    /// One entry per depth level; each level is a flat sequence of
+    /// `[offset_delta_left, total_left, self_left,
+    ///   offset_delta_right, total_right, self_right, name_index]`
+    /// septuples, offsets delta-encoded per side.
+    pub levels: Vec<Vec<i64>>,
+    /// Total baseline value.
+    pub left_ticks: i64,
+    /// Total comparison value.
+    pub right_ticks: i64,
+    /// Combined total (left + right), the root block width.
+    pub total: i64,
+    /// Largest self value of any block on either side.
+    pub max_self: i64,
+}
+
+/// Merged two-sided aggregation node.
+#[derive(Default)]
+struct DiffNode {
+    left_total: i64,
+    left_self: i64,
+    right_total: i64,
+    right_self: i64,
+    children: Vec<(String, DiffNode)>,
+}
+
+impl DiffNode {
+    fn child_mut(&mut self, name: &str) -> &mut DiffNode {
+        if let Some(index) = self.children.iter().position(|(n, _)| n == name) {
+            return &mut self.children[index].1;
+        }
+        self.children.push((name.to_string(), DiffNode::default()));
+        &mut self
+            .children
+            .last_mut()
+            .expect("children cannot be empty after push")
+            .1
+    }
+}
+
+fn frame_name(frame: &crate::model::profile::Frame) -> String {
+    if frame.function_name.is_empty() {
+        if frame.address != 0 {
+            format!("{:#x}", frame.address)
+        } else {
+            "<unknown>".to_string()
+        }
+    } else {
+        frame.function_name.clone()
+    }
+}
+
+fn accumulate_into_diff(root: &mut DiffNode, profiles: &[Profile], right: bool) {
+    for profile in profiles {
+        for sample in &profile.samples {
+            let value = sample
+                .values
+                .first()
+                .copied()
+                .unwrap_or(sample.timestamps_unix_nano.len() as i64);
+            if value <= 0 {
+                continue;
+            }
+            let Some(stacktrace) = profile.stacktraces.get(sample.stacktrace_index) else {
+                continue;
+            };
+
+            if right {
+                root.right_total += value;
+            } else {
+                root.left_total += value;
+            }
+            let mut node = &mut *root;
+            for frame in stacktrace.frames.iter().rev() {
+                let name = frame_name(frame);
+                node = node.child_mut(&name);
+                if right {
+                    node.right_total += value;
+                } else {
+                    node.left_total += value;
+                }
+            }
+            if right {
+                node.right_self += value;
+            } else {
+                node.left_self += value;
+            }
+        }
+    }
+}
+
+/// Aggregate a baseline and a comparison profile set into a differential
+/// flamegraph. Stacks present on only one side get zero values on the
+/// other, which renderers show as pure growth/regression.
+pub fn aggregate_profiles_to_diff_flamegraph(
+    baseline: &[Profile],
+    comparison: &[Profile],
+) -> DiffFlamegraph {
+    let mut root = DiffNode::default();
+    accumulate_into_diff(&mut root, baseline, false);
+    accumulate_into_diff(&mut root, comparison, true);
+
+    root.left_self = root.left_total - root.children.iter().map(|(_, c)| c.left_total).sum::<i64>();
+    root.right_self = root.right_total
+        - root
+            .children
+            .iter()
+            .map(|(_, c)| c.right_total)
+            .sum::<i64>();
+
+    flatten_diff(&root)
+}
+
+fn flatten_diff(root: &DiffNode) -> DiffFlamegraph {
+    let mut names = Vec::new();
+    let mut name_indices: HashMap<String, usize> = HashMap::new();
+    let mut intern = |name: &str, names: &mut Vec<String>| -> i64 {
+        if let Some(&index) = name_indices.get(name) {
+            return index as i64;
+        }
+        let index = names.len();
+        names.push(name.to_string());
+        name_indices.insert(name.to_string(), index);
+        index as i64
+    };
+
+    let mut max_self = root.left_self.max(root.right_self);
+    let root_index = intern("total", &mut names);
+    let mut levels: Vec<Vec<i64>> = vec![vec![
+        0,
+        root.left_total,
+        root.left_self,
+        0,
+        root.right_total,
+        root.right_self,
+        root_index,
+    ]];
+
+    // Blocks to lay out: (left absolute offset, right absolute offset, node).
+    let mut current: Vec<(i64, i64, &DiffNode)> = vec![(0, 0, root)];
+
+    while !current.is_empty() {
+        let mut next: Vec<(i64, i64, &DiffNode)> = Vec::new();
+        let mut level: Vec<i64> = Vec::new();
+        let mut previous_left_end: i64 = 0;
+        let mut previous_right_end: i64 = 0;
+
+        for (left_offset, right_offset, node) in &current {
+            let mut left_x = *left_offset;
+            let mut right_x = *right_offset;
+            for (name, child) in &node.children {
+                let name_index = intern(name, &mut names);
+                level.extend_from_slice(&[
+                    left_x - previous_left_end,
+                    child.left_total,
+                    child.left_self,
+                    right_x - previous_right_end,
+                    child.right_total,
+                    child.right_self,
+                    name_index,
+                ]);
+                max_self = max_self.max(child.left_self).max(child.right_self);
+                next.push((left_x, right_x, child));
+                previous_left_end = left_x + child.left_total;
+                previous_right_end = right_x + child.right_total;
+                left_x += child.left_total;
+                right_x += child.right_total;
+            }
+        }
+
+        if !level.is_empty() {
+            levels.push(level);
+        }
+        current = next;
+    }
+
+    DiffFlamegraph {
+        names,
+        levels,
+        left_ticks: root.left_total,
+        right_ticks: root.right_total,
+        total: root.left_total + root.right_total,
+        max_self,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +471,43 @@ mod tests {
         assert_eq!(flamegraph.total, 0);
         assert_eq!(flamegraph.levels.len(), 1);
         assert_eq!(flamegraph.names, vec!["total".to_string()]);
+    }
+
+    #[test]
+    fn diff_flamegraph_carries_both_sides() {
+        let baseline = sample_profile(); // work 100, idle 50, other_root 25
+        let mut comparison = sample_profile();
+        comparison.samples[0].values = vec![200]; // work regressed to 200
+        comparison.samples.remove(2); // other_root gone in comparison
+
+        let diff = aggregate_profiles_to_diff_flamegraph(&[baseline], &[comparison]);
+        assert_eq!(diff.left_ticks, 175);
+        assert_eq!(diff.right_ticks, 250);
+        assert_eq!(diff.total, 425);
+
+        // Root block: [0, 175, selfL, 0, 250, selfR, 0]
+        assert_eq!(diff.levels[0][1], 175);
+        assert_eq!(diff.levels[0][4], 250);
+
+        // Find the "work" block on level 2 and check both sides.
+        let work_index = diff.names.iter().position(|n| n == "work").unwrap() as i64;
+        let level2 = &diff.levels[2];
+        let block = level2
+            .chunks(7)
+            .find(|c| c[6] == work_index)
+            .expect("work block");
+        assert_eq!(block[1], 100); // baseline total
+        assert_eq!(block[4], 200); // comparison total
+
+        // other_root exists only in baseline: right side is zero.
+        let other_index = diff.names.iter().position(|n| n == "other_root").unwrap() as i64;
+        let level1 = &diff.levels[1];
+        let block = level1
+            .chunks(7)
+            .find(|c| c[6] == other_index)
+            .expect("other_root block");
+        assert_eq!(block[1], 25);
+        assert_eq!(block[4], 0);
     }
 
     #[test]

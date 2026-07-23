@@ -26,7 +26,8 @@ use tonic::{Request, Response, Status};
 use tracing::Instrument;
 
 use crate::query::profile::{
-    FindProfileByIdParams, ProfileDiscoveryParams, ProfileSearchParams, ProfileService,
+    FindProfileByIdParams, ProfileDiffParams, ProfileDiscoveryParams, ProfileSearchParams,
+    ProfileService,
 };
 use crate::query::trace::TraceService;
 use crate::query::{FindTraceByIdParams, SearchQueryParams};
@@ -187,6 +188,16 @@ enum TicketRequest {
         dataset_slug: String,
         label_name: String,
         params: ProfileDiscoveryParams,
+    },
+    ProfileFlamegraph {
+        tenant_slug: String,
+        dataset_slug: String,
+        params: ProfileSearchParams,
+    },
+    ProfileDiff {
+        tenant_slug: String,
+        dataset_slug: String,
+        params: ProfileDiffParams,
     },
 }
 
@@ -553,6 +564,40 @@ impl QuerierFlightService {
             ));
         }
 
+        if let Some(remainder) = ticket_content.strip_prefix("profile_flamegraph:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                let params: ProfileSearchParams = serde_json::from_str(parts[2]).map_err(|e| {
+                    Status::invalid_argument(format!("Invalid flamegraph parameters: {e}"))
+                })?;
+                return Ok(TicketRequest::ProfileFlamegraph {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    params,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid profile_flamegraph ticket format. Expected: profile_flamegraph:tenant_slug:dataset_slug:params",
+            ));
+        }
+
+        if let Some(remainder) = ticket_content.strip_prefix("profile_diff:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                let params: ProfileDiffParams = serde_json::from_str(parts[2]).map_err(|e| {
+                    Status::invalid_argument(format!("Invalid profile diff parameters: {e}"))
+                })?;
+                return Ok(TicketRequest::ProfileDiff {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    params,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid profile_diff ticket format. Expected: profile_diff:tenant_slug:dataset_slug:params",
+            ));
+        }
+
         if let Some(remainder) = ticket_content.strip_prefix("label_values:") {
             let parts: Vec<&str> = remainder.splitn(4, ':').collect();
             if parts.len() >= 3 {
@@ -860,7 +905,9 @@ impl FlightService for QuerierFlightService {
                     | TicketRequest::SearchProfiles { tenant_slug, .. }
                     | TicketRequest::ProfileTypes { tenant_slug, .. }
                     | TicketRequest::ProfileLabelNames { tenant_slug, .. }
-                    | TicketRequest::ProfileLabelValues { tenant_slug, .. } => Some(tenant_slug),
+                    | TicketRequest::ProfileLabelValues { tenant_slug, .. }
+                    | TicketRequest::ProfileFlamegraph { tenant_slug, .. }
+                    | TicketRequest::ProfileDiff { tenant_slug, .. } => Some(tenant_slug),
                     TicketRequest::SqlQuery { .. } => None,
                 };
                 if let Some(ticket_tenant) = ticket_tenant
@@ -884,6 +931,8 @@ impl FlightService for QuerierFlightService {
                 TicketRequest::ProfileTypes { .. } => "profile_types",
                 TicketRequest::ProfileLabelNames { .. } => "profile_label_names",
                 TicketRequest::ProfileLabelValues { .. } => "profile_label_values",
+                TicketRequest::ProfileFlamegraph { .. } => "profile_flamegraph",
+                TicketRequest::ProfileDiff { .. } => "profile_diff",
                 TicketRequest::SqlQuery { .. } => "sql",
             };
 
@@ -901,9 +950,9 @@ impl FlightService for QuerierFlightService {
                     | TicketRequest::SearchProfiles { tenant_slug, .. }
                     | TicketRequest::ProfileTypes { tenant_slug, .. }
                     | TicketRequest::ProfileLabelNames { tenant_slug, .. }
-                    | TicketRequest::ProfileLabelValues { tenant_slug, .. } => {
-                        Some(tenant_slug.clone())
-                    }
+                    | TicketRequest::ProfileLabelValues { tenant_slug, .. }
+                    | TicketRequest::ProfileFlamegraph { tenant_slug, .. }
+                    | TicketRequest::ProfileDiff { tenant_slug, .. } => Some(tenant_slug.clone()),
                     TicketRequest::SqlQuery { .. } => None,
                 });
             // Held until the query's batches are fully computed.
@@ -1106,6 +1155,30 @@ impl FlightService for QuerierFlightService {
                             .map_err(querier_error_to_status)?;
                         vec![strings_to_batch("label_value", values)?]
                     }
+                    TicketRequest::ProfileFlamegraph {
+                        tenant_slug,
+                        dataset_slug,
+                        params,
+                    } => {
+                        let flamegraph = self
+                            .profile_service
+                            .flamegraph_with_tenant(params, &tenant_slug, &dataset_slug)
+                            .await
+                            .map_err(querier_error_to_status)?;
+                        vec![json_to_batch("flamegraph", &flamegraph)?]
+                    }
+                    TicketRequest::ProfileDiff {
+                        tenant_slug,
+                        dataset_slug,
+                        params,
+                    } => {
+                        let diff = self
+                            .profile_service
+                            .diff_with_tenant(params, &tenant_slug, &dataset_slug)
+                            .await
+                            .map_err(querier_error_to_status)?;
+                        vec![json_to_batch("diff", &diff)?]
+                    }
                     TicketRequest::SqlQuery { sql } => {
                         // Tenant-scoped callers are pinned to their
                         // authenticated tenant/dataset; only internal or
@@ -1255,6 +1328,14 @@ fn strings_to_batch(column_name: &str, values: Vec<String>) -> Result<RecordBatc
     )]));
     RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(values))])
         .map_err(|e| Status::internal(format!("Failed to build result batch: {e}")))
+}
+
+/// Encode a serializable value as a single-row, single-column JSON batch.
+#[allow(clippy::result_large_err)]
+fn json_to_batch<T: serde::Serialize>(column_name: &str, value: &T) -> Result<RecordBatch, Status> {
+    let json = serde_json::to_string(value)
+        .map_err(|e| Status::internal(format!("Failed to serialize result: {e}")))?;
+    strings_to_batch(column_name, vec![json])
 }
 
 /// Map querier errors onto gRPC statuses: caller errors surface as
