@@ -24,10 +24,10 @@ RUST_LOG=debug cargo test test_name -- --nocapture  # With logging
 
 ```bash
 cargo run --bin signaldb   # Monolithic mode (all services in one process)
-cargo run --bin acceptor   # OTLP ingestion (ports 4317/4318)
-cargo run --bin router     # HTTP router (port 3000) + Flight (port 50053)
-cargo run --bin writer     # Data persistence service
-cargo run --bin querier    # Query execution (port 9000)
+cargo run --bin signaldb-acceptor   # OTLP ingestion (ports 4317/4318)
+cargo run --bin signaldb-router     # HTTP router (port 3000) + Flight (port 50053)
+cargo run --bin signaldb-writer     # Data persistence (Flight port 50061)
+cargo run --bin signaldb-querier    # Query execution (Flight port 50054)
 ```
 
 ### Local Development
@@ -218,18 +218,16 @@ dry_run = false  # Start with true for testing
 retention_check_interval = "1h"
 grace_period = "1h"
 traces = "7d"
-logs = "3d"
-metrics = "30d"
-snapshots_to_keep = 5
+logs = "30d"
+metrics = "90d"
+snapshots_to_keep = 10
 
-# Tenant override
-[[compactor.retention.tenant_overrides]]
-tenant_id = "production"
+# Tenant override (map keyed by tenant id)
+[compactor.retention.tenant_overrides.production]
 traces = "30d"
 
-# Dataset override (highest priority)
-[[compactor.retention.tenant_overrides.dataset_overrides]]
-dataset_id = "critical"
+# Dataset override (highest priority, map keyed by dataset id)
+[compactor.retention.tenant_overrides.production.dataset_overrides.critical]
 traces = "90d"
 
 [compactor.orphan_cleanup]
@@ -243,7 +241,7 @@ revalidate_before_delete = true
 **Testing Phase 3:**
 
 ```bash
-# Integration tests (19 tests covering all Phase 3 features)
+# Integration tests covering Phase 3 features
 cargo test -p tests-integration --test retention_cutoff
 cargo test -p tests-integration --test partition_drop
 cargo test -p tests-integration --test snapshot_expiration
