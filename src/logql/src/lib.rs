@@ -18,7 +18,11 @@ pub mod lexer;
 pub mod parser;
 pub mod token;
 
-pub use ast::{LabelMatcher, LogQuery, MatchOp, PipelineStage, StreamSelector};
+pub use ast::{
+    FilterOp, FilterValue, LabelExtraction, LabelFilterExpr, LabelFilterPred, LabelFormat,
+    LabelFormatValue, LabelMatcher, LineFilter, LineFilterOp, LogQuery, MatchOp, PipelineStage,
+    StreamSelector, Unwrap,
+};
 pub use lexer::{LexError, tokenize};
 pub use parser::{ParseError, parse_query, parse_selector};
 pub use token::{SpannedToken, Token};
