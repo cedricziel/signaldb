@@ -76,6 +76,7 @@ Parquet storage with DataFusion query processing:
 | **querier** | `src/querier/` | Binary + Library | Query execution engine via DataFusion |
 | **compactor** | `src/compactor/` | Binary + Library | Storage maintenance: compaction, retention (bin `signaldb-compactor`) |
 | **common** | `src/common/` | Library | Shared config, auth, WAL, Flight, catalog, schema |
+| **pyroscope-api** | `src/pyroscope-api/` | Library | Pyroscope-compatible API types (flamebearer, profile types) |
 | **tempo-api** | `src/tempo-api/` | Library | Grafana Tempo API types and protobuf definitions |
 | **signaldb-bin** | `src/signaldb-bin/` | Binary | Monolithic mode runner (all services in one process) |
 | **signaldb-api** | `src/signaldb-api/` | Library | OpenAPI-generated admin API types |
