@@ -1,51 +1,31 @@
 #!/usr/bin/env bash
-# Stop hook: block ending the turn when the session's diff touches source files
-# that living docs (per their `sources:` frontmatter) claim to describe, but the
-# docs were not updated. Blocks at most once per distinct debt set per session —
-# the agent may update the docs or consciously wave off, but not forget.
+# Stop hook: soft backstop for the doc-freshness check. Fires at every turn end,
+# but never blocks — it only injects a non-blocking reminder so long-running
+# goals are not interrupted mid-flight. The hard gate lives in the TaskCompleted
+# hook; this catches debt that never passed through a task completion (a taskless
+# session, or the un-tasked tail of a goal).
+#
+# Reminds at most once per distinct debt set per session, and stays silent for
+# any debt set the TaskCompleted hook already hard-blocked (shared "block"
+# marker), so the two hooks never nag about the same thing twice.
 set -uo pipefail
 
-input=$(cat)
+source "$(dirname "${BASH_SOURCE[0]}")/doc-freshness-common.sh"
 
-# Never re-block while the agent is already continuing because of this hook.
-if [[ "$input" == *'"stop_hook_active":true'* || "$input" == *'"stop_hook_active": true'* ]]; then
-    exit 0
-fi
+df_collect || exit 0
 
-session_id=$(printf '%s' "$input" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-[[ -z "$session_id" ]] && session_id="unknown"
+# Already hard-blocked at a milestone this session — don't softly repeat it.
+[[ -f "$(df_marker block)" ]] && exit 0
 
-# Run against the repo the session is actually working in. In a linked worktree
-# the session cwd is the worktree, while CLAUDE_PROJECT_DIR may point at the
-# main checkout — prefer the cwd from the hook input.
-session_cwd=$(printf '%s' "$input" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-if [[ -n "$session_cwd" && -d "$session_cwd" ]]; then
-    cd "$session_cwd"
-elif [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-    cd "$CLAUDE_PROJECT_DIR"
-fi
-repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-
-# The checker cds to the toplevel of the repo it runs in, so invoking the
-# worktree's own copy (when present) checks the worktree's diff and docs.
-checker="$repo_root/scripts/check-doc-freshness.sh"
-[[ -x "$checker" ]] || checker="${CLAUDE_PROJECT_DIR:-$repo_root}/scripts/check-doc-freshness.sh"
-[[ -x "$checker" ]] || exit 0
-
-report=$("$checker" 2>/dev/null)
-[[ -z "$report" ]] && exit 0
-
-# One nag per distinct debt set: key marker on session + report content.
-digest=$(printf '%s' "$report" | cksum | tr -d ' \t')
-marker="${TMPDIR:-/tmp}/claude-doc-freshness-${session_id}-${digest}"
+marker=$(df_marker soft)
 [[ -f "$marker" ]] && exit 0
 touch "$marker"
 
-reason="Doc-freshness check: this session's changes touch files that the following living docs declare as sources, but the docs were not updated:
+context="Doc-freshness reminder: this branch's changes touch files that the following living docs declare as sources, but the docs were not updated:
 
-$report
+$DF_REPORT
 
-Invoke the 'docs' skill for routing guidance, then either update the affected docs (and .claude/skills entries) or state explicitly in your final message why no documentation change is needed. This check will not repeat for the same set of findings."
+Before wrapping up, invoke the 'docs' skill for routing guidance, then either update the affected docs (and .claude/skills entries) or note why no documentation change is needed. This reminder will not repeat for the same set of findings."
 
-python3 -c 'import json,sys; print(json.dumps({"decision":"block","reason":sys.argv[1]}))' "$reason"
+python3 -c 'import json,sys; print(json.dumps({"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":sys.argv[1]}}))' "$context"
 exit 0
