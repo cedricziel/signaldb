@@ -223,6 +223,15 @@ flowchart LR
 | `GET /loki/api/v1/tail` | Not implemented (WebSocket streaming, #380) |
 | LogQL metric queries (`rate`, `count_over_time`, `sum by (...)`) | Implemented via `query_range` -- `date_bin(step)` bucketed matrix (no binary ops / `topk` / `quantile` yet) |
 
+**Prometheus API Endpoints** (metrics, nested at `/prometheus`; see epic #328):
+
+| Endpoint | Status |
+|----------|--------|
+| `GET\|POST /prometheus/api/v1/query_range` | Implemented -- PromQL over `metrics_gauge`+`metrics_sum`, `date_bin(step)` matrix |
+| `GET\|POST /prometheus/api/v1/query` | Implemented -- instant vector (latest sample per series) |
+| `GET /prometheus/api/v1/labels`, `/label/{name}/values`, `/series` | Stub -- metadata discovery pending (#339) |
+| PromQL `rate`/`increase`, `histogram_quantile`, binary ops | Not implemented yet (#334/#335) |
+
 **Admin API Endpoints** (requires `admin_api_key`):
 
 | Endpoint | Description |
