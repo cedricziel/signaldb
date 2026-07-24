@@ -57,33 +57,61 @@ pub enum PipelineStage {
     LineFilter(LineFilter),
     /// `| json` with optional label-extraction expressions.
     Json(Vec<LabelExtraction>),
-    /// `| logfmt` with optional label-extraction expressions.
-    Logfmt(Vec<LabelExtraction>),
+    /// `| logfmt` with optional flags (`--strict`, `--keep-empty`) and
+    /// label-extraction expressions.
+    Logfmt(LogfmtStage),
     /// `| regexp "(?P<name>re)"` — named-capture extraction.
     Regexp(String),
     /// `| pattern "<method> <path>"` — pattern extraction.
     Pattern(String),
     /// `| unpack` — promote a packed JSON entry's labels.
     Unpack,
+    /// `| decolorize` — strip ANSI color codes from the line.
+    Decolorize,
     /// `| level="error"`, `| status >= 500 and duration > 1s`.
     LabelFilter(LabelFilterExpr),
     /// `| line_format "{{.msg}}"`.
     LineFormat(String),
     /// `| label_format dst="src", pretty=`{{.x}}``.
     LabelFormat(Vec<LabelFormat>),
-    /// `| drop label1, label2`.
-    Drop(Vec<String>),
-    /// `| keep label1, label2`.
-    Keep(Vec<String>),
+    /// `| drop label1, method="GET"` — drop labels, optionally only when
+    /// a matcher holds.
+    Drop(Vec<LabelPredicate>),
+    /// `| keep label1, method="GET"` — keep only these labels.
+    Keep(Vec<LabelPredicate>),
+    /// `| distinct label1, label2` — drop consecutive duplicate lines by
+    /// the given labels.
+    Distinct(Vec<String>),
     /// `| unwrap duration_ms` or `| unwrap duration(latency)`.
     Unwrap(Unwrap),
 }
 
-/// A line filter operator and its match string.
+/// A line filter: an operator, a match value, and whether the value is
+/// an `ip("...")` matcher rather than a literal/regex.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LineFilter {
     pub op: LineFilterOp,
     pub value: String,
+    /// `true` for `|= ip("...")`, matching the line's IP addresses.
+    pub is_ip: bool,
+}
+
+/// A `logfmt` stage: optional flags plus label extractions.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LogfmtStage {
+    /// Flags such as `strict` and `keep-empty` (without the `--`).
+    pub flags: Vec<String>,
+    pub extractions: Vec<LabelExtraction>,
+}
+
+/// One `drop`/`keep` item: a label name, optionally gated by a matcher
+/// (`method="GET"`, `app=~"api.*"`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LabelPredicate {
+    pub name: String,
+    /// The matcher operator and value, when the item is `name op "value"`
+    /// rather than a bare label name.
+    pub matcher: Option<(MatchOp, String)>,
 }
 
 /// Line filter operators.
@@ -193,4 +221,8 @@ pub enum FilterValue {
     Number(f64),
     /// A duration literal such as `1s` or `500ms`.
     Duration(std::time::Duration),
+    /// A bytes literal such as `20KB` or `5MB`, in bytes.
+    Bytes(u64),
+    /// An `ip("...")` matcher (single address, CIDR, or range).
+    Ip(String),
 }

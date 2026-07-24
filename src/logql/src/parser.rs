@@ -7,8 +7,8 @@
 
 use crate::ast::{
     FilterOp, FilterValue, Grouping, LabelExtraction, LabelFilterExpr, LabelFilterPred,
-    LabelFormat, LabelFormatValue, LabelMatcher, LineFilter, LineFilterOp, LogQuery, MatchOp,
-    PipelineStage, StreamSelector, Unwrap,
+    LabelFormat, LabelFormatValue, LabelMatcher, LabelPredicate, LineFilter, LineFilterOp,
+    LogQuery, LogfmtStage, MatchOp, PipelineStage, StreamSelector, Unwrap,
 };
 use crate::lexer::{LexError, tokenize};
 use crate::metric::{
@@ -196,18 +196,42 @@ impl Parser {
         Ok(stages)
     }
 
-    /// The string operand of a line filter.
+    /// The operand of a line filter: a quoted string, or `ip("...")`.
     fn parse_line_filter_value(&mut self, op: LineFilterOp) -> Result<LineFilter, ParseError> {
+        // `ip("...")` matcher.
+        if let Some(t) = self.peek()
+            && matches!(&t.token, Token::Ident(name) if name == "ip")
+        {
+            self.next();
+            let value = self.parse_ip_call()?;
+            return Ok(LineFilter {
+                op,
+                value,
+                is_ip: true,
+            });
+        }
         match self.next() {
             Some(t) => match t.token {
-                Token::String(value) => Ok(LineFilter { op, value }),
+                Token::String(value) => Ok(LineFilter {
+                    op,
+                    value,
+                    is_ip: false,
+                }),
                 ref other => Err(self.error_at(
-                    format!("expected quoted string after line filter, found '{other}'"),
+                    format!("expected a quoted string or ip() after line filter, found '{other}'"),
                     Some(&t),
                 )),
             },
-            None => Err(self.error_at("expected quoted string after line filter", None)),
+            None => Err(self.error_at("expected a quoted string or ip() after line filter", None)),
         }
+    }
+
+    /// The `("...")` argument of an `ip(...)` matcher; `ip` is consumed.
+    fn parse_ip_call(&mut self) -> Result<String, ParseError> {
+        self.expect(&Token::LParen, "'(' after ip")?;
+        let value = self.expect_string("an IP pattern string")?;
+        self.expect(&Token::RParen, "')' to close ip(...)")?;
+        Ok(value)
     }
 
     /// Parse the stage that follows a bare `|`.
@@ -218,6 +242,11 @@ impl Parser {
         {
             self.next();
             return Ok(PipelineStage::Unwrap(self.parse_unwrap()?));
+        }
+
+        // A parenthesized label-filter group, e.g. `| (a="1" or b="2")`.
+        if matches!(self.peek().map(|t| &t.token), Some(Token::LParen)) {
+            return Ok(PipelineStage::LabelFilter(self.parse_label_filter_expr()?));
         }
 
         let head = match self.peek() {
@@ -240,7 +269,9 @@ impl Parser {
             }
             "logfmt" => {
                 self.next();
-                Ok(PipelineStage::Logfmt(self.parse_label_extractions()?))
+                let flags = self.parse_flags();
+                let extractions = self.parse_label_extractions()?;
+                Ok(PipelineStage::Logfmt(LogfmtStage { flags, extractions }))
             }
             "regexp" => {
                 self.next();
@@ -258,6 +289,14 @@ impl Parser {
                 self.next();
                 Ok(PipelineStage::Unpack)
             }
+            "decolorize" => {
+                self.next();
+                Ok(PipelineStage::Decolorize)
+            }
+            "distinct" => {
+                self.next();
+                Ok(PipelineStage::Distinct(self.parse_label_name_list()?))
+            }
             "line_format" => {
                 self.next();
                 Ok(PipelineStage::LineFormat(
@@ -270,11 +309,11 @@ impl Parser {
             }
             "drop" => {
                 self.next();
-                Ok(PipelineStage::Drop(self.parse_label_name_list()?))
+                Ok(PipelineStage::Drop(self.parse_label_predicate_list()?))
             }
             "keep" => {
                 self.next();
-                Ok(PipelineStage::Keep(self.parse_label_name_list()?))
+                Ok(PipelineStage::Keep(self.parse_label_predicate_list()?))
             }
             // Anything else is a label filter expression (it starts with
             // a label name, which is an identifier).
@@ -366,7 +405,7 @@ impl Parser {
         Ok(out)
     }
 
-    /// Comma-separated bare label names for `drop`/`keep`.
+    /// Comma-separated bare label names for `distinct`.
     fn parse_label_name_list(&mut self) -> Result<Vec<String>, ParseError> {
         let mut out = vec![self.expect_ident("a label name")?];
         while matches!(self.peek().map(|t| &t.token), Some(Token::Comma)) {
@@ -374,6 +413,46 @@ impl Parser {
             out.push(self.expect_ident("a label name")?);
         }
         Ok(out)
+    }
+
+    /// Consume any leading `--flag` tokens (parser-stage options).
+    fn parse_flags(&mut self) -> Vec<String> {
+        let mut flags = Vec::new();
+        while let Some(Token::Flag(name)) = self.peek().map(|t| &t.token) {
+            flags.push(name.clone());
+            self.next();
+        }
+        flags
+    }
+
+    /// Comma-separated `drop`/`keep` items: a bare label name or a
+    /// `name op "value"` matcher.
+    fn parse_label_predicate_list(&mut self) -> Result<Vec<LabelPredicate>, ParseError> {
+        let mut out = vec![self.parse_label_predicate()?];
+        while matches!(self.peek().map(|t| &t.token), Some(Token::Comma)) {
+            self.next();
+            out.push(self.parse_label_predicate()?);
+        }
+        Ok(out)
+    }
+
+    fn parse_label_predicate(&mut self) -> Result<LabelPredicate, ParseError> {
+        let name = self.expect_ident("a label name")?;
+        let matcher = match self.peek().map(|t| &t.token) {
+            Some(Token::Eq | Token::Neq | Token::Re | Token::Nre) => {
+                let op = match self.next().expect("peeked").token {
+                    Token::Eq => MatchOp::Eq,
+                    Token::Neq => MatchOp::Neq,
+                    Token::Re => MatchOp::Re,
+                    Token::Nre => MatchOp::Nre,
+                    _ => unreachable!(),
+                };
+                let value = self.expect_string("a quoted matcher value")?;
+                Some((op, value))
+            }
+            _ => None,
+        };
+        Ok(LabelPredicate { name, matcher })
     }
 
     /// `unwrap <label>` or `unwrap <conversion>(<label>)`.
@@ -407,17 +486,28 @@ impl Parser {
     }
 
     fn parse_label_filter_and(&mut self) -> Result<LabelFilterExpr, ParseError> {
-        let mut left = self.parse_label_filter_pred()?;
+        let mut left = self.parse_label_filter_primary()?;
         // Both `and` and a bare comma mean conjunction.
         while matches!(
             self.peek().map(|t| &t.token),
             Some(Token::And) | Some(Token::Comma)
         ) {
             self.next();
-            let right = self.parse_label_filter_pred()?;
+            let right = self.parse_label_filter_primary()?;
             left = LabelFilterExpr::And(Box::new(left), Box::new(right));
         }
         Ok(left)
+    }
+
+    /// A parenthesized sub-expression or a single predicate.
+    fn parse_label_filter_primary(&mut self) -> Result<LabelFilterExpr, ParseError> {
+        if matches!(self.peek().map(|t| &t.token), Some(Token::LParen)) {
+            self.next();
+            let expr = self.parse_label_filter_expr()?;
+            self.expect(&Token::RParen, "')' to close a label filter group")?;
+            return Ok(expr);
+        }
+        self.parse_label_filter_pred()
     }
 
     fn parse_label_filter_pred(&mut self) -> Result<LabelFilterExpr, ParseError> {
@@ -456,14 +546,22 @@ impl Parser {
     }
 
     fn parse_filter_value(&mut self) -> Result<FilterValue, ParseError> {
+        // `ip("...")` matcher.
+        if let Some(t) = self.peek()
+            && matches!(&t.token, Token::Ident(name) if name == "ip")
+        {
+            self.next();
+            return Ok(FilterValue::Ip(self.parse_ip_call()?));
+        }
         match self.next() {
             Some(t) => match t.token {
                 Token::String(s) => Ok(FilterValue::String(s)),
                 Token::Number(n) => Ok(FilterValue::Number(n)),
                 Token::Duration(d) => Ok(FilterValue::Duration(d)),
+                Token::Bytes(b) => Ok(FilterValue::Bytes(b)),
                 ref other => Err(self.error_at(
                     format!(
-                        "expected a string, number, or duration in label filter, found '{other}'"
+                        "expected a string, number, duration, bytes, or ip() in label filter, found '{other}'"
                     ),
                     Some(&t),
                 )),
@@ -473,8 +571,8 @@ impl Parser {
     }
 
     /// Reject operator/value combinations that don't type-check: regex
-    /// matchers require a string; ordered comparisons require a number
-    /// or duration.
+    /// matchers require a string or ip; ordered comparisons require a
+    /// number, duration, or bytes.
     fn check_op_value(
         &self,
         op: FilterOp,
@@ -482,9 +580,14 @@ impl Parser {
         op_token: &SpannedToken,
     ) -> Result<(), ParseError> {
         let ok = match op {
-            FilterOp::Re | FilterOp::Nre => matches!(value, FilterValue::String(_)),
+            FilterOp::Re | FilterOp::Nre => {
+                matches!(value, FilterValue::String(_) | FilterValue::Ip(_))
+            }
             FilterOp::Gt | FilterOp::Gte | FilterOp::Lt | FilterOp::Lte => {
-                matches!(value, FilterValue::Number(_) | FilterValue::Duration(_))
+                matches!(
+                    value,
+                    FilterValue::Number(_) | FilterValue::Duration(_) | FilterValue::Bytes(_)
+                )
             }
             FilterOp::Eq | FilterOp::Neq | FilterOp::CmpEq => true,
         };
@@ -702,6 +805,10 @@ impl Parser {
                     self.parse_range_aggregation()
                 } else if AggregationFunction::from_name(&name).is_some() {
                     self.parse_vector_aggregation()
+                } else if name == "vector" {
+                    self.parse_vector_literal()
+                } else if name == "label_replace" {
+                    self.parse_label_replace()
                 } else {
                     let t = self.peek().cloned();
                     Err(self.error_at(format!("unknown metric function '{name}'"), t.as_ref()))
@@ -730,8 +837,13 @@ impl Parser {
             None
         };
 
-        let (log_query, range, offset, unwrap) = self.parse_log_range_expr()?;
+        let (log_query, range, mut offset, unwrap) = self.parse_log_range_expr()?;
         self.expect(&Token::RParen, "')' to close the range aggregation")?;
+
+        // `offset` may also trail the aggregation: `count_over_time(...) offset 5m`.
+        if offset.is_none() {
+            offset = self.parse_optional_offset()?;
+        }
 
         // A grouping may trail an unwrapped range aggregation.
         let grouping = self.parse_optional_grouping()?;
@@ -745,6 +857,40 @@ impl Parser {
             param,
             grouping,
         })))
+    }
+
+    /// `vector ( <scalar> )`.
+    fn parse_vector_literal(&mut self) -> Result<MetricQuery, ParseError> {
+        self.expect_ident("vector")?;
+        self.expect(&Token::LParen, "'(' after vector")?;
+        let value = self.parse_number("a scalar value")?;
+        self.expect(&Token::RParen, "')' to close vector(...)")?;
+        Ok(MetricQuery::VectorLiteral(value))
+    }
+
+    /// `label_replace ( v, dst, replacement, src, regex )`.
+    fn parse_label_replace(&mut self) -> Result<MetricQuery, ParseError> {
+        self.expect_ident("label_replace")?;
+        self.expect(&Token::LParen, "'(' after label_replace")?;
+        let inner = self.parse_metric_expr()?;
+        self.expect(&Token::Comma, "',' after the label_replace vector")?;
+        let dst_label = self.expect_string("the destination label")?;
+        self.expect(&Token::Comma, "',' after the destination label")?;
+        let replacement = self.expect_string("the replacement template")?;
+        self.expect(&Token::Comma, "',' after the replacement")?;
+        let src_label = self.expect_string("the source label")?;
+        self.expect(&Token::Comma, "',' after the source label")?;
+        let regex = self.expect_string("the regex")?;
+        self.expect(&Token::RParen, "')' to close label_replace(...)")?;
+        Ok(MetricQuery::LabelReplace(Box::new(
+            crate::metric::LabelReplace {
+                inner,
+                dst_label,
+                replacement,
+                src_label,
+                regex,
+            },
+        )))
     }
 
     /// Parse the `{selector} pipeline [range] [offset d] [| unwrap ...]`
@@ -761,8 +907,20 @@ impl Parser {
         ),
         ParseError,
     > {
+        // The log expression may be wrapped in parentheses:
+        // `rate(({job="x"} |= "e")[5m])`.
+        let paren = matches!(self.peek().map(|t| &t.token), Some(Token::LParen));
+        if paren {
+            self.next();
+        }
         let selector = self.parse_selector()?;
         let mut pipeline = self.parse_pipeline()?;
+        if paren {
+            self.expect(
+                &Token::RParen,
+                "')' to close the parenthesized log expression",
+            )?;
+        }
 
         // Range window `[Nd]`.
         let range = self.parse_range_window()?;
@@ -977,6 +1135,7 @@ mod tests {
             vec![PipelineStage::LineFilter(LineFilter {
                 op: LineFilterOp::Contains,
                 value: "error".to_string(),
+                is_ip: false,
             })]
         );
     }
@@ -1027,6 +1186,7 @@ mod tests {
         PipelineStage::LineFilter(LineFilter {
             op,
             value: value.to_string(),
+            is_ip: false,
         })
     }
 
@@ -1064,7 +1224,102 @@ mod tests {
         );
         assert_eq!(
             pipeline(r#"{a="b"} | logfmt"#),
-            vec![PipelineStage::Logfmt(vec![])]
+            vec![PipelineStage::Logfmt(LogfmtStage::default())]
+        );
+    }
+
+    #[test]
+    fn parses_logfmt_flags() {
+        assert_eq!(
+            pipeline(r#"{a="b"} | logfmt --strict --keep-empty host"#),
+            vec![PipelineStage::Logfmt(LogfmtStage {
+                flags: vec!["strict".into(), "keep-empty".into()],
+                extractions: vec![LabelExtraction {
+                    name: "host".into(),
+                    expr: None,
+                }],
+            })]
+        );
+    }
+
+    #[test]
+    fn parses_decolorize_and_distinct() {
+        assert_eq!(
+            pipeline(r#"{a="b"} | decolorize"#),
+            vec![PipelineStage::Decolorize]
+        );
+        assert_eq!(
+            pipeline(r#"{a="b"} | distinct host, path"#),
+            vec![PipelineStage::Distinct(vec!["host".into(), "path".into()])]
+        );
+    }
+
+    #[test]
+    fn parses_ip_line_and_label_filters() {
+        assert_eq!(
+            pipeline(r#"{a="b"} |= ip("192.168.4.5/16")"#),
+            vec![PipelineStage::LineFilter(LineFilter {
+                op: LineFilterOp::Contains,
+                value: "192.168.4.5/16".into(),
+                is_ip: true,
+            })]
+        );
+        assert_eq!(
+            pipeline(r#"{a="b"} | logfmt | addr = ip("10.0.0.0/8")"#),
+            vec![
+                PipelineStage::Logfmt(LogfmtStage::default()),
+                PipelineStage::LabelFilter(LabelFilterExpr::Pred(LabelFilterPred {
+                    name: "addr".into(),
+                    op: FilterOp::Eq,
+                    value: FilterValue::Ip("10.0.0.0/8".into()),
+                })),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_bytes_label_filter() {
+        assert_eq!(
+            pipeline(r#"{a="b"} | logfmt | size > 20KB"#),
+            vec![
+                PipelineStage::Logfmt(LogfmtStage::default()),
+                PipelineStage::LabelFilter(LabelFilterExpr::Pred(LabelFilterPred {
+                    name: "size".into(),
+                    op: FilterOp::Gt,
+                    value: FilterValue::Bytes(20_000),
+                })),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_parenthesized_label_filter() {
+        // `(a or b) and c` groups the or under the and.
+        let stages = pipeline(r#"{x="y"} | (a="1" or b="2") and c="3""#);
+        let PipelineStage::LabelFilter(LabelFilterExpr::And(left, right)) = &stages[0] else {
+            panic!("expected top-level And, got {:?}", stages[0]);
+        };
+        assert!(matches!(**left, LabelFilterExpr::Or(_, _)));
+        assert!(matches!(**right, LabelFilterExpr::Pred(_)));
+    }
+
+    #[test]
+    fn parses_drop_keep_with_matchers() {
+        assert_eq!(
+            pipeline(r#"{a="b"} | json | drop __error__, method="GET""#),
+            vec![
+                PipelineStage::Json(vec![]),
+                PipelineStage::Drop(vec![
+                    LabelPredicate {
+                        name: "__error__".into(),
+                        matcher: None,
+                    },
+                    LabelPredicate {
+                        name: "method".into(),
+                        matcher: Some((MatchOp::Eq, "GET".into())),
+                    },
+                ]),
+            ]
         );
     }
 
@@ -1104,13 +1359,17 @@ mod tests {
 
     #[test]
     fn parses_drop_and_keep() {
+        let bare = |name: &str| LabelPredicate {
+            name: name.to_string(),
+            matcher: None,
+        };
         assert_eq!(
             pipeline(r#"{a="b"} | drop level, source"#),
-            vec![PipelineStage::Drop(vec!["level".into(), "source".into()])]
+            vec![PipelineStage::Drop(vec![bare("level"), bare("source")])]
         );
         assert_eq!(
             pipeline(r#"{a="b"} | keep pod"#),
-            vec![PipelineStage::Keep(vec!["pod".into()])]
+            vec![PipelineStage::Keep(vec![bare("pod")])]
         );
     }
 
@@ -1199,7 +1458,7 @@ mod tests {
         assert_eq!(
             pipeline(r#"{a="b"} | logfmt | latency > 1s"#),
             vec![
-                PipelineStage::Logfmt(vec![]),
+                PipelineStage::Logfmt(LogfmtStage::default()),
                 PipelineStage::LabelFilter(LabelFilterExpr::Pred(LabelFilterPred {
                     name: "latency".into(),
                     op: FilterOp::Gt,
@@ -1492,5 +1751,46 @@ mod tests {
     fn rejects_unclosed_aggregation_paren() {
         let err = parse_metric_query(r#"sum(rate({a="b"}[5m])"#).unwrap_err();
         assert!(err.message.contains("')'"), "{err}");
+    }
+
+    // ---- extended metric surface (#661) ----
+
+    #[test]
+    fn parses_offset_after_aggregation() {
+        let q = metric(r#"count_over_time({job="mysql"}[5m]) offset 5m"#);
+        assert_eq!(as_range(&q).offset, Some(Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn parses_parenthesized_selector_in_range() {
+        let q = metric(r#"rate(({job="mysql"} |= "error" != "timeout")[10s])"#);
+        let r = as_range(&q);
+        assert_eq!(r.range, Duration::from_secs(10));
+        assert_eq!(r.log_query.pipeline.len(), 2);
+    }
+
+    #[test]
+    fn parses_vector_literal() {
+        assert_eq!(metric("vector(0)"), MetricQuery::VectorLiteral(0.0));
+        // `... or vector(0)` fallback.
+        let q = metric(r#"sum(count_over_time({a="b"}[5m])) or vector(0)"#);
+        let b = as_binary(&q);
+        assert_eq!(b.op, BinOp::Or);
+        assert_eq!(b.right, MetricQuery::VectorLiteral(0.0));
+    }
+
+    #[test]
+    fn parses_label_replace() {
+        let q = metric(
+            r#"label_replace(sum(rate({job="api"}[5m])) by (instance), "host", "$1", "instance", "(.*):.*")"#,
+        );
+        let MetricQuery::LabelReplace(lr) = &q else {
+            panic!("expected label_replace, got {q:?}");
+        };
+        assert_eq!(lr.dst_label, "host");
+        assert_eq!(lr.replacement, "$1");
+        assert_eq!(lr.src_label, "instance");
+        assert_eq!(lr.regex, "(.*):.*");
+        assert!(matches!(lr.inner, MetricQuery::Vector(_)));
     }
 }

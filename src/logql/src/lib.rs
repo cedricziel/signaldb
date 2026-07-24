@@ -22,13 +22,13 @@ pub mod token;
 
 pub use ast::{
     FilterOp, FilterValue, Grouping, LabelExtraction, LabelFilterExpr, LabelFilterPred,
-    LabelFormat, LabelFormatValue, LabelMatcher, LineFilter, LineFilterOp, LogQuery, MatchOp,
-    PipelineStage, StreamSelector, Unwrap,
+    LabelFormat, LabelFormatValue, LabelMatcher, LabelPredicate, LineFilter, LineFilterOp,
+    LogQuery, LogfmtStage, MatchOp, PipelineStage, StreamSelector, Unwrap,
 };
 pub use lexer::{LexError, tokenize};
 pub use metric::{
-    AggregationFunction, BinOp, BinaryExpr, MetricQuery, RangeAggregation, RangeFunction,
-    VectorAggregation,
+    AggregationFunction, BinOp, BinaryExpr, LabelReplace, MetricQuery, RangeAggregation,
+    RangeFunction, VectorAggregation,
 };
 pub use parser::{Expr, ParseError, parse, parse_query, parse_selector};
 pub use token::{SpannedToken, Token};

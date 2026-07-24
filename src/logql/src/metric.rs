@@ -21,6 +21,27 @@ pub enum MetricQuery {
     Binary(Box<BinaryExpr>),
     /// A scalar literal (e.g. the `2` in `rate(...) * 2`).
     Literal(f64),
+    /// `vector(<scalar>)` — a scalar promoted to an instant vector, used
+    /// for fallbacks like `... or vector(0)`.
+    VectorLiteral(f64),
+    /// `label_replace(v, dst, replacement, src, regex)` — rewrite a label
+    /// from a regex capture of another label.
+    LabelReplace(Box<LabelReplace>),
+}
+
+/// A `label_replace(v, dst, replacement, src, regex)` call.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LabelReplace {
+    /// The inner metric query whose labels are rewritten.
+    pub inner: MetricQuery,
+    /// Destination label name.
+    pub dst_label: String,
+    /// Replacement template referencing regex capture groups (`$1`).
+    pub replacement: String,
+    /// Source label the regex is matched against.
+    pub src_label: String,
+    /// Regex applied to the source label's value.
+    pub regex: String,
 }
 
 /// A range aggregation: a range function applied to a ranged log query.
