@@ -220,7 +220,7 @@ flowchart LR
 | `GET /loki/api/v1/label/{name}/values` | Implemented -- distinct label values via Querier |
 | `GET /loki/api/v1/series` | Implemented -- label sets matching a selector via Querier |
 | `GET /loki/api/v1/tail` | Not implemented (WebSocket streaming, #380) |
-| LogQL metric queries (`rate`, `count_over_time`, ...) | Not implemented yet (#374) |
+| LogQL metric queries (`rate`, `count_over_time`, `sum by (...)`) | Implemented via `query_range` -- `date_bin(step)` bucketed matrix (no binary ops / `topk` / `quantile` yet) |
 
 **Admin API Endpoints** (requires `admin_api_key`):
 
