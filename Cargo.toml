@@ -7,6 +7,7 @@ members = [
     "src/compactor",
     "src/logql",
     "src/loki-api",
+    "src/prometheus-api",
     "src/pyroscope-api",
     "src/querier",
     "src/router",
@@ -32,6 +33,7 @@ default-members = [
     "src/compactor",
     "src/logql",
     "src/loki-api",
+    "src/prometheus-api",
     "src/pyroscope-api",
     "src/querier",
     "src/router",
@@ -58,6 +60,7 @@ signaldb-api = { path = "src/signaldb-api" }
 signaldb-sdk = { path = "src/signaldb-sdk" }
 logql = { path = "src/logql" }
 loki-api = { path = "src/loki-api" }
+prometheus-api = { path = "src/prometheus-api" }
 pyroscope-api = { path = "src/pyroscope-api" }
 tempo-api = { path = "src/tempo-api" }
 writer = { path = "src/writer" }
