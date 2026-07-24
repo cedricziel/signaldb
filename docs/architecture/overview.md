@@ -79,7 +79,6 @@ Parquet storage with DataFusion query processing:
 | **pyroscope-api** | `src/pyroscope-api/` | Library | Pyroscope-compatible API types (flamebearer, profile types) |
 | **tempo-api** | `src/tempo-api/` | Library | Grafana Tempo API types and protobuf definitions |
 | **loki-api** | `src/loki-api/` | Library | Loki HTTP API response types (LogQL query surface) |
-| **pyroscope-api** | `src/pyroscope-api/` | Library | Pyroscope HTTP API response types (flamebearer format) |
 | **signaldb-bin** | `src/signaldb-bin/` | Binary | Monolithic mode runner (all services in one process) |
 | **signaldb-api** | `src/signaldb-api/` | Library | OpenAPI-generated admin API types |
 | **signaldb-cli** | `src/signaldb-cli/` | Binary | CLI and TUI for tenant, API key, and dataset management |
