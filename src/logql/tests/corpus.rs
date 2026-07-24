@@ -99,6 +99,22 @@ const SUPPORTED: &[&str] = &[
     r#"count_over_time({foo="bar"}[1m]) > bool 10"#,
     r#"sum without(app) (count_over_time({app="foo"}[1m])) > sum without(app) (count_over_time({app="bar"}[1m]))"#,
     r#"sum without(app) (count_over_time({app="foo"}[1m])) > bool sum without(app) (count_over_time({app="bar"}[1m]))"#,
+    // --- bytes literals in label filters ---
+    r#"{app="foo"} | logfmt | duration > 1m and bytes_consumed > 20MB"#,
+    r#"{app="foo"} | logfmt | size == 20KB"#,
+    // --- parenthesized label filter (with bytes) ---
+    r#"{app="foo"} | logfmt | ((duration >= 20ms or method="GET") and size <= 20KB)"#,
+    // --- decolorize ---
+    r#"{job="example"} | decolorize"#,
+    // --- drop/keep with matcher expressions ---
+    r#"{job="varlogs"}|json|drop level, method="GET""#,
+    r#"{job="varlogs"}|json|keep level, app=~"some-api.*""#,
+    // --- logfmt flags ---
+    r#"{job="varlogs"} | logfmt --strict"#,
+    r#"{job="varlogs"} | logfmt --keep-empty --strict host"#,
+    // --- ip() line and label filters ---
+    r#"{job_name="myapp"} |= ip("192.168.4.5/16")"#,
+    r#"{job_name="myapp"} | logfmt | addr = ip("192.168.4.0/24") or addr = ip("10.10.15.0/24")"#,
 ];
 
 /// Documented LogQL features the parser does NOT support yet. Each MUST
@@ -106,22 +122,12 @@ const SUPPORTED: &[&str] = &[
 /// `SUPPORTED` and the failing assertion here will flag it. The trailing
 /// comment names the missing feature.
 const KNOWN_UNSUPPORTED: &[&str] = &[
-    r#"{app="foo"} | logfmt | duration > 1m and bytes_consumed > 20MB"#, // bytes literal (20MB)
-    r#"{app="foo"} | logfmt | size == 20KB"#,                            // bytes literal (20KB)
-    r#"{app="foo"} | logfmt | ((duration >= 20ms or method="GET") and size <= 20KB)"#, // parenthesized label filter + bytes
-    r#"{job="example"} | decolorize"#, // decolorize stage
-    r#"{job="varlogs"}|json|drop level, method="GET""#, // drop with matcher expression
-    r#"{job="varlogs"}|json|keep level, app=~"some-api.*""#, // keep with matcher expression
-    r#"{job="varlogs"} | logfmt --strict"#, // logfmt flags
-    r#"{job="varlogs"} | logfmt --keep-empty --strict host"#, // logfmt flags
     r#"count_over_time({job="mysql"}[5m]) offset 5m"#, // offset after aggregation
     r#"rate(({job="mysql"} |= "error" != "timeout")[10s])"#, // parenthesized selector in range
     r#"avg(rate(({job="nginx"} |= "GET" | json | path="/home")[10s])) by (region)"#, // parenthesized selector in range
     r#"sum(count_over_time({namespace="traefik"}[5m])) or vector(0)"#, // vector() function
     r#"label_replace(sum(rate({job="api"}[5m])) by (instance), "host", "$1", "instance", "(.*):.*")"#, // label_replace()
-    r#"{job_name="myapp"} |= ip("192.168.4.5/16")"#, // ip() line filter
-    r#"{job_name="myapp"} | logfmt | addr = ip("192.168.4.0/24") or addr = ip("10.10.15.0/24")"#, // ip() label filter
-    r#"{$label_name=~"$label_value"}"#, // Grafana template variables
+    r#"{$label_name=~"$label_value"}"#, // Grafana template variables (interpolated before LogQL parsing)
 ];
 
 #[test]
@@ -159,9 +165,9 @@ fn known_unsupported_corpus_is_rejected() {
 fn corpus_is_non_trivial() {
     // Guard against accidental truncation of the corpus.
     assert!(
-        SUPPORTED.len() >= 70,
+        SUPPORTED.len() >= 80,
         "supported corpus shrank: {}",
         SUPPORTED.len()
     );
-    assert!(KNOWN_UNSUPPORTED.len() >= 10);
+    assert!(!KNOWN_UNSUPPORTED.is_empty());
 }

@@ -22,8 +22,8 @@ pub mod token;
 
 pub use ast::{
     FilterOp, FilterValue, Grouping, LabelExtraction, LabelFilterExpr, LabelFilterPred,
-    LabelFormat, LabelFormatValue, LabelMatcher, LineFilter, LineFilterOp, LogQuery, MatchOp,
-    PipelineStage, StreamSelector, Unwrap,
+    LabelFormat, LabelFormatValue, LabelMatcher, LabelPredicate, LineFilter, LineFilterOp,
+    LogQuery, LogfmtStage, MatchOp, PipelineStage, StreamSelector, Unwrap,
 };
 pub use lexer::{LexError, tokenize};
 pub use metric::{
