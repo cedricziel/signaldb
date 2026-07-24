@@ -161,6 +161,7 @@ Any other `do_get` ticket (including `find_trace:...`, `search_traces:...`, and 
 | `query_logs_label_values:{tenant_slug}:{dataset_slug}:{label}:{start}:{end}` | Distinct values of one log label in the window |
 | `query_logs_series:{tenant_slug}:{dataset_slug}:{params_json}` | Series (label sets) matching a stream selector (`LogSeriesParams` as JSON) |
 | `query_metric:{tenant_slug}:{dataset_slug}:{params_json}` | LogQL metric query (`MetricQueryParams` as JSON: LogQL string, nanosecond start/end, step). Returns a matrix bucketed by `date_bin(step)` |
+| `query_promql:{tenant_slug}:{dataset_slug}:{params_json}` | PromQL query (`PromQlQueryParams` as JSON: PromQL string, nanosecond start/end, step). Returns a matrix over the metrics tables |
 | anything else | Treated as a raw SQL query executed via DataFusion |
 
 The standalone querier binary additionally serves Tempo's `tempopb.Querier`

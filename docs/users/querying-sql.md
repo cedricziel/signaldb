@@ -101,6 +101,9 @@ signaldb-cli query sql "SELECT DISTINCT service_name FROM traces" --format json 
 
 ## Where to go next
 
+- SQL is for ad-hoc exploration; to query metrics with PromQL over the
+  Prometheus-compatible HTTP API, see [Query metrics with
+  PromQL](querying-promql.md).
 - `signaldb-cli tui` starts an interactive terminal UI over the same
   endpoints.
 - The Tempo-compatible HTTP API serves Grafana trace views — see the

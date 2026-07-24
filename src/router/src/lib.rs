@@ -215,6 +215,13 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
                 .layer(query_rate_layer.clone())
                 .layer(auth_layer.clone()),
         )
+        // Prometheus-compatible metrics query API (PromQL)
+        .nest(
+            "/prometheus",
+            endpoints::promql::router()
+                .layer(query_rate_layer.clone())
+                .layer(auth_layer.clone()),
+        )
         // Trace-to-profile correlation
         .nest(
             "/api/profiles",
