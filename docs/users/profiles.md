@@ -48,6 +48,13 @@ service:
 An export is acknowledged only after it is durably written to the
 profiles write-ahead log; a rejected export is safe to retry.
 
+Per-tenant ingest rate limits and storage quotas cover profiles like
+every other signal: gRPC exports over the limit fail with
+`RESOURCE_EXHAUSTED` (retryable — back off), HTTP exports with `429 Too
+Many Requests`. An error mentioning `quota_exceeded` means the tenant is
+at or over its storage quota (`max_storage_bytes`); retrying will not
+help until data is deleted, retention shortens, or the quota is raised.
+
 ## How profiles are stored
 
 The OTLP profiles wire format shares one dictionary (strings, functions,
