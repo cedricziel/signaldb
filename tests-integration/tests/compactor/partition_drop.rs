@@ -210,7 +210,7 @@ async fn test_partition_drop_respects_grace_period() -> Result<()> {
         .await?;
 
     let now = Utc::now().timestamp_millis();
-    // Create data at exactly the retention boundary (3 hours + 1 minute ago)
+    // Create data just past the 3-hour retention boundary (3h 1min ago).
     let boundary_time = now - (3 * 60 * 60 * 1000) - (60 * 1000);
 
     let config = DataGeneratorConfig {
@@ -233,7 +233,15 @@ async fn test_partition_drop_respects_grace_period() -> Result<()> {
         logs: std::time::Duration::from_secs(24 * 3600),
         metrics: std::time::Duration::from_secs(24 * 3600),
         tenant_overrides: HashMap::new(),
-        grace_period: std::time::Duration::from_secs(3600), // 1 hour grace period
+        // Partitions are dated by their Hour-transform bucket start
+        // (`PartitionInfo.timestamp` = floor-to-hour), so a data point at
+        // 3h 1min ago can floor to a bucket up to ~1h older when the test
+        // runs near the top of a wall-clock hour. A 2-hour grace period
+        // (effective cutoff = retention 3h + grace 2h = 5h) keeps that
+        // worst-case bucket (~4h 1min old) safely inside the window,
+        // removing a top-of-hour boundary flake while still exercising that
+        // grace protects a partition past retention.
+        grace_period: std::time::Duration::from_secs(2 * 3600),
         timezone: "UTC".to_string(),
         dry_run: false,
         snapshots_to_keep: Some(10),
@@ -262,15 +270,16 @@ async fn test_partition_drop_respects_grace_period() -> Result<()> {
         "Grace period must protect the boundary partition from being dropped"
     );
 
-    // The partition at 3h 1min ago should be protected by the grace period
-    // Effective cutoff = retention (3h) + grace (1h) = 4h ago
-    // Our partition at 3h 1min ago is within the grace period, so should NOT be dropped
+    // The partition at 3h 1min ago should be protected by the grace period.
+    // Effective cutoff = retention (3h) + grace (2h) = 5h ago.
+    // Our partition at 3h 1min ago is well within the grace period, so should
+    // NOT be dropped even after the Hour-transform floors its bucket start.
 
     // Note: Since the retention enforcer computes cutoff with grace period applied,
     // we verify the grace period is working by checking that data just past the
     // retention boundary (but within grace) is preserved
 
-    let retention_cutoff_with_grace = now - (4 * 60 * 60 * 1000); // 4 hours (3h retention + 1h grace)
+    let retention_cutoff_with_grace = now - (5 * 60 * 60 * 1000); // 5 hours (3h retention + 2h grace)
 
     let partition_timestamp = partitions[0].timestamp_range.1;
     assert!(
