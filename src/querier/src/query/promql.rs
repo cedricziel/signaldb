@@ -15,6 +15,8 @@
 //!
 //! - Range-vector functions `rate(metric[range])` and
 //!   `increase(metric[range])`, optionally under an outer aggregation.
+//! - The `<agg>_over_time(metric[range])` family (avg/sum/min/max/count/
+//!   last/stddev/stdvar) — a per-bucket reducer over the raw samples.
 //! - `histogram_quantile(phi, metric)` over a stored OTLP histogram — the
 //!   quantile is interpolated per series from the metric's buckets.
 //!
@@ -40,6 +42,10 @@ pub enum MetricAgg {
     Min,
     Max,
     Count,
+    /// Population standard deviation (`stddev_over_time`).
+    Stddev,
+    /// Population variance (`stdvar_over_time`).
+    StdVar,
 }
 
 /// How series are grouped.
@@ -163,15 +169,6 @@ fn build_plan(
         Expr::Paren(p) => build_plan(&p.expr, aggregate, grouping),
         Expr::VectorSelector(vs) => lower_selector(vs, aggregate, grouping, None),
         Expr::Call(call) => {
-            let function = match call.func.name {
-                "rate" => RangeFn::Rate,
-                "increase" => RangeFn::Increase,
-                other => {
-                    return Err(QuerierError::Unsupported(format!(
-                        "function '{other}' (only rate/increase are supported)"
-                    )));
-                }
-            };
             let arg = call.args.first().ok_or_else(|| {
                 QuerierError::InvalidInput(format!("{} expects one argument", call.func.name))
             })?;
@@ -180,6 +177,29 @@ fn build_plan(
                     "{} requires a range-vector selector like metric[5m]",
                     call.func.name
                 )));
+            };
+
+            // `<agg>_over_time(metric[range])` reduces the raw samples in each
+            // bucket. Only the bare form is supported; an outer aggregation
+            // would need a second reduce stage (#335).
+            if let Some(reducer) = over_time_agg(call.func.name) {
+                if grouping != Grouping::Natural || aggregate != MetricAgg::Last {
+                    return Err(QuerierError::Unsupported(format!(
+                        "{} under an outer aggregation is not supported yet (#335)",
+                        call.func.name
+                    )));
+                }
+                return lower_selector(&ms.vs, reducer, Grouping::Natural, None);
+            }
+
+            let function = match call.func.name {
+                "rate" => RangeFn::Rate,
+                "increase" => RangeFn::Increase,
+                other => {
+                    return Err(QuerierError::Unsupported(format!(
+                        "function '{other}' (supported: rate, increase, *_over_time)"
+                    )));
+                }
             };
             let seconds = ms.range.as_secs_f64();
             lower_selector(
@@ -277,6 +297,21 @@ fn aggregate_op(op: &str) -> Result<MetricAgg, QuerierError> {
                 "aggregation operator '{other}'"
             )));
         }
+    })
+}
+
+/// Map an `<agg>_over_time` function name to its per-bucket reducer.
+fn over_time_agg(name: &str) -> Option<MetricAgg> {
+    Some(match name {
+        "avg_over_time" => MetricAgg::Avg,
+        "sum_over_time" => MetricAgg::Sum,
+        "min_over_time" => MetricAgg::Min,
+        "max_over_time" => MetricAgg::Max,
+        "count_over_time" => MetricAgg::Count,
+        "last_over_time" => MetricAgg::Last,
+        "stddev_over_time" => MetricAgg::Stddev,
+        "stdvar_over_time" => MetricAgg::StdVar,
+        _ => return None,
     })
 }
 
@@ -435,6 +470,33 @@ mod tests {
         assert_eq!(p.aggregate, MetricAgg::Sum);
         assert_eq!(p.grouping, Grouping::Collapse);
         assert_eq!(p.range.unwrap().function, RangeFn::Rate);
+    }
+
+    #[test]
+    fn over_time_maps_to_reducer() {
+        for (q, a) in [
+            ("avg_over_time(x[5m])", MetricAgg::Avg),
+            ("sum_over_time(x[5m])", MetricAgg::Sum),
+            ("min_over_time(x[5m])", MetricAgg::Min),
+            ("max_over_time(x[5m])", MetricAgg::Max),
+            ("count_over_time(x[5m])", MetricAgg::Count),
+            ("last_over_time(x[5m])", MetricAgg::Last),
+            ("stddev_over_time(x[5m])", MetricAgg::Stddev),
+            ("stdvar_over_time(x[5m])", MetricAgg::StdVar),
+        ] {
+            let p = plan(q);
+            assert_eq!(p.aggregate, a, "{q}");
+            assert_eq!(p.grouping, Grouping::Natural, "{q}");
+            assert!(p.range.is_none(), "{q}");
+        }
+    }
+
+    #[test]
+    fn over_time_under_aggregation_unsupported() {
+        assert!(matches!(
+            err(r#"sum(avg_over_time(x[5m]))"#),
+            QuerierError::Unsupported(_)
+        ));
     }
 
     #[test]
