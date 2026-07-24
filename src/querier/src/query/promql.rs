@@ -17,6 +17,8 @@
 //!   `increase(metric[range])`, optionally under an outer aggregation.
 //! - The `<agg>_over_time(metric[range])` family (avg/sum/min/max/count/
 //!   last/stddev/stdvar) — a per-bucket reducer over the raw samples.
+//! - `topk(k, …)` / `bottomk(k, …)` — keep the k highest/lowest series per
+//!   bucket (no `by`/`without` grouping yet).
 //! - `histogram_quantile(phi, metric)` over a stored OTLP histogram — the
 //!   quantile is interpolated per series from the metric's buckets.
 //! - Unary math functions (`abs`, `ceil`, `floor`, `round`, `sqrt`, `exp`,
@@ -155,6 +157,17 @@ pub struct MetricPlan {
     /// Math/scalar-arithmetic transforms applied to the result `value`, in
     /// order (e.g. `abs`, `metric * 8`). Empty for a plain query.
     pub transforms: Vec<ValueOp>,
+    /// Set for `topk(k, …)` / `bottomk(k, …)` — after computing per-series
+    /// values, keep the k highest (or lowest) series per bucket.
+    pub topk: Option<TopKSpec>,
+}
+
+/// A `topk`/`bottomk` selection: keep `k` series per bucket, ranked by value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopKSpec {
+    pub k: usize,
+    /// `true` for `bottomk` (keep the lowest), `false` for `topk`.
+    pub bottom: bool,
 }
 
 impl Eq for MetricPlan {}
@@ -180,10 +193,15 @@ fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
             build_plan(expr, MetricAgg::Last, Grouping::Natural)
         }
         Expr::Aggregate(agg) => {
-            let aggregate = aggregate_op(&format!("{}", agg.op))?;
+            let op = format!("{}", agg.op);
+            // `topk(k, expr)` / `bottomk(k, expr)`: rank series per bucket.
+            if op == "topk" || op == "bottomk" {
+                return lower_topk(agg, op == "bottomk");
+            }
+            let aggregate = aggregate_op(&op)?;
             if agg.param.is_some() {
                 return Err(QuerierError::Unsupported(
-                    "parameterized aggregation (topk/quantile/count_values)".to_string(),
+                    "parameterized aggregation (quantile/count_values)".to_string(),
                 ));
             }
             let grouping = grouping_from(agg.modifier.as_ref())?;
@@ -290,7 +308,32 @@ fn lower_selector(
         range,
         quantile: None,
         transforms: Vec::new(),
+        topk: None,
     })
+}
+
+/// Lower `topk(k, expr)` / `bottomk(k, expr)`. `k` must be a numeric literal;
+/// the inner expression is lowered with its natural per-series grouping and a
+/// [`TopKSpec`] selects the k highest/lowest series per bucket. `by`/`without`
+/// grouping on the selection itself is not supported yet (#335).
+fn lower_topk(agg: &parser::AggregateExpr, bottom: bool) -> Result<MetricPlan, QuerierError> {
+    let name = if bottom { "bottomk" } else { "topk" };
+    let k = match agg.param.as_deref().map(unwrap_paren) {
+        Some(Expr::NumberLiteral(n)) if n.val >= 0.0 => n.val as usize,
+        _ => {
+            return Err(QuerierError::Unsupported(format!(
+                "{name} requires a non-negative numeric literal k"
+            )));
+        }
+    };
+    if agg.modifier.is_some() {
+        return Err(QuerierError::Unsupported(format!(
+            "{name} with by/without grouping is not supported yet (#335)"
+        )));
+    }
+    let mut plan = build_plan(unwrap_paren(&agg.expr), MetricAgg::Last, Grouping::Natural)?;
+    plan.topk = Some(TopKSpec { k, bottom });
+    Ok(plan)
 }
 
 /// Lower `histogram_quantile(phi, <selector>)`. The phi must be a numeric
@@ -716,12 +759,49 @@ mod tests {
     }
 
     #[test]
+    fn topk_and_bottomk() {
+        let t = plan("topk(2, x)");
+        assert_eq!(
+            t.topk,
+            Some(TopKSpec {
+                k: 2,
+                bottom: false
+            })
+        );
+        assert_eq!(t.grouping, Grouping::Natural);
+
+        let b = plan("bottomk(1, http_requests_total)");
+        assert_eq!(b.topk, Some(TopKSpec { k: 1, bottom: true }));
+
+        // Composes with a range function.
+        let r = plan("topk(3, rate(x[5m]))");
+        assert_eq!(
+            r.topk,
+            Some(TopKSpec {
+                k: 3,
+                bottom: false
+            })
+        );
+        assert_eq!(r.range.unwrap().function, RangeFn::Rate);
+    }
+
+    #[test]
+    fn topk_requires_literal_k_and_no_grouping() {
+        // The parser itself requires a scalar first argument.
+        assert!(plan_promql("topk(x, y)").is_err());
+        // by/without grouping on the selection is not supported yet.
+        assert!(matches!(
+            err("topk by (job) (2, x)"),
+            QuerierError::Unsupported(_)
+        ));
+    }
+
+    #[test]
     fn unsupported_shapes() {
         assert!(matches!(
             err(r#"irate(x[5m])"#),
             QuerierError::Unsupported(_)
         ));
-        assert!(matches!(err(r#"topk(5, x)"#), QuerierError::Unsupported(_)));
         assert!(matches!(err(r#"x + y"#), QuerierError::Unsupported(_)));
         assert!(matches!(
             err(r#"sum without (job) (x)"#),

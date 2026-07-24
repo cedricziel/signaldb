@@ -36,9 +36,10 @@ wrong result.
 | Operator | Status |
 |----------|--------|
 | `sum`, `avg`, `min`, `max`, `count` (with/without `by (…)`) | ✅ |
+| `topk(k, …)`, `bottomk(k, …)` (no `by`/`without`) | ✅ |
 | `without (…)` grouping | ❌ |
 | `stddev`, `stdvar`, `group`, `count_values` | ❌ |
-| `topk`, `bottomk`, `quantile` (parameterized) | ❌ |
+| `quantile` (parameterized) | ❌ |
 
 ## Range (`[range]`) functions
 
@@ -85,6 +86,6 @@ wrong result.
 ## Roadmap
 
 Tracked under epic #328 and #335. Unsupported items above are being added
-incrementally; `topk`/`bottomk`, `irate`, and comparison operators are the next
-planned increments. Full vector-to-vector binary matching
+incrementally; comparison operators and `irate` are the next planned
+increments. Full vector-to-vector binary matching
 (`on`/`ignoring`/`group_left`) and subqueries are larger efforts.
