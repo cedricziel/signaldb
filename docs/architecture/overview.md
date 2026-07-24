@@ -229,8 +229,9 @@ flowchart LR
 |----------|--------|
 | `GET\|POST /prometheus/api/v1/query_range` | Implemented -- PromQL over `metrics_gauge`+`metrics_sum`, `date_bin(step)` matrix |
 | `GET\|POST /prometheus/api/v1/query` | Implemented -- instant vector (latest sample per series) |
-| `GET /prometheus/api/v1/labels`, `/label/{name}/values`, `/series` | Stub -- metadata discovery pending (#339) |
-| PromQL `rate`/`increase`, `histogram_quantile`, binary ops | Not implemented yet (#334/#335) |
+| `GET /prometheus/api/v1/labels`, `/label/{name}/values`, `/series` | Implemented -- metric label names/values and `{__name__, job}` series via Querier |
+| PromQL `rate`/`increase` | Implemented -- counter delta over `date_bin` buckets |
+| PromQL `histogram_quantile`, binary ops, `topk` | Not implemented yet (#335) |
 
 **Admin API Endpoints** (requires `admin_api_key`):
 
