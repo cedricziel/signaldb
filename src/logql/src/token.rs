@@ -130,6 +130,27 @@ impl Token {
             _ => return None,
         })
     }
+
+    /// The source text of a keyword token, if the token is one. Inverse
+    /// of [`Token::keyword`], used where the grammar allows keywords as
+    /// plain identifiers (e.g. label names).
+    pub(crate) fn keyword_text(token: &Token) -> Option<&'static str> {
+        Some(match token {
+            Token::By => "by",
+            Token::Without => "without",
+            Token::On => "on",
+            Token::Ignoring => "ignoring",
+            Token::GroupLeft => "group_left",
+            Token::GroupRight => "group_right",
+            Token::Unwrap => "unwrap",
+            Token::Offset => "offset",
+            Token::Bool => "bool",
+            Token::And => "and",
+            Token::Or => "or",
+            Token::Unless => "unless",
+            _ => return None,
+        })
+    }
 }
 
 impl std::fmt::Display for Token {
