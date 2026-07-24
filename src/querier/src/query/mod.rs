@@ -54,6 +54,17 @@ pub struct PromQlQueryParams {
     pub step: i64,
 }
 
+/// Parameters carried in the `query_metric_series` Flight ticket.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MetricSeriesParams {
+    /// The PromQL selector, e.g. `http_requests_total{job="api"}`.
+    pub selector: String,
+    /// Inclusive range start, unix epoch nanoseconds.
+    pub start: i64,
+    /// Inclusive range end, unix epoch nanoseconds.
+    pub end: i64,
+}
+
 /// Parameters carried in the `query_logs_series` Flight ticket.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LogSeriesParams {

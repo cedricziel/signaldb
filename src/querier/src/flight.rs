@@ -33,8 +33,8 @@ use crate::query::profile::{
 };
 use crate::query::trace::TraceService;
 use crate::query::{
-    FindTraceByIdParams, LogQueryParams, LogSeriesParams, MetricQueryParams, PromQlQueryParams,
-    SearchQueryParams,
+    FindTraceByIdParams, LogQueryParams, LogSeriesParams, MetricQueryParams, MetricSeriesParams,
+    PromQlQueryParams, SearchQueryParams,
 };
 
 /// Queries the Iceberg catalog directly, bypassing `datafusion_iceberg`'s
@@ -247,6 +247,24 @@ enum TicketRequest {
         tenant_slug: String,
         dataset_slug: String,
         params: PromQlQueryParams,
+    },
+    QueryMetricLabels {
+        tenant_slug: String,
+        dataset_slug: String,
+        start: i64,
+        end: i64,
+    },
+    QueryMetricLabelValues {
+        tenant_slug: String,
+        dataset_slug: String,
+        label: String,
+        start: i64,
+        end: i64,
+    },
+    QueryMetricSeries {
+        tenant_slug: String,
+        dataset_slug: String,
+        params: MetricSeriesParams,
     },
 }
 
@@ -820,6 +838,59 @@ impl QuerierFlightService {
             ));
         }
 
+        // Metric label names: query_metric_labels:{tenant}:{dataset}:{start}:{end}
+        if let Some(remainder) = ticket_content.strip_prefix("query_metric_labels:") {
+            let parts: Vec<&str> = remainder.splitn(4, ':').collect();
+            if parts.len() == 4 {
+                let (start, end) = parse_ns_window(parts[2], parts[3])?;
+                return Ok(TicketRequest::QueryMetricLabels {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    start,
+                    end,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid query_metric_labels ticket format. Expected: query_metric_labels:tenant:dataset:start:end",
+            ));
+        }
+
+        // Metric label values: query_metric_label_values:{tenant}:{dataset}:{label}:{start}:{end}
+        if let Some(remainder) = ticket_content.strip_prefix("query_metric_label_values:") {
+            let parts: Vec<&str> = remainder.splitn(5, ':').collect();
+            if parts.len() == 5 {
+                let (start, end) = parse_ns_window(parts[3], parts[4])?;
+                return Ok(TicketRequest::QueryMetricLabelValues {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    label: parts[2].to_string(),
+                    start,
+                    end,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid query_metric_label_values ticket format. Expected: query_metric_label_values:tenant:dataset:label:start:end",
+            ));
+        }
+
+        // Metric series: query_metric_series:{tenant}:{dataset}:{json MetricSeriesParams}
+        if let Some(remainder) = ticket_content.strip_prefix("query_metric_series:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                let params: MetricSeriesParams = serde_json::from_str(parts[2]).map_err(|e| {
+                    Status::invalid_argument(format!("Invalid query_metric_series parameters: {e}"))
+                })?;
+                return Ok(TicketRequest::QueryMetricSeries {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    params,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid query_metric_series ticket format. Expected: query_metric_series:tenant:dataset:{json}",
+            ));
+        }
+
         // Fall back to raw SQL query
         Ok(TicketRequest::SqlQuery {
             sql: ticket_content.to_string(),
@@ -1121,7 +1192,10 @@ impl FlightService for QuerierFlightService {
                     | TicketRequest::QueryLogsLabelValues { tenant_slug, .. }
                     | TicketRequest::QueryLogsSeries { tenant_slug, .. }
                     | TicketRequest::QueryMetric { tenant_slug, .. }
-                    | TicketRequest::QueryPromql { tenant_slug, .. } => Some(tenant_slug),
+                    | TicketRequest::QueryPromql { tenant_slug, .. }
+                    | TicketRequest::QueryMetricLabels { tenant_slug, .. }
+                    | TicketRequest::QueryMetricLabelValues { tenant_slug, .. }
+                    | TicketRequest::QueryMetricSeries { tenant_slug, .. } => Some(tenant_slug),
                     TicketRequest::SqlQuery { .. } => None,
                 };
                 if let Some(ticket_tenant) = ticket_tenant
@@ -1155,6 +1229,9 @@ impl FlightService for QuerierFlightService {
                 TicketRequest::QueryLogsSeries { .. } => "query_logs_series",
                 TicketRequest::QueryMetric { .. } => "query_metric",
                 TicketRequest::QueryPromql { .. } => "query_promql",
+                TicketRequest::QueryMetricLabels { .. } => "query_metric_labels",
+                TicketRequest::QueryMetricLabelValues { .. } => "query_metric_label_values",
+                TicketRequest::QueryMetricSeries { .. } => "query_metric_series",
                 TicketRequest::SqlQuery { .. } => "sql",
             };
 
@@ -1182,7 +1259,12 @@ impl FlightService for QuerierFlightService {
                     | TicketRequest::QueryLogsLabelValues { tenant_slug, .. }
                     | TicketRequest::QueryLogsSeries { tenant_slug, .. }
                     | TicketRequest::QueryMetric { tenant_slug, .. }
-                    | TicketRequest::QueryPromql { tenant_slug, .. } => Some(tenant_slug.clone()),
+                    | TicketRequest::QueryPromql { tenant_slug, .. }
+                    | TicketRequest::QueryMetricLabels { tenant_slug, .. }
+                    | TicketRequest::QueryMetricLabelValues { tenant_slug, .. }
+                    | TicketRequest::QueryMetricSeries { tenant_slug, .. } => {
+                        Some(tenant_slug.clone())
+                    }
                     TicketRequest::SqlQuery { .. } => None,
                 });
             // Held until the query's batches are fully computed.
@@ -1531,6 +1613,51 @@ impl FlightService for QuerierFlightService {
                             )
                             .await
                             .map_err(querier_error_to_status)?
+                    }
+                    TicketRequest::QueryMetricLabels {
+                        tenant_slug,
+                        dataset_slug,
+                        start,
+                        end,
+                    } => {
+                        let labels = self
+                            .metrics_service
+                            .get_labels(start, end, &tenant_slug, &dataset_slug)
+                            .await
+                            .map_err(querier_error_to_status)?;
+                        vec![strings_to_batch("label", labels)?]
+                    }
+                    TicketRequest::QueryMetricLabelValues {
+                        tenant_slug,
+                        dataset_slug,
+                        label,
+                        start,
+                        end,
+                    } => {
+                        let values = self
+                            .metrics_service
+                            .get_label_values(&label, start, end, &tenant_slug, &dataset_slug)
+                            .await
+                            .map_err(querier_error_to_status)?;
+                        vec![strings_to_batch("value", values)?]
+                    }
+                    TicketRequest::QueryMetricSeries {
+                        tenant_slug,
+                        dataset_slug,
+                        params,
+                    } => {
+                        let series = self
+                            .metrics_service
+                            .get_series(
+                                &params.selector,
+                                params.start,
+                                params.end,
+                                &tenant_slug,
+                                &dataset_slug,
+                            )
+                            .await
+                            .map_err(querier_error_to_status)?;
+                        vec![json_to_batch("series", &series)?]
                     }
                     TicketRequest::SqlProfiles {
                         tenant_slug,
