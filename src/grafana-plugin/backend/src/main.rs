@@ -218,8 +218,9 @@ impl SignalDBDataSource {
             "traces" => self.query_traces(query, auth).await,
             "metrics" => self.query_metrics(query, auth).await,
             "logs" => self.query_logs(query, auth).await,
+            "profiles" => self.query_profiles(query, auth).await,
             _ => Err(anyhow::anyhow!(
-                "Unknown signal type '{}'. Supported types: traces, metrics, logs",
+                "Unknown signal type '{}'. Supported types: traces, metrics, logs, profiles",
                 query.signal_type
             )),
         }
@@ -322,6 +323,103 @@ impl SignalDBDataSource {
 
         Ok(frame)
     }
+}
+
+impl SignalDBDataSource {
+    /// Query profiles via Flight and render them as a flamegraph frame.
+    async fn query_profiles(
+        &self,
+        query: &SignalDBQuery,
+        auth: Option<&AuthContext>,
+    ) -> anyhow::Result<data::Frame> {
+        // Profile tickets are tenant-scoped; the querier verifies the
+        // ticket tenant against the authenticated caller.
+        let (tenant, dataset) = match auth {
+            Some(AuthContext {
+                tenant_id: Some(tenant),
+                dataset_id: Some(dataset),
+                ..
+            }) => (tenant.clone(), dataset.clone()),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Profile queries require tenant and dataset to be configured on the datasource"
+                ));
+            }
+        };
+
+        let (sample_type, service_name) = parse_profile_query(&query.query_text);
+        let params = serde_json::json!({
+            "sample_type": sample_type,
+            "service_name": service_name,
+        });
+        let ticket = format!("profile_flamegraph:{tenant}:{dataset}:{params}");
+
+        tracing::debug!("Executing Flight query with ticket: {ticket}");
+
+        let mut client = self.create_flight_client().await?;
+        let (batches, _schema) = client.query_with_auth(&ticket, auth).await?;
+
+        // The querier returns a single-row, single-column JSON document.
+        use arrow::array::Array;
+        let json = batches
+            .iter()
+            .find_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .filter(|column| column.len() > 0)
+                    .map(|column| column.value(0).to_string())
+            })
+            .ok_or_else(|| anyhow::anyhow!("Profile query returned no flamegraph document"))?;
+
+        #[derive(serde::Deserialize)]
+        struct FlamegraphDoc {
+            names: Vec<String>,
+            levels: Vec<Vec<i64>>,
+        }
+        let flamegraph: FlamegraphDoc = serde_json::from_str(&json)?;
+
+        Ok(conversion::flamebearer_to_nested_set_frame(
+            &flamegraph.names,
+            &flamegraph.levels,
+            "profiles",
+        ))
+    }
+}
+
+/// Parse a Pyroscope-style profile query (`type{service_name="x"}` or a
+/// bare type) into (sample_type, service_name) filters.
+fn parse_profile_query(query_text: &str) -> (Option<String>, Option<String>) {
+    let query_text = query_text.trim();
+    if query_text.is_empty() {
+        return (None, None);
+    }
+    let (id_part, selector_part) = match query_text.split_once('{') {
+        Some((id, rest)) => (id.trim(), rest.strip_suffix('}').unwrap_or(rest)),
+        None => (query_text, ""),
+    };
+    let sample_type = if id_part.is_empty() {
+        None
+    } else {
+        let segments: Vec<&str> = id_part.split(':').collect();
+        Some(
+            segments
+                .get(1)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&segments[0])
+                .to_string(),
+        )
+    };
+    let mut service_name = None;
+    for matcher in selector_part.split(',') {
+        if let Some((key, value)) = matcher.split_once('=')
+            && key.trim() == "service_name"
+        {
+            service_name = Some(value.trim().trim_matches('"').to_string());
+        }
+    }
+    (sample_type, service_name)
 }
 
 /// Create an empty traces frame with expected columns.
