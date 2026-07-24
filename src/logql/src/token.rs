@@ -19,8 +19,13 @@ pub enum Token {
     Number(f64),
     /// Duration literal such as `5m`, `1h30m`, or `1.5h`.
     Duration(Duration),
+    /// Bytes literal such as `20KB`, `5MB`, or `1GiB`, in bytes.
+    Bytes(u64),
     /// Identifier: label names, function names, parser stage names.
     Ident(String),
+    /// A parser-stage flag such as `--strict` or `--keep-empty` (stored
+    /// without the leading dashes).
+    Flag(String),
 
     // Label matchers / equality
     /// `=`
@@ -159,7 +164,9 @@ impl std::fmt::Display for Token {
             Token::String(s) => write!(f, "{s:?}"),
             Token::Number(n) => write!(f, "{n}"),
             Token::Duration(d) => write!(f, "{d:?}"),
+            Token::Bytes(b) => write!(f, "{b}B"),
             Token::Ident(i) => write!(f, "{i}"),
+            Token::Flag(name) => write!(f, "--{name}"),
             Token::Eq => f.write_str("="),
             Token::Neq => f.write_str("!="),
             Token::Re => f.write_str("=~"),

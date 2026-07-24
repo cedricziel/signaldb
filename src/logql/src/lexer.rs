@@ -107,7 +107,15 @@ impl<'a> Lexer<'a> {
                 ']' => Token::RBracket,
                 ',' => Token::Comma,
                 '+' => Token::Add,
-                '-' => Token::Sub,
+                '-' => {
+                    // `--flag` is a parser-stage flag; a single `-` is
+                    // subtraction / unary minus.
+                    if self.eat('-') {
+                        self.lex_flag(line, col)?
+                    } else {
+                        Token::Sub
+                    }
+                }
                 '*' => Token::Mul,
                 '/' => Token::Div,
                 '%' => Token::Mod,
@@ -334,20 +342,25 @@ impl<'a> Lexer<'a> {
             return Ok(Token::Number(value));
         }
 
-        // Duration: one or more (number, unit) pairs, e.g. `1h30m`.
+        // Read the first unit. A bytes unit (`KB`, `MiB`, ...) yields a
+        // bytes literal; otherwise fall through to duration parsing.
+        let (u_line, u_col) = (self.line, self.col);
+        let unit = self.read_unit();
+        if let Some(factor) = bytes_factor(&unit) {
+            if value < 0.0 {
+                return Err(self.error("negative bytes literal", line, col));
+            }
+            let bytes = (value * factor as f64).round() as u64;
+            return Ok(Token::Bytes(bytes));
+        }
+
+        // Duration: one or more (number, unit) pairs, e.g. `1h30m`. The
+        // first unit was already read above.
         let mut total_secs = 0.0_f64;
         let mut pending = value;
+        let mut unit = unit;
+        let (mut u_line, mut u_col) = (u_line, u_col);
         loop {
-            let (u_line, u_col) = (self.line, self.col);
-            let mut unit = String::new();
-            while let Some(&c) = self.chars.peek() {
-                if c.is_alphabetic() || c == 'µ' {
-                    unit.push(c);
-                    self.bump();
-                } else {
-                    break;
-                }
-            }
             let factor = match unit.as_str() {
                 "ns" => 1e-9,
                 "us" | "µs" => 1e-6,
@@ -373,6 +386,8 @@ impl<'a> Lexer<'a> {
                 Some(&c) if c.is_ascii_digit() => {
                     let first = self.bump().expect("peeked digit");
                     pending = self.read_number(first, self.line, self.col)?;
+                    (u_line, u_col) = (self.line, self.col);
+                    unit = self.read_unit();
                 }
                 _ => break,
             }
@@ -382,6 +397,60 @@ impl<'a> Lexer<'a> {
         }
         Ok(Token::Duration(Duration::from_secs_f64(total_secs)))
     }
+
+    /// Read a run of unit letters (`ms`, `KiB`, `µs`, ...).
+    fn read_unit(&mut self) -> String {
+        let mut unit = String::new();
+        while let Some(&c) = self.chars.peek() {
+            if c.is_alphabetic() || c == 'µ' {
+                unit.push(c);
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        unit
+    }
+
+    /// A parser-stage flag: `--<name>`. The two dashes are already
+    /// consumed.
+    fn lex_flag(&mut self, line: u32, col: u32) -> Result<Token, LexError> {
+        let mut name = String::new();
+        while let Some(&c) = self.chars.peek() {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                name.push(c);
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        if name.is_empty() {
+            return Err(self.error("expected a flag name after '--'", line, col));
+        }
+        Ok(Token::Flag(name))
+    }
+}
+
+/// Bytes-per-unit factor for a byte-size unit, or `None` if `unit` is
+/// not a bytes unit. Decimal units are powers of 1000; `*iB` units and
+/// bare `KB`/`MB`/... follow Loki's `humanize` convention of powers of
+/// 1024 for the `i` forms.
+fn bytes_factor(unit: &str) -> Option<u64> {
+    let f = match unit {
+        "B" => 1,
+        "kB" | "KB" => 1_000,
+        "MB" => 1_000_000,
+        "GB" => 1_000_000_000,
+        "TB" => 1_000_000_000_000,
+        "PB" => 1_000_000_000_000_000,
+        "KiB" => 1_024,
+        "MiB" => 1_024 * 1_024,
+        "GiB" => 1_024 * 1_024 * 1_024,
+        "TiB" => 1_024_u64.pow(4),
+        "PiB" => 1_024_u64.pow(5),
+        _ => return None,
+    };
+    Some(f)
 }
 
 #[cfg(test)]
@@ -539,6 +608,38 @@ mod tests {
         assert_eq!(tokens("0.25"), vec![Token::Number(0.25)]);
         assert_eq!(tokens("1e3"), vec![Token::Number(1000.0)]);
         assert_eq!(tokens("2.5e-2"), vec![Token::Number(0.025)]);
+    }
+
+    #[test]
+    fn lexes_bytes_literals() {
+        assert_eq!(tokens("20KB"), vec![Token::Bytes(20_000)]);
+        assert_eq!(tokens("5MB"), vec![Token::Bytes(5_000_000)]);
+        assert_eq!(tokens("1GB"), vec![Token::Bytes(1_000_000_000)]);
+        assert_eq!(tokens("1KiB"), vec![Token::Bytes(1_024)]);
+        assert_eq!(tokens("2MiB"), vec![Token::Bytes(2 * 1_024 * 1_024)]);
+        assert_eq!(tokens("512B"), vec![Token::Bytes(512)]);
+        // Bytes and durations are distinguished by unit.
+        assert_eq!(
+            tokens("20ms"),
+            vec![Token::Duration(Duration::from_millis(20))]
+        );
+    }
+
+    #[test]
+    fn lexes_parser_stage_flags() {
+        assert_eq!(
+            tokens("logfmt --strict --keep-empty"),
+            vec![
+                Token::Ident("logfmt".into()),
+                Token::Flag("strict".into()),
+                Token::Flag("keep-empty".into()),
+            ]
+        );
+        // A lone '-' is still subtraction.
+        assert_eq!(
+            tokens("5 - 2"),
+            vec![Token::Number(5.0), Token::Sub, Token::Number(2.0),]
+        );
     }
 
     #[test]
