@@ -22,7 +22,7 @@ use datafusion::functions::datetime::expr_fn::date_bin;
 use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::expr_fn::contains;
 use datafusion::functions_aggregate::expr_fn::{
-    avg, count, first_value, last_value, max, min, sum,
+    avg, count, first_value, last_value, max, min, stddev_pop, sum, var_pop,
 };
 use datafusion::logical_expr::{Expr, SortExpr, col, lit, not};
 use datafusion::prelude::{DataFrame, SessionContext};
@@ -652,6 +652,8 @@ fn aggregate_expr(agg: MetricAgg) -> Expr {
         MetricAgg::Min => min(value),
         MetricAgg::Max => max(value),
         MetricAgg::Count => count(value),
+        MetricAgg::Stddev => stddev_pop(value),
+        MetricAgg::StdVar => var_pop(value),
         // Last value in the bucket, ordered by timestamp.
         MetricAgg::Last => last_value(value, vec![SortExpr::new(col("timestamp"), true, true)]),
     }
@@ -1010,6 +1012,43 @@ mod tests {
             .filter_map(|s| s.get("job").cloned())
             .collect();
         assert_eq!(jobs, BTreeSet::from(["api".to_string(), "web".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn over_time_reduces_samples_per_bucket() {
+        let service = service_with_data();
+        // api has samples [1,3] in one bucket, web has [5].
+        let avg = matrix(&service, "avg_over_time(reqs[1m])", 1000).await;
+        let api = avg
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert_eq!(api.2, 2.0); // (1+3)/2
+        assert_eq!(
+            matrix(&service, "sum_over_time(reqs[1m])", 1000)
+                .await
+                .iter()
+                .find(|(_, s, _)| s.as_deref() == Some("api"))
+                .unwrap()
+                .2,
+            4.0
+        );
+        assert_eq!(
+            matrix(&service, "count_over_time(reqs[1m])", 1000)
+                .await
+                .iter()
+                .find(|(_, s, _)| s.as_deref() == Some("api"))
+                .unwrap()
+                .2,
+            2.0
+        );
+        // Population stddev of [1,3] is 1.0.
+        let sd = matrix(&service, "stddev_over_time(reqs[1m])", 1000).await;
+        let api_sd = sd
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert!((api_sd.2 - 1.0).abs() < 1e-9, "got {}", api_sd.2);
     }
 
     #[tokio::test]
