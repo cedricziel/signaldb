@@ -10,9 +10,15 @@
 //!
 //! - [`token`]: token type produced by the lexer
 //! - [`lexer`]: hand-rolled tokenizer with line/column error reporting
+//! - [`ast`]: abstract syntax tree for parsed queries
+//! - [`parser`]: recursive-descent parser over the token stream
 
+pub mod ast;
 pub mod lexer;
+pub mod parser;
 pub mod token;
 
+pub use ast::{LabelMatcher, LogQuery, MatchOp, PipelineStage, StreamSelector};
 pub use lexer::{LexError, tokenize};
+pub use parser::{ParseError, parse_query, parse_selector};
 pub use token::{SpannedToken, Token};
