@@ -36,6 +36,7 @@ Iceberg namespaces). Invalid IDs fail with 400 / `INVALID_ARGUMENT`.
 | OTLP gRPC ingestion | 4317 | [Sending OTLP data](sending-otlp.md) |
 | Prometheus remote_write (`/api/v1/write`) | 4318 | [Prometheus remote_write](prometheus-remote-write.md) |
 | Tempo HTTP API (`/tempo/*`) | 3000 | [Tempo API reference](tempo-api-reference.md) |
+| Loki HTTP API (`/loki/*`) | 3000 | [LogQL reference](logql-reference.md) |
 | Flight SQL queries | 50053 | [Querying with SQL](querying-sql.md); enforced when the operator has enabled Flight auth |
 | Tenant self-service API (`/api/v1/*`) | 3000 | see below |
 

@@ -46,6 +46,21 @@ Trace-by-ID lookup, trace search, and tag autocomplete work within the
 limits listed in the [Tempo API reference](tempo-api-reference.md) — in
 particular, TraceQL metrics queries return 501.
 
+### Logs: built-in Loki datasource
+
+For logs, add a **Loki** datasource pointed at the router's Loki
+endpoint with the same headers:
+
+```text
+http://<router-host>:3000/loki
+```
+
+Explore log queries, label/value autocomplete, and metric queries
+(`rate`, `count_over_time`, `sum by (...)`) work within the limits in the
+[LogQL reference](logql-reference.md) — live tail (`/tail`) is not
+implemented yet, and set a panel step equal to the range window for exact
+metric results.
+
 ## Option 2: native SignalDB plugin
 
 ### Build and install
