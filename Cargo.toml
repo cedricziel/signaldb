@@ -5,6 +5,7 @@ members = [
     "src/acceptor",
     "src/common",
     "src/compactor",
+    "src/logql",
     "src/loki-api",
     "src/pyroscope-api",
     "src/querier",
@@ -29,6 +30,7 @@ default-members = [
     "src/acceptor",
     "src/common",
     "src/compactor",
+    "src/logql",
     "src/loki-api",
     "src/pyroscope-api",
     "src/querier",
@@ -54,6 +56,7 @@ common = { path = "src/common" }
 compactor = { path = "src/compactor" }
 signaldb-api = { path = "src/signaldb-api" }
 signaldb-sdk = { path = "src/signaldb-sdk" }
+logql = { path = "src/logql" }
 loki-api = { path = "src/loki-api" }
 pyroscope-api = { path = "src/pyroscope-api" }
 tempo-api = { path = "src/tempo-api" }
