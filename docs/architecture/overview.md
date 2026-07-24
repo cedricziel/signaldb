@@ -77,6 +77,8 @@ Parquet storage with DataFusion query processing:
 | **compactor** | `src/compactor/` | Binary + Library | Storage maintenance: compaction, retention (bin `signaldb-compactor`) |
 | **common** | `src/common/` | Library | Shared config, auth, WAL, Flight, catalog, schema |
 | **tempo-api** | `src/tempo-api/` | Library | Grafana Tempo API types and protobuf definitions |
+| **loki-api** | `src/loki-api/` | Library | Loki HTTP API response types (LogQL query surface) |
+| **pyroscope-api** | `src/pyroscope-api/` | Library | Pyroscope HTTP API response types (flamebearer format) |
 | **signaldb-bin** | `src/signaldb-bin/` | Binary | Monolithic mode runner (all services in one process) |
 | **signaldb-api** | `src/signaldb-api/` | Library | OpenAPI-generated admin API types |
 | **signaldb-cli** | `src/signaldb-cli/` | Binary | CLI and TUI for tenant, API key, and dataset management |
@@ -182,7 +184,7 @@ flowchart LR
 |----------|-------|
 | **Ports** | HTTP: 3000, Flight: 50053 |
 | **Capability** | `Routing` |
-| **APIs** | Tempo-compatible, Admin API, OpenAPI |
+| **APIs** | Tempo-compatible, Pyroscope-compatible, Loki-compatible (stubs), Admin API, OpenAPI |
 
 **Tempo API Endpoints**:
 
@@ -198,6 +200,27 @@ flowchart LR
 | `GET /tempo/api/v2/search/tag/{tag_name}/values` | Implemented -- same lookup, v2 response shape |
 | `GET /tempo/api/metrics/query` | 501 Not Implemented (TraceQL metrics) |
 | `GET /tempo/api/metrics/query_range` | 501 Not Implemented (TraceQL metrics) |
+
+**Pyroscope API Endpoints** (profiles, nested at `/pyroscope` plus `/api/profiles`):
+
+| Endpoint | Status |
+|----------|--------|
+| `GET /pyroscope/render` | Implemented -- flamegraph via Querier |
+| `GET /pyroscope/render-diff` | Implemented -- differential flamegraph |
+| `GET /pyroscope/label-names`, `/label-values`, `/profile-types` | Implemented -- discovery via Querier |
+| `GET /api/profiles/trace/{trace_id}` | Implemented -- profiles linked to a trace |
+
+**Loki API Endpoints** (logs, nested at `/loki`; wire-format stubs until LogQL
+execution lands, see epic #366):
+
+| Endpoint | Status |
+|----------|--------|
+| `GET /loki/api/v1/query` | Stub -- validates params, returns empty streams |
+| `GET /loki/api/v1/query_range` | Stub -- validates params, returns empty streams |
+| `GET /loki/api/v1/labels` | Stub -- returns empty label list |
+| `GET /loki/api/v1/label/{name}/values` | Stub -- returns empty value list |
+| `GET /loki/api/v1/series` | Stub -- returns empty series list |
+| `GET /loki/api/v1/tail` | Not implemented (WebSocket streaming, #380) |
 
 **Admin API Endpoints** (requires `admin_api_key`):
 
