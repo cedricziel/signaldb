@@ -210,17 +210,17 @@ flowchart LR
 | `GET /pyroscope/label-names`, `/label-values`, `/profile-types` | Implemented -- discovery via Querier |
 | `GET /api/profiles/trace/{trace_id}` | Implemented -- profiles linked to a trace |
 
-**Loki API Endpoints** (logs, nested at `/loki`; wire-format stubs until LogQL
-execution lands, see epic #366):
+**Loki API Endpoints** (logs, nested at `/loki`; see epic #366):
 
 | Endpoint | Status |
 |----------|--------|
-| `GET /loki/api/v1/query` | Stub -- validates params, returns empty streams |
-| `GET /loki/api/v1/query_range` | Stub -- validates params, returns empty streams |
-| `GET /loki/api/v1/labels` | Stub -- returns empty label list |
-| `GET /loki/api/v1/label/{name}/values` | Stub -- returns empty value list |
-| `GET /loki/api/v1/series` | Stub -- returns empty series list |
+| `GET /loki/api/v1/query` | Implemented -- log query over a one-hour window ending at `time` |
+| `GET /loki/api/v1/query_range` | Implemented -- transpiles LogQL to a querier filter, returns Loki streams |
+| `GET /loki/api/v1/labels` | Implemented -- known + attribute label names via Querier |
+| `GET /loki/api/v1/label/{name}/values` | Implemented -- distinct label values via Querier |
+| `GET /loki/api/v1/series` | Implemented -- label sets matching a selector via Querier |
 | `GET /loki/api/v1/tail` | Not implemented (WebSocket streaming, #380) |
+| LogQL metric queries (`rate`, `count_over_time`, ...) | Not implemented yet (#374) |
 
 **Admin API Endpoints** (requires `admin_api_key`):
 
