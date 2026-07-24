@@ -255,6 +255,13 @@ async fn execute_ticket<S: RouterState>(
         data.push(flight_data.map_err(|e| flight_status_to_http(&e))?);
     }
 
+    // An empty result is a well-formed empty stream (no schema frame). Return
+    // no batches rather than letting `flight_data_to_batches` error on it — a
+    // query whose window contains no data must yield an empty vector/matrix.
+    if data.is_empty() {
+        return Ok(Vec::new());
+    }
+
     flight_data_to_batches(&data).map_err(|e| {
         tracing::error!(error = %e, "Failed to decode PromQL Flight data");
         StatusCode::INTERNAL_SERVER_ERROR
