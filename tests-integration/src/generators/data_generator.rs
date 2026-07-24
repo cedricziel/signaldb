@@ -134,6 +134,47 @@ pub async fn generate_metrics(
     Ok(partitions)
 }
 
+/// Generates time-partitioned profile data
+pub async fn generate_profiles(
+    writer: &mut IcebergTableWriter,
+    config: &DataGeneratorConfig,
+) -> Result<Vec<PartitionInfo>> {
+    let mut partitions = Vec::new();
+    let partition_duration = config.partition_granularity.to_millis();
+
+    for partition_idx in 0..config.partition_count {
+        let partition_start = config.base_timestamp + (partition_idx as i64 * partition_duration);
+        let partition_end = partition_start + partition_duration;
+
+        let mut total_rows = 0;
+
+        for file_idx in 0..config.files_per_partition {
+            let batch = create_profile_batch(
+                partition_start,
+                partition_end,
+                config.rows_per_file,
+                partition_idx,
+                file_idx,
+            )?;
+
+            writer
+                .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
+                .await?;
+            total_rows += config.rows_per_file;
+        }
+
+        let partition_id = format_partition_id(partition_start, config.partition_granularity);
+        partitions.push(PartitionInfo {
+            partition_id,
+            timestamp_range: (partition_start, partition_end),
+            file_count: config.files_per_partition,
+            row_count: total_rows,
+        });
+    }
+
+    Ok(partitions)
+}
+
 /// Creates a trace batch with specified parameters (v1 schema format)
 fn create_trace_batch(
     start_ts: i64,
@@ -545,6 +586,104 @@ fn create_metric_batch(
     Ok(batch)
 }
 
+/// Creates a profile batch with specified parameters (Iceberg storage schema)
+fn create_profile_batch(
+    start_ts: i64,
+    end_ts: i64,
+    num_rows: usize,
+    partition_idx: usize,
+    file_idx: usize,
+) -> Result<RecordBatch> {
+    use chrono::{DateTime, Datelike, Timelike};
+    use datafusion::arrow::array::{Date32Array, Int32Array, Int64Array, TimestampNanosecondArray};
+
+    // Use the writer's storage schema directly; batches in this shape pass
+    // through the writer without a v1->iceberg transform.
+    let schema = writer::schema_transform::create_profiles_arrow_schema();
+
+    let time_step = if num_rows == 0 {
+        0
+    } else {
+        (end_ts - start_ts) / num_rows as i64
+    };
+
+    let mut profile_ids: Vec<String> = Vec::with_capacity(num_rows);
+    let mut timestamps: Vec<Option<i64>> = Vec::with_capacity(num_rows);
+    let mut duration_nanos: Vec<i64> = Vec::with_capacity(num_rows);
+    let mut sample_types: Vec<String> = Vec::with_capacity(num_rows);
+    let mut sample_units: Vec<String> = Vec::with_capacity(num_rows);
+    let mut period_types: Vec<Option<String>> = Vec::with_capacity(num_rows);
+    let mut period_units: Vec<Option<String>> = Vec::with_capacity(num_rows);
+    let mut periods: Vec<Option<i64>> = Vec::with_capacity(num_rows);
+    let mut service_names: Vec<String> = Vec::with_capacity(num_rows);
+    let mut stacktraces_jsons: Vec<String> = Vec::with_capacity(num_rows);
+    let mut samples_jsons: Vec<String> = Vec::with_capacity(num_rows);
+    let mut resource_attributes: Vec<Option<String>> = Vec::with_capacity(num_rows);
+    let mut scope_attributes: Vec<Option<String>> = Vec::with_capacity(num_rows);
+    let mut profile_attributes: Vec<Option<String>> = Vec::with_capacity(num_rows);
+    let mut trace_ids: Vec<Option<String>> = Vec::with_capacity(num_rows);
+    let mut span_ids: Vec<Option<String>> = Vec::with_capacity(num_rows);
+    let mut date_days: Vec<Option<i32>> = Vec::with_capacity(num_rows);
+    let mut hours: Vec<Option<i32>> = Vec::with_capacity(num_rows);
+
+    for i in 0..num_rows {
+        let ts_millis = start_ts + (i as i64 * time_step);
+        let ts_nanos = ts_millis * 1_000_000;
+
+        profile_ids.push(format!("profile-p{partition_idx}-f{file_idx}-{i}"));
+        timestamps.push(Some(ts_nanos));
+        duration_nanos.push(10_000_000 + (i as i64 * 1_000));
+        sample_types.push("cpu".to_string());
+        sample_units.push("nanoseconds".to_string());
+        period_types.push(Some("cpu".to_string()));
+        period_units.push(Some("nanoseconds".to_string()));
+        periods.push(Some(10_000_000));
+        service_names.push(format!("test-service-{}", i % 3));
+        stacktraces_jsons.push(r#"[{"locations":["main","work"]}]"#.to_string());
+        samples_jsons.push(r#"[{"stacktrace_index":0,"values":[100]}]"#.to_string());
+        resource_attributes.push(Some(r#"{"service.name":"test-service"}"#.to_string()));
+        scope_attributes.push(Some("{}".to_string()));
+        profile_attributes.push(Some("{}".to_string()));
+        trace_ids.push(Some(format!("{:032x}", i)));
+        span_ids.push(Some(format!("{:016x}", i)));
+
+        let secs = ts_nanos / 1_000_000_000;
+        if let Some(dt) = DateTime::from_timestamp(secs, 0) {
+            date_days.push(Some(dt.naive_utc().date().num_days_from_ce() - 719163));
+            hours.push(Some(dt.hour() as i32));
+        } else {
+            date_days.push(None);
+            hours.push(None);
+        }
+    }
+
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(profile_ids)),
+            Arc::new(TimestampNanosecondArray::from(timestamps)),
+            Arc::new(Int64Array::from(duration_nanos)),
+            Arc::new(StringArray::from(sample_types)),
+            Arc::new(StringArray::from(sample_units)),
+            Arc::new(StringArray::from(period_types)),
+            Arc::new(StringArray::from(period_units)),
+            Arc::new(Int64Array::from(periods)),
+            Arc::new(StringArray::from(service_names)),
+            Arc::new(StringArray::from(stacktraces_jsons)),
+            Arc::new(StringArray::from(samples_jsons)),
+            Arc::new(StringArray::from(resource_attributes)),
+            Arc::new(StringArray::from(scope_attributes)),
+            Arc::new(StringArray::from(profile_attributes)),
+            Arc::new(StringArray::from(trace_ids)),
+            Arc::new(StringArray::from(span_ids)),
+            Arc::new(Date32Array::from(date_days)),
+            Arc::new(Int32Array::from(hours)),
+        ],
+    )?;
+
+    Ok(batch)
+}
+
 /// Formats a partition ID from a timestamp
 fn format_partition_id(
     timestamp: i64,
@@ -586,6 +725,14 @@ mod tests {
         let batch = create_metric_batch(1700000000000, 1700003600000, 75, 0, 0)?;
         assert_eq!(batch.num_rows(), 75);
         assert_eq!(batch.num_columns(), 19); // Updated for metrics gauge schema with 19 fields
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_profile_batch() -> Result<()> {
+        let batch = create_profile_batch(1700000000000, 1700003600000, 25, 0, 0)?;
+        assert_eq!(batch.num_rows(), 25);
+        assert_eq!(batch.num_columns(), 18); // Profiles Iceberg storage schema with 18 fields
         Ok(())
     }
 

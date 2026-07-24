@@ -122,4 +122,5 @@ appear to succeed but no data is stored.
 | `PERMISSION_DENIED` | Key does not belong to the tenant/dataset you named | Use a key issued for that tenant |
 | `RESOURCE_EXHAUSTED` | Per-tenant ingest rate limit hit | Back off and retry; ask your operator about tenant limits |
 | `RESOURCE_EXHAUSTED` mentioning `quota_exceeded` | Tenant is at or over its storage quota (`max_storage_bytes`) | Retrying will not help until data is deleted, retention shortens, or the quota is raised — talk to your operator |
+| `429 Too Many Requests` on `POST /v1development/profiles` | HTTP analog of the two `RESOURCE_EXHAUSTED` cases above | See [profiles](profiles.md) |
 | Exports return 200 but no data is queryable | Exporter uses OTLP/HTTP on :4318 | Switch the exporter to gRPC on :4317 |
