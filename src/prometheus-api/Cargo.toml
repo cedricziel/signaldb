@@ -1,0 +1,10 @@
+[package]
+name = "prometheus-api"
+version = "0.1.0"
+edition = "2024"
+description = "Prometheus HTTP API types for SignalDB"
+license = "AGPL-3.0"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
