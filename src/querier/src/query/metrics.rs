@@ -29,7 +29,7 @@ use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
 use super::promql::{
-    ArithOp, Grouping, LabelMatch, MatchKind, MetricAgg, MetricPlan, ValueOp, plan_promql,
+    ArithOp, Grouping, LabelMatch, MatchKind, MetricAgg, MetricPlan, TopKSpec, ValueOp, plan_promql,
 };
 use super::{error::QuerierError, table_ref::build_table_reference};
 
@@ -126,11 +126,18 @@ impl MetricsService {
         // Apply math / scalar-arithmetic transforms to the result value.
         let df = apply_transforms_df(df, &plan.transforms, &group_cols)?;
 
-        df.sort(vec![SortExpr::new(col("bucket"), true, true)])
+        let batches = df
+            .sort(vec![SortExpr::new(col("bucket"), true, true)])
             .map_err(QuerierError::QueryFailed)?
             .collect()
             .await
-            .map_err(QuerierError::QueryFailed)
+            .map_err(QuerierError::QueryFailed)?;
+
+        // `topk`/`bottomk`: keep the k highest/lowest series per bucket.
+        if let Some(spec) = plan.topk {
+            return apply_topk(batches, spec);
+        }
+        Ok(batches)
     }
 
     /// Aggregate `value` per (bucket, metric_name, group) directly.
@@ -864,6 +871,89 @@ fn arith_f64(op: ArithOp, v: f64, s: f64, scalar_left: bool) -> f64 {
     }
 }
 
+/// Keep the k highest (or lowest, for `bottomk`) series per bucket. The input
+/// matrix has columns `bucket`, `metric_name`, `service_name`, `value`.
+fn apply_topk(batches: Vec<RecordBatch>, spec: TopKSpec) -> Result<Vec<RecordBatch>, QuerierError> {
+    use std::cmp::Ordering;
+
+    if batches.is_empty() {
+        return Ok(batches);
+    }
+    let schema = batches[0].schema();
+
+    struct Row {
+        bucket: i64,
+        name: String,
+        service: String,
+        value: f64,
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    for batch in &batches {
+        let bucket = batch
+            .column_by_name("bucket")
+            .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
+            .ok_or_else(|| QuerierError::InvalidInput("bucket column missing".to_string()))?;
+        let name = string_column(batch, "metric_name")?;
+        let service = string_column(batch, "service_name")?;
+        let value = batch
+            .column_by_name("value")
+            .and_then(|c| c.as_any().downcast_ref::<Float64Array>())
+            .ok_or_else(|| QuerierError::InvalidInput("value column missing".to_string()))?;
+        for i in 0..batch.num_rows() {
+            rows.push(Row {
+                bucket: bucket.value(i),
+                name: name.value(i).to_string(),
+                service: if service.is_null(i) {
+                    String::new()
+                } else {
+                    service.value(i).to_string()
+                },
+                value: if value.is_null(i) {
+                    f64::NAN
+                } else {
+                    value.value(i)
+                },
+            });
+        }
+    }
+
+    // Rank within each bucket; BTreeMap keeps buckets in ascending order.
+    let mut by_bucket: BTreeMap<i64, Vec<usize>> = BTreeMap::new();
+    for (i, r) in rows.iter().enumerate() {
+        by_bucket.entry(r.bucket).or_default().push(i);
+    }
+    let mut keep: Vec<usize> = Vec::new();
+    for (_bucket, mut idxs) in by_bucket {
+        idxs.sort_by(|&a, &b| {
+            let (va, vb) = (rows[a].value, rows[b].value);
+            let ord = va.partial_cmp(&vb).unwrap_or(Ordering::Equal);
+            if spec.bottom { ord } else { ord.reverse() }
+        });
+        idxs.truncate(spec.k);
+        keep.extend(idxs);
+    }
+
+    let mut ts = Vec::with_capacity(keep.len());
+    let mut names = Vec::with_capacity(keep.len());
+    let mut services = Vec::with_capacity(keep.len());
+    let mut values = Vec::with_capacity(keep.len());
+    for &i in &keep {
+        ts.push(rows[i].bucket);
+        names.push(rows[i].name.clone());
+        services.push(rows[i].service.clone());
+        values.push(rows[i].value);
+    }
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(TimestampNanosecondArray::from(ts)),
+        Arc::new(StringArray::from(names)),
+        Arc::new(StringArray::from(services)),
+        Arc::new(Float64Array::from(values)),
+    ];
+    let out = RecordBatch::try_new(schema, columns)
+        .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+    Ok(vec![out])
+}
+
 fn cast_ns(expr: Expr) -> Expr {
     datafusion::logical_expr::cast(expr, DataType::Timestamp(TimeUnit::Nanosecond, None))
 }
@@ -1191,6 +1281,24 @@ mod tests {
         // abs over a rate that is negative is not exercised here; abs of a
         // positive last value is a no-op.
         assert_eq!(by(matrix(&service, "abs(reqs)", 1000).await, "api"), 3.0);
+    }
+
+    #[tokio::test]
+    async fn topk_and_bottomk_select_series_per_bucket() {
+        let service = service_with_data();
+        // One bucket, series api=3 and web=5.
+        let top = matrix(&service, "topk(1, reqs)", 1000).await;
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].1.as_deref(), Some("web"));
+        assert_eq!(top[0].2, 5.0);
+
+        let bottom = matrix(&service, "bottomk(1, reqs)", 1000).await;
+        assert_eq!(bottom.len(), 1);
+        assert_eq!(bottom[0].1.as_deref(), Some("api"));
+        assert_eq!(bottom[0].2, 3.0);
+
+        // k larger than the series count keeps all.
+        assert_eq!(matrix(&service, "topk(5, reqs)", 1000).await.len(), 2);
     }
 
     #[tokio::test]
