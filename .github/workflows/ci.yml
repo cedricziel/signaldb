@@ -3,14 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - 'src/grafana-plugin/**'
-      - '.github/workflows/grafana-plugin-*'
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'src/grafana-plugin/**'
-      - '.github/workflows/grafana-plugin-*'
 
 env:
   CARGO_TERM_COLOR: always
@@ -23,10 +17,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Detect whether anything outside the Grafana plugin changed. The plugin
+  # is a standalone workspace with its own CI (grafana-plugin-*.yml); the
+  # jobs below are skipped for plugin-only changes. A workflow-level
+  # paths-ignore must NOT be used for this: the ruleset requires
+  # "Check & Lint" and "Test Suite (stable)", and a path-filtered workflow
+  # never reports those contexts, deadlocking plugin-only PRs. Skipped
+  # jobs, by contrast, satisfy required checks.
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    outputs:
+      core: ${{ steps.filter.outputs.core }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check for changes outside the Grafana plugin
+        id: filter
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # PR checkouts are merge commits; first parent is the base tip.
+            base=$(git rev-parse HEAD^1)
+          else
+            base="${{ github.event.before }}"
+            if ! git cat-file -e "$base" 2>/dev/null; then
+              # Branch creation or force push: no usable before-SHA.
+              echo "core=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          changed=$(git diff --name-only "$base" HEAD)
+          core_changed=$(echo "$changed" | grep -vE '^src/grafana-plugin/|^\.github/workflows/grafana-plugin-' || true)
+          if [ -n "$core_changed" ]; then
+            echo "core=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "core=false" >> "$GITHUB_OUTPUT"
+            echo "Only Grafana plugin files changed; core CI will be skipped."
+          fi
+
   # Fast preliminary checks - fail fast strategy
   check:
     name: Check & Lint
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
     steps:
       - uses: actions/checkout@v7
 
