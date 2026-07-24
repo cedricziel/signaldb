@@ -805,6 +805,10 @@ impl Parser {
                     self.parse_range_aggregation()
                 } else if AggregationFunction::from_name(&name).is_some() {
                     self.parse_vector_aggregation()
+                } else if name == "vector" {
+                    self.parse_vector_literal()
+                } else if name == "label_replace" {
+                    self.parse_label_replace()
                 } else {
                     let t = self.peek().cloned();
                     Err(self.error_at(format!("unknown metric function '{name}'"), t.as_ref()))
@@ -833,8 +837,13 @@ impl Parser {
             None
         };
 
-        let (log_query, range, offset, unwrap) = self.parse_log_range_expr()?;
+        let (log_query, range, mut offset, unwrap) = self.parse_log_range_expr()?;
         self.expect(&Token::RParen, "')' to close the range aggregation")?;
+
+        // `offset` may also trail the aggregation: `count_over_time(...) offset 5m`.
+        if offset.is_none() {
+            offset = self.parse_optional_offset()?;
+        }
 
         // A grouping may trail an unwrapped range aggregation.
         let grouping = self.parse_optional_grouping()?;
@@ -848,6 +857,40 @@ impl Parser {
             param,
             grouping,
         })))
+    }
+
+    /// `vector ( <scalar> )`.
+    fn parse_vector_literal(&mut self) -> Result<MetricQuery, ParseError> {
+        self.expect_ident("vector")?;
+        self.expect(&Token::LParen, "'(' after vector")?;
+        let value = self.parse_number("a scalar value")?;
+        self.expect(&Token::RParen, "')' to close vector(...)")?;
+        Ok(MetricQuery::VectorLiteral(value))
+    }
+
+    /// `label_replace ( v, dst, replacement, src, regex )`.
+    fn parse_label_replace(&mut self) -> Result<MetricQuery, ParseError> {
+        self.expect_ident("label_replace")?;
+        self.expect(&Token::LParen, "'(' after label_replace")?;
+        let inner = self.parse_metric_expr()?;
+        self.expect(&Token::Comma, "',' after the label_replace vector")?;
+        let dst_label = self.expect_string("the destination label")?;
+        self.expect(&Token::Comma, "',' after the destination label")?;
+        let replacement = self.expect_string("the replacement template")?;
+        self.expect(&Token::Comma, "',' after the replacement")?;
+        let src_label = self.expect_string("the source label")?;
+        self.expect(&Token::Comma, "',' after the source label")?;
+        let regex = self.expect_string("the regex")?;
+        self.expect(&Token::RParen, "')' to close label_replace(...)")?;
+        Ok(MetricQuery::LabelReplace(Box::new(
+            crate::metric::LabelReplace {
+                inner,
+                dst_label,
+                replacement,
+                src_label,
+                regex,
+            },
+        )))
     }
 
     /// Parse the `{selector} pipeline [range] [offset d] [| unwrap ...]`
@@ -864,8 +907,20 @@ impl Parser {
         ),
         ParseError,
     > {
+        // The log expression may be wrapped in parentheses:
+        // `rate(({job="x"} |= "e")[5m])`.
+        let paren = matches!(self.peek().map(|t| &t.token), Some(Token::LParen));
+        if paren {
+            self.next();
+        }
         let selector = self.parse_selector()?;
         let mut pipeline = self.parse_pipeline()?;
+        if paren {
+            self.expect(
+                &Token::RParen,
+                "')' to close the parenthesized log expression",
+            )?;
+        }
 
         // Range window `[Nd]`.
         let range = self.parse_range_window()?;
@@ -1696,5 +1751,46 @@ mod tests {
     fn rejects_unclosed_aggregation_paren() {
         let err = parse_metric_query(r#"sum(rate({a="b"}[5m])"#).unwrap_err();
         assert!(err.message.contains("')'"), "{err}");
+    }
+
+    // ---- extended metric surface (#661) ----
+
+    #[test]
+    fn parses_offset_after_aggregation() {
+        let q = metric(r#"count_over_time({job="mysql"}[5m]) offset 5m"#);
+        assert_eq!(as_range(&q).offset, Some(Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn parses_parenthesized_selector_in_range() {
+        let q = metric(r#"rate(({job="mysql"} |= "error" != "timeout")[10s])"#);
+        let r = as_range(&q);
+        assert_eq!(r.range, Duration::from_secs(10));
+        assert_eq!(r.log_query.pipeline.len(), 2);
+    }
+
+    #[test]
+    fn parses_vector_literal() {
+        assert_eq!(metric("vector(0)"), MetricQuery::VectorLiteral(0.0));
+        // `... or vector(0)` fallback.
+        let q = metric(r#"sum(count_over_time({a="b"}[5m])) or vector(0)"#);
+        let b = as_binary(&q);
+        assert_eq!(b.op, BinOp::Or);
+        assert_eq!(b.right, MetricQuery::VectorLiteral(0.0));
+    }
+
+    #[test]
+    fn parses_label_replace() {
+        let q = metric(
+            r#"label_replace(sum(rate({job="api"}[5m])) by (instance), "host", "$1", "instance", "(.*):.*")"#,
+        );
+        let MetricQuery::LabelReplace(lr) = &q else {
+            panic!("expected label_replace, got {q:?}");
+        };
+        assert_eq!(lr.dst_label, "host");
+        assert_eq!(lr.replacement, "$1");
+        assert_eq!(lr.src_label, "instance");
+        assert_eq!(lr.regex, "(.*):.*");
+        assert!(matches!(lr.inner, MetricQuery::Vector(_)));
     }
 }

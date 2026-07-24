@@ -115,6 +115,14 @@ const SUPPORTED: &[&str] = &[
     // --- ip() line and label filters ---
     r#"{job_name="myapp"} |= ip("192.168.4.5/16")"#,
     r#"{job_name="myapp"} | logfmt | addr = ip("192.168.4.0/24") or addr = ip("10.10.15.0/24")"#,
+    // --- offset after aggregation ---
+    r#"count_over_time({job="mysql"}[5m]) offset 5m"#,
+    // --- parenthesized selector in range ---
+    r#"rate(({job="mysql"} |= "error" != "timeout")[10s])"#,
+    r#"avg(rate(({job="nginx"} |= "GET" | json | path="/home")[10s])) by (region)"#,
+    // --- vector() and label_replace() ---
+    r#"sum(count_over_time({namespace="traefik"}[5m])) or vector(0)"#,
+    r#"label_replace(sum(rate({job="api"}[5m])) by (instance), "host", "$1", "instance", "(.*):.*")"#,
 ];
 
 /// Documented LogQL features the parser does NOT support yet. Each MUST
@@ -122,12 +130,10 @@ const SUPPORTED: &[&str] = &[
 /// `SUPPORTED` and the failing assertion here will flag it. The trailing
 /// comment names the missing feature.
 const KNOWN_UNSUPPORTED: &[&str] = &[
-    r#"count_over_time({job="mysql"}[5m]) offset 5m"#, // offset after aggregation
-    r#"rate(({job="mysql"} |= "error" != "timeout")[10s])"#, // parenthesized selector in range
-    r#"avg(rate(({job="nginx"} |= "GET" | json | path="/home")[10s])) by (region)"#, // parenthesized selector in range
-    r#"sum(count_over_time({namespace="traefik"}[5m])) or vector(0)"#, // vector() function
-    r#"label_replace(sum(rate({job="api"}[5m])) by (instance), "host", "$1", "instance", "(.*):.*")"#, // label_replace()
-    r#"{$label_name=~"$label_value"}"#, // Grafana template variables (interpolated before LogQL parsing)
+    // Grafana dashboard template variables are interpolated by the
+    // datasource before the query reaches LogQL, so they are
+    // intentionally out of scope for the parser.
+    r#"{$label_name=~"$label_value"}"#,
 ];
 
 #[test]
