@@ -128,6 +128,16 @@ pub enum LabelFormatValue {
     Template(String),
 }
 
+/// A `by`/`without` grouping clause, shared by vector aggregations and
+/// unwrapped range aggregations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grouping {
+    /// `true` for `without (...)`, `false` for `by (...)`.
+    pub without: bool,
+    /// The labels listed in the clause (may be empty: `by ()`).
+    pub labels: Vec<String>,
+}
+
 /// An `unwrap` stage: the label to unwrap plus an optional conversion.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Unwrap {

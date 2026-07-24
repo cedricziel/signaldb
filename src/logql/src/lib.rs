@@ -10,19 +10,25 @@
 //!
 //! - [`token`]: token type produced by the lexer
 //! - [`lexer`]: hand-rolled tokenizer with line/column error reporting
-//! - [`ast`]: abstract syntax tree for parsed queries
+//! - [`ast`]: abstract syntax tree for log queries
+//! - [`metric`]: abstract syntax tree for metric queries
 //! - [`parser`]: recursive-descent parser over the token stream
 
 pub mod ast;
 pub mod lexer;
+pub mod metric;
 pub mod parser;
 pub mod token;
 
 pub use ast::{
-    FilterOp, FilterValue, LabelExtraction, LabelFilterExpr, LabelFilterPred, LabelFormat,
-    LabelFormatValue, LabelMatcher, LineFilter, LineFilterOp, LogQuery, MatchOp, PipelineStage,
-    StreamSelector, Unwrap,
+    FilterOp, FilterValue, Grouping, LabelExtraction, LabelFilterExpr, LabelFilterPred,
+    LabelFormat, LabelFormatValue, LabelMatcher, LineFilter, LineFilterOp, LogQuery, MatchOp,
+    PipelineStage, StreamSelector, Unwrap,
 };
 pub use lexer::{LexError, tokenize};
-pub use parser::{ParseError, parse_query, parse_selector};
+pub use metric::{
+    AggregationFunction, BinOp, BinaryExpr, MetricQuery, RangeAggregation, RangeFunction,
+    VectorAggregation,
+};
+pub use parser::{Expr, ParseError, parse, parse_query, parse_selector};
 pub use token::{SpannedToken, Token};
