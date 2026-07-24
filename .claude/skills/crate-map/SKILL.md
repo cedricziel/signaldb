@@ -18,6 +18,7 @@ sources:
 | **router** | `src/router/` | Binary + Library | HTTP API gateway + Flight routing layer |
 | **querier** | `src/querier/` | Binary + Library | DataFusion query execution engine |
 | **compactor** | `src/compactor/` | Binary + Library | Complete data lifecycle: compaction planning/execution (Phase 1-2), retention enforcement, snapshot expiration, orphan cleanup (Phase 3); binary is `signaldb-compactor` |
+| **pyroscope-api** | `src/pyroscope-api/` | Library | Pyroscope-compatible API types (flamebearer, profile types) |
 | **tempo-api** | `src/tempo-api/` | Library | Grafana Tempo API types and protobuf definitions |
 | **signaldb-bin** | `src/signaldb-bin/` | Binary | Monolithic mode runner (all services in one process) |
 | **signaldb-api** | `src/signaldb-api/` | Library | OpenAPI-generated admin API types |

@@ -8,6 +8,7 @@ use crate::handler::otlp_profiles_handler::ProfileHandler;
 use crate::middleware::get_tenant_context;
 use common::auth::TenantContext;
 use common::ratelimit::TenantRateLimiter;
+use common::storage_usage::StorageUsageTracker;
 use prost::Message;
 use std::sync::Arc;
 
@@ -35,6 +36,7 @@ impl ProfileHandlerTrait for ProfileHandler {
 pub struct ProfileAcceptorService<H: ProfileHandlerTrait> {
     handler: H,
     rate_limiter: Option<Arc<TenantRateLimiter>>,
+    storage_quota: Option<Arc<StorageUsageTracker>>,
 }
 
 impl<H: ProfileHandlerTrait> ProfileAcceptorService<H> {
@@ -42,12 +44,19 @@ impl<H: ProfileHandlerTrait> ProfileAcceptorService<H> {
         Self {
             handler,
             rate_limiter: None,
+            storage_quota: None,
         }
     }
 
     /// Enforce per-tenant ingest rate limits on this service.
     pub fn with_rate_limiter(mut self, rate_limiter: Arc<TenantRateLimiter>) -> Self {
         self.rate_limiter = Some(rate_limiter);
+        self
+    }
+
+    /// Enforce per-tenant storage quotas on this service.
+    pub fn with_storage_quota(mut self, storage_quota: Arc<StorageUsageTracker>) -> Self {
+        self.storage_quota = Some(storage_quota);
         self
     }
 }
@@ -68,6 +77,14 @@ impl<H: ProfileHandlerTrait + Send + Sync + 'static> ProfilesService for Profile
         if let Some(limiter) = &self.rate_limiter {
             limiter
                 .check_ingest(&tenant_context.tenant_id, request_inner.encoded_len())
+                .map_err(|e| Status::resource_exhausted(e.to_string()))?;
+        }
+
+        // Per-tenant storage quota: a tenant at or over max_storage_bytes
+        // must free space (or get a raised quota) before ingesting more.
+        if let Some(quota) = &self.storage_quota {
+            quota
+                .check_ingest(&tenant_context.tenant_id)
                 .map_err(|e| Status::resource_exhausted(e.to_string()))?;
         }
 
@@ -189,5 +206,43 @@ mod tests {
         let response = service.export(tonic_request).await;
 
         assert!(response.is_ok());
+    }
+
+    #[tokio::test]
+    async fn export_rejects_tenant_over_storage_quota() {
+        use common::config::{AuthConfig, TenantLimits};
+        use std::collections::HashMap;
+
+        // No expectation set: the handler must never run for a rejected export.
+        let mock_handler = MockProfileHandler::new();
+
+        let auth = AuthConfig {
+            default_limits: TenantLimits {
+                max_storage_bytes: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let tracker = Arc::new(StorageUsageTracker::from_auth_config(&auth));
+        tracker.replace_all(HashMap::from([("test-tenant".to_string(), 10u64)]));
+
+        let service = ProfileAcceptorService::new(mock_handler).with_storage_quota(tracker);
+
+        let mut tonic_request = Request::new(ExportProfilesServiceRequest::default());
+        tonic_request.extensions_mut().insert(TenantContext {
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            tenant_slug: "test-tenant".to_string(),
+            dataset_slug: "test-dataset".to_string(),
+            api_key_name: Some("test-key".to_string()),
+            source: common::auth::TenantSource::Config,
+        });
+
+        let status = service
+            .export(tonic_request)
+            .await
+            .expect_err("tenant over quota must be rejected");
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert!(status.message().contains("quota_exceeded"));
     }
 }

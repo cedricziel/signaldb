@@ -96,11 +96,11 @@ fields mean unlimited; DB-provisioned tenants get the defaults.
 
 | Limit | Enforced at | On exceed |
 |-------|-------------|-----------|
-| `max_ingest_requests_per_sec` / `max_ingest_bytes_per_sec` | Acceptor (OTLP gRPC, remote_write) | 429 / RESOURCE_EXHAUSTED |
+| `max_ingest_requests_per_sec` / `max_ingest_bytes_per_sec` | Acceptor (OTLP gRPC incl. profiles, OTLP/HTTP profiles, remote_write) | 429 / RESOURCE_EXHAUSTED |
 | `max_query_requests_per_sec` | Router HTTP query API (`/tempo`, `/api/v1`) | 429 |
 | `max_api_keys` (active keys only) | Admin API key creation | 429 `quota_exceeded` |
 | `max_datasets` | Admin API dataset creation | 429 `quota_exceeded` |
-| `max_storage_bytes` | Acceptor (OTLP gRPC, remote_write) | 429 / RESOURCE_EXHAUSTED `quota_exceeded` |
+| `max_storage_bytes` | Acceptor (OTLP gRPC incl. profiles, OTLP/HTTP profiles, remote_write) | 429 / RESOURCE_EXHAUSTED `quota_exceeded` |
 | `[querier] max_concurrent_queries_per_tenant` | Querier | query rejected |
 
 Token buckets per dimension (`common::ratelimit::TenantRateLimiter`);

@@ -285,8 +285,9 @@ pub async fn serve_otlp_grpc(
     });
 
     let profile_handler = ProfileHandler::new(flight_transport.clone(), wal_manager.clone());
-    let profile_service =
-        ProfileAcceptorService::new(profile_handler).with_rate_limiter(rate_limiter.clone());
+    let profile_service = ProfileAcceptorService::new(profile_handler)
+        .with_rate_limiter(rate_limiter.clone())
+        .with_storage_quota(storage_usage.clone());
     let auth_for_profiles = authenticator.clone();
     let profile_server = ProfilesServiceServer::with_interceptor(profile_service, move |req| {
         grpc_auth_interceptor(auth_for_profiles.clone(), req)
@@ -364,20 +365,28 @@ pub fn prometheus_router(
 #[derive(Clone)]
 pub struct ProfilesHandlerState {
     pub handler: Arc<ProfileHandler>,
+    pub rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
+    pub storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
 }
 
 /// Create a router for the OTLP/HTTP profiles ingestion endpoint with authentication
 ///
 /// Handles `POST /v1development/profiles` (the OTLP development endpoint for
-/// the profiles signal) with protobuf or JSON request bodies.
+/// the profiles signal) with protobuf or JSON request bodies. Per-tenant
+/// ingest rate limits and storage quotas are enforced with HTTP 429; both
+/// are unlimited unless configured.
 pub fn profiles_http_router(
     authenticator: Arc<Authenticator>,
     profile_handler: Arc<ProfileHandler>,
+    rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
+    storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
 ) -> Router {
     use axum::middleware;
 
     let state = ProfilesHandlerState {
         handler: profile_handler,
+        rate_limiter,
+        storage_quota,
     };
 
     Router::new()
@@ -409,6 +418,20 @@ async fn handle_http_profiles(
 ) -> axum::response::Response<axum::body::Body> {
     use opentelemetry_proto::tonic::collector::profiles::v1development::ExportProfilesServiceRequest;
     use prost::Message;
+
+    // Per-tenant ingest rate limiting (HTTP 429 with the reason)
+    if let Err(e) = state
+        .rate_limiter
+        .check_ingest(&tenant_context.tenant_id, body.len())
+    {
+        return otlp_http_error(axum::http::StatusCode::TOO_MANY_REQUESTS, e.to_string());
+    }
+
+    // Per-tenant storage quota: a tenant at or over max_storage_bytes
+    // must free space (or get a raised quota) before ingesting more.
+    if let Err(e) = state.storage_quota.check_ingest(&tenant_context.tenant_id) {
+        return otlp_http_error(axum::http::StatusCode::TOO_MANY_REQUESTS, e.to_string());
+    }
 
     let content_type = headers
         .get(axum::http::header::CONTENT_TYPE)
@@ -550,6 +573,8 @@ pub async fn serve_otlp_http(
         .merge(profiles_http_router(
             config.authenticator.clone(),
             profile_handler,
+            config.rate_limiter.clone(),
+            config.storage_usage.clone(),
         ));
 
     tracing::info!("Prometheus remote_write endpoint enabled at POST /api/v1/write");

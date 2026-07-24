@@ -43,6 +43,55 @@ async fn write_traces(catalog_manager: &Arc<CatalogManager>, writes: usize) -> R
     Ok(())
 }
 
+async fn write_profiles(catalog_manager: &Arc<CatalogManager>, writes: usize) -> Result<()> {
+    let object_store = Arc::new(InMemory::new());
+    let mut writer = IcebergTableWriter::new(
+        catalog_manager,
+        object_store,
+        TENANT.to_string(),
+        DATASET.to_string(),
+        "profiles".to_string(),
+    )
+    .await
+    .expect("Failed to create Iceberg writer");
+
+    let config = DataGeneratorConfig {
+        partition_count: 1,
+        files_per_partition: 1,
+        rows_per_file: 100,
+        base_timestamp: chrono::Utc::now().timestamp_millis() - (60 * 60 * 1000),
+        partition_granularity: PartitionGranularity::Hour,
+    };
+    for _ in 0..writes {
+        generators::generate_profiles(&mut writer, &config).await?;
+    }
+    Ok(())
+}
+
+/// Sum of live data-file sizes in one table's current snapshot, per the
+/// manifest reader (the accounting ground truth).
+async fn manifest_live_bytes(
+    catalog_manager: &Arc<CatalogManager>,
+    table_name: &str,
+) -> Result<u64> {
+    let identifier = catalog_manager.build_table_identifier(TENANT, DATASET, table_name);
+    let table = match catalog_manager
+        .catalog()
+        .load_tabular(&identifier)
+        .await
+        .expect("Failed to load table")
+    {
+        iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
+        _ => panic!("Expected table"),
+    };
+    Ok(compactor::iceberg::ManifestReader::new()
+        .get_snapshot_files(&table)
+        .await?
+        .iter()
+        .map(|f| f.file_size_bytes)
+        .sum())
+}
+
 #[tokio::test]
 async fn storage_usage_is_accounted_from_live_files_and_enforced() -> Result<()> {
     let _ = env_logger::builder().is_test(true).try_init();
@@ -69,22 +118,7 @@ async fn storage_usage_is_accounted_from_live_files_and_enforced() -> Result<()>
     let counted = *usage
         .get(TENANT)
         .expect("tenant with data must appear in the usage map");
-    let table_identifier = catalog_manager.build_table_identifier(TENANT, DATASET, "traces");
-    let table = match catalog_manager
-        .catalog()
-        .load_tabular(&table_identifier)
-        .await
-        .expect("Failed to load table")
-    {
-        iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
-        _ => panic!("Expected table"),
-    };
-    let manifest_bytes: u64 = compactor::iceberg::ManifestReader::new()
-        .get_snapshot_files(&table)
-        .await?
-        .iter()
-        .map(|f| f.file_size_bytes)
-        .sum();
+    let manifest_bytes = manifest_live_bytes(&catalog_manager, "traces").await?;
     assert!(counted > 0, "real data files must produce non-zero usage");
     assert_eq!(
         counted, manifest_bytes,
@@ -110,6 +144,22 @@ async fn storage_usage_is_accounted_from_live_files_and_enforced() -> Result<()>
     assert!(
         usage_after[TENANT] > counted,
         "additional writes must increase accounted usage"
+    );
+
+    // The profiles signal (issue #635) must count toward the same tenant
+    // quota: accounting walks every table in the tenant namespace, so a
+    // profiles table's live files show up byte-for-byte in the total.
+    write_profiles(&catalog_manager, 2).await?;
+    let usage_with_profiles = compute_usage(&catalog_manager).await?;
+    let profile_bytes = manifest_live_bytes(&catalog_manager, "profiles").await?;
+    assert!(
+        profile_bytes > 0,
+        "profile writes must produce live data files"
+    );
+    assert_eq!(
+        usage_with_profiles[TENANT],
+        usage_after[TENANT] + profile_bytes,
+        "profiles tables must count toward tenant storage usage"
     );
     Ok(())
 }
