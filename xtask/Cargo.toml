@@ -9,7 +9,7 @@ progenitor = "0.14.0"
 typify = "0.7.0"
 openapiv3 = "2.2.0"
 # Must stay on 0.8: typify 0.7 / progenitor 0.14 take schemars ^0.8 types in their APIs
-schemars = "0.8"
+schemars = "1.2"
 serde_json.workspace = true
 serde_yaml = "0.9"
 prettyplease = "0.3"
