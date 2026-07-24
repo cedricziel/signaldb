@@ -47,8 +47,10 @@ curl -sG http://localhost:3000/prometheus/api/v1/query_range \
 Supported so far: instant/range selectors with label matchers
 (`=`, `!=`, `=~`, `!~`); the aggregations `sum`, `avg`, `min`, `max`, `count`,
 optionally with `by (label)`; the range functions `rate`, `increase`, and the
-`<agg>_over_time` family; and `histogram_quantile(phi, metric)` (see below).
-For the full list of what is and isn't supported, see the
+`<agg>_over_time` family; `histogram_quantile(phi, metric)` (see below); the
+unary math functions (`abs`, `ceil`, `floor`, `round`, `sqrt`, `clamp*`, …);
+and scalar arithmetic (`metric * 8`, `1024 / metric`). For the full list of
+what is and isn't supported, see the
 [PromQL function support reference](promql-functions.md).
 
 ## Quantiles from histograms
