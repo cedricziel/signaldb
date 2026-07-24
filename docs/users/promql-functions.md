@@ -65,7 +65,8 @@ wrong result.
 
 | Operator | Status |
 |----------|--------|
-| Arithmetic `+ - * / % ^` | ❌ |
+| Arithmetic `+ - * / % ^` with a scalar (`metric * 8`, `1024 / metric`) | ✅ |
+| Arithmetic between two vectors | ❌ |
 | Comparison `== != > < >= <=` | ❌ |
 | Logical/set `and`, `or`, `unless` | ❌ |
 | `on` / `ignoring` / `group_left` / `group_right` matching | ❌ |
@@ -74,8 +75,8 @@ wrong result.
 
 | Function | Status |
 |----------|--------|
-| `abs`, `ceil`, `floor`, `round`, `clamp`, `clamp_min`, `clamp_max` | ❌ |
-| `exp`, `ln`, `log2`, `log10`, `sqrt`, `sgn` | ❌ |
+| `abs`, `ceil`, `floor`, `round`, `clamp`, `clamp_min`, `clamp_max` | ✅ |
+| `exp`, `ln`, `log2`, `log10`, `sqrt`, `sgn` | ✅ |
 | `sort`, `sort_desc` | ❌ |
 | `label_replace`, `label_join` | ❌ |
 | `vector`, `scalar`, `absent` | ❌ |
@@ -84,6 +85,6 @@ wrong result.
 ## Roadmap
 
 Tracked under epic #328 and #335. Unsupported items above are being added
-incrementally; scalar arithmetic/comparison, the common math functions, and
-`topk`/`bottomk` are the next planned increments. Full vector-to-vector binary
-matching (`on`/`ignoring`/`group_left`) and subqueries are larger efforts.
+incrementally; `topk`/`bottomk`, `irate`, and comparison operators are the next
+planned increments. Full vector-to-vector binary matching
+(`on`/`ignoring`/`group_left`) and subqueries are larger efforts.
