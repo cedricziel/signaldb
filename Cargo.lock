@@ -6165,6 +6165,7 @@ dependencies = [
  "log",
  "logql",
  "loki-api",
+ "prometheus-api",
  "pyroscope-api",
  "serde",
  "serde_json",
