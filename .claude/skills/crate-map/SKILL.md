@@ -21,6 +21,7 @@ sources:
 | **pyroscope-api** | `src/pyroscope-api/` | Library | Pyroscope-compatible API types (flamebearer, profile types) |
 | **tempo-api** | `src/tempo-api/` | Library | Grafana Tempo API types and protobuf definitions |
 | **loki-api** | `src/loki-api/` | Library | Loki HTTP API response types (LogQL query surface) |
+| **prometheus-api** | `src/prometheus-api/` | Library | Prometheus HTTP API response types (PromQL query surface) |
 | **signaldb-bin** | `src/signaldb-bin/` | Binary | Monolithic mode runner (all services in one process) |
 | **signaldb-api** | `src/signaldb-api/` | Library | OpenAPI-generated admin API types |
 | **signaldb-cli** | `src/signaldb-cli/` | Binary | CLI for tenant, API key, dataset management |
@@ -78,6 +79,8 @@ This is the shared foundation. Key modules:
 | `query` | `src/querier/src/query/` | Query execution modules |
 | `query/table_ref.rs` | `src/querier/src/query/table_ref.rs` | Safe table reference with slug validation |
 | `query/trace.rs` | `src/querier/src/query/trace.rs` | Trace query handlers |
+| `query/logs.rs` / `query/logql.rs` | `src/querier/src/query/` | LogQL log query execution + Expr lowering |
+| `query/metrics.rs` / `query/promql.rs` | `src/querier/src/query/` | PromQL metrics query execution + lowering |
 | `query/error.rs` | `src/querier/src/query/error.rs` | Query error types |
 | `query/search_filter.rs` | `src/querier/src/query/search_filter.rs` | Search filter parsing/handling |
 | `services` | `src/querier/src/services/` | Service implementations |
