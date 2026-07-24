@@ -1,5 +1,6 @@
 pub mod error;
 pub mod logql;
+pub mod logql_metric;
 pub mod logs;
 pub mod profile;
 pub mod search_filter;
@@ -23,6 +24,19 @@ pub struct LogQueryParams {
     /// `"forward"` or `"backward"` (default).
     #[serde(default)]
     pub direction: Option<String>,
+}
+
+/// Parameters carried in the `query_metric` Flight ticket (JSON-encoded).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MetricQueryParams {
+    /// The LogQL metric query string.
+    pub query: String,
+    /// Inclusive range start, unix epoch nanoseconds.
+    pub start: i64,
+    /// Inclusive range end, unix epoch nanoseconds.
+    pub end: i64,
+    /// Bucket width (query resolution) in nanoseconds.
+    pub step: i64,
 }
 
 /// Parameters carried in the `query_logs_series` Flight ticket.
