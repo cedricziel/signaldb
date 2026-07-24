@@ -25,12 +25,13 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use tracing::Instrument;
 
+use crate::query::logs::LogsService;
 use crate::query::profile::{
     FindProfileByIdParams, ProfileDiffParams, ProfileDiscoveryParams, ProfileSearchParams,
     ProfileService,
 };
 use crate::query::trace::TraceService;
-use crate::query::{FindTraceByIdParams, SearchQueryParams};
+use crate::query::{FindTraceByIdParams, LogQueryParams, LogSeriesParams, SearchQueryParams};
 
 /// Queries the Iceberg catalog directly, bypassing `datafusion_iceberg`'s
 /// stale `Mirror` cache so newly-created tables are immediately visible.
@@ -210,6 +211,29 @@ enum TicketRequest {
         trace_id: String,
         span_id: Option<String>,
     },
+    QueryLogs {
+        tenant_slug: String,
+        dataset_slug: String,
+        params: LogQueryParams,
+    },
+    QueryLogsLabels {
+        tenant_slug: String,
+        dataset_slug: String,
+        start: i64,
+        end: i64,
+    },
+    QueryLogsLabelValues {
+        tenant_slug: String,
+        dataset_slug: String,
+        label: String,
+        start: i64,
+        end: i64,
+    },
+    QueryLogsSeries {
+        tenant_slug: String,
+        dataset_slug: String,
+        params: LogSeriesParams,
+    },
 }
 
 /// Flight service for query execution against stored data
@@ -222,6 +246,7 @@ pub struct QuerierFlightService {
     session_ctx: Arc<SessionContext>,
     trace_service: TraceService,
     profile_service: ProfileService,
+    logs_service: LogsService,
     #[allow(dead_code)]
     iceberg_catalog: Option<Arc<dyn iceberg_rust::catalog::Catalog>>,
     limits: QuerierConfig,
@@ -302,6 +327,7 @@ impl QuerierFlightService {
             .with_max_search_limit(limits.max_search_limit);
         let profile_service = ProfileService::new(session_ctx.as_ref().clone())
             .with_max_search_limit(limits.max_search_limit);
+        let logs_service = LogsService::new(session_ctx.as_ref().clone());
 
         Self {
             object_store,
@@ -310,6 +336,7 @@ impl QuerierFlightService {
             session_ctx,
             trace_service,
             profile_service,
+            logs_service,
             iceberg_catalog: None,
             limits,
             query_permits: dashmap::DashMap::new(),
@@ -397,6 +424,7 @@ impl QuerierFlightService {
             .with_max_search_limit(limits.max_search_limit);
         let profile_service = ProfileService::new(session_ctx.as_ref().clone())
             .with_max_search_limit(limits.max_search_limit);
+        let logs_service = LogsService::new(session_ctx.as_ref().clone());
 
         Ok(Self {
             object_store,
@@ -405,6 +433,7 @@ impl QuerierFlightService {
             session_ctx,
             trace_service,
             profile_service,
+            logs_service,
             iceberg_catalog: Some(iceberg_catalog),
             limits,
             query_permits: dashmap::DashMap::new(),
@@ -662,6 +691,77 @@ impl QuerierFlightService {
             }
             return Err(Status::invalid_argument(
                 "Invalid sql_profiles ticket format. Expected: sql_profiles:tenant_slug:dataset_slug:sql",
+            ));
+        }
+
+        // LogQL log query: query_logs:{tenant}:{dataset}:{json LogQueryParams}
+        if let Some(remainder) = ticket_content.strip_prefix("query_logs:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                let params: LogQueryParams = serde_json::from_str(parts[2]).map_err(|e| {
+                    Status::invalid_argument(format!("Invalid query_logs parameters: {e}"))
+                })?;
+                return Ok(TicketRequest::QueryLogs {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    params,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid query_logs ticket format. Expected: query_logs:tenant:dataset:{json}",
+            ));
+        }
+
+        // Label names: query_logs_labels:{tenant}:{dataset}:{start}:{end}
+        if let Some(remainder) = ticket_content.strip_prefix("query_logs_labels:") {
+            let parts: Vec<&str> = remainder.splitn(4, ':').collect();
+            if parts.len() == 4 {
+                let (start, end) = parse_ns_window(parts[2], parts[3])?;
+                return Ok(TicketRequest::QueryLogsLabels {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    start,
+                    end,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid query_logs_labels ticket format. Expected: query_logs_labels:tenant:dataset:start:end",
+            ));
+        }
+
+        // Label values: query_logs_label_values:{tenant}:{dataset}:{label}:{start}:{end}
+        if let Some(remainder) = ticket_content.strip_prefix("query_logs_label_values:") {
+            let parts: Vec<&str> = remainder.splitn(5, ':').collect();
+            if parts.len() == 5 {
+                let (start, end) = parse_ns_window(parts[3], parts[4])?;
+                return Ok(TicketRequest::QueryLogsLabelValues {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    label: parts[2].to_string(),
+                    start,
+                    end,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid query_logs_label_values ticket format. Expected: query_logs_label_values:tenant:dataset:label:start:end",
+            ));
+        }
+
+        // Series: query_logs_series:{tenant}:{dataset}:{json LogSeriesParams}
+        if let Some(remainder) = ticket_content.strip_prefix("query_logs_series:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                let params: LogSeriesParams = serde_json::from_str(parts[2]).map_err(|e| {
+                    Status::invalid_argument(format!("Invalid query_logs_series parameters: {e}"))
+                })?;
+                return Ok(TicketRequest::QueryLogsSeries {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    params,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid query_logs_series ticket format. Expected: query_logs_series:tenant:dataset:{json}",
             ));
         }
 
@@ -960,7 +1060,11 @@ impl FlightService for QuerierFlightService {
                     | TicketRequest::ProfileFlamegraph { tenant_slug, .. }
                     | TicketRequest::ProfileDiff { tenant_slug, .. }
                     | TicketRequest::SqlProfiles { tenant_slug, .. }
-                    | TicketRequest::ProfilesByTrace { tenant_slug, .. } => Some(tenant_slug),
+                    | TicketRequest::ProfilesByTrace { tenant_slug, .. }
+                    | TicketRequest::QueryLogs { tenant_slug, .. }
+                    | TicketRequest::QueryLogsLabels { tenant_slug, .. }
+                    | TicketRequest::QueryLogsLabelValues { tenant_slug, .. }
+                    | TicketRequest::QueryLogsSeries { tenant_slug, .. } => Some(tenant_slug),
                     TicketRequest::SqlQuery { .. } => None,
                 };
                 if let Some(ticket_tenant) = ticket_tenant
@@ -988,6 +1092,10 @@ impl FlightService for QuerierFlightService {
                 TicketRequest::ProfileDiff { .. } => "profile_diff",
                 TicketRequest::SqlProfiles { .. } => "sql_profiles",
                 TicketRequest::ProfilesByTrace { .. } => "profiles_by_trace",
+                TicketRequest::QueryLogs { .. } => "query_logs",
+                TicketRequest::QueryLogsLabels { .. } => "query_logs_labels",
+                TicketRequest::QueryLogsLabelValues { .. } => "query_logs_label_values",
+                TicketRequest::QueryLogsSeries { .. } => "query_logs_series",
                 TicketRequest::SqlQuery { .. } => "sql",
             };
 
@@ -1009,7 +1117,11 @@ impl FlightService for QuerierFlightService {
                     | TicketRequest::ProfileFlamegraph { tenant_slug, .. }
                     | TicketRequest::ProfileDiff { tenant_slug, .. }
                     | TicketRequest::SqlProfiles { tenant_slug, .. }
-                    | TicketRequest::ProfilesByTrace { tenant_slug, .. } => {
+                    | TicketRequest::ProfilesByTrace { tenant_slug, .. }
+                    | TicketRequest::QueryLogs { tenant_slug, .. }
+                    | TicketRequest::QueryLogsLabels { tenant_slug, .. }
+                    | TicketRequest::QueryLogsLabelValues { tenant_slug, .. }
+                    | TicketRequest::QueryLogsSeries { tenant_slug, .. } => {
                         Some(tenant_slug.clone())
                     }
                     TicketRequest::SqlQuery { .. } => None,
@@ -1261,6 +1373,67 @@ impl FlightService for QuerierFlightService {
                             .await
                             .map_err(querier_error_to_status)?
                     }
+                    TicketRequest::QueryLogs {
+                        tenant_slug,
+                        dataset_slug,
+                        params,
+                    } => {
+                        tracing::info!(
+                            tenant_slug = %tenant_slug,
+                            dataset_slug = %dataset_slug,
+                            query = %params.query,
+                            "Executing query_logs"
+                        );
+                        self.logs_service
+                            .query_logs(&params, &tenant_slug, &dataset_slug)
+                            .await
+                            .map_err(querier_error_to_status)?
+                    }
+                    TicketRequest::QueryLogsLabels {
+                        tenant_slug,
+                        dataset_slug,
+                        start,
+                        end,
+                    } => {
+                        let labels = self
+                            .logs_service
+                            .get_labels(start, end, &tenant_slug, &dataset_slug)
+                            .await
+                            .map_err(querier_error_to_status)?;
+                        vec![strings_to_batch("label", labels)?]
+                    }
+                    TicketRequest::QueryLogsLabelValues {
+                        tenant_slug,
+                        dataset_slug,
+                        label,
+                        start,
+                        end,
+                    } => {
+                        let values = self
+                            .logs_service
+                            .get_label_values(&label, start, end, &tenant_slug, &dataset_slug)
+                            .await
+                            .map_err(querier_error_to_status)?;
+                        vec![strings_to_batch("value", values)?]
+                    }
+                    TicketRequest::QueryLogsSeries {
+                        tenant_slug,
+                        dataset_slug,
+                        params,
+                    } => {
+                        let series = self
+                            .logs_service
+                            .get_series(
+                                &params.selector,
+                                params.start,
+                                params.end,
+                                &tenant_slug,
+                                &dataset_slug,
+                            )
+                            .await
+                            .map_err(querier_error_to_status)?;
+                        vec![json_to_batch("series", &series)?]
+                    }
                     TicketRequest::SqlProfiles {
                         tenant_slug,
                         dataset_slug,
@@ -1406,6 +1579,19 @@ impl FlightService for QuerierFlightService {
         let out = stream::empty().boxed();
         Ok(Response::new(out))
     }
+}
+
+/// Parse a `start:end` nanosecond window from ticket segments.
+#[allow(clippy::result_large_err)]
+fn parse_ns_window(start: &str, end: &str) -> Result<(i64, i64), Status> {
+    let parse = |name: &str, value: &str| -> Result<i64, Status> {
+        value.parse::<i64>().map_err(|_| {
+            Status::invalid_argument(format!(
+                "{name} '{value}' is not a unix-nanosecond timestamp"
+            ))
+        })
+    };
+    Ok((parse("start", start)?, parse("end", end)?))
 }
 
 /// Parse the optional JSON tail of a profile discovery ticket.
@@ -1700,6 +1886,84 @@ mod tests {
             }
             other => panic!("expected FindTrace, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn parse_query_logs_ticket() {
+        let service = make_service().await;
+        let ticket = r#"query_logs:acme:prod:{"query":"{service_name=\"api\"}","start":10,"end":20,"limit":50,"direction":"forward"}"#;
+        match service.parse_ticket(ticket).unwrap() {
+            TicketRequest::QueryLogs {
+                tenant_slug,
+                dataset_slug,
+                params,
+            } => {
+                assert_eq!(tenant_slug, "acme");
+                assert_eq!(dataset_slug, "prod");
+                assert_eq!(params.query, r#"{service_name="api"}"#);
+                assert_eq!((params.start, params.end, params.limit), (10, 20, 50));
+                assert_eq!(params.direction.as_deref(), Some("forward"));
+            }
+            other => panic!("expected QueryLogs, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn parse_query_logs_metadata_tickets() {
+        let service = make_service().await;
+
+        match service
+            .parse_ticket("query_logs_labels:acme:prod:10:20")
+            .unwrap()
+        {
+            TicketRequest::QueryLogsLabels {
+                start,
+                end,
+                tenant_slug,
+                ..
+            } => {
+                assert_eq!((start, end), (10, 20));
+                assert_eq!(tenant_slug, "acme");
+            }
+            other => panic!("expected QueryLogsLabels, got {other:?}"),
+        }
+
+        match service
+            .parse_ticket("query_logs_label_values:acme:prod:service_name:10:20")
+            .unwrap()
+        {
+            TicketRequest::QueryLogsLabelValues {
+                label, start, end, ..
+            } => {
+                assert_eq!(label, "service_name");
+                assert_eq!((start, end), (10, 20));
+            }
+            other => panic!("expected QueryLogsLabelValues, got {other:?}"),
+        }
+
+        let series = r#"query_logs_series:acme:prod:{"selector":"{service_name=\"api\"}","start":10,"end":20}"#;
+        match service.parse_ticket(series).unwrap() {
+            TicketRequest::QueryLogsSeries { params, .. } => {
+                assert_eq!(params.selector, r#"{service_name="api"}"#);
+                assert_eq!((params.start, params.end), (10, 20));
+            }
+            other => panic!("expected QueryLogsSeries, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_query_logs_tickets_are_rejected() {
+        let service = make_service().await;
+        assert!(
+            service
+                .parse_ticket("query_logs:acme:prod:not-json")
+                .is_err()
+        );
+        assert!(
+            service
+                .parse_ticket("query_logs_labels:acme:prod:notanumber:20")
+                .is_err()
+        );
     }
 
     #[tokio::test]

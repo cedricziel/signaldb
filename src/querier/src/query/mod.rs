@@ -1,9 +1,40 @@
 pub mod error;
 pub mod logql;
+pub mod logs;
 pub mod profile;
 pub mod search_filter;
 pub mod table_ref;
 pub mod trace;
+
+/// Parameters carried in the `query_logs` Flight ticket (JSON-encoded).
+///
+/// Mirrors Loki's range/instant query surface: a LogQL string plus a
+/// nanosecond time window, a row limit, and the scan direction.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LogQueryParams {
+    /// The LogQL query string.
+    pub query: String,
+    /// Inclusive range start, unix epoch nanoseconds.
+    pub start: i64,
+    /// Inclusive range end, unix epoch nanoseconds.
+    pub end: i64,
+    /// Maximum rows to return.
+    pub limit: u32,
+    /// `"forward"` or `"backward"` (default).
+    #[serde(default)]
+    pub direction: Option<String>,
+}
+
+/// Parameters carried in the `query_logs_series` Flight ticket.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LogSeriesParams {
+    /// The stream selector, e.g. `{service_name="api"}`.
+    pub selector: String,
+    /// Inclusive range start, unix epoch nanoseconds.
+    pub start: i64,
+    /// Inclusive range end, unix epoch nanoseconds.
+    pub end: i64,
+}
 
 /// Parameters for single-trace lookup.
 #[derive(Debug)]

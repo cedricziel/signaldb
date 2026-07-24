@@ -63,7 +63,7 @@ Key details:
 3. Querier uses `TenantCatalog` to bridge DataFusion 3-level model to Iceberg 2-level namespace
 4. Results stream back as Arrow RecordBatches via Flight (trace not found -> Flight `not_found` status)
 5. Standalone querier also serves Tempo's `tempopb.Querier` gRPC protocol on the Flight port (see `tempo-api` skill)
-6. Router also nests a Pyroscope-compatible profile API at `/pyroscope` and a Loki-compatible logs API at `/loki` (the latter returns wire-format stubs until LogQL execution lands, epic #366)
+6. Router also nests a Pyroscope-compatible profile API at `/pyroscope` and a Loki-compatible logs API at `/loki`. LogQL log queries (selectors, line filters, label filters) execute end-to-end: the querier's `LogsService` lowers the parsed query to a DataFusion filter and streams matching log lines back as Loki streams; LogQL metric queries (`rate`, `count_over_time`, ...) are not implemented yet (epic #366)
 
 ## Service Components
 
