@@ -26,13 +26,15 @@ use tonic::{Request, Response, Status};
 use tracing::Instrument;
 
 use crate::query::logs::LogsService;
+use crate::query::metrics::MetricsService;
 use crate::query::profile::{
     FindProfileByIdParams, ProfileDiffParams, ProfileDiscoveryParams, ProfileSearchParams,
     ProfileService,
 };
 use crate::query::trace::TraceService;
 use crate::query::{
-    FindTraceByIdParams, LogQueryParams, LogSeriesParams, MetricQueryParams, SearchQueryParams,
+    FindTraceByIdParams, LogQueryParams, LogSeriesParams, MetricQueryParams, PromQlQueryParams,
+    SearchQueryParams,
 };
 
 /// Queries the Iceberg catalog directly, bypassing `datafusion_iceberg`'s
@@ -241,6 +243,11 @@ enum TicketRequest {
         dataset_slug: String,
         params: MetricQueryParams,
     },
+    QueryPromql {
+        tenant_slug: String,
+        dataset_slug: String,
+        params: PromQlQueryParams,
+    },
 }
 
 /// Flight service for query execution against stored data
@@ -254,6 +261,7 @@ pub struct QuerierFlightService {
     trace_service: TraceService,
     profile_service: ProfileService,
     logs_service: LogsService,
+    metrics_service: MetricsService,
     #[allow(dead_code)]
     iceberg_catalog: Option<Arc<dyn iceberg_rust::catalog::Catalog>>,
     limits: QuerierConfig,
@@ -335,6 +343,7 @@ impl QuerierFlightService {
         let profile_service = ProfileService::new(session_ctx.as_ref().clone())
             .with_max_search_limit(limits.max_search_limit);
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
+        let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
 
         Self {
             object_store,
@@ -344,6 +353,7 @@ impl QuerierFlightService {
             trace_service,
             profile_service,
             logs_service,
+            metrics_service,
             iceberg_catalog: None,
             limits,
             query_permits: dashmap::DashMap::new(),
@@ -432,6 +442,7 @@ impl QuerierFlightService {
         let profile_service = ProfileService::new(session_ctx.as_ref().clone())
             .with_max_search_limit(limits.max_search_limit);
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
+        let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
 
         Ok(Self {
             object_store,
@@ -441,6 +452,7 @@ impl QuerierFlightService {
             trace_service,
             profile_service,
             logs_service,
+            metrics_service,
             iceberg_catalog: Some(iceberg_catalog),
             limits,
             query_permits: dashmap::DashMap::new(),
@@ -790,6 +802,24 @@ impl QuerierFlightService {
             ));
         }
 
+        // PromQL query: query_promql:{tenant}:{dataset}:{json PromQlQueryParams}
+        if let Some(remainder) = ticket_content.strip_prefix("query_promql:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                let params: PromQlQueryParams = serde_json::from_str(parts[2]).map_err(|e| {
+                    Status::invalid_argument(format!("Invalid query_promql parameters: {e}"))
+                })?;
+                return Ok(TicketRequest::QueryPromql {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    params,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid query_promql ticket format. Expected: query_promql:tenant:dataset:{json}",
+            ));
+        }
+
         // Fall back to raw SQL query
         Ok(TicketRequest::SqlQuery {
             sql: ticket_content.to_string(),
@@ -1090,7 +1120,8 @@ impl FlightService for QuerierFlightService {
                     | TicketRequest::QueryLogsLabels { tenant_slug, .. }
                     | TicketRequest::QueryLogsLabelValues { tenant_slug, .. }
                     | TicketRequest::QueryLogsSeries { tenant_slug, .. }
-                    | TicketRequest::QueryMetric { tenant_slug, .. } => Some(tenant_slug),
+                    | TicketRequest::QueryMetric { tenant_slug, .. }
+                    | TicketRequest::QueryPromql { tenant_slug, .. } => Some(tenant_slug),
                     TicketRequest::SqlQuery { .. } => None,
                 };
                 if let Some(ticket_tenant) = ticket_tenant
@@ -1123,6 +1154,7 @@ impl FlightService for QuerierFlightService {
                 TicketRequest::QueryLogsLabelValues { .. } => "query_logs_label_values",
                 TicketRequest::QueryLogsSeries { .. } => "query_logs_series",
                 TicketRequest::QueryMetric { .. } => "query_metric",
+                TicketRequest::QueryPromql { .. } => "query_promql",
                 TicketRequest::SqlQuery { .. } => "sql",
             };
 
@@ -1149,7 +1181,8 @@ impl FlightService for QuerierFlightService {
                     | TicketRequest::QueryLogsLabels { tenant_slug, .. }
                     | TicketRequest::QueryLogsLabelValues { tenant_slug, .. }
                     | TicketRequest::QueryLogsSeries { tenant_slug, .. }
-                    | TicketRequest::QueryMetric { tenant_slug, .. } => Some(tenant_slug.clone()),
+                    | TicketRequest::QueryMetric { tenant_slug, .. }
+                    | TicketRequest::QueryPromql { tenant_slug, .. } => Some(tenant_slug.clone()),
                     TicketRequest::SqlQuery { .. } => None,
                 });
             // Held until the query's batches are fully computed.
@@ -1473,6 +1506,29 @@ impl FlightService for QuerierFlightService {
                         );
                         self.logs_service
                             .query_metric(&params, &tenant_slug, &dataset_slug)
+                            .await
+                            .map_err(querier_error_to_status)?
+                    }
+                    TicketRequest::QueryPromql {
+                        tenant_slug,
+                        dataset_slug,
+                        params,
+                    } => {
+                        tracing::info!(
+                            tenant_slug = %tenant_slug,
+                            dataset_slug = %dataset_slug,
+                            query = %params.query,
+                            "Executing query_promql"
+                        );
+                        self.metrics_service
+                            .query_range(
+                                &params.query,
+                                params.start,
+                                params.end,
+                                params.step,
+                                &tenant_slug,
+                                &dataset_slug,
+                            )
                             .await
                             .map_err(querier_error_to_status)?
                     }
@@ -1991,6 +2047,31 @@ mod tests {
             }
             other => panic!("expected QueryLogsSeries, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn parse_query_promql_ticket() {
+        let service = make_service().await;
+        let ticket =
+            r#"query_promql:acme:prod:{"query":"sum(rate(up[5m]))","start":10,"end":20,"step":15}"#;
+        match service.parse_ticket(ticket).unwrap() {
+            TicketRequest::QueryPromql {
+                tenant_slug,
+                dataset_slug,
+                params,
+            } => {
+                assert_eq!(tenant_slug, "acme");
+                assert_eq!(dataset_slug, "prod");
+                assert_eq!(params.query, "sum(rate(up[5m]))");
+                assert_eq!((params.start, params.end, params.step), (10, 20, 15));
+            }
+            other => panic!("expected QueryPromql, got {other:?}"),
+        }
+        assert!(
+            service
+                .parse_ticket("query_promql:acme:prod:not-json")
+                .is_err()
+        );
     }
 
     #[tokio::test]

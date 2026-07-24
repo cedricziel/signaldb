@@ -33,6 +33,7 @@ iceberg-rust.workspace = true
 datafusion_iceberg.workspace = true
 
 thiserror.workspace = true
+promql-parser.workspace = true
 
 # PromQL support
 
