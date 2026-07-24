@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
 common = { path = "../common" }
+logql = { path = "../logql" }
 tempo-api = { path = "../tempo-api", features = ["server"] }
 
 async-trait.workspace = true

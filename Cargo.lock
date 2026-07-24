@@ -5450,6 +5450,7 @@ dependencies = [
  "hex",
  "iceberg-rust",
  "log",
+ "logql",
  "object_store",
  "opentelemetry",
  "serde",
