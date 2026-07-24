@@ -5,6 +5,41 @@ All notable changes to the SignalDB Compactor Service will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1](https://github.com/cedricziel/signaldb/compare/compactor-v0.1.0...compactor-v0.1.1) (2026-07-24)
+
+
+### Features
+
+* **compactor:** complete epic [#432](https://github.com/cedricziel/signaldb/issues/432) — real compaction, multi-instance tests, observability ([#540](https://github.com/cedricziel/signaldb/issues/540)) ([ed95e20](https://github.com/cedricziel/signaldb/commit/ed95e2062a05b7386d05188c89a754a3606fc428))
+* **compactor:** enable compaction for all table types ([#466](https://github.com/cedricziel/signaldb/issues/466)) ([55ab128](https://github.com/cedricziel/signaldb/commit/55ab12825f26c3d45c8c61859940f082421ffa98))
+* **compactor:** enforce retention for real — partition drops and snapshot expiration ([#598](https://github.com/cedricziel/signaldb/issues/598)) ([106562d](https://github.com/cedricziel/signaldb/commit/106562de1208eebe0d0fefa30bbcf2e53087acbc))
+* **compactor:** Phase 1 - Dry-run compaction planner ([#462](https://github.com/cedricziel/signaldb/issues/462)) ([a0ad75f](https://github.com/cedricziel/signaldb/commit/a0ad75f5478be94786d77e732a1b8db319ae8650))
+* **compactor:** Phase 2 - Compaction Execution Engine ([#465](https://github.com/cedricziel/signaldb/issues/465)) ([e58271d](https://github.com/cedricziel/signaldb/commit/e58271d0d14f495290da4abe3d4ff3b9c185082b))
+* **compactor:** Phase 3 - Retention & Lifecycle Management ([#467](https://github.com/cedricziel/signaldb/issues/467)) ([28acc8d](https://github.com/cedricziel/signaldb/commit/28acc8d215f029fe0b81dcd9b916f29ccdea60d6))
+* **compactor:** Phase 4 — multi-instance safety (leases, round-robin, Flight endpoints) ([e9acbc2](https://github.com/cedricziel/signaldb/commit/e9acbc28ac75898fc1d9bd4fd866665b0ea076a5))
+* **flight:** close out Flight port authentication ([#544](https://github.com/cedricziel/signaldb/issues/544)) ([#589](https://github.com/cedricziel/signaldb/issues/589)) ([f8a7b43](https://github.com/cedricziel/signaldb/commit/f8a7b43722fa0024e2b7c01b2243bb9329420f6c))
+
+
+### Bug Fixes
+
+* **ci:** resolve clippy 1.97 lints, security advisories, and ethnum build failure ([#516](https://github.com/cedricziel/signaldb/issues/516)) ([b21c459](https://github.com/cedricziel/signaldb/commit/b21c4596f361d14dad147447cc19da4156fb81da))
+* **compactor:** derive orphan-cleanup tables from the catalog ([#604](https://github.com/cedricziel/signaldb/issues/604)) ([40dd6e2](https://github.com/cedricziel/signaldb/commit/40dd6e24e5a630b05dee73d1aa1f4cf97228affb))
+* **compactor:** plan from real manifest data instead of synthetic files ([#602](https://github.com/cedricziel/signaldb/issues/602)) ([4e4702b](https://github.com/cedricziel/signaldb/commit/4e4702b9376e02a6b7894a7a7d2500f99f9ba7f8))
+* **compactor:** renew leases during long compactions and use the DB clock ([#603](https://github.com/cedricziel/signaldb/issues/603)) ([4a1ead2](https://github.com/cedricziel/signaldb/commit/4a1ead2de48102f42d98f5cec289694b61fbf69e))
+* **config:** refuse in-memory discovery/catalog in standalone services ([#599](https://github.com/cedricziel/signaldb/issues/599)) ([c8413ba](https://github.com/cedricziel/signaldb/commit/c8413babe5de5346477bf4d1ff26a7f2fef380bb))
+* **iceberg:** load fresh table metadata in ensure_table instead of caching handles ([#606](https://github.com/cedricziel/signaldb/issues/606)) ([4539084](https://github.com/cedricziel/signaldb/commit/4539084cb5d1886edfacb000d3d93afbe584a67e)), closes [#537](https://github.com/cedricziel/signaldb/issues/537)
+
+
+### Documentation
+
+* audience-based taxonomy, doc-freshness enforcement, and Mermaid diagrams ([#607](https://github.com/cedricziel/signaldb/issues/607)) ([917709a](https://github.com/cedricziel/signaldb/commit/917709a5e765c7f93cdc4a56ae7842bd82d02e51))
+* full staleness sweep — match all docs, skills, and READMEs to current code ([#611](https://github.com/cedricziel/signaldb/issues/611)) ([22247b0](https://github.com/cedricziel/signaldb/commit/22247b027d77820481d493c081e29f0df4efd6ed))
+
+
+### Continuous Integration
+
+* drop MSRV policy and fix security audit ignores ([#521](https://github.com/cedricziel/signaldb/issues/521)) ([7da71e3](https://github.com/cedricziel/signaldb/commit/7da71e3d78f593a4361f403e2d4be1e426fb8807))
+
 ## 0.1.0 (2026-03-02)
 
 
