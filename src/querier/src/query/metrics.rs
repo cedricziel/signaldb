@@ -14,8 +14,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use datafusion::arrow::array::{Array, RecordBatch, StringArray};
-use datafusion::arrow::datatypes::{DataType, IntervalMonthDayNano, TimeUnit};
+use datafusion::arrow::array::{
+    Array, ArrayRef, Float64Array, RecordBatch, StringArray, TimestampNanosecondArray,
+};
+use datafusion::arrow::datatypes::{DataType, Field, IntervalMonthDayNano, Schema, TimeUnit};
 use datafusion::functions::datetime::expr_fn::date_bin;
 use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::expr_fn::contains;
@@ -95,6 +97,15 @@ impl MetricsService {
             ));
         }
         let plan = plan_promql(query)?;
+
+        // histogram_quantile targets the histogram table with a distinct
+        // (row-wise, interpolated) execution path.
+        if let Some(phi) = plan.quantile {
+            return self
+                .histogram_query(&plan, phi, start, end, step, tenant_slug, dataset_slug)
+                .await;
+        }
+
         let group_cols = self.group_columns(&plan)?;
 
         let df = self.scan_union(tenant_slug, dataset_slug).await?;
@@ -193,6 +204,119 @@ impl MetricsService {
         proj.extend(group_cols.iter().map(|c| col(*c)));
         proj.push(cast_value_f64(col("value")).alias("value"));
         df.select(proj).map_err(QuerierError::QueryFailed)
+    }
+
+    /// `histogram_quantile(phi, metric)`: interpolate the phi-quantile per
+    /// (step bucket, series) from stored OTLP histogram buckets.
+    ///
+    /// SignalDB stores whole histograms per row — `bucket_counts` and
+    /// `explicit_bounds` as JSON arrays — rather than Prometheus `_bucket`
+    /// series keyed by `le`. Data points that fall in the same step bucket
+    /// are merged by summing their bucket counts element-wise (exact for a
+    /// single point per bucket and for delta temporality), then the quantile
+    /// is interpolated. Output matches the matrix shape: `bucket`,
+    /// `metric_name`, `service_name`, `value`.
+    #[allow(clippy::too_many_arguments)]
+    async fn histogram_query(
+        &self,
+        plan: &MetricPlan,
+        phi: f64,
+        start: i64,
+        end: i64,
+        step: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<RecordBatch>, QuerierError> {
+        let table_ref = build_table_reference(tenant_slug, dataset_slug, "metrics_histogram")
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        // No histogram table yet → empty result, not an error.
+        let Ok(df) = self.session_context.table(table_ref).await else {
+            return Ok(vec![]);
+        };
+        let df = apply_filters(df, plan, start, end)?;
+        let batches = df
+            .select(vec![
+                bucket_expr(step),
+                col("metric_name"),
+                col("service_name"),
+                col("bucket_counts"),
+                col("explicit_bounds"),
+            ])
+            .map_err(QuerierError::QueryFailed)?
+            .collect()
+            .await
+            .map_err(QuerierError::QueryFailed)?;
+
+        // Merge histogram data points per (bucket, metric_name, service_name).
+        // BTreeMap keeps the output sorted by bucket, then series.
+        let mut groups: BTreeMap<(i64, String, String), HistogramAcc> = BTreeMap::new();
+        for batch in &batches {
+            let bucket = batch
+                .column_by_name("bucket")
+                .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
+                .ok_or_else(|| {
+                    QuerierError::InvalidInput("bucket column is not a timestamp".to_string())
+                })?;
+            let name = string_column(batch, "metric_name")?;
+            let service = string_column(batch, "service_name")?;
+            let counts = string_column(batch, "bucket_counts")?;
+            let bounds = string_column(batch, "explicit_bounds")?;
+            for i in 0..batch.num_rows() {
+                if bucket.is_null(i) || counts.is_null(i) || bounds.is_null(i) {
+                    continue;
+                }
+                let (Some(row_counts), Some(row_bounds)) = (
+                    parse_f64_array(counts.value(i)),
+                    parse_f64_array(bounds.value(i)),
+                ) else {
+                    continue;
+                };
+                // OTLP invariant: one more bucket count than bound.
+                if row_counts.len() != row_bounds.len() + 1 || row_bounds.is_empty() {
+                    continue;
+                }
+                let key = (
+                    bucket.value(i),
+                    name.value(i).to_string(),
+                    service.value(i).to_string(),
+                );
+                groups
+                    .entry(key)
+                    .or_insert_with(|| HistogramAcc::new(row_bounds, row_counts.len()))
+                    .merge(&row_counts);
+            }
+        }
+
+        let mut ts = Vec::with_capacity(groups.len());
+        let mut names = Vec::with_capacity(groups.len());
+        let mut services = Vec::with_capacity(groups.len());
+        let mut values = Vec::with_capacity(groups.len());
+        for ((bucket_ns, metric, service), acc) in groups {
+            ts.push(bucket_ns);
+            names.push(metric);
+            services.push(service);
+            values.push(histogram_quantile(phi, &acc.bounds, &acc.counts));
+        }
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "bucket",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(ts)),
+            Arc::new(StringArray::from(names)),
+            Arc::new(StringArray::from(services)),
+            Arc::new(Float64Array::from(values)),
+        ];
+        let batch = RecordBatch::try_new(schema, columns)
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        Ok(vec![batch])
     }
 
     /// Resolve the grouping labels to physical columns. Only labels backed
@@ -533,6 +657,97 @@ fn aggregate_expr(agg: MetricAgg) -> Expr {
     }
 }
 
+/// Merges OTLP histogram data points that share a step bucket and series.
+struct HistogramAcc {
+    /// Upper bounds of the finite buckets (`explicit_bounds`).
+    bounds: Vec<f64>,
+    /// Running element-wise sum of `bucket_counts` (one more than `bounds`).
+    counts: Vec<f64>,
+}
+
+impl HistogramAcc {
+    fn new(bounds: Vec<f64>, count_len: usize) -> Self {
+        Self {
+            bounds,
+            counts: vec![0.0; count_len],
+        }
+    }
+
+    fn merge(&mut self, row_counts: &[f64]) {
+        if row_counts.len() == self.counts.len() {
+            for (acc, add) in self.counts.iter_mut().zip(row_counts) {
+                *acc += add;
+            }
+        }
+    }
+}
+
+/// Parse a JSON numeric array (`"[1,2,3]"`) into `f64`s.
+fn parse_f64_array(raw: &str) -> Option<Vec<f64>> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let array = value.as_array()?;
+    array.iter().map(|v| v.as_f64()).collect()
+}
+
+/// Interpolate the `phi`-quantile of a classic histogram, following
+/// Prometheus's `bucketQuantile`: locate the bucket the rank falls in and
+/// linearly interpolate within it, assuming a uniform spread.
+///
+/// `bounds` are the finite bucket upper bounds; `counts` are the
+/// non-cumulative per-bucket counts with one extra `+Inf` bucket
+/// (`counts.len() == bounds.len() + 1`).
+fn histogram_quantile(phi: f64, bounds: &[f64], counts: &[f64]) -> f64 {
+    if phi.is_nan() {
+        return f64::NAN;
+    }
+    if phi < 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    if phi > 1.0 {
+        return f64::INFINITY;
+    }
+    if bounds.is_empty() || counts.len() != bounds.len() + 1 {
+        return f64::NAN;
+    }
+    let total: f64 = counts.iter().sum();
+    if total <= 0.0 {
+        return f64::NAN;
+    }
+
+    // Cumulative counts across buckets.
+    let mut cumulative = Vec::with_capacity(counts.len());
+    let mut running = 0.0;
+    for &c in counts {
+        running += c;
+        cumulative.push(running);
+    }
+
+    let rank = phi * total;
+    let last = counts.len() - 1;
+    let b = cumulative.iter().position(|&c| c >= rank).unwrap_or(last);
+
+    // Rank lands in the open-ended `+Inf` bucket: clamp to the top finite
+    // bound (we can't extrapolate beyond it).
+    if b == last {
+        return bounds[bounds.len() - 1];
+    }
+
+    let bucket_end = bounds[b];
+    let (bucket_start, rank_in_bucket, count_in_bucket) = if b == 0 {
+        // Prometheus: a non-positive first bound is returned as-is.
+        if bucket_end <= 0.0 {
+            return bucket_end;
+        }
+        (0.0, rank, cumulative[0])
+    } else {
+        (bounds[b - 1], rank - cumulative[b - 1], counts[b])
+    };
+    if count_in_bucket <= 0.0 {
+        return bucket_start;
+    }
+    bucket_start + (bucket_end - bucket_start) * (rank_in_bucket / count_in_bucket)
+}
+
 fn cast_ns(expr: Expr) -> Expr {
     datafusion::logical_expr::cast(expr, DataType::Timestamp(TimeUnit::Nanosecond, None))
 }
@@ -804,5 +1019,114 @@ mod tests {
             service.query_range("reqs", 0, 1000, 0, "t", "d").await,
             Err(QuerierError::InvalidInput(_))
         ));
+    }
+
+    // ---- histogram_quantile ----
+
+    #[test]
+    fn histogram_quantile_interpolates_within_bucket() {
+        // bounds [1,2,4], counts [1,2,3,4] (incl. +Inf), total 10.
+        // rank 5 lands in the (2,4] bucket: 2 + 2*(5-3)/3 = 3.333…
+        let bounds = [1.0, 2.0, 4.0];
+        let counts = [1.0, 2.0, 3.0, 4.0];
+        assert!((histogram_quantile(0.5, &bounds, &counts) - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-9);
+        // rank 1 lands at the top of the first bucket: exactly its bound.
+        assert!((histogram_quantile(0.1, &bounds, &counts) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn histogram_quantile_in_inf_bucket_clamps_to_top_bound() {
+        let bounds = [1.0, 2.0, 4.0];
+        let counts = [1.0, 2.0, 3.0, 4.0];
+        // rank 9.5 falls in the +Inf bucket → clamp to the highest bound.
+        assert_eq!(histogram_quantile(0.95, &bounds, &counts), 4.0);
+    }
+
+    #[test]
+    fn histogram_quantile_edge_cases() {
+        let bounds = [1.0, 2.0];
+        let counts = [1.0, 1.0, 1.0];
+        assert!(histogram_quantile(f64::NAN, &bounds, &counts).is_nan());
+        assert_eq!(
+            histogram_quantile(-0.1, &bounds, &counts),
+            f64::NEG_INFINITY
+        );
+        assert_eq!(histogram_quantile(1.5, &bounds, &counts), f64::INFINITY);
+        // No observations → NaN.
+        assert!(histogram_quantile(0.5, &bounds, &[0.0, 0.0, 0.0]).is_nan());
+        // Malformed (counts length != bounds+1) → NaN.
+        assert!(histogram_quantile(0.5, &bounds, &[1.0, 1.0]).is_nan());
+    }
+
+    #[test]
+    fn parse_f64_array_handles_json_and_junk() {
+        assert_eq!(parse_f64_array("[1, 2.5, 3]"), Some(vec![1.0, 2.5, 3.0]));
+        assert_eq!(parse_f64_array("[]"), Some(vec![]));
+        assert_eq!(parse_f64_array("not json"), None);
+        assert_eq!(parse_f64_array(r#"{"a":1}"#), None);
+    }
+
+    fn service_with_histogram() -> MetricsService {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("bucket_counts", DataType::Utf8, true),
+            Field::new("explicit_bounds", DataType::Utf8, true),
+            Field::new("attributes", DataType::Utf8, true),
+            Field::new("resource_attributes", DataType::Utf8, true),
+        ]));
+        // Two data points for the same series in one step bucket. Merging
+        // scales the counts (×2) without moving the quantile.
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100, 100])),
+                Arc::new(StringArray::from(vec!["api", "api"])),
+                Arc::new(StringArray::from(vec!["latency", "latency"])),
+                Arc::new(StringArray::from(vec!["[1,2,3,4]", "[1,2,3,4]"])),
+                Arc::new(StringArray::from(vec!["[1,2,4]", "[1,2,4]"])),
+                Arc::new(StringArray::from(vec!["{}", "{}"])),
+                Arc::new(StringArray::from(vec!["{}", "{}"])),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table("metrics_histogram".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        MetricsService::new(ctx)
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_query_interpolates_merged_series() {
+        let service = service_with_histogram();
+        let out = matrix(&service, "histogram_quantile(0.5, latency)", 1000).await;
+        assert_eq!(out.len(), 1);
+        let (name, svc, value) = &out[0];
+        assert_eq!(name, "latency");
+        assert_eq!(svc.as_deref(), Some("api"));
+        assert!(
+            (value - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-9,
+            "got {value}"
+        );
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_without_table_is_empty() {
+        // The gauge-only service has no metrics_histogram table.
+        let service = service_with_data();
+        let out = matrix(&service, "histogram_quantile(0.9, latency)", 1000).await;
+        assert!(out.is_empty());
     }
 }

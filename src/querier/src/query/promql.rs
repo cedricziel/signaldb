@@ -15,9 +15,12 @@
 //!
 //! - Range-vector functions `rate(metric[range])` and
 //!   `increase(metric[range])`, optionally under an outer aggregation.
+//! - `histogram_quantile(phi, metric)` over a stored OTLP histogram — the
+//!   quantile is interpolated per series from the metric's buckets.
 //!
-//! `irate`, binary operators, subqueries, and `histogram_quantile` are
-//! not lowered yet and return [`QuerierError::Unsupported`] (#335).
+//! `irate`, binary operators, subqueries, and `histogram_quantile` over an
+//! inner `rate()`/aggregation are not lowered yet and return
+//! [`QuerierError::Unsupported`] (#335).
 //!
 //! Like the log path, range aggregations use fixed step-aligned buckets
 //! (`date_bin`), not Prometheus's sliding window — exact when the step
@@ -100,6 +103,10 @@ pub struct MetricPlan {
     /// Set for `rate`/`increase` — a per-series counter delta over the
     /// window is computed before any outer aggregation.
     pub range: Option<RangeSpec>,
+    /// Set for `histogram_quantile(phi, <selector>)` — the query targets
+    /// the `metrics_histogram` table and interpolates the phi-quantile from
+    /// each series' stored buckets instead of aggregating a scalar `value`.
+    pub quantile: Option<f64>,
 }
 
 impl Eq for MetricPlan {}
@@ -114,6 +121,10 @@ pub fn plan_promql(query: &str) -> Result<MetricPlan, QuerierError> {
 fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
     match expr {
         Expr::Paren(p) => lower(&p.expr),
+        // `histogram_quantile(phi, <selector>)` targets the histogram table.
+        Expr::Call(call) if call.func.name == "histogram_quantile" => {
+            lower_histogram_quantile(call)
+        }
         // Bare selector or bare range function.
         Expr::VectorSelector(_) | Expr::Call(_) => {
             build_plan(expr, MetricAgg::Last, Grouping::Natural)
@@ -213,7 +224,38 @@ fn lower_selector(
         aggregate,
         grouping,
         range,
+        quantile: None,
     })
+}
+
+/// Lower `histogram_quantile(phi, <selector>)`. The phi must be a numeric
+/// literal and the inner argument a plain vector selector — SignalDB stores
+/// whole OTLP histograms per series (bucket arrays), so the quantile is
+/// interpolated per series rather than from `le`-labelled bucket series.
+fn lower_histogram_quantile(call: &parser::Call) -> Result<MetricPlan, QuerierError> {
+    let phi = match unwrap_paren(call.args.args.first().ok_or_else(|| {
+        QuerierError::InvalidInput("histogram_quantile expects (phi, selector)".to_string())
+    })?) {
+        Expr::NumberLiteral(n) => n.val,
+        _ => {
+            return Err(QuerierError::Unsupported(
+                "histogram_quantile requires a numeric literal quantile".to_string(),
+            ));
+        }
+    };
+    let inner = call.args.args.get(1).ok_or_else(|| {
+        QuerierError::InvalidInput("histogram_quantile expects (phi, selector)".to_string())
+    })?;
+    let Expr::VectorSelector(vs) = unwrap_paren(inner) else {
+        return Err(QuerierError::Unsupported(
+            "histogram_quantile over rate()/aggregations is not supported yet (#335); \
+             use histogram_quantile(phi, metric)"
+                .to_string(),
+        ));
+    };
+    let mut plan = lower_selector(vs, MetricAgg::Last, Grouping::Natural, None)?;
+    plan.quantile = Some(phi);
+    Ok(plan)
 }
 
 fn unwrap_paren(expr: &Expr) -> &Expr {
@@ -407,10 +449,27 @@ mod tests {
             err(r#"sum without (job) (x)"#),
             QuerierError::Unsupported(_)
         ));
+        // histogram_quantile over an inner rate() is not lowered yet.
         assert!(matches!(
-            err(r#"histogram_quantile(0.9, x)"#),
+            err(r#"histogram_quantile(0.9, rate(x[5m]))"#),
             QuerierError::Unsupported(_)
         ));
+    }
+
+    #[test]
+    fn histogram_quantile_over_selector() {
+        let p = plan(r#"histogram_quantile(0.95, http_request_duration_seconds{job="api"})"#);
+        assert_eq!(p.metric_name, "http_request_duration_seconds");
+        assert_eq!(p.quantile, Some(0.95));
+        assert_eq!(p.matchers.len(), 1);
+        assert_eq!(p.grouping, Grouping::Natural);
+        assert!(p.range.is_none());
+    }
+
+    #[test]
+    fn non_histogram_plan_has_no_quantile() {
+        assert_eq!(plan(r#"http_requests_total"#).quantile, None);
+        assert_eq!(plan(r#"sum(rate(x[5m]))"#).quantile, None);
     }
 
     #[test]
