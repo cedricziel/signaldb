@@ -356,10 +356,7 @@ fn batches_to_matrix(batches: &[RecordBatch]) -> Vec<loki_api::MetricSeries> {
     let mut series: HashMap<String, MetricSeries> = HashMap::new();
 
     for batch in batches {
-        let Some(buckets) = batch
-            .column_by_name("bucket")
-            .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
-        else {
+        let Some(buckets) = timestamps_ns(batch, "bucket") else {
             continue;
         };
         let value = batch.column_by_name("value").and_then(|c| {
@@ -514,10 +511,7 @@ fn batches_to_streams(batches: &[RecordBatch]) -> Vec<Stream> {
     let mut streams: HashMap<String, Stream> = HashMap::new();
 
     for batch in batches {
-        let Some(timestamps) = batch
-            .column_by_name("timestamp")
-            .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
-        else {
+        let Some(timestamps) = timestamps_ns(batch, "timestamp") else {
             continue;
         };
         let body = str_col(batch, "body");
@@ -603,6 +597,21 @@ fn str_col<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a StringArray> {
     batch
         .column_by_name(name)
         .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+}
+
+/// Read a timestamp column as nanoseconds, casting from whatever unit the
+/// storage uses (Iceberg stores microsecond timestamps, so the raw column
+/// is not necessarily nanosecond).
+fn timestamps_ns(batch: &RecordBatch, name: &str) -> Option<TimestampNanosecondArray> {
+    use datafusion::arrow::compute::cast;
+    use datafusion::arrow::datatypes::{DataType, TimeUnit};
+
+    let column = batch.column_by_name(name)?;
+    let nanos = cast(column, &DataType::Timestamp(TimeUnit::Nanosecond, None)).ok()?;
+    nanos
+        .as_any()
+        .downcast_ref::<TimestampNanosecondArray>()
+        .cloned()
 }
 
 fn value_at(col: &Option<&StringArray>, i: usize) -> Option<String> {

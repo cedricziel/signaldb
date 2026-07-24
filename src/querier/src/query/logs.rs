@@ -200,9 +200,14 @@ impl LogsService {
         let stride = lit(ScalarValue::IntervalMonthDayNano(Some(
             IntervalMonthDayNano::new(0, 0, params.step),
         )));
-        // Align buckets to the unix epoch.
+        // Align buckets to the unix epoch. Cast the (microsecond) storage
+        // timestamp to nanoseconds so the nanosecond stride/origin agree.
         let origin = lit(ScalarValue::TimestampNanosecond(Some(0), None));
-        let bucket = date_bin(stride, col("timestamp"), origin).alias("bucket");
+        let timestamp_ns = cast(
+            col("timestamp"),
+            DataType::Timestamp(datafusion::arrow::datatypes::TimeUnit::Nanosecond, None),
+        );
+        let bucket = date_bin(stride, timestamp_ns, origin).alias("bucket");
 
         let mut group_exprs = vec![bucket];
         group_exprs.extend(group_cols.iter().map(|c| col(*c)));
