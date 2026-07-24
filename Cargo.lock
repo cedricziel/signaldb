@@ -6029,6 +6029,7 @@ dependencies = [
  "datafusion",
  "futures",
  "log",
+ "loki-api",
  "pyroscope-api",
  "serde",
  "serde_json",
