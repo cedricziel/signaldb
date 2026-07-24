@@ -13,9 +13,11 @@
 //!   by step (last value per bucket).
 //! - A vector aggregation `sum|avg|min|max|count [by (labels)] (metric)`.
 //!
-//! Range-vector functions (`rate`, `increase`, `irate`), binary
-//! operators, subqueries, and `histogram_quantile` are not lowered here
-//! yet and return [`QuerierError::Unsupported`] (tracked in #334/#335).
+//! - Range-vector functions `rate(metric[range])` and
+//!   `increase(metric[range])`, optionally under an outer aggregation.
+//!
+//! `irate`, binary operators, subqueries, and `histogram_quantile` are
+//! not lowered yet and return [`QuerierError::Unsupported`] (#335).
 //!
 //! Like the log path, range aggregations use fixed step-aligned buckets
 //! (`date_bin`), not Prometheus's sliding window — exact when the step
@@ -65,17 +67,42 @@ pub enum MatchKind {
     Nre,
 }
 
+/// A range-vector function applied over the `[range]` window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RangeFn {
+    /// `rate(metric[range])` — per-second average increase of a counter.
+    Rate,
+    /// `increase(metric[range])` — total increase over the window.
+    Increase,
+}
+
+/// A range-vector spec: the function and its window in seconds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RangeSpec {
+    pub function: RangeFn,
+    pub seconds: f64,
+}
+
+impl Eq for RangeSpec {}
+
 /// A lowered PromQL query.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MetricPlan {
     /// The metric name being queried.
     pub metric_name: String,
     /// Label matchers to filter series (excluding `__name__`).
     pub matchers: Vec<LabelMatch>,
-    /// The aggregate computed per bucket per series.
+    /// The aggregate computed per bucket per series. Ignored for the
+    /// per-series stage of a range function; applied as the outer
+    /// aggregation over a range result.
     pub aggregate: MetricAgg,
     pub grouping: Grouping,
+    /// Set for `rate`/`increase` — a per-series counter delta over the
+    /// window is computed before any outer aggregation.
+    pub range: Option<RangeSpec>,
 }
+
+impl Eq for MetricPlan {}
 
 /// Parse and lower a PromQL query.
 pub fn plan_promql(query: &str) -> Result<MetricPlan, QuerierError> {
@@ -86,8 +113,11 @@ pub fn plan_promql(query: &str) -> Result<MetricPlan, QuerierError> {
 
 fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
     match expr {
-        Expr::VectorSelector(vs) => lower_selector(vs, MetricAgg::Last, Grouping::Natural),
         Expr::Paren(p) => lower(&p.expr),
+        // Bare selector or bare range function.
+        Expr::VectorSelector(_) | Expr::Call(_) => {
+            build_plan(expr, MetricAgg::Last, Grouping::Natural)
+        }
         Expr::Aggregate(agg) => {
             let aggregate = aggregate_op(&format!("{}", agg.op))?;
             if agg.param.is_some() {
@@ -96,18 +126,8 @@ fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
                 ));
             }
             let grouping = grouping_from(agg.modifier.as_ref())?;
-            match unwrap_paren(&agg.expr) {
-                Expr::VectorSelector(vs) => lower_selector(vs, aggregate, grouping),
-                other => Err(QuerierError::Unsupported(format!(
-                    "aggregation over {}",
-                    expr_kind(other)
-                ))),
-            }
+            build_plan(unwrap_paren(&agg.expr), aggregate, grouping)
         }
-        Expr::Call(call) => Err(QuerierError::Unsupported(format!(
-            "function '{}' (range functions land in #334)",
-            call.func.name
-        ))),
         Expr::Binary(_) => Err(QuerierError::Unsupported(
             "binary operations between metric queries".to_string(),
         )),
@@ -121,10 +141,55 @@ fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
     }
 }
 
+/// Build a plan from the innermost expression (a selector or a range
+/// function over a selector) plus the outer aggregate/grouping.
+fn build_plan(
+    inner: &Expr,
+    aggregate: MetricAgg,
+    grouping: Grouping,
+) -> Result<MetricPlan, QuerierError> {
+    match inner {
+        Expr::Paren(p) => build_plan(&p.expr, aggregate, grouping),
+        Expr::VectorSelector(vs) => lower_selector(vs, aggregate, grouping, None),
+        Expr::Call(call) => {
+            let function = match call.func.name {
+                "rate" => RangeFn::Rate,
+                "increase" => RangeFn::Increase,
+                other => {
+                    return Err(QuerierError::Unsupported(format!(
+                        "function '{other}' (only rate/increase are supported)"
+                    )));
+                }
+            };
+            let arg = call.args.first().ok_or_else(|| {
+                QuerierError::InvalidInput(format!("{} expects one argument", call.func.name))
+            })?;
+            let Expr::MatrixSelector(ms) = unwrap_paren(&arg) else {
+                return Err(QuerierError::Unsupported(format!(
+                    "{} requires a range-vector selector like metric[5m]",
+                    call.func.name
+                )));
+            };
+            let seconds = ms.range.as_secs_f64();
+            lower_selector(
+                &ms.vs,
+                aggregate,
+                grouping,
+                Some(RangeSpec { function, seconds }),
+            )
+        }
+        other => Err(QuerierError::Unsupported(format!(
+            "aggregation over {}",
+            expr_kind(other)
+        ))),
+    }
+}
+
 fn lower_selector(
     vs: &parser::VectorSelector,
     aggregate: MetricAgg,
     grouping: Grouping,
+    range: Option<RangeSpec>,
 ) -> Result<MetricPlan, QuerierError> {
     // The metric name may be given directly or via a `__name__` matcher.
     let mut metric_name = vs.name.clone();
@@ -147,6 +212,7 @@ fn lower_selector(
         matchers,
         aggregate,
         grouping,
+        range,
     })
 }
 
@@ -298,9 +364,41 @@ mod tests {
     }
 
     #[test]
+    fn rate_and_increase() {
+        let r = plan(r#"rate(http_requests_total{job="api"}[5m])"#);
+        assert_eq!(r.metric_name, "http_requests_total");
+        assert_eq!(r.matchers.len(), 1);
+        assert_eq!(
+            r.range,
+            Some(RangeSpec {
+                function: RangeFn::Rate,
+                seconds: 300.0
+            })
+        );
+        assert_eq!(r.grouping, Grouping::Natural);
+
+        let inc = plan(r#"increase(errors[1m])"#);
+        assert_eq!(
+            inc.range,
+            Some(RangeSpec {
+                function: RangeFn::Increase,
+                seconds: 60.0
+            })
+        );
+    }
+
+    #[test]
+    fn sum_over_rate() {
+        let p = plan(r#"sum(rate(http_requests_total[5m]))"#);
+        assert_eq!(p.aggregate, MetricAgg::Sum);
+        assert_eq!(p.grouping, Grouping::Collapse);
+        assert_eq!(p.range.unwrap().function, RangeFn::Rate);
+    }
+
+    #[test]
     fn unsupported_shapes() {
         assert!(matches!(
-            err(r#"rate(x[5m])"#),
+            err(r#"irate(x[5m])"#),
             QuerierError::Unsupported(_)
         ));
         assert!(matches!(err(r#"topk(5, x)"#), QuerierError::Unsupported(_)));

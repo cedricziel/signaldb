@@ -18,7 +18,9 @@ use datafusion::arrow::datatypes::{DataType, IntervalMonthDayNano, TimeUnit};
 use datafusion::functions::datetime::expr_fn::date_bin;
 use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::expr_fn::contains;
-use datafusion::functions_aggregate::expr_fn::{avg, count, last_value, max, min, sum};
+use datafusion::functions_aggregate::expr_fn::{
+    avg, count, first_value, last_value, max, min, sum,
+};
 use datafusion::logical_expr::{Expr, SortExpr, col, lit, not};
 use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
@@ -96,18 +98,33 @@ impl MetricsService {
 
         // Bucket timestamps into step-aligned windows (cast the
         // microsecond storage timestamp to nanoseconds first).
-        let stride = lit(ScalarValue::IntervalMonthDayNano(Some(
-            IntervalMonthDayNano::new(0, 0, step),
-        )));
-        let origin = lit(ScalarValue::TimestampNanosecond(Some(0), None));
-        let timestamp_ns = cast_ns(col("timestamp"));
-        let bucket = date_bin(stride, timestamp_ns, origin).alias("bucket");
+        let bucket = bucket_expr(step);
 
-        // Group by bucket, metric_name, and the grouping columns.
+        let df = if let Some(range) = plan.range {
+            self.range_query(df, bucket, range, plan.aggregate, &group_cols)?
+        } else {
+            self.simple_query(df, bucket, plan.aggregate, &group_cols)?
+        };
+
+        df.sort(vec![SortExpr::new(col("bucket"), true, true)])
+            .map_err(QuerierError::QueryFailed)?
+            .collect()
+            .await
+            .map_err(QuerierError::QueryFailed)
+    }
+
+    /// Aggregate `value` per (bucket, metric_name, group) directly.
+    fn simple_query(
+        &self,
+        df: DataFrame,
+        bucket: Expr,
+        aggregate: MetricAgg,
+        group_cols: &[&str],
+    ) -> Result<DataFrame, QuerierError> {
         let mut group_exprs = vec![bucket, col("metric_name")];
         group_exprs.extend(group_cols.iter().map(|c| col(*c)));
 
-        let value = aggregate_expr(plan.aggregate).alias("value");
+        let value = aggregate_expr(aggregate).alias("value");
         let df = df
             .aggregate(group_exprs, vec![value])
             .map_err(QuerierError::QueryFailed)?;
@@ -115,14 +132,63 @@ impl MetricsService {
         // Normalize `value` to Float64 (count aggregates to Int64).
         let mut proj = vec![col("bucket"), col("metric_name")];
         proj.extend(group_cols.iter().map(|c| col(*c)));
-        proj.push(cast_ns_value(col("value")).alias("value"));
-        let df = df.select(proj).map_err(QuerierError::QueryFailed)?;
+        proj.push(cast_value_f64(col("value")).alias("value"));
+        df.select(proj).map_err(QuerierError::QueryFailed)
+    }
 
-        df.sort(vec![SortExpr::new(col("bucket"), true, true)])
-            .map_err(QuerierError::QueryFailed)?
-            .collect()
-            .await
-            .map_err(QuerierError::QueryFailed)
+    /// Two-stage `rate`/`increase`: per-series counter delta over the
+    /// bucket, then an optional outer aggregation.
+    fn range_query(
+        &self,
+        df: DataFrame,
+        bucket: Expr,
+        range: super::promql::RangeSpec,
+        aggregate: MetricAgg,
+        group_cols: &[&str],
+    ) -> Result<DataFrame, QuerierError> {
+        use super::promql::RangeFn;
+
+        // Stage 1: (last - first)[/seconds] per (bucket, metric_name, service).
+        let order = vec![SortExpr::new(col("timestamp"), true, true)];
+        let df = df
+            .aggregate(
+                vec![bucket, col("metric_name"), col("service_name")],
+                vec![
+                    first_value(col("value"), order.clone()).alias("first"),
+                    last_value(col("value"), order).alias("last"),
+                ],
+            )
+            .map_err(QuerierError::QueryFailed)?;
+
+        let delta = col("last") - col("first");
+        let per_series = match range.function {
+            RangeFn::Increase => delta,
+            RangeFn::Rate => delta / lit(range.seconds),
+        };
+        let df = df
+            .select(vec![
+                col("bucket"),
+                col("metric_name"),
+                col("service_name"),
+                cast_value_f64(per_series).alias("value"),
+            ])
+            .map_err(QuerierError::QueryFailed)?;
+
+        // Stage 2: an outer aggregation folds the per-series rates. A bare
+        // `rate(...)` (Natural grouping over `service_name`) is already the
+        // result.
+        if group_cols == ["service_name"] {
+            return Ok(df);
+        }
+        let mut group_exprs = vec![col("bucket"), col("metric_name")];
+        group_exprs.extend(group_cols.iter().map(|c| col(*c)));
+        let df = df
+            .aggregate(group_exprs, vec![aggregate_expr(aggregate).alias("value")])
+            .map_err(QuerierError::QueryFailed)?;
+        let mut proj = vec![col("bucket"), col("metric_name")];
+        proj.extend(group_cols.iter().map(|c| col(*c)));
+        proj.push(cast_value_f64(col("value")).alias("value"));
+        df.select(proj).map_err(QuerierError::QueryFailed)
     }
 
     /// Resolve the grouping labels to physical columns. Only labels backed
@@ -252,9 +318,19 @@ fn cast_ns(expr: Expr) -> Expr {
     datafusion::logical_expr::cast(expr, DataType::Timestamp(TimeUnit::Nanosecond, None))
 }
 
-/// Cast an aggregate value to Float64 for a uniform matrix value column.
-fn cast_ns_value(expr: Expr) -> Expr {
+/// Cast a value to Float64 for a uniform matrix value column.
+fn cast_value_f64(expr: Expr) -> Expr {
     datafusion::logical_expr::cast(expr, DataType::Float64)
+}
+
+/// The step-aligned `date_bin` bucket expression, aligned to the epoch.
+/// The microsecond storage timestamp is cast to nanoseconds first.
+fn bucket_expr(step: i64) -> Expr {
+    let stride = lit(ScalarValue::IntervalMonthDayNano(Some(
+        IntervalMonthDayNano::new(0, 0, step),
+    )));
+    let origin = lit(ScalarValue::TimestampNanosecond(Some(0), None));
+    date_bin(stride, cast_ns(col("timestamp")), origin).alias("bucket")
 }
 
 #[cfg(test)]
@@ -414,6 +490,40 @@ mod tests {
         let out = matrix(&service, "sum(reqs)", 150).await;
         assert_eq!(out.len(), 3);
         assert_eq!(out.iter().map(|(_, _, v)| *v).sum::<f64>(), 9.0);
+    }
+
+    #[tokio::test]
+    async fn increase_is_last_minus_first_per_bucket() {
+        let service = service_with_data();
+        // api counter: 1 -> 3 in one bucket => increase 2; web has one
+        // sample => increase 0.
+        let out = matrix(&service, "increase(reqs[1m])", 1000).await;
+        let api = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert_eq!(api.2, 2.0);
+    }
+
+    #[tokio::test]
+    async fn rate_divides_increase_by_range_seconds() {
+        let service = service_with_data();
+        // increase 2 over a 60s range = rate 2/60.
+        let out = matrix(&service, "rate(reqs[1m])", 1000).await;
+        let api = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert!((api.2 - 2.0 / 60.0).abs() < 1e-9, "got {}", api.2);
+    }
+
+    #[tokio::test]
+    async fn sum_over_increase_folds_series() {
+        let service = service_with_data();
+        // api increase 2, web increase 0 => sum 2.
+        let out = matrix(&service, "sum(increase(reqs[1m]))", 1000).await;
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].2, 2.0);
     }
 
     #[tokio::test]
