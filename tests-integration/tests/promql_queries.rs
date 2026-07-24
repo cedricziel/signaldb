@@ -25,8 +25,8 @@ use opentelemetry_proto::tonic::{
     collector::metrics::v1::ExportMetricsServiceRequest,
     common::v1::{AnyValue, KeyValue, any_value::Value},
     metrics::v1::{
-        Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric::Data,
-        number_data_point,
+        Gauge, Histogram, HistogramDataPoint, Metric, NumberDataPoint, ResourceMetrics,
+        ScopeMetrics, metric::Data, number_data_point,
     },
     resource::v1::Resource,
 };
@@ -266,6 +266,52 @@ fn gauge_metrics(service: &str, value: f64, code: &str) -> ExportMetricsServiceR
     }
 }
 
+/// A single `latency` histogram data point with bounds [1,2,4] and bucket
+/// counts [1,2,3,4] (incl. +Inf) — total 10. The 0.5-quantile interpolates
+/// to 2 + 2*(5-3)/3 = 3.333… within the (2,4] bucket.
+fn histogram_metrics(service: &str) -> ExportMetricsServiceRequest {
+    ExportMetricsServiceRequest {
+        resource_metrics: vec![ResourceMetrics {
+            resource: Some(Resource {
+                attributes: vec![KeyValue {
+                    key: "service.name".to_string(),
+                    value: Some(string_value(service)),
+                    ..Default::default()
+                }],
+                dropped_attributes_count: 0,
+                ..Default::default()
+            }),
+            scope_metrics: vec![ScopeMetrics {
+                scope: None,
+                metrics: vec![Metric {
+                    name: "latency".to_string(),
+                    description: String::new(),
+                    unit: "s".to_string(),
+                    data: Some(Data::Histogram(Histogram {
+                        aggregation_temporality: 1, // delta
+                        data_points: vec![HistogramDataPoint {
+                            attributes: vec![],
+                            start_time_unix_nano: BASE_NS,
+                            time_unix_nano: BASE_NS,
+                            count: 10,
+                            sum: Some(20.0),
+                            bucket_counts: vec![1, 2, 3, 4],
+                            explicit_bounds: vec![1.0, 2.0, 4.0],
+                            exemplars: vec![],
+                            flags: 0,
+                            min: Some(0.5),
+                            max: Some(6.0),
+                        }],
+                    })),
+                    metadata: vec![],
+                }],
+                schema_url: String::new(),
+            }],
+            schema_url: String::new(),
+        }],
+    }
+}
+
 async fn build_router(services: &TestServices) -> Router {
     let catalog = Catalog::new(services.config.discovery.as_ref().unwrap().dsn.as_str())
         .await
@@ -367,6 +413,12 @@ async fn promql_end_to_end() {
         .handle_grpc_otlp_metrics(&ctx, gauge_metrics("web", 20.0, "500"))
         .await
         .expect("ingest web gauge");
+    // Ingest: latency histogram (buckets [1,2,4], counts [1,2,3,4]).
+    services
+        .metrics_handler
+        .handle_grpc_otlp_metrics(&ctx, histogram_metrics("api"))
+        .await
+        .expect("ingest api histogram");
 
     // Wait for persistence.
     sleep(Duration::from_secs(15)).await;
@@ -487,6 +539,21 @@ async fn promql_end_to_end() {
         "series should all be requests: {body}"
     );
     assert_eq!(series.len(), 2, "one series per job: {body}");
+
+    // 7. histogram_quantile over the stored latency histogram: the median
+    //    interpolates to 3.333… within the (2,4] bucket.
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query=histogram_quantile(0.5,latency)&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "histogram_quantile: {body}");
+    assert_eq!(body["data"]["resultType"], "matrix");
+    let q = matrix_value_sum(&body);
+    assert!(
+        (q - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-6,
+        "median latency ≈ 3.333, got {q}: {body}"
+    );
 }
 
 /// Sum all sample values across all series in a matrix response.

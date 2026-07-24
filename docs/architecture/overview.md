@@ -231,7 +231,8 @@ flowchart LR
 | `GET\|POST /prometheus/api/v1/query` | Implemented -- instant vector (latest sample per series) |
 | `GET /prometheus/api/v1/labels`, `/label/{name}/values`, `/series` | Implemented -- metric label names/values and `{__name__, job}` series via Querier |
 | PromQL `rate`/`increase` | Implemented -- counter delta over `date_bin` buckets |
-| PromQL `histogram_quantile`, binary ops, `topk` | Not implemented yet (#335) |
+| PromQL `histogram_quantile(phi, metric)` | Implemented -- interpolated per series from `metrics_histogram` OTLP buckets |
+| PromQL `histogram_quantile` over `rate()`, binary ops, `topk` | Not implemented yet (#335) |
 
 **Admin API Endpoints** (requires `admin_api_key`):
 

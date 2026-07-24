@@ -46,9 +46,31 @@ curl -sG http://localhost:3000/prometheus/api/v1/query_range \
 
 Supported so far: instant/range selectors with label matchers
 (`=`, `!=`, `=~`, `!~`); the aggregations `sum`, `avg`, `min`, `max`, `count`,
-optionally with `by (label)`; and the range functions `rate` and `increase`.
-`histogram_quantile`, binary operators, and `topk` are not implemented yet
-(#335).
+optionally with `by (label)`; the range functions `rate` and `increase`; and
+`histogram_quantile(phi, metric)` (see below). `histogram_quantile` over an
+inner `rate()`, binary operators, and `topk` are not implemented yet (#335).
+
+## Quantiles from histograms
+
+`histogram_quantile(phi, metric)` estimates the `phi`-quantile of a histogram
+metric — e.g. p95 latency:
+
+```bash
+curl -sG http://localhost:3000/prometheus/api/v1/query_range \
+  -H "Authorization: Bearer $SIGNALDB_API_KEY" \
+  -H "X-Tenant-ID: $SIGNALDB_TENANT" \
+  --data-urlencode 'query=histogram_quantile(0.95, http_request_duration_seconds)' \
+  --data-urlencode "start=$(date -d '-1 hour' +%s)" \
+  --data-urlencode "end=$(date +%s)" \
+  --data-urlencode 'step=60'
+```
+
+Unlike Prometheus text-format histograms (a fan of `_bucket` series keyed by
+`le`), SignalDB stores each OTLP histogram whole. So the argument is the
+**histogram metric name itself**, not a `sum by (le) (rate(..._bucket[5m]))`
+expression. The quantile is interpolated per series from the metric's stored
+buckets, assuming a uniform spread within the containing bucket — the same
+estimate Prometheus's `histogram_quantile` produces.
 
 ## Instant query (vector)
 
