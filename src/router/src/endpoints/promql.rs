@@ -9,7 +9,7 @@
 //!
 //! Handlers build a `query_promql` Flight ticket, execute it against a
 //! querier, and convert the returned matrix RecordBatches into Prometheus
-//! JSON. Metadata endpoints are minimal stubs for now (#339).
+//! JSON. Metadata endpoints (labels/values/series) query the metrics tables via the querier.
 
 use std::collections::HashMap;
 
@@ -137,32 +137,66 @@ pub async fn query<S: RouterState>(
     }
 }
 
-/// GET /prometheus/api/v1/labels — stub (metadata discovery lands in #339).
+/// GET /prometheus/api/v1/labels — metric label names.
 pub async fn labels<S: RouterState>(
-    State(_state): State<S>,
-    _tenant_ctx: TenantContextExtractor,
-    Query(_params): Query<MetadataParams>,
-) -> axum::Json<LabelsResponse> {
-    axum::Json(LabelsResponse::success(vec![]))
+    State(state): State<S>,
+    tenant_ctx: TenantContextExtractor,
+    Query(params): Query<MetadataParams>,
+) -> Result<axum::Json<LabelsResponse>, StatusCode> {
+    let (start, end) = metadata_window(&params);
+    let ticket = format!(
+        "query_metric_labels:{}:{}:{start}:{end}",
+        tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
+    );
+    let batches = execute_ticket(&state, ticket).await?;
+    Ok(axum::Json(LabelsResponse::success(string_column(
+        &batches, "label",
+    ))))
 }
 
-/// GET /prometheus/api/v1/label/{name}/values — stub (#339).
+/// GET /prometheus/api/v1/label/{name}/values — distinct values of a label.
 pub async fn label_values<S: RouterState>(
-    State(_state): State<S>,
-    _tenant_ctx: TenantContextExtractor,
-    Path(_name): Path<String>,
-    Query(_params): Query<MetadataParams>,
-) -> axum::Json<LabelsResponse> {
-    axum::Json(LabelsResponse::success(vec![]))
+    State(state): State<S>,
+    tenant_ctx: TenantContextExtractor,
+    Path(name): Path<String>,
+    Query(params): Query<MetadataParams>,
+) -> Result<axum::Json<LabelsResponse>, StatusCode> {
+    if name.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let (start, end) = metadata_window(&params);
+    let ticket = format!(
+        "query_metric_label_values:{}:{}:{name}:{start}:{end}",
+        tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
+    );
+    let batches = execute_ticket(&state, ticket).await?;
+    Ok(axum::Json(LabelsResponse::success(string_column(
+        &batches, "value",
+    ))))
 }
 
-/// GET /prometheus/api/v1/series — stub (#339).
+/// GET /prometheus/api/v1/series — series matching a selector.
 pub async fn series<S: RouterState>(
-    State(_state): State<S>,
-    _tenant_ctx: TenantContextExtractor,
-    Query(_params): Query<MetadataParams>,
-) -> axum::Json<SeriesResponse> {
-    axum::Json(SeriesResponse::success(vec![]))
+    State(state): State<S>,
+    tenant_ctx: TenantContextExtractor,
+    Query(params): Query<MetadataParams>,
+) -> Result<axum::Json<SeriesResponse>, StatusCode> {
+    let selector = params
+        .matcher
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let (start, end) = metadata_window(&params);
+    let payload = serde_json::json!({ "selector": selector, "start": start, "end": end });
+    let ticket = format!(
+        "query_metric_series:{}:{}:{payload}",
+        tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
+    );
+    let batches = execute_ticket(&state, ticket).await?;
+    Ok(axum::Json(SeriesResponse::success(series_from_batches(
+        &batches,
+    ))))
 }
 
 // ---- execution + conversion ----
@@ -349,6 +383,40 @@ fn str_col<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a StringArray> {
     batch
         .column_by_name(name)
         .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+}
+
+/// Collect the values of a single-string-column result batch.
+fn string_column(batches: &[RecordBatch], column: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for batch in batches {
+        if let Some(col) = str_col(batch, column) {
+            for i in 0..col.len() {
+                if !col.is_null(i) {
+                    out.push(col.value(i).to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Decode a `series` JSON batch into label maps.
+fn series_from_batches(batches: &[RecordBatch]) -> Vec<HashMap<String, String>> {
+    let mut out = Vec::new();
+    for value in string_column(batches, "series") {
+        if let Ok(series) = serde_json::from_str::<Vec<HashMap<String, String>>>(&value) {
+            out.extend(series);
+        }
+    }
+    out
+}
+
+/// Resolve a metadata endpoint's `[start, end]` window in nanoseconds,
+/// defaulting to the last hour.
+fn metadata_window(params: &MetadataParams) -> (i64, i64) {
+    let end = parse_timestamp_ns(params.end.as_deref()).unwrap_or_else(now_ns);
+    let start = parse_timestamp_ns(params.start.as_deref()).unwrap_or(end - HOUR_NS);
+    (start, end)
 }
 
 /// Read a timestamp column as nanoseconds, casting from the storage unit.
