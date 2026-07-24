@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acceptor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
@@ -1227,7 +1227,7 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
@@ -1292,7 +1292,7 @@ dependencies = [
 
 [[package]]
 name = "compactor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "arrow-flight",
@@ -5560,7 +5560,7 @@ checksum = "5a651516ddc9168ebd67b24afd085a718be02f8858fe406591b013d101ce2f40"
 
 [[package]]
 name = "querier"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
@@ -6151,7 +6151,7 @@ checksum = "3582f63211428f83597b51b2ddb88e2a91a9d52d12831f9d08f5e624e8977422"
 
 [[package]]
 name = "router"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
@@ -6722,7 +6722,7 @@ dependencies = [
 
 [[package]]
 name = "signal-producer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "opentelemetry",
@@ -6743,7 +6743,7 @@ dependencies = [
 
 [[package]]
 name = "signaldb-bin"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "acceptor",
  "anyhow",
@@ -6765,7 +6765,7 @@ dependencies = [
 
 [[package]]
 name = "signaldb-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "arrow",
@@ -7373,7 +7373,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "prost",
  "serde",
@@ -7501,7 +7501,7 @@ dependencies = [
 
 [[package]]
 name = "tests-integration"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "acceptor",
  "anyhow",
@@ -9006,7 +9006,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "writer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
