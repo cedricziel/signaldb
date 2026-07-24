@@ -6,6 +6,10 @@
 //! two purposes: prove the parser accepts the breadth of syntax users
 //! actually write, and pin down — honestly — the features it does not
 //! support yet, so those gaps are visible and regression-guarded.
+//!
+//! This suite only checks that queries parse; `ast.rs` asserts the exact
+//! tree for one query per construct, catching structural regressions the
+//! parse-only check would miss.
 
 use logql::parse;
 
