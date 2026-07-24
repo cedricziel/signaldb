@@ -31,7 +31,9 @@ use crate::query::profile::{
     ProfileService,
 };
 use crate::query::trace::TraceService;
-use crate::query::{FindTraceByIdParams, LogQueryParams, LogSeriesParams, SearchQueryParams};
+use crate::query::{
+    FindTraceByIdParams, LogQueryParams, LogSeriesParams, MetricQueryParams, SearchQueryParams,
+};
 
 /// Queries the Iceberg catalog directly, bypassing `datafusion_iceberg`'s
 /// stale `Mirror` cache so newly-created tables are immediately visible.
@@ -233,6 +235,11 @@ enum TicketRequest {
         tenant_slug: String,
         dataset_slug: String,
         params: LogSeriesParams,
+    },
+    QueryMetric {
+        tenant_slug: String,
+        dataset_slug: String,
+        params: MetricQueryParams,
     },
 }
 
@@ -765,6 +772,24 @@ impl QuerierFlightService {
             ));
         }
 
+        // LogQL metric query: query_metric:{tenant}:{dataset}:{json MetricQueryParams}
+        if let Some(remainder) = ticket_content.strip_prefix("query_metric:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                let params: MetricQueryParams = serde_json::from_str(parts[2]).map_err(|e| {
+                    Status::invalid_argument(format!("Invalid query_metric parameters: {e}"))
+                })?;
+                return Ok(TicketRequest::QueryMetric {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    params,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid query_metric ticket format. Expected: query_metric:tenant:dataset:{json}",
+            ));
+        }
+
         // Fall back to raw SQL query
         Ok(TicketRequest::SqlQuery {
             sql: ticket_content.to_string(),
@@ -1064,7 +1089,8 @@ impl FlightService for QuerierFlightService {
                     | TicketRequest::QueryLogs { tenant_slug, .. }
                     | TicketRequest::QueryLogsLabels { tenant_slug, .. }
                     | TicketRequest::QueryLogsLabelValues { tenant_slug, .. }
-                    | TicketRequest::QueryLogsSeries { tenant_slug, .. } => Some(tenant_slug),
+                    | TicketRequest::QueryLogsSeries { tenant_slug, .. }
+                    | TicketRequest::QueryMetric { tenant_slug, .. } => Some(tenant_slug),
                     TicketRequest::SqlQuery { .. } => None,
                 };
                 if let Some(ticket_tenant) = ticket_tenant
@@ -1096,6 +1122,7 @@ impl FlightService for QuerierFlightService {
                 TicketRequest::QueryLogsLabels { .. } => "query_logs_labels",
                 TicketRequest::QueryLogsLabelValues { .. } => "query_logs_label_values",
                 TicketRequest::QueryLogsSeries { .. } => "query_logs_series",
+                TicketRequest::QueryMetric { .. } => "query_metric",
                 TicketRequest::SqlQuery { .. } => "sql",
             };
 
@@ -1121,9 +1148,8 @@ impl FlightService for QuerierFlightService {
                     | TicketRequest::QueryLogs { tenant_slug, .. }
                     | TicketRequest::QueryLogsLabels { tenant_slug, .. }
                     | TicketRequest::QueryLogsLabelValues { tenant_slug, .. }
-                    | TicketRequest::QueryLogsSeries { tenant_slug, .. } => {
-                        Some(tenant_slug.clone())
-                    }
+                    | TicketRequest::QueryLogsSeries { tenant_slug, .. }
+                    | TicketRequest::QueryMetric { tenant_slug, .. } => Some(tenant_slug.clone()),
                     TicketRequest::SqlQuery { .. } => None,
                 });
             // Held until the query's batches are fully computed.
@@ -1433,6 +1459,22 @@ impl FlightService for QuerierFlightService {
                             .await
                             .map_err(querier_error_to_status)?;
                         vec![json_to_batch("series", &series)?]
+                    }
+                    TicketRequest::QueryMetric {
+                        tenant_slug,
+                        dataset_slug,
+                        params,
+                    } => {
+                        tracing::info!(
+                            tenant_slug = %tenant_slug,
+                            dataset_slug = %dataset_slug,
+                            query = %params.query,
+                            "Executing query_metric"
+                        );
+                        self.logs_service
+                            .query_metric(&params, &tenant_slug, &dataset_slug)
+                            .await
+                            .map_err(querier_error_to_status)?
                     }
                     TicketRequest::SqlProfiles {
                         tenant_slug,

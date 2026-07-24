@@ -173,6 +173,17 @@ pub async fn query_range<S: RouterState>(
 
     let end = parse_timestamp_ns(params.end.as_deref()).unwrap_or_else(now_ns);
     let start = parse_timestamp_ns(params.start.as_deref()).unwrap_or(end - HOUR_NS);
+
+    // A metric query returns a matrix; a log query returns streams.
+    if is_metric_query(&logql) {
+        let step =
+            parse_step_ns(params.step.as_deref()).unwrap_or_else(|| default_step_ns(start, end));
+        let matrix = run_metric_query(&state, &tenant_ctx, &logql, start, end, step).await?;
+        return Ok(axum::Json(QueryResponse::success(QueryResult::Matrix(
+            matrix,
+        ))));
+    }
+
     let streams = run_log_query(
         &state,
         &tenant_ctx,
@@ -303,6 +314,143 @@ async fn run_log_query<S: RouterState>(
     );
     let batches = execute_ticket(state, ticket).await?;
     Ok(batches_to_streams(&batches))
+}
+
+/// Whether a LogQL string is a metric query (returns samples) rather than
+/// a log query (returns lines).
+fn is_metric_query(logql: &str) -> bool {
+    matches!(logql::parse(logql), Ok(logql::Expr::Metric(_)))
+}
+
+/// Build and execute a `query_metric` ticket, converting the result into a
+/// Loki matrix.
+async fn run_metric_query<S: RouterState>(
+    state: &S,
+    tenant_ctx: &TenantContextExtractor,
+    logql: &str,
+    start: i64,
+    end: i64,
+    step: i64,
+) -> Result<Vec<loki_api::MetricSeries>, StatusCode> {
+    let payload = serde_json::json!({
+        "query": logql,
+        "start": start,
+        "end": end,
+        "step": step,
+    });
+    let ticket = format!(
+        "query_metric:{}:{}:{payload}",
+        tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
+    );
+    let batches = execute_ticket(state, ticket).await?;
+    Ok(batches_to_matrix(&batches))
+}
+
+/// Group matrix rows (`bucket`, label columns, `value`) into Loki metric
+/// series. The `bucket` column is nanoseconds; Loki matrix samples use
+/// unix seconds.
+fn batches_to_matrix(batches: &[RecordBatch]) -> Vec<loki_api::MetricSeries> {
+    use loki_api::{MetricSeries, Sample};
+
+    let mut order: Vec<String> = Vec::new();
+    let mut series: HashMap<String, MetricSeries> = HashMap::new();
+
+    for batch in batches {
+        let Some(buckets) = batch
+            .column_by_name("bucket")
+            .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
+        else {
+            continue;
+        };
+        let value = batch.column_by_name("value").and_then(|c| {
+            c.as_any()
+                .downcast_ref::<datafusion::arrow::array::Float64Array>()
+        });
+
+        // Every string column other than the value is a series label;
+        // `severity_text` is presented as Loki's `level`.
+        let schema = batch.schema();
+        let label_cols: Vec<(String, &StringArray)> = schema
+            .fields()
+            .iter()
+            .filter_map(|f| {
+                let name = f.name();
+                if name == "bucket" || name == "value" {
+                    return None;
+                }
+                str_col(batch, name).map(|c| (name.clone(), c))
+            })
+            .collect();
+
+        for i in 0..batch.num_rows() {
+            let mut labels: HashMap<String, String> = HashMap::new();
+            for (name, col) in &label_cols {
+                if !col.is_null(i) && !col.value(i).is_empty() {
+                    let key = if name == "severity_text" {
+                        "level"
+                    } else {
+                        name.as_str()
+                    };
+                    labels.insert(key.to_string(), col.value(i).to_string());
+                }
+            }
+            let key = label_key(&labels);
+            let seconds = if buckets.is_null(i) {
+                0.0
+            } else {
+                buckets.value(i) as f64 / 1_000_000_000.0
+            };
+            let v = value
+                .map(|c| if c.is_null(i) { 0.0 } else { c.value(i) })
+                .unwrap_or(0.0);
+            series
+                .entry(key.clone())
+                .or_insert_with(|| {
+                    order.push(key.clone());
+                    MetricSeries {
+                        metric: labels,
+                        values: Vec::new(),
+                    }
+                })
+                .values
+                .push(Sample::new(seconds, format_value(v)));
+        }
+    }
+
+    order
+        .into_iter()
+        .filter_map(|k| series.remove(&k))
+        .collect()
+}
+
+/// Render a matrix value the way Loki does: an integer when whole.
+fn format_value(v: f64) -> String {
+    if v.fract() == 0.0 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
+}
+
+/// Parse the `step` parameter (Go duration or seconds) into nanoseconds.
+fn parse_step_ns(value: Option<&str>) -> Option<i64> {
+    let value = value.map(str::trim).filter(|s| !s.is_empty())?;
+    if let Ok(seconds) = value.parse::<f64>() {
+        return Some((seconds * 1_000_000_000.0) as i64);
+    }
+    // Reuse the LogQL lexer for durations like `30s`, `5m`.
+    let tokens = logql::tokenize(value).ok()?;
+    match tokens.first().map(|t| &t.token) {
+        Some(logql::Token::Duration(d)) => Some(d.as_nanos() as i64),
+        _ => None,
+    }
+}
+
+/// A sensible default step when the caller omits one: aim for ~250 points
+/// across the window, at least one second.
+fn default_step_ns(start: i64, end: i64) -> i64 {
+    let span = (end - start).max(1);
+    (span / 250).max(1_000_000_000)
 }
 
 /// Send a Flight ticket to a querier and collect the result batches.
@@ -607,9 +755,12 @@ mod tests {
 
     mod convert {
         use super::super::{
-            batches_to_streams, parse_timestamp_ns, series_from_batches, string_column,
+            batches_to_matrix, batches_to_streams, default_step_ns, is_metric_query, parse_step_ns,
+            parse_timestamp_ns, series_from_batches, string_column,
         };
-        use datafusion::arrow::array::{RecordBatch, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::array::{
+            Float64Array, RecordBatch, StringArray, TimestampNanosecondArray,
+        };
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use std::sync::Arc;
 
@@ -705,6 +856,77 @@ mod tests {
             assert_eq!(parse_timestamp_ns(None), None);
             assert_eq!(parse_timestamp_ns(Some("")), None);
             assert_eq!(parse_timestamp_ns(Some("garbage")), None);
+        }
+
+        fn matrix_batch() -> RecordBatch {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(
+                    "bucket",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new("service_name", DataType::Utf8, true),
+                Field::new("severity_text", DataType::Utf8, true),
+                Field::new("value", DataType::Float64, false),
+            ]));
+            RecordBatch::try_new(
+                schema,
+                vec![
+                    // Two buckets for the api/error series, one for web/info.
+                    Arc::new(TimestampNanosecondArray::from(vec![
+                        1_000_000_000,
+                        2_000_000_000,
+                        1_000_000_000,
+                    ])),
+                    Arc::new(StringArray::from(vec!["api", "api", "web"])),
+                    Arc::new(StringArray::from(vec!["error", "error", "info"])),
+                    Arc::new(Float64Array::from(vec![2.0, 3.0, 1.5])),
+                ],
+            )
+            .unwrap()
+        }
+
+        #[test]
+        fn groups_matrix_rows_into_series() {
+            let series = batches_to_matrix(&[matrix_batch()]);
+            assert_eq!(series.len(), 2);
+            let api = series
+                .iter()
+                .find(|s| s.metric.get("service_name") == Some(&"api".to_string()))
+                .unwrap();
+            // severity_text is presented as Loki's `level`.
+            assert_eq!(api.metric.get("level"), Some(&"error".to_string()));
+            // Samples: (seconds, value string); whole values render as ints.
+            assert_eq!(api.values.len(), 2);
+            assert_eq!(api.values[0], loki_api::Sample::new(1.0, "2"));
+            assert_eq!(api.values[1], loki_api::Sample::new(2.0, "3"));
+
+            let web = series
+                .iter()
+                .find(|s| s.metric.get("service_name") == Some(&"web".to_string()))
+                .unwrap();
+            assert_eq!(web.values, vec![loki_api::Sample::new(1.0, "1.5")]);
+        }
+
+        #[test]
+        fn detects_metric_vs_log_queries() {
+            assert!(is_metric_query(r#"rate({app="x"}[5m])"#));
+            assert!(is_metric_query(
+                r#"sum by (level) (count_over_time({a="b"}[1m]))"#
+            ));
+            assert!(!is_metric_query(r#"{app="x"}"#));
+            assert!(!is_metric_query(r#"{app="x"} |= "err""#));
+        }
+
+        #[test]
+        fn step_parsing_handles_seconds_and_durations() {
+            assert_eq!(parse_step_ns(Some("30")), Some(30_000_000_000));
+            assert_eq!(parse_step_ns(Some("5m")), Some(300_000_000_000));
+            assert_eq!(parse_step_ns(Some("1h")), Some(3_600_000_000_000));
+            assert_eq!(parse_step_ns(None), None);
+            // ~250 points across a 1000s window, floored at one second.
+            assert_eq!(default_step_ns(0, 1_000_000_000_000), 4_000_000_000);
+            assert_eq!(default_step_ns(0, 10), 1_000_000_000);
         }
     }
 }
