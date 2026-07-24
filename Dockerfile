@@ -27,6 +27,7 @@ COPY src/writer/Cargo.toml src/writer/
 COPY src/querier/Cargo.toml src/querier/
 COPY src/compactor/Cargo.toml src/compactor/
 COPY src/common/Cargo.toml src/common/
+COPY src/logql/Cargo.toml src/logql/
 COPY src/loki-api/Cargo.toml src/loki-api/
 COPY src/pyroscope-api/Cargo.toml src/pyroscope-api/
 COPY src/tempo-api/Cargo.toml src/tempo-api/
@@ -48,6 +49,7 @@ RUN mkdir -p src/acceptor/src && echo "fn main() {}" > src/acceptor/src/main.rs 
     mkdir -p src/compactor/src && echo "fn main() {}" > src/compactor/src/main.rs && \
     echo "pub fn dummy() {}" > src/compactor/src/lib.rs && \
     mkdir -p src/common/src && echo "pub fn dummy() {}" > src/common/src/lib.rs && \
+    mkdir -p src/logql/src && echo "pub fn dummy() {}" > src/logql/src/lib.rs && \
     mkdir -p src/loki-api/src && echo "pub fn dummy() {}" > src/loki-api/src/lib.rs && \
     mkdir -p src/pyroscope-api/src && echo "pub fn dummy() {}" > src/pyroscope-api/src/lib.rs && \
     mkdir -p src/tempo-api/src && echo "pub fn dummy() {}" > src/tempo-api/src/lib.rs && \
