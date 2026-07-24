@@ -8,6 +8,7 @@ license.workspace = true
 tikv-jemallocator = { workspace = true, optional = true }
 common.workspace = true
 signaldb-api.workspace = true
+loki-api.workspace = true
 pyroscope-api.workspace = true
 tempo-api.workspace = true
 arrow-flight.workspace = true
