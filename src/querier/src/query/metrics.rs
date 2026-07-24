@@ -28,7 +28,9 @@ use datafusion::logical_expr::{Expr, SortExpr, col, lit, not};
 use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
-use super::promql::{Grouping, LabelMatch, MatchKind, MetricAgg, MetricPlan, plan_promql};
+use super::promql::{
+    ArithOp, Grouping, LabelMatch, MatchKind, MetricAgg, MetricPlan, ValueOp, plan_promql,
+};
 use super::{error::QuerierError, table_ref::build_table_reference};
 
 /// The metrics tables a PromQL query scans (gauge + sum cover counters
@@ -120,6 +122,9 @@ impl MetricsService {
         } else {
             self.simple_query(df, bucket, plan.aggregate, &group_cols)?
         };
+
+        // Apply math / scalar-arithmetic transforms to the result value.
+        let df = apply_transforms_df(df, &plan.transforms, &group_cols)?;
 
         df.sort(vec![SortExpr::new(col("bucket"), true, true)])
             .map_err(QuerierError::QueryFailed)?
@@ -295,7 +300,8 @@ impl MetricsService {
             ts.push(bucket_ns);
             names.push(metric);
             services.push(service);
-            values.push(histogram_quantile(phi, &acc.bounds, &acc.counts));
+            let q = histogram_quantile(phi, &acc.bounds, &acc.counts);
+            values.push(apply_transforms_f64(q, &plan.transforms));
         }
 
         let schema = Arc::new(Schema::new(vec![
@@ -750,6 +756,114 @@ fn histogram_quantile(phi: f64, bounds: &[f64], counts: &[f64]) -> f64 {
     bucket_start + (bucket_end - bucket_start) * (rank_in_bucket / count_in_bucket)
 }
 
+/// Re-project a matrix DataFrame with the `value` column transformed by
+/// `ops`, preserving `bucket`, `metric_name`, and the grouping columns.
+fn apply_transforms_df(
+    df: DataFrame,
+    ops: &[ValueOp],
+    group_cols: &[&str],
+) -> Result<DataFrame, QuerierError> {
+    if ops.is_empty() {
+        return Ok(df);
+    }
+    let mut proj = vec![col("bucket"), col("metric_name")];
+    proj.extend(group_cols.iter().map(|c| col(*c)));
+    proj.push(apply_value_ops_expr(col("value"), ops).alias("value"));
+    df.select(proj).map_err(QuerierError::QueryFailed)
+}
+
+/// Compose the value transforms into a DataFusion expression.
+fn apply_value_ops_expr(mut value: Expr, ops: &[ValueOp]) -> Expr {
+    use datafusion::functions::math::expr_fn as math;
+    use datafusion::logical_expr::when;
+    for op in ops {
+        value = match op {
+            ValueOp::Abs => math::abs(value),
+            ValueOp::Ceil => math::ceil(value),
+            ValueOp::Floor => math::floor(value),
+            ValueOp::Round => math::round(vec![value]),
+            ValueOp::Sqrt => math::sqrt(value),
+            ValueOp::Exp => math::exp(value),
+            ValueOp::Ln => math::ln(value),
+            ValueOp::Log2 => math::log2(value),
+            ValueOp::Log10 => math::log10(value),
+            ValueOp::Sgn => math::signum(value),
+            ValueOp::ClampMin(m) => when(value.clone().lt(lit(*m)), lit(*m))
+                .otherwise(value)
+                .unwrap(),
+            ValueOp::ClampMax(m) => when(value.clone().gt(lit(*m)), lit(*m))
+                .otherwise(value)
+                .unwrap(),
+            ValueOp::Clamp(lo, hi) => {
+                let clamped_low = when(value.clone().lt(lit(*lo)), lit(*lo))
+                    .otherwise(value)
+                    .unwrap();
+                when(clamped_low.clone().gt(lit(*hi)), lit(*hi))
+                    .otherwise(clamped_low)
+                    .unwrap()
+            }
+            ValueOp::Arith(arith, s, scalar_left) => arith_expr(*arith, value, *s, *scalar_left),
+        };
+    }
+    value
+}
+
+/// Build `value OP scalar` (or `scalar OP value`) as an expression.
+fn arith_expr(op: ArithOp, value: Expr, scalar: f64, scalar_left: bool) -> Expr {
+    use datafusion::functions::math::expr_fn::power;
+    let s = lit(scalar);
+    match (op, scalar_left) {
+        (ArithOp::Add, _) => value + s,
+        (ArithOp::Mul, _) => value * s,
+        (ArithOp::Sub, false) => value - s,
+        (ArithOp::Sub, true) => s - value,
+        (ArithOp::Div, false) => value / s,
+        (ArithOp::Div, true) => s / value,
+        (ArithOp::Mod, false) => value % s,
+        (ArithOp::Mod, true) => s % value,
+        (ArithOp::Pow, false) => power(value, s),
+        (ArithOp::Pow, true) => power(s, value),
+    }
+}
+
+/// Apply the value transforms to a scalar (histogram path).
+fn apply_transforms_f64(mut v: f64, ops: &[ValueOp]) -> f64 {
+    for op in ops {
+        v = match op {
+            ValueOp::Abs => v.abs(),
+            ValueOp::Ceil => v.ceil(),
+            ValueOp::Floor => v.floor(),
+            ValueOp::Round => v.round(),
+            ValueOp::Sqrt => v.sqrt(),
+            ValueOp::Exp => v.exp(),
+            ValueOp::Ln => v.ln(),
+            ValueOp::Log2 => v.log2(),
+            ValueOp::Log10 => v.log10(),
+            ValueOp::Sgn => v.signum(),
+            ValueOp::ClampMin(m) => v.max(*m),
+            ValueOp::ClampMax(m) => v.min(*m),
+            ValueOp::Clamp(lo, hi) => v.clamp(*lo, *hi),
+            ValueOp::Arith(arith, s, scalar_left) => arith_f64(*arith, v, *s, *scalar_left),
+        };
+    }
+    v
+}
+
+fn arith_f64(op: ArithOp, v: f64, s: f64, scalar_left: bool) -> f64 {
+    match (op, scalar_left) {
+        (ArithOp::Add, _) => v + s,
+        (ArithOp::Mul, _) => v * s,
+        (ArithOp::Sub, false) => v - s,
+        (ArithOp::Sub, true) => s - v,
+        (ArithOp::Div, false) => v / s,
+        (ArithOp::Div, true) => s / v,
+        (ArithOp::Mod, false) => v % s,
+        (ArithOp::Mod, true) => s % v,
+        (ArithOp::Pow, false) => v.powf(s),
+        (ArithOp::Pow, true) => s.powf(v),
+    }
+}
+
 fn cast_ns(expr: Expr) -> Expr {
     datafusion::logical_expr::cast(expr, DataType::Timestamp(TimeUnit::Nanosecond, None))
 }
@@ -1049,6 +1163,34 @@ mod tests {
             .find(|(_, s, _)| s.as_deref() == Some("api"))
             .unwrap();
         assert!((api_sd.2 - 1.0).abs() < 1e-9, "got {}", api_sd.2);
+    }
+
+    #[tokio::test]
+    async fn scalar_arithmetic_and_math_transform_value() {
+        let service = service_with_data();
+        // Bare selector → last value per series: api=3, web=5.
+        let by = |out: Vec<(String, Option<String>, f64)>, svc: &str| {
+            out.into_iter()
+                .find(|(_, s, _)| s.as_deref() == Some(svc))
+                .unwrap()
+                .2
+        };
+        assert_eq!(by(matrix(&service, "reqs * 2", 1000).await, "api"), 6.0);
+        assert_eq!(by(matrix(&service, "reqs + 10", 1000).await, "web"), 15.0);
+        // clamp_max caps web's 5 at 4; api's 3 stays.
+        assert_eq!(
+            by(matrix(&service, "clamp_max(reqs, 4)", 1000).await, "web"),
+            4.0
+        );
+        assert_eq!(
+            by(matrix(&service, "clamp_max(reqs, 4)", 1000).await, "api"),
+            3.0
+        );
+        // 10 / reqs → api 10/3.
+        assert!((by(matrix(&service, "10 / reqs", 1000).await, "api") - 10.0 / 3.0).abs() < 1e-9);
+        // abs over a rate that is negative is not exercised here; abs of a
+        // positive last value is a no-op.
+        assert_eq!(by(matrix(&service, "abs(reqs)", 1000).await, "api"), 3.0);
     }
 
     #[tokio::test]

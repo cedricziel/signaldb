@@ -19,10 +19,13 @@
 //!   last/stddev/stdvar) — a per-bucket reducer over the raw samples.
 //! - `histogram_quantile(phi, metric)` over a stored OTLP histogram — the
 //!   quantile is interpolated per series from the metric's buckets.
+//! - Unary math functions (`abs`, `ceil`, `floor`, `round`, `sqrt`, `exp`,
+//!   `ln`, `log2`, `log10`, `sgn`, `clamp*`) and scalar arithmetic
+//!   (`metric * 8`, `1024 / metric`) as value transforms on the result.
 //!
-//! `irate`, binary operators, subqueries, and `histogram_quantile` over an
-//! inner `rate()`/aggregation are not lowered yet and return
-//! [`QuerierError::Unsupported`] (#335).
+//! `irate`, comparison/logical/vector-to-vector operators, subqueries, and
+//! `histogram_quantile` over an inner `rate()`/aggregation are not lowered yet
+//! and return [`QuerierError::Unsupported`] (#335).
 //!
 //! Like the log path, range aggregations use fixed step-aligned buckets
 //! (`date_bin`), not Prometheus's sliding window — exact when the step
@@ -94,6 +97,42 @@ pub struct RangeSpec {
 
 impl Eq for RangeSpec {}
 
+/// A scalar arithmetic operator in a `vector OP scalar` expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArithOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
+}
+
+/// A transform applied to the result `value` column, in order. Covers the
+/// unary math functions and scalar arithmetic (`metric * 8`, `metric / 1024`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ValueOp {
+    Abs,
+    Ceil,
+    Floor,
+    Round,
+    Sqrt,
+    Exp,
+    Ln,
+    Log2,
+    Log10,
+    /// `sgn` — sign of the value (-1, 0, 1).
+    Sgn,
+    ClampMin(f64),
+    ClampMax(f64),
+    Clamp(f64, f64),
+    /// Scalar arithmetic; the bool is true when the scalar is on the left
+    /// (`scalar OP vector`), false for `vector OP scalar`.
+    Arith(ArithOp, f64, bool),
+}
+
+impl Eq for ValueOp {}
+
 /// A lowered PromQL query.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricPlan {
@@ -113,6 +152,9 @@ pub struct MetricPlan {
     /// the `metrics_histogram` table and interpolates the phi-quantile from
     /// each series' stored buckets instead of aggregating a scalar `value`.
     pub quantile: Option<f64>,
+    /// Math/scalar-arithmetic transforms applied to the result `value`, in
+    /// order (e.g. `abs`, `metric * 8`). Empty for a plain query.
+    pub transforms: Vec<ValueOp>,
 }
 
 impl Eq for MetricPlan {}
@@ -131,6 +173,8 @@ fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
         Expr::Call(call) if call.func.name == "histogram_quantile" => {
             lower_histogram_quantile(call)
         }
+        // A math function wrapping a vector: `abs(...)`, `clamp_min(..., 0)`.
+        Expr::Call(call) if is_math_fn(call.func.name) => lower_math_call(call),
         // Bare selector or bare range function.
         Expr::VectorSelector(_) | Expr::Call(_) => {
             build_plan(expr, MetricAgg::Last, Grouping::Natural)
@@ -145,9 +189,9 @@ fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
             let grouping = grouping_from(agg.modifier.as_ref())?;
             build_plan(unwrap_paren(&agg.expr), aggregate, grouping)
         }
-        Expr::Binary(_) => Err(QuerierError::Unsupported(
-            "binary operations between metric queries".to_string(),
-        )),
+        // Scalar arithmetic: `metric * 8`, `1024 / metric`. Applied to the
+        // result value. Vector-to-vector operations remain unsupported.
+        Expr::Binary(bin) => lower_binary(bin),
         Expr::MatrixSelector(_) | Expr::Subquery(_) => Err(QuerierError::Unsupported(
             "range-vector selector without a function".to_string(),
         )),
@@ -245,6 +289,7 @@ fn lower_selector(
         grouping,
         range,
         quantile: None,
+        transforms: Vec::new(),
     })
 }
 
@@ -276,6 +321,118 @@ fn lower_histogram_quantile(call: &parser::Call) -> Result<MetricPlan, QuerierEr
     let mut plan = lower_selector(vs, MetricAgg::Last, Grouping::Natural, None)?;
     plan.quantile = Some(phi);
     Ok(plan)
+}
+
+/// Whether a function name is a supported unary math / clamp function.
+fn is_math_fn(name: &str) -> bool {
+    matches!(
+        name,
+        "abs"
+            | "ceil"
+            | "floor"
+            | "round"
+            | "sqrt"
+            | "exp"
+            | "ln"
+            | "log2"
+            | "log10"
+            | "sgn"
+            | "clamp_min"
+            | "clamp_max"
+            | "clamp"
+    )
+}
+
+/// Lower a math function `f(vector, [scalars…])` by lowering the vector
+/// argument and appending the corresponding value transform.
+fn lower_math_call(call: &parser::Call) -> Result<MetricPlan, QuerierError> {
+    let inner = call.args.args.first().ok_or_else(|| {
+        QuerierError::InvalidInput(format!("{} expects an argument", call.func.name))
+    })?;
+    let op = match call.func.name {
+        "abs" => ValueOp::Abs,
+        "ceil" => ValueOp::Ceil,
+        "floor" => ValueOp::Floor,
+        "round" => ValueOp::Round,
+        "sqrt" => ValueOp::Sqrt,
+        "exp" => ValueOp::Exp,
+        "ln" => ValueOp::Ln,
+        "log2" => ValueOp::Log2,
+        "log10" => ValueOp::Log10,
+        "sgn" => ValueOp::Sgn,
+        "clamp_min" => ValueOp::ClampMin(scalar_arg(call, 1)?),
+        "clamp_max" => ValueOp::ClampMax(scalar_arg(call, 1)?),
+        "clamp" => ValueOp::Clamp(scalar_arg(call, 1)?, scalar_arg(call, 2)?),
+        other => {
+            return Err(QuerierError::Unsupported(format!("function '{other}'")));
+        }
+    };
+    let mut plan = lower(unwrap_paren(inner))?;
+    plan.transforms.push(op);
+    Ok(plan)
+}
+
+/// Lower a binary expression. Only `vector OP scalar` / `scalar OP vector`
+/// arithmetic is supported; comparison, logical, and vector-to-vector
+/// operations are not (#335).
+fn lower_binary(bin: &parser::BinaryExpr) -> Result<MetricPlan, QuerierError> {
+    if bin.op.is_comparison_operator() {
+        return Err(QuerierError::Unsupported(
+            "comparison operators".to_string(),
+        ));
+    }
+    let arith = match format!("{}", bin.op).as_str() {
+        "+" => ArithOp::Add,
+        "-" => ArithOp::Sub,
+        "*" => ArithOp::Mul,
+        "/" => ArithOp::Div,
+        "%" => ArithOp::Mod,
+        "^" => ArithOp::Pow,
+        other => {
+            return Err(QuerierError::Unsupported(format!(
+                "binary operator '{other}'"
+            )));
+        }
+    };
+    match (as_scalar(&bin.lhs), as_scalar(&bin.rhs)) {
+        (Some(_), Some(_)) => Err(QuerierError::Unsupported(
+            "constant-only arithmetic".to_string(),
+        )),
+        (None, None) => Err(QuerierError::Unsupported(
+            "vector-to-vector binary operations".to_string(),
+        )),
+        // scalar OP vector
+        (Some(s), None) => {
+            let mut plan = lower(unwrap_paren(&bin.rhs))?;
+            plan.transforms.push(ValueOp::Arith(arith, s, true));
+            Ok(plan)
+        }
+        // vector OP scalar
+        (None, Some(s)) => {
+            let mut plan = lower(unwrap_paren(&bin.lhs))?;
+            plan.transforms.push(ValueOp::Arith(arith, s, false));
+            Ok(plan)
+        }
+    }
+}
+
+/// The `i`-th call argument as a numeric literal.
+fn scalar_arg(call: &parser::Call, i: usize) -> Result<f64, QuerierError> {
+    match call.args.args.get(i).map(|a| unwrap_paren(a)) {
+        Some(Expr::NumberLiteral(n)) => Ok(n.val),
+        _ => Err(QuerierError::Unsupported(format!(
+            "{} requires a numeric literal argument",
+            call.func.name
+        ))),
+    }
+}
+
+/// A parenthesized number literal, if the expression is one.
+fn as_scalar(expr: &Expr) -> Option<f64> {
+    match unwrap_paren(expr) {
+        Expr::NumberLiteral(n) => Some(n.val),
+        _ => None,
+    }
 }
 
 fn unwrap_paren(expr: &Expr) -> &Expr {
@@ -497,6 +654,65 @@ mod tests {
             err(r#"sum(avg_over_time(x[5m]))"#),
             QuerierError::Unsupported(_)
         ));
+    }
+
+    #[test]
+    fn math_functions_append_transforms() {
+        assert_eq!(plan("abs(x)").transforms, vec![ValueOp::Abs]);
+        assert_eq!(plan("ceil(x)").transforms, vec![ValueOp::Ceil]);
+        assert_eq!(plan("sqrt(x)").transforms, vec![ValueOp::Sqrt]);
+        assert_eq!(plan("sgn(x)").transforms, vec![ValueOp::Sgn]);
+        assert_eq!(
+            plan("clamp_min(x, 0)").transforms,
+            vec![ValueOp::ClampMin(0.0)]
+        );
+        assert_eq!(
+            plan("clamp_max(x, 5)").transforms,
+            vec![ValueOp::ClampMax(5.0)]
+        );
+        assert_eq!(
+            plan("clamp(x, 1, 9)").transforms,
+            vec![ValueOp::Clamp(1.0, 9.0)]
+        );
+    }
+
+    #[test]
+    fn scalar_arithmetic_appends_transform() {
+        assert_eq!(
+            plan("x * 8").transforms,
+            vec![ValueOp::Arith(ArithOp::Mul, 8.0, false)]
+        );
+        assert_eq!(
+            plan("1024 / x").transforms,
+            vec![ValueOp::Arith(ArithOp::Div, 1024.0, true)]
+        );
+        assert_eq!(
+            plan("x + 1").transforms,
+            vec![ValueOp::Arith(ArithOp::Add, 1.0, false)]
+        );
+    }
+
+    #[test]
+    fn math_over_rate_keeps_range_and_transform() {
+        let p = plan("abs(rate(x[5m]))");
+        assert_eq!(p.range.unwrap().function, RangeFn::Rate);
+        assert_eq!(p.transforms, vec![ValueOp::Abs]);
+    }
+
+    #[test]
+    fn nested_transforms_order_inner_to_outer() {
+        // abs(x) * 2 → abs first, then *2.
+        let p = plan("abs(x) * 2");
+        assert_eq!(
+            p.transforms,
+            vec![ValueOp::Abs, ValueOp::Arith(ArithOp::Mul, 2.0, false)]
+        );
+    }
+
+    #[test]
+    fn vector_binary_and_comparison_unsupported() {
+        assert!(matches!(err("x + y"), QuerierError::Unsupported(_)));
+        assert!(matches!(err("x > 5"), QuerierError::Unsupported(_)));
     }
 
     #[test]
