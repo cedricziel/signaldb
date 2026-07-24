@@ -20,6 +20,8 @@ sources:
 | **compactor** | `src/compactor/` | Binary + Library | Complete data lifecycle: compaction planning/execution (Phase 1-2), retention enforcement, snapshot expiration, orphan cleanup (Phase 3); binary is `signaldb-compactor` |
 | **pyroscope-api** | `src/pyroscope-api/` | Library | Pyroscope-compatible API types (flamebearer, profile types) |
 | **tempo-api** | `src/tempo-api/` | Library | Grafana Tempo API types and protobuf definitions |
+| **loki-api** | `src/loki-api/` | Library | Loki HTTP API response types (LogQL query surface) |
+| **pyroscope-api** | `src/pyroscope-api/` | Library | Pyroscope HTTP API response types (flamebearer format) |
 | **signaldb-bin** | `src/signaldb-bin/` | Binary | Monolithic mode runner (all services in one process) |
 | **signaldb-api** | `src/signaldb-api/` | Library | OpenAPI-generated admin API types |
 | **signaldb-cli** | `src/signaldb-cli/` | Binary | CLI for tenant, API key, dataset management |
@@ -89,6 +91,8 @@ This is the shared foundation. Key modules:
 | `main.rs` | `src/router/src/main.rs` | Standalone router binary |
 | `discovery.rs` | `src/router/src/discovery.rs` | Cached service discovery for the router |
 | `endpoints/tempo.rs` | `src/router/src/endpoints/tempo.rs` | Tempo-compatible API handlers |
+| `endpoints/logql.rs` | `src/router/src/endpoints/logql.rs` | Loki-compatible API handlers under `/loki` (stubs until LogQL execution lands) |
+| `endpoints/pyroscope.rs` | `src/router/src/endpoints/pyroscope.rs` | Pyroscope-compatible profile query handlers |
 | `endpoints/admin.rs` | `src/router/src/endpoints/admin.rs` | Admin API for tenant/key/dataset CRUD |
 | `endpoints/tenant.rs` | `src/router/src/endpoints/tenant.rs` | Tenant self-service API |
 | `endpoints/flight.rs` | `src/router/src/endpoints/flight.rs` | Router Flight service |
