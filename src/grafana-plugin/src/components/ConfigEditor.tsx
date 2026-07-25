@@ -5,7 +5,9 @@ import { SignalDBDataSourceOptions, SignalDBSecureJsonData } from '../types';
 
 interface Props extends DataSourcePluginOptionsEditorProps<SignalDBDataSourceOptions, SignalDBSecureJsonData> {}
 
-const PROTOCOL_OPTIONS: Array<SelectableValue<string>> = [
+type Protocol = 'http' | 'flight';
+
+const PROTOCOL_OPTIONS: Array<SelectableValue<Protocol>> = [
   { label: 'HTTP', value: 'http', description: 'HTTP API (default port 3001)' },
   { label: 'Flight', value: 'flight', description: 'Arrow Flight (default port 50053)' },
 ];
@@ -24,12 +26,12 @@ export function ConfigEditor(props: Props) {
     });
   };
 
-  const onProtocolChange = (value: SelectableValue<string>) => {
+  const onProtocolChange = (value: SelectableValue<Protocol>) => {
     onOptionsChange({
       ...options,
       jsonData: {
         ...jsonData,
-        protocol: value.value as 'http' | 'flight',
+        protocol: value.value ?? 'http',
       },
     });
   };
