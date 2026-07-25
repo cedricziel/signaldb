@@ -5,7 +5,8 @@ user-invocable: false
 sources:
   - src/router/src/endpoints/tempo.rs
   - src/router/src/endpoints/admin.rs
-  - src/grafana-plugin/**
+  - src/grafana-plugin/src/**
+  - src/grafana-plugin/backend/src/**
 ---
 
 # SignalDB Tempo API Compatibility
