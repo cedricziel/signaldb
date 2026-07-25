@@ -276,7 +276,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=amd64
-          cache-to: type=gha,mode=max,scope=amd64
+          cache-to: type=gha,mode=max,scope=amd64,ignore-error=true
 
   # Docker build for arm64 (only on main branch, not PRs)
   docker-build-arm64:
@@ -322,7 +322,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=arm64
-          cache-to: type=gha,mode=max,scope=arm64
+          cache-to: type=gha,mode=max,scope=arm64,ignore-error=true
 
   # Merge architecture-specific images into multi-arch manifest (main only)
   docker-manifest:
