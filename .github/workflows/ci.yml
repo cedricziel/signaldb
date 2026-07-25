@@ -236,6 +236,9 @@ jobs:
     name: Build Docker Image (amd64)
     runs-on: ubuntu-latest
     needs: check
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v7
 
@@ -281,6 +284,9 @@ jobs:
     runs-on: ubuntu-24.04-arm
     needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v7
 
@@ -324,6 +330,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [docker-build-amd64, docker-build-arm64]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
