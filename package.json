@@ -10,5 +10,12 @@
   "engines": {
     "node": ">=22"
   },
-  "packageManager": "pnpm@9.15.4"
+  "packageManager": "pnpm@9.15.4",
+  "pnpm": {
+    "overrides": {
+      "serialize-javascript@<=7.0.2": ">=7.0.3",
+      "serialize-javascript@>=5.0.0 <7.0.5": ">=7.0.5",
+      "brace-expansion@<=5.0.7": ">=5.0.8"
+    }
+  }
 }
