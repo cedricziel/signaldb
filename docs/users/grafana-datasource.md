@@ -68,9 +68,9 @@ metric results.
 From the repository root:
 
 ```bash
-npm install               # install workspace dependencies
-npm run grafana:build     # build the frontend
-cd src/grafana-plugin && npm run build:backend   # build the Rust backend
+pnpm install                # install workspace dependencies
+pnpm run grafana:build      # build the frontend
+cd src/grafana-plugin && pnpm run build:backend   # build the Rust backend
 ```
 
 Copy the resulting `src/grafana-plugin/dist/` directory into Grafana's
