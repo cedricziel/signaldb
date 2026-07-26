@@ -28,7 +28,7 @@ wrong result.
 | `__name__` matcher | ✅ |
 | Range vector selector `metric[5m]` (as a function argument) | ✅ |
 | `offset` modifier (`metric offset 5m`) | ✅ |
-| `@` modifier | ❌ |
+| `@` modifier (`metric @ 1600000000`, `@ start()`/`@ end()`) | ✅ (pins to the instant, 5-min lookback, replicated across steps) |
 | Subqueries `expr[5m:1m]` | ❌ |
 
 ## Aggregation operators

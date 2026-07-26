@@ -254,6 +254,20 @@ pub struct MetricPlan {
     /// Set for `count_values("label", v)` — count series per distinct value;
     /// the distinct value becomes the output `service_name`.
     pub count_values: Option<String>,
+    /// `@` modifier — pin evaluation to an absolute time (replicated across
+    /// every output step).
+    pub at: Option<AtSpec>,
+}
+
+/// The `@` modifier's evaluation time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtSpec {
+    /// `@ <unix-nanoseconds>`.
+    Abs(i64),
+    /// `@ start()`.
+    Start,
+    /// `@ end()`.
+    End,
 }
 
 /// A `label_replace` / `label_join` operation on the output labels. Only the
@@ -672,13 +686,19 @@ fn lower_selector(
     }
     let metric_name = metric_name
         .ok_or_else(|| QuerierError::InvalidInput("selector has no metric name".to_string()))?;
-    // The `@` modifier pins evaluation to an absolute time; we can't honor
-    // that yet, so reject it rather than silently ignoring it.
-    if vs.at.is_some() {
-        return Err(QuerierError::Unsupported(
-            "@ modifier is not supported yet".to_string(),
-        ));
-    }
+    // The `@` modifier pins evaluation to an absolute time.
+    let at = match &vs.at {
+        None => None,
+        Some(promql_parser::parser::AtModifier::Start) => Some(AtSpec::Start),
+        Some(promql_parser::parser::AtModifier::End) => Some(AtSpec::End),
+        Some(promql_parser::parser::AtModifier::At(t)) => {
+            let ns = t
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as i64)
+                .unwrap_or(0);
+            Some(AtSpec::Abs(ns))
+        }
+    };
     let offset_ns = match &vs.offset {
         None => 0,
         Some(promql_parser::parser::Offset::Pos(d)) => d.as_nanos() as i64,
@@ -709,6 +729,7 @@ fn lower_selector(
         scalar_reduce: false,
         label_ops: Vec::new(),
         count_values: None,
+        at,
     })
 }
 
@@ -739,6 +760,7 @@ fn time_plan() -> MetricPlan {
         scalar_reduce: false,
         label_ops: Vec::new(),
         count_values: None,
+        at: None,
     }
 }
 
@@ -1397,12 +1419,14 @@ mod tests {
     }
 
     #[test]
-    fn at_modifier_is_rejected() {
-        // `@` is not honored yet; reject rather than silently ignore it.
-        assert!(matches!(
-            err("x @ 1600000000"),
-            QuerierError::Unsupported(_)
-        ));
+    fn at_modifier_is_parsed() {
+        assert_eq!(
+            plan("x @ 1600000000").at,
+            Some(AtSpec::Abs(1_600_000_000_000_000_000))
+        );
+        assert_eq!(plan("x @ start()").at, Some(AtSpec::Start));
+        assert_eq!(plan("x @ end()").at, Some(AtSpec::End));
+        assert_eq!(plan("x").at, None);
     }
 
     #[test]

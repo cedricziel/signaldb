@@ -29,8 +29,9 @@ use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
 use super::promql::{
-    ArithOp, CalendarFn, CmpOp, Grouping, HistogramFn, LabelMatch, LabelOp, LogicalOp, MatchKind,
-    MetricAgg, MetricPlan, QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_promql, plan_query,
+    ArithOp, AtSpec, CalendarFn, CmpOp, Grouping, HistogramFn, LabelMatch, LabelOp, LogicalOp,
+    MatchKind, MetricAgg, MetricPlan, QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_promql,
+    plan_query,
 };
 use super::{error::QuerierError, table_ref::build_table_reference};
 
@@ -188,6 +189,14 @@ impl MetricsService {
         if let Some(sf) = plan.sequence_fn {
             return self
                 .sequence_query(plan, sf, start, end, step, tenant_slug, dataset_slug)
+                .await;
+        }
+
+        // `@` modifier: evaluate at the pinned instant and replicate the
+        // result across every output step.
+        if let Some(at) = plan.at {
+            return self
+                .eval_at(plan, at, start, end, step, tenant_slug, dataset_slug)
                 .await;
         }
 
@@ -616,6 +625,91 @@ impl MetricsService {
             bucket += step;
         }
 
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "bucket",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(ts)),
+            Arc::new(StringArray::from(names)),
+            Arc::new(StringArray::from(services)),
+            Arc::new(Float64Array::from(values)),
+        ];
+        let batch = RecordBatch::try_new(schema, columns)
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        Ok(vec![batch])
+    }
+
+    /// `@` modifier: evaluate the (unpinned) plan at the instant `at`, using a
+    /// 5-minute lookback, then replicate the per-series value across every
+    /// output step bucket in `[start, end]`.
+    #[allow(clippy::too_many_arguments)]
+    async fn eval_at(
+        &self,
+        plan: &MetricPlan,
+        at: AtSpec,
+        start: i64,
+        end: i64,
+        step: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<RecordBatch>, QuerierError> {
+        let at_ns = match at {
+            AtSpec::Abs(ns) => ns,
+            AtSpec::Start => start,
+            AtSpec::End => end,
+        };
+        const LOOKBACK: i64 = 300_000_000_000; // 5 minutes
+        let mut inner = plan.clone();
+        inner.at = None;
+        // One bucket spanning the lookback → the value at/just before `at`.
+        let big = LOOKBACK + step;
+        // Box the recursive call to give the async future a finite size.
+        let pinned = Box::pin(self.eval_plan(
+            &inner,
+            at_ns - LOOKBACK,
+            at_ns,
+            big,
+            tenant_slug,
+            dataset_slug,
+        ))
+        .await?;
+
+        // Keep the latest (metric, value) per series.
+        let mut series: BTreeMap<String, (i64, String, f64)> = BTreeMap::new();
+        for batch in &pinned {
+            for (bucket, metric, svc, value) in matrix_rows_named(batch)? {
+                let e = series
+                    .entry(svc)
+                    .or_insert((i64::MIN, String::new(), f64::NAN));
+                if bucket >= e.0 {
+                    *e = (bucket, metric, value);
+                }
+            }
+        }
+
+        // Replicate across the output grid.
+        let first = start.div_euclid(step) * step;
+        let mut ts = Vec::new();
+        let mut names = Vec::new();
+        let mut services = Vec::new();
+        let mut values = Vec::new();
+        let mut bucket = first;
+        while bucket <= end {
+            for (svc, (_b, metric, value)) in &series {
+                ts.push(bucket);
+                names.push(metric.clone());
+                services.push(svc.clone());
+                values.push(*value);
+            }
+            bucket += step;
+        }
         let schema = Arc::new(Schema::new(vec![
             Field::new(
                 "bucket",
@@ -2719,6 +2813,20 @@ mod tests {
         // `or` → union = both series.
         let or = matrix(&service, "reqs or (reqs > 4)", 1000).await;
         assert_eq!(or.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn at_modifier_pins_and_replicates() {
+        let service = service_with_data();
+        // `@ 200` (200s) pins to that instant; the fixture samples fall in the
+        // 5-min lookback, so api=3/web=5 are replicated across every step.
+        let out = matrix(&service, "reqs @ 200", 1000).await;
+        let api: Vec<_> = out
+            .iter()
+            .filter(|(_, s, _)| s.as_deref() == Some("api"))
+            .collect();
+        assert!(api.len() >= 2, "replicated across buckets: {out:?}");
+        assert!(api.iter().all(|(_, _, v)| *v == 3.0));
     }
 
     #[tokio::test]
