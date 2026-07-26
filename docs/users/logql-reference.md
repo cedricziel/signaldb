@@ -134,6 +134,9 @@ sum by (level) (rate({service_name="api"}[5m]))
   group (`stddev`/`stdvar` are population statistics, as in Prometheus).
 - **Selection**: `topk(k, ...)` / `bottomk(k, ...)` keep the `k` highest /
   lowest series by value in each time bucket, applied after aggregation.
+- **Scalar arithmetic**: a metric query combined with a scalar literal
+  using `+` / `-` / `*` / `/` (`rate(...) / 60`, `100 * rate(...)`),
+  scaling every value. Operand order is preserved for `-` and `/`.
 - **Grouping** is only supported by labels backed by a column
   (`service_name`, `level`, ...).
 
@@ -151,7 +154,8 @@ exact results.
 These parse but return an "unsupported" error at execution:
 
 - `sort` / `sort_desc`
-- Binary operations between metric queries (`a / b`), `vector(N)`,
+- Vector-to-vector binary operations (`a / b`), comparisons
+  (`a > 5`), logical/set operators (`and`/`or`/`unless`), `vector(N)`,
   `label_replace`
 - `sum without (labels)` with a non-empty label list
 - Grouping by an attribute (non-column) label
