@@ -197,6 +197,7 @@ impl LogsService {
                 BinaryKind::Compare(op) => {
                     join_compare(left_batches, op, bin.bool_modifier, right_batches)
                 }
+                BinaryKind::Logical(op) => join_logical(left_batches, op, right_batches),
             };
         }
 
@@ -596,10 +597,22 @@ enum CmpOp {
     Lte,
 }
 
+/// A logical/set operator for a vector-to-vector expression.
+#[derive(Debug, Clone, Copy)]
+enum LogicalOp {
+    /// `and` — keep left series with a matching right series.
+    And,
+    /// `or` — left series, plus right series with no left match.
+    Or,
+    /// `unless` — left series with no matching right series.
+    Unless,
+}
+
 /// The kind of vector-to-vector operation to evaluate via a join.
 enum BinaryKind {
     Arith(ArithOp),
     Compare(CmpOp),
+    Logical(LogicalOp),
 }
 
 /// Classify a **vector-to-vector** binary expression, or `None` when it
@@ -623,6 +636,9 @@ fn classify_binary(bin: &logql::BinaryExpr) -> Option<BinaryKind> {
         BinOp::Gte => Some(BinaryKind::Compare(CmpOp::Gte)),
         BinOp::Lt => Some(BinaryKind::Compare(CmpOp::Lt)),
         BinOp::Lte => Some(BinaryKind::Compare(CmpOp::Lte)),
+        BinOp::And => Some(BinaryKind::Logical(LogicalOp::And)),
+        BinOp::Or => Some(BinaryKind::Logical(LogicalOp::Or)),
+        BinOp::Unless => Some(BinaryKind::Logical(LogicalOp::Unless)),
         _ => None,
     }
 }
@@ -815,6 +831,56 @@ fn join_compare(
             }
         }
     }
+    rebuild_matrix(schema, out)
+}
+
+/// Combine two matrices with a logical/set operator, matching series on
+/// `(bucket, labels)`. `and` keeps left series present on the right,
+/// `unless` keeps those absent from the right, and `or` is the union
+/// (left series plus right-only series). Values are carried through, never
+/// combined; the output reuses the left side's schema.
+fn join_logical(
+    left: Vec<RecordBatch>,
+    op: LogicalOp,
+    right: Vec<RecordBatch>,
+) -> Result<Vec<RecordBatch>, QuerierError> {
+    if left.is_empty() {
+        // `or` still yields the right side when the left is empty.
+        return match op {
+            LogicalOp::Or => Ok(right),
+            LogicalOp::And | LogicalOp::Unless => Ok(left),
+        };
+    }
+    let schema = left[0].schema();
+    let rhs = index_matrix(&right)?;
+
+    let mut out: JoinMap = BTreeMap::new();
+    for batch in &left {
+        for (bucket, labels, lv) in logql_matrix_rows(batch)? {
+            let matched = rhs.contains_key(&(bucket, labels.clone()));
+            let keep = match op {
+                LogicalOp::And | LogicalOp::Or => matched,
+                LogicalOp::Unless => !matched,
+            };
+            // `or` also keeps left series regardless of a right match.
+            if keep || matches!(op, LogicalOp::Or) {
+                out.insert((bucket, labels), lv);
+            }
+        }
+    }
+
+    // `or` adds right series that have no left counterpart.
+    if matches!(op, LogicalOp::Or) {
+        let lhs = index_matrix(&left)?;
+        for batch in &right {
+            for (bucket, labels, rv) in logql_matrix_rows(batch)? {
+                if !lhs.contains_key(&(bucket, labels.clone())) {
+                    out.insert((bucket, labels), rv);
+                }
+            }
+        }
+    }
+
     rebuild_matrix(schema, out)
 }
 
@@ -1458,6 +1524,29 @@ mod tests {
         let gt_bool = matrix(&service, &format!("{all} > bool {with_a}"), 1000).await;
         assert_eq!(gt_bool.len(), 1);
         assert_eq!(gt_bool[0].0, 1.0);
+    }
+
+    #[tokio::test]
+    async fn vector_to_vector_logical_ops() {
+        let service = service_with_data();
+        // `all` = three series (api/error, api/info, web/error); `api` = the
+        // two api series.
+        let all = r#"count_over_time({service_name=~".+"}[1000ns])"#;
+        let api = r#"count_over_time({service_name="api"}[1000ns])"#;
+
+        // `and`: left series that also appear on the right → the two api.
+        let and = matrix(&service, &format!("{all} and {api}"), 1000).await;
+        assert_eq!(and.len(), 2);
+        assert!(and.iter().all(|(_, s)| s.as_deref() == Some("api")));
+
+        // `unless`: left series absent from the right → web only.
+        let unless = matrix(&service, &format!("{all} unless {api}"), 1000).await;
+        assert_eq!(unless.len(), 1);
+        assert_eq!(unless[0].1.as_deref(), Some("web"));
+
+        // `or`: union — the two api series plus the right-only web series.
+        let or = matrix(&service, &format!("{api} or {all}"), 1000).await;
+        assert_eq!(or.len(), 3);
     }
 
     #[tokio::test]

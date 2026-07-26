@@ -145,6 +145,9 @@ sum by (level) (rate({service_name="api"}[5m]))
   `>` / `>=` / `<` / `<=`. Without `bool` the left series is kept where the
   comparison holds (a filter); with `bool` (`a > bool b`) each matched pair
   becomes `1` or `0`.
+- **Logical / set**: `and` (left series with a right match), `or` (union of
+  both sides), `unless` (left series with no right match). Matching is on
+  `(bucket, labels)`; values are carried through, never combined.
 - **Grouping** is only supported by labels backed by a column
   (`service_name`, `level`, ...).
 
@@ -162,8 +165,8 @@ exact results.
 These parse but return an "unsupported" error at execution:
 
 - `sort` / `sort_desc`
-- Logical/set operators (`and`/`or`/`unless`), `on` / `ignoring` label
-  matching, `vector(N)`, `label_replace`
+- `on` / `ignoring` label matching (vector matching uses the full label
+  set), `vector(N)`, `label_replace`
 - `sum without (labels)` with a non-empty label list
 - Grouping by an attribute (non-column) label
 
