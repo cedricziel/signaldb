@@ -137,6 +137,10 @@ sum by (level) (rate({service_name="api"}[5m]))
 - **Scalar arithmetic**: a metric query combined with a scalar literal
   using `+` / `-` / `*` / `/` (`rate(...) / 60`, `100 * rate(...)`),
   scaling every value. Operand order is preserved for `-` and `/`.
+- **Vector arithmetic**: two metric queries combined with `+` / `-` / `*`
+  / `/` (`sum(rate(...)) / sum(rate(...))` for a ratio). Series are matched
+  one-to-one on `(bucket, labels)`; unmatched series are dropped (there is
+  no `on` / `ignoring` yet).
 - **Grouping** is only supported by labels backed by a column
   (`service_name`, `level`, ...).
 
@@ -154,8 +158,8 @@ exact results.
 These parse but return an "unsupported" error at execution:
 
 - `sort` / `sort_desc`
-- Vector-to-vector binary operations (`a / b`), comparisons
-  (`a > 5`), logical/set operators (`and`/`or`/`unless`), `vector(N)`,
+- Vector-to-vector comparisons (`a > b`), logical/set operators
+  (`and`/`or`/`unless`), `on` / `ignoring` label matching, `vector(N)`,
   `label_replace`
 - `sum without (labels)` with a non-empty label list
 - Grouping by an attribute (non-column) label
