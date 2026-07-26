@@ -477,6 +477,8 @@ fn aggregate_expr(aggregate: &Aggregate) -> Expr {
         Aggregate::UnwrapQuantile { quantile, label } => {
             approx_percentile_cont(unwrap_value(label).sort(true, false), lit(*quantile), None)
         }
+        Aggregate::UnwrapStddev(label) => stddev_pop(unwrap_value(label)),
+        Aggregate::UnwrapStdvar(label) => var_pop(unwrap_value(label)),
     }
 }
 
@@ -983,6 +985,32 @@ mod tests {
 
         let mid = q("0.5").await;
         assert!(mid[0].0 > 10.0 && mid[0].0 < 40.0, "q0.5 {}", mid[0].0);
+    }
+
+    #[tokio::test]
+    async fn stddev_stdvar_over_time_reduce_unwrapped_samples() {
+        let service = service_with_numeric_unwrap();
+        // Samples [10, 20, 30, 40]: population variance 125, stddev ~11.18.
+        let var = matrix(
+            &service,
+            r#"stdvar_over_time({service_name="api"} | unwrap trace_id [1000ns])"#,
+            1000,
+        )
+        .await;
+        assert_eq!(var.len(), 1);
+        assert!((var[0].0 - 125.0).abs() < 1e-6, "stdvar {}", var[0].0);
+
+        let dev = matrix(
+            &service,
+            r#"stddev_over_time({service_name="api"} | unwrap trace_id [1000ns])"#,
+            1000,
+        )
+        .await;
+        assert!(
+            (dev[0].0 - 125.0_f64.sqrt()).abs() < 1e-6,
+            "stddev {}",
+            dev[0].0
+        );
     }
 
     #[tokio::test]
