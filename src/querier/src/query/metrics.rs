@@ -167,9 +167,10 @@ impl MetricsService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
-        // histogram_quantile targets the histogram table with a distinct
-        // (row-wise, interpolated) execution path.
-        if let Some(phi) = plan.quantile {
+        // histogram_quantile / histogram_fraction target the histogram table
+        // with a distinct (row-wise, interpolated) execution path.
+        if plan.quantile.is_some() || plan.histogram_fraction.is_some() {
+            let phi = plan.quantile.unwrap_or(0.0);
             return self
                 .histogram_query(plan, phi, start, end, step, tenant_slug, dataset_slug)
                 .await;
@@ -864,7 +865,10 @@ impl MetricsService {
         let mut services = Vec::with_capacity(groups.len());
         let mut values = Vec::with_capacity(groups.len());
         for ((bucket_ns, metric, service), bounds, counts) in groups {
-            let q = histogram_quantile(phi, &bounds, &counts);
+            let q = match plan.histogram_fraction {
+                Some((lo, hi)) => histogram_fraction(lo, hi, &bounds, &counts),
+                None => histogram_quantile(phi, &bounds, &counts),
+            };
             let val = apply_transforms_f64(q, &plan.transforms);
             // `vector CMP scalar` without `bool`: drop non-matching series.
             if let Some(cmp) = &plan.filter
@@ -1621,6 +1625,45 @@ fn histogram_quantile(phi: f64, bounds: &[f64], counts: &[f64]) -> f64 {
         return bucket_start;
     }
     bucket_start + (bucket_end - bucket_start) * (rank_in_bucket / count_in_bucket)
+}
+
+/// The fraction of a classic histogram's observations in `(lower, upper]`,
+/// via the cumulative distribution (the inverse of [`histogram_quantile`]'s
+/// interpolation): buckets span `(prev_bound, bound]` with the first starting
+/// at 0, observations spread uniformly, and the open `+Inf` bucket sits above
+/// the last finite bound.
+fn histogram_fraction(lower: f64, upper: f64, bounds: &[f64], counts: &[f64]) -> f64 {
+    if bounds.is_empty() || counts.len() != bounds.len() + 1 {
+        return f64::NAN;
+    }
+    let total: f64 = counts.iter().sum();
+    if total <= 0.0 {
+        return f64::NAN;
+    }
+    (hist_cumulative(upper, bounds, counts) - hist_cumulative(lower, bounds, counts)) / total
+}
+
+/// Cumulative count of observations `<= x`, interpolated within the bucket.
+fn hist_cumulative(x: f64, bounds: &[f64], counts: &[f64]) -> f64 {
+    let n = bounds.len();
+    // At or above the top finite bound: all finite-bucket observations count;
+    // the `+Inf` bucket's observations are strictly greater.
+    if x >= bounds[n - 1] {
+        return counts[..n].iter().sum();
+    }
+    // First finite bucket whose upper bound is >= x contains x.
+    let b = bounds.iter().position(|&bd| bd >= x).unwrap_or(0);
+    let bucket_start = if b == 0 { 0.0 } else { bounds[b - 1] };
+    let before: f64 = counts[..b].iter().sum();
+    if x <= bucket_start {
+        return before;
+    }
+    let width = bounds[b] - bucket_start;
+    if width <= 0.0 {
+        return before;
+    }
+    let frac = ((x - bucket_start) / width).clamp(0.0, 1.0);
+    before + counts[b] * frac
 }
 
 /// Re-project a matrix DataFrame with the `value` column transformed by
@@ -2538,6 +2581,19 @@ mod tests {
             "got {}",
             out[0].2
         );
+    }
+
+    #[tokio::test]
+    async fn histogram_fraction_is_cdf_delta() {
+        let service = service_with_histogram();
+        // Merged counts [3,6,9,12] over bounds [1,2,4], total 30.
+        // Observations in (0, 2] = 3+6 = 9 → fraction 0.3.
+        let out = matrix(&service, "histogram_fraction(0, 2, latency)", 1000).await;
+        assert_eq!(out.len(), 1);
+        assert!((out[0].2 - 0.3).abs() < 1e-9, "got {}", out[0].2);
+        // (0, 4] covers three finite buckets = 18/30 = 0.6.
+        let out = matrix(&service, "histogram_fraction(0, 4, latency)", 1000).await;
+        assert!((out[0].2 - 0.6).abs() < 1e-9, "got {}", out[0].2);
     }
 
     #[tokio::test]
