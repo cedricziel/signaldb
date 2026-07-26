@@ -27,7 +27,7 @@
 //!   (`metric * 8`, `1024 / metric`) as value transforms on the result.
 //!
 //! Scalar comparisons (`metric > 5`, `5 < metric`, with an optional `bool`
-//! modifier) filter the result or map it to 1/0. `irate`, logical and
+//! modifier) filter the result or map it to 1/0. Logical and
 //! vector-to-vector operators, subqueries, and `histogram_quantile` over an
 //! inner `rate()`/aggregation are not lowered yet and return
 //! [`QuerierError::Unsupported`] (#335).
@@ -101,6 +101,11 @@ pub enum RangeFn {
     /// `deriv(metric[range])` — per-second derivative estimated by simple
     /// linear regression of the samples against time.
     Deriv,
+    /// `irate(metric[range])` — per-second instant rate from the last two
+    /// samples in the window.
+    Irate,
+    /// `idelta(metric[range])` — difference between the last two samples.
+    Idelta,
 }
 
 /// A range-vector spec: the function and its window in seconds.
@@ -301,9 +306,12 @@ fn build_plan(
                 "increase" => RangeFn::Increase,
                 "delta" => RangeFn::Delta,
                 "deriv" => RangeFn::Deriv,
+                "irate" => RangeFn::Irate,
+                "idelta" => RangeFn::Idelta,
                 other => {
                     return Err(QuerierError::Unsupported(format!(
-                        "function '{other}' (supported: rate, increase, delta, deriv, *_over_time)"
+                        "function '{other}' (supported: rate, increase, delta, deriv, irate, \
+                         idelta, *_over_time)"
                     )));
                 }
             };
@@ -833,6 +841,18 @@ mod tests {
     }
 
     #[test]
+    fn irate_and_idelta_are_range_functions() {
+        for (q, f) in [
+            ("irate(x[5m])", RangeFn::Irate),
+            ("idelta(x[5m])", RangeFn::Idelta),
+        ] {
+            let p = plan(q);
+            assert_eq!(p.range.unwrap().function, f, "{q}");
+            assert_eq!(p.grouping, Grouping::Natural, "{q}");
+        }
+    }
+
+    #[test]
     fn sum_over_rate() {
         let p = plan(r#"sum(rate(http_requests_total[5m]))"#);
         assert_eq!(p.aggregate, MetricAgg::Sum);
@@ -1017,7 +1037,7 @@ mod tests {
     #[test]
     fn unsupported_shapes() {
         assert!(matches!(
-            err(r#"irate(x[5m])"#),
+            err(r#"resets(x[5m])"#),
             QuerierError::Unsupported(_)
         ));
         assert!(matches!(err(r#"x + y"#), QuerierError::Unsupported(_)));
