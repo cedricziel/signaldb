@@ -119,9 +119,16 @@ impl MetricsService {
         let bucket = bucket_expr(step);
 
         let df = if let Some(range) = plan.range {
-            self.range_query(df, bucket, range, plan.aggregate, &group_cols)?
+            self.range_query(
+                df,
+                bucket,
+                range,
+                plan.aggregate,
+                plan.agg_param,
+                &group_cols,
+            )?
         } else {
-            self.simple_query(df, bucket, plan.aggregate, &group_cols)?
+            self.simple_query(df, bucket, plan.aggregate, plan.agg_param, &group_cols)?
         };
 
         // Apply math / scalar-arithmetic transforms to the result value.
@@ -160,12 +167,13 @@ impl MetricsService {
         df: DataFrame,
         bucket: Expr,
         aggregate: MetricAgg,
+        param: Option<f64>,
         group_cols: &[&str],
     ) -> Result<DataFrame, QuerierError> {
         let mut group_exprs = vec![bucket, col("metric_name")];
         group_exprs.extend(group_cols.iter().map(|c| col(*c)));
 
-        let value = aggregate_expr(aggregate).alias("value");
+        let value = aggregate_expr(aggregate, param).alias("value");
         let df = df
             .aggregate(group_exprs, vec![value])
             .map_err(QuerierError::QueryFailed)?;
@@ -185,6 +193,7 @@ impl MetricsService {
         bucket: Expr,
         range: super::promql::RangeSpec,
         aggregate: MetricAgg,
+        param: Option<f64>,
         group_cols: &[&str],
     ) -> Result<DataFrame, QuerierError> {
         use super::promql::RangeFn;
@@ -280,7 +289,10 @@ impl MetricsService {
         let mut group_exprs = vec![col("bucket"), col("metric_name")];
         group_exprs.extend(group_cols.iter().map(|c| col(*c)));
         let df = df
-            .aggregate(group_exprs, vec![aggregate_expr(aggregate).alias("value")])
+            .aggregate(
+                group_exprs,
+                vec![aggregate_expr(aggregate, param).alias("value")],
+            )
             .map_err(QuerierError::QueryFailed)?;
         let mut proj = vec![col("bucket"), col("metric_name")];
         proj.extend(group_cols.iter().map(|c| col(*c)));
@@ -748,7 +760,8 @@ fn attribute_fragment(key: &str, value: &str) -> String {
     format!("{json_key}:{json_value}")
 }
 
-fn aggregate_expr(agg: MetricAgg) -> Expr {
+fn aggregate_expr(agg: MetricAgg, param: Option<f64>) -> Expr {
+    use datafusion::functions_aggregate::expr_fn::percentile_cont;
     let value = col("value");
     match agg {
         MetricAgg::Sum => sum(value),
@@ -760,6 +773,11 @@ fn aggregate_expr(agg: MetricAgg) -> Expr {
         MetricAgg::StdVar => var_pop(value),
         // `group()` yields a constant 1 for every output series.
         MetricAgg::Group => max(lit(1.0_f64)),
+        // `quantile(phi, …)` — the phi-quantile of the grouped values.
+        MetricAgg::Quantile => {
+            let phi = param.unwrap_or(0.5);
+            percentile_cont(SortExpr::new(value, true, true), lit(phi))
+        }
         // Last value in the bucket, ordered by timestamp.
         MetricAgg::Last => last_value(value, vec![SortExpr::new(col("timestamp"), true, true)]),
     }
@@ -1230,6 +1248,18 @@ mod tests {
         let out = matrix(&service, "sum(reqs)", 1000).await;
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].2, 9.0); // 1+3+5
+    }
+
+    #[tokio::test]
+    async fn quantile_is_percentile_across_the_bucket() {
+        let service = service_with_data();
+        // Values in the bucket are [1, 3, 5]; the 0.5-quantile (median) is 3.
+        let out = matrix(&service, "quantile(0.5, reqs)", 1000).await;
+        assert_eq!(out.len(), 1);
+        assert!((out[0].2 - 3.0).abs() < 1e-9, "got {}", out[0].2);
+        // The 0-quantile is the minimum.
+        let out = matrix(&service, "quantile(0, reqs)", 1000).await;
+        assert!((out[0].2 - 1.0).abs() < 1e-9, "got {}", out[0].2);
     }
 
     #[tokio::test]

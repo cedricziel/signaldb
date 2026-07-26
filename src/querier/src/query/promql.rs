@@ -56,6 +56,9 @@ pub enum MetricAgg {
     StdVar,
     /// `group(...)` — a constant `1` per output series.
     Group,
+    /// `quantile(phi, …)` — the phi-quantile across series (phi is carried in
+    /// [`MetricPlan::agg_param`]).
+    Quantile,
 }
 
 /// How series are grouped.
@@ -207,6 +210,8 @@ pub struct MetricPlan {
     /// Set for a `vector CMP scalar` comparison without `bool` — keep only
     /// the samples where the comparison holds.
     pub filter: Option<ScalarCompare>,
+    /// The phi for a parameterized `quantile(phi, …)` aggregation.
+    pub agg_param: Option<f64>,
 }
 
 /// A `topk`/`bottomk` selection: keep `k` series per bucket, ranked by value.
@@ -245,10 +250,13 @@ fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
             if op == "topk" || op == "bottomk" {
                 return lower_topk(agg, op == "bottomk");
             }
+            if op == "quantile" {
+                return lower_quantile(agg);
+            }
             let aggregate = aggregate_op(&op)?;
             if agg.param.is_some() {
                 return Err(QuerierError::Unsupported(
-                    "parameterized aggregation (quantile/count_values)".to_string(),
+                    "parameterized aggregation (count_values)".to_string(),
                 ));
             }
             let grouping = grouping_from(agg.modifier.as_ref())?;
@@ -362,6 +370,7 @@ fn lower_selector(
         transforms: Vec::new(),
         topk: None,
         filter: None,
+        agg_param: None,
     })
 }
 
@@ -386,6 +395,24 @@ fn lower_topk(agg: &parser::AggregateExpr, bottom: bool) -> Result<MetricPlan, Q
     }
     let mut plan = build_plan(unwrap_paren(&agg.expr), MetricAgg::Last, Grouping::Natural)?;
     plan.topk = Some(TopKSpec { k, bottom });
+    Ok(plan)
+}
+
+/// Lower `quantile(phi, expr)` — the phi-quantile across the grouped series.
+/// phi must be a numeric literal; it is carried in [`MetricPlan::agg_param`]
+/// and evaluated with `percentile_cont` at execution time.
+fn lower_quantile(agg: &parser::AggregateExpr) -> Result<MetricPlan, QuerierError> {
+    let phi = match agg.param.as_deref().map(unwrap_paren) {
+        Some(Expr::NumberLiteral(n)) => n.val,
+        _ => {
+            return Err(QuerierError::Unsupported(
+                "quantile requires a numeric literal phi".to_string(),
+            ));
+        }
+    };
+    let grouping = grouping_from(agg.modifier.as_ref())?;
+    let mut plan = build_plan(unwrap_paren(&agg.expr), MetricAgg::Quantile, grouping)?;
+    plan.agg_param = Some(phi);
     Ok(plan)
 }
 
@@ -759,6 +786,19 @@ mod tests {
         // With `by (…)` grouping.
         let p = plan(r#"stddev by (job) (x)"#);
         assert_eq!(p.aggregate, MetricAgg::Stddev);
+        assert_eq!(p.grouping, Grouping::By(vec!["job".into()]));
+    }
+
+    #[test]
+    fn quantile_aggregation_carries_phi() {
+        let p = plan("quantile(0.9, x)");
+        assert_eq!(p.aggregate, MetricAgg::Quantile);
+        assert_eq!(p.agg_param, Some(0.9));
+        assert_eq!(p.grouping, Grouping::Collapse);
+        // With grouping.
+        let p = plan("quantile by (job) (0.5, x)");
+        assert_eq!(p.aggregate, MetricAgg::Quantile);
+        assert_eq!(p.agg_param, Some(0.5));
         assert_eq!(p.grouping, Grouping::By(vec!["job".into()]));
     }
 
