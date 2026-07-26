@@ -100,6 +100,10 @@ impl MetricsService {
             ));
         }
         match plan_query(query)? {
+            QueryPlan::Single(plan) if plan.absent => {
+                self.eval_absent(&plan, start, end, step, tenant_slug, dataset_slug)
+                    .await
+            }
             QueryPlan::Single(plan) => {
                 self.eval_plan(&plan, start, end, step, tenant_slug, dataset_slug)
                     .await
@@ -478,6 +482,90 @@ impl MetricsService {
             services.push(service);
             values.push(value);
         }
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "bucket",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(ts)),
+            Arc::new(StringArray::from(names)),
+            Arc::new(StringArray::from(services)),
+            Arc::new(Float64Array::from(values)),
+        ];
+        let batch = RecordBatch::try_new(schema, columns)
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        Ok(vec![batch])
+    }
+
+    /// `absent(v)` / `absent_over_time(v[range])`: emit a `1`-valued series
+    /// for every step bucket in `[start, end]` where the selector matched no
+    /// data. The output carries the `job`/`service` equality matcher (if any)
+    /// as `service_name`, mirroring Prometheus's use of the selector labels.
+    async fn eval_absent(
+        &self,
+        plan: &MetricPlan,
+        start: i64,
+        end: i64,
+        step: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<RecordBatch>, QuerierError> {
+        // Evaluate the inner selector (without the absent flag) and collect
+        // the buckets that produced data.
+        let mut inner = plan.clone();
+        inner.absent = false;
+        // A scan over a missing table errors inside eval_plan for some paths;
+        // treat any evaluation as "no data" only via its rows.
+        let present: BTreeSet<i64> = match self
+            .eval_plan(&inner, start, end, step, tenant_slug, dataset_slug)
+            .await
+        {
+            Ok(batches) => {
+                let mut set = BTreeSet::new();
+                for batch in &batches {
+                    for (bucket, _s, _v) in matrix_rows(batch)? {
+                        set.insert(bucket);
+                    }
+                }
+                set
+            }
+            Err(_) => BTreeSet::new(),
+        };
+
+        // The output series label: the value of a `job`/`service` equality
+        // matcher, if the selector has one.
+        let service = plan
+            .matchers
+            .iter()
+            .find(|m| {
+                matches!(m.op, MatchKind::Eq) && column_for_label(&m.name) == Some("service_name")
+            })
+            .map(|m| m.value.clone())
+            .unwrap_or_default();
+
+        // Emit 1 for every step bucket (aligned to the epoch) with no data.
+        let first = start.div_euclid(step) * step;
+        let mut ts = Vec::new();
+        let mut names = Vec::new();
+        let mut services = Vec::new();
+        let mut values = Vec::new();
+        let mut bucket = first;
+        while bucket <= end {
+            if !present.contains(&bucket) {
+                ts.push(bucket);
+                names.push(String::new());
+                services.push(service.clone());
+                values.push(1.0);
+            }
+            bucket += step;
+        }
+
         let schema = Arc::new(Schema::new(vec![
             Field::new(
                 "bucket",
@@ -2345,6 +2433,24 @@ mod tests {
         let service = service_with_data();
         let out = matrix(&service, "histogram_quantile(0.9, latency)", 1000).await;
         assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn absent_emits_one_for_empty_buckets() {
+        let service = service_with_data();
+        // reqs exists (bucket 0) → fewer absent buckets than a missing metric.
+        let present = matrix(&service, "absent(reqs)", 1000).await;
+        let missing = matrix(&service, "absent(nope)", 1000).await;
+        assert!(missing.len() > present.len());
+        assert!(missing.iter().all(|(n, _, v)| n.is_empty() && *v == 1.0));
+        // A `job` equality matcher becomes the output service label.
+        let ghost = matrix(&service, r#"absent(reqs{job="ghost"})"#, 1000).await;
+        assert!(!ghost.is_empty());
+        assert!(
+            ghost
+                .iter()
+                .all(|(_, s, v)| s.as_deref() == Some("ghost") && *v == 1.0)
+        );
     }
 
     #[tokio::test]

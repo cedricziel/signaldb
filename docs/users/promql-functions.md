@@ -58,7 +58,7 @@ wrong result.
 | `resets`, `changes` | ✅ (counted over the ordered samples in each bucket) |
 | `present_over_time` | ✅ (1 per bucket with samples) |
 | `quantile_over_time(phi, …)` | ✅ (per-series phi-quantile of the bucket) |
-| `absent_over_time` | ❌ |
+| `absent_over_time` | ✅ (1 per empty step bucket) |
 
 ## Histograms
 
@@ -88,7 +88,8 @@ wrong result.
 | `exp`, `ln`, `log2`, `log10`, `sqrt`, `sgn` | ✅ |
 | `sort`, `sort_desc` | ❌ |
 | `label_replace`, `label_join` | ❌ |
-| `vector`, `scalar`, `absent` | ❌ |
+| `absent` | ✅ (1 per empty step bucket; carries the `job`/`service` matcher) |
+| `vector`, `scalar` | ❌ |
 | `time`, `timestamp`, `day_of_week`, `hour`, … | ❌ |
 
 ## Roadmap
