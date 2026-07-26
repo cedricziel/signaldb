@@ -26,9 +26,11 @@
 //!   `ln`, `log2`, `log10`, `sgn`, `clamp*`) and scalar arithmetic
 //!   (`metric * 8`, `1024 / metric`) as value transforms on the result.
 //!
-//! `irate`, comparison/logical/vector-to-vector operators, subqueries, and
-//! `histogram_quantile` over an inner `rate()`/aggregation are not lowered yet
-//! and return [`QuerierError::Unsupported`] (#335).
+//! Scalar comparisons (`metric > 5`, `5 < metric`, with an optional `bool`
+//! modifier) filter the result or map it to 1/0. `irate`, logical and
+//! vector-to-vector operators, subqueries, and `histogram_quantile` over an
+//! inner `rate()`/aggregation are not lowered yet and return
+//! [`QuerierError::Unsupported`] (#335).
 //!
 //! Like the log path, range aggregations use fixed step-aligned buckets
 //! (`date_bin`), not Prometheus's sliding window — exact when the step
@@ -121,6 +123,29 @@ pub enum ArithOp {
     Pow,
 }
 
+/// A comparison operator in a `vector OP scalar` expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpOp {
+    Eq,
+    Ne,
+    Gt,
+    Lt,
+    Ge,
+    Le,
+}
+
+/// A `vector CMP scalar` comparison used as a filter (Prometheus keeps the
+/// series where the comparison holds). `scalar_left` is true for
+/// `scalar CMP vector` (e.g. `5 < metric`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScalarCompare {
+    pub op: CmpOp,
+    pub scalar: f64,
+    pub scalar_left: bool,
+}
+
+impl Eq for ScalarCompare {}
+
 /// A transform applied to the result `value` column, in order. Covers the
 /// unary math functions and scalar arithmetic (`metric * 8`, `metric / 1024`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -142,6 +167,9 @@ pub enum ValueOp {
     /// Scalar arithmetic; the bool is true when the scalar is on the left
     /// (`scalar OP vector`), false for `vector OP scalar`.
     Arith(ArithOp, f64, bool),
+    /// `vector CMP scalar bool` — map each value to 1 or 0 depending on the
+    /// comparison. The bool is true when the scalar is on the left.
+    CompareBool(CmpOp, f64, bool),
 }
 
 impl Eq for ValueOp {}
@@ -171,6 +199,9 @@ pub struct MetricPlan {
     /// Set for `topk(k, …)` / `bottomk(k, …)` — after computing per-series
     /// values, keep the k highest (or lowest) series per bucket.
     pub topk: Option<TopKSpec>,
+    /// Set for a `vector CMP scalar` comparison without `bool` — keep only
+    /// the samples where the comparison holds.
+    pub filter: Option<ScalarCompare>,
 }
 
 /// A `topk`/`bottomk` selection: keep `k` series per bucket, ranked by value.
@@ -322,6 +353,7 @@ fn lower_selector(
         quantile: None,
         transforms: Vec::new(),
         topk: None,
+        filter: None,
     })
 }
 
@@ -433,9 +465,7 @@ fn lower_math_call(call: &parser::Call) -> Result<MetricPlan, QuerierError> {
 /// operations are not (#335).
 fn lower_binary(bin: &parser::BinaryExpr) -> Result<MetricPlan, QuerierError> {
     if bin.op.is_comparison_operator() {
-        return Err(QuerierError::Unsupported(
-            "comparison operators".to_string(),
-        ));
+        return lower_comparison(bin);
     }
     let arith = match format!("{}", bin.op).as_str() {
         "+" => ArithOp::Add,
@@ -470,6 +500,62 @@ fn lower_binary(bin: &parser::BinaryExpr) -> Result<MetricPlan, QuerierError> {
             Ok(plan)
         }
     }
+}
+
+/// Lower a `vector CMP scalar` (or `scalar CMP vector`) comparison. Without
+/// the `bool` modifier this filters the series to those where the comparison
+/// holds; with `bool` it maps each value to 1/0. Vector-to-vector comparison
+/// stays unsupported (#335).
+fn lower_comparison(bin: &parser::BinaryExpr) -> Result<MetricPlan, QuerierError> {
+    let op = match format!("{}", bin.op).as_str() {
+        "==" => CmpOp::Eq,
+        "!=" => CmpOp::Ne,
+        ">" => CmpOp::Gt,
+        "<" => CmpOp::Lt,
+        ">=" => CmpOp::Ge,
+        "<=" => CmpOp::Le,
+        other => {
+            return Err(QuerierError::Unsupported(format!(
+                "comparison operator '{other}'"
+            )));
+        }
+    };
+    let return_bool = bin
+        .modifier
+        .as_ref()
+        .map(|m| m.return_bool)
+        .unwrap_or(false);
+    let (mut plan, scalar, scalar_left) = match (as_scalar(&bin.lhs), as_scalar(&bin.rhs)) {
+        (Some(_), Some(_)) => {
+            return Err(QuerierError::Unsupported(
+                "constant-only comparison".to_string(),
+            ));
+        }
+        (None, None) => {
+            return Err(QuerierError::Unsupported(
+                "vector-to-vector comparison".to_string(),
+            ));
+        }
+        // scalar CMP vector
+        (Some(s), None) => (lower(unwrap_paren(&bin.rhs))?, s, true),
+        // vector CMP scalar
+        (None, Some(s)) => (lower(unwrap_paren(&bin.lhs))?, s, false),
+    };
+    if return_bool {
+        plan.transforms
+            .push(ValueOp::CompareBool(op, scalar, scalar_left));
+    } else if plan.filter.is_some() {
+        return Err(QuerierError::Unsupported(
+            "chained comparison filters".to_string(),
+        ));
+    } else {
+        plan.filter = Some(ScalarCompare {
+            op,
+            scalar,
+            scalar_left,
+        });
+    }
+    Ok(plan)
 }
 
 /// The `i`-th call argument as a numeric literal.
@@ -836,9 +922,58 @@ mod tests {
     }
 
     #[test]
-    fn vector_binary_and_comparison_unsupported() {
+    fn vector_binary_and_vector_comparison_unsupported() {
         assert!(matches!(err("x + y"), QuerierError::Unsupported(_)));
-        assert!(matches!(err("x > 5"), QuerierError::Unsupported(_)));
+        // Vector-to-vector comparison stays unsupported.
+        assert!(matches!(err("x > y"), QuerierError::Unsupported(_)));
+    }
+
+    #[test]
+    fn scalar_comparison_sets_filter() {
+        for (q, op, scalar, left) in [
+            ("x > 5", CmpOp::Gt, 5.0, false),
+            ("x == 0", CmpOp::Eq, 0.0, false),
+            ("x != 0", CmpOp::Ne, 0.0, false),
+            ("x <= 10", CmpOp::Le, 10.0, false),
+            ("5 < x", CmpOp::Lt, 5.0, true),
+        ] {
+            let p = plan(q);
+            assert_eq!(
+                p.filter,
+                Some(ScalarCompare {
+                    op,
+                    scalar,
+                    scalar_left: left
+                }),
+                "{q}"
+            );
+            assert!(p.transforms.is_empty(), "{q}");
+        }
+    }
+
+    #[test]
+    fn bool_comparison_appends_transform() {
+        let p = plan("x > bool 5");
+        assert!(p.filter.is_none());
+        assert_eq!(
+            p.transforms,
+            vec![ValueOp::CompareBool(CmpOp::Gt, 5.0, false)]
+        );
+    }
+
+    #[test]
+    fn comparison_composes_with_aggregation() {
+        // Filter applies to the aggregated result.
+        let p = plan("sum(x) > 100");
+        assert_eq!(p.aggregate, MetricAgg::Sum);
+        assert_eq!(
+            p.filter,
+            Some(ScalarCompare {
+                op: CmpOp::Gt,
+                scalar: 100.0,
+                scalar_left: false
+            })
+        );
     }
 
     #[test]
