@@ -527,6 +527,9 @@ fn over_time_agg(name: &str) -> Option<MetricAgg> {
         "last_over_time" => MetricAgg::Last,
         "stddev_over_time" => MetricAgg::Stddev,
         "stdvar_over_time" => MetricAgg::StdVar,
+        // 1 for every bucket that has at least one sample (buckets with no
+        // sample produce no row, which is exactly `present_over_time`).
+        "present_over_time" => MetricAgg::Group,
         _ => return None,
     })
 }
@@ -762,6 +765,7 @@ mod tests {
             ("last_over_time(x[5m])", MetricAgg::Last),
             ("stddev_over_time(x[5m])", MetricAgg::Stddev),
             ("stdvar_over_time(x[5m])", MetricAgg::StdVar),
+            ("present_over_time(x[5m])", MetricAgg::Group),
         ] {
             let p = plan(q);
             assert_eq!(p.aggregate, a, "{q}");

@@ -55,7 +55,8 @@ wrong result.
 | `stddev_over_time`, `stdvar_over_time` | ✅ (population) |
 | `<agg>_over_time` under an outer aggregation, e.g. `sum(avg_over_time(…))` | ❌ |
 | `irate`, `idelta`, `delta`, `deriv`, `resets`, `changes` | ❌ |
-| `present_over_time`, `absent_over_time`, `quantile_over_time` | ❌ |
+| `present_over_time` | ✅ (1 per bucket with samples) |
+| `absent_over_time`, `quantile_over_time` | ❌ |
 
 ## Histograms
 
