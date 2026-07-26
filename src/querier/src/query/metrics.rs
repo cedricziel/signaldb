@@ -29,8 +29,8 @@ use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
 use super::promql::{
-    ArithOp, CmpOp, Grouping, LabelMatch, MatchKind, MetricAgg, MetricPlan, TopKSpec, ValueOp,
-    plan_promql,
+    ArithOp, CmpOp, Grouping, HistogramFn, LabelMatch, MatchKind, MetricAgg, MetricPlan, TopKSpec,
+    ValueOp, plan_promql,
 };
 use super::{error::QuerierError, table_ref::build_table_reference};
 
@@ -106,6 +106,14 @@ impl MetricsService {
         if let Some(phi) = plan.quantile {
             return self
                 .histogram_query(&plan, phi, start, end, step, tenant_slug, dataset_slug)
+                .await;
+        }
+
+        // histogram_count/histogram_sum aggregate the histogram table's
+        // scalar count/sum column.
+        if let Some(hf) = plan.histogram_fn {
+            return self
+                .histogram_scalar_query(&plan, hf, start, end, step, tenant_slug, dataset_slug)
                 .await;
         }
 
@@ -420,6 +428,54 @@ impl MetricsService {
         let batch = RecordBatch::try_new(schema, columns)
             .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
         Ok(vec![batch])
+    }
+
+    /// `histogram_count(v)` / `histogram_sum(v)`: sum the stored histogram's
+    /// `count`/`sum` column per (step bucket, series).
+    #[allow(clippy::too_many_arguments)]
+    async fn histogram_scalar_query(
+        &self,
+        plan: &MetricPlan,
+        hf: HistogramFn,
+        start: i64,
+        end: i64,
+        step: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<RecordBatch>, QuerierError> {
+        let table_ref = build_table_reference(tenant_slug, dataset_slug, "metrics_histogram")
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        // No histogram table yet → empty result, not an error.
+        let Ok(df) = self.session_context.table(table_ref).await else {
+            return Ok(vec![]);
+        };
+        let df = apply_filters(df, plan, start - plan.offset_ns, end - plan.offset_ns)?;
+        let column = match hf {
+            HistogramFn::Count => "count",
+            HistogramFn::Sum => "sum",
+        };
+        let df = df
+            .aggregate(
+                vec![
+                    bucket_expr(step, plan.offset_ns),
+                    col("metric_name"),
+                    col("service_name"),
+                ],
+                vec![sum(col(column)).alias("value")],
+            )
+            .map_err(QuerierError::QueryFailed)?
+            .select(vec![
+                col("bucket"),
+                col("metric_name"),
+                col("service_name"),
+                cast_value_f64(col("value")).alias("value"),
+            ])
+            .map_err(QuerierError::QueryFailed)?;
+        df.sort(vec![SortExpr::new(col("bucket"), true, true)])
+            .map_err(QuerierError::QueryFailed)?
+            .collect()
+            .await
+            .map_err(QuerierError::QueryFailed)
     }
 
     /// Resolve the grouping labels to physical columns. Only labels backed
@@ -1618,6 +1674,8 @@ mod tests {
             ),
             Field::new("service_name", DataType::Utf8, false),
             Field::new("metric_name", DataType::Utf8, false),
+            Field::new("count", DataType::Int64, false),
+            Field::new("sum", DataType::Float64, true),
             Field::new("bucket_counts", DataType::Utf8, true),
             Field::new("explicit_bounds", DataType::Utf8, true),
             Field::new("attributes", DataType::Utf8, true),
@@ -1631,6 +1689,8 @@ mod tests {
                 Arc::new(TimestampNanosecondArray::from(vec![100, 100])),
                 Arc::new(StringArray::from(vec!["api", "api"])),
                 Arc::new(StringArray::from(vec!["latency", "latency"])),
+                Arc::new(datafusion::arrow::array::Int64Array::from(vec![10, 10])),
+                Arc::new(Float64Array::from(vec![55.0, 55.0])),
                 Arc::new(StringArray::from(vec!["[1,2,3,4]", "[1,2,3,4]"])),
                 Arc::new(StringArray::from(vec!["[1,2,4]", "[1,2,4]"])),
                 Arc::new(StringArray::from(vec!["{}", "{}"])),
@@ -1671,5 +1731,18 @@ mod tests {
         let service = service_with_data();
         let out = matrix(&service, "histogram_quantile(0.9, latency)", 1000).await;
         assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn histogram_count_and_sum_aggregate_the_columns() {
+        let service = service_with_histogram();
+        // Two points: count 10+10 = 20, sum 55+55 = 110.
+        let out = matrix(&service, "histogram_count(latency)", 1000).await;
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].2, 20.0);
+
+        let out = matrix(&service, "histogram_sum(latency)", 1000).await;
+        assert_eq!(out.len(), 1);
+        assert!((out[0].2 - 110.0).abs() < 1e-9, "got {}", out[0].2);
     }
 }

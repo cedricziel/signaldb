@@ -215,6 +215,18 @@ pub struct MetricPlan {
     /// `offset` modifier in nanoseconds: the query window is shifted back by
     /// this amount (negative for `offset -5m`). Zero when absent.
     pub offset_ns: i64,
+    /// Set for `histogram_count(v)` / `histogram_sum(v)` — aggregate the
+    /// stored histogram's `count`/`sum` column instead of a scalar `value`.
+    pub histogram_fn: Option<HistogramFn>,
+}
+
+/// A scalar reduction over a stored histogram's `count`/`sum` columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistogramFn {
+    /// `histogram_count(v)` — total observation count.
+    Count,
+    /// `histogram_sum(v)` — sum of observed values.
+    Sum,
 }
 
 /// A `topk`/`bottomk` selection: keep `k` series per bucket, ranked by value.
@@ -240,6 +252,14 @@ fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
         // `histogram_quantile(phi, <selector>)` targets the histogram table.
         Expr::Call(call) if call.func.name == "histogram_quantile" => {
             lower_histogram_quantile(call)
+        }
+        // `histogram_count(v)` / `histogram_sum(v)` reduce the stored
+        // histogram's count/sum column.
+        Expr::Call(call) if call.func.name == "histogram_count" => {
+            lower_histogram_scalar(call, HistogramFn::Count)
+        }
+        Expr::Call(call) if call.func.name == "histogram_sum" => {
+            lower_histogram_scalar(call, HistogramFn::Sum)
         }
         // A math function wrapping a vector: `abs(...)`, `clamp_min(..., 0)`.
         Expr::Call(call) if is_math_fn(call.func.name) => lower_math_call(call),
@@ -387,6 +407,7 @@ fn lower_selector(
         filter: None,
         agg_param: None,
         offset_ns,
+        histogram_fn: None,
     })
 }
 
@@ -459,6 +480,32 @@ fn lower_histogram_quantile(call: &parser::Call) -> Result<MetricPlan, QuerierEr
     };
     let mut plan = lower_selector(vs, MetricAgg::Last, Grouping::Natural, None)?;
     plan.quantile = Some(phi);
+    Ok(plan)
+}
+
+/// Lower `histogram_count(v)` / `histogram_sum(v)`. The argument must be a
+/// plain vector selector; the stored histogram's `count`/`sum` column is
+/// summed per bucket and series.
+fn lower_histogram_scalar(
+    call: &parser::Call,
+    hf: HistogramFn,
+) -> Result<MetricPlan, QuerierError> {
+    let name = match hf {
+        HistogramFn::Count => "histogram_count",
+        HistogramFn::Sum => "histogram_sum",
+    };
+    let inner = call
+        .args
+        .args
+        .first()
+        .ok_or_else(|| QuerierError::InvalidInput(format!("{name} expects (selector)")))?;
+    let Expr::VectorSelector(vs) = unwrap_paren(inner) else {
+        return Err(QuerierError::Unsupported(format!(
+            "{name} over rate()/aggregations is not supported yet (#335); use {name}(metric)"
+        )));
+    };
+    let mut plan = lower_selector(vs, MetricAgg::Last, Grouping::Natural, None)?;
+    plan.histogram_fn = Some(hf);
     Ok(plan)
 }
 
@@ -1130,6 +1177,16 @@ mod tests {
         assert_eq!(p.matchers.len(), 1);
         assert_eq!(p.grouping, Grouping::Natural);
         assert!(p.range.is_none());
+    }
+
+    #[test]
+    fn histogram_count_and_sum_set_histogram_fn() {
+        let c = plan("histogram_count(latency)");
+        assert_eq!(c.metric_name, "latency");
+        assert_eq!(c.histogram_fn, Some(HistogramFn::Count));
+        assert!(c.quantile.is_none());
+        let s = plan("histogram_sum(latency)");
+        assert_eq!(s.histogram_fn, Some(HistogramFn::Sum));
     }
 
     #[test]
