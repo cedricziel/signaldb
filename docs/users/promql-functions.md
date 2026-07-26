@@ -77,7 +77,7 @@ wrong result.
 | Comparison `== != > < >= <=` with a scalar (`metric > 5`, `5 < metric`) | ✅ (filters series; with `bool` maps to 1/0) |
 | Arithmetic `+ - * / % ^` between two vectors (`a / b`) | ✅ (one-to-one match on `job`/`service`; drops `__name__`) |
 | Comparison `== != > < >= <=` between two vectors (`a > b`, with `bool`) | ✅ (one-to-one match; filters `left` or maps to 1/0) |
-| Logical/set `and`, `or`, `unless` | ❌ |
+| Logical/set `and`, `or`, `unless` | ✅ (matched on `job`/`service` identity) |
 | `on` / `ignoring` / `group_left` / `group_right` matching | ❌ |
 
 ## Math & label functions

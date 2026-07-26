@@ -28,10 +28,11 @@
 //!
 //! Scalar comparisons (`metric > 5`, `5 < metric`, with an optional `bool`
 //! modifier) filter the result or map it to 1/0. Vector-to-vector arithmetic
-//! (`a / b`) and comparison (`a > b`) match series one-to-one on their shared
-//! materialized label. Logical set ops, `on`/`ignoring`/`group_left` matching,
-//! subqueries, and `histogram_quantile` over an inner `rate()`/aggregation are
-//! not lowered yet and return [`QuerierError::Unsupported`] (#335).
+//! (`a / b`), comparison (`a > b`), and set ops (`and`/`or`/`unless`) match
+//! series one-to-one on their shared materialized label. Explicit
+//! `on`/`ignoring`/`group_left` matching, subqueries, and `histogram_quantile`
+//! over an inner `rate()`/aggregation are not lowered yet and return
+//! [`QuerierError::Unsupported`] (#335).
 //!
 //! Like the log path, range aggregations use fixed step-aligned buckets
 //! (`date_bin`), not Prometheus's sliding window — exact when the step
@@ -281,6 +282,20 @@ pub enum QueryPlan {
         right: Box<MetricPlan>,
         return_bool: bool,
     },
+    /// `left and|or|unless right` — set operations on series identity.
+    BinaryLogical {
+        left: Box<MetricPlan>,
+        op: LogicalOp,
+        right: Box<MetricPlan>,
+    },
+}
+
+/// A logical/set operator between two vectors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicalOp {
+    And,
+    Or,
+    Unless,
 }
 
 /// Parse and lower a PromQL query to a [`QueryPlan`].
@@ -327,13 +342,32 @@ pub fn plan_query(query: &str) -> Result<QueryPlan, QuerierError> {
             });
         }
     }
+    // `and`/`or`/`unless` set operations between two vectors (default match;
+    // explicit on/ignoring not supported yet).
+    if let Expr::Binary(bin) = unwrap_paren(&expr)
+        && as_scalar(&bin.lhs).is_none()
+        && as_scalar(&bin.rhs).is_none()
+        && bin.modifier.as_ref().is_none_or(|m| m.matching.is_none())
+    {
+        let op = match format!("{}", bin.op).as_str() {
+            "and" => Some(LogicalOp::And),
+            "or" => Some(LogicalOp::Or),
+            "unless" => Some(LogicalOp::Unless),
+            _ => None,
+        };
+        if let Some(op) = op {
+            let left = Box::new(lower(unwrap_paren(&bin.lhs))?);
+            let right = Box::new(lower(unwrap_paren(&bin.rhs))?);
+            return Ok(QueryPlan::BinaryLogical { left, op, right });
+        }
+    }
     if let Expr::Binary(bin) = unwrap_paren(&expr)
         && !bin.op.is_comparison_operator()
         && as_scalar(&bin.lhs).is_none()
         && as_scalar(&bin.rhs).is_none()
     {
-        // Only plain arithmetic tokens; logical set ops (`and`/`or`/`unless`)
-        // and `on`/`ignoring`/`group_left` matching stay unsupported (#335).
+        // Only plain arithmetic tokens; `on`/`ignoring`/`group_left` matching
+        // stays unsupported (#335).
         let op = match format!("{}", bin.op).as_str() {
             "+" => Some(ArithOp::Add),
             "-" => Some(ArithOp::Sub),
@@ -1367,9 +1401,24 @@ mod tests {
             plan_query("a * 2").expect("plan"),
             QueryPlan::Single(_)
         ));
-        // Logical set ops and explicit matching stay unsupported for now.
-        assert!(plan_query("a and b").is_err());
+        // Explicit on/ignoring/group_left matching stays unsupported for now.
         assert!(plan_query("a / on(job) b").is_err());
+    }
+
+    #[test]
+    fn logical_set_ops_are_binary_plans() {
+        for (q, expected) in [
+            ("a and b", LogicalOp::And),
+            ("a or b", LogicalOp::Or),
+            ("a unless b", LogicalOp::Unless),
+        ] {
+            match plan_query(q).expect("plan") {
+                QueryPlan::BinaryLogical { op, .. } => assert_eq!(op, expected, "{q}"),
+                other => panic!("expected logical for {q}, got {other:?}"),
+            }
+        }
+        // Explicit on/ignoring matching stays unsupported.
+        assert!(plan_query("a and on(job) b").is_err());
     }
 
     #[test]
