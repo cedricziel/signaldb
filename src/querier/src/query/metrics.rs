@@ -29,8 +29,8 @@ use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
 use super::promql::{
-    ArithOp, CmpOp, Grouping, HistogramFn, LabelMatch, MatchKind, MetricAgg, MetricPlan, QueryPlan,
-    SequenceFn, TopKSpec, ValueOp, plan_promql, plan_query,
+    ArithOp, CmpOp, Grouping, HistogramFn, LabelMatch, LogicalOp, MatchKind, MetricAgg, MetricPlan,
+    QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_promql, plan_query,
 };
 use super::{error::QuerierError, table_ref::build_table_reference};
 
@@ -128,6 +128,19 @@ impl MetricsService {
                     op,
                     &right,
                     return_bool,
+                    start,
+                    end,
+                    step,
+                    tenant_slug,
+                    dataset_slug,
+                )
+                .await
+            }
+            QueryPlan::BinaryLogical { left, op, right } => {
+                self.eval_binary_logical(
+                    &left,
+                    op,
+                    &right,
                     start,
                     end,
                     step,
@@ -342,6 +355,94 @@ impl MetricsService {
                     out.insert((bucket, service), (String::new(), v));
                 } else if holds {
                     out.insert((bucket, service), (metric, lv));
+                }
+            }
+        }
+
+        let mut ts = Vec::with_capacity(out.len());
+        let mut names = Vec::with_capacity(out.len());
+        let mut services = Vec::with_capacity(out.len());
+        let mut values = Vec::with_capacity(out.len());
+        for ((bucket, service), (metric, value)) in out {
+            ts.push(bucket);
+            names.push(metric);
+            services.push(service);
+            values.push(value);
+        }
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "bucket",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(ts)),
+            Arc::new(StringArray::from(names)),
+            Arc::new(StringArray::from(services)),
+            Arc::new(Float64Array::from(values)),
+        ];
+        let batch = RecordBatch::try_new(schema, columns)
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        Ok(vec![batch])
+    }
+
+    /// Execute a `left and|or|unless right` set operation. Series identity is
+    /// (bucket, service_name). `and` keeps left series with a match on the
+    /// right; `unless` keeps those without; `or` is the union, preferring the
+    /// left series where both sides have one. Labels/values are preserved.
+    #[allow(clippy::too_many_arguments)]
+    async fn eval_binary_logical(
+        &self,
+        left: &MetricPlan,
+        op: LogicalOp,
+        right: &MetricPlan,
+        start: i64,
+        end: i64,
+        step: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<RecordBatch>, QuerierError> {
+        let left_batches = self
+            .eval_plan(left, start, end, step, tenant_slug, dataset_slug)
+            .await?;
+        let right_batches = self
+            .eval_plan(right, start, end, step, tenant_slug, dataset_slug)
+            .await?;
+
+        let mut right_ids: BTreeSet<(i64, String)> = BTreeSet::new();
+        for batch in &right_batches {
+            for (bucket, _m, service, _v) in matrix_rows_named(batch)? {
+                right_ids.insert((bucket, service));
+            }
+        }
+
+        // (bucket, service) → (metric_name, value).
+        let mut out: BTreeMap<(i64, String), (String, f64)> = BTreeMap::new();
+        for batch in &left_batches {
+            for (bucket, metric, service, v) in matrix_rows_named(batch)? {
+                let in_right = right_ids.contains(&(bucket, service.clone()));
+                let keep = match op {
+                    LogicalOp::And => in_right,
+                    LogicalOp::Unless => !in_right,
+                    LogicalOp::Or => true,
+                };
+                if keep {
+                    out.insert((bucket, service), (metric, v));
+                }
+            }
+        }
+        // `or` adds the right series whose identity is absent from the left.
+        if op == LogicalOp::Or {
+            let left_ids: BTreeSet<(i64, String)> = out.keys().cloned().collect();
+            for batch in &right_batches {
+                for (bucket, metric, service, v) in matrix_rows_named(batch)? {
+                    if !left_ids.contains(&(bucket, service.clone())) {
+                        out.entry((bucket, service)).or_insert((metric, v));
+                    }
                 }
             }
         }
@@ -1992,6 +2093,24 @@ mod tests {
         // `reqs - reqs` = 0 per series.
         let sub = matrix(&service, "reqs - reqs", 1000).await;
         assert!(sub.iter().all(|(_, _, v)| *v == 0.0));
+    }
+
+    #[tokio::test]
+    async fn logical_set_ops_match_on_identity() {
+        let service = service_with_data();
+        // reqs: api=3, web=5. `reqs > 4` keeps only web(5).
+        // `and` → series with a match on the right = web only.
+        let and = matrix(&service, "reqs and (reqs > 4)", 1000).await;
+        assert_eq!(and.len(), 1);
+        assert_eq!(and[0].1.as_deref(), Some("web"));
+        assert_eq!(and[0].2, 5.0);
+        // `unless` → series without a match = api only.
+        let unless = matrix(&service, "reqs unless (reqs > 4)", 1000).await;
+        assert_eq!(unless.len(), 1);
+        assert_eq!(unless[0].1.as_deref(), Some("api"));
+        // `or` → union = both series.
+        let or = matrix(&service, "reqs or (reqs > 4)", 1000).await;
+        assert_eq!(or.len(), 2);
     }
 
     #[tokio::test]
