@@ -231,6 +231,9 @@ pub struct MetricPlan {
     /// Set for `timestamp(v)` — the result value is each series' latest sample
     /// timestamp (unix seconds) in the bucket, not the sample value.
     pub timestamp: bool,
+    /// Set for `histogram_fraction(lower, upper, v)` — the fraction of a
+    /// stored histogram's observations that fall in `(lower, upper]`.
+    pub histogram_fraction: Option<(f64, f64)>,
 }
 
 /// A per-bucket reduction that needs the ordered sample sequence.
@@ -425,6 +428,11 @@ fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
         Expr::Call(call) if call.func.name == "histogram_sum" => {
             lower_histogram_scalar(call, HistogramFn::Sum)
         }
+        // `histogram_fraction(lower, upper, v)` — fraction of observations in
+        // (lower, upper].
+        Expr::Call(call) if call.func.name == "histogram_fraction" => {
+            lower_histogram_fraction(call)
+        }
         // A math function wrapping a vector: `abs(...)`, `clamp_min(..., 0)`.
         Expr::Call(call) if is_math_fn(call.func.name) => lower_math_call(call),
         // Bare selector or bare range function.
@@ -594,6 +602,7 @@ fn lower_selector(
         outer_agg: None,
         absent: false,
         timestamp: false,
+        histogram_fraction: None,
     })
 }
 
@@ -761,6 +770,32 @@ fn lower_histogram_scalar(
     };
     let mut plan = lower_selector(vs, MetricAgg::Last, Grouping::Natural, None)?;
     plan.histogram_fn = Some(hf);
+    Ok(plan)
+}
+
+/// Lower `histogram_fraction(lower, upper, v)`. `lower`/`upper` must be numeric
+/// literals and the argument a plain histogram selector.
+fn lower_histogram_fraction(call: &parser::Call) -> Result<MetricPlan, QuerierError> {
+    let num = |i: usize| match call.args.args.get(i).map(|a| unwrap_paren(a)) {
+        Some(Expr::NumberLiteral(n)) => Ok(n.val),
+        _ => Err(QuerierError::Unsupported(
+            "histogram_fraction requires numeric literal lower/upper bounds".to_string(),
+        )),
+    };
+    let lower = num(0)?;
+    let upper = num(1)?;
+    let inner = call.args.args.get(2).ok_or_else(|| {
+        QuerierError::InvalidInput(
+            "histogram_fraction expects (lower, upper, selector)".to_string(),
+        )
+    })?;
+    let Expr::VectorSelector(vs) = unwrap_paren(inner) else {
+        return Err(QuerierError::Unsupported(
+            "histogram_fraction over rate()/aggregations is not supported yet (#335)".to_string(),
+        ));
+    };
+    let mut plan = lower_selector(vs, MetricAgg::Last, Grouping::Natural, None)?;
+    plan.histogram_fraction = Some((lower, upper));
     Ok(plan)
 }
 
@@ -1580,6 +1615,14 @@ mod tests {
         assert!(!plan("up").absent);
         // The selector's matchers are preserved for labelling the output.
         assert_eq!(plan(r#"absent(up{job="x"})"#).matchers.len(), 1);
+    }
+
+    #[test]
+    fn histogram_fraction_sets_bounds() {
+        let p = plan("histogram_fraction(0, 0.5, latency)");
+        assert_eq!(p.histogram_fraction, Some((0.0, 0.5)));
+        assert_eq!(p.metric_name, "latency");
+        assert!(p.quantile.is_none());
     }
 
     #[test]
