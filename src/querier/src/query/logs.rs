@@ -15,7 +15,9 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use datafusion::{
-    arrow::array::{Array, Float64Array, RecordBatch, StringArray, TimestampNanosecondArray},
+    arrow::array::{
+        Array, ArrayRef, Float64Array, RecordBatch, StringArray, TimestampNanosecondArray,
+    },
     arrow::compute::{concat_batches, take},
     arrow::datatypes::{DataType, IntervalMonthDayNano},
     functions::datetime::expr_fn::date_bin,
@@ -28,7 +30,7 @@ use datafusion::{
     prelude::{DataFrame, SessionContext},
     scalar::ScalarValue,
 };
-use logql::{Expr as LogqlExpr, LogQuery, parse, parse_query, parse_selector};
+use logql::{BinOp, Expr as LogqlExpr, LogQuery, MetricQuery, parse, parse_query, parse_selector};
 
 use super::logql::log_query_filter;
 use super::logql_metric::{Aggregate, ArithOp, OuterAgg, ScalarOp, TopKSpec, plan_metric_query};
@@ -176,7 +178,38 @@ impl LogsService {
                 "not a metric query (use query_logs for log queries)".to_string(),
             ));
         };
+        // Vector-to-vector arithmetic (`a / b`): evaluate each operand and
+        // join on (bucket, series labels). Scalar arithmetic and everything
+        // else lower to a single plan below.
+        if let MetricQuery::Binary(bin) = &metric
+            && let Some(op) = binary_arith_op(bin)?
+        {
+            let left = plan_metric_query(&bin.left)?;
+            let right = plan_metric_query(&bin.right)?;
+            let left_batches = self
+                .execute_plan(&left, params, tenant_slug, dataset_slug)
+                .await?;
+            let right_batches = self
+                .execute_plan(&right, params, tenant_slug, dataset_slug)
+                .await?;
+            return join_binary(left_batches, op, right_batches);
+        }
+
         let plan = plan_metric_query(&metric)?;
+        self.execute_plan(&plan, params, tenant_slug, dataset_slug)
+            .await
+    }
+
+    /// Execute a single lowered [`MetricPlan`] into a matrix. Shared by
+    /// top-level metric queries and each operand of a vector-to-vector
+    /// binary operation.
+    async fn execute_plan(
+        &self,
+        plan: &super::logql_metric::MetricPlan,
+        params: &MetricQueryParams,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<RecordBatch>, QuerierError> {
         let filter = log_query_filter(&plan.log_query)?;
 
         // Resolve the output grouping columns (the `by` labels); unknown
@@ -545,6 +578,158 @@ fn scalar_op_expr(value: Expr, scalar_op: ScalarOp) -> Expr {
         ArithOp::Mul => lhs * rhs,
         ArithOp::Div => lhs / rhs,
     }
+}
+
+/// The arithmetic operator for a **vector-to-vector** binary expression,
+/// or `None` when the expression should instead lower to a single plan
+/// (a scalar operand, or a comparison/logical operator `plan_binary`
+/// rejects).
+fn binary_arith_op(bin: &logql::BinaryExpr) -> Result<Option<ArithOp>, QuerierError> {
+    let is_literal =
+        |q: &MetricQuery| matches!(q, MetricQuery::Literal(_) | MetricQuery::VectorLiteral(_));
+    if is_literal(&bin.left) || is_literal(&bin.right) {
+        return Ok(None);
+    }
+    Ok(match bin.op {
+        BinOp::Add => Some(ArithOp::Add),
+        BinOp::Sub => Some(ArithOp::Sub),
+        BinOp::Mul => Some(ArithOp::Mul),
+        BinOp::Div => Some(ArithOp::Div),
+        _ => None,
+    })
+}
+
+/// Apply a scalar arithmetic operator to two `f64`s.
+fn arith_apply(op: ArithOp, l: f64, r: f64) -> f64 {
+    match op {
+        ArithOp::Add => l + r,
+        ArithOp::Sub => l - r,
+        ArithOp::Mul => l * r,
+        ArithOp::Div => l / r,
+    }
+}
+
+/// One matrix row: its bucket, sorted `(label, value)` pairs, and value.
+type MatrixRow = (i64, Vec<(String, String)>, f64);
+
+/// Read a LogQL matrix batch into `(bucket, sorted label pairs, value)`
+/// rows. Every string column other than `value` is treated as a series
+/// label, so the join key is agnostic to which grouping produced it.
+fn logql_matrix_rows(batch: &RecordBatch) -> Result<Vec<MatrixRow>, QuerierError> {
+    let bucket = batch
+        .column_by_name("bucket")
+        .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
+        .ok_or_else(|| QuerierError::InvalidInput("bucket column missing".to_string()))?;
+    let value = batch
+        .column_by_name("value")
+        .and_then(|c| c.as_any().downcast_ref::<Float64Array>())
+        .ok_or_else(|| QuerierError::InvalidInput("value column missing".to_string()))?;
+
+    let label_cols: Vec<(String, &StringArray)> = batch
+        .schema()
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.name() != "bucket" && f.name() != "value")
+        .filter_map(|(i, f)| {
+            batch
+                .column(i)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .map(|a| (f.name().to_string(), a))
+        })
+        .collect();
+
+    let mut rows = Vec::with_capacity(batch.num_rows());
+    for i in 0..batch.num_rows() {
+        let mut labels: Vec<(String, String)> = label_cols
+            .iter()
+            .filter(|(_, a)| !a.is_null(i))
+            .map(|(name, a)| (name.clone(), a.value(i).to_string()))
+            .collect();
+        labels.sort();
+        let b = if bucket.is_null(i) {
+            i64::MIN
+        } else {
+            bucket.value(i)
+        };
+        let v = if value.is_null(i) {
+            f64::NAN
+        } else {
+            value.value(i)
+        };
+        rows.push((b, labels, v));
+    }
+    Ok(rows)
+}
+
+/// Join two matrices on `(bucket, labels)` and combine matched values with
+/// `op` — the vector-to-vector arithmetic case (e.g. an error ratio). The
+/// output reuses the left side's schema; unmatched series are dropped
+/// (one-to-one matching), as in Loki/Prometheus without `on`/`ignoring`.
+fn join_binary(
+    left: Vec<RecordBatch>,
+    op: ArithOp,
+    right: Vec<RecordBatch>,
+) -> Result<Vec<RecordBatch>, QuerierError> {
+    if left.is_empty() {
+        return Ok(left);
+    }
+    let schema = left[0].schema();
+
+    let mut rhs: BTreeMap<(i64, Vec<(String, String)>), f64> = BTreeMap::new();
+    for batch in &right {
+        for (bucket, labels, v) in logql_matrix_rows(batch)? {
+            rhs.insert((bucket, labels), v);
+        }
+    }
+
+    // BTreeMap keeps the output ordered by (bucket, labels).
+    let mut out: BTreeMap<(i64, Vec<(String, String)>), f64> = BTreeMap::new();
+    for batch in &left {
+        for (bucket, labels, lv) in logql_matrix_rows(batch)? {
+            if let Some(&rv) = rhs.get(&(bucket, labels.clone())) {
+                out.insert((bucket, labels), arith_apply(op, lv, rv));
+            }
+        }
+    }
+
+    // Rebuild columns in the left schema's order, pulling each label value
+    // from the joined row's label map.
+    let label_names: Vec<String> = schema
+        .fields()
+        .iter()
+        .filter(|f| f.name() != "bucket" && f.name() != "value")
+        .map(|f| f.name().to_string())
+        .collect();
+
+    let mut buckets = Vec::with_capacity(out.len());
+    let mut label_values: Vec<Vec<Option<String>>> =
+        vec![Vec::with_capacity(out.len()); label_names.len()];
+    let mut values = Vec::with_capacity(out.len());
+    for ((bucket, labels), value) in out {
+        buckets.push(bucket);
+        for (j, name) in label_names.iter().enumerate() {
+            label_values[j].push(
+                labels
+                    .iter()
+                    .find(|(k, _)| k == name)
+                    .map(|(_, v)| v.clone()),
+            );
+        }
+        values.push(value);
+    }
+
+    let mut columns: Vec<ArrayRef> = Vec::with_capacity(2 + label_names.len());
+    columns.push(Arc::new(TimestampNanosecondArray::from(buckets)));
+    for col_values in label_values {
+        columns.push(Arc::new(StringArray::from(col_values)));
+    }
+    columns.push(Arc::new(Float64Array::from(values)));
+
+    let out = RecordBatch::try_new(schema, columns)
+        .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+    Ok(vec![out])
 }
 
 /// Keep the `k` highest (or lowest, for `bottomk`) series by value in each
@@ -1146,6 +1331,23 @@ mod tests {
         )
         .await;
         assert!(shifted.iter().all(|(v, _)| *v == 99.0));
+    }
+
+    #[tokio::test]
+    async fn vector_to_vector_division_joins_on_labels() {
+        let service = service_with_varying_counts();
+        // Numerator: error/info logs containing "a" → only (api, error) = 1.
+        // Denominator: all api logs → (api, error) = 3, (api, info) = 1.
+        // Join on (api, error): 1/3. (api, info) has no numerator → dropped.
+        let out = matrix(
+            &service,
+            r#"count_over_time({service_name="api"} |= "a" [1000ns]) / count_over_time({service_name="api"}[1000ns])"#,
+            1000,
+        )
+        .await;
+        assert_eq!(out.len(), 1);
+        assert!((out[0].0 - 1.0 / 3.0).abs() < 1e-9, "ratio {}", out[0].0);
+        assert_eq!(out[0].1.as_deref(), Some("api"));
     }
 
     #[tokio::test]
