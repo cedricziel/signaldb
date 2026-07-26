@@ -22,9 +22,9 @@ use datafusion::functions::datetime::expr_fn::date_bin;
 use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::expr_fn::contains;
 use datafusion::functions_aggregate::expr_fn::{
-    avg, count, first_value, last_value, max, min, stddev_pop, sum, var_pop,
+    avg, count, first_value, last_value, max, min, regr_slope, stddev_pop, sum, var_pop,
 };
-use datafusion::logical_expr::{Expr, SortExpr, col, lit, not};
+use datafusion::logical_expr::{Expr, SortExpr, cast, col, lit, not};
 use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
@@ -175,31 +175,54 @@ impl MetricsService {
     ) -> Result<DataFrame, QuerierError> {
         use super::promql::RangeFn;
 
-        // Stage 1: (last - first)[/seconds] per (bucket, metric_name, service).
-        let order = vec![SortExpr::new(col("timestamp"), true, true)];
-        let df = df
-            .aggregate(
-                vec![bucket, col("metric_name"), col("service_name")],
-                vec![
-                    first_value(col("value"), order.clone()).alias("first"),
-                    last_value(col("value"), order).alias("last"),
-                ],
-            )
-            .map_err(QuerierError::QueryFailed)?;
-
-        let delta = col("last") - col("first");
-        let per_series = match range.function {
-            RangeFn::Increase | RangeFn::Delta => delta,
-            RangeFn::Rate => delta / lit(range.seconds),
+        // Stage 1: reduce each (bucket, metric_name, service) to one `value`.
+        let df = match range.function {
+            // `deriv`: per-second slope from a linear regression of the
+            // samples against time (nanoseconds → seconds).
+            RangeFn::Deriv => {
+                let secs = cast_value_f64(cast(cast_ns(col("timestamp")), DataType::Int64))
+                    / lit(1_000_000_000.0);
+                df.aggregate(
+                    vec![bucket, col("metric_name"), col("service_name")],
+                    vec![regr_slope(col("value"), secs).alias("value")],
+                )
+                .map_err(QuerierError::QueryFailed)?
+                .select(vec![
+                    col("bucket"),
+                    col("metric_name"),
+                    col("service_name"),
+                    cast_value_f64(col("value")).alias("value"),
+                ])
+                .map_err(QuerierError::QueryFailed)?
+            }
+            // rate/increase/delta: (last - first)[/seconds].
+            _ => {
+                let order = vec![SortExpr::new(col("timestamp"), true, true)];
+                let reduced = df
+                    .aggregate(
+                        vec![bucket, col("metric_name"), col("service_name")],
+                        vec![
+                            first_value(col("value"), order.clone()).alias("first"),
+                            last_value(col("value"), order).alias("last"),
+                        ],
+                    )
+                    .map_err(QuerierError::QueryFailed)?;
+                let delta = col("last") - col("first");
+                let per_series = match range.function {
+                    RangeFn::Increase | RangeFn::Delta => delta,
+                    RangeFn::Rate => delta / lit(range.seconds),
+                    RangeFn::Deriv => unreachable!("deriv handled above"),
+                };
+                reduced
+                    .select(vec![
+                        col("bucket"),
+                        col("metric_name"),
+                        col("service_name"),
+                        cast_value_f64(per_series).alias("value"),
+                    ])
+                    .map_err(QuerierError::QueryFailed)?
+            }
         };
-        let df = df
-            .select(vec![
-                col("bucket"),
-                col("metric_name"),
-                col("service_name"),
-                cast_value_f64(per_series).alias("value"),
-            ])
-            .map_err(QuerierError::QueryFailed)?;
 
         // Stage 2: an outer aggregation folds the per-series rates. A bare
         // `rate(...)` (Natural grouping over `service_name`) is already the
@@ -1171,6 +1194,19 @@ mod tests {
             .find(|(_, s, _)| s.as_deref() == Some("api"))
             .unwrap();
         assert!((api.2 - 2.0 / 60.0).abs() < 1e-9, "got {}", api.2);
+    }
+
+    #[tokio::test]
+    async fn deriv_is_regression_slope_per_second() {
+        let service = service_with_data();
+        // api samples: (t=100ns, 1), (t=200ns, 3). Slope over Δt=100ns is
+        // 2 / 100e-9 = 2e7 values/second.
+        let out = matrix(&service, "deriv(reqs[1m])", 1000).await;
+        let api = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert!((api.2 - 2.0e7).abs() < 1.0, "got {}", api.2);
     }
 
     #[tokio::test]
