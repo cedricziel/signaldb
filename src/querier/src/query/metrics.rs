@@ -29,8 +29,9 @@ use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
 use super::promql::{
-    ArithOp, CmpOp, Grouping, HistogramFn, LabelMatch, LogicalOp, MatchKind, MetricAgg, MetricPlan,
-    QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_promql, plan_query,
+    ArithOp, AtSpec, CalendarFn, CmpOp, Grouping, HistogramFn, LabelMatch, LabelOp, LogicalOp,
+    MatchKind, MetricAgg, MetricPlan, QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_promql,
+    plan_query,
 };
 use super::{error::QuerierError, table_ref::build_table_reference};
 
@@ -99,20 +100,41 @@ impl MetricsService {
                 "step must be a positive nanosecond interval".to_string(),
             ));
         }
-        match plan_query(query)? {
+        self.eval_query_plan(
+            &plan_query(query)?,
+            start,
+            end,
+            step,
+            tenant_slug,
+            dataset_slug,
+        )
+        .await
+    }
+
+    /// Execute a lowered [`QueryPlan`] over `[start, end]` at `step`.
+    async fn eval_query_plan(
+        &self,
+        plan: &QueryPlan,
+        start: i64,
+        end: i64,
+        step: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<RecordBatch>, QuerierError> {
+        match plan {
             QueryPlan::Single(plan) if plan.absent => {
-                self.eval_absent(&plan, start, end, step, tenant_slug, dataset_slug)
+                self.eval_absent(plan, start, end, step, tenant_slug, dataset_slug)
                     .await
             }
             QueryPlan::Single(plan) => {
-                self.eval_plan(&plan, start, end, step, tenant_slug, dataset_slug)
+                self.eval_plan(plan, start, end, step, tenant_slug, dataset_slug)
                     .await
             }
             QueryPlan::BinaryVector { left, op, right } => {
                 self.eval_binary(
-                    &left,
-                    op,
-                    &right,
+                    left,
+                    *op,
+                    right,
                     start,
                     end,
                     step,
@@ -128,10 +150,10 @@ impl MetricsService {
                 return_bool,
             } => {
                 self.eval_binary_compare(
-                    &left,
-                    op,
-                    &right,
-                    return_bool,
+                    left,
+                    *op,
+                    right,
+                    *return_bool,
                     start,
                     end,
                     step,
@@ -142,9 +164,28 @@ impl MetricsService {
             }
             QueryPlan::BinaryLogical { left, op, right } => {
                 self.eval_binary_logical(
-                    &left,
-                    op,
-                    &right,
+                    left,
+                    *op,
+                    right,
+                    start,
+                    end,
+                    step,
+                    tenant_slug,
+                    dataset_slug,
+                )
+                .await
+            }
+            QueryPlan::Subquery {
+                inner,
+                range_ns,
+                res_ns,
+                reducer,
+            } => {
+                self.eval_subquery(
+                    inner,
+                    *range_ns,
+                    *res_ns,
+                    *reducer,
                     start,
                     end,
                     step,
@@ -189,6 +230,20 @@ impl MetricsService {
             return self
                 .sequence_query(plan, sf, start, end, step, tenant_slug, dataset_slug)
                 .await;
+        }
+
+        // `@` modifier: evaluate at the pinned instant and replicate the
+        // result across every output step.
+        if let Some(at) = plan.at {
+            return self
+                .eval_at(plan, at, start, end, step, tenant_slug, dataset_slug)
+                .await;
+        }
+
+        // `time()` / no-arg calendar functions: synthesise the evaluation time
+        // per bucket without a table scan.
+        if plan.time_source {
+            return eval_time(plan, start, end, step);
         }
 
         let group_cols = self.group_columns(plan)?;
@@ -264,12 +319,42 @@ impl MetricsService {
             df
         };
 
+        // `sort`/`sort_desc` order the output within each bucket by value.
+        let mut sort_keys = vec![SortExpr::new(col("bucket"), true, true)];
+        if let Some(desc) = plan.sort {
+            sort_keys.push(SortExpr::new(col("value"), !desc, false));
+        }
         let batches = df
-            .sort(vec![SortExpr::new(col("bucket"), true, true)])
+            .sort(sort_keys)
             .map_err(QuerierError::QueryFailed)?
             .collect()
             .await
             .map_err(QuerierError::QueryFailed)?;
+
+        // Calendar functions on a metric (`day_of_week(metric)`): extract the
+        // component from the value as a final step.
+        let batches = if let Some(cf) = plan.calendar {
+            apply_calendar_batches(batches, cf)?
+        } else {
+            batches
+        };
+
+        // label_replace/label_join rewrite the output labels.
+        let batches = if plan.label_ops.is_empty() {
+            batches
+        } else {
+            apply_label_ops(batches, &plan.label_ops)?
+        };
+
+        // `count_values`: count series per distinct value.
+        if plan.count_values.is_some() {
+            return count_values_reduce(batches);
+        }
+
+        // `scalar(v)`: reduce to one no-label value per bucket.
+        if plan.scalar_reduce {
+            return scalar_reduce(batches);
+        }
 
         // `topk`/`bottomk`: keep the k highest/lowest series per bucket.
         if let Some(spec) = plan.topk {
@@ -580,6 +665,174 @@ impl MetricsService {
             bucket += step;
         }
 
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "bucket",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(ts)),
+            Arc::new(StringArray::from(names)),
+            Arc::new(StringArray::from(services)),
+            Arc::new(Float64Array::from(values)),
+        ];
+        let batch = RecordBatch::try_new(schema, columns)
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        Ok(vec![batch])
+    }
+
+    /// `@` modifier: evaluate the (unpinned) plan at the instant `at`, using a
+    /// 5-minute lookback, then replicate the per-series value across every
+    /// output step bucket in `[start, end]`.
+    #[allow(clippy::too_many_arguments)]
+    async fn eval_at(
+        &self,
+        plan: &MetricPlan,
+        at: AtSpec,
+        start: i64,
+        end: i64,
+        step: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<RecordBatch>, QuerierError> {
+        let at_ns = match at {
+            AtSpec::Abs(ns) => ns,
+            AtSpec::Start => start,
+            AtSpec::End => end,
+        };
+        const LOOKBACK: i64 = 300_000_000_000; // 5 minutes
+        let mut inner = plan.clone();
+        inner.at = None;
+        // One bucket spanning the lookback → the value at/just before `at`.
+        let big = LOOKBACK + step;
+        // Box the recursive call to give the async future a finite size.
+        let pinned = Box::pin(self.eval_plan(
+            &inner,
+            at_ns - LOOKBACK,
+            at_ns,
+            big,
+            tenant_slug,
+            dataset_slug,
+        ))
+        .await?;
+
+        // Keep the latest (metric, value) per series.
+        let mut series: BTreeMap<String, (i64, String, f64)> = BTreeMap::new();
+        for batch in &pinned {
+            for (bucket, metric, svc, value) in matrix_rows_named(batch)? {
+                let e = series
+                    .entry(svc)
+                    .or_insert((i64::MIN, String::new(), f64::NAN));
+                if bucket >= e.0 {
+                    *e = (bucket, metric, value);
+                }
+            }
+        }
+
+        // Replicate across the output grid.
+        let first = start.div_euclid(step) * step;
+        let mut ts = Vec::new();
+        let mut names = Vec::new();
+        let mut services = Vec::new();
+        let mut values = Vec::new();
+        let mut bucket = first;
+        while bucket <= end {
+            for (svc, (_b, metric, value)) in &series {
+                ts.push(bucket);
+                names.push(metric.clone());
+                services.push(svc.clone());
+                values.push(*value);
+            }
+            bucket += step;
+        }
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "bucket",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(ts)),
+            Arc::new(StringArray::from(names)),
+            Arc::new(StringArray::from(services)),
+            Arc::new(Float64Array::from(values)),
+        ];
+        let batch = RecordBatch::try_new(schema, columns)
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        Ok(vec![batch])
+    }
+
+    /// `<reducer>_over_time(inner[range:res])`: evaluate `inner` at `res`
+    /// resolution over `[start-range, end]`, then reduce, per output bucket and
+    /// series, the sub-samples that fall in `(bucket-range, bucket]`.
+    #[allow(clippy::too_many_arguments)]
+    async fn eval_subquery(
+        &self,
+        inner: &QueryPlan,
+        range_ns: i64,
+        res_ns: i64,
+        reducer: MetricAgg,
+        start: i64,
+        end: i64,
+        step: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<RecordBatch>, QuerierError> {
+        let res = res_ns.max(1);
+        // Sub-evaluate at `res` over the extended window (boxed for recursion).
+        let sub = Box::pin(self.eval_query_plan(
+            inner,
+            start - range_ns,
+            end,
+            res,
+            tenant_slug,
+            dataset_slug,
+        ))
+        .await?;
+
+        // service → ordered (sub_bucket, value) samples.
+        let mut samples: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
+        for batch in &sub {
+            for (bucket, service, value) in matrix_rows(batch)? {
+                samples.entry(service).or_default().push((bucket, value));
+            }
+        }
+        for v in samples.values_mut() {
+            v.sort_by_key(|(t, _)| *t);
+        }
+
+        let first = start.div_euclid(step) * step;
+        let mut ts = Vec::new();
+        let mut names = Vec::new();
+        let mut services = Vec::new();
+        let mut values = Vec::new();
+        let mut bucket = first;
+        while bucket <= end {
+            for (service, pts) in &samples {
+                let window: Vec<f64> = pts
+                    .iter()
+                    .filter(|(t, _)| *t > bucket - range_ns && *t <= bucket)
+                    .map(|(_, v)| *v)
+                    .collect();
+                if window.is_empty() {
+                    continue;
+                }
+                ts.push(bucket);
+                names.push(String::new());
+                services.push(service.clone());
+                values.push(reduce_agg(&window, reducer));
+            }
+            bucket += step;
+        }
         let schema = Arc::new(Schema::new(vec![
             Field::new(
                 "bucket",
@@ -1349,6 +1602,335 @@ fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArr
 
 /// Extract `(bucket_ns, service_name, value)` rows from a matrix batch.
 /// Series with no `service_name` column (collapsed groupings) use "".
+/// Reduce a subquery's per-bucket sub-samples with the outer `_over_time`
+/// aggregate (samples are ordered by time).
+fn reduce_agg(values: &[f64], agg: MetricAgg) -> f64 {
+    let n = values.len() as f64;
+    match agg {
+        MetricAgg::Sum => values.iter().sum(),
+        MetricAgg::Avg => values.iter().sum::<f64>() / n,
+        MetricAgg::Min => values.iter().copied().fold(f64::INFINITY, f64::min),
+        MetricAgg::Max => values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        MetricAgg::Count => n,
+        MetricAgg::Group => 1.0,
+        MetricAgg::Last => values.last().copied().unwrap_or(f64::NAN),
+        MetricAgg::Stddev | MetricAgg::StdVar => {
+            let mean = values.iter().sum::<f64>() / n;
+            let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n;
+            if agg == MetricAgg::StdVar {
+                var
+            } else {
+                var.sqrt()
+            }
+        }
+        MetricAgg::Quantile => f64::NAN,
+    }
+}
+
+/// `time()` / no-arg calendar functions: emit one no-label series per step
+/// bucket whose value is the bucket's evaluation time in unix seconds (or the
+/// requested calendar component of it).
+fn eval_time(
+    plan: &MetricPlan,
+    start: i64,
+    end: i64,
+    step: i64,
+) -> Result<Vec<RecordBatch>, QuerierError> {
+    let first = start.div_euclid(step) * step;
+    let mut ts = Vec::new();
+    let mut values = Vec::new();
+    let mut bucket = first;
+    while bucket <= end {
+        let secs = bucket as f64 / 1e9;
+        let v = match (plan.constant, plan.calendar) {
+            (Some(c), _) => c,
+            (None, Some(cf)) => calendar_extract(secs, cf),
+            (None, None) => secs,
+        };
+        ts.push(bucket);
+        values.push(v);
+        bucket += step;
+    }
+    if let Some(desc) = plan.sort {
+        // Stable sort of the single synthetic series by value.
+        let mut idx: Vec<usize> = (0..values.len()).collect();
+        idx.sort_by(|&a, &b| {
+            let o = values[a]
+                .partial_cmp(&values[b])
+                .unwrap_or(std::cmp::Ordering::Equal);
+            if desc { o.reverse() } else { o }
+        });
+        ts = idx.iter().map(|&i| ts[i]).collect();
+        values = idx.iter().map(|&i| values[i]).collect();
+    }
+    let n = ts.len();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "bucket",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new("metric_name", DataType::Utf8, false),
+        Field::new("service_name", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(TimestampNanosecondArray::from(ts)),
+        Arc::new(StringArray::from(vec![""; n])),
+        Arc::new(StringArray::from(vec![""; n])),
+        Arc::new(Float64Array::from(values)),
+    ];
+    let batch = RecordBatch::try_new(schema, columns)
+        .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+    Ok(vec![batch])
+}
+
+/// Resolve a PromQL label name to its materialized output column, if any
+/// (`__name__` → metric_name, job/service → service_name).
+fn output_column_for_label(label: &str) -> Option<&'static str> {
+    match label {
+        "__name__" => Some("metric_name"),
+        _ => column_for_label(label),
+    }
+}
+
+/// Apply `label_replace`/`label_join` to the output batches, rewriting the
+/// `metric_name`/`service_name` columns. Destinations that aren't materialized
+/// are a no-op (the label can't be stored).
+fn apply_label_ops(
+    batches: Vec<RecordBatch>,
+    ops: &[LabelOp],
+) -> Result<Vec<RecordBatch>, QuerierError> {
+    let read = |batch: &RecordBatch, label: &str, row: usize| -> String {
+        match output_column_for_label(label) {
+            Some(col) => string_column(batch, col)
+                .ok()
+                .map(|c| c.value(row).to_string())
+                .unwrap_or_default(),
+            None => String::new(),
+        }
+    };
+    let mut out = Vec::with_capacity(batches.len());
+    for batch in batches {
+        let n = batch.num_rows();
+        // Start from the existing metric_name/service_name values.
+        let mut metric: Vec<String> = (0..n)
+            .map(|i| {
+                string_column(&batch, "metric_name")
+                    .map(|c| c.value(i).to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let mut service: Vec<String> = (0..n)
+            .map(|i| {
+                batch
+                    .column_by_name("service_name")
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                    .map(|c| c.value(i).to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        for op in ops {
+            match op {
+                LabelOp::Replace {
+                    dst,
+                    replacement,
+                    src,
+                    regex,
+                } => {
+                    let re = regex::Regex::new(&format!("^(?:{regex})$"))
+                        .map_err(|e| QuerierError::InvalidInput(format!("bad regex: {e}")))?;
+                    let dst_col = output_column_for_label(dst);
+                    for i in 0..n {
+                        let src_val = read(&batch, src, i);
+                        if let Some(caps) = re.captures(&src_val) {
+                            let mut new = String::new();
+                            caps.expand(replacement, &mut new);
+                            match dst_col {
+                                Some("metric_name") => metric[i] = new,
+                                Some("service_name") => service[i] = new,
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                LabelOp::Join {
+                    dst,
+                    separator,
+                    srcs,
+                } => {
+                    let dst_col = output_column_for_label(dst);
+                    for i in 0..n {
+                        let joined = srcs
+                            .iter()
+                            .map(|s| read(&batch, s, i))
+                            .collect::<Vec<_>>()
+                            .join(separator);
+                        match dst_col {
+                            Some("metric_name") => metric[i] = joined,
+                            Some("service_name") => service[i] = joined,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        // Rebuild the batch with the rewritten metric_name/service_name.
+        let schema = batch.schema();
+        let mut cols = batch.columns().to_vec();
+        if let Ok(mi) = schema.index_of("metric_name") {
+            cols[mi] = Arc::new(StringArray::from(metric));
+        }
+        if let Ok(si) = schema.index_of("service_name") {
+            cols[si] = Arc::new(StringArray::from(service));
+        }
+        out.push(
+            RecordBatch::try_new(schema, cols)
+                .map_err(|e| QuerierError::InvalidInput(e.to_string()))?,
+        );
+    }
+    Ok(out)
+}
+
+/// `count_values("label", v)`: count the series sharing each distinct value
+/// per bucket; the value (formatted) becomes the output `service_name`.
+fn count_values_reduce(batches: Vec<RecordBatch>) -> Result<Vec<RecordBatch>, QuerierError> {
+    // (bucket, value-string) → count. BTreeMap keeps output sorted.
+    let mut groups: BTreeMap<(i64, String), usize> = BTreeMap::new();
+    for batch in &batches {
+        for (bucket, _service, value) in matrix_rows(batch)? {
+            *groups.entry((bucket, format!("{value}"))).or_insert(0) += 1;
+        }
+    }
+    let mut ts = Vec::with_capacity(groups.len());
+    let mut names = Vec::with_capacity(groups.len());
+    let mut services = Vec::with_capacity(groups.len());
+    let mut values = Vec::with_capacity(groups.len());
+    for ((bucket, value_str), count) in groups {
+        ts.push(bucket);
+        names.push(String::new());
+        services.push(value_str);
+        values.push(count as f64);
+    }
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "bucket",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new("metric_name", DataType::Utf8, false),
+        Field::new("service_name", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(TimestampNanosecondArray::from(ts)),
+        Arc::new(StringArray::from(names)),
+        Arc::new(StringArray::from(services)),
+        Arc::new(Float64Array::from(values)),
+    ];
+    let batch = RecordBatch::try_new(schema, columns)
+        .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+    Ok(vec![batch])
+}
+
+/// `scalar(v)`: collapse to one no-label series per bucket — the single
+/// series' value, or NaN if the bucket has zero or more than one series.
+fn scalar_reduce(batches: Vec<RecordBatch>) -> Result<Vec<RecordBatch>, QuerierError> {
+    // bucket → (count, value).
+    let mut per_bucket: BTreeMap<i64, (usize, f64)> = BTreeMap::new();
+    for batch in &batches {
+        for (bucket, _service, value) in matrix_rows(batch)? {
+            let e = per_bucket.entry(bucket).or_insert((0, f64::NAN));
+            e.0 += 1;
+            e.1 = value;
+        }
+    }
+    let mut ts = Vec::with_capacity(per_bucket.len());
+    let mut values = Vec::with_capacity(per_bucket.len());
+    for (bucket, (count, value)) in per_bucket {
+        ts.push(bucket);
+        values.push(if count == 1 { value } else { f64::NAN });
+    }
+    let n = ts.len();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "bucket",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new("metric_name", DataType::Utf8, false),
+        Field::new("service_name", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(TimestampNanosecondArray::from(ts)),
+        Arc::new(StringArray::from(vec![""; n])),
+        Arc::new(StringArray::from(vec![""; n])),
+        Arc::new(Float64Array::from(values)),
+    ];
+    let batch = RecordBatch::try_new(schema, columns)
+        .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+    Ok(vec![batch])
+}
+
+/// Replace each batch's `value` with the requested calendar component of the
+/// value interpreted as unix seconds.
+fn apply_calendar_batches(
+    batches: Vec<RecordBatch>,
+    cf: CalendarFn,
+) -> Result<Vec<RecordBatch>, QuerierError> {
+    let mut out = Vec::with_capacity(batches.len());
+    for batch in batches {
+        let schema = batch.schema();
+        let vi = schema
+            .index_of("value")
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        let value = batch
+            .column(vi)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .ok_or_else(|| QuerierError::InvalidInput("value column is not Float64".to_string()))?;
+        let new_value: Float64Array = value
+            .iter()
+            .map(|v| v.map(|x| calendar_extract(x, cf)))
+            .collect();
+        let mut cols = batch.columns().to_vec();
+        cols[vi] = Arc::new(new_value);
+        out.push(
+            RecordBatch::try_new(schema, cols)
+                .map_err(|e| QuerierError::InvalidInput(e.to_string()))?,
+        );
+    }
+    Ok(out)
+}
+
+/// Extract a calendar component (UTC) from a value in unix seconds.
+fn calendar_extract(secs: f64, cf: CalendarFn) -> f64 {
+    use chrono::{DateTime, Datelike, Timelike, Utc};
+    let Some(dt) = DateTime::<Utc>::from_timestamp(secs as i64, 0) else {
+        return f64::NAN;
+    };
+    match cf {
+        CalendarFn::DayOfWeek => dt.weekday().num_days_from_sunday() as f64,
+        CalendarFn::DayOfMonth => dt.day() as f64,
+        CalendarFn::DayOfYear => dt.ordinal() as f64,
+        CalendarFn::DaysInMonth => {
+            let (y, m) = (dt.year(), dt.month());
+            let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+            let first_next = chrono::NaiveDate::from_ymd_opt(ny, nm, 1);
+            let first_this = chrono::NaiveDate::from_ymd_opt(y, m, 1);
+            match (first_next, first_this) {
+                (Some(a), Some(b)) => (a - b).num_days() as f64,
+                _ => f64::NAN,
+            }
+        }
+        CalendarFn::Hour => dt.hour() as f64,
+        CalendarFn::Minute => dt.minute() as f64,
+        CalendarFn::Month => dt.month() as f64,
+        CalendarFn::Year => dt.year() as f64,
+    }
+}
+
 fn matrix_rows(batch: &RecordBatch) -> Result<Vec<(i64, String, f64)>, QuerierError> {
     let bucket = batch
         .column_by_name("bucket")
@@ -2382,6 +2964,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn subquery_evaluates_inner_then_reduces() {
+        let service = service_with_data();
+        // reqs sub-sampled (all fixture samples land in bucket 0) → api=3, web=5;
+        // avg_over_time over the 1000ns range at bucket 0 keeps them.
+        let out = matrix(&service, "avg_over_time(reqs[1000:500])", 1000).await;
+        let api = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .expect("api series");
+        assert_eq!(api.2, 3.0);
+    }
+
+    #[tokio::test]
+    async fn at_modifier_pins_and_replicates() {
+        let service = service_with_data();
+        // `@ 200` (200s) pins to that instant; the fixture samples fall in the
+        // 5-min lookback, so api=3/web=5 are replicated across every step.
+        let out = matrix(&service, "reqs @ 200", 1000).await;
+        let api: Vec<_> = out
+            .iter()
+            .filter(|(_, s, _)| s.as_deref() == Some("api"))
+            .collect();
+        assert!(api.len() >= 2, "replicated across buckets: {out:?}");
+        assert!(api.iter().all(|(_, _, v)| *v == 3.0));
+    }
+
+    #[tokio::test]
+    async fn on_ignoring_group_left_resolve_to_service() {
+        let service = service_with_data();
+        // Explicit matching modifiers compute via the service_name identity.
+        for q in [
+            "reqs / on(service) reqs",
+            "reqs / ignoring(code) reqs",
+            "reqs * on(service) group_left reqs",
+        ] {
+            let out = matrix(&service, q, 1000).await;
+            assert!(!out.is_empty(), "{q}");
+            assert!(
+                out.iter()
+                    .all(|(_, _, v)| (*v - 1.0).abs() < 1e-9 || *v == 9.0 || *v == 25.0),
+                "{q}: {out:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn vector_comparison_filters_and_bools() {
         let service = service_with_data();
         // api=3, web=5. `reqs >= reqs` holds for both → both kept, with the
@@ -2602,6 +3230,97 @@ mod tests {
         let service = service_with_data();
         let out = matrix(&service, "histogram_quantile(0.9, latency)", 1000).await;
         assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn count_values_counts_series_per_value() {
+        let service = service_with_data();
+        // reqs last-per-series: api=3, web=5 — two distinct values, one each.
+        let out = matrix(&service, r#"count_values("v", reqs)"#, 1000).await;
+        let by = |val: &str| {
+            out.iter()
+                .find(|(_, s, _)| s.as_deref() == Some(val))
+                .map(|(_, _, v)| *v)
+        };
+        assert_eq!(by("3"), Some(1.0));
+        assert_eq!(by("5"), Some(1.0));
+    }
+
+    #[tokio::test]
+    async fn label_replace_and_join_rewrite_service() {
+        let service = service_with_data();
+        // Rewrite service_name via a captured prefix: api → prod-api.
+        let out = matrix(
+            &service,
+            r#"label_replace(reqs, "service", "prod-$1", "service", "(.*)")"#,
+            1000,
+        )
+        .await;
+        assert!(out.iter().any(|(_, s, _)| s.as_deref() == Some("prod-api")));
+        assert!(out.iter().any(|(_, s, _)| s.as_deref() == Some("prod-web")));
+        // No regex match → unchanged.
+        let out = matrix(
+            &service,
+            r#"label_replace(reqs, "service", "x", "service", "nomatch")"#,
+            1000,
+        )
+        .await;
+        assert!(out.iter().any(|(_, s, _)| s.as_deref() == Some("api")));
+        // label_join folds metric_name + service into service_name.
+        let out = matrix(
+            &service,
+            r#"label_join(reqs, "service", "/", "__name__", "service")"#,
+            1000,
+        )
+        .await;
+        assert!(out.iter().any(|(_, s, _)| s.as_deref() == Some("reqs/api")));
+    }
+
+    #[tokio::test]
+    async fn vector_and_scalar_functions() {
+        let service = service_with_data();
+        // vector(7): a no-label series with constant 7.
+        let out = matrix(&service, "vector(7)", 1000).await;
+        assert!(!out.is_empty());
+        assert!(
+            out.iter()
+                .all(|(n, s, v)| n.is_empty() && s.as_deref() == Some("") && *v == 7.0)
+        );
+        // scalar(reqs): reqs has two series (api, web) → NaN.
+        let out = matrix(&service, "scalar(reqs)", 1000).await;
+        assert!(out.iter().all(|(_, _, v)| v.is_nan()));
+        // scalar of a single-series query → that value.
+        let out = matrix(&service, r#"scalar(reqs{job="api"})"#, 1000).await;
+        assert!(out.iter().any(|(_, _, v)| *v == 3.0));
+    }
+
+    #[tokio::test]
+    async fn time_and_calendar_functions() {
+        let service = service_with_data();
+        // time(): value is the bucket's evaluation time in seconds. With
+        // step 1000ns the first bucket is at t=0 → 0 seconds.
+        let out = matrix(&service, "time()", 1000).await;
+        assert!(out.iter().any(|(_, _, v)| *v == 0.0));
+        // 1970-01-01 (t≈0) was a Thursday → day_of_week 4, hour 0, year 1970.
+        let dow = matrix(&service, "day_of_week()", 1000).await;
+        assert!(dow.iter().all(|(_, _, v)| *v == 4.0));
+        assert!(
+            matrix(&service, "year()", 1000)
+                .await
+                .iter()
+                .all(|(_, _, v)| *v == 1970.0)
+        );
+    }
+
+    #[tokio::test]
+    async fn sort_orders_output_by_value() {
+        let service = service_with_data();
+        // api=3, web=5. sort → ascending (api first); sort_desc → web first.
+        let asc = matrix(&service, "sort(reqs)", 1000).await;
+        assert_eq!(asc.first().unwrap().1.as_deref(), Some("api"));
+        assert_eq!(asc.last().unwrap().1.as_deref(), Some("web"));
+        let desc = matrix(&service, "sort_desc(reqs)", 1000).await;
+        assert_eq!(desc.first().unwrap().1.as_deref(), Some("web"));
     }
 
     #[tokio::test]

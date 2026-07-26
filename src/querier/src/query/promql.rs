@@ -234,6 +234,73 @@ pub struct MetricPlan {
     /// Set for `histogram_fraction(lower, upper, v)` — the fraction of a
     /// stored histogram's observations that fall in `(lower, upper]`.
     pub histogram_fraction: Option<(f64, f64)>,
+    /// Set for `sort(v)` / `sort_desc(v)` — order the output within each
+    /// bucket by value; `true` for descending.
+    pub sort: Option<bool>,
+    /// `true` for `time()` and the no-argument calendar functions: the value
+    /// is the bucket's evaluation time (unix seconds), generated without a
+    /// table scan.
+    pub time_source: bool,
+    /// Set for `day_of_week`/`hour`/… — extract a calendar component from the
+    /// value (interpreted as unix seconds, UTC) as a final step.
+    pub calendar: Option<CalendarFn>,
+    /// Set for `vector(s)` — a synthetic no-label series with the constant `s`.
+    pub constant: Option<f64>,
+    /// Set for `scalar(v)` — reduce to a single no-label value per bucket
+    /// (NaN unless the input has exactly one series).
+    pub scalar_reduce: bool,
+    /// `label_replace`/`label_join` output-label rewrites, applied in order.
+    pub label_ops: Vec<LabelOp>,
+    /// Set for `count_values("label", v)` — count series per distinct value;
+    /// the distinct value becomes the output `service_name`.
+    pub count_values: Option<String>,
+    /// `@` modifier — pin evaluation to an absolute time (replicated across
+    /// every output step).
+    pub at: Option<AtSpec>,
+}
+
+/// The `@` modifier's evaluation time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtSpec {
+    /// `@ <unix-nanoseconds>`.
+    Abs(i64),
+    /// `@ start()`.
+    Start,
+    /// `@ end()`.
+    End,
+}
+
+/// A `label_replace` / `label_join` operation on the output labels. Only the
+/// materialized labels (`service_name` via job/service, `metric_name` via
+/// __name__) can be written; a destination that isn't materialized is a no-op.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LabelOp {
+    /// `label_replace(v, dst, replacement, src, regex)`.
+    Replace {
+        dst: String,
+        replacement: String,
+        src: String,
+        regex: String,
+    },
+    /// `label_join(v, dst, separator, src…)`.
+    Join {
+        dst: String,
+        separator: String,
+        srcs: Vec<String>,
+    },
+}
+
+/// A calendar component extracted from a value interpreted as unix seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalendarFn {
+    DayOfWeek,
+    DayOfMonth,
+    DayOfYear,
+    DaysInMonth,
+    Hour,
+    Minute,
+    Month,
+    Year,
 }
 
 /// A per-bucket reduction that needs the ordered sample sequence.
@@ -299,6 +366,14 @@ pub enum QueryPlan {
         op: LogicalOp,
         right: Box<MetricPlan>,
     },
+    /// `<reducer>_over_time(inner[range:res])` — evaluate `inner` at `res`
+    /// resolution, then reduce per outer bucket over the `range` window.
+    Subquery {
+        inner: Box<QueryPlan>,
+        range_ns: i64,
+        res_ns: i64,
+        reducer: MetricAgg,
+    },
 }
 
 /// A logical/set operator between two vectors.
@@ -313,20 +388,40 @@ pub enum LogicalOp {
 pub fn plan_query(query: &str) -> Result<QueryPlan, QuerierError> {
     let expr = parser::parse(query)
         .map_err(|e| QuerierError::InvalidInput(format!("invalid PromQL: {e}")))?;
+    plan_query_expr(&expr)
+}
+
+/// Lower an already-parsed expression to a [`QueryPlan`].
+fn plan_query_expr(expr: &Expr) -> Result<QueryPlan, QuerierError> {
+    let expr = unwrap_paren(expr).clone();
+    // `<reducer>_over_time(inner[range:res])` — a subquery under an over_time
+    // reducer. Evaluate `inner` at `res`, then reduce per outer bucket.
+    if let Expr::Call(call) = &expr
+        && let Some(Expr::Subquery(sq)) = call.args.args.first().map(|a| unwrap_paren(a))
+        && let Some(reducer) = over_time_agg(call.func.name)
+    {
+        let res_ns = sq
+            .step
+            .map(|d| d.as_nanos() as i64)
+            .filter(|&n| n > 0)
+            .unwrap_or(60_000_000_000); // default 1m resolution
+        let inner = plan_query_expr(&sq.expr)?;
+        return Ok(QueryPlan::Subquery {
+            inner: Box::new(inner),
+            range_ns: sq.range.as_nanos() as i64,
+            res_ns,
+            reducer,
+        });
+    }
     // A top-level binary with two vector operands is a vector-to-vector
     // operation. Explicit `on`/`ignoring`/`group_left` matching is not
     // supported yet — only the default one-to-one match (#335).
+    // `on`/`ignoring`/`group_left`/`group_right` are accepted; matching still
+    // resolves to the sole materialized join label (`service_name`).
     if let Expr::Binary(bin) = unwrap_paren(&expr)
         && bin.op.is_comparison_operator()
         && as_scalar(&bin.lhs).is_none()
         && as_scalar(&bin.rhs).is_none()
-        && bin.modifier.as_ref().is_none_or(|m| {
-            m.matching.is_none()
-                && matches!(
-                    m.card,
-                    promql_parser::parser::VectorMatchCardinality::OneToOne
-                )
-        })
     {
         let op = match format!("{}", bin.op).as_str() {
             "==" => Some(CmpOp::Eq),
@@ -353,12 +448,11 @@ pub fn plan_query(query: &str) -> Result<QueryPlan, QuerierError> {
             });
         }
     }
-    // `and`/`or`/`unless` set operations between two vectors (default match;
-    // explicit on/ignoring not supported yet).
+    // `and`/`or`/`unless` set operations between two vectors (matched on the
+    // materialized `service_name` identity; on/ignoring labels are accepted).
     if let Expr::Binary(bin) = unwrap_paren(&expr)
         && as_scalar(&bin.lhs).is_none()
         && as_scalar(&bin.rhs).is_none()
-        && bin.modifier.as_ref().is_none_or(|m| m.matching.is_none())
     {
         let op = match format!("{}", bin.op).as_str() {
             "and" => Some(LogicalOp::And),
@@ -377,8 +471,8 @@ pub fn plan_query(query: &str) -> Result<QueryPlan, QuerierError> {
         && as_scalar(&bin.lhs).is_none()
         && as_scalar(&bin.rhs).is_none()
     {
-        // Only plain arithmetic tokens; `on`/`ignoring`/`group_left` matching
-        // stays unsupported (#335).
+        // Plain arithmetic tokens; on/ignoring/group_left modifiers are
+        // accepted (matching resolves to `service_name`).
         let op = match format!("{}", bin.op).as_str() {
             "+" => Some(ArithOp::Add),
             "-" => Some(ArithOp::Sub),
@@ -388,9 +482,7 @@ pub fn plan_query(query: &str) -> Result<QueryPlan, QuerierError> {
             "^" => Some(ArithOp::Pow),
             _ => None,
         };
-        if let Some(op) = op
-            && bin.modifier.is_none()
-        {
+        if let Some(op) = op {
             let left = Box::new(lower(unwrap_paren(&bin.lhs))?);
             let right = Box::new(lower(unwrap_paren(&bin.rhs))?);
             return Ok(QueryPlan::BinaryVector { left, op, right });
@@ -414,6 +506,57 @@ fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
             })?;
             let mut plan = lower(unwrap_paren(arg))?;
             plan.timestamp = true;
+            Ok(plan)
+        }
+        // `sort(v)` / `sort_desc(v)`: order the output by value.
+        Expr::Call(call) if call.func.name == "sort" || call.func.name == "sort_desc" => {
+            let arg = call.args.args.first().ok_or_else(|| {
+                QuerierError::InvalidInput(format!("{} expects a vector", call.func.name))
+            })?;
+            let mut plan = lower(unwrap_paren(arg))?;
+            plan.sort = Some(call.func.name == "sort_desc");
+            Ok(plan)
+        }
+        // `time()`: the evaluation time per bucket, as a synthetic series.
+        Expr::Call(call) if call.func.name == "time" && call.args.args.is_empty() => {
+            Ok(time_plan())
+        }
+        // `vector(s)`: a synthetic no-label series with the constant scalar.
+        Expr::Call(call) if call.func.name == "vector" => {
+            match call.args.args.first().map(|a| unwrap_paren(a)) {
+                Some(Expr::NumberLiteral(n)) => {
+                    let mut plan = time_plan();
+                    plan.constant = Some(n.val);
+                    Ok(plan)
+                }
+                _ => Err(QuerierError::Unsupported(
+                    "vector() requires a numeric literal argument".to_string(),
+                )),
+            }
+        }
+        // `scalar(v)`: reduce a single-series vector to its value.
+        Expr::Call(call) if call.func.name == "scalar" => {
+            let arg =
+                call.args.args.first().ok_or_else(|| {
+                    QuerierError::InvalidInput("scalar expects a vector".to_string())
+                })?;
+            let mut plan = lower(unwrap_paren(arg))?;
+            plan.scalar_reduce = true;
+            Ok(plan)
+        }
+        // `label_replace(v, dst, repl, src, regex)` / `label_join(v, dst,
+        // sep, src…)`.
+        Expr::Call(call) if call.func.name == "label_replace" => lower_label_replace(call),
+        Expr::Call(call) if call.func.name == "label_join" => lower_label_join(call),
+        // Calendar functions: `day_of_week(v)`, `hour()`, … With no argument
+        // they operate on `time()`; otherwise on the argument's value.
+        Expr::Call(call) if calendar_fn(call.func.name).is_some() => {
+            let cf = calendar_fn(call.func.name).unwrap();
+            let mut plan = match call.args.args.first() {
+                Some(arg) => lower(unwrap_paren(arg))?,
+                None => time_plan(),
+            };
+            plan.calendar = Some(cf);
             Ok(plan)
         }
         // `histogram_quantile(phi, <selector>)` targets the histogram table.
@@ -448,10 +591,13 @@ fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
             if op == "quantile" {
                 return lower_quantile(agg);
             }
+            if op == "count_values" {
+                return lower_count_values(agg);
+            }
             let aggregate = aggregate_op(&op)?;
             if agg.param.is_some() {
                 return Err(QuerierError::Unsupported(
-                    "parameterized aggregation (count_values)".to_string(),
+                    "parameterized aggregation".to_string(),
                 ));
             }
             let grouping = grouping_from(agg.modifier.as_ref())?;
@@ -573,13 +719,19 @@ fn lower_selector(
     }
     let metric_name = metric_name
         .ok_or_else(|| QuerierError::InvalidInput("selector has no metric name".to_string()))?;
-    // The `@` modifier pins evaluation to an absolute time; we can't honor
-    // that yet, so reject it rather than silently ignoring it.
-    if vs.at.is_some() {
-        return Err(QuerierError::Unsupported(
-            "@ modifier is not supported yet".to_string(),
-        ));
-    }
+    // The `@` modifier pins evaluation to an absolute time.
+    let at = match &vs.at {
+        None => None,
+        Some(promql_parser::parser::AtModifier::Start) => Some(AtSpec::Start),
+        Some(promql_parser::parser::AtModifier::End) => Some(AtSpec::End),
+        Some(promql_parser::parser::AtModifier::At(t)) => {
+            let ns = t
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as i64)
+                .unwrap_or(0);
+            Some(AtSpec::Abs(ns))
+        }
+    };
     let offset_ns = match &vs.offset {
         None => 0,
         Some(promql_parser::parser::Offset::Pos(d)) => d.as_nanos() as i64,
@@ -603,6 +755,108 @@ fn lower_selector(
         absent: false,
         timestamp: false,
         histogram_fraction: None,
+        sort: None,
+        time_source: false,
+        calendar: None,
+        constant: None,
+        scalar_reduce: false,
+        label_ops: Vec::new(),
+        count_values: None,
+        at,
+    })
+}
+
+/// A synthetic plan for `time()` — the bucket evaluation time, no table scan.
+fn time_plan() -> MetricPlan {
+    MetricPlan {
+        metric_name: String::new(),
+        matchers: Vec::new(),
+        aggregate: MetricAgg::Last,
+        grouping: Grouping::Collapse,
+        range: None,
+        quantile: None,
+        transforms: Vec::new(),
+        topk: None,
+        filter: None,
+        agg_param: None,
+        offset_ns: 0,
+        histogram_fn: None,
+        sequence_fn: None,
+        outer_agg: None,
+        absent: false,
+        timestamp: false,
+        histogram_fraction: None,
+        sort: None,
+        time_source: true,
+        calendar: None,
+        constant: None,
+        scalar_reduce: false,
+        label_ops: Vec::new(),
+        count_values: None,
+        at: None,
+    }
+}
+
+/// A string-literal argument, or an error.
+fn str_arg(call: &parser::Call, i: usize) -> Result<String, QuerierError> {
+    match call.args.args.get(i).map(|a| unwrap_paren(a)) {
+        Some(Expr::StringLiteral(s)) => Ok(s.val.clone()),
+        _ => Err(QuerierError::Unsupported(format!(
+            "{} requires string-literal label arguments",
+            call.func.name
+        ))),
+    }
+}
+
+/// Lower `label_replace(v, dst, replacement, src, regex)`.
+fn lower_label_replace(call: &parser::Call) -> Result<MetricPlan, QuerierError> {
+    let inner = call.args.args.first().ok_or_else(|| {
+        QuerierError::InvalidInput("label_replace expects a vector argument".to_string())
+    })?;
+    let mut plan = lower(unwrap_paren(inner))?;
+    plan.label_ops.push(LabelOp::Replace {
+        dst: str_arg(call, 1)?,
+        replacement: str_arg(call, 2)?,
+        src: str_arg(call, 3)?,
+        regex: str_arg(call, 4)?,
+    });
+    Ok(plan)
+}
+
+/// Lower `label_join(v, dst, separator, src…)`.
+fn lower_label_join(call: &parser::Call) -> Result<MetricPlan, QuerierError> {
+    let inner = call.args.args.first().ok_or_else(|| {
+        QuerierError::InvalidInput("label_join expects a vector argument".to_string())
+    })?;
+    let mut plan = lower(unwrap_paren(inner))?;
+    let dst = str_arg(call, 1)?;
+    let separator = str_arg(call, 2)?;
+    let mut srcs = Vec::new();
+    let mut i = 3;
+    while call.args.args.get(i).is_some() {
+        srcs.push(str_arg(call, i)?);
+        i += 1;
+    }
+    plan.label_ops.push(LabelOp::Join {
+        dst,
+        separator,
+        srcs,
+    });
+    Ok(plan)
+}
+
+/// Map a calendar function name to its component, if it is one.
+fn calendar_fn(name: &str) -> Option<CalendarFn> {
+    Some(match name {
+        "day_of_week" => CalendarFn::DayOfWeek,
+        "day_of_month" => CalendarFn::DayOfMonth,
+        "day_of_year" => CalendarFn::DayOfYear,
+        "days_in_month" => CalendarFn::DaysInMonth,
+        "hour" => CalendarFn::Hour,
+        "minute" => CalendarFn::Minute,
+        "month" => CalendarFn::Month,
+        "year" => CalendarFn::Year,
+        _ => return None,
     })
 }
 
@@ -645,6 +899,22 @@ fn lower_quantile(agg: &parser::AggregateExpr) -> Result<MetricPlan, QuerierErro
     let grouping = grouping_from(agg.modifier.as_ref())?;
     let mut plan = build_plan(unwrap_paren(&agg.expr), MetricAgg::Quantile, grouping)?;
     plan.agg_param = Some(phi);
+    Ok(plan)
+}
+
+/// Lower `count_values("label", v)` — count the series sharing each distinct
+/// value; the value becomes the output label. `label` must be a string literal.
+fn lower_count_values(agg: &parser::AggregateExpr) -> Result<MetricPlan, QuerierError> {
+    let label = match agg.param.as_deref().map(unwrap_paren) {
+        Some(Expr::StringLiteral(s)) => s.val.clone(),
+        _ => {
+            return Err(QuerierError::Unsupported(
+                "count_values requires a string-literal label name".to_string(),
+            ));
+        }
+    };
+    let mut plan = build_plan(unwrap_paren(&agg.expr), MetricAgg::Last, Grouping::Natural)?;
+    plan.count_values = Some(label);
     Ok(plan)
 }
 
@@ -1182,12 +1452,14 @@ mod tests {
     }
 
     #[test]
-    fn at_modifier_is_rejected() {
-        // `@` is not honored yet; reject rather than silently ignore it.
-        assert!(matches!(
-            err("x @ 1600000000"),
-            QuerierError::Unsupported(_)
-        ));
+    fn at_modifier_is_parsed() {
+        assert_eq!(
+            plan("x @ 1600000000").at,
+            Some(AtSpec::Abs(1_600_000_000_000_000_000))
+        );
+        assert_eq!(plan("x @ start()").at, Some(AtSpec::Start));
+        assert_eq!(plan("x @ end()").at, Some(AtSpec::End));
+        assert_eq!(plan("x").at, None);
     }
 
     #[test]
@@ -1509,6 +1781,28 @@ mod tests {
     }
 
     #[test]
+    fn subquery_is_a_subquery_plan() {
+        match plan_query("max_over_time(reqs[5m:1m])").expect("plan") {
+            QueryPlan::Subquery {
+                reducer,
+                range_ns,
+                res_ns,
+                ..
+            } => {
+                assert_eq!(reducer, MetricAgg::Max);
+                assert_eq!(range_ns, 300_000_000_000);
+                assert_eq!(res_ns, 60_000_000_000);
+            }
+            other => panic!("expected subquery, got {other:?}"),
+        }
+        // Default resolution when omitted.
+        assert!(matches!(
+            plan_query("avg_over_time(reqs[5m:])").expect("plan"),
+            QueryPlan::Subquery { .. }
+        ));
+    }
+
+    #[test]
     fn vector_arithmetic_is_a_binary_plan() {
         match plan_query("a / b").expect("plan") {
             QueryPlan::BinaryVector { left, op, right } => {
@@ -1528,8 +1822,11 @@ mod tests {
             plan_query("a * 2").expect("plan"),
             QueryPlan::Single(_)
         ));
-        // Explicit on/ignoring/group_left matching stays unsupported for now.
-        assert!(plan_query("a / on(job) b").is_err());
+        // on/ignoring/group_left matching is accepted (resolves to service_name).
+        assert!(matches!(
+            plan_query("a / on(job) b").expect("plan"),
+            QueryPlan::BinaryVector { .. }
+        ));
     }
 
     #[test]
@@ -1544,8 +1841,11 @@ mod tests {
                 other => panic!("expected logical for {q}, got {other:?}"),
             }
         }
-        // Explicit on/ignoring matching stays unsupported.
-        assert!(plan_query("a and on(job) b").is_err());
+        // on/ignoring matching is accepted (resolves to service_name).
+        assert!(matches!(
+            plan_query("a and on(job) b").expect("plan"),
+            QueryPlan::BinaryLogical { .. }
+        ));
     }
 
     #[test]
@@ -1598,6 +1898,67 @@ mod tests {
         assert_eq!(p.matchers.len(), 1);
         assert_eq!(p.grouping, Grouping::Natural);
         assert!(p.range.is_none());
+    }
+
+    #[test]
+    fn count_values_lowering() {
+        let p = plan(r#"count_values("version", build_info)"#);
+        assert_eq!(p.count_values, Some("version".into()));
+        assert_eq!(p.metric_name, "build_info");
+    }
+
+    #[test]
+    fn label_ops_lowering() {
+        let p = plan(r#"label_replace(x, "service", "$1", "service", "(.*)")"#);
+        assert_eq!(p.metric_name, "x");
+        assert_eq!(
+            p.label_ops,
+            vec![LabelOp::Replace {
+                dst: "service".into(),
+                replacement: "$1".into(),
+                src: "service".into(),
+                regex: "(.*)".into(),
+            }]
+        );
+        let j = plan(r#"label_join(x, "service", "-", "job", "__name__")"#);
+        assert_eq!(
+            j.label_ops,
+            vec![LabelOp::Join {
+                dst: "service".into(),
+                separator: "-".into(),
+                srcs: vec!["job".into(), "__name__".into()],
+            }]
+        );
+    }
+
+    #[test]
+    fn vector_and_scalar_lowering() {
+        assert_eq!(plan("vector(5)").constant, Some(5.0));
+        assert!(plan("vector(5)").time_source);
+        let s = plan("scalar(x)");
+        assert!(s.scalar_reduce);
+        assert_eq!(s.metric_name, "x");
+        assert!(!plan("x").scalar_reduce);
+    }
+
+    #[test]
+    fn time_and_calendar_lowering() {
+        assert!(plan("time()").time_source);
+        let dow = plan("day_of_week()");
+        assert!(dow.time_source);
+        assert_eq!(dow.calendar, Some(CalendarFn::DayOfWeek));
+        // With a vector arg it operates on the metric, not time().
+        let p = plan("hour(x)");
+        assert!(!p.time_source);
+        assert_eq!(p.metric_name, "x");
+        assert_eq!(p.calendar, Some(CalendarFn::Hour));
+    }
+
+    #[test]
+    fn sort_sets_direction() {
+        assert_eq!(plan("sort(x)").sort, Some(false));
+        assert_eq!(plan("sort_desc(x)").sort, Some(true));
+        assert_eq!(plan("x").sort, None);
     }
 
     #[test]

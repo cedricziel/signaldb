@@ -28,8 +28,8 @@ wrong result.
 | `__name__` matcher | ✅ |
 | Range vector selector `metric[5m]` (as a function argument) | ✅ |
 | `offset` modifier (`metric offset 5m`) | ✅ |
-| `@` modifier | ❌ |
-| Subqueries `expr[5m:1m]` | ❌ |
+| `@` modifier (`metric @ 1600000000`, `@ start()`/`@ end()`) | ✅ (pins to the instant, 5-min lookback, replicated across steps) |
+| Subqueries `expr[5m:1m]` | ✅ (under an `_over_time` reducer; inner evaluated at the resolution) |
 
 ## Aggregation operators
 
@@ -40,7 +40,7 @@ wrong result.
 | `stddev`, `stdvar` (population), `group` (with/without `by (…)`) | ✅ |
 | `without (…)` grouping | ✅ (over `job`/`service`; attribute labels aren't materialized) |
 | `quantile(phi, …)` (parameterized, with/without `by (…)`) | ✅ |
-| `count_values` | ❌ |
+| `count_values` | ✅ (distinct value → `service_name`; label name not materialized) |
 
 ## Range (`[range]`) functions
 
@@ -78,7 +78,7 @@ wrong result.
 | Arithmetic `+ - * / % ^` between two vectors (`a / b`) | ✅ (one-to-one match on `job`/`service`; drops `__name__`) |
 | Comparison `== != > < >= <=` between two vectors (`a > b`, with `bool`) | ✅ (one-to-one match; filters `left` or maps to 1/0) |
 | Logical/set `and`, `or`, `unless` | ✅ (matched on `job`/`service` identity) |
-| `on` / `ignoring` / `group_left` / `group_right` matching | ❌ |
+| `on` / `ignoring` / `group_left` / `group_right` matching | ✅ (accepted; resolves to the materialized `service_name` join label) |
 
 ## Math & label functions
 
@@ -86,16 +86,22 @@ wrong result.
 |----------|--------|
 | `abs`, `ceil`, `floor`, `round`, `clamp`, `clamp_min`, `clamp_max` | ✅ |
 | `exp`, `ln`, `log2`, `log10`, `sqrt`, `sgn` | ✅ |
-| `sort`, `sort_desc` | ❌ |
-| `label_replace`, `label_join` | ❌ |
+| `sort`, `sort_desc` | ✅ (order the output by value) |
+| `label_replace`, `label_join` | ✅ (over the materialized `service_name`/`__name__` labels) |
 | `absent` | ✅ (1 per empty step bucket; carries the `job`/`service` matcher) |
-| `vector`, `scalar` | ❌ |
+| `vector`, `scalar` | ✅ (`vector(s)` constant series; `scalar(v)` single-series value) |
 | `timestamp` | ✅ (latest sample time per series, in unix seconds) |
-| `time`, `day_of_week`, `hour`, … | ❌ |
+| `time`, `timestamp`, `day_of_week`, `day_of_month`, `day_of_year`, `days_in_month`, `hour`, `minute`, `month`, `year` | ✅ |
 
-## Roadmap
+## Notes
 
-Tracked under epic #328 and #336. Unsupported items above are being added
-incrementally. Full vector-to-vector binary matching
-(`on`/`ignoring`/`group_left`) and subqueries are the larger remaining
-efforts.
+Tracked under epic #328 and #336. The full PromQL function and operator
+surface is now supported. Remaining differences from upstream Prometheus are
+backend-specific rather than missing features: only `service_name` is
+materialized as a queryable metric label (other labels live in JSON
+`attributes`), so label-writing (`label_replace`/`label_join`), `count_values`,
+and vector matching (`on`/`ignoring`/`group_left`) operate over
+`service_name`/`__name__`; and range aggregations use fixed `date_bin` step
+buckets rather than a sliding window (exact when the query step equals the
+range). Materializing more labels into columns is the highest-leverage way to
+close those gaps.
