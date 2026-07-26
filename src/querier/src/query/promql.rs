@@ -366,6 +366,14 @@ pub enum QueryPlan {
         op: LogicalOp,
         right: Box<MetricPlan>,
     },
+    /// `<reducer>_over_time(inner[range:res])` — evaluate `inner` at `res`
+    /// resolution, then reduce per outer bucket over the `range` window.
+    Subquery {
+        inner: Box<QueryPlan>,
+        range_ns: i64,
+        res_ns: i64,
+        reducer: MetricAgg,
+    },
 }
 
 /// A logical/set operator between two vectors.
@@ -380,6 +388,31 @@ pub enum LogicalOp {
 pub fn plan_query(query: &str) -> Result<QueryPlan, QuerierError> {
     let expr = parser::parse(query)
         .map_err(|e| QuerierError::InvalidInput(format!("invalid PromQL: {e}")))?;
+    plan_query_expr(&expr)
+}
+
+/// Lower an already-parsed expression to a [`QueryPlan`].
+fn plan_query_expr(expr: &Expr) -> Result<QueryPlan, QuerierError> {
+    let expr = unwrap_paren(expr).clone();
+    // `<reducer>_over_time(inner[range:res])` — a subquery under an over_time
+    // reducer. Evaluate `inner` at `res`, then reduce per outer bucket.
+    if let Expr::Call(call) = &expr
+        && let Some(Expr::Subquery(sq)) = call.args.args.first().map(|a| unwrap_paren(a))
+        && let Some(reducer) = over_time_agg(call.func.name)
+    {
+        let res_ns = sq
+            .step
+            .map(|d| d.as_nanos() as i64)
+            .filter(|&n| n > 0)
+            .unwrap_or(60_000_000_000); // default 1m resolution
+        let inner = plan_query_expr(&sq.expr)?;
+        return Ok(QueryPlan::Subquery {
+            inner: Box::new(inner),
+            range_ns: sq.range.as_nanos() as i64,
+            res_ns,
+            reducer,
+        });
+    }
     // A top-level binary with two vector operands is a vector-to-vector
     // operation. Explicit `on`/`ignoring`/`group_left` matching is not
     // supported yet — only the default one-to-one match (#335).
@@ -1744,6 +1777,28 @@ mod tests {
         assert!(matches!(
             err("sum(changes(x[5m]))"),
             QuerierError::Unsupported(_)
+        ));
+    }
+
+    #[test]
+    fn subquery_is_a_subquery_plan() {
+        match plan_query("max_over_time(reqs[5m:1m])").expect("plan") {
+            QueryPlan::Subquery {
+                reducer,
+                range_ns,
+                res_ns,
+                ..
+            } => {
+                assert_eq!(reducer, MetricAgg::Max);
+                assert_eq!(range_ns, 300_000_000_000);
+                assert_eq!(res_ns, 60_000_000_000);
+            }
+            other => panic!("expected subquery, got {other:?}"),
+        }
+        // Default resolution when omitted.
+        assert!(matches!(
+            plan_query("avg_over_time(reqs[5m:])").expect("plan"),
+            QueryPlan::Subquery { .. }
         ));
     }
 

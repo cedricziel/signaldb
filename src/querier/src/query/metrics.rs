@@ -100,20 +100,41 @@ impl MetricsService {
                 "step must be a positive nanosecond interval".to_string(),
             ));
         }
-        match plan_query(query)? {
+        self.eval_query_plan(
+            &plan_query(query)?,
+            start,
+            end,
+            step,
+            tenant_slug,
+            dataset_slug,
+        )
+        .await
+    }
+
+    /// Execute a lowered [`QueryPlan`] over `[start, end]` at `step`.
+    async fn eval_query_plan(
+        &self,
+        plan: &QueryPlan,
+        start: i64,
+        end: i64,
+        step: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<RecordBatch>, QuerierError> {
+        match plan {
             QueryPlan::Single(plan) if plan.absent => {
-                self.eval_absent(&plan, start, end, step, tenant_slug, dataset_slug)
+                self.eval_absent(plan, start, end, step, tenant_slug, dataset_slug)
                     .await
             }
             QueryPlan::Single(plan) => {
-                self.eval_plan(&plan, start, end, step, tenant_slug, dataset_slug)
+                self.eval_plan(plan, start, end, step, tenant_slug, dataset_slug)
                     .await
             }
             QueryPlan::BinaryVector { left, op, right } => {
                 self.eval_binary(
-                    &left,
-                    op,
-                    &right,
+                    left,
+                    *op,
+                    right,
                     start,
                     end,
                     step,
@@ -129,10 +150,10 @@ impl MetricsService {
                 return_bool,
             } => {
                 self.eval_binary_compare(
-                    &left,
-                    op,
-                    &right,
-                    return_bool,
+                    left,
+                    *op,
+                    right,
+                    *return_bool,
                     start,
                     end,
                     step,
@@ -143,9 +164,28 @@ impl MetricsService {
             }
             QueryPlan::BinaryLogical { left, op, right } => {
                 self.eval_binary_logical(
-                    &left,
-                    op,
-                    &right,
+                    left,
+                    *op,
+                    right,
+                    start,
+                    end,
+                    step,
+                    tenant_slug,
+                    dataset_slug,
+                )
+                .await
+            }
+            QueryPlan::Subquery {
+                inner,
+                range_ns,
+                res_ns,
+                reducer,
+            } => {
+                self.eval_subquery(
+                    inner,
+                    *range_ns,
+                    *res_ns,
+                    *reducer,
                     start,
                     end,
                     step,
@@ -707,6 +747,89 @@ impl MetricsService {
                 names.push(metric.clone());
                 services.push(svc.clone());
                 values.push(*value);
+            }
+            bucket += step;
+        }
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "bucket",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(ts)),
+            Arc::new(StringArray::from(names)),
+            Arc::new(StringArray::from(services)),
+            Arc::new(Float64Array::from(values)),
+        ];
+        let batch = RecordBatch::try_new(schema, columns)
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        Ok(vec![batch])
+    }
+
+    /// `<reducer>_over_time(inner[range:res])`: evaluate `inner` at `res`
+    /// resolution over `[start-range, end]`, then reduce, per output bucket and
+    /// series, the sub-samples that fall in `(bucket-range, bucket]`.
+    #[allow(clippy::too_many_arguments)]
+    async fn eval_subquery(
+        &self,
+        inner: &QueryPlan,
+        range_ns: i64,
+        res_ns: i64,
+        reducer: MetricAgg,
+        start: i64,
+        end: i64,
+        step: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<RecordBatch>, QuerierError> {
+        let res = res_ns.max(1);
+        // Sub-evaluate at `res` over the extended window (boxed for recursion).
+        let sub = Box::pin(self.eval_query_plan(
+            inner,
+            start - range_ns,
+            end,
+            res,
+            tenant_slug,
+            dataset_slug,
+        ))
+        .await?;
+
+        // service → ordered (sub_bucket, value) samples.
+        let mut samples: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
+        for batch in &sub {
+            for (bucket, service, value) in matrix_rows(batch)? {
+                samples.entry(service).or_default().push((bucket, value));
+            }
+        }
+        for v in samples.values_mut() {
+            v.sort_by_key(|(t, _)| *t);
+        }
+
+        let first = start.div_euclid(step) * step;
+        let mut ts = Vec::new();
+        let mut names = Vec::new();
+        let mut services = Vec::new();
+        let mut values = Vec::new();
+        let mut bucket = first;
+        while bucket <= end {
+            for (service, pts) in &samples {
+                let window: Vec<f64> = pts
+                    .iter()
+                    .filter(|(t, _)| *t > bucket - range_ns && *t <= bucket)
+                    .map(|(_, v)| *v)
+                    .collect();
+                if window.is_empty() {
+                    continue;
+                }
+                ts.push(bucket);
+                names.push(String::new());
+                services.push(service.clone());
+                values.push(reduce_agg(&window, reducer));
             }
             bucket += step;
         }
@@ -1479,6 +1602,31 @@ fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArr
 
 /// Extract `(bucket_ns, service_name, value)` rows from a matrix batch.
 /// Series with no `service_name` column (collapsed groupings) use "".
+/// Reduce a subquery's per-bucket sub-samples with the outer `_over_time`
+/// aggregate (samples are ordered by time).
+fn reduce_agg(values: &[f64], agg: MetricAgg) -> f64 {
+    let n = values.len() as f64;
+    match agg {
+        MetricAgg::Sum => values.iter().sum(),
+        MetricAgg::Avg => values.iter().sum::<f64>() / n,
+        MetricAgg::Min => values.iter().copied().fold(f64::INFINITY, f64::min),
+        MetricAgg::Max => values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        MetricAgg::Count => n,
+        MetricAgg::Group => 1.0,
+        MetricAgg::Last => values.last().copied().unwrap_or(f64::NAN),
+        MetricAgg::Stddev | MetricAgg::StdVar => {
+            let mean = values.iter().sum::<f64>() / n;
+            let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n;
+            if agg == MetricAgg::StdVar {
+                var
+            } else {
+                var.sqrt()
+            }
+        }
+        MetricAgg::Quantile => f64::NAN,
+    }
+}
+
 /// `time()` / no-arg calendar functions: emit one no-label series per step
 /// bucket whose value is the bucket's evaluation time in unix seconds (or the
 /// requested calendar component of it).
@@ -2813,6 +2961,19 @@ mod tests {
         // `or` → union = both series.
         let or = matrix(&service, "reqs or (reqs > 4)", 1000).await;
         assert_eq!(or.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn subquery_evaluates_inner_then_reduces() {
+        let service = service_with_data();
+        // reqs sub-sampled (all fixture samples land in bucket 0) → api=3, web=5;
+        // avg_over_time over the 1000ns range at bucket 0 keeps them.
+        let out = matrix(&service, "avg_over_time(reqs[1000:500])", 1000).await;
+        let api = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .expect("api series");
+        assert_eq!(api.2, 3.0);
     }
 
     #[tokio::test]
