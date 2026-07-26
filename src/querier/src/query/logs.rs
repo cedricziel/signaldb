@@ -19,7 +19,7 @@ use datafusion::{
         Array, ArrayRef, Float64Array, RecordBatch, StringArray, TimestampNanosecondArray,
     },
     arrow::compute::{concat_batches, take},
-    arrow::datatypes::{DataType, IntervalMonthDayNano},
+    arrow::datatypes::{DataType, IntervalMonthDayNano, SchemaRef},
     functions::datetime::expr_fn::date_bin,
     functions::unicode::expr_fn::character_length,
     functions_aggregate::expr_fn::{
@@ -178,11 +178,11 @@ impl LogsService {
                 "not a metric query (use query_logs for log queries)".to_string(),
             ));
         };
-        // Vector-to-vector arithmetic (`a / b`): evaluate each operand and
-        // join on (bucket, series labels). Scalar arithmetic and everything
-        // else lower to a single plan below.
+        // Vector-to-vector operations (`a / b`, `a > b`): evaluate each
+        // operand and join on (bucket, series labels). Scalar operations and
+        // everything else lower to a single plan below.
         if let MetricQuery::Binary(bin) = &metric
-            && let Some(op) = binary_arith_op(bin)?
+            && let Some(kind) = classify_binary(bin)
         {
             let left = plan_metric_query(&bin.left)?;
             let right = plan_metric_query(&bin.right)?;
@@ -192,7 +192,12 @@ impl LogsService {
             let right_batches = self
                 .execute_plan(&right, params, tenant_slug, dataset_slug)
                 .await?;
-            return join_binary(left_batches, op, right_batches);
+            return match kind {
+                BinaryKind::Arith(op) => join_binary(left_batches, op, right_batches),
+                BinaryKind::Compare(op) => {
+                    join_compare(left_batches, op, bin.bool_modifier, right_batches)
+                }
+            };
         }
 
         let plan = plan_metric_query(&metric)?;
@@ -580,23 +585,58 @@ fn scalar_op_expr(value: Expr, scalar_op: ScalarOp) -> Expr {
     }
 }
 
-/// The arithmetic operator for a **vector-to-vector** binary expression,
-/// or `None` when the expression should instead lower to a single plan
-/// (a scalar operand, or a comparison/logical operator `plan_binary`
-/// rejects).
-fn binary_arith_op(bin: &logql::BinaryExpr) -> Result<Option<ArithOp>, QuerierError> {
+/// A comparison operator for a vector-to-vector comparison.
+#[derive(Debug, Clone, Copy)]
+enum CmpOp {
+    Eq,
+    Neq,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+}
+
+/// The kind of vector-to-vector operation to evaluate via a join.
+enum BinaryKind {
+    Arith(ArithOp),
+    Compare(CmpOp),
+}
+
+/// Classify a **vector-to-vector** binary expression, or `None` when it
+/// should instead lower to a single plan: a scalar operand (handled by
+/// `plan_binary` as a `ScalarOp`), or an operator not supported between two
+/// vectors (`mod`/`pow`, logical/set) which `plan_binary` then rejects.
+fn classify_binary(bin: &logql::BinaryExpr) -> Option<BinaryKind> {
     let is_literal =
         |q: &MetricQuery| matches!(q, MetricQuery::Literal(_) | MetricQuery::VectorLiteral(_));
     if is_literal(&bin.left) || is_literal(&bin.right) {
-        return Ok(None);
+        return None;
     }
-    Ok(match bin.op {
-        BinOp::Add => Some(ArithOp::Add),
-        BinOp::Sub => Some(ArithOp::Sub),
-        BinOp::Mul => Some(ArithOp::Mul),
-        BinOp::Div => Some(ArithOp::Div),
+    match bin.op {
+        BinOp::Add => Some(BinaryKind::Arith(ArithOp::Add)),
+        BinOp::Sub => Some(BinaryKind::Arith(ArithOp::Sub)),
+        BinOp::Mul => Some(BinaryKind::Arith(ArithOp::Mul)),
+        BinOp::Div => Some(BinaryKind::Arith(ArithOp::Div)),
+        BinOp::Eq => Some(BinaryKind::Compare(CmpOp::Eq)),
+        BinOp::Neq => Some(BinaryKind::Compare(CmpOp::Neq)),
+        BinOp::Gt => Some(BinaryKind::Compare(CmpOp::Gt)),
+        BinOp::Gte => Some(BinaryKind::Compare(CmpOp::Gte)),
+        BinOp::Lt => Some(BinaryKind::Compare(CmpOp::Lt)),
+        BinOp::Lte => Some(BinaryKind::Compare(CmpOp::Lte)),
         _ => None,
-    })
+    }
+}
+
+/// Whether a comparison holds for two values.
+fn cmp_holds(op: CmpOp, l: f64, r: f64) -> bool {
+    match op {
+        CmpOp::Eq => l == r,
+        CmpOp::Neq => l != r,
+        CmpOp::Gt => l > r,
+        CmpOp::Gte => l >= r,
+        CmpOp::Lt => l < r,
+        CmpOp::Lte => l <= r,
+    }
 }
 
 /// Apply a scalar arithmetic operator to two `f64`s.
@@ -611,6 +651,12 @@ fn arith_apply(op: ArithOp, l: f64, r: f64) -> f64 {
 
 /// One matrix row: its bucket, sorted `(label, value)` pairs, and value.
 type MatrixRow = (i64, Vec<(String, String)>, f64);
+
+/// A series key for joining: `(bucket, sorted label pairs)`.
+type SeriesKey = (i64, Vec<(String, String)>);
+
+/// Joined matrix rows indexed by [`SeriesKey`]; ordered by key.
+type JoinMap = BTreeMap<SeriesKey, f64>;
 
 /// Read a LogQL matrix batch into `(bucket, sorted label pairs, value)`
 /// rows. Every string column other than `value` is treated as a series
@@ -663,39 +709,21 @@ fn logql_matrix_rows(batch: &RecordBatch) -> Result<Vec<MatrixRow>, QuerierError
     Ok(rows)
 }
 
-/// Join two matrices on `(bucket, labels)` and combine matched values with
-/// `op` — the vector-to-vector arithmetic case (e.g. an error ratio). The
-/// output reuses the left side's schema; unmatched series are dropped
-/// (one-to-one matching), as in Loki/Prometheus without `on`/`ignoring`.
-fn join_binary(
-    left: Vec<RecordBatch>,
-    op: ArithOp,
-    right: Vec<RecordBatch>,
-) -> Result<Vec<RecordBatch>, QuerierError> {
-    if left.is_empty() {
-        return Ok(left);
-    }
-    let schema = left[0].schema();
-
-    let mut rhs: BTreeMap<(i64, Vec<(String, String)>), f64> = BTreeMap::new();
-    for batch in &right {
+/// Index a matrix's rows by `(bucket, labels)` for one side of a join.
+fn index_matrix(batches: &[RecordBatch]) -> Result<JoinMap, QuerierError> {
+    let mut index = BTreeMap::new();
+    for batch in batches {
         for (bucket, labels, v) in logql_matrix_rows(batch)? {
-            rhs.insert((bucket, labels), v);
+            index.insert((bucket, labels), v);
         }
     }
+    Ok(index)
+}
 
-    // BTreeMap keeps the output ordered by (bucket, labels).
-    let mut out: BTreeMap<(i64, Vec<(String, String)>), f64> = BTreeMap::new();
-    for batch in &left {
-        for (bucket, labels, lv) in logql_matrix_rows(batch)? {
-            if let Some(&rv) = rhs.get(&(bucket, labels.clone())) {
-                out.insert((bucket, labels), arith_apply(op, lv, rv));
-            }
-        }
-    }
-
-    // Rebuild columns in the left schema's order, pulling each label value
-    // from the joined row's label map.
+/// Rebuild a matrix batch from joined `(bucket, labels) -> value` rows,
+/// reusing `schema`'s column layout (the left side's). A `BTreeMap` input
+/// keeps the output ordered by `(bucket, labels)`.
+fn rebuild_matrix(schema: SchemaRef, rows: JoinMap) -> Result<Vec<RecordBatch>, QuerierError> {
     let label_names: Vec<String> = schema
         .fields()
         .iter()
@@ -703,11 +731,11 @@ fn join_binary(
         .map(|f| f.name().to_string())
         .collect();
 
-    let mut buckets = Vec::with_capacity(out.len());
+    let mut buckets = Vec::with_capacity(rows.len());
     let mut label_values: Vec<Vec<Option<String>>> =
-        vec![Vec::with_capacity(out.len()); label_names.len()];
-    let mut values = Vec::with_capacity(out.len());
-    for ((bucket, labels), value) in out {
+        vec![Vec::with_capacity(rows.len()); label_names.len()];
+    let mut values = Vec::with_capacity(rows.len());
+    for ((bucket, labels), value) in rows {
         buckets.push(bucket);
         for (j, name) in label_names.iter().enumerate() {
             label_values[j].push(
@@ -727,9 +755,67 @@ fn join_binary(
     }
     columns.push(Arc::new(Float64Array::from(values)));
 
-    let out = RecordBatch::try_new(schema, columns)
+    let batch = RecordBatch::try_new(schema, columns)
         .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
-    Ok(vec![out])
+    Ok(vec![batch])
+}
+
+/// Join two matrices on `(bucket, labels)` and combine matched values with
+/// `op` — the vector-to-vector arithmetic case (e.g. an error ratio). The
+/// output reuses the left side's schema; unmatched series are dropped
+/// (one-to-one matching), as in Loki/Prometheus without `on`/`ignoring`.
+fn join_binary(
+    left: Vec<RecordBatch>,
+    op: ArithOp,
+    right: Vec<RecordBatch>,
+) -> Result<Vec<RecordBatch>, QuerierError> {
+    if left.is_empty() {
+        return Ok(left);
+    }
+    let schema = left[0].schema();
+    let rhs = index_matrix(&right)?;
+
+    let mut out: JoinMap = BTreeMap::new();
+    for batch in &left {
+        for (bucket, labels, lv) in logql_matrix_rows(batch)? {
+            if let Some(&rv) = rhs.get(&(bucket, labels.clone())) {
+                out.insert((bucket, labels), arith_apply(op, lv, rv));
+            }
+        }
+    }
+    rebuild_matrix(schema, out)
+}
+
+/// Join two matrices on `(bucket, labels)` and compare matched values. Only
+/// series present on both sides participate. Without `bool` the left value
+/// is kept where the comparison holds (a filter); with `bool` each matched
+/// pair maps to `1`/`0`.
+fn join_compare(
+    left: Vec<RecordBatch>,
+    op: CmpOp,
+    bool_modifier: bool,
+    right: Vec<RecordBatch>,
+) -> Result<Vec<RecordBatch>, QuerierError> {
+    if left.is_empty() {
+        return Ok(left);
+    }
+    let schema = left[0].schema();
+    let rhs = index_matrix(&right)?;
+
+    let mut out: JoinMap = BTreeMap::new();
+    for batch in &left {
+        for (bucket, labels, lv) in logql_matrix_rows(batch)? {
+            if let Some(&rv) = rhs.get(&(bucket, labels.clone())) {
+                let holds = cmp_holds(op, lv, rv);
+                if bool_modifier {
+                    out.insert((bucket, labels), if holds { 1.0 } else { 0.0 });
+                } else if holds {
+                    out.insert((bucket, labels), lv);
+                }
+            }
+        }
+    }
+    rebuild_matrix(schema, out)
 }
 
 /// Keep the `k` highest (or lowest, for `bottomk`) series by value in each
@@ -1348,6 +1434,30 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!((out[0].0 - 1.0 / 3.0).abs() < 1e-9, "ratio {}", out[0].0);
         assert_eq!(out[0].1.as_deref(), Some("api"));
+    }
+
+    #[tokio::test]
+    async fn vector_to_vector_comparison_filters_and_bools() {
+        let service = service_with_varying_counts();
+        // Left (all api): (api,error)=3, (api,info)=1.
+        // Right (api logs containing "a"): (api,error)=1.
+        // Matched only on (api,error).
+        let all = r#"count_over_time({service_name="api"}[1000ns])"#;
+        let with_a = r#"count_over_time({service_name="api"} |= "a" [1000ns])"#;
+
+        // `>` keeps the left value where 3 > 1 holds.
+        let gt = matrix(&service, &format!("{all} > {with_a}"), 1000).await;
+        assert_eq!(gt.len(), 1);
+        assert_eq!(gt[0].0, 3.0);
+
+        // `<` drops it (3 < 1 is false); no series remain.
+        let lt = matrix(&service, &format!("{all} < {with_a}"), 1000).await;
+        assert!(lt.is_empty());
+
+        // `> bool` maps the matched pair to 1 instead of the left value.
+        let gt_bool = matrix(&service, &format!("{all} > bool {with_a}"), 1000).await;
+        assert_eq!(gt_bool.len(), 1);
+        assert_eq!(gt_bool[0].0, 1.0);
     }
 
     #[tokio::test]

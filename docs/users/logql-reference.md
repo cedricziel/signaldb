@@ -141,6 +141,10 @@ sum by (level) (rate({service_name="api"}[5m]))
   / `/` (`sum(rate(...)) / sum(rate(...))` for a ratio). Series are matched
   one-to-one on `(bucket, labels)`; unmatched series are dropped (there is
   no `on` / `ignoring` yet).
+- **Vector comparison**: two metric queries compared with `==` / `!=` /
+  `>` / `>=` / `<` / `<=`. Without `bool` the left series is kept where the
+  comparison holds (a filter); with `bool` (`a > bool b`) each matched pair
+  becomes `1` or `0`.
 - **Grouping** is only supported by labels backed by a column
   (`service_name`, `level`, ...).
 
@@ -158,9 +162,8 @@ exact results.
 These parse but return an "unsupported" error at execution:
 
 - `sort` / `sort_desc`
-- Vector-to-vector comparisons (`a > b`), logical/set operators
-  (`and`/`or`/`unless`), `on` / `ignoring` label matching, `vector(N)`,
-  `label_replace`
+- Logical/set operators (`and`/`or`/`unless`), `on` / `ignoring` label
+  matching, `vector(N)`, `label_replace`
 - `sum without (labels)` with a non-empty label list
 - Grouping by an attribute (non-column) label
 
