@@ -117,6 +117,25 @@ impl MetricsService {
                 )
                 .await
             }
+            QueryPlan::BinaryCompare {
+                left,
+                op,
+                right,
+                return_bool,
+            } => {
+                self.eval_binary_compare(
+                    &left,
+                    op,
+                    &right,
+                    return_bool,
+                    start,
+                    end,
+                    step,
+                    tenant_slug,
+                    dataset_slug,
+                )
+                .await
+            }
         }
     }
 
@@ -255,6 +274,85 @@ impl MetricsService {
         for ((bucket, service), value) in out {
             ts.push(bucket);
             names.push(String::new()); // __name__ is dropped for binary ops
+            services.push(service);
+            values.push(value);
+        }
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "bucket",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(ts)),
+            Arc::new(StringArray::from(names)),
+            Arc::new(StringArray::from(services)),
+            Arc::new(Float64Array::from(values)),
+        ];
+        let batch = RecordBatch::try_new(schema, columns)
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        Ok(vec![batch])
+    }
+
+    /// Execute a `left CMP right` vector-to-vector comparison. Series are
+    /// matched one-to-one on (bucket, service_name). Without `bool` the
+    /// left series is kept (with its metric name) where the comparison holds;
+    /// with `bool` each matched pair maps to 1/0 and the name is dropped.
+    #[allow(clippy::too_many_arguments)]
+    async fn eval_binary_compare(
+        &self,
+        left: &MetricPlan,
+        op: CmpOp,
+        right: &MetricPlan,
+        return_bool: bool,
+        start: i64,
+        end: i64,
+        step: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<RecordBatch>, QuerierError> {
+        let left_batches = self
+            .eval_plan(left, start, end, step, tenant_slug, dataset_slug)
+            .await?;
+        let right_batches = self
+            .eval_plan(right, start, end, step, tenant_slug, dataset_slug)
+            .await?;
+
+        let mut rhs: BTreeMap<(i64, String), f64> = BTreeMap::new();
+        for batch in &right_batches {
+            for (bucket, service, value) in matrix_rows(batch)? {
+                rhs.insert((bucket, service), value);
+            }
+        }
+
+        // (bucket, service) → (metric_name, value).
+        let mut out: BTreeMap<(i64, String), (String, f64)> = BTreeMap::new();
+        for batch in &left_batches {
+            for (bucket, metric, service, lv) in matrix_rows_named(batch)? {
+                let Some(&rv) = rhs.get(&(bucket, service.clone())) else {
+                    continue;
+                };
+                let holds = cmp_f64(lv, op, rv, false);
+                if return_bool {
+                    let v = if holds { 1.0 } else { 0.0 };
+                    out.insert((bucket, service), (String::new(), v));
+                } else if holds {
+                    out.insert((bucket, service), (metric, lv));
+                }
+            }
+        }
+
+        let mut ts = Vec::with_capacity(out.len());
+        let mut names = Vec::with_capacity(out.len());
+        let mut services = Vec::with_capacity(out.len());
+        let mut values = Vec::with_capacity(out.len());
+        for ((bucket, service), (metric, value)) in out {
+            ts.push(bucket);
+            names.push(metric);
             services.push(service);
             values.push(value);
         }
@@ -1001,6 +1099,39 @@ fn matrix_rows(batch: &RecordBatch) -> Result<Vec<(i64, String, f64)>, QuerierEr
         }
         let svc = service.map(|c| c.value(i).to_string()).unwrap_or_default();
         out.push((bucket.value(i), svc, value.value(i)));
+    }
+    Ok(out)
+}
+
+/// Like [`matrix_rows`] but keeps the metric name: `(bucket, metric, service,
+/// value)`. Used by comparison filtering, which preserves the left labels.
+fn matrix_rows_named(batch: &RecordBatch) -> Result<Vec<(i64, String, String, f64)>, QuerierError> {
+    let bucket = batch
+        .column_by_name("bucket")
+        .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
+        .ok_or_else(|| {
+            QuerierError::InvalidInput("bucket column is not a timestamp".to_string())
+        })?;
+    let metric = string_column(batch, "metric_name")?;
+    let service = batch
+        .column_by_name("service_name")
+        .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+    let value = batch
+        .column_by_name("value")
+        .and_then(|c| c.as_any().downcast_ref::<Float64Array>())
+        .ok_or_else(|| QuerierError::InvalidInput("value column is not Float64".to_string()))?;
+    let mut out = Vec::with_capacity(batch.num_rows());
+    for i in 0..batch.num_rows() {
+        if bucket.is_null(i) || value.is_null(i) {
+            continue;
+        }
+        let svc = service.map(|c| c.value(i).to_string()).unwrap_or_default();
+        out.push((
+            bucket.value(i),
+            metric.value(i).to_string(),
+            svc,
+            value.value(i),
+        ));
     }
     Ok(out)
 }
@@ -1861,6 +1992,27 @@ mod tests {
         // `reqs - reqs` = 0 per series.
         let sub = matrix(&service, "reqs - reqs", 1000).await;
         assert!(sub.iter().all(|(_, _, v)| *v == 0.0));
+    }
+
+    #[tokio::test]
+    async fn vector_comparison_filters_and_bools() {
+        let service = service_with_data();
+        // api=3, web=5. `reqs >= reqs` holds for both → both kept, with the
+        // left value and metric name preserved (filtering comparison).
+        let out = matrix(&service, "reqs >= reqs", 1000).await;
+        assert_eq!(out.len(), 2);
+        let api = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert_eq!(api.0, "reqs"); // metric name preserved for filtering
+        assert_eq!(api.2, 3.0);
+        // A comparison that never holds → empty.
+        assert!(matrix(&service, "reqs > reqs", 1000).await.is_empty());
+        // `bool` maps to 1/0 and drops the name: 3>=3 and 5>=5 → 1.0 each.
+        let b = matrix(&service, "reqs >= bool reqs", 1000).await;
+        assert!(!b.is_empty());
+        assert!(b.iter().all(|(n, _, v)| n.is_empty() && *v == 1.0));
     }
 
     #[tokio::test]
