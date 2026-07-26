@@ -132,6 +132,8 @@ sum by (level) (rate({service_name="api"}[5m]))
   one of the above. `sum` folds into the grouped range aggregate; the
   others reduce the per-series range aggregation across the series in each
   group (`stddev`/`stdvar` are population statistics, as in Prometheus).
+- **Selection**: `topk(k, ...)` / `bottomk(k, ...)` keep the `k` highest /
+  lowest series by value in each time bucket, applied after aggregation.
 - **Grouping** is only supported by labels backed by a column
   (`service_name`, `level`, ...).
 
@@ -148,7 +150,7 @@ exact results.
 
 These parse but return an "unsupported" error at execution:
 
-- `topk` / `bottomk` and `sort` / `sort_desc`
+- `sort` / `sort_desc`
 - Binary operations between metric queries (`a / b`), `vector(N)`,
   `label_replace`
 - `sum without (labels)` with a non-empty label list
