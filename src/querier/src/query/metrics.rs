@@ -297,6 +297,11 @@ impl MetricsService {
             apply_label_ops(batches, &plan.label_ops)?
         };
 
+        // `count_values`: count series per distinct value.
+        if plan.count_values.is_some() {
+            return count_values_reduce(batches);
+        }
+
         // `scalar(v)`: reduce to one no-label value per bucket.
         if plan.scalar_reduce {
             return scalar_reduce(batches);
@@ -1543,6 +1548,47 @@ fn apply_label_ops(
         );
     }
     Ok(out)
+}
+
+/// `count_values("label", v)`: count the series sharing each distinct value
+/// per bucket; the value (formatted) becomes the output `service_name`.
+fn count_values_reduce(batches: Vec<RecordBatch>) -> Result<Vec<RecordBatch>, QuerierError> {
+    // (bucket, value-string) → count. BTreeMap keeps output sorted.
+    let mut groups: BTreeMap<(i64, String), usize> = BTreeMap::new();
+    for batch in &batches {
+        for (bucket, _service, value) in matrix_rows(batch)? {
+            *groups.entry((bucket, format!("{value}"))).or_insert(0) += 1;
+        }
+    }
+    let mut ts = Vec::with_capacity(groups.len());
+    let mut names = Vec::with_capacity(groups.len());
+    let mut services = Vec::with_capacity(groups.len());
+    let mut values = Vec::with_capacity(groups.len());
+    for ((bucket, value_str), count) in groups {
+        ts.push(bucket);
+        names.push(String::new());
+        services.push(value_str);
+        values.push(count as f64);
+    }
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "bucket",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new("metric_name", DataType::Utf8, false),
+        Field::new("service_name", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(TimestampNanosecondArray::from(ts)),
+        Arc::new(StringArray::from(names)),
+        Arc::new(StringArray::from(services)),
+        Arc::new(Float64Array::from(values)),
+    ];
+    let batch = RecordBatch::try_new(schema, columns)
+        .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+    Ok(vec![batch])
 }
 
 /// `scalar(v)`: collapse to one no-label series per bucket — the single
@@ -2896,6 +2942,20 @@ mod tests {
         let service = service_with_data();
         let out = matrix(&service, "histogram_quantile(0.9, latency)", 1000).await;
         assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn count_values_counts_series_per_value() {
+        let service = service_with_data();
+        // reqs last-per-series: api=3, web=5 — two distinct values, one each.
+        let out = matrix(&service, r#"count_values("v", reqs)"#, 1000).await;
+        let by = |val: &str| {
+            out.iter()
+                .find(|(_, s, _)| s.as_deref() == Some(val))
+                .map(|(_, _, v)| *v)
+        };
+        assert_eq!(by("3"), Some(1.0));
+        assert_eq!(by("5"), Some(1.0));
     }
 
     #[tokio::test]

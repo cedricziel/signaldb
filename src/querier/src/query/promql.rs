@@ -251,6 +251,9 @@ pub struct MetricPlan {
     pub scalar_reduce: bool,
     /// `label_replace`/`label_join` output-label rewrites, applied in order.
     pub label_ops: Vec<LabelOp>,
+    /// Set for `count_values("label", v)` — count series per distinct value;
+    /// the distinct value becomes the output `service_name`.
+    pub count_values: Option<String>,
 }
 
 /// A `label_replace` / `label_join` operation on the output labels. Only the
@@ -549,10 +552,13 @@ fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
             if op == "quantile" {
                 return lower_quantile(agg);
             }
+            if op == "count_values" {
+                return lower_count_values(agg);
+            }
             let aggregate = aggregate_op(&op)?;
             if agg.param.is_some() {
                 return Err(QuerierError::Unsupported(
-                    "parameterized aggregation (count_values)".to_string(),
+                    "parameterized aggregation".to_string(),
                 ));
             }
             let grouping = grouping_from(agg.modifier.as_ref())?;
@@ -710,6 +716,7 @@ fn lower_selector(
         constant: None,
         scalar_reduce: false,
         label_ops: Vec::new(),
+        count_values: None,
     })
 }
 
@@ -739,6 +746,7 @@ fn time_plan() -> MetricPlan {
         constant: None,
         scalar_reduce: false,
         label_ops: Vec::new(),
+        count_values: None,
     }
 }
 
@@ -844,6 +852,22 @@ fn lower_quantile(agg: &parser::AggregateExpr) -> Result<MetricPlan, QuerierErro
     let grouping = grouping_from(agg.modifier.as_ref())?;
     let mut plan = build_plan(unwrap_paren(&agg.expr), MetricAgg::Quantile, grouping)?;
     plan.agg_param = Some(phi);
+    Ok(plan)
+}
+
+/// Lower `count_values("label", v)` — count the series sharing each distinct
+/// value; the value becomes the output label. `label` must be a string literal.
+fn lower_count_values(agg: &parser::AggregateExpr) -> Result<MetricPlan, QuerierError> {
+    let label = match agg.param.as_deref().map(unwrap_paren) {
+        Some(Expr::StringLiteral(s)) => s.val.clone(),
+        _ => {
+            return Err(QuerierError::Unsupported(
+                "count_values requires a string-literal label name".to_string(),
+            ));
+        }
+    };
+    let mut plan = build_plan(unwrap_paren(&agg.expr), MetricAgg::Last, Grouping::Natural)?;
+    plan.count_values = Some(label);
     Ok(plan)
 }
 
@@ -1797,6 +1821,13 @@ mod tests {
         assert_eq!(p.matchers.len(), 1);
         assert_eq!(p.grouping, Grouping::Natural);
         assert!(p.range.is_none());
+    }
+
+    #[test]
+    fn count_values_lowering() {
+        let p = plan(r#"count_values("version", build_info)"#);
+        assert_eq!(p.count_values, Some("version".into()));
+        assert_eq!(p.metric_name, "build_info");
     }
 
     #[test]

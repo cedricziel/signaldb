@@ -40,7 +40,7 @@ wrong result.
 | `stddev`, `stdvar` (population), `group` (with/without `by (…)`) | ✅ |
 | `without (…)` grouping | ✅ (over `job`/`service`; attribute labels aren't materialized) |
 | `quantile(phi, …)` (parameterized, with/without `by (…)`) | ✅ |
-| `count_values` | ❌ |
+| `count_values` | ✅ (distinct value → `service_name`; label name not materialized) |
 
 ## Range (`[range]`) functions
 
