@@ -5566,6 +5566,7 @@ dependencies = [
  "arrow-flight",
  "async-trait",
  "bytes",
+ "chrono",
  "clap",
  "common",
  "dashmap",

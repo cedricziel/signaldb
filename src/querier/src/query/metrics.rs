@@ -29,8 +29,8 @@ use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
 use super::promql::{
-    ArithOp, CmpOp, Grouping, HistogramFn, LabelMatch, LogicalOp, MatchKind, MetricAgg, MetricPlan,
-    QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_promql, plan_query,
+    ArithOp, CalendarFn, CmpOp, Grouping, HistogramFn, LabelMatch, LogicalOp, MatchKind, MetricAgg,
+    MetricPlan, QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_promql, plan_query,
 };
 use super::{error::QuerierError, table_ref::build_table_reference};
 
@@ -191,6 +191,12 @@ impl MetricsService {
                 .await;
         }
 
+        // `time()` / no-arg calendar functions: synthesise the evaluation time
+        // per bucket without a table scan.
+        if plan.time_source {
+            return eval_time(plan, start, end, step);
+        }
+
         let group_cols = self.group_columns(plan)?;
 
         let df = self.scan_union(tenant_slug, dataset_slug).await?;
@@ -275,6 +281,14 @@ impl MetricsService {
             .collect()
             .await
             .map_err(QuerierError::QueryFailed)?;
+
+        // Calendar functions on a metric (`day_of_week(metric)`): extract the
+        // component from the value as a final step.
+        let batches = if let Some(cf) = plan.calendar {
+            apply_calendar_batches(batches, cf)?
+        } else {
+            batches
+        };
 
         // `topk`/`bottomk`: keep the k highest/lowest series per bucket.
         if let Some(spec) = plan.topk {
@@ -1354,6 +1368,121 @@ fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArr
 
 /// Extract `(bucket_ns, service_name, value)` rows from a matrix batch.
 /// Series with no `service_name` column (collapsed groupings) use "".
+/// `time()` / no-arg calendar functions: emit one no-label series per step
+/// bucket whose value is the bucket's evaluation time in unix seconds (or the
+/// requested calendar component of it).
+fn eval_time(
+    plan: &MetricPlan,
+    start: i64,
+    end: i64,
+    step: i64,
+) -> Result<Vec<RecordBatch>, QuerierError> {
+    let first = start.div_euclid(step) * step;
+    let mut ts = Vec::new();
+    let mut values = Vec::new();
+    let mut bucket = first;
+    while bucket <= end {
+        let secs = bucket as f64 / 1e9;
+        let v = match plan.calendar {
+            Some(cf) => calendar_extract(secs, cf),
+            None => secs,
+        };
+        ts.push(bucket);
+        values.push(v);
+        bucket += step;
+    }
+    if let Some(desc) = plan.sort {
+        // Stable sort of the single synthetic series by value.
+        let mut idx: Vec<usize> = (0..values.len()).collect();
+        idx.sort_by(|&a, &b| {
+            let o = values[a]
+                .partial_cmp(&values[b])
+                .unwrap_or(std::cmp::Ordering::Equal);
+            if desc { o.reverse() } else { o }
+        });
+        ts = idx.iter().map(|&i| ts[i]).collect();
+        values = idx.iter().map(|&i| values[i]).collect();
+    }
+    let n = ts.len();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "bucket",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new("metric_name", DataType::Utf8, false),
+        Field::new("service_name", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(TimestampNanosecondArray::from(ts)),
+        Arc::new(StringArray::from(vec![""; n])),
+        Arc::new(StringArray::from(vec![""; n])),
+        Arc::new(Float64Array::from(values)),
+    ];
+    let batch = RecordBatch::try_new(schema, columns)
+        .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+    Ok(vec![batch])
+}
+
+/// Replace each batch's `value` with the requested calendar component of the
+/// value interpreted as unix seconds.
+fn apply_calendar_batches(
+    batches: Vec<RecordBatch>,
+    cf: CalendarFn,
+) -> Result<Vec<RecordBatch>, QuerierError> {
+    let mut out = Vec::with_capacity(batches.len());
+    for batch in batches {
+        let schema = batch.schema();
+        let vi = schema
+            .index_of("value")
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        let value = batch
+            .column(vi)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .ok_or_else(|| QuerierError::InvalidInput("value column is not Float64".to_string()))?;
+        let new_value: Float64Array = value
+            .iter()
+            .map(|v| v.map(|x| calendar_extract(x, cf)))
+            .collect();
+        let mut cols = batch.columns().to_vec();
+        cols[vi] = Arc::new(new_value);
+        out.push(
+            RecordBatch::try_new(schema, cols)
+                .map_err(|e| QuerierError::InvalidInput(e.to_string()))?,
+        );
+    }
+    Ok(out)
+}
+
+/// Extract a calendar component (UTC) from a value in unix seconds.
+fn calendar_extract(secs: f64, cf: CalendarFn) -> f64 {
+    use chrono::{DateTime, Datelike, Timelike, Utc};
+    let Some(dt) = DateTime::<Utc>::from_timestamp(secs as i64, 0) else {
+        return f64::NAN;
+    };
+    match cf {
+        CalendarFn::DayOfWeek => dt.weekday().num_days_from_sunday() as f64,
+        CalendarFn::DayOfMonth => dt.day() as f64,
+        CalendarFn::DayOfYear => dt.ordinal() as f64,
+        CalendarFn::DaysInMonth => {
+            let (y, m) = (dt.year(), dt.month());
+            let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+            let first_next = chrono::NaiveDate::from_ymd_opt(ny, nm, 1);
+            let first_this = chrono::NaiveDate::from_ymd_opt(y, m, 1);
+            match (first_next, first_this) {
+                (Some(a), Some(b)) => (a - b).num_days() as f64,
+                _ => f64::NAN,
+            }
+        }
+        CalendarFn::Hour => dt.hour() as f64,
+        CalendarFn::Minute => dt.minute() as f64,
+        CalendarFn::Month => dt.month() as f64,
+        CalendarFn::Year => dt.year() as f64,
+    }
+}
+
 fn matrix_rows(batch: &RecordBatch) -> Result<Vec<(i64, String, f64)>, QuerierError> {
     let bucket = batch
         .column_by_name("bucket")
@@ -2607,6 +2736,24 @@ mod tests {
         let service = service_with_data();
         let out = matrix(&service, "histogram_quantile(0.9, latency)", 1000).await;
         assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn time_and_calendar_functions() {
+        let service = service_with_data();
+        // time(): value is the bucket's evaluation time in seconds. With
+        // step 1000ns the first bucket is at t=0 → 0 seconds.
+        let out = matrix(&service, "time()", 1000).await;
+        assert!(out.iter().any(|(_, _, v)| *v == 0.0));
+        // 1970-01-01 (t≈0) was a Thursday → day_of_week 4, hour 0, year 1970.
+        let dow = matrix(&service, "day_of_week()", 1000).await;
+        assert!(dow.iter().all(|(_, _, v)| *v == 4.0));
+        assert!(
+            matrix(&service, "year()", 1000)
+                .await
+                .iter()
+                .all(|(_, _, v)| *v == 1970.0)
+        );
     }
 
     #[tokio::test]

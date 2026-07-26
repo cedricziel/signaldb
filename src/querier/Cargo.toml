@@ -11,6 +11,7 @@ logql = { path = "../logql" }
 tempo-api = { path = "../tempo-api", features = ["server"] }
 
 async-trait.workspace = true
+chrono.workspace = true
 dashmap.workspace = true
 hex.workspace = true
 

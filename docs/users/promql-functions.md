@@ -91,7 +91,7 @@ wrong result.
 | `absent` | ✅ (1 per empty step bucket; carries the `job`/`service` matcher) |
 | `vector`, `scalar` | ❌ |
 | `timestamp` | ✅ (latest sample time per series, in unix seconds) |
-| `time`, `day_of_week`, `hour`, … | ❌ |
+| `time`, `timestamp`, `day_of_week`, `day_of_month`, `day_of_year`, `days_in_month`, `hour`, `minute`, `month`, `year` | ✅ |
 
 ## Roadmap
 

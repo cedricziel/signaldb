@@ -237,6 +237,26 @@ pub struct MetricPlan {
     /// Set for `sort(v)` / `sort_desc(v)` — order the output within each
     /// bucket by value; `true` for descending.
     pub sort: Option<bool>,
+    /// `true` for `time()` and the no-argument calendar functions: the value
+    /// is the bucket's evaluation time (unix seconds), generated without a
+    /// table scan.
+    pub time_source: bool,
+    /// Set for `day_of_week`/`hour`/… — extract a calendar component from the
+    /// value (interpreted as unix seconds, UTC) as a final step.
+    pub calendar: Option<CalendarFn>,
+}
+
+/// A calendar component extracted from a value interpreted as unix seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalendarFn {
+    DayOfWeek,
+    DayOfMonth,
+    DayOfYear,
+    DaysInMonth,
+    Hour,
+    Minute,
+    Month,
+    Year,
 }
 
 /// A per-bucket reduction that needs the ordered sample sequence.
@@ -428,6 +448,21 @@ fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
             plan.sort = Some(call.func.name == "sort_desc");
             Ok(plan)
         }
+        // `time()`: the evaluation time per bucket, as a synthetic series.
+        Expr::Call(call) if call.func.name == "time" && call.args.args.is_empty() => {
+            Ok(time_plan())
+        }
+        // Calendar functions: `day_of_week(v)`, `hour()`, … With no argument
+        // they operate on `time()`; otherwise on the argument's value.
+        Expr::Call(call) if calendar_fn(call.func.name).is_some() => {
+            let cf = calendar_fn(call.func.name).unwrap();
+            let mut plan = match call.args.args.first() {
+                Some(arg) => lower(unwrap_paren(arg))?,
+                None => time_plan(),
+            };
+            plan.calendar = Some(cf);
+            Ok(plan)
+        }
         // `histogram_quantile(phi, <selector>)` targets the histogram table.
         Expr::Call(call) if call.func.name == "histogram_quantile" => {
             lower_histogram_quantile(call)
@@ -616,6 +651,49 @@ fn lower_selector(
         timestamp: false,
         histogram_fraction: None,
         sort: None,
+        time_source: false,
+        calendar: None,
+    })
+}
+
+/// A synthetic plan for `time()` — the bucket evaluation time, no table scan.
+fn time_plan() -> MetricPlan {
+    MetricPlan {
+        metric_name: String::new(),
+        matchers: Vec::new(),
+        aggregate: MetricAgg::Last,
+        grouping: Grouping::Collapse,
+        range: None,
+        quantile: None,
+        transforms: Vec::new(),
+        topk: None,
+        filter: None,
+        agg_param: None,
+        offset_ns: 0,
+        histogram_fn: None,
+        sequence_fn: None,
+        outer_agg: None,
+        absent: false,
+        timestamp: false,
+        histogram_fraction: None,
+        sort: None,
+        time_source: true,
+        calendar: None,
+    }
+}
+
+/// Map a calendar function name to its component, if it is one.
+fn calendar_fn(name: &str) -> Option<CalendarFn> {
+    Some(match name {
+        "day_of_week" => CalendarFn::DayOfWeek,
+        "day_of_month" => CalendarFn::DayOfMonth,
+        "day_of_year" => CalendarFn::DayOfYear,
+        "days_in_month" => CalendarFn::DaysInMonth,
+        "hour" => CalendarFn::Hour,
+        "minute" => CalendarFn::Minute,
+        "month" => CalendarFn::Month,
+        "year" => CalendarFn::Year,
+        _ => return None,
     })
 }
 
@@ -1611,6 +1689,19 @@ mod tests {
         assert_eq!(p.matchers.len(), 1);
         assert_eq!(p.grouping, Grouping::Natural);
         assert!(p.range.is_none());
+    }
+
+    #[test]
+    fn time_and_calendar_lowering() {
+        assert!(plan("time()").time_source);
+        let dow = plan("day_of_week()");
+        assert!(dow.time_source);
+        assert_eq!(dow.calendar, Some(CalendarFn::DayOfWeek));
+        // With a vector arg it operates on the metric, not time().
+        let p = plan("hour(x)");
+        assert!(!p.time_source);
+        assert_eq!(p.metric_name, "x");
+        assert_eq!(p.calendar, Some(CalendarFn::Hour));
     }
 
     #[test]
