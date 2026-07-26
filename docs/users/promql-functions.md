@@ -65,7 +65,8 @@ wrong result.
 |----------|--------|
 | `histogram_quantile(phi, metric)` | ✅ (interpolated from OTLP buckets; the argument is the histogram metric name, not `le`-keyed `_bucket` series) |
 | `histogram_quantile(phi, rate(metric[5m]))` | ❌ |
-| `histogram_count`, `histogram_sum`, `histogram_fraction` | ❌ |
+| `histogram_count`, `histogram_sum` | ✅ (sum the stored count/sum columns) |
+| `histogram_fraction` | ❌ |
 
 ## Binary operators
 
