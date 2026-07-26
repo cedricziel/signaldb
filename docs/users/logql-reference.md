@@ -126,9 +126,10 @@ sum by (level) (rate({service_name="api"}[5m]))
   `bytes_rate`, and the unwrap-based `sum_over_time` / `avg_over_time` /
   `min_over_time` / `max_over_time`.
 - **Vector aggregation**: a single outer `sum` / `avg` / `min` / `max` /
-  `count`, with `by (...)` or `without ()`, wrapping one of the above.
-  `sum` folds into the grouped range aggregate; the others reduce the
-  per-series range aggregation across the series in each group.
+  `count` / `stddev` / `stdvar`, with `by (...)` or `without ()`, wrapping
+  one of the above. `sum` folds into the grouped range aggregate; the
+  others reduce the per-series range aggregation across the series in each
+  group (`stddev`/`stdvar` are population statistics, as in Prometheus).
 - **Grouping** is only supported by labels backed by a column
   (`service_name`, `level`, ...).
 
@@ -145,8 +146,7 @@ exact results.
 
 These parse but return an "unsupported" error at execution:
 
-- `topk` / `bottomk`, `stddev` / `stdvar`, `sort` / `sort_desc`, and
-  `quantile_over_time`
+- `topk` / `bottomk`, `sort` / `sort_desc`, and `quantile_over_time`
 - Binary operations between metric queries (`a / b`), `vector(N)`,
   `label_replace`
 - `sum without (labels)` with a non-empty label list

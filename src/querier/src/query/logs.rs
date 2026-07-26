@@ -19,7 +19,7 @@ use datafusion::{
     arrow::datatypes::{DataType, IntervalMonthDayNano},
     functions::datetime::expr_fn::date_bin,
     functions::unicode::expr_fn::character_length,
-    functions_aggregate::expr_fn::{avg, count, max, min, sum},
+    functions_aggregate::expr_fn::{avg, count, max, min, stddev_pop, sum, var_pop},
     logical_expr::{Expr, cast, col, lit},
     prelude::{DataFrame, SessionContext},
     scalar::ScalarValue,
@@ -483,6 +483,10 @@ fn outer_agg_expr(outer: OuterAgg, value: Expr) -> Expr {
         OuterAgg::Min => min(value),
         OuterAgg::Max => max(value),
         OuterAgg::Count => count(value),
+        // Loki follows Prometheus: `stddev`/`stdvar` are population
+        // statistics across the series in the group.
+        OuterAgg::Stddev => stddev_pop(value),
+        OuterAgg::Stdvar => var_pop(value),
     }
 }
 
@@ -887,6 +891,62 @@ mod tests {
         .await;
         assert_eq!(out.len(), 2);
         assert!(out.iter().all(|(v, _)| *v == 1.0));
+    }
+
+    /// A context whose `api` service has two series with differing row
+    /// counts in one bucket: `error`×3 and `info`×1 — so a cross-series
+    /// `stddev`/`stdvar` over them is non-zero.
+    fn service_with_varying_counts() -> LogsService {
+        let schema = logs_schema();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300, 400])),
+                str_col(&["a", "b", "c", "d"]),
+                str_col(&["api", "api", "api", "api"]),
+                str_col(&["error", "error", "error", "info"]),
+                str_col(&["t1", "t2", "t3", "t4"]),
+                str_col(&["s1", "s2", "s3", "s4"]),
+                str_col(&["{}", "{}", "{}", "{}"]),
+                str_col(&["{}", "{}", "{}", "{}"]),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        LogsService::new(ctx)
+    }
+
+    #[tokio::test]
+    async fn stddev_and_stdvar_reduce_across_series() {
+        let service = service_with_varying_counts();
+        // Series counts within `api` are [3, 1]: population variance is 1,
+        // population stddev is 1.
+        let stdvar = matrix(
+            &service,
+            r#"stdvar by (service_name) (count_over_time({service_name="api"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        assert_eq!(stdvar.len(), 1);
+        assert!((stdvar[0].0 - 1.0).abs() < 1e-9, "stdvar {}", stdvar[0].0);
+
+        let stddev = matrix(
+            &service,
+            r#"stddev by (service_name) (count_over_time({service_name="api"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        assert_eq!(stddev.len(), 1);
+        assert!((stddev[0].0 - 1.0).abs() < 1e-9, "stddev {}", stddev[0].0);
     }
 
     #[tokio::test]
