@@ -222,6 +222,9 @@ pub struct MetricPlan {
     /// Set for `resets(v[range])` / `changes(v[range])` — count sequence
     /// events over the ordered samples in each bucket.
     pub sequence_fn: Option<SequenceFn>,
+    /// A second aggregation folded over the per-series result, e.g. the outer
+    /// `sum` in `sum(avg_over_time(x[5m]))`. The inner reducer is `aggregate`.
+    pub outer_agg: Option<(MetricAgg, Grouping)>,
 }
 
 /// A per-bucket reduction that needs the ordered sample sequence.
@@ -448,13 +451,14 @@ fn build_plan(
             }
 
             if let Some(reducer) = over_time_agg(call.func.name) {
+                // The reducer runs per series; if wrapped in an aggregation
+                // (`sum(avg_over_time(…))`), fold the per-series result with a
+                // second stage.
+                let mut plan = lower_selector(&ms.vs, reducer, Grouping::Natural, None)?;
                 if grouping != Grouping::Natural || aggregate != MetricAgg::Last {
-                    return Err(QuerierError::Unsupported(format!(
-                        "{} under an outer aggregation is not supported yet (#335)",
-                        call.func.name
-                    )));
+                    plan.outer_agg = Some((aggregate, grouping));
                 }
-                return lower_selector(&ms.vs, reducer, Grouping::Natural, None);
+                return Ok(plan);
             }
 
             let function = match call.func.name {
@@ -534,6 +538,7 @@ fn lower_selector(
         offset_ns,
         histogram_fn: None,
         sequence_fn: None,
+        outer_agg: None,
     })
 }
 
@@ -1179,11 +1184,20 @@ mod tests {
     }
 
     #[test]
-    fn over_time_under_aggregation_unsupported() {
-        assert!(matches!(
-            err(r#"sum(avg_over_time(x[5m]))"#),
-            QuerierError::Unsupported(_)
-        ));
+    fn over_time_under_aggregation_sets_outer() {
+        let p = plan(r#"sum(avg_over_time(x[5m]))"#);
+        assert_eq!(p.aggregate, MetricAgg::Avg); // inner reducer
+        assert_eq!(p.grouping, Grouping::Natural);
+        assert_eq!(p.outer_agg, Some((MetricAgg::Sum, Grouping::Collapse)));
+        // With `by (…)` on the outer aggregation.
+        let p = plan(r#"max by (job) (min_over_time(x[5m]))"#);
+        assert_eq!(p.aggregate, MetricAgg::Min);
+        assert_eq!(
+            p.outer_agg,
+            Some((MetricAgg::Max, Grouping::By(vec!["job".into()])))
+        );
+        // Bare over_time has no outer aggregation.
+        assert_eq!(plan(r#"avg_over_time(x[5m])"#).outer_agg, None);
     }
 
     #[test]
