@@ -29,8 +29,8 @@ use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
 use super::promql::{
-    ArithOp, CmpOp, Grouping, HistogramFn, LabelMatch, MatchKind, MetricAgg, MetricPlan, TopKSpec,
-    ValueOp, plan_promql,
+    ArithOp, CmpOp, Grouping, HistogramFn, LabelMatch, MatchKind, MetricAgg, MetricPlan,
+    SequenceFn, TopKSpec, ValueOp, plan_promql,
 };
 use super::{error::QuerierError, table_ref::build_table_reference};
 
@@ -114,6 +114,13 @@ impl MetricsService {
         if let Some(hf) = plan.histogram_fn {
             return self
                 .histogram_scalar_query(&plan, hf, start, end, step, tenant_slug, dataset_slug)
+                .await;
+        }
+
+        // resets/changes count events over the ordered per-bucket samples.
+        if let Some(sf) = plan.sequence_fn {
+            return self
+                .sequence_query(&plan, sf, start, end, step, tenant_slug, dataset_slug)
                 .await;
         }
 
@@ -476,6 +483,118 @@ impl MetricsService {
             .collect()
             .await
             .map_err(QuerierError::QueryFailed)
+    }
+
+    /// `resets(v[range])` / `changes(v[range])`: count sequence events over
+    /// the ordered samples in each (step bucket, series). Computed row-wise
+    /// in Rust since the aggregate path can't see consecutive samples.
+    #[allow(clippy::too_many_arguments)]
+    async fn sequence_query(
+        &self,
+        plan: &MetricPlan,
+        sf: SequenceFn,
+        start: i64,
+        end: i64,
+        step: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<RecordBatch>, QuerierError> {
+        let df = self.scan_union(tenant_slug, dataset_slug).await?;
+        let df = apply_filters(df, plan, start - plan.offset_ns, end - plan.offset_ns)?;
+        let batches = df
+            .select(vec![
+                bucket_expr(step, plan.offset_ns),
+                col("metric_name"),
+                col("service_name"),
+                col("value"),
+                cast_ns(col("timestamp")).alias("ts"),
+            ])
+            .map_err(QuerierError::QueryFailed)?
+            .collect()
+            .await
+            .map_err(QuerierError::QueryFailed)?;
+
+        // Group ordered (timestamp, value) samples per (bucket, series).
+        let mut groups: BTreeMap<(i64, String, String), Vec<(i64, f64)>> = BTreeMap::new();
+        for batch in &batches {
+            let bucket = batch
+                .column_by_name("bucket")
+                .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
+                .ok_or_else(|| {
+                    QuerierError::InvalidInput("bucket column is not a timestamp".to_string())
+                })?;
+            let name = string_column(batch, "metric_name")?;
+            let service = string_column(batch, "service_name")?;
+            let value = batch
+                .column_by_name("value")
+                .and_then(|c| c.as_any().downcast_ref::<Float64Array>())
+                .ok_or_else(|| {
+                    QuerierError::InvalidInput("value column is not Float64".to_string())
+                })?;
+            let ts = batch
+                .column_by_name("ts")
+                .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
+                .ok_or_else(|| {
+                    QuerierError::InvalidInput("ts column is not a timestamp".to_string())
+                })?;
+            for i in 0..batch.num_rows() {
+                if bucket.is_null(i) || value.is_null(i) || ts.is_null(i) {
+                    continue;
+                }
+                groups
+                    .entry((
+                        bucket.value(i),
+                        name.value(i).to_string(),
+                        service.value(i).to_string(),
+                    ))
+                    .or_default()
+                    .push((ts.value(i), value.value(i)));
+            }
+        }
+
+        let mut out_ts = Vec::with_capacity(groups.len());
+        let mut names = Vec::with_capacity(groups.len());
+        let mut services = Vec::with_capacity(groups.len());
+        let mut values = Vec::with_capacity(groups.len());
+        for ((bucket_ns, metric, service), mut samples) in groups {
+            samples.sort_by_key(|(t, _)| *t);
+            let mut count = 0.0;
+            for w in samples.windows(2) {
+                let prev = w[0].1;
+                let cur = w[1].1;
+                let event = match sf {
+                    SequenceFn::Resets => cur < prev,
+                    SequenceFn::Changes => cur != prev,
+                };
+                if event {
+                    count += 1.0;
+                }
+            }
+            out_ts.push(bucket_ns);
+            names.push(metric);
+            services.push(service);
+            values.push(count);
+        }
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "bucket",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(out_ts)),
+            Arc::new(StringArray::from(names)),
+            Arc::new(StringArray::from(services)),
+            Arc::new(Float64Array::from(values)),
+        ];
+        let batch = RecordBatch::try_new(schema, columns)
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        Ok(vec![batch])
     }
 
     /// Resolve the grouping labels to physical columns. Only labels backed
@@ -1446,6 +1565,24 @@ mod tests {
             .find(|(_, s, _)| s.as_deref() == Some("api"))
             .unwrap();
         assert!((api.2 - 2.0e7).abs() < 1.0, "got {}", api.2);
+    }
+
+    #[tokio::test]
+    async fn changes_and_resets_count_sequence_events() {
+        let service = service_with_data();
+        // api samples [1, 3] → 1 change, 0 resets. web [5] → 0.
+        let changes = matrix(&service, "changes(reqs[1m])", 1000).await;
+        let api = changes
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert_eq!(api.2, 1.0);
+        let resets = matrix(&service, "resets(reqs[1m])", 1000).await;
+        let api = resets
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert_eq!(api.2, 0.0);
     }
 
     #[tokio::test]

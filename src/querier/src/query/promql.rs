@@ -218,6 +218,18 @@ pub struct MetricPlan {
     /// Set for `histogram_count(v)` / `histogram_sum(v)` — aggregate the
     /// stored histogram's `count`/`sum` column instead of a scalar `value`.
     pub histogram_fn: Option<HistogramFn>,
+    /// Set for `resets(v[range])` / `changes(v[range])` — count sequence
+    /// events over the ordered samples in each bucket.
+    pub sequence_fn: Option<SequenceFn>,
+}
+
+/// A per-bucket reduction that needs the ordered sample sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SequenceFn {
+    /// `resets(v[range])` — number of counter resets (value decreases).
+    Resets,
+    /// `changes(v[range])` — number of times the value changed.
+    Changes,
 }
 
 /// A scalar reduction over a stored histogram's `count`/`sum` columns.
@@ -325,6 +337,20 @@ fn build_plan(
             // `<agg>_over_time(metric[range])` reduces the raw samples in each
             // bucket. Only the bare form is supported; an outer aggregation
             // would need a second reduce stage (#335).
+            // `resets`/`changes` count events over the ordered samples in
+            // each bucket (bare form only).
+            if let Some(sf) = sequence_fn_for(call.func.name) {
+                if grouping != Grouping::Natural || aggregate != MetricAgg::Last {
+                    return Err(QuerierError::Unsupported(format!(
+                        "{} under an outer aggregation is not supported yet (#335)",
+                        call.func.name
+                    )));
+                }
+                let mut plan = lower_selector(&ms.vs, MetricAgg::Last, Grouping::Natural, None)?;
+                plan.sequence_fn = Some(sf);
+                return Ok(plan);
+            }
+
             if let Some(reducer) = over_time_agg(call.func.name) {
                 if grouping != Grouping::Natural || aggregate != MetricAgg::Last {
                     return Err(QuerierError::Unsupported(format!(
@@ -411,6 +437,7 @@ fn lower_selector(
         agg_param: None,
         offset_ns,
         histogram_fn: None,
+        sequence_fn: None,
     })
 }
 
@@ -751,6 +778,14 @@ fn over_time_agg(name: &str) -> Option<MetricAgg> {
         // 1 for every bucket that has at least one sample (buckets with no
         // sample produce no row, which is exactly `present_over_time`).
         "present_over_time" => MetricAgg::Group,
+        _ => return None,
+    })
+}
+
+fn sequence_fn_for(name: &str) -> Option<SequenceFn> {
+    Some(match name {
+        "resets" => SequenceFn::Resets,
+        "changes" => SequenceFn::Changes,
         _ => return None,
     })
 }
@@ -1202,11 +1237,22 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_shapes() {
+    fn resets_and_changes_set_sequence_fn() {
+        assert_eq!(plan("resets(x[5m])").sequence_fn, Some(SequenceFn::Resets));
+        assert_eq!(
+            plan("changes(x[5m])").sequence_fn,
+            Some(SequenceFn::Changes)
+        );
+        assert!(plan("resets(x[5m])").range.is_none());
+        // Under an outer aggregation is unsupported (#335).
         assert!(matches!(
-            err(r#"resets(x[5m])"#),
+            err("sum(changes(x[5m]))"),
             QuerierError::Unsupported(_)
         ));
+    }
+
+    #[test]
+    fn unsupported_shapes() {
         assert!(matches!(err(r#"x + y"#), QuerierError::Unsupported(_)));
         // histogram_quantile over an inner rate() is not lowered yet.
         assert!(matches!(
