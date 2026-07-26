@@ -16,7 +16,8 @@
 //!
 //! - Range aggregations: `count_over_time`, `rate`, `bytes_over_time`,
 //!   `bytes_rate`, and the unwrap-based `sum/avg/min/max_over_time`,
-//!   `stddev/stdvar_over_time`, and `quantile_over_time`.
+//!   `stddev/stdvar_over_time`, `first/last_over_time`, and
+//!   `quantile_over_time`.
 //! - A single outer vector aggregation wrapping one of the above:
 //!   `sum` (sum-of-counts folds into a grouped count/rate), and
 //!   `avg` / `min` / `max` / `count` / `stddev` / `stdvar`, which reduce
@@ -55,6 +56,12 @@ pub enum Aggregate {
     /// `var_pop(<unwrapped label>)` — population variance of the unwrapped
     /// sample values in the bucket.
     UnwrapStdvar(String),
+    /// `first_value(<unwrapped label> order by timestamp)` — the unwrapped
+    /// value of the earliest sample in the bucket.
+    UnwrapFirst(String),
+    /// `last_value(<unwrapped label> order by timestamp)` — the unwrapped
+    /// value of the latest sample in the bucket.
+    UnwrapLast(String),
 }
 
 /// A non-`sum` outer vector aggregation that reduces the per-series range
@@ -180,6 +187,8 @@ fn plan_range(
         RangeFunction::MaxOverTime => (Aggregate::UnwrapMax(unwrap_label()?), None),
         RangeFunction::StddevOverTime => (Aggregate::UnwrapStddev(unwrap_label()?), None),
         RangeFunction::StdvarOverTime => (Aggregate::UnwrapStdvar(unwrap_label()?), None),
+        RangeFunction::FirstOverTime => (Aggregate::UnwrapFirst(unwrap_label()?), None),
+        RangeFunction::LastOverTime => (Aggregate::UnwrapLast(unwrap_label()?), None),
         RangeFunction::QuantileOverTime => {
             let quantile = range.param.ok_or_else(|| {
                 QuerierError::Unsupported(
@@ -324,6 +333,22 @@ mod tests {
         // Both require an unwrap expression.
         assert!(matches!(
             err(r#"stddev_over_time({a="b"}[5m])"#),
+            QuerierError::Unsupported(_)
+        ));
+    }
+
+    #[test]
+    fn first_and_last_over_time_are_unwrap_aggregations() {
+        assert_eq!(
+            plan(r#"first_over_time({a="b"} | unwrap latency [5m])"#).aggregate,
+            Aggregate::UnwrapFirst("latency".to_string())
+        );
+        assert_eq!(
+            plan(r#"last_over_time({a="b"} | unwrap latency [5m])"#).aggregate,
+            Aggregate::UnwrapLast("latency".to_string())
+        );
+        assert!(matches!(
+            err(r#"first_over_time({a="b"}[5m])"#),
             QuerierError::Unsupported(_)
         ));
     }

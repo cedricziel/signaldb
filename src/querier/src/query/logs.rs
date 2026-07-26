@@ -20,7 +20,8 @@ use datafusion::{
     functions::datetime::expr_fn::date_bin,
     functions::unicode::expr_fn::character_length,
     functions_aggregate::expr_fn::{
-        approx_percentile_cont, avg, count, max, min, stddev_pop, sum, var_pop,
+        approx_percentile_cont, avg, count, first_value, last_value, max, min, stddev_pop, sum,
+        var_pop,
     },
     logical_expr::{Expr, cast, col, lit},
     prelude::{DataFrame, SessionContext},
@@ -479,6 +480,15 @@ fn aggregate_expr(aggregate: &Aggregate) -> Expr {
         }
         Aggregate::UnwrapStddev(label) => stddev_pop(unwrap_value(label)),
         Aggregate::UnwrapStdvar(label) => var_pop(unwrap_value(label)),
+        // Order by timestamp so first/last pick the earliest/latest sample.
+        Aggregate::UnwrapFirst(label) => first_value(
+            unwrap_value(label),
+            vec![col("timestamp").sort(true, false)],
+        ),
+        Aggregate::UnwrapLast(label) => last_value(
+            unwrap_value(label),
+            vec![col("timestamp").sort(true, false)],
+        ),
     }
 }
 
@@ -1011,6 +1021,28 @@ mod tests {
             "stddev {}",
             dev[0].0
         );
+    }
+
+    #[tokio::test]
+    async fn first_and_last_over_time_pick_by_timestamp() {
+        let service = service_with_numeric_unwrap();
+        // Samples arrive as 10@100, 20@200, 30@300, 40@400 in one bucket.
+        let first = matrix(
+            &service,
+            r#"first_over_time({service_name="api"} | unwrap trace_id [1000ns])"#,
+            1000,
+        )
+        .await;
+        assert_eq!(first.len(), 1);
+        assert!((first[0].0 - 10.0).abs() < 1e-6, "first {}", first[0].0);
+
+        let last = matrix(
+            &service,
+            r#"last_over_time({service_name="api"} | unwrap trace_id [1000ns])"#,
+            1000,
+        )
+        .await;
+        assert!((last[0].0 - 40.0).abs() < 1e-6, "last {}", last[0].0);
     }
 
     #[tokio::test]
