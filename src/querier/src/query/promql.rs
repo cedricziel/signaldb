@@ -369,17 +369,12 @@ pub fn plan_query(query: &str) -> Result<QueryPlan, QuerierError> {
     // A top-level binary with two vector operands is a vector-to-vector
     // operation. Explicit `on`/`ignoring`/`group_left` matching is not
     // supported yet — only the default one-to-one match (#335).
+    // `on`/`ignoring`/`group_left`/`group_right` are accepted; matching still
+    // resolves to the sole materialized join label (`service_name`).
     if let Expr::Binary(bin) = unwrap_paren(&expr)
         && bin.op.is_comparison_operator()
         && as_scalar(&bin.lhs).is_none()
         && as_scalar(&bin.rhs).is_none()
-        && bin.modifier.as_ref().is_none_or(|m| {
-            m.matching.is_none()
-                && matches!(
-                    m.card,
-                    promql_parser::parser::VectorMatchCardinality::OneToOne
-                )
-        })
     {
         let op = match format!("{}", bin.op).as_str() {
             "==" => Some(CmpOp::Eq),
@@ -406,12 +401,11 @@ pub fn plan_query(query: &str) -> Result<QueryPlan, QuerierError> {
             });
         }
     }
-    // `and`/`or`/`unless` set operations between two vectors (default match;
-    // explicit on/ignoring not supported yet).
+    // `and`/`or`/`unless` set operations between two vectors (matched on the
+    // materialized `service_name` identity; on/ignoring labels are accepted).
     if let Expr::Binary(bin) = unwrap_paren(&expr)
         && as_scalar(&bin.lhs).is_none()
         && as_scalar(&bin.rhs).is_none()
-        && bin.modifier.as_ref().is_none_or(|m| m.matching.is_none())
     {
         let op = match format!("{}", bin.op).as_str() {
             "and" => Some(LogicalOp::And),
@@ -430,8 +424,8 @@ pub fn plan_query(query: &str) -> Result<QueryPlan, QuerierError> {
         && as_scalar(&bin.lhs).is_none()
         && as_scalar(&bin.rhs).is_none()
     {
-        // Only plain arithmetic tokens; `on`/`ignoring`/`group_left` matching
-        // stays unsupported (#335).
+        // Plain arithmetic tokens; on/ignoring/group_left modifiers are
+        // accepted (matching resolves to `service_name`).
         let op = match format!("{}", bin.op).as_str() {
             "+" => Some(ArithOp::Add),
             "-" => Some(ArithOp::Sub),
@@ -441,9 +435,7 @@ pub fn plan_query(query: &str) -> Result<QueryPlan, QuerierError> {
             "^" => Some(ArithOp::Pow),
             _ => None,
         };
-        if let Some(op) = op
-            && bin.modifier.is_none()
-        {
+        if let Some(op) = op {
             let left = Box::new(lower(unwrap_paren(&bin.lhs))?);
             let right = Box::new(lower(unwrap_paren(&bin.rhs))?);
             return Ok(QueryPlan::BinaryVector { left, op, right });
@@ -1751,8 +1743,11 @@ mod tests {
             plan_query("a * 2").expect("plan"),
             QueryPlan::Single(_)
         ));
-        // Explicit on/ignoring/group_left matching stays unsupported for now.
-        assert!(plan_query("a / on(job) b").is_err());
+        // on/ignoring/group_left matching is accepted (resolves to service_name).
+        assert!(matches!(
+            plan_query("a / on(job) b").expect("plan"),
+            QueryPlan::BinaryVector { .. }
+        ));
     }
 
     #[test]
@@ -1767,8 +1762,11 @@ mod tests {
                 other => panic!("expected logical for {q}, got {other:?}"),
             }
         }
-        // Explicit on/ignoring matching stays unsupported.
-        assert!(plan_query("a and on(job) b").is_err());
+        // on/ignoring matching is accepted (resolves to service_name).
+        assert!(matches!(
+            plan_query("a and on(job) b").expect("plan"),
+            QueryPlan::BinaryLogical { .. }
+        ));
     }
 
     #[test]

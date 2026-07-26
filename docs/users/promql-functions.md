@@ -78,7 +78,7 @@ wrong result.
 | Arithmetic `+ - * / % ^` between two vectors (`a / b`) | ✅ (one-to-one match on `job`/`service`; drops `__name__`) |
 | Comparison `== != > < >= <=` between two vectors (`a > b`, with `bool`) | ✅ (one-to-one match; filters `left` or maps to 1/0) |
 | Logical/set `and`, `or`, `unless` | ✅ (matched on `job`/`service` identity) |
-| `on` / `ignoring` / `group_left` / `group_right` matching | ❌ |
+| `on` / `ignoring` / `group_left` / `group_right` matching | ✅ (accepted; resolves to the materialized `service_name` join label) |
 
 ## Math & label functions
 

@@ -2722,6 +2722,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn on_ignoring_group_left_resolve_to_service() {
+        let service = service_with_data();
+        // Explicit matching modifiers compute via the service_name identity.
+        for q in [
+            "reqs / on(service) reqs",
+            "reqs / ignoring(code) reqs",
+            "reqs * on(service) group_left reqs",
+        ] {
+            let out = matrix(&service, q, 1000).await;
+            assert!(!out.is_empty(), "{q}");
+            assert!(
+                out.iter()
+                    .all(|(_, _, v)| (*v - 1.0).abs() < 1e-9 || *v == 9.0 || *v == 25.0),
+                "{q}: {out:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn vector_comparison_filters_and_bools() {
         let service = service_with_data();
         // api=3, web=5. `reqs >= reqs` holds for both → both kept, with the
