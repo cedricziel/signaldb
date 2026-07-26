@@ -554,6 +554,91 @@ async fn promql_end_to_end() {
         (q - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-6,
         "median latency ≈ 3.333, got {q}: {body}"
     );
+
+    // 8. New function families, exercised end-to-end through the router to
+    //    confirm the query→lowering→execution wiring (the math itself is
+    //    covered by the querier unit tests). `>` is percent-encoded (%3E),
+    //    subquery brackets/colon as %5B/%3A/%5D.
+
+    // Vector-to-vector arithmetic: requests / requests = 1 per series.
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query=requests/requests&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "vector division: {body}");
+    assert_eq!(body["data"]["resultType"], "matrix");
+    for s in body["data"]["result"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+    {
+        for sample in s["values"].as_array().cloned().unwrap_or_default() {
+            let v: f64 = sample[1].as_str().unwrap_or("0").parse().unwrap_or(0.0);
+            assert!((v - 1.0).abs() < 1e-9, "a/a should be 1: {body}");
+        }
+    }
+
+    // Scalar comparison filters to the matching series (web=20 > 15).
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query=requests%3E15&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "comparison filter: {body}");
+    assert!(
+        (matrix_value_sum(&body) - 20.0).abs() < 1e-9,
+        "only web (20) survives > 15: {body}"
+    );
+
+    // histogram_fraction over the latency histogram: (0, 2] = 3/10 = 0.3.
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query=histogram_fraction(0,2,latency)&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "histogram_fraction: {body}");
+    assert!(
+        (matrix_value_sum(&body) - 0.3).abs() < 1e-6,
+        "fraction in (0,2] ≈ 0.3: {body}"
+    );
+
+    // vector(42): a synthetic constant series.
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query=vector(42)&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "vector(): {body}");
+    assert!(
+        matrix_value_sum(&body) >= 42.0,
+        "vector(42) present: {body}"
+    );
+
+    // absent() of a missing metric yields 1.
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query=absent(does_not_exist)&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "absent(): {body}");
+    assert!(matrix_value_sum(&body) >= 1.0, "absent yields ≥1: {body}");
+
+    // Subquery under an over_time reducer, and the @ modifier and time() all
+    // lower and execute cleanly over the router.
+    for query in [
+        "avg_over_time(requests%5B1h%3A5m%5D)",
+        &format!("requests@{at}"),
+        "time()",
+    ] {
+        let (status, body) = get(
+            &app,
+            &format!("/prometheus/api/v1/query_range?query={query}&{w}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{query}: {body}");
+        assert_eq!(body["data"]["resultType"], "matrix", "{query}: {body}");
+    }
 }
 
 /// Sum all sample values across all series in a matrix response.
