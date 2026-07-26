@@ -19,7 +19,9 @@ use datafusion::{
     arrow::datatypes::{DataType, IntervalMonthDayNano},
     functions::datetime::expr_fn::date_bin,
     functions::unicode::expr_fn::character_length,
-    functions_aggregate::expr_fn::{avg, count, max, min, stddev_pop, sum, var_pop},
+    functions_aggregate::expr_fn::{
+        approx_percentile_cont, avg, count, max, min, stddev_pop, sum, var_pop,
+    },
     logical_expr::{Expr, cast, col, lit},
     prelude::{DataFrame, SessionContext},
     scalar::ScalarValue,
@@ -472,6 +474,9 @@ fn aggregate_expr(aggregate: &Aggregate) -> Expr {
         Aggregate::UnwrapAvg(label) => avg(unwrap_value(label)),
         Aggregate::UnwrapMin(label) => min(unwrap_value(label)),
         Aggregate::UnwrapMax(label) => max(unwrap_value(label)),
+        Aggregate::UnwrapQuantile { quantile, label } => {
+            approx_percentile_cont(unwrap_value(label).sort(true, false), lit(*quantile), None)
+        }
     }
 }
 
@@ -923,6 +928,61 @@ mod tests {
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
         LogsService::new(ctx)
+    }
+
+    /// A context with one `api`/`info` series whose `trace_id` column
+    /// carries the numeric strings 10, 20, 30, 40 — a stand-in for an
+    /// unwrappable numeric column, so `unwrap trace_id` yields those
+    /// samples in a single bucket.
+    fn service_with_numeric_unwrap() -> LogsService {
+        let schema = logs_schema();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300, 400])),
+                str_col(&["a", "b", "c", "d"]),
+                str_col(&["api", "api", "api", "api"]),
+                str_col(&["info", "info", "info", "info"]),
+                str_col(&["10", "20", "30", "40"]),
+                str_col(&["s1", "s2", "s3", "s4"]),
+                str_col(&["{}", "{}", "{}", "{}"]),
+                str_col(&["{}", "{}", "{}", "{}"]),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        LogsService::new(ctx)
+    }
+
+    #[tokio::test]
+    async fn quantile_over_time_ranks_unwrapped_samples() {
+        let service = service_with_numeric_unwrap();
+        let q = |phi: &str| {
+            let query = format!(
+                r#"quantile_over_time({phi}, {{service_name="api"}} | unwrap trace_id [1000ns])"#
+            );
+            let service = &service;
+            async move { matrix(service, &query, 1000).await }
+        };
+        // Extremes map to min/max exactly; the median lands between them.
+        let lo = q("0.0").await;
+        assert_eq!(lo.len(), 1);
+        assert!((lo[0].0 - 10.0).abs() < 1e-6, "q0 {}", lo[0].0);
+
+        let hi = q("1.0").await;
+        assert!((hi[0].0 - 40.0).abs() < 1e-6, "q1 {}", hi[0].0);
+
+        let mid = q("0.5").await;
+        assert!(mid[0].0 > 10.0 && mid[0].0 < 40.0, "q0.5 {}", mid[0].0);
     }
 
     #[tokio::test]
