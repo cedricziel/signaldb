@@ -90,7 +90,8 @@ wrong result.
 | `label_replace`, `label_join` | ❌ |
 | `absent` | ✅ (1 per empty step bucket; carries the `job`/`service` matcher) |
 | `vector`, `scalar` | ❌ |
-| `time`, `timestamp`, `day_of_week`, `hour`, … | ❌ |
+| `timestamp` | ✅ (latest sample time per series, in unix seconds) |
+| `time`, `day_of_week`, `hour`, … | ❌ |
 
 ## Roadmap
 
