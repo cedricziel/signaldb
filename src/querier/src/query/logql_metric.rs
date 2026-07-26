@@ -18,8 +18,9 @@
 //!   `bytes_rate`, and the unwrap-based `sum/avg/min/max_over_time`.
 //! - A single outer vector aggregation wrapping one of the above:
 //!   `sum` (sum-of-counts folds into a grouped count/rate), and
-//!   `avg` / `min` / `max` / `count`, which reduce the range
-//!   aggregation across series within each group (see [`OuterAgg`]).
+//!   `avg` / `min` / `max` / `count` / `stddev` / `stdvar`, which reduce
+//!   the range aggregation across series within each group (see
+//!   [`OuterAgg`]).
 //!
 //! Binary operators, `topk`/`bottomk` (parameterized aggregations),
 //! `quantile*`, `vector()`, and `label_replace` return
@@ -62,6 +63,10 @@ pub enum OuterAgg {
     Max,
     /// `count(...)` — number of series with data in the bucket.
     Count,
+    /// `stddev(...)` — population standard deviation across series.
+    Stddev,
+    /// `stdvar(...)` — population variance across series.
+    Stdvar,
 }
 
 /// A lowered metric query.
@@ -101,6 +106,8 @@ pub fn plan_metric_query(query: &MetricQuery) -> Result<MetricPlan, QuerierError
                 AggregationFunction::Min => Some(OuterAgg::Min),
                 AggregationFunction::Max => Some(OuterAgg::Max),
                 AggregationFunction::Count => Some(OuterAgg::Count),
+                AggregationFunction::Stddev => Some(OuterAgg::Stddev),
+                AggregationFunction::Stdvar => Some(OuterAgg::Stdvar),
                 other => {
                     return Err(QuerierError::Unsupported(format!(
                         "outer aggregation '{other:?}' over a range aggregation"
@@ -298,6 +305,8 @@ mod tests {
                 r#"count by (level) (count_over_time({a="b"}[5m]))"#,
                 OuterAgg::Count,
             ),
+            (r#"stddev(rate({a="b"}[5m]))"#, OuterAgg::Stddev),
+            (r#"stdvar by (level) (rate({a="b"}[5m]))"#, OuterAgg::Stdvar),
         ] {
             let p = plan(query);
             assert_eq!(p.outer_agg, Some(expected), "{query}");
@@ -319,7 +328,7 @@ mod tests {
             QuerierError::Unsupported(_)
         ));
         assert!(matches!(
-            err(r#"stddev(rate({a="b"}[5m]))"#),
+            err(r#"sort(rate({a="b"}[5m]))"#),
             QuerierError::Unsupported(_)
         ));
         assert!(matches!(
