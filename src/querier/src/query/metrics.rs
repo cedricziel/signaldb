@@ -200,7 +200,20 @@ impl MetricsService {
         // microsecond storage timestamp to nanoseconds first).
         let bucket = bucket_expr(step, plan.offset_ns);
 
-        let df = if let Some(range) = plan.range {
+        let df = if plan.timestamp {
+            // `timestamp(v)`: the value is each series' latest sample time in
+            // seconds, rather than the sample value.
+            let mut group_exprs = vec![bucket, col("metric_name")];
+            group_exprs.extend(group_cols.iter().map(|c| col(*c)));
+            let secs = cast_value_f64(cast(cast_ns(col("timestamp")), DataType::Int64)) / lit(1e9);
+            let df = df
+                .aggregate(group_exprs, vec![max(secs).alias("value")])
+                .map_err(QuerierError::QueryFailed)?;
+            let mut proj = vec![col("bucket"), col("metric_name")];
+            proj.extend(group_cols.iter().map(|c| col(*c)));
+            proj.push(cast_value_f64(col("value")).alias("value"));
+            df.select(proj).map_err(QuerierError::QueryFailed)?
+        } else if let Some(range) = plan.range {
             self.range_query(
                 df,
                 bucket,
@@ -2533,6 +2546,23 @@ mod tests {
         let service = service_with_data();
         let out = matrix(&service, "histogram_quantile(0.9, latency)", 1000).await;
         assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn timestamp_returns_latest_sample_time_in_seconds() {
+        let service = service_with_data();
+        // api's latest sample is at t=200ns → 200e-9 s; web's at 300ns.
+        let out = matrix(&service, "timestamp(reqs)", 1000).await;
+        let api = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert!((api.2 - 200e-9).abs() < 1e-18, "got {}", api.2);
+        let web = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("web"))
+            .unwrap();
+        assert!((web.2 - 300e-9).abs() < 1e-18, "got {}", web.2);
     }
 
     #[tokio::test]
