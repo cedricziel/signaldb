@@ -30,9 +30,8 @@
 //! modifier) filter the result or map it to 1/0. Vector-to-vector arithmetic
 //! (`a / b`), comparison (`a > b`), and set ops (`and`/`or`/`unless`) match
 //! series one-to-one on their shared materialized label. Explicit
-//! `on`/`ignoring`/`group_left` matching, subqueries, and `histogram_quantile`
-//! over an inner `rate()`/aggregation are not lowered yet and return
-//! [`QuerierError::Unsupported`] (#335).
+//! `on`/`ignoring`/`group_left` matching and subqueries are not lowered yet
+//! and return [`QuerierError::Unsupported`] (#335).
 //!
 //! Like the log path, range aggregations use fixed step-aligned buckets
 //! (`date_bin`), not Prometheus's sliding window — exact when the step
@@ -679,14 +678,49 @@ fn lower_histogram_quantile(call: &parser::Call) -> Result<MetricPlan, QuerierEr
     let inner = call.args.args.get(1).ok_or_else(|| {
         QuerierError::InvalidInput("histogram_quantile expects (phi, selector)".to_string())
     })?;
-    let Expr::VectorSelector(vs) = unwrap_paren(inner) else {
-        return Err(QuerierError::Unsupported(
-            "histogram_quantile over rate()/aggregations is not supported yet (#335); \
-             use histogram_quantile(phi, metric)"
-                .to_string(),
-        ));
+    let mut plan = match unwrap_paren(inner) {
+        // `histogram_quantile(phi, metric)` — interpolate over the merged
+        // buckets of each series.
+        Expr::VectorSelector(vs) => lower_selector(vs, MetricAgg::Last, Grouping::Natural, None)?,
+        // `histogram_quantile(phi, rate(metric[range]))` — the buckets are
+        // rated over the window before interpolation.
+        Expr::Call(inner_call)
+            if inner_call.func.name == "rate" || inner_call.func.name == "increase" =>
+        {
+            let arg = inner_call.args.args.first().ok_or_else(|| {
+                QuerierError::InvalidInput(format!(
+                    "{} expects a range selector",
+                    inner_call.func.name
+                ))
+            })?;
+            let Expr::MatrixSelector(ms) = unwrap_paren(arg) else {
+                return Err(QuerierError::Unsupported(
+                    "histogram_quantile's inner rate() needs a range-vector selector".to_string(),
+                ));
+            };
+            let function = if inner_call.func.name == "rate" {
+                RangeFn::Rate
+            } else {
+                RangeFn::Increase
+            };
+            lower_selector(
+                &ms.vs,
+                MetricAgg::Last,
+                Grouping::Natural,
+                Some(RangeSpec {
+                    function,
+                    seconds: ms.range.as_secs_f64(),
+                }),
+            )?
+        }
+        _ => {
+            return Err(QuerierError::Unsupported(
+                "histogram_quantile over aggregations is not supported yet (#335); \
+                 use histogram_quantile(phi, metric) or histogram_quantile(phi, rate(metric[5m]))"
+                    .to_string(),
+            ));
+        }
     };
-    let mut plan = lower_selector(vs, MetricAgg::Last, Grouping::Natural, None)?;
     plan.quantile = Some(phi);
     Ok(plan)
 }
@@ -1493,11 +1527,19 @@ mod tests {
     fn unsupported_shapes() {
         // A bare MetricPlan can't represent vector-to-vector arithmetic.
         assert!(matches!(err(r#"x + y"#), QuerierError::Unsupported(_)));
-        // histogram_quantile over an inner rate() is not lowered yet.
+        // histogram_quantile over an aggregation (not rate) is not lowered.
         assert!(matches!(
-            err(r#"histogram_quantile(0.9, rate(x[5m]))"#),
+            err(r#"histogram_quantile(0.9, sum(x))"#),
             QuerierError::Unsupported(_)
         ));
+    }
+
+    #[test]
+    fn histogram_quantile_over_rate_sets_range() {
+        let p = plan(r#"histogram_quantile(0.95, rate(latency[5m]))"#);
+        assert_eq!(p.metric_name, "latency");
+        assert_eq!(p.quantile, Some(0.95));
+        assert_eq!(p.range.map(|r| r.function), Some(RangeFn::Rate));
     }
 
     #[test]

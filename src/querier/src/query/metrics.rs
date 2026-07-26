@@ -754,6 +754,10 @@ impl MetricsService {
             return Ok(vec![]);
         };
         let df = apply_filters(df, plan, start - plan.offset_ns, end - plan.offset_ns)?;
+        // `histogram_quantile(phi, rate(metric[range]))` rates the buckets:
+        // the quantile is scale-invariant, so the per-series delta of counts
+        // (last − first, ordered by time) suffices — the ÷seconds cancels.
+        let rate_mode = plan.range.is_some();
         let batches = df
             .select(vec![
                 bucket_expr(step, plan.offset_ns),
@@ -761,15 +765,17 @@ impl MetricsService {
                 col("service_name"),
                 col("bucket_counts"),
                 col("explicit_bounds"),
+                cast_ns(col("timestamp")).alias("ts"),
             ])
             .map_err(QuerierError::QueryFailed)?
             .collect()
             .await
             .map_err(QuerierError::QueryFailed)?;
 
-        // Merge histogram data points per (bucket, metric_name, service_name).
-        // BTreeMap keeps the output sorted by bucket, then series.
-        let mut groups: BTreeMap<(i64, String, String), HistogramAcc> = BTreeMap::new();
+        // Per (bucket, metric_name, service_name): merged counts (instant) or
+        // first/last counts (rate). BTreeMap keeps output sorted.
+        let mut merged: BTreeMap<(i64, String, String), HistogramAcc> = BTreeMap::new();
+        let mut rated: BTreeMap<(i64, String, String), RateHistAcc> = BTreeMap::new();
         for batch in &batches {
             let bucket = batch
                 .column_by_name("bucket")
@@ -781,6 +787,12 @@ impl MetricsService {
             let service = string_column(batch, "service_name")?;
             let counts = string_column(batch, "bucket_counts")?;
             let bounds = string_column(batch, "explicit_bounds")?;
+            let sample_ts = batch
+                .column_by_name("ts")
+                .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
+                .ok_or_else(|| {
+                    QuerierError::InvalidInput("ts column is not a timestamp".to_string())
+                })?;
             for i in 0..batch.num_rows() {
                 if bucket.is_null(i) || counts.is_null(i) || bounds.is_null(i) {
                     continue;
@@ -800,19 +812,46 @@ impl MetricsService {
                     name.value(i).to_string(),
                     service.value(i).to_string(),
                 );
-                groups
-                    .entry(key)
-                    .or_insert_with(|| HistogramAcc::new(row_bounds, row_counts.len()))
-                    .merge(&row_counts);
+                if rate_mode {
+                    let t = if sample_ts.is_null(i) {
+                        0
+                    } else {
+                        sample_ts.value(i)
+                    };
+                    rated
+                        .entry(key)
+                        .or_insert_with(|| RateHistAcc::new(row_bounds, t, row_counts.clone()))
+                        .observe(t, &row_counts);
+                } else {
+                    merged
+                        .entry(key)
+                        .or_insert_with(|| HistogramAcc::new(row_bounds, row_counts.len()))
+                        .merge(&row_counts);
+                }
             }
         }
+
+        // Normalize both modes to (key, bounds, counts) for interpolation.
+        // (bucket, metric, service), bounds, counts-for-interpolation.
+        type HistGroup = ((i64, String, String), Vec<f64>, Vec<f64>);
+        let groups: Vec<HistGroup> = if rate_mode {
+            rated
+                .into_iter()
+                .map(|(k, acc)| (k, acc.bounds.clone(), acc.delta()))
+                .collect()
+        } else {
+            merged
+                .into_iter()
+                .map(|(k, acc)| (k, acc.bounds, acc.counts))
+                .collect()
+        };
 
         let mut ts = Vec::with_capacity(groups.len());
         let mut names = Vec::with_capacity(groups.len());
         let mut services = Vec::with_capacity(groups.len());
         let mut values = Vec::with_capacity(groups.len());
-        for ((bucket_ns, metric, service), acc) in groups {
-            let q = histogram_quantile(phi, &acc.bounds, &acc.counts);
+        for ((bucket_ns, metric, service), bounds, counts) in groups {
+            let q = histogram_quantile(phi, &bounds, &counts);
             let val = apply_transforms_f64(q, &plan.transforms);
             // `vector CMP scalar` without `bool`: drop non-matching series.
             if let Some(cmp) = &plan.filter
@@ -1456,6 +1495,52 @@ impl HistogramAcc {
                 *acc += add;
             }
         }
+    }
+}
+
+/// Tracks the first and last histogram data points (by timestamp) for a
+/// series in a bucket, so `histogram_quantile(phi, rate(metric[range]))` can
+/// interpolate over the per-bucket count delta.
+struct RateHistAcc {
+    bounds: Vec<f64>,
+    first_ts: i64,
+    first: Vec<f64>,
+    last_ts: i64,
+    last: Vec<f64>,
+}
+
+impl RateHistAcc {
+    fn new(bounds: Vec<f64>, ts: i64, counts: Vec<f64>) -> Self {
+        Self {
+            bounds,
+            first_ts: ts,
+            first: counts.clone(),
+            last_ts: ts,
+            last: counts,
+        }
+    }
+
+    fn observe(&mut self, ts: i64, counts: &[f64]) {
+        if counts.len() != self.first.len() {
+            return;
+        }
+        if ts <= self.first_ts {
+            self.first_ts = ts;
+            self.first = counts.to_vec();
+        }
+        if ts >= self.last_ts {
+            self.last_ts = ts;
+            self.last = counts.to_vec();
+        }
+    }
+
+    /// Per-bucket increase, clamped to ≥ 0 (a decrease means a counter reset).
+    fn delta(&self) -> Vec<f64> {
+        self.last
+            .iter()
+            .zip(&self.first)
+            .map(|(l, f)| (l - f).max(0.0))
+            .collect()
     }
 }
 
@@ -2388,12 +2473,13 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 100])),
+                // Two cumulative data points in one step bucket at t=100/200.
+                Arc::new(TimestampNanosecondArray::from(vec![100, 200])),
                 Arc::new(StringArray::from(vec!["api", "api"])),
                 Arc::new(StringArray::from(vec!["latency", "latency"])),
                 Arc::new(datafusion::arrow::array::Int64Array::from(vec![10, 10])),
                 Arc::new(Float64Array::from(vec![55.0, 55.0])),
-                Arc::new(StringArray::from(vec!["[1,2,3,4]", "[1,2,3,4]"])),
+                Arc::new(StringArray::from(vec!["[1,2,3,4]", "[2,4,6,8]"])),
                 Arc::new(StringArray::from(vec!["[1,2,4]", "[1,2,4]"])),
                 Arc::new(StringArray::from(vec!["{}", "{}"])),
                 Arc::new(StringArray::from(vec!["{}", "{}"])),
@@ -2424,6 +2510,20 @@ mod tests {
         assert!(
             (value - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-9,
             "got {value}"
+        );
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_over_rate_uses_bucket_delta() {
+        let service = service_with_histogram();
+        // counts go [1,2,3,4] → [2,4,6,8] over the bucket; the delta [1,2,3,4]
+        // has the same shape, so the 0.5-quantile is the same 3.333….
+        let out = matrix(&service, "histogram_quantile(0.5, rate(latency[5m]))", 1000).await;
+        assert_eq!(out.len(), 1);
+        assert!(
+            (out[0].2 - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-9,
+            "got {}",
+            out[0].2
         );
     }
 
