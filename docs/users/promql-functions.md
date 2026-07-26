@@ -93,9 +93,15 @@ wrong result.
 | `timestamp` | ✅ (latest sample time per series, in unix seconds) |
 | `time`, `timestamp`, `day_of_week`, `day_of_month`, `day_of_year`, `days_in_month`, `hour`, `minute`, `month`, `year` | ✅ |
 
-## Roadmap
+## Notes
 
-Tracked under epic #328 and #336. Unsupported items above are being added
-incrementally. Full vector-to-vector binary matching
-(`on`/`ignoring`/`group_left`) and subqueries are the larger remaining
-efforts.
+Tracked under epic #328 and #336. The full PromQL function and operator
+surface is now supported. Remaining differences from upstream Prometheus are
+backend-specific rather than missing features: only `service_name` is
+materialized as a queryable metric label (other labels live in JSON
+`attributes`), so label-writing (`label_replace`/`label_join`), `count_values`,
+and vector matching (`on`/`ignoring`/`group_left`) operate over
+`service_name`/`__name__`; and range aggregations use fixed `date_bin` step
+buckets rather than a sliding window (exact when the query step equals the
+range). Materializing more labels into columns is the highest-leverage way to
+close those gaps.
