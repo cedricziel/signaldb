@@ -87,7 +87,7 @@ wrong result.
 | `abs`, `ceil`, `floor`, `round`, `clamp`, `clamp_min`, `clamp_max` | ✅ |
 | `exp`, `ln`, `log2`, `log10`, `sqrt`, `sgn` | ✅ |
 | `sort`, `sort_desc` | ✅ (order the output by value) |
-| `label_replace`, `label_join` | ❌ |
+| `label_replace`, `label_join` | ✅ (over the materialized `service_name`/`__name__` labels) |
 | `absent` | ✅ (1 per empty step bucket; carries the `job`/`service` matcher) |
 | `vector`, `scalar` | ✅ (`vector(s)` constant series; `scalar(v)` single-series value) |
 | `timestamp` | ✅ (latest sample time per series, in unix seconds) |

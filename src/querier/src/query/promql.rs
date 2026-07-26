@@ -249,6 +249,28 @@ pub struct MetricPlan {
     /// Set for `scalar(v)` — reduce to a single no-label value per bucket
     /// (NaN unless the input has exactly one series).
     pub scalar_reduce: bool,
+    /// `label_replace`/`label_join` output-label rewrites, applied in order.
+    pub label_ops: Vec<LabelOp>,
+}
+
+/// A `label_replace` / `label_join` operation on the output labels. Only the
+/// materialized labels (`service_name` via job/service, `metric_name` via
+/// __name__) can be written; a destination that isn't materialized is a no-op.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LabelOp {
+    /// `label_replace(v, dst, replacement, src, regex)`.
+    Replace {
+        dst: String,
+        replacement: String,
+        src: String,
+        regex: String,
+    },
+    /// `label_join(v, dst, separator, src…)`.
+    Join {
+        dst: String,
+        separator: String,
+        srcs: Vec<String>,
+    },
 }
 
 /// A calendar component extracted from a value interpreted as unix seconds.
@@ -480,6 +502,10 @@ fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
             plan.scalar_reduce = true;
             Ok(plan)
         }
+        // `label_replace(v, dst, repl, src, regex)` / `label_join(v, dst,
+        // sep, src…)`.
+        Expr::Call(call) if call.func.name == "label_replace" => lower_label_replace(call),
+        Expr::Call(call) if call.func.name == "label_join" => lower_label_join(call),
         // Calendar functions: `day_of_week(v)`, `hour()`, … With no argument
         // they operate on `time()`; otherwise on the argument's value.
         Expr::Call(call) if calendar_fn(call.func.name).is_some() => {
@@ -683,6 +709,7 @@ fn lower_selector(
         calendar: None,
         constant: None,
         scalar_reduce: false,
+        label_ops: Vec::new(),
     })
 }
 
@@ -711,7 +738,56 @@ fn time_plan() -> MetricPlan {
         calendar: None,
         constant: None,
         scalar_reduce: false,
+        label_ops: Vec::new(),
     }
+}
+
+/// A string-literal argument, or an error.
+fn str_arg(call: &parser::Call, i: usize) -> Result<String, QuerierError> {
+    match call.args.args.get(i).map(|a| unwrap_paren(a)) {
+        Some(Expr::StringLiteral(s)) => Ok(s.val.clone()),
+        _ => Err(QuerierError::Unsupported(format!(
+            "{} requires string-literal label arguments",
+            call.func.name
+        ))),
+    }
+}
+
+/// Lower `label_replace(v, dst, replacement, src, regex)`.
+fn lower_label_replace(call: &parser::Call) -> Result<MetricPlan, QuerierError> {
+    let inner = call.args.args.first().ok_or_else(|| {
+        QuerierError::InvalidInput("label_replace expects a vector argument".to_string())
+    })?;
+    let mut plan = lower(unwrap_paren(inner))?;
+    plan.label_ops.push(LabelOp::Replace {
+        dst: str_arg(call, 1)?,
+        replacement: str_arg(call, 2)?,
+        src: str_arg(call, 3)?,
+        regex: str_arg(call, 4)?,
+    });
+    Ok(plan)
+}
+
+/// Lower `label_join(v, dst, separator, src…)`.
+fn lower_label_join(call: &parser::Call) -> Result<MetricPlan, QuerierError> {
+    let inner = call.args.args.first().ok_or_else(|| {
+        QuerierError::InvalidInput("label_join expects a vector argument".to_string())
+    })?;
+    let mut plan = lower(unwrap_paren(inner))?;
+    let dst = str_arg(call, 1)?;
+    let separator = str_arg(call, 2)?;
+    let mut srcs = Vec::new();
+    let mut i = 3;
+    while call.args.args.get(i).is_some() {
+        srcs.push(str_arg(call, i)?);
+        i += 1;
+    }
+    plan.label_ops.push(LabelOp::Join {
+        dst,
+        separator,
+        srcs,
+    });
+    Ok(plan)
 }
 
 /// Map a calendar function name to its component, if it is one.
@@ -1721,6 +1797,30 @@ mod tests {
         assert_eq!(p.matchers.len(), 1);
         assert_eq!(p.grouping, Grouping::Natural);
         assert!(p.range.is_none());
+    }
+
+    #[test]
+    fn label_ops_lowering() {
+        let p = plan(r#"label_replace(x, "service", "$1", "service", "(.*)")"#);
+        assert_eq!(p.metric_name, "x");
+        assert_eq!(
+            p.label_ops,
+            vec![LabelOp::Replace {
+                dst: "service".into(),
+                replacement: "$1".into(),
+                src: "service".into(),
+                regex: "(.*)".into(),
+            }]
+        );
+        let j = plan(r#"label_join(x, "service", "-", "job", "__name__")"#);
+        assert_eq!(
+            j.label_ops,
+            vec![LabelOp::Join {
+                dst: "service".into(),
+                separator: "-".into(),
+                srcs: vec!["job".into(), "__name__".into()],
+            }]
+        );
     }
 
     #[test]

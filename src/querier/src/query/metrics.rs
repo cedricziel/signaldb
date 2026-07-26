@@ -29,8 +29,8 @@ use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
 use super::promql::{
-    ArithOp, CalendarFn, CmpOp, Grouping, HistogramFn, LabelMatch, LogicalOp, MatchKind, MetricAgg,
-    MetricPlan, QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_promql, plan_query,
+    ArithOp, CalendarFn, CmpOp, Grouping, HistogramFn, LabelMatch, LabelOp, LogicalOp, MatchKind,
+    MetricAgg, MetricPlan, QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_promql, plan_query,
 };
 use super::{error::QuerierError, table_ref::build_table_reference};
 
@@ -288,6 +288,13 @@ impl MetricsService {
             apply_calendar_batches(batches, cf)?
         } else {
             batches
+        };
+
+        // label_replace/label_join rewrite the output labels.
+        let batches = if plan.label_ops.is_empty() {
+            batches
+        } else {
+            apply_label_ops(batches, &plan.label_ops)?
         };
 
         // `scalar(v)`: reduce to one no-label value per bucket.
@@ -1429,6 +1436,113 @@ fn eval_time(
     let batch = RecordBatch::try_new(schema, columns)
         .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
     Ok(vec![batch])
+}
+
+/// Resolve a PromQL label name to its materialized output column, if any
+/// (`__name__` → metric_name, job/service → service_name).
+fn output_column_for_label(label: &str) -> Option<&'static str> {
+    match label {
+        "__name__" => Some("metric_name"),
+        _ => column_for_label(label),
+    }
+}
+
+/// Apply `label_replace`/`label_join` to the output batches, rewriting the
+/// `metric_name`/`service_name` columns. Destinations that aren't materialized
+/// are a no-op (the label can't be stored).
+fn apply_label_ops(
+    batches: Vec<RecordBatch>,
+    ops: &[LabelOp],
+) -> Result<Vec<RecordBatch>, QuerierError> {
+    let read = |batch: &RecordBatch, label: &str, row: usize| -> String {
+        match output_column_for_label(label) {
+            Some(col) => string_column(batch, col)
+                .ok()
+                .map(|c| c.value(row).to_string())
+                .unwrap_or_default(),
+            None => String::new(),
+        }
+    };
+    let mut out = Vec::with_capacity(batches.len());
+    for batch in batches {
+        let n = batch.num_rows();
+        // Start from the existing metric_name/service_name values.
+        let mut metric: Vec<String> = (0..n)
+            .map(|i| {
+                string_column(&batch, "metric_name")
+                    .map(|c| c.value(i).to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let mut service: Vec<String> = (0..n)
+            .map(|i| {
+                batch
+                    .column_by_name("service_name")
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                    .map(|c| c.value(i).to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        for op in ops {
+            match op {
+                LabelOp::Replace {
+                    dst,
+                    replacement,
+                    src,
+                    regex,
+                } => {
+                    let re = regex::Regex::new(&format!("^(?:{regex})$"))
+                        .map_err(|e| QuerierError::InvalidInput(format!("bad regex: {e}")))?;
+                    let dst_col = output_column_for_label(dst);
+                    for i in 0..n {
+                        let src_val = read(&batch, src, i);
+                        if let Some(caps) = re.captures(&src_val) {
+                            let mut new = String::new();
+                            caps.expand(replacement, &mut new);
+                            match dst_col {
+                                Some("metric_name") => metric[i] = new,
+                                Some("service_name") => service[i] = new,
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                LabelOp::Join {
+                    dst,
+                    separator,
+                    srcs,
+                } => {
+                    let dst_col = output_column_for_label(dst);
+                    for i in 0..n {
+                        let joined = srcs
+                            .iter()
+                            .map(|s| read(&batch, s, i))
+                            .collect::<Vec<_>>()
+                            .join(separator);
+                        match dst_col {
+                            Some("metric_name") => metric[i] = joined,
+                            Some("service_name") => service[i] = joined,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        // Rebuild the batch with the rewritten metric_name/service_name.
+        let schema = batch.schema();
+        let mut cols = batch.columns().to_vec();
+        if let Ok(mi) = schema.index_of("metric_name") {
+            cols[mi] = Arc::new(StringArray::from(metric));
+        }
+        if let Ok(si) = schema.index_of("service_name") {
+            cols[si] = Arc::new(StringArray::from(service));
+        }
+        out.push(
+            RecordBatch::try_new(schema, cols)
+                .map_err(|e| QuerierError::InvalidInput(e.to_string()))?,
+        );
+    }
+    Ok(out)
 }
 
 /// `scalar(v)`: collapse to one no-label series per bucket — the single
@@ -2782,6 +2896,36 @@ mod tests {
         let service = service_with_data();
         let out = matrix(&service, "histogram_quantile(0.9, latency)", 1000).await;
         assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn label_replace_and_join_rewrite_service() {
+        let service = service_with_data();
+        // Rewrite service_name via a captured prefix: api → prod-api.
+        let out = matrix(
+            &service,
+            r#"label_replace(reqs, "service", "prod-$1", "service", "(.*)")"#,
+            1000,
+        )
+        .await;
+        assert!(out.iter().any(|(_, s, _)| s.as_deref() == Some("prod-api")));
+        assert!(out.iter().any(|(_, s, _)| s.as_deref() == Some("prod-web")));
+        // No regex match → unchanged.
+        let out = matrix(
+            &service,
+            r#"label_replace(reqs, "service", "x", "service", "nomatch")"#,
+            1000,
+        )
+        .await;
+        assert!(out.iter().any(|(_, s, _)| s.as_deref() == Some("api")));
+        // label_join folds metric_name + service into service_name.
+        let out = matrix(
+            &service,
+            r#"label_join(reqs, "service", "/", "__name__", "service")"#,
+            1000,
+        )
+        .await;
+        assert!(out.iter().any(|(_, s, _)| s.as_deref() == Some("reqs/api")));
     }
 
     #[tokio::test]
