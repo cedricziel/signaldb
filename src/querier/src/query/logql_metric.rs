@@ -15,7 +15,8 @@
 //! shapes are supported:
 //!
 //! - Range aggregations: `count_over_time`, `rate`, `bytes_over_time`,
-//!   `bytes_rate`, and the unwrap-based `sum/avg/min/max_over_time`.
+//!   `bytes_rate`, and the unwrap-based `sum/avg/min/max_over_time` and
+//!   `quantile_over_time`.
 //! - A single outer vector aggregation wrapping one of the above:
 //!   `sum` (sum-of-counts folds into a grouped count/rate), and
 //!   `avg` / `min` / `max` / `count` / `stddev` / `stdvar`, which reduce
@@ -45,6 +46,9 @@ pub enum Aggregate {
     UnwrapMin(String),
     /// `max(<unwrapped label>)`.
     UnwrapMax(String),
+    /// `approx_percentile_cont(<unwrapped label>, <quantile>)` — the
+    /// φ-quantile of the unwrapped sample values in the bucket.
+    UnwrapQuantile { quantile: f64, label: String },
 }
 
 /// A non-`sum` outer vector aggregation that reduces the per-series range
@@ -168,6 +172,20 @@ fn plan_range(
         RangeFunction::AvgOverTime => (Aggregate::UnwrapAvg(unwrap_label()?), None),
         RangeFunction::MinOverTime => (Aggregate::UnwrapMin(unwrap_label()?), None),
         RangeFunction::MaxOverTime => (Aggregate::UnwrapMax(unwrap_label()?), None),
+        RangeFunction::QuantileOverTime => {
+            let quantile = range.param.ok_or_else(|| {
+                QuerierError::Unsupported(
+                    "quantile_over_time requires a quantile parameter".to_string(),
+                )
+            })?;
+            (
+                Aggregate::UnwrapQuantile {
+                    quantile,
+                    label: unwrap_label()?,
+                },
+                None,
+            )
+        }
         other => {
             return Err(QuerierError::Unsupported(format!(
                 "range function {other:?}"
@@ -270,6 +288,22 @@ mod tests {
     }
 
     #[test]
+    fn quantile_over_time_carries_the_quantile_and_label() {
+        assert_eq!(
+            plan(r#"quantile_over_time(0.9, {a="b"} | unwrap latency [5m])"#).aggregate,
+            Aggregate::UnwrapQuantile {
+                quantile: 0.9,
+                label: "latency".to_string()
+            }
+        );
+        // Missing the `| unwrap` is rejected (no samples to rank).
+        assert!(matches!(
+            err(r#"quantile_over_time(0.9, {a="b"}[5m])"#),
+            QuerierError::Unsupported(_)
+        ));
+    }
+
+    #[test]
     fn sum_by_pushes_grouping_down() {
         let p = plan(r#"sum by (level) (count_over_time({a="b"}[5m]))"#);
         assert_eq!(p.aggregate, Aggregate::Count);
@@ -329,10 +363,6 @@ mod tests {
         ));
         assert!(matches!(
             err(r#"sort(rate({a="b"}[5m]))"#),
-            QuerierError::Unsupported(_)
-        ));
-        assert!(matches!(
-            err(r#"quantile_over_time(0.9, {a="b"} | unwrap x [5m])"#),
             QuerierError::Unsupported(_)
         ));
         assert!(matches!(
