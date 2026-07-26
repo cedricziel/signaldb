@@ -57,7 +57,8 @@ wrong result.
 | `<agg>_over_time` under an outer aggregation, e.g. `sum(avg_over_time(…))` | ❌ |
 | `resets`, `changes` | ❌ |
 | `present_over_time` | ✅ (1 per bucket with samples) |
-| `absent_over_time`, `quantile_over_time` | ❌ |
+| `quantile_over_time(phi, …)` | ✅ (per-series phi-quantile of the bucket) |
+| `absent_over_time` | ❌ |
 
 ## Histograms
 

@@ -308,6 +308,9 @@ fn build_plan(
     match inner {
         Expr::Paren(p) => build_plan(&p.expr, aggregate, grouping),
         Expr::VectorSelector(vs) => lower_selector(vs, aggregate, grouping, None),
+        Expr::Call(call) if call.func.name == "quantile_over_time" => {
+            lower_quantile_over_time(call, aggregate, grouping)
+        }
         Expr::Call(call) => {
             let arg = call.args.first().ok_or_else(|| {
                 QuerierError::InvalidInput(format!("{} expects one argument", call.func.name))
@@ -449,6 +452,40 @@ fn lower_quantile(agg: &parser::AggregateExpr) -> Result<MetricPlan, QuerierErro
     };
     let grouping = grouping_from(agg.modifier.as_ref())?;
     let mut plan = build_plan(unwrap_paren(&agg.expr), MetricAgg::Quantile, grouping)?;
+    plan.agg_param = Some(phi);
+    Ok(plan)
+}
+
+/// Lower `quantile_over_time(phi, metric[range])` — the phi-quantile of the
+/// samples in each bucket. Like the other `_over_time` reducers it only
+/// supports the bare form (no outer aggregation, #335).
+fn lower_quantile_over_time(
+    call: &parser::Call,
+    aggregate: MetricAgg,
+    grouping: Grouping,
+) -> Result<MetricPlan, QuerierError> {
+    if grouping != Grouping::Natural || aggregate != MetricAgg::Last {
+        return Err(QuerierError::Unsupported(
+            "quantile_over_time under an outer aggregation is not supported yet (#335)".to_string(),
+        ));
+    }
+    let phi = match call.args.args.first().map(|a| unwrap_paren(a)) {
+        Some(Expr::NumberLiteral(n)) => n.val,
+        _ => {
+            return Err(QuerierError::Unsupported(
+                "quantile_over_time requires a numeric literal phi".to_string(),
+            ));
+        }
+    };
+    let matrix = call.args.args.get(1).ok_or_else(|| {
+        QuerierError::InvalidInput("quantile_over_time expects (phi, range-vector)".to_string())
+    })?;
+    let Expr::MatrixSelector(ms) = unwrap_paren(matrix) else {
+        return Err(QuerierError::Unsupported(
+            "quantile_over_time requires a range-vector selector like metric[5m]".to_string(),
+        ));
+    };
+    let mut plan = lower_selector(&ms.vs, MetricAgg::Quantile, Grouping::Natural, None)?;
     plan.agg_param = Some(phi);
     Ok(plan)
 }
@@ -868,6 +905,15 @@ mod tests {
             err("x @ 1600000000"),
             QuerierError::Unsupported(_)
         ));
+    }
+
+    #[test]
+    fn quantile_over_time_carries_phi() {
+        let p = plan("quantile_over_time(0.9, x[5m])");
+        assert_eq!(p.aggregate, MetricAgg::Quantile);
+        assert_eq!(p.agg_param, Some(0.9));
+        assert_eq!(p.grouping, Grouping::Natural);
+        assert!(p.range.is_none());
     }
 
     #[test]
