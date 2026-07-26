@@ -27,7 +27,7 @@ wrong result.
 | Label matchers `=`, `!=`, `=~`, `!~` | ✅ (regex on attribute labels: `=`/`!=` only) |
 | `__name__` matcher | ✅ |
 | Range vector selector `metric[5m]` (as a function argument) | ✅ |
-| `offset` modifier | ❌ |
+| `offset` modifier (`metric offset 5m`) | ✅ |
 | `@` modifier | ❌ |
 | Subqueries `expr[5m:1m]` | ❌ |
 

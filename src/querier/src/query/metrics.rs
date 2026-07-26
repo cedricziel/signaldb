@@ -112,11 +112,12 @@ impl MetricsService {
         let group_cols = self.group_columns(&plan)?;
 
         let df = self.scan_union(tenant_slug, dataset_slug).await?;
-        let df = apply_filters(df, &plan, start, end)?;
+        // `offset` shifts the sampled window back in time.
+        let df = apply_filters(df, &plan, start - plan.offset_ns, end - plan.offset_ns)?;
 
         // Bucket timestamps into step-aligned windows (cast the
         // microsecond storage timestamp to nanoseconds first).
-        let bucket = bucket_expr(step);
+        let bucket = bucket_expr(step, plan.offset_ns);
 
         let df = if let Some(range) = plan.range {
             self.range_query(
@@ -327,10 +328,10 @@ impl MetricsService {
         let Ok(df) = self.session_context.table(table_ref).await else {
             return Ok(vec![]);
         };
-        let df = apply_filters(df, plan, start, end)?;
+        let df = apply_filters(df, plan, start - plan.offset_ns, end - plan.offset_ns)?;
         let batches = df
             .select(vec![
-                bucket_expr(step),
+                bucket_expr(step, plan.offset_ns),
                 col("metric_name"),
                 col("service_name"),
                 col("bucket_counts"),
@@ -1120,12 +1121,22 @@ fn cast_value_f64(expr: Expr) -> Expr {
 
 /// The step-aligned `date_bin` bucket expression, aligned to the epoch.
 /// The microsecond storage timestamp is cast to nanoseconds first.
-fn bucket_expr(step: i64) -> Expr {
+fn bucket_expr(step: i64, offset_ns: i64) -> Expr {
     let stride = lit(ScalarValue::IntervalMonthDayNano(Some(
         IntervalMonthDayNano::new(0, 0, step),
     )));
     let origin = lit(ScalarValue::TimestampNanosecond(Some(0), None));
-    date_bin(stride, cast_ns(col("timestamp")), origin).alias("bucket")
+    // `offset` shifts the sampled window back in time; add it back to the
+    // timestamp before binning so results align to the query grid.
+    let ts = if offset_ns != 0 {
+        cast_ns(col("timestamp"))
+            + lit(ScalarValue::IntervalMonthDayNano(Some(
+                IntervalMonthDayNano::new(0, 0, offset_ns),
+            )))
+    } else {
+        cast_ns(col("timestamp"))
+    };
+    date_bin(stride, ts, origin).alias("bucket")
 }
 
 #[cfg(test)]
@@ -1240,6 +1251,15 @@ mod tests {
             .unwrap();
         assert_eq!(api.2, 3.0); // last of [1,3]
         assert_eq!(web.2, 5.0);
+    }
+
+    #[tokio::test]
+    async fn offset_shifts_the_query_window() {
+        let service = service_with_data();
+        // Without offset the samples (ts 100–300ns) fall in the [0,1000] window.
+        assert!(!matrix(&service, "reqs", 1000).await.is_empty());
+        // A 5m offset shifts the sampled window far into the past → no samples.
+        assert!(matrix(&service, "reqs offset 5m", 1000).await.is_empty());
     }
 
     #[tokio::test]

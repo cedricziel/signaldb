@@ -212,6 +212,9 @@ pub struct MetricPlan {
     pub filter: Option<ScalarCompare>,
     /// The phi for a parameterized `quantile(phi, …)` aggregation.
     pub agg_param: Option<f64>,
+    /// `offset` modifier in nanoseconds: the query window is shifted back by
+    /// this amount (negative for `offset -5m`). Zero when absent.
+    pub offset_ns: i64,
 }
 
 /// A `topk`/`bottomk` selection: keep `k` series per bucket, ranked by value.
@@ -360,6 +363,11 @@ fn lower_selector(
     }
     let metric_name = metric_name
         .ok_or_else(|| QuerierError::InvalidInput("selector has no metric name".to_string()))?;
+    let offset_ns = match &vs.offset {
+        None => 0,
+        Some(promql_parser::parser::Offset::Pos(d)) => d.as_nanos() as i64,
+        Some(promql_parser::parser::Offset::Neg(d)) => -(d.as_nanos() as i64),
+    };
     Ok(MetricPlan {
         metric_name,
         matchers,
@@ -371,6 +379,7 @@ fn lower_selector(
         topk: None,
         filter: None,
         agg_param: None,
+        offset_ns,
     })
 }
 
@@ -787,6 +796,15 @@ mod tests {
         let p = plan(r#"stddev by (job) (x)"#);
         assert_eq!(p.aggregate, MetricAgg::Stddev);
         assert_eq!(p.grouping, Grouping::By(vec!["job".into()]));
+    }
+
+    #[test]
+    fn offset_modifier_sets_offset_ns() {
+        assert_eq!(plan("x").offset_ns, 0);
+        assert_eq!(plan("x offset 5m").offset_ns, 300_000_000_000);
+        assert_eq!(plan("x offset -30s").offset_ns, -30_000_000_000);
+        // Offset inside a range function is read from the inner selector.
+        assert_eq!(plan("rate(x[5m] offset 1h)").offset_ns, 3_600_000_000_000);
     }
 
     #[test]
