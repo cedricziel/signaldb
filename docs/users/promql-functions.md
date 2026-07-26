@@ -38,7 +38,7 @@ wrong result.
 | `sum`, `avg`, `min`, `max`, `count` (with/without `by (…)`) | ✅ |
 | `topk(k, …)`, `bottomk(k, …)` (no `by`/`without`) | ✅ |
 | `stddev`, `stdvar` (population), `group` (with/without `by (…)`) | ✅ |
-| `without (…)` grouping | ❌ |
+| `without (…)` grouping | ✅ (over `job`/`service`; attribute labels aren't materialized) |
 | `count_values` | ❌ |
 | `quantile` (parameterized) | ❌ |
 

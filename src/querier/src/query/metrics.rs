@@ -348,6 +348,20 @@ impl MetricsService {
                     })
                 })
                 .collect(),
+            // `without (labels)` keeps every materialized dimension except
+            // the excluded ones. `service_name` (job/service) is the only
+            // groupable column, so drop it when it is excluded, otherwise
+            // keep it — matching `by` semantics over the supported labels.
+            Grouping::Without(labels) => {
+                let drops_service = labels
+                    .iter()
+                    .any(|l| column_for_label(l) == Some("service_name"));
+                if drops_service {
+                    Ok(vec![])
+                } else {
+                    Ok(vec!["service_name"])
+                }
+            }
         }
     }
 

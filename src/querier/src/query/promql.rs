@@ -65,6 +65,8 @@ pub enum Grouping {
     Collapse,
     /// Group by the given labels (`sum by (a, b) (metric)`).
     By(Vec<String>),
+    /// Group by every label except the given ones (`sum without (a) (metric)`).
+    Without(Vec<String>),
 }
 
 /// A label matcher on a selector (excluding `__name__`).
@@ -526,9 +528,7 @@ fn grouping_from(modifier: Option<&LabelModifier>) -> Result<Grouping, QuerierEr
         None => Ok(Grouping::Collapse),
         Some(LabelModifier::Include(labels)) => Ok(Grouping::By(labels.labels.clone())),
         Some(LabelModifier::Exclude(labels)) if labels.is_empty() => Ok(Grouping::Collapse),
-        Some(LabelModifier::Exclude(_)) => Err(QuerierError::Unsupported(
-            "'without (labels)' grouping".to_string(),
-        )),
+        Some(LabelModifier::Exclude(labels)) => Ok(Grouping::Without(labels.labels.clone())),
     }
 }
 
@@ -661,6 +661,18 @@ mod tests {
     fn without_empty_collapses() {
         // `sum without () (x)` collapses like a bare `sum`.
         assert_eq!(plan(r#"sum without () (x)"#).grouping, Grouping::Collapse);
+    }
+
+    #[test]
+    fn without_labels_grouping() {
+        assert_eq!(
+            plan(r#"sum without (job) (x)"#).grouping,
+            Grouping::Without(vec!["job".into()])
+        );
+        assert_eq!(
+            plan(r#"avg without (instance, code) (x)"#).grouping,
+            Grouping::Without(vec!["instance".into(), "code".into()])
+        );
     }
 
     #[test]
@@ -826,10 +838,6 @@ mod tests {
             QuerierError::Unsupported(_)
         ));
         assert!(matches!(err(r#"x + y"#), QuerierError::Unsupported(_)));
-        assert!(matches!(
-            err(r#"sum without (job) (x)"#),
-            QuerierError::Unsupported(_)
-        ));
         // histogram_quantile over an inner rate() is not lowered yet.
         assert!(matches!(
             err(r#"histogram_quantile(0.9, rate(x[5m]))"#),
