@@ -234,6 +234,9 @@ pub struct MetricPlan {
     /// Set for `histogram_fraction(lower, upper, v)` — the fraction of a
     /// stored histogram's observations that fall in `(lower, upper]`.
     pub histogram_fraction: Option<(f64, f64)>,
+    /// Set for `sort(v)` / `sort_desc(v)` — order the output within each
+    /// bucket by value; `true` for descending.
+    pub sort: Option<bool>,
 }
 
 /// A per-bucket reduction that needs the ordered sample sequence.
@@ -414,6 +417,15 @@ fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
             })?;
             let mut plan = lower(unwrap_paren(arg))?;
             plan.timestamp = true;
+            Ok(plan)
+        }
+        // `sort(v)` / `sort_desc(v)`: order the output by value.
+        Expr::Call(call) if call.func.name == "sort" || call.func.name == "sort_desc" => {
+            let arg = call.args.args.first().ok_or_else(|| {
+                QuerierError::InvalidInput(format!("{} expects a vector", call.func.name))
+            })?;
+            let mut plan = lower(unwrap_paren(arg))?;
+            plan.sort = Some(call.func.name == "sort_desc");
             Ok(plan)
         }
         // `histogram_quantile(phi, <selector>)` targets the histogram table.
@@ -603,6 +615,7 @@ fn lower_selector(
         absent: false,
         timestamp: false,
         histogram_fraction: None,
+        sort: None,
     })
 }
 
@@ -1598,6 +1611,13 @@ mod tests {
         assert_eq!(p.matchers.len(), 1);
         assert_eq!(p.grouping, Grouping::Natural);
         assert!(p.range.is_none());
+    }
+
+    #[test]
+    fn sort_sets_direction() {
+        assert_eq!(plan("sort(x)").sort, Some(false));
+        assert_eq!(plan("sort_desc(x)").sort, Some(true));
+        assert_eq!(plan("x").sort, None);
     }
 
     #[test]

@@ -86,7 +86,7 @@ wrong result.
 |----------|--------|
 | `abs`, `ceil`, `floor`, `round`, `clamp`, `clamp_min`, `clamp_max` | ✅ |
 | `exp`, `ln`, `log2`, `log10`, `sqrt`, `sgn` | ✅ |
-| `sort`, `sort_desc` | ❌ |
+| `sort`, `sort_desc` | ✅ (order the output by value) |
 | `label_replace`, `label_join` | ❌ |
 | `absent` | ✅ (1 per empty step bucket; carries the `job`/`service` matcher) |
 | `vector`, `scalar` | ❌ |

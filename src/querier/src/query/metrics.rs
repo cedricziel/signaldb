@@ -264,8 +264,13 @@ impl MetricsService {
             df
         };
 
+        // `sort`/`sort_desc` order the output within each bucket by value.
+        let mut sort_keys = vec![SortExpr::new(col("bucket"), true, true)];
+        if let Some(desc) = plan.sort {
+            sort_keys.push(SortExpr::new(col("value"), !desc, false));
+        }
         let batches = df
-            .sort(vec![SortExpr::new(col("bucket"), true, true)])
+            .sort(sort_keys)
             .map_err(QuerierError::QueryFailed)?
             .collect()
             .await
@@ -2602,6 +2607,17 @@ mod tests {
         let service = service_with_data();
         let out = matrix(&service, "histogram_quantile(0.9, latency)", 1000).await;
         assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sort_orders_output_by_value() {
+        let service = service_with_data();
+        // api=3, web=5. sort → ascending (api first); sort_desc → web first.
+        let asc = matrix(&service, "sort(reqs)", 1000).await;
+        assert_eq!(asc.first().unwrap().1.as_deref(), Some("api"));
+        assert_eq!(asc.last().unwrap().1.as_deref(), Some("web"));
+        let desc = matrix(&service, "sort_desc(reqs)", 1000).await;
+        assert_eq!(desc.first().unwrap().1.as_deref(), Some("web"));
     }
 
     #[tokio::test]
