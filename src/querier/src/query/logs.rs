@@ -27,7 +27,7 @@ use datafusion::{
 use logql::{Expr as LogqlExpr, LogQuery, parse, parse_query, parse_selector};
 
 use super::logql::log_query_filter;
-use super::logql_metric::{Aggregate, plan_metric_query};
+use super::logql_metric::{Aggregate, OuterAgg, plan_metric_query};
 use super::{
     LogQueryParams, MetricQueryParams, error::QuerierError, table_ref::build_table_reference,
 };
@@ -175,19 +175,27 @@ impl LogsService {
         let plan = plan_metric_query(&metric)?;
         let filter = log_query_filter(&plan.log_query)?;
 
-        // Resolve the grouping columns; unknown labels can't be grouped
-        // with the substring attribute model.
-        let group_cols: Vec<&'static str> = if plan.group_labels.is_empty() {
-            SERIES_COLUMNS.to_vec()
-        } else {
-            plan.group_labels
-                .iter()
-                .map(|label| {
-                    column_for_label(label).ok_or_else(|| {
-                        QuerierError::Unsupported(format!("grouping by attribute label '{label}'"))
-                    })
+        // Resolve the output grouping columns (the `by` labels); unknown
+        // labels can't be grouped with the substring attribute model.
+        let out_group_cols: Vec<&'static str> = plan
+            .group_labels
+            .iter()
+            .map(|label| {
+                column_for_label(label).ok_or_else(|| {
+                    QuerierError::Unsupported(format!("grouping by attribute label '{label}'"))
                 })
-                .collect::<Result<_, _>>()?
+            })
+            .collect::<Result<_, _>>()?;
+
+        // The range aggregation groups by the output columns directly for a
+        // plain or `sum`-folded query (defaulting to the natural series
+        // identity). A non-`sum` outer aggregation instead groups by the
+        // full series identity so the second pass has per-series values to
+        // reduce across.
+        let range_group_cols: Vec<&'static str> = match plan.outer_agg {
+            None if out_group_cols.is_empty() => SERIES_COLUMNS.to_vec(),
+            None => out_group_cols.clone(),
+            Some(_) => SERIES_COLUMNS.to_vec(),
         };
 
         let mut df = self.logs_table(tenant_slug, dataset_slug).await?;
@@ -210,7 +218,7 @@ impl LogsService {
         let bucket = date_bin(stride, timestamp_ns, origin).alias("bucket");
 
         let mut group_exprs = vec![bucket];
-        group_exprs.extend(group_cols.iter().map(|c| col(*c)));
+        group_exprs.extend(range_group_cols.iter().map(|c| col(*c)));
 
         let value = aggregate_expr(&plan.aggregate).alias("value");
         df = df
@@ -220,7 +228,7 @@ impl LogsService {
         // Normalize `value` to Float64 (count/bytes aggregate to Int64)
         // and apply the `rate` divisor in the same projection.
         let mut proj = vec![col("bucket")];
-        proj.extend(group_cols.iter().map(|c| col(*c)));
+        proj.extend(range_group_cols.iter().map(|c| col(*c)));
         let value = cast(col("value"), DataType::Float64);
         let value = match plan.rate_divisor_seconds {
             Some(seconds) => value / lit(seconds),
@@ -228,6 +236,23 @@ impl LogsService {
         };
         proj.push(value.alias("value"));
         df = df.select(proj).map_err(QuerierError::QueryFailed)?;
+
+        // Second pass: reduce the per-series range aggregation across series
+        // within each output group (`avg`/`min`/`max`/`count`).
+        if let Some(outer) = plan.outer_agg {
+            let mut group_exprs = vec![col("bucket")];
+            group_exprs.extend(out_group_cols.iter().map(|c| col(*c)));
+            let reduced = outer_agg_expr(outer, col("value")).alias("value");
+            df = df
+                .aggregate(group_exprs, vec![reduced])
+                .map_err(QuerierError::QueryFailed)?;
+
+            // `count` reduces to Int64; keep the matrix value Float64.
+            let mut proj = vec![col("bucket")];
+            proj.extend(out_group_cols.iter().map(|c| col(*c)));
+            proj.push(cast(col("value"), DataType::Float64).alias("value"));
+            df = df.select(proj).map_err(QuerierError::QueryFailed)?;
+        }
 
         df.sort(vec![col("bucket").sort(true, true)])
             .map_err(QuerierError::QueryFailed)?
@@ -447,6 +472,17 @@ fn aggregate_expr(aggregate: &Aggregate) -> Expr {
         Aggregate::UnwrapAvg(label) => avg(unwrap_value(label)),
         Aggregate::UnwrapMin(label) => min(unwrap_value(label)),
         Aggregate::UnwrapMax(label) => max(unwrap_value(label)),
+    }
+}
+
+/// Build the second-pass expression that reduces the per-series range
+/// aggregation across series within a group (non-`sum` outer aggregation).
+fn outer_agg_expr(outer: OuterAgg, value: Expr) -> Expr {
+    match outer {
+        OuterAgg::Avg => avg(value),
+        OuterAgg::Min => min(value),
+        OuterAgg::Max => max(value),
+        OuterAgg::Count => count(value),
     }
 }
 
@@ -800,6 +836,57 @@ mod tests {
             .find(|(_, s)| s.as_deref() == Some("api"))
             .unwrap();
         assert_eq!(api.0, 2.0);
+    }
+
+    #[tokio::test]
+    async fn count_outer_aggregation_counts_series() {
+        let service = service_with_data();
+        // Three natural series (api/error, api/info, web/error) collapse to
+        // a single value: the series count.
+        let out = matrix(
+            &service,
+            r#"count(count_over_time({service_name=~".+"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, 3.0);
+    }
+
+    #[tokio::test]
+    async fn count_by_service_counts_series_per_group() {
+        let service = service_with_data();
+        // api has two series (error, info), web one.
+        let out = matrix(
+            &service,
+            r#"count by (service_name) (count_over_time({service_name=~".+"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        let get = |name: &str| {
+            out.iter()
+                .find(|(_, s)| s.as_deref() == Some(name))
+                .unwrap()
+                .0
+        };
+        assert_eq!(out.len(), 2);
+        assert_eq!(get("api"), 2.0);
+        assert_eq!(get("web"), 1.0);
+    }
+
+    #[tokio::test]
+    async fn avg_by_service_reduces_across_series() {
+        let service = service_with_data();
+        // Each series has count 1, so the per-service average is 1 — but
+        // the three natural series collapse to two grouped rows.
+        let out = matrix(
+            &service,
+            r#"avg by (service_name) (count_over_time({service_name=~".+"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|(v, _)| *v == 1.0));
     }
 
     #[tokio::test]

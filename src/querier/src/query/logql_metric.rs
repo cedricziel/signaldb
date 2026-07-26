@@ -16,12 +16,13 @@
 //!
 //! - Range aggregations: `count_over_time`, `rate`, `bytes_over_time`,
 //!   `bytes_rate`, and the unwrap-based `sum/avg/min/max_over_time`.
-//! - A single outer `sum by (...)` / `sum without ()` vector aggregation
-//!   wrapping one of the above (sum-of-counts folds into a grouped
-//!   count/rate).
+//! - A single outer vector aggregation wrapping one of the above:
+//!   `sum` (sum-of-counts folds into a grouped count/rate), and
+//!   `avg` / `min` / `max` / `count`, which reduce the range
+//!   aggregation across series within each group (see [`OuterAgg`]).
 //!
-//! Binary operators, `topk`/`bottomk`, `quantile*`, `vector()`,
-//! `label_replace`, and non-`sum` outer aggregations return
+//! Binary operators, `topk`/`bottomk` (parameterized aggregations),
+//! `quantile*`, `vector()`, and `label_replace` return
 //! [`QuerierError::Unsupported`].
 
 use logql::{AggregationFunction, Grouping, LogQuery, MetricQuery, RangeFunction};
@@ -45,6 +46,24 @@ pub enum Aggregate {
     UnwrapMax(String),
 }
 
+/// A non-`sum` outer vector aggregation that reduces the per-series range
+/// aggregation across the series in each group.
+///
+/// `sum` is absent because it folds directly into the grouped range
+/// aggregate (sum-of-counts == count-of-group) and needs no second pass;
+/// the others genuinely reduce across per-series values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OuterAgg {
+    /// `avg(...)` — mean of the per-series values.
+    Avg,
+    /// `min(...)` — smallest per-series value.
+    Min,
+    /// `max(...)` — largest per-series value.
+    Max,
+    /// `count(...)` — number of series with data in the bucket.
+    Count,
+}
+
 /// A lowered metric query.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricPlan {
@@ -57,6 +76,11 @@ pub struct MetricPlan {
     pub aggregate: Aggregate,
     /// When set, divide the aggregate by this many seconds (`rate`).
     pub rate_divisor_seconds: Option<f64>,
+    /// A non-`sum` outer aggregation to apply across series after the range
+    /// aggregation. When set, `group_labels` names the surviving group
+    /// (empty = collapse across all series); when `None`, the range
+    /// aggregation is grouped directly by `group_labels`.
+    pub outer_agg: Option<OuterAgg>,
     /// The `[range]` window in nanoseconds (informational; bucketing uses
     /// the caller's step).
     pub range_ns: u128,
@@ -67,15 +91,22 @@ pub fn plan_metric_query(query: &MetricQuery) -> Result<MetricPlan, QuerierError
     match query {
         MetricQuery::Range(range) => plan_range(range, Vec::new()),
         MetricQuery::Vector(vector) => {
-            // Only a `sum` outer aggregation folds cleanly into grouped
-            // counts/rates; others need per-series values we don't
-            // materialize.
-            if vector.function != AggregationFunction::Sum {
-                return Err(QuerierError::Unsupported(format!(
-                    "outer aggregation '{:?}' over a range aggregation",
-                    vector.function
-                )));
-            }
+            // `sum` folds into the grouped range aggregate (`outer_agg`
+            // stays `None`); `avg`/`min`/`max`/`count` reduce across series
+            // in a second pass. `topk`/`bottomk` and other parameterized or
+            // exotic aggregations still need per-series machinery we lack.
+            let outer_agg = match vector.function {
+                AggregationFunction::Sum => None,
+                AggregationFunction::Avg => Some(OuterAgg::Avg),
+                AggregationFunction::Min => Some(OuterAgg::Min),
+                AggregationFunction::Max => Some(OuterAgg::Max),
+                AggregationFunction::Count => Some(OuterAgg::Count),
+                other => {
+                    return Err(QuerierError::Unsupported(format!(
+                        "outer aggregation '{other:?}' over a range aggregation"
+                    )));
+                }
+            };
             if vector.param.is_some() {
                 return Err(QuerierError::Unsupported(
                     "parameterized outer aggregation".to_string(),
@@ -83,7 +114,11 @@ pub fn plan_metric_query(query: &MetricQuery) -> Result<MetricPlan, QuerierError
             }
             let group_labels = grouping_labels(vector.grouping.as_ref())?;
             match &vector.inner {
-                MetricQuery::Range(range) => plan_range(range, group_labels),
+                MetricQuery::Range(range) => {
+                    let mut plan = plan_range(range, group_labels)?;
+                    plan.outer_agg = outer_agg;
+                    Ok(plan)
+                }
                 other => Err(QuerierError::Unsupported(format!(
                     "nested metric expression: {other:?}"
                 ))),
@@ -146,6 +181,7 @@ fn plan_range(
         group_labels,
         aggregate,
         rate_divisor_seconds,
+        outer_agg: None,
         range_ns: range.range.as_nanos(),
     })
 }
@@ -247,13 +283,43 @@ mod tests {
     }
 
     #[test]
+    fn non_sum_outer_aggregations_reduce_across_series() {
+        // `sum` folds into the grouped range aggregate (no second pass).
+        let s = plan(r#"sum by (level) (rate({a="b"}[5m]))"#);
+        assert_eq!(s.outer_agg, None);
+        assert_eq!(s.group_labels, vec!["level".to_string()]);
+
+        // The others carry an `OuterAgg` for the cross-series reduction.
+        for (query, expected) in [
+            (r#"avg(rate({a="b"}[5m]))"#, OuterAgg::Avg),
+            (r#"min(rate({a="b"}[5m]))"#, OuterAgg::Min),
+            (r#"max by (level) (rate({a="b"}[5m]))"#, OuterAgg::Max),
+            (
+                r#"count by (level) (count_over_time({a="b"}[5m]))"#,
+                OuterAgg::Count,
+            ),
+        ] {
+            let p = plan(query);
+            assert_eq!(p.outer_agg, Some(expected), "{query}");
+        }
+
+        // `by` labels survive onto the plan for the second pass.
+        assert_eq!(
+            plan(r#"max by (level) (rate({a="b"}[5m]))"#).group_labels,
+            vec!["level".to_string()]
+        );
+        // No `by`: collapse across all series (empty group).
+        assert!(plan(r#"avg(rate({a="b"}[5m]))"#).group_labels.is_empty());
+    }
+
+    #[test]
     fn unsupported_shapes_are_rejected() {
         assert!(matches!(
             err(r#"topk(5, rate({a="b"}[5m]))"#),
             QuerierError::Unsupported(_)
         ));
         assert!(matches!(
-            err(r#"avg(rate({a="b"}[5m]))"#),
+            err(r#"stddev(rate({a="b"}[5m]))"#),
             QuerierError::Unsupported(_)
         ));
         assert!(matches!(
