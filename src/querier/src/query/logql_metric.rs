@@ -15,8 +15,8 @@
 //! shapes are supported:
 //!
 //! - Range aggregations: `count_over_time`, `rate`, `bytes_over_time`,
-//!   `bytes_rate`, and the unwrap-based `sum/avg/min/max_over_time` and
-//!   `quantile_over_time`.
+//!   `bytes_rate`, and the unwrap-based `sum/avg/min/max_over_time`,
+//!   `stddev/stdvar_over_time`, and `quantile_over_time`.
 //! - A single outer vector aggregation wrapping one of the above:
 //!   `sum` (sum-of-counts folds into a grouped count/rate), and
 //!   `avg` / `min` / `max` / `count` / `stddev` / `stdvar`, which reduce
@@ -49,6 +49,12 @@ pub enum Aggregate {
     /// `approx_percentile_cont(<unwrapped label>, <quantile>)` — the
     /// φ-quantile of the unwrapped sample values in the bucket.
     UnwrapQuantile { quantile: f64, label: String },
+    /// `stddev_pop(<unwrapped label>)` — population standard deviation of
+    /// the unwrapped sample values in the bucket.
+    UnwrapStddev(String),
+    /// `var_pop(<unwrapped label>)` — population variance of the unwrapped
+    /// sample values in the bucket.
+    UnwrapStdvar(String),
 }
 
 /// A non-`sum` outer vector aggregation that reduces the per-series range
@@ -172,6 +178,8 @@ fn plan_range(
         RangeFunction::AvgOverTime => (Aggregate::UnwrapAvg(unwrap_label()?), None),
         RangeFunction::MinOverTime => (Aggregate::UnwrapMin(unwrap_label()?), None),
         RangeFunction::MaxOverTime => (Aggregate::UnwrapMax(unwrap_label()?), None),
+        RangeFunction::StddevOverTime => (Aggregate::UnwrapStddev(unwrap_label()?), None),
+        RangeFunction::StdvarOverTime => (Aggregate::UnwrapStdvar(unwrap_label()?), None),
         RangeFunction::QuantileOverTime => {
             let quantile = range.param.ok_or_else(|| {
                 QuerierError::Unsupported(
@@ -299,6 +307,23 @@ mod tests {
         // Missing the `| unwrap` is rejected (no samples to rank).
         assert!(matches!(
             err(r#"quantile_over_time(0.9, {a="b"}[5m])"#),
+            QuerierError::Unsupported(_)
+        ));
+    }
+
+    #[test]
+    fn stddev_and_stdvar_over_time_are_unwrap_aggregations() {
+        assert_eq!(
+            plan(r#"stddev_over_time({a="b"} | unwrap latency [5m])"#).aggregate,
+            Aggregate::UnwrapStddev("latency".to_string())
+        );
+        assert_eq!(
+            plan(r#"stdvar_over_time({a="b"} | unwrap latency [5m])"#).aggregate,
+            Aggregate::UnwrapStdvar("latency".to_string())
+        );
+        // Both require an unwrap expression.
+        assert!(matches!(
+            err(r#"stddev_over_time({a="b"}[5m])"#),
             QuerierError::Unsupported(_)
         ));
     }
