@@ -244,6 +244,11 @@ pub struct MetricPlan {
     /// Set for `day_of_week`/`hour`/… — extract a calendar component from the
     /// value (interpreted as unix seconds, UTC) as a final step.
     pub calendar: Option<CalendarFn>,
+    /// Set for `vector(s)` — a synthetic no-label series with the constant `s`.
+    pub constant: Option<f64>,
+    /// Set for `scalar(v)` — reduce to a single no-label value per bucket
+    /// (NaN unless the input has exactly one series).
+    pub scalar_reduce: bool,
 }
 
 /// A calendar component extracted from a value interpreted as unix seconds.
@@ -452,6 +457,29 @@ fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
         Expr::Call(call) if call.func.name == "time" && call.args.args.is_empty() => {
             Ok(time_plan())
         }
+        // `vector(s)`: a synthetic no-label series with the constant scalar.
+        Expr::Call(call) if call.func.name == "vector" => {
+            match call.args.args.first().map(|a| unwrap_paren(a)) {
+                Some(Expr::NumberLiteral(n)) => {
+                    let mut plan = time_plan();
+                    plan.constant = Some(n.val);
+                    Ok(plan)
+                }
+                _ => Err(QuerierError::Unsupported(
+                    "vector() requires a numeric literal argument".to_string(),
+                )),
+            }
+        }
+        // `scalar(v)`: reduce a single-series vector to its value.
+        Expr::Call(call) if call.func.name == "scalar" => {
+            let arg =
+                call.args.args.first().ok_or_else(|| {
+                    QuerierError::InvalidInput("scalar expects a vector".to_string())
+                })?;
+            let mut plan = lower(unwrap_paren(arg))?;
+            plan.scalar_reduce = true;
+            Ok(plan)
+        }
         // Calendar functions: `day_of_week(v)`, `hour()`, … With no argument
         // they operate on `time()`; otherwise on the argument's value.
         Expr::Call(call) if calendar_fn(call.func.name).is_some() => {
@@ -653,6 +681,8 @@ fn lower_selector(
         sort: None,
         time_source: false,
         calendar: None,
+        constant: None,
+        scalar_reduce: false,
     })
 }
 
@@ -679,6 +709,8 @@ fn time_plan() -> MetricPlan {
         sort: None,
         time_source: true,
         calendar: None,
+        constant: None,
+        scalar_reduce: false,
     }
 }
 
@@ -1689,6 +1721,16 @@ mod tests {
         assert_eq!(p.matchers.len(), 1);
         assert_eq!(p.grouping, Grouping::Natural);
         assert!(p.range.is_none());
+    }
+
+    #[test]
+    fn vector_and_scalar_lowering() {
+        assert_eq!(plan("vector(5)").constant, Some(5.0));
+        assert!(plan("vector(5)").time_source);
+        let s = plan("scalar(x)");
+        assert!(s.scalar_reduce);
+        assert_eq!(s.metric_name, "x");
+        assert!(!plan("x").scalar_reduce);
     }
 
     #[test]

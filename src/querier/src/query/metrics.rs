@@ -290,6 +290,11 @@ impl MetricsService {
             batches
         };
 
+        // `scalar(v)`: reduce to one no-label value per bucket.
+        if plan.scalar_reduce {
+            return scalar_reduce(batches);
+        }
+
         // `topk`/`bottomk`: keep the k highest/lowest series per bucket.
         if let Some(spec) = plan.topk {
             return apply_topk(batches, spec);
@@ -1383,9 +1388,10 @@ fn eval_time(
     let mut bucket = first;
     while bucket <= end {
         let secs = bucket as f64 / 1e9;
-        let v = match plan.calendar {
-            Some(cf) => calendar_extract(secs, cf),
-            None => secs,
+        let v = match (plan.constant, plan.calendar) {
+            (Some(c), _) => c,
+            (None, Some(cf)) => calendar_extract(secs, cf),
+            (None, None) => secs,
         };
         ts.push(bucket);
         values.push(v);
@@ -1402,6 +1408,46 @@ fn eval_time(
         });
         ts = idx.iter().map(|&i| ts[i]).collect();
         values = idx.iter().map(|&i| values[i]).collect();
+    }
+    let n = ts.len();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "bucket",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new("metric_name", DataType::Utf8, false),
+        Field::new("service_name", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(TimestampNanosecondArray::from(ts)),
+        Arc::new(StringArray::from(vec![""; n])),
+        Arc::new(StringArray::from(vec![""; n])),
+        Arc::new(Float64Array::from(values)),
+    ];
+    let batch = RecordBatch::try_new(schema, columns)
+        .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+    Ok(vec![batch])
+}
+
+/// `scalar(v)`: collapse to one no-label series per bucket — the single
+/// series' value, or NaN if the bucket has zero or more than one series.
+fn scalar_reduce(batches: Vec<RecordBatch>) -> Result<Vec<RecordBatch>, QuerierError> {
+    // bucket → (count, value).
+    let mut per_bucket: BTreeMap<i64, (usize, f64)> = BTreeMap::new();
+    for batch in &batches {
+        for (bucket, _service, value) in matrix_rows(batch)? {
+            let e = per_bucket.entry(bucket).or_insert((0, f64::NAN));
+            e.0 += 1;
+            e.1 = value;
+        }
+    }
+    let mut ts = Vec::with_capacity(per_bucket.len());
+    let mut values = Vec::with_capacity(per_bucket.len());
+    for (bucket, (count, value)) in per_bucket {
+        ts.push(bucket);
+        values.push(if count == 1 { value } else { f64::NAN });
     }
     let n = ts.len();
     let schema = Arc::new(Schema::new(vec![
@@ -2736,6 +2782,24 @@ mod tests {
         let service = service_with_data();
         let out = matrix(&service, "histogram_quantile(0.9, latency)", 1000).await;
         assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn vector_and_scalar_functions() {
+        let service = service_with_data();
+        // vector(7): a no-label series with constant 7.
+        let out = matrix(&service, "vector(7)", 1000).await;
+        assert!(!out.is_empty());
+        assert!(
+            out.iter()
+                .all(|(n, s, v)| n.is_empty() && s.as_deref() == Some("") && *v == 7.0)
+        );
+        // scalar(reqs): reqs has two series (api, web) → NaN.
+        let out = matrix(&service, "scalar(reqs)", 1000).await;
+        assert!(out.iter().all(|(_, _, v)| v.is_nan()));
+        // scalar of a single-series query → that value.
+        let out = matrix(&service, r#"scalar(reqs{job="api"})"#, 1000).await;
+        assert!(out.iter().any(|(_, _, v)| *v == 3.0));
     }
 
     #[tokio::test]

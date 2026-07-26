@@ -89,7 +89,7 @@ wrong result.
 | `sort`, `sort_desc` | ✅ (order the output by value) |
 | `label_replace`, `label_join` | ❌ |
 | `absent` | ✅ (1 per empty step bucket; carries the `job`/`service` matcher) |
-| `vector`, `scalar` | ❌ |
+| `vector`, `scalar` | ✅ (`vector(s)` constant series; `scalar(v)` single-series value) |
 | `timestamp` | ✅ (latest sample time per series, in unix seconds) |
 | `time`, `timestamp`, `day_of_week`, `day_of_month`, `day_of_year`, `days_in_month`, `hour`, `minute`, `month`, `year` | ✅ |
 
