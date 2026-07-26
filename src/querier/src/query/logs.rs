@@ -15,7 +15,8 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use datafusion::{
-    arrow::array::{Array, RecordBatch, StringArray},
+    arrow::array::{Array, Float64Array, RecordBatch, StringArray, TimestampNanosecondArray},
+    arrow::compute::{concat_batches, take},
     arrow::datatypes::{DataType, IntervalMonthDayNano},
     functions::datetime::expr_fn::date_bin,
     functions::unicode::expr_fn::character_length,
@@ -30,7 +31,7 @@ use datafusion::{
 use logql::{Expr as LogqlExpr, LogQuery, parse, parse_query, parse_selector};
 
 use super::logql::log_query_filter;
-use super::logql_metric::{Aggregate, OuterAgg, plan_metric_query};
+use super::logql_metric::{Aggregate, OuterAgg, TopKSpec, plan_metric_query};
 use super::{
     LogQueryParams, MetricQueryParams, error::QuerierError, table_ref::build_table_reference,
 };
@@ -257,11 +258,18 @@ impl LogsService {
             df = df.select(proj).map_err(QuerierError::QueryFailed)?;
         }
 
-        df.sort(vec![col("bucket").sort(true, true)])
+        let batches = df
+            .sort(vec![col("bucket").sort(true, true)])
             .map_err(QuerierError::QueryFailed)?
             .collect()
             .await
-            .map_err(QuerierError::QueryFailed)
+            .map_err(QuerierError::QueryFailed)?;
+
+        // `topk`/`bottomk`: keep the k highest/lowest series per bucket.
+        match plan.topk {
+            Some(spec) => apply_topk(batches, spec),
+            None => Ok(batches),
+        }
     }
 
     /// List the label names available for logs. Returns the labels backed
@@ -505,6 +513,68 @@ fn outer_agg_expr(outer: OuterAgg, value: Expr) -> Expr {
         OuterAgg::Stddev => stddev_pop(value),
         OuterAgg::Stdvar => var_pop(value),
     }
+}
+
+/// Keep the `k` highest (or lowest, for `bottomk`) series by value in each
+/// time bucket. Operates on the finished matrix, so it is agnostic to which
+/// label columns are present — it ranks rows within a `bucket` and selects
+/// them with Arrow's `take`, preserving every column.
+fn apply_topk(batches: Vec<RecordBatch>, spec: TopKSpec) -> Result<Vec<RecordBatch>, QuerierError> {
+    use std::cmp::Ordering;
+
+    if batches.is_empty() {
+        return Ok(batches);
+    }
+    let schema = batches[0].schema();
+    let batch =
+        concat_batches(&schema, &batches).map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+
+    let bucket = batch
+        .column_by_name("bucket")
+        .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
+        .ok_or_else(|| QuerierError::InvalidInput("bucket column missing".to_string()))?;
+    let value = batch
+        .column_by_name("value")
+        .and_then(|c| c.as_any().downcast_ref::<Float64Array>())
+        .ok_or_else(|| QuerierError::InvalidInput("value column missing".to_string()))?;
+
+    // Group row indices by bucket (BTreeMap keeps buckets ascending), rank
+    // within each, and keep the first `k`.
+    let mut by_bucket: BTreeMap<i64, Vec<usize>> = BTreeMap::new();
+    for i in 0..batch.num_rows() {
+        let b = if bucket.is_null(i) {
+            i64::MIN
+        } else {
+            bucket.value(i)
+        };
+        by_bucket.entry(b).or_default().push(i);
+    }
+    let val = |i: usize| {
+        if value.is_null(i) {
+            f64::NAN
+        } else {
+            value.value(i)
+        }
+    };
+    let mut keep: Vec<u32> = Vec::new();
+    for (_bucket, mut idxs) in by_bucket {
+        idxs.sort_by(|&a, &b| {
+            let ord = val(a).partial_cmp(&val(b)).unwrap_or(Ordering::Equal);
+            if spec.bottom { ord } else { ord.reverse() }
+        });
+        idxs.truncate(spec.k);
+        keep.extend(idxs.iter().map(|&i| i as u32));
+    }
+
+    let indices = datafusion::arrow::array::UInt32Array::from(keep);
+    let columns = batch
+        .columns()
+        .iter()
+        .map(|c| take(c, &indices, None).map_err(|e| QuerierError::InvalidInput(e.to_string())))
+        .collect::<Result<Vec<_>, _>>()?;
+    let out = RecordBatch::try_new(schema, columns)
+        .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+    Ok(vec![out])
 }
 
 /// The unwrapped label's numeric value: the dedicated column when the
@@ -1021,6 +1091,38 @@ mod tests {
             "stddev {}",
             dev[0].0
         );
+    }
+
+    #[tokio::test]
+    async fn topk_and_bottomk_keep_k_series_per_bucket() {
+        let service = service_with_varying_counts();
+        // Two `api` series with counts [3, 1] in one bucket.
+        let top1 = matrix(
+            &service,
+            r#"topk(1, count_over_time({service_name="api"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        assert_eq!(top1.len(), 1);
+        assert_eq!(top1[0].0, 3.0);
+
+        let bottom1 = matrix(
+            &service,
+            r#"bottomk(1, count_over_time({service_name="api"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        assert_eq!(bottom1.len(), 1);
+        assert_eq!(bottom1[0].0, 1.0);
+
+        // k beyond the series count keeps all of them.
+        let top5 = matrix(
+            &service,
+            r#"topk(5, count_over_time({service_name="api"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        assert_eq!(top5.len(), 2);
     }
 
     #[tokio::test]

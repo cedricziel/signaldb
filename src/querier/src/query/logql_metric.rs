@@ -23,10 +23,11 @@
 //!   `avg` / `min` / `max` / `count` / `stddev` / `stdvar`, which reduce
 //!   the range aggregation across series within each group (see
 //!   [`OuterAgg`]).
+//! - `topk` / `bottomk`, which keep the `k` highest/lowest series per
+//!   bucket after aggregation (see [`TopKSpec`]).
 //!
-//! Binary operators, `topk`/`bottomk` (parameterized aggregations),
-//! `quantile*`, `vector()`, and `label_replace` return
-//! [`QuerierError::Unsupported`].
+//! Binary operators, `sort`/`sort_desc`, `vector()`, and `label_replace`
+//! return [`QuerierError::Unsupported`].
 
 use logql::{AggregationFunction, Grouping, LogQuery, MetricQuery, RangeFunction};
 
@@ -86,6 +87,17 @@ pub enum OuterAgg {
     Stdvar,
 }
 
+/// `topk(k, ...)` / `bottomk(k, ...)`: keep the `k` highest (or lowest)
+/// series by value in each time bucket, applied after the range and any
+/// outer aggregation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopKSpec {
+    /// How many series to keep per bucket.
+    pub k: usize,
+    /// `true` for `bottomk` (keep the lowest), `false` for `topk`.
+    pub bottom: bool,
+}
+
 /// A lowered metric query.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricPlan {
@@ -103,6 +115,8 @@ pub struct MetricPlan {
     /// (empty = collapse across all series); when `None`, the range
     /// aggregation is grouped directly by `group_labels`.
     pub outer_agg: Option<OuterAgg>,
+    /// A `topk`/`bottomk` per-bucket ranking to apply after aggregation.
+    pub topk: Option<TopKSpec>,
     /// The `[range]` window in nanoseconds (informational; bucketing uses
     /// the caller's step).
     pub range_ns: u128,
@@ -113,10 +127,38 @@ pub fn plan_metric_query(query: &MetricQuery) -> Result<MetricPlan, QuerierError
     match query {
         MetricQuery::Range(range) => plan_range(range, Vec::new()),
         MetricQuery::Vector(vector) => {
+            // `topk`/`bottomk` rank the inner query's series per bucket:
+            // lower the inner, then attach a `TopKSpec` post-pass.
+            if let AggregationFunction::Topk | AggregationFunction::Bottomk = vector.function {
+                let bottom = vector.function == AggregationFunction::Bottomk;
+                let k = vector
+                    .param
+                    .filter(|k| k.is_finite() && *k >= 0.0)
+                    .ok_or_else(|| {
+                        QuerierError::Unsupported(
+                            "topk/bottomk requires a non-negative k parameter".to_string(),
+                        )
+                    })?;
+                if vector.grouping.is_some() {
+                    return Err(QuerierError::Unsupported(
+                        "grouped topk/bottomk".to_string(),
+                    ));
+                }
+                let mut plan = plan_metric_query(&vector.inner)?;
+                if plan.topk.is_some() {
+                    return Err(QuerierError::Unsupported("nested topk/bottomk".to_string()));
+                }
+                plan.topk = Some(TopKSpec {
+                    k: k as usize,
+                    bottom,
+                });
+                return Ok(plan);
+            }
+
             // `sum` folds into the grouped range aggregate (`outer_agg`
             // stays `None`); `avg`/`min`/`max`/`count` reduce across series
-            // in a second pass. `topk`/`bottomk` and other parameterized or
-            // exotic aggregations still need per-series machinery we lack.
+            // in a second pass. Other parameterized or exotic aggregations
+            // still need per-series machinery we lack.
             let outer_agg = match vector.function {
                 AggregationFunction::Sum => None,
                 AggregationFunction::Avg => Some(OuterAgg::Avg),
@@ -224,6 +266,7 @@ fn plan_range(
         aggregate,
         rate_divisor_seconds,
         outer_agg: None,
+        topk: None,
         range_ns: range.range.as_nanos(),
     })
 }
@@ -406,11 +449,36 @@ mod tests {
     }
 
     #[test]
+    fn topk_and_bottomk_rank_the_inner_series() {
+        let t = plan(r#"topk(5, rate({a="b"}[5m]))"#);
+        assert_eq!(
+            t.topk,
+            Some(TopKSpec {
+                k: 5,
+                bottom: false
+            })
+        );
+        // The inner range aggregation is preserved underneath.
+        assert_eq!(t.aggregate, Aggregate::Count);
+        assert_eq!(t.rate_divisor_seconds, Some(300.0));
+
+        let b = plan(r#"bottomk(3, count_over_time({a="b"}[5m]))"#);
+        assert_eq!(b.topk, Some(TopKSpec { k: 3, bottom: true }));
+
+        // topk over a grouped inner keeps the grouping.
+        let g = plan(r#"topk(2, sum by (level) (rate({a="b"}[5m])))"#);
+        assert_eq!(
+            g.topk,
+            Some(TopKSpec {
+                k: 2,
+                bottom: false
+            })
+        );
+        assert_eq!(g.group_labels, vec!["level".to_string()]);
+    }
+
+    #[test]
     fn unsupported_shapes_are_rejected() {
-        assert!(matches!(
-            err(r#"topk(5, rate({a="b"}[5m]))"#),
-            QuerierError::Unsupported(_)
-        ));
         assert!(matches!(
             err(r#"sort(rate({a="b"}[5m]))"#),
             QuerierError::Unsupported(_)
