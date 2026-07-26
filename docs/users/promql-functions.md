@@ -39,8 +39,8 @@ wrong result.
 | `topk(k, …)`, `bottomk(k, …)` (no `by`/`without`) | ✅ |
 | `stddev`, `stdvar` (population), `group` (with/without `by (…)`) | ✅ |
 | `without (…)` grouping | ✅ (over `job`/`service`; attribute labels aren't materialized) |
+| `quantile(phi, …)` (parameterized, with/without `by (…)`) | ✅ |
 | `count_values` | ❌ |
-| `quantile` (parameterized) | ❌ |
 
 ## Range (`[range]`) functions
 
