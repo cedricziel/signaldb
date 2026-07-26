@@ -1327,6 +1327,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn quantile_over_time_is_percentile_per_series() {
+        let service = service_with_data();
+        // api samples [1, 3] → median 2; web [5] → 5.
+        let out = matrix(&service, "quantile_over_time(0.5, reqs[1m])", 1000).await;
+        let by = |svc: &str| {
+            out.iter()
+                .find(|(_, s, _)| s.as_deref() == Some(svc))
+                .unwrap()
+                .2
+        };
+        assert!((by("api") - 2.0).abs() < 1e-9, "got {}", by("api"));
+        assert!((by("web") - 5.0).abs() < 1e-9, "got {}", by("web"));
+    }
+
+    #[tokio::test]
     async fn quantile_is_percentile_across_the_bucket() {
         let service = service_with_data();
         // Values in the bucket are [1, 3, 5]; the 0.5-quantile (median) is 3.
