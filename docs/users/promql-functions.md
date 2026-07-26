@@ -75,7 +75,7 @@ wrong result.
 |----------|--------|
 | Arithmetic `+ - * / % ^` with a scalar (`metric * 8`, `1024 / metric`) | ✅ |
 | Comparison `== != > < >= <=` with a scalar (`metric > 5`, `5 < metric`) | ✅ (filters series; with `bool` maps to 1/0) |
-| Arithmetic between two vectors | ❌ |
+| Arithmetic `+ - * / % ^` between two vectors (`a / b`) | ✅ (one-to-one match on `job`/`service`; drops `__name__`) |
 | Comparison between two vectors | ❌ |
 | Logical/set `and`, `or`, `unless` | ❌ |
 | `on` / `ignoring` / `group_left` / `group_right` matching | ❌ |

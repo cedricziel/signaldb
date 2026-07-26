@@ -29,8 +29,8 @@ use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
 use super::promql::{
-    ArithOp, CmpOp, Grouping, HistogramFn, LabelMatch, MatchKind, MetricAgg, MetricPlan,
-    SequenceFn, TopKSpec, ValueOp, plan_promql,
+    ArithOp, CmpOp, Grouping, HistogramFn, LabelMatch, MatchKind, MetricAgg, MetricPlan, QueryPlan,
+    SequenceFn, TopKSpec, ValueOp, plan_promql, plan_query,
 };
 use super::{error::QuerierError, table_ref::build_table_reference};
 
@@ -99,13 +99,43 @@ impl MetricsService {
                 "step must be a positive nanosecond interval".to_string(),
             ));
         }
-        let plan = plan_promql(query)?;
+        match plan_query(query)? {
+            QueryPlan::Single(plan) => {
+                self.eval_plan(&plan, start, end, step, tenant_slug, dataset_slug)
+                    .await
+            }
+            QueryPlan::BinaryVector { left, op, right } => {
+                self.eval_binary(
+                    &left,
+                    op,
+                    &right,
+                    start,
+                    end,
+                    step,
+                    tenant_slug,
+                    dataset_slug,
+                )
+                .await
+            }
+        }
+    }
 
+    /// Execute a single lowered [`MetricPlan`] to matrix RecordBatches.
+    #[allow(clippy::too_many_arguments)]
+    async fn eval_plan(
+        &self,
+        plan: &MetricPlan,
+        start: i64,
+        end: i64,
+        step: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<RecordBatch>, QuerierError> {
         // histogram_quantile targets the histogram table with a distinct
         // (row-wise, interpolated) execution path.
         if let Some(phi) = plan.quantile {
             return self
-                .histogram_query(&plan, phi, start, end, step, tenant_slug, dataset_slug)
+                .histogram_query(plan, phi, start, end, step, tenant_slug, dataset_slug)
                 .await;
         }
 
@@ -113,22 +143,22 @@ impl MetricsService {
         // scalar count/sum column.
         if let Some(hf) = plan.histogram_fn {
             return self
-                .histogram_scalar_query(&plan, hf, start, end, step, tenant_slug, dataset_slug)
+                .histogram_scalar_query(plan, hf, start, end, step, tenant_slug, dataset_slug)
                 .await;
         }
 
         // resets/changes count events over the ordered per-bucket samples.
         if let Some(sf) = plan.sequence_fn {
             return self
-                .sequence_query(&plan, sf, start, end, step, tenant_slug, dataset_slug)
+                .sequence_query(plan, sf, start, end, step, tenant_slug, dataset_slug)
                 .await;
         }
 
-        let group_cols = self.group_columns(&plan)?;
+        let group_cols = self.group_columns(plan)?;
 
         let df = self.scan_union(tenant_slug, dataset_slug).await?;
         // `offset` shifts the sampled window back in time.
-        let df = apply_filters(df, &plan, start - plan.offset_ns, end - plan.offset_ns)?;
+        let df = apply_filters(df, plan, start - plan.offset_ns, end - plan.offset_ns)?;
 
         // Bucket timestamps into step-aligned windows (cast the
         // microsecond storage timestamp to nanoseconds first).
@@ -175,6 +205,78 @@ impl MetricsService {
             return apply_topk(batches, spec);
         }
         Ok(batches)
+    }
+
+    /// Execute a `left OP right` vector-to-vector arithmetic: evaluate both
+    /// sides, then match one-to-one on (bucket, service_name) and combine the
+    /// values. The output series drops the metric name (`__name__`), matching
+    /// Prometheus. Only series present on both sides are emitted.
+    #[allow(clippy::too_many_arguments)]
+    async fn eval_binary(
+        &self,
+        left: &MetricPlan,
+        op: ArithOp,
+        right: &MetricPlan,
+        start: i64,
+        end: i64,
+        step: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<RecordBatch>, QuerierError> {
+        let left_batches = self
+            .eval_plan(left, start, end, step, tenant_slug, dataset_slug)
+            .await?;
+        let right_batches = self
+            .eval_plan(right, start, end, step, tenant_slug, dataset_slug)
+            .await?;
+
+        // Index the right side by (bucket, service_name).
+        let mut rhs: BTreeMap<(i64, String), f64> = BTreeMap::new();
+        for batch in &right_batches {
+            for (bucket, service, value) in matrix_rows(batch)? {
+                rhs.insert((bucket, service), value);
+            }
+        }
+
+        // BTreeMap keeps output sorted by (bucket, series).
+        let mut out: BTreeMap<(i64, String), f64> = BTreeMap::new();
+        for batch in &left_batches {
+            for (bucket, service, lv) in matrix_rows(batch)? {
+                if let Some(&rv) = rhs.get(&(bucket, service.clone())) {
+                    out.insert((bucket, service), arith_f64(op, lv, rv, false));
+                }
+            }
+        }
+
+        let mut ts = Vec::with_capacity(out.len());
+        let mut names = Vec::with_capacity(out.len());
+        let mut services = Vec::with_capacity(out.len());
+        let mut values = Vec::with_capacity(out.len());
+        for ((bucket, service), value) in out {
+            ts.push(bucket);
+            names.push(String::new()); // __name__ is dropped for binary ops
+            services.push(service);
+            values.push(value);
+        }
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "bucket",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(ts)),
+            Arc::new(StringArray::from(names)),
+            Arc::new(StringArray::from(services)),
+            Arc::new(Float64Array::from(values)),
+        ];
+        let batch = RecordBatch::try_new(schema, columns)
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        Ok(vec![batch])
     }
 
     /// Aggregate `value` per (bucket, metric_name, group) directly.
@@ -874,6 +976,33 @@ fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArr
         .ok_or_else(|| {
             QuerierError::InvalidInput(format!("column '{name}' is not a string column"))
         })
+}
+
+/// Extract `(bucket_ns, service_name, value)` rows from a matrix batch.
+/// Series with no `service_name` column (collapsed groupings) use "".
+fn matrix_rows(batch: &RecordBatch) -> Result<Vec<(i64, String, f64)>, QuerierError> {
+    let bucket = batch
+        .column_by_name("bucket")
+        .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
+        .ok_or_else(|| {
+            QuerierError::InvalidInput("bucket column is not a timestamp".to_string())
+        })?;
+    let service = batch
+        .column_by_name("service_name")
+        .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+    let value = batch
+        .column_by_name("value")
+        .and_then(|c| c.as_any().downcast_ref::<Float64Array>())
+        .ok_or_else(|| QuerierError::InvalidInput("value column is not Float64".to_string()))?;
+    let mut out = Vec::with_capacity(batch.num_rows());
+    for i in 0..batch.num_rows() {
+        if bucket.is_null(i) || value.is_null(i) {
+            continue;
+        }
+        let svc = service.map(|c| c.value(i).to_string()).unwrap_or_default();
+        out.push((bucket.value(i), svc, value.value(i)));
+    }
+    Ok(out)
 }
 
 /// Apply the metric-name filter, label matchers, and time window.
@@ -1709,6 +1838,29 @@ mod tests {
         // abs over a rate that is negative is not exercised here; abs of a
         // positive last value is a no-op.
         assert_eq!(by(matrix(&service, "abs(reqs)", 1000).await, "api"), 3.0);
+    }
+
+    #[tokio::test]
+    async fn vector_arithmetic_matches_on_service() {
+        let service = service_with_data();
+        // reqs last per series: api=3, web=5. `reqs / reqs` matches each
+        // series to itself → 1.0, and drops the metric name.
+        let out = matrix(&service, "reqs / reqs", 1000).await;
+        assert_eq!(out.len(), 2);
+        for (name, _svc, v) in &out {
+            assert_eq!(name, "");
+            assert_eq!(*v, 1.0);
+        }
+        // `reqs * reqs`: api 3*3=9, web 5*5=25.
+        let mul = matrix(&service, "reqs * reqs", 1000).await;
+        let api = mul
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert_eq!(api.2, 9.0);
+        // `reqs - reqs` = 0 per series.
+        let sub = matrix(&service, "reqs - reqs", 1000).await;
+        assert!(sub.iter().all(|(_, _, v)| *v == 0.0));
     }
 
     #[tokio::test]

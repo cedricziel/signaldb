@@ -27,9 +27,11 @@
 //!   (`metric * 8`, `1024 / metric`) as value transforms on the result.
 //!
 //! Scalar comparisons (`metric > 5`, `5 < metric`, with an optional `bool`
-//! modifier) filter the result or map it to 1/0. Logical and
-//! vector-to-vector operators, subqueries, and `histogram_quantile` over an
-//! inner `rate()`/aggregation are not lowered yet and return
+//! modifier) filter the result or map it to 1/0. Vector-to-vector arithmetic
+//! (`a / b`) matches series one-to-one on their shared materialized label.
+//! Vector-to-vector comparison, logical set ops, `on`/`ignoring`/`group_left`
+//! matching, subqueries, and `histogram_quantile` over an inner
+//! `rate()`/aggregation are not lowered yet and return
 //! [`QuerierError::Unsupported`] (#335).
 //!
 //! Like the log path, range aggregations use fixed step-aligned buckets
@@ -256,6 +258,54 @@ pub fn plan_promql(query: &str) -> Result<MetricPlan, QuerierError> {
     let expr = parser::parse(query)
         .map_err(|e| QuerierError::InvalidInput(format!("invalid PromQL: {e}")))?;
     lower(&expr)
+}
+
+/// A top-level query plan. Most queries are a single [`MetricPlan`], but a
+/// `vector OP vector` arithmetic expression lowers to a binary of two plans
+/// joined on their shared series identity at execution time.
+#[derive(Debug, Clone, PartialEq)]
+pub enum QueryPlan {
+    Single(Box<MetricPlan>),
+    /// `left OP right` between two instant/range vectors (arithmetic only for
+    /// now; matched one-to-one on the shared materialized label).
+    BinaryVector {
+        left: Box<MetricPlan>,
+        op: ArithOp,
+        right: Box<MetricPlan>,
+    },
+}
+
+/// Parse and lower a PromQL query to a [`QueryPlan`].
+pub fn plan_query(query: &str) -> Result<QueryPlan, QuerierError> {
+    let expr = parser::parse(query)
+        .map_err(|e| QuerierError::InvalidInput(format!("invalid PromQL: {e}")))?;
+    // A top-level arithmetic binary with two vector operands is a
+    // vector-to-vector operation; anything else is a single plan.
+    if let Expr::Binary(bin) = unwrap_paren(&expr)
+        && !bin.op.is_comparison_operator()
+        && as_scalar(&bin.lhs).is_none()
+        && as_scalar(&bin.rhs).is_none()
+    {
+        // Only plain arithmetic tokens; logical set ops (`and`/`or`/`unless`)
+        // and `on`/`ignoring`/`group_left` matching stay unsupported (#335).
+        let op = match format!("{}", bin.op).as_str() {
+            "+" => Some(ArithOp::Add),
+            "-" => Some(ArithOp::Sub),
+            "*" => Some(ArithOp::Mul),
+            "/" => Some(ArithOp::Div),
+            "%" => Some(ArithOp::Mod),
+            "^" => Some(ArithOp::Pow),
+            _ => None,
+        };
+        if let Some(op) = op
+            && bin.modifier.is_none()
+        {
+            let left = Box::new(lower(unwrap_paren(&bin.lhs))?);
+            let right = Box::new(lower(unwrap_paren(&bin.rhs))?);
+            return Ok(QueryPlan::BinaryVector { left, op, right });
+        }
+    }
+    Ok(QueryPlan::Single(Box::new(lower(&expr)?)))
 }
 
 fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
@@ -1252,7 +1302,33 @@ mod tests {
     }
 
     #[test]
+    fn vector_arithmetic_is_a_binary_plan() {
+        match plan_query("a / b").expect("plan") {
+            QueryPlan::BinaryVector { left, op, right } => {
+                assert_eq!(left.metric_name, "a");
+                assert_eq!(right.metric_name, "b");
+                assert_eq!(op, ArithOp::Div);
+            }
+            other => panic!("expected binary, got {other:?}"),
+        }
+        // Aggregations on each side are fine.
+        assert!(matches!(
+            plan_query("sum(a) - sum(b)").expect("plan"),
+            QueryPlan::BinaryVector { .. }
+        ));
+        // Scalar arithmetic stays a single plan.
+        assert!(matches!(
+            plan_query("a * 2").expect("plan"),
+            QueryPlan::Single(_)
+        ));
+        // Vector-to-vector comparison and set ops stay unsupported for now.
+        assert!(plan_query("a > b").is_err());
+        assert!(plan_query("a and b").is_err());
+    }
+
+    #[test]
     fn unsupported_shapes() {
+        // A bare MetricPlan can't represent vector-to-vector arithmetic.
         assert!(matches!(err(r#"x + y"#), QuerierError::Unsupported(_)));
         // histogram_quantile over an inner rate() is not lowered yet.
         assert!(matches!(
