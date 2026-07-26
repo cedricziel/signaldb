@@ -96,6 +96,9 @@ pub enum RangeFn {
     /// `delta(metric[range])` — difference between the last and first sample
     /// in the window (gauge delta; no counter-reset correction).
     Delta,
+    /// `deriv(metric[range])` — per-second derivative estimated by simple
+    /// linear regression of the samples against time.
+    Deriv,
 }
 
 /// A range-vector spec: the function and its window in seconds.
@@ -266,9 +269,10 @@ fn build_plan(
                 "rate" => RangeFn::Rate,
                 "increase" => RangeFn::Increase,
                 "delta" => RangeFn::Delta,
+                "deriv" => RangeFn::Deriv,
                 other => {
                     return Err(QuerierError::Unsupported(format!(
-                        "function '{other}' (supported: rate, increase, delta, *_over_time)"
+                        "function '{other}' (supported: rate, increase, delta, deriv, *_over_time)"
                     )));
                 }
             };
@@ -719,6 +723,24 @@ mod tests {
         let p = plan(r#"sum(delta(x[5m]))"#);
         assert_eq!(p.aggregate, MetricAgg::Sum);
         assert_eq!(p.range.unwrap().function, RangeFn::Delta);
+    }
+
+    #[test]
+    fn deriv_is_a_range_function() {
+        let d = plan(r#"deriv(disk_usage_bytes[1h])"#);
+        assert_eq!(d.metric_name, "disk_usage_bytes");
+        assert_eq!(
+            d.range,
+            Some(RangeSpec {
+                function: RangeFn::Deriv,
+                seconds: 3600.0
+            })
+        );
+        assert_eq!(d.grouping, Grouping::Natural);
+        // Composes under an outer aggregation.
+        let p = plan(r#"max(deriv(x[5m]))"#);
+        assert_eq!(p.aggregate, MetricAgg::Max);
+        assert_eq!(p.range.unwrap().function, RangeFn::Deriv);
     }
 
     #[test]
