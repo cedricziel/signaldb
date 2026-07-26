@@ -22,7 +22,7 @@ use datafusion::functions::datetime::expr_fn::date_bin;
 use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::expr_fn::contains;
 use datafusion::functions_aggregate::expr_fn::{
-    avg, count, first_value, last_value, max, min, regr_slope, stddev_pop, sum, var_pop,
+    avg, count, first_value, last_value, max, min, nth_value, regr_slope, stddev_pop, sum, var_pop,
 };
 use datafusion::logical_expr::{Expr, SortExpr, cast, col, lit, not};
 use datafusion::prelude::{DataFrame, SessionContext};
@@ -209,6 +209,37 @@ impl MetricsService {
                 ])
                 .map_err(QuerierError::QueryFailed)?
             }
+            // `irate`/`idelta`: the last two samples in the window.
+            RangeFn::Irate | RangeFn::Idelta => {
+                let order = vec![SortExpr::new(col("timestamp"), true, true)];
+                let secs = cast_value_f64(cast(cast_ns(col("timestamp")), DataType::Int64))
+                    / lit(1_000_000_000.0);
+                let reduced = df
+                    .aggregate(
+                        vec![bucket, col("metric_name"), col("service_name")],
+                        vec![
+                            nth_value(col("value"), -1, order.clone()).alias("v_last"),
+                            nth_value(col("value"), -2, order.clone()).alias("v_prev"),
+                            nth_value(secs.clone(), -1, order.clone()).alias("t_last"),
+                            nth_value(secs, -2, order).alias("t_prev"),
+                        ],
+                    )
+                    .map_err(QuerierError::QueryFailed)?;
+                let d = col("v_last") - col("v_prev");
+                let per_series = match range.function {
+                    RangeFn::Idelta => d,
+                    RangeFn::Irate => d / (col("t_last") - col("t_prev")),
+                    _ => unreachable!("only irate/idelta here"),
+                };
+                reduced
+                    .select(vec![
+                        col("bucket"),
+                        col("metric_name"),
+                        col("service_name"),
+                        cast_value_f64(per_series).alias("value"),
+                    ])
+                    .map_err(QuerierError::QueryFailed)?
+            }
             // rate/increase/delta: (last - first)[/seconds].
             _ => {
                 let order = vec![SortExpr::new(col("timestamp"), true, true)];
@@ -225,7 +256,9 @@ impl MetricsService {
                 let per_series = match range.function {
                     RangeFn::Increase | RangeFn::Delta => delta,
                     RangeFn::Rate => delta / lit(range.seconds),
-                    RangeFn::Deriv => unreachable!("deriv handled above"),
+                    RangeFn::Deriv | RangeFn::Irate | RangeFn::Idelta => {
+                        unreachable!("handled above")
+                    }
                 };
                 reduced
                     .select(vec![
@@ -1267,6 +1300,26 @@ mod tests {
         // api samples: (t=100ns, 1), (t=200ns, 3). Slope over Δt=100ns is
         // 2 / 100e-9 = 2e7 values/second.
         let out = matrix(&service, "deriv(reqs[1m])", 1000).await;
+        let api = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert!((api.2 - 2.0e7).abs() < 1.0, "got {}", api.2);
+    }
+
+    #[tokio::test]
+    async fn irate_and_idelta_use_last_two_samples() {
+        let service = service_with_data();
+        // api samples: (100ns, 1), (200ns, 3). idelta = 3 - 1 = 2.
+        let out = matrix(&service, "idelta(reqs[1m])", 1000).await;
+        let api = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert_eq!(api.2, 2.0);
+
+        // irate = 2 / (Δt = 100ns = 1e-7 s) = 2e7.
+        let out = matrix(&service, "irate(reqs[1m])", 1000).await;
         let api = out
             .iter()
             .find(|(_, s, _)| s.as_deref() == Some("api"))

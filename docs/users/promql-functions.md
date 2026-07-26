@@ -50,11 +50,12 @@ wrong result.
 | `increase` | ✅ (counter delta) |
 | `delta` | ✅ (gauge delta: last − first, no reset correction) |
 | `deriv` | ✅ (per-second slope via linear regression; needs ≥2 samples) |
+| `irate`, `idelta` | ✅ (from the last two samples in the window) |
 | `avg_over_time`, `sum_over_time`, `min_over_time`, `max_over_time` | ✅ |
 | `count_over_time`, `last_over_time` | ✅ |
 | `stddev_over_time`, `stdvar_over_time` | ✅ (population) |
 | `<agg>_over_time` under an outer aggregation, e.g. `sum(avg_over_time(…))` | ❌ |
-| `irate`, `idelta`, `delta`, `deriv`, `resets`, `changes` | ❌ |
+| `resets`, `changes` | ❌ |
 | `present_over_time` | ✅ (1 per bucket with samples) |
 | `absent_over_time`, `quantile_over_time` | ❌ |
 
@@ -90,7 +91,7 @@ wrong result.
 
 ## Roadmap
 
-Tracked under epic #328 and #335. Unsupported items above are being added
-incrementally; comparison operators and `irate` are the next planned
-increments. Full vector-to-vector binary matching
-(`on`/`ignoring`/`group_left`) and subqueries are larger efforts.
+Tracked under epic #328 and #336. Unsupported items above are being added
+incrementally. Full vector-to-vector binary matching
+(`on`/`ignoring`/`group_left`) and subqueries are the larger remaining
+efforts.
