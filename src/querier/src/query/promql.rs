@@ -28,11 +28,10 @@
 //!
 //! Scalar comparisons (`metric > 5`, `5 < metric`, with an optional `bool`
 //! modifier) filter the result or map it to 1/0. Vector-to-vector arithmetic
-//! (`a / b`) matches series one-to-one on their shared materialized label.
-//! Vector-to-vector comparison, logical set ops, `on`/`ignoring`/`group_left`
-//! matching, subqueries, and `histogram_quantile` over an inner
-//! `rate()`/aggregation are not lowered yet and return
-//! [`QuerierError::Unsupported`] (#335).
+//! (`a / b`) and comparison (`a > b`) match series one-to-one on their shared
+//! materialized label. Logical set ops, `on`/`ignoring`/`group_left` matching,
+//! subqueries, and `histogram_quantile` over an inner `rate()`/aggregation are
+//! not lowered yet and return [`QuerierError::Unsupported`] (#335).
 //!
 //! Like the log path, range aggregations use fixed step-aligned buckets
 //! (`date_bin`), not Prometheus's sliding window — exact when the step
@@ -273,14 +272,61 @@ pub enum QueryPlan {
         op: ArithOp,
         right: Box<MetricPlan>,
     },
+    /// `left CMP right` between two vectors. Without `bool` it filters `left`
+    /// to the series whose value satisfies the comparison against the matched
+    /// `right`; with `bool` it maps each matched pair to 1/0.
+    BinaryCompare {
+        left: Box<MetricPlan>,
+        op: CmpOp,
+        right: Box<MetricPlan>,
+        return_bool: bool,
+    },
 }
 
 /// Parse and lower a PromQL query to a [`QueryPlan`].
 pub fn plan_query(query: &str) -> Result<QueryPlan, QuerierError> {
     let expr = parser::parse(query)
         .map_err(|e| QuerierError::InvalidInput(format!("invalid PromQL: {e}")))?;
-    // A top-level arithmetic binary with two vector operands is a
-    // vector-to-vector operation; anything else is a single plan.
+    // A top-level binary with two vector operands is a vector-to-vector
+    // operation. Explicit `on`/`ignoring`/`group_left` matching is not
+    // supported yet — only the default one-to-one match (#335).
+    if let Expr::Binary(bin) = unwrap_paren(&expr)
+        && bin.op.is_comparison_operator()
+        && as_scalar(&bin.lhs).is_none()
+        && as_scalar(&bin.rhs).is_none()
+        && bin.modifier.as_ref().is_none_or(|m| {
+            m.matching.is_none()
+                && matches!(
+                    m.card,
+                    promql_parser::parser::VectorMatchCardinality::OneToOne
+                )
+        })
+    {
+        let op = match format!("{}", bin.op).as_str() {
+            "==" => Some(CmpOp::Eq),
+            "!=" => Some(CmpOp::Ne),
+            ">" => Some(CmpOp::Gt),
+            "<" => Some(CmpOp::Lt),
+            ">=" => Some(CmpOp::Ge),
+            "<=" => Some(CmpOp::Le),
+            _ => None,
+        };
+        if let Some(op) = op {
+            let return_bool = bin
+                .modifier
+                .as_ref()
+                .map(|m| m.return_bool)
+                .unwrap_or(false);
+            let left = Box::new(lower(unwrap_paren(&bin.lhs))?);
+            let right = Box::new(lower(unwrap_paren(&bin.rhs))?);
+            return Ok(QueryPlan::BinaryCompare {
+                left,
+                op,
+                right,
+                return_bool,
+            });
+        }
+    }
     if let Expr::Binary(bin) = unwrap_paren(&expr)
         && !bin.op.is_comparison_operator()
         && as_scalar(&bin.lhs).is_none()
@@ -1321,9 +1367,32 @@ mod tests {
             plan_query("a * 2").expect("plan"),
             QueryPlan::Single(_)
         ));
-        // Vector-to-vector comparison and set ops stay unsupported for now.
-        assert!(plan_query("a > b").is_err());
+        // Logical set ops and explicit matching stay unsupported for now.
         assert!(plan_query("a and b").is_err());
+        assert!(plan_query("a / on(job) b").is_err());
+    }
+
+    #[test]
+    fn vector_comparison_is_a_binary_plan() {
+        match plan_query("a > b").expect("plan") {
+            QueryPlan::BinaryCompare {
+                left,
+                op,
+                right,
+                return_bool,
+            } => {
+                assert_eq!(left.metric_name, "a");
+                assert_eq!(right.metric_name, "b");
+                assert_eq!(op, CmpOp::Gt);
+                assert!(!return_bool);
+            }
+            other => panic!("expected compare, got {other:?}"),
+        }
+        // `bool` modifier is carried through.
+        match plan_query("a == bool b").expect("plan") {
+            QueryPlan::BinaryCompare { return_bool, .. } => assert!(return_bool),
+            other => panic!("expected compare, got {other:?}"),
+        }
     }
 
     #[test]
