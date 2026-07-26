@@ -29,7 +29,8 @@ use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
 use super::promql::{
-    ArithOp, Grouping, LabelMatch, MatchKind, MetricAgg, MetricPlan, TopKSpec, ValueOp, plan_promql,
+    ArithOp, CmpOp, Grouping, LabelMatch, MatchKind, MetricAgg, MetricPlan, TopKSpec, ValueOp,
+    plan_promql,
 };
 use super::{error::QuerierError, table_ref::build_table_reference};
 
@@ -125,6 +126,19 @@ impl MetricsService {
 
         // Apply math / scalar-arithmetic transforms to the result value.
         let df = apply_transforms_df(df, &plan.transforms, &group_cols)?;
+
+        // `vector CMP scalar` without `bool`: keep only matching samples.
+        let df = if let Some(cmp) = &plan.filter {
+            df.filter(cmp_bool_expr(
+                col("value"),
+                cmp.op,
+                cmp.scalar,
+                cmp.scalar_left,
+            ))
+            .map_err(QuerierError::QueryFailed)?
+        } else {
+            df
+        };
 
         let batches = df
             .sort(vec![SortExpr::new(col("bucket"), true, true)])
@@ -304,11 +318,18 @@ impl MetricsService {
         let mut services = Vec::with_capacity(groups.len());
         let mut values = Vec::with_capacity(groups.len());
         for ((bucket_ns, metric, service), acc) in groups {
+            let q = histogram_quantile(phi, &acc.bounds, &acc.counts);
+            let val = apply_transforms_f64(q, &plan.transforms);
+            // `vector CMP scalar` without `bool`: drop non-matching series.
+            if let Some(cmp) = &plan.filter
+                && !cmp_f64(val, cmp.op, cmp.scalar, cmp.scalar_left)
+            {
+                continue;
+            }
             ts.push(bucket_ns);
             names.push(metric);
             services.push(service);
-            let q = histogram_quantile(phi, &acc.bounds, &acc.counts);
-            values.push(apply_transforms_f64(q, &plan.transforms));
+            values.push(val);
         }
 
         let schema = Arc::new(Schema::new(vec![
@@ -826,9 +847,29 @@ fn apply_value_ops_expr(mut value: Expr, ops: &[ValueOp]) -> Expr {
                     .unwrap()
             }
             ValueOp::Arith(arith, s, scalar_left) => arith_expr(*arith, value, *s, *scalar_left),
+            ValueOp::CompareBool(op, s, scalar_left) => {
+                when(cmp_bool_expr(value, *op, *s, *scalar_left), lit(1.0_f64))
+                    .otherwise(lit(0.0_f64))
+                    .unwrap()
+            }
         };
     }
     value
+}
+
+/// Build a boolean `value CMP scalar` (or `scalar CMP value`) expression,
+/// used both for the `bool` value map and for comparison filtering.
+fn cmp_bool_expr(value: Expr, op: CmpOp, scalar: f64, scalar_left: bool) -> Expr {
+    let s = lit(scalar);
+    let (l, r) = if scalar_left { (s, value) } else { (value, s) };
+    match op {
+        CmpOp::Eq => l.eq(r),
+        CmpOp::Ne => l.not_eq(r),
+        CmpOp::Gt => l.gt(r),
+        CmpOp::Lt => l.lt(r),
+        CmpOp::Ge => l.gt_eq(r),
+        CmpOp::Le => l.lt_eq(r),
+    }
 }
 
 /// Build `value OP scalar` (or `scalar OP value`) as an expression.
@@ -867,9 +908,33 @@ fn apply_transforms_f64(mut v: f64, ops: &[ValueOp]) -> f64 {
             ValueOp::ClampMax(m) => v.min(*m),
             ValueOp::Clamp(lo, hi) => v.clamp(*lo, *hi),
             ValueOp::Arith(arith, s, scalar_left) => arith_f64(*arith, v, *s, *scalar_left),
+            ValueOp::CompareBool(op, s, scalar_left) => {
+                if cmp_f64(v, *op, *s, *scalar_left) {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
         };
     }
     v
+}
+
+/// Evaluate a scalar comparison for the histogram (row-wise) path.
+fn cmp_f64(v: f64, op: CmpOp, scalar: f64, scalar_left: bool) -> bool {
+    let (l, r) = if scalar_left {
+        (scalar, v)
+    } else {
+        (v, scalar)
+    };
+    match op {
+        CmpOp::Eq => l == r,
+        CmpOp::Ne => l != r,
+        CmpOp::Gt => l > r,
+        CmpOp::Lt => l < r,
+        CmpOp::Ge => l >= r,
+        CmpOp::Le => l <= r,
+    }
 }
 
 fn arith_f64(op: ArithOp, v: f64, s: f64, scalar_left: bool) -> f64 {
@@ -1297,6 +1362,40 @@ mod tests {
         // abs over a rate that is negative is not exercised here; abs of a
         // positive last value is a no-op.
         assert_eq!(by(matrix(&service, "abs(reqs)", 1000).await, "api"), 3.0);
+    }
+
+    #[tokio::test]
+    async fn scalar_comparison_filters_series() {
+        let service = service_with_data();
+        // Bare selector → api=3, web=5. `reqs > 4` keeps only web.
+        let out = matrix(&service, "reqs > 4", 1000).await;
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1.as_deref(), Some("web"));
+        assert_eq!(out[0].2, 5.0);
+
+        // `4 < reqs` is equivalent (scalar on the left).
+        let out = matrix(&service, "4 < reqs", 1000).await;
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1.as_deref(), Some("web"));
+
+        // No series match → empty result.
+        assert!(matrix(&service, "reqs > 100", 1000).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn scalar_comparison_bool_maps_to_one_or_zero() {
+        let service = service_with_data();
+        // `reqs > bool 4`: api(3) → 0, web(5) → 1. Both series retained.
+        let out = matrix(&service, "reqs > bool 4", 1000).await;
+        let by = |svc: &str| {
+            out.iter()
+                .find(|(_, s, _)| s.as_deref() == Some(svc))
+                .unwrap()
+                .2
+        };
+        assert_eq!(out.len(), 2);
+        assert_eq!(by("api"), 0.0);
+        assert_eq!(by("web"), 1.0);
     }
 
     #[tokio::test]
