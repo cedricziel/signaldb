@@ -11,7 +11,8 @@
 //!
 //! - A bare selector `metric{label="v"}` — the series' samples, bucketed
 //!   by step (last value per bucket).
-//! - A vector aggregation `sum|avg|min|max|count [by (labels)] (metric)`.
+//! - A vector aggregation
+//!   `sum|avg|min|max|count|stddev|stdvar|group [by (labels)] (metric)`.
 //!
 //! - Range-vector functions `rate(metric[range])` and
 //!   `increase(metric[range])`, optionally under an outer aggregation.
@@ -47,10 +48,12 @@ pub enum MetricAgg {
     Min,
     Max,
     Count,
-    /// Population standard deviation (`stddev_over_time`).
+    /// Population standard deviation (`stddev`, `stddev_over_time`).
     Stddev,
-    /// Population variance (`stdvar_over_time`).
+    /// Population variance (`stdvar`, `stdvar_over_time`).
     StdVar,
+    /// `group(...)` — a constant `1` per output series.
+    Group,
 }
 
 /// How series are grouped.
@@ -492,6 +495,9 @@ fn aggregate_op(op: &str) -> Result<MetricAgg, QuerierError> {
         "min" => MetricAgg::Min,
         "max" => MetricAgg::Max,
         "count" => MetricAgg::Count,
+        "stddev" => MetricAgg::Stddev,
+        "stdvar" => MetricAgg::StdVar,
+        "group" => MetricAgg::Group,
         other => {
             return Err(QuerierError::Unsupported(format!(
                 "aggregation operator '{other}'"
@@ -632,6 +638,23 @@ mod tests {
         ] {
             assert_eq!(plan(q).aggregate, a, "{q}");
         }
+    }
+
+    #[test]
+    fn stddev_stdvar_group_aggregates() {
+        for (q, a) in [
+            ("stddev(x)", MetricAgg::Stddev),
+            ("stdvar(x)", MetricAgg::StdVar),
+            ("group(x)", MetricAgg::Group),
+        ] {
+            let p = plan(q);
+            assert_eq!(p.aggregate, a, "{q}");
+            assert_eq!(p.grouping, Grouping::Collapse, "{q}");
+        }
+        // With `by (…)` grouping.
+        let p = plan(r#"stddev by (job) (x)"#);
+        assert_eq!(p.aggregate, MetricAgg::Stddev);
+        assert_eq!(p.grouping, Grouping::By(vec!["job".into()]));
     }
 
     #[test]

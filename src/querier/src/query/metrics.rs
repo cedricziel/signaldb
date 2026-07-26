@@ -667,6 +667,8 @@ fn aggregate_expr(agg: MetricAgg) -> Expr {
         MetricAgg::Count => count(value),
         MetricAgg::Stddev => stddev_pop(value),
         MetricAgg::StdVar => var_pop(value),
+        // `group()` yields a constant 1 for every output series.
+        MetricAgg::Group => max(lit(1.0_f64)),
         // Last value in the bucket, ordered by timestamp.
         MetricAgg::Last => last_value(value, vec![SortExpr::new(col("timestamp"), true, true)]),
     }

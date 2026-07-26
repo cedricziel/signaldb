@@ -37,8 +37,9 @@ wrong result.
 |----------|--------|
 | `sum`, `avg`, `min`, `max`, `count` (with/without `by (…)`) | ✅ |
 | `topk(k, …)`, `bottomk(k, …)` (no `by`/`without`) | ✅ |
+| `stddev`, `stdvar` (population), `group` (with/without `by (…)`) | ✅ |
 | `without (…)` grouping | ❌ |
-| `stddev`, `stdvar`, `group`, `count_values` | ❌ |
+| `count_values` | ❌ |
 | `quantile` (parameterized) | ❌ |
 
 ## Range (`[range]`) functions
