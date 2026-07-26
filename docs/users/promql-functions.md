@@ -48,6 +48,7 @@ wrong result.
 |----------|--------|
 | `rate` | ✅ (counter delta ÷ range seconds) |
 | `increase` | ✅ (counter delta) |
+| `delta` | ✅ (gauge delta: last − first, no reset correction) |
 | `avg_over_time`, `sum_over_time`, `min_over_time`, `max_over_time` | ✅ |
 | `count_over_time`, `last_over_time` | ✅ |
 | `stddev_over_time`, `stdvar_over_time` | ✅ (population) |

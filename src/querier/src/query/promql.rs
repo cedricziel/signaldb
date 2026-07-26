@@ -91,6 +91,9 @@ pub enum RangeFn {
     Rate,
     /// `increase(metric[range])` — total increase over the window.
     Increase,
+    /// `delta(metric[range])` — difference between the last and first sample
+    /// in the window (gauge delta; no counter-reset correction).
+    Delta,
 }
 
 /// A range-vector spec: the function and its window in seconds.
@@ -260,9 +263,10 @@ fn build_plan(
             let function = match call.func.name {
                 "rate" => RangeFn::Rate,
                 "increase" => RangeFn::Increase,
+                "delta" => RangeFn::Delta,
                 other => {
                     return Err(QuerierError::Unsupported(format!(
-                        "function '{other}' (supported: rate, increase, *_over_time)"
+                        "function '{other}' (supported: rate, increase, delta, *_over_time)"
                     )));
                 }
             };
@@ -685,6 +689,24 @@ mod tests {
                 seconds: 60.0
             })
         );
+    }
+
+    #[test]
+    fn delta_is_a_range_function() {
+        let d = plan(r#"delta(temperature{room="lab"}[10m])"#);
+        assert_eq!(d.metric_name, "temperature");
+        assert_eq!(
+            d.range,
+            Some(RangeSpec {
+                function: RangeFn::Delta,
+                seconds: 600.0
+            })
+        );
+        assert_eq!(d.grouping, Grouping::Natural);
+        // Composes under an outer aggregation like rate/increase.
+        let p = plan(r#"sum(delta(x[5m]))"#);
+        assert_eq!(p.aggregate, MetricAgg::Sum);
+        assert_eq!(p.range.unwrap().function, RangeFn::Delta);
     }
 
     #[test]

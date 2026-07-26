@@ -189,7 +189,7 @@ impl MetricsService {
 
         let delta = col("last") - col("first");
         let per_series = match range.function {
-            RangeFn::Increase => delta,
+            RangeFn::Increase | RangeFn::Delta => delta,
             RangeFn::Rate => delta / lit(range.seconds),
         };
         let df = df
