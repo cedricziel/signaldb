@@ -25,11 +25,14 @@
 //!   [`OuterAgg`]).
 //! - `topk` / `bottomk`, which keep the `k` highest/lowest series per
 //!   bucket after aggregation (see [`TopKSpec`]).
+//! - Vector-scalar arithmetic (`expr * 2`, `expr / 60`), folded into the
+//!   plan as a [`ScalarOp`].
 //!
-//! Binary operators, `sort`/`sort_desc`, `vector()`, and `label_replace`
-//! return [`QuerierError::Unsupported`].
+//! Vector-to-vector binary operators, comparisons, logical/set operators,
+//! `sort`/`sort_desc`, `vector()`, and `label_replace` return
+//! [`QuerierError::Unsupported`].
 
-use logql::{AggregationFunction, Grouping, LogQuery, MetricQuery, RangeFunction};
+use logql::{AggregationFunction, BinOp, Grouping, LogQuery, MetricQuery, RangeFunction};
 
 use super::error::QuerierError;
 
@@ -87,6 +90,25 @@ pub enum OuterAgg {
     Stdvar,
 }
 
+/// A binary arithmetic operator (`+`, `-`, `*`, `/`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArithOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+/// A scalar arithmetic operation applied to every value of a metric
+/// query, e.g. `rate(...) / 60` or `100 * rate(...)`. `scalar_is_lhs`
+/// records the operand order so non-commutative `-` / `/` stay correct.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScalarOp {
+    pub op: ArithOp,
+    pub scalar: f64,
+    pub scalar_is_lhs: bool,
+}
+
 /// `topk(k, ...)` / `bottomk(k, ...)`: keep the `k` highest (or lowest)
 /// series by value in each time bucket, applied after the range and any
 /// outer aggregation.
@@ -115,6 +137,9 @@ pub struct MetricPlan {
     /// (empty = collapse across all series); when `None`, the range
     /// aggregation is grouped directly by `group_labels`.
     pub outer_agg: Option<OuterAgg>,
+    /// A scalar arithmetic op applied to every value after aggregation and
+    /// before any `topk`/`bottomk` ranking.
+    pub scalar_op: Option<ScalarOp>,
     /// A `topk`/`bottomk` per-bucket ranking to apply after aggregation.
     pub topk: Option<TopKSpec>,
     /// The `[range]` window in nanoseconds (informational; bucketing uses
@@ -190,9 +215,7 @@ pub fn plan_metric_query(query: &MetricQuery) -> Result<MetricPlan, QuerierError
                 ))),
             }
         }
-        MetricQuery::Binary(_) => Err(QuerierError::Unsupported(
-            "binary operations between metric queries".to_string(),
-        )),
+        MetricQuery::Binary(bin) => plan_binary(bin),
         MetricQuery::Literal(_) | MetricQuery::VectorLiteral(_) => Err(QuerierError::Unsupported(
             "scalar/vector literal metric query".to_string(),
         )),
@@ -266,9 +289,65 @@ fn plan_range(
         aggregate,
         rate_divisor_seconds,
         outer_agg: None,
+        scalar_op: None,
         topk: None,
         range_ns: range.range.as_nanos(),
     })
+}
+
+/// Lower a binary expression. Only **vector-scalar arithmetic** is
+/// supported: one operand is a scalar literal and the other a metric
+/// query, combined with `+`/`-`/`*`/`/`. The scalar folds into the
+/// metric query's plan as a [`ScalarOp`]. Vector-to-vector operations,
+/// comparisons, and logical/set operators are not supported yet.
+fn plan_binary(bin: &logql::BinaryExpr) -> Result<MetricPlan, QuerierError> {
+    let op = match bin.op {
+        BinOp::Add => ArithOp::Add,
+        BinOp::Sub => ArithOp::Sub,
+        BinOp::Mul => ArithOp::Mul,
+        BinOp::Div => ArithOp::Div,
+        other => {
+            return Err(QuerierError::Unsupported(format!(
+                "binary operator {other:?} between metric queries"
+            )));
+        }
+    };
+
+    let (scalar, vector, scalar_is_lhs) = match (&bin.left, &bin.right) {
+        (MetricQuery::Literal(s), rhs) if !is_literal(rhs) => (*s, rhs, true),
+        (lhs, MetricQuery::Literal(s)) if !is_literal(lhs) => (*s, lhs, false),
+        (MetricQuery::Literal(_), MetricQuery::Literal(_)) => {
+            return Err(QuerierError::Unsupported(
+                "arithmetic between two scalars".to_string(),
+            ));
+        }
+        _ => {
+            return Err(QuerierError::Unsupported(
+                "binary operation between two metric queries".to_string(),
+            ));
+        }
+    };
+
+    let mut plan = plan_metric_query(vector)?;
+    if plan.scalar_op.is_some() {
+        return Err(QuerierError::Unsupported(
+            "chained scalar arithmetic".to_string(),
+        ));
+    }
+    plan.scalar_op = Some(ScalarOp {
+        op,
+        scalar,
+        scalar_is_lhs,
+    });
+    Ok(plan)
+}
+
+/// Whether a metric query is a bare scalar literal.
+fn is_literal(query: &MetricQuery) -> bool {
+    matches!(
+        query,
+        MetricQuery::Literal(_) | MetricQuery::VectorLiteral(_)
+    )
 }
 
 /// Extract the `by (...)` labels. `without` is only supported when empty
@@ -475,6 +554,42 @@ mod tests {
             })
         );
         assert_eq!(g.group_labels, vec!["level".to_string()]);
+    }
+
+    #[test]
+    fn vector_scalar_arithmetic_folds_into_the_plan() {
+        // Scalar on the right.
+        let p = plan(r#"rate({a="b"}[5m]) / 60"#);
+        assert_eq!(
+            p.scalar_op,
+            Some(ScalarOp {
+                op: ArithOp::Div,
+                scalar: 60.0,
+                scalar_is_lhs: false
+            })
+        );
+        assert_eq!(p.aggregate, Aggregate::Count);
+
+        // Scalar on the left records the operand order.
+        let l = plan(r#"100 * count_over_time({a="b"}[5m])"#);
+        assert_eq!(
+            l.scalar_op,
+            Some(ScalarOp {
+                op: ArithOp::Mul,
+                scalar: 100.0,
+                scalar_is_lhs: true
+            })
+        );
+
+        // Vector-to-vector arithmetic and comparisons are still rejected.
+        assert!(matches!(
+            err(r#"rate({a="b"}[5m]) / rate({a="c"}[5m])"#),
+            QuerierError::Unsupported(_)
+        ));
+        assert!(matches!(
+            err(r#"rate({a="b"}[5m]) > 5"#),
+            QuerierError::Unsupported(_)
+        ));
     }
 
     #[test]

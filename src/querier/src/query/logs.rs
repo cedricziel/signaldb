@@ -31,7 +31,7 @@ use datafusion::{
 use logql::{Expr as LogqlExpr, LogQuery, parse, parse_query, parse_selector};
 
 use super::logql::log_query_filter;
-use super::logql_metric::{Aggregate, OuterAgg, TopKSpec, plan_metric_query};
+use super::logql_metric::{Aggregate, ArithOp, OuterAgg, ScalarOp, TopKSpec, plan_metric_query};
 use super::{
     LogQueryParams, MetricQueryParams, error::QuerierError, table_ref::build_table_reference,
 };
@@ -255,6 +255,21 @@ impl LogsService {
             let mut proj = vec![col("bucket")];
             proj.extend(out_group_cols.iter().map(|c| col(*c)));
             proj.push(cast(col("value"), DataType::Float64).alias("value"));
+            df = df.select(proj).map_err(QuerierError::QueryFailed)?;
+        }
+
+        // Vector-scalar arithmetic: scale/shift every value in place. The
+        // surviving group columns are the outer-agg output when present,
+        // else the range aggregation's own grouping.
+        if let Some(scalar_op) = plan.scalar_op {
+            let current_group_cols = if plan.outer_agg.is_some() {
+                &out_group_cols
+            } else {
+                &range_group_cols
+            };
+            let mut proj = vec![col("bucket")];
+            proj.extend(current_group_cols.iter().map(|c| col(*c)));
+            proj.push(scalar_op_expr(col("value"), scalar_op).alias("value"));
             df = df.select(proj).map_err(QuerierError::QueryFailed)?;
         }
 
@@ -512,6 +527,23 @@ fn outer_agg_expr(outer: OuterAgg, value: Expr) -> Expr {
         // statistics across the series in the group.
         OuterAgg::Stddev => stddev_pop(value),
         OuterAgg::Stdvar => var_pop(value),
+    }
+}
+
+/// Apply a scalar arithmetic op to a value expression, honoring the
+/// operand order recorded in the [`ScalarOp`].
+fn scalar_op_expr(value: Expr, scalar_op: ScalarOp) -> Expr {
+    let scalar = lit(scalar_op.scalar);
+    let (lhs, rhs) = if scalar_op.scalar_is_lhs {
+        (scalar, value)
+    } else {
+        (value, scalar)
+    };
+    match scalar_op.op {
+        ArithOp::Add => lhs + rhs,
+        ArithOp::Sub => lhs - rhs,
+        ArithOp::Mul => lhs * rhs,
+        ArithOp::Div => lhs / rhs,
     }
 }
 
@@ -1091,6 +1123,29 @@ mod tests {
             "stddev {}",
             dev[0].0
         );
+    }
+
+    #[tokio::test]
+    async fn scalar_arithmetic_scales_values() {
+        let service = service_with_data();
+        // Each of the three series has count 1; `* 10` scales them to 10.
+        let scaled = matrix(
+            &service,
+            r#"count_over_time({service_name=~".+"}[1000ns]) * 10"#,
+            1000,
+        )
+        .await;
+        assert_eq!(scaled.len(), 3);
+        assert!(scaled.iter().all(|(v, _)| *v == 10.0));
+
+        // Operand order matters for subtraction: 100 - 1 = 99.
+        let shifted = matrix(
+            &service,
+            r#"100 - count_over_time({service_name=~".+"}[1000ns])"#,
+            1000,
+        )
+        .await;
+        assert!(shifted.iter().all(|(v, _)| *v == 99.0));
     }
 
     #[tokio::test]
