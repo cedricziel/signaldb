@@ -226,6 +226,9 @@ pub struct MetricPlan {
     /// A second aggregation folded over the per-series result, e.g. the outer
     /// `sum` in `sum(avg_over_time(x[5m]))`. The inner reducer is `aggregate`.
     pub outer_agg: Option<(MetricAgg, Grouping)>,
+    /// Set for `absent(v)` / `absent_over_time(v[range])` — emit `1` for each
+    /// step bucket in which the selector matches no series.
+    pub absent: bool,
 }
 
 /// A per-bucket reduction that needs the ordered sample sequence.
@@ -394,6 +397,11 @@ pub fn plan_query(query: &str) -> Result<QueryPlan, QuerierError> {
 fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
     match expr {
         Expr::Paren(p) => lower(&p.expr),
+        // `absent(v)` / `absent_over_time(v[range])`: emit 1 where the
+        // selector matches nothing.
+        Expr::Call(call) if call.func.name == "absent" || call.func.name == "absent_over_time" => {
+            lower_absent(call)
+        }
         // `histogram_quantile(phi, <selector>)` targets the histogram table.
         Expr::Call(call) if call.func.name == "histogram_quantile" => {
             lower_histogram_quantile(call)
@@ -573,6 +581,7 @@ fn lower_selector(
         histogram_fn: None,
         sequence_fn: None,
         outer_agg: None,
+        absent: false,
     })
 }
 
@@ -705,6 +714,28 @@ fn lower_histogram_scalar(
     };
     let mut plan = lower_selector(vs, MetricAgg::Last, Grouping::Natural, None)?;
     plan.histogram_fn = Some(hf);
+    Ok(plan)
+}
+
+/// Lower `absent(v)` / `absent_over_time(v[range])`. The argument must be a
+/// (possibly range-vector) selector; the plan is flagged so execution emits a
+/// `1`-valued series for each step bucket with no matching data.
+fn lower_absent(call: &parser::Call) -> Result<MetricPlan, QuerierError> {
+    let arg = call.args.args.first().ok_or_else(|| {
+        QuerierError::InvalidInput(format!("{} expects a selector", call.func.name))
+    })?;
+    let vs = match unwrap_paren(arg) {
+        Expr::VectorSelector(vs) => vs,
+        Expr::MatrixSelector(ms) => &ms.vs,
+        _ => {
+            return Err(QuerierError::Unsupported(format!(
+                "{} requires a selector argument",
+                call.func.name
+            )));
+        }
+    };
+    let mut plan = lower_selector(vs, MetricAgg::Last, Grouping::Natural, None)?;
+    plan.absent = true;
     Ok(plan)
 }
 
@@ -1477,6 +1508,15 @@ mod tests {
         assert_eq!(p.matchers.len(), 1);
         assert_eq!(p.grouping, Grouping::Natural);
         assert!(p.range.is_none());
+    }
+
+    #[test]
+    fn absent_sets_the_flag() {
+        assert!(plan("absent(up)").absent);
+        assert!(plan("absent_over_time(up[5m])").absent);
+        assert!(!plan("up").absent);
+        // The selector's matchers are preserved for labelling the output.
+        assert_eq!(plan(r#"absent(up{job="x"})"#).matchers.len(), 1);
     }
 
     #[test]
