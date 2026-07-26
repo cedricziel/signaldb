@@ -209,6 +209,27 @@ impl MetricsService {
             self.simple_query(df, bucket, plan.aggregate, plan.agg_param, &group_cols)?
         };
 
+        // A second aggregation folds the per-series result, e.g. the outer
+        // `sum` in `sum(avg_over_time(x[5m]))`.
+        let (df, group_cols) = if let Some((outer_agg, outer_grouping)) = &plan.outer_agg {
+            let outer_cols = Self::group_columns_for(outer_grouping)?;
+            let mut group_exprs = vec![col("bucket"), col("metric_name")];
+            group_exprs.extend(outer_cols.iter().map(|c| col(*c)));
+            let df = df
+                .aggregate(
+                    group_exprs,
+                    vec![aggregate_expr(*outer_agg, None).alias("value")],
+                )
+                .map_err(QuerierError::QueryFailed)?;
+            let mut proj = vec![col("bucket"), col("metric_name")];
+            proj.extend(outer_cols.iter().map(|c| col(*c)));
+            proj.push(cast_value_f64(col("value")).alias("value"));
+            let df = df.select(proj).map_err(QuerierError::QueryFailed)?;
+            (df, outer_cols)
+        } else {
+            (df, group_cols)
+        };
+
         // Apply math / scalar-arithmetic transforms to the result value.
         let df = apply_transforms_df(df, &plan.transforms, &group_cols)?;
 
@@ -901,7 +922,12 @@ impl MetricsService {
     /// Resolve the grouping labels to physical columns. Only labels backed
     /// by a dedicated column can be grouped.
     fn group_columns(&self, plan: &MetricPlan) -> Result<Vec<&'static str>, QuerierError> {
-        match &plan.grouping {
+        Self::group_columns_for(&plan.grouping)
+    }
+
+    /// Resolve a [`Grouping`] to physical group columns.
+    fn group_columns_for(grouping: &Grouping) -> Result<Vec<&'static str>, QuerierError> {
+        match grouping {
             // Bare selector: one series per service.
             Grouping::Natural => Ok(vec!["service_name"]),
             // sum(x): collapse everything.
@@ -2042,6 +2068,19 @@ mod tests {
             .find(|(_, s, _)| s.as_deref() == Some("api"))
             .unwrap();
         assert!((api_sd.2 - 1.0).abs() < 1e-9, "got {}", api_sd.2);
+    }
+
+    #[tokio::test]
+    async fn over_time_under_aggregation_folds_series() {
+        let service = service_with_data();
+        // avg_over_time per series: api=(1+3)/2=2, web=5. sum → 7.
+        let out = matrix(&service, "sum(avg_over_time(reqs[1m]))", 1000).await;
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].2, 7.0);
+        // max per service: api=3, web=5 (max_over_time), then min across → 3.
+        let out = matrix(&service, "min(max_over_time(reqs[1m]))", 1000).await;
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].2, 3.0);
     }
 
     #[tokio::test]
