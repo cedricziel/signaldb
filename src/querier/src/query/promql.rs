@@ -363,6 +363,13 @@ fn lower_selector(
     }
     let metric_name = metric_name
         .ok_or_else(|| QuerierError::InvalidInput("selector has no metric name".to_string()))?;
+    // The `@` modifier pins evaluation to an absolute time; we can't honor
+    // that yet, so reject it rather than silently ignoring it.
+    if vs.at.is_some() {
+        return Err(QuerierError::Unsupported(
+            "@ modifier is not supported yet".to_string(),
+        ));
+    }
     let offset_ns = match &vs.offset {
         None => 0,
         Some(promql_parser::parser::Offset::Pos(d)) => d.as_nanos() as i64,
@@ -805,6 +812,15 @@ mod tests {
         assert_eq!(plan("x offset -30s").offset_ns, -30_000_000_000);
         // Offset inside a range function is read from the inner selector.
         assert_eq!(plan("rate(x[5m] offset 1h)").offset_ns, 3_600_000_000_000);
+    }
+
+    #[test]
+    fn at_modifier_is_rejected() {
+        // `@` is not honored yet; reject rather than silently ignore it.
+        assert!(matches!(
+            err("x @ 1600000000"),
+            QuerierError::Unsupported(_)
+        ));
     }
 
     #[test]
