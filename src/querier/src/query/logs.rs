@@ -34,7 +34,7 @@ use logql::{BinOp, Expr as LogqlExpr, LogQuery, MetricQuery, parse, parse_query,
 
 use super::logql::log_query_filter;
 use super::logql_metric::{
-    Aggregate, ArithOp, LabelReplaceSpec, OuterAgg, ScalarOp, TopKSpec, plan_metric_query,
+    Aggregate, ArithOp, LabelReplaceSpec, OuterAgg, ScalarOp, SortSpec, TopKSpec, plan_metric_query,
 };
 use super::{
     LogQueryParams, MetricQueryParams, error::QuerierError, table_ref::build_table_reference,
@@ -328,8 +328,14 @@ impl LogsService {
         };
 
         // `label_replace`: rewrite a label from a regex capture of another.
-        match &plan.label_replace {
-            Some(spec) => apply_label_replace(batches, spec),
+        let batches = match &plan.label_replace {
+            Some(spec) => apply_label_replace(batches, spec)?,
+            None => batches,
+        };
+
+        // `sort`/`sort_desc`: order the output series by value.
+        match plan.sort {
+            Some(spec) => apply_sort(batches, spec),
             None => Ok(batches),
         }
     }
@@ -682,6 +688,12 @@ type SeriesKey = (i64, Vec<(String, String)>);
 /// Joined matrix rows indexed by [`SeriesKey`]; ordered by key.
 type JoinMap = BTreeMap<SeriesKey, f64>;
 
+/// A series' label set (sorted pairs), used to group its points for sort.
+type SeriesLabels = Vec<(String, String)>;
+
+/// A series' `(bucket, value)` points.
+type SeriesPoints = Vec<(i64, f64)>;
+
 /// Read a LogQL matrix batch into `(bucket, sorted label pairs, value)`
 /// rows. Every string column other than `value` is treated as a series
 /// label, so the join key is agnostic to which grouping produced it.
@@ -970,6 +982,85 @@ fn apply_label_replace(
     let schema = Arc::new(Schema::new(fields));
 
     let mut columns: Vec<ArrayRef> = Vec::with_capacity(2 + names.len());
+    columns.push(Arc::new(TimestampNanosecondArray::from(buckets)));
+    for col_values in label_values {
+        columns.push(Arc::new(StringArray::from(col_values)));
+    }
+    columns.push(Arc::new(Float64Array::from(values)));
+
+    let batch = RecordBatch::try_new(schema, columns)
+        .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+    Ok(vec![batch])
+}
+
+/// Order the output series by value for `sort` / `sort_desc`. Series are
+/// ranked by their value at their latest bucket (a range matrix has one
+/// value per bucket, so `sort` is only strictly defined for instant
+/// queries; the latest value is the natural stand-in). Rows are emitted
+/// series-by-series in that order, which the router preserves as the series
+/// order of the response.
+fn apply_sort(batches: Vec<RecordBatch>, spec: SortSpec) -> Result<Vec<RecordBatch>, QuerierError> {
+    use std::cmp::Ordering;
+
+    if batches.is_empty() {
+        return Ok(batches);
+    }
+    let schema = batches[0].schema();
+
+    // Group each series' (bucket, value) points by its label set.
+    let mut series: BTreeMap<SeriesLabels, SeriesPoints> = BTreeMap::new();
+    for batch in &batches {
+        for (bucket, labels, v) in logql_matrix_rows(batch)? {
+            series.entry(labels).or_default().push((bucket, v));
+        }
+    }
+
+    // Rank series by the value at the latest bucket.
+    let latest = |points: &[(i64, f64)]| -> f64 {
+        points
+            .iter()
+            .max_by_key(|(t, _)| *t)
+            .map(|(_, v)| *v)
+            .unwrap_or(f64::NAN)
+    };
+    let mut ordered: Vec<(SeriesLabels, SeriesPoints)> = series.into_iter().collect();
+    ordered.sort_by(|a, b| {
+        let ord = latest(&a.1)
+            .partial_cmp(&latest(&b.1))
+            .unwrap_or(Ordering::Equal);
+        if spec.desc { ord.reverse() } else { ord }
+    });
+
+    // Emit rows series-by-series (each series' points in bucket order).
+    let label_names: Vec<String> = schema
+        .fields()
+        .iter()
+        .filter(|f| f.name() != "bucket" && f.name() != "value")
+        .map(|f| f.name().to_string())
+        .collect();
+
+    let total: usize = ordered.iter().map(|(_, p)| p.len()).sum();
+    let mut buckets = Vec::with_capacity(total);
+    let mut label_values: Vec<Vec<Option<String>>> =
+        vec![Vec::with_capacity(total); label_names.len()];
+    let mut values = Vec::with_capacity(total);
+    for (labels, mut points) in ordered {
+        points.sort_by_key(|(t, _)| *t);
+        for (bucket, v) in points {
+            buckets.push(bucket);
+            for (j, name) in label_names.iter().enumerate() {
+                label_values[j].push(
+                    labels
+                        .iter()
+                        .find(|(k, _)| k == name)
+                        .map(|(_, v)| v.clone()),
+                );
+            }
+            values.push(v);
+        }
+    }
+
+    let mut columns: Vec<ArrayRef> = Vec::with_capacity(2 + label_names.len());
     columns.push(Arc::new(TimestampNanosecondArray::from(buckets)));
     for col_values in label_values {
         columns.push(Arc::new(StringArray::from(col_values)));
@@ -1688,6 +1779,30 @@ mod tests {
         // `or`: union — the two api series plus the right-only web series.
         let or = matrix(&service, &format!("{api} or {all}"), 1000).await;
         assert_eq!(or.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn sort_orders_series_by_value() {
+        let service = service_with_varying_counts();
+        // Two api series: (api,error)=3, (api,info)=1.
+        let asc = matrix(
+            &service,
+            r#"sort(count_over_time({service_name="api"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        assert_eq!(asc.len(), 2);
+        assert_eq!(asc[0].0, 1.0); // lowest first
+        assert_eq!(asc[1].0, 3.0);
+
+        let desc = matrix(
+            &service,
+            r#"sort_desc(count_over_time({service_name="api"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        assert_eq!(desc[0].0, 3.0); // highest first
+        assert_eq!(desc[1].0, 1.0);
     }
 
     #[tokio::test]

@@ -25,6 +25,8 @@
 //!   [`OuterAgg`]).
 //! - `topk` / `bottomk`, which keep the `k` highest/lowest series per
 //!   bucket after aggregation (see [`TopKSpec`]).
+//! - `sort` / `sort_desc`, which order the output series by value (see
+//!   [`SortSpec`]).
 //! - Vector-scalar arithmetic (`expr * 2`, `expr / 60`), folded into the
 //!   plan as a [`ScalarOp`].
 //!
@@ -32,7 +34,7 @@
 //!   label on the finished matrix (see [`LabelReplaceSpec`]).
 //!
 //! Vector-to-vector binary operators, comparisons, logical/set operators,
-//! `sort`/`sort_desc`, and `vector()` return [`QuerierError::Unsupported`].
+//! and `vector()` return [`QuerierError::Unsupported`].
 
 use logql::{AggregationFunction, BinOp, Grouping, LogQuery, MetricQuery, RangeFunction};
 
@@ -137,6 +139,13 @@ pub struct TopKSpec {
     pub bottom: bool,
 }
 
+/// `sort(...)` / `sort_desc(...)`: order the output series by value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortSpec {
+    /// `true` for `sort_desc` (descending), `false` for `sort`.
+    pub desc: bool,
+}
+
 /// A lowered metric query.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricPlan {
@@ -159,6 +168,8 @@ pub struct MetricPlan {
     pub scalar_op: Option<ScalarOp>,
     /// A `topk`/`bottomk` per-bucket ranking to apply after aggregation.
     pub topk: Option<TopKSpec>,
+    /// A `sort`/`sort_desc` ordering of the output series by value.
+    pub sort: Option<SortSpec>,
     /// A `label_replace` label rewrite to apply to the finished matrix.
     pub label_replace: Option<LabelReplaceSpec>,
     /// The `[range]` window in nanoseconds (informational; bucketing uses
@@ -196,6 +207,21 @@ pub fn plan_metric_query(query: &MetricQuery) -> Result<MetricPlan, QuerierError
                     k: k as usize,
                     bottom,
                 });
+                return Ok(plan);
+            }
+
+            // `sort`/`sort_desc` order the inner query's output series by
+            // value: lower the inner, then attach a `SortSpec`.
+            if let AggregationFunction::Sort | AggregationFunction::SortDesc = vector.function {
+                let desc = vector.function == AggregationFunction::SortDesc;
+                if vector.grouping.is_some() {
+                    return Err(QuerierError::Unsupported("grouped sort".to_string()));
+                }
+                let mut plan = plan_metric_query(&vector.inner)?;
+                if plan.sort.is_some() {
+                    return Err(QuerierError::Unsupported("chained sort".to_string()));
+                }
+                plan.sort = Some(SortSpec { desc });
                 return Ok(plan);
             }
 
@@ -324,6 +350,7 @@ fn plan_range(
         outer_agg: None,
         scalar_op: None,
         topk: None,
+        sort: None,
         label_replace: None,
         range_ns: range.range.as_nanos(),
     })
@@ -644,11 +671,18 @@ mod tests {
     }
 
     #[test]
+    fn sort_and_sort_desc_fold_onto_the_plan() {
+        let a = plan(r#"sort(rate({a="b"}[5m]))"#);
+        assert_eq!(a.sort, Some(SortSpec { desc: false }));
+        assert_eq!(a.aggregate, Aggregate::Count);
+
+        let d = plan(r#"sort_desc(count_over_time({a="b"}[5m]))"#);
+        assert_eq!(d.sort, Some(SortSpec { desc: true }));
+    }
+
+    #[test]
     fn unsupported_shapes_are_rejected() {
-        assert!(matches!(
-            err(r#"sort(rate({a="b"}[5m]))"#),
-            QuerierError::Unsupported(_)
-        ));
+        assert!(matches!(err(r#"vector(5)"#), QuerierError::Unsupported(_)));
         assert!(matches!(
             err(r#"sum(rate({a="b"}[1m])) / sum(rate({a="c"}[1m]))"#),
             QuerierError::Unsupported(_)
