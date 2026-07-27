@@ -421,6 +421,22 @@ fn default_true() -> bool {
     true
 }
 
+/// Per-signal allowlists of attribute keys to materialize into dedicated,
+/// queryable columns (instead of only matching them inside the attribute
+/// JSON). Keeping the set explicit bounds the column cardinality, mirroring
+/// Loki's "labels are declared, not inferred" model.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MaterializedLabels {
+    #[serde(default)]
+    pub logs: Vec<String>,
+    #[serde(default)]
+    pub traces: Vec<String>,
+    #[serde(default)]
+    pub metrics: Vec<String>,
+    #[serde(default)]
+    pub profiles: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SchemaConfig {
     /// Type of catalog backend (sql, memory)
@@ -430,6 +446,9 @@ pub struct SchemaConfig {
     /// Default schemas to create for new tenants
     #[serde(default)]
     pub default_schemas: DefaultSchemas,
+    /// Attribute keys promoted to dedicated columns per signal type.
+    #[serde(default)]
+    pub materialized_labels: MaterializedLabels,
 }
 
 impl Default for SchemaConfig {
@@ -438,6 +457,7 @@ impl Default for SchemaConfig {
             catalog_type: "sql".to_string(),
             catalog_uri: "sqlite::memory:".to_string(),
             default_schemas: DefaultSchemas::default(),
+            materialized_labels: MaterializedLabels::default(),
         }
     }
 }
@@ -755,6 +775,7 @@ impl From<IcebergConfig> for SchemaConfig {
             catalog_type: iceberg_config.catalog_type, // Preserve original catalog_type
             catalog_uri: iceberg_config.catalog_uri,
             default_schemas: DefaultSchemas::default(),
+            materialized_labels: MaterializedLabels::default(),
         }
     }
 }
@@ -1388,6 +1409,7 @@ mod tests {
                 catalog_type: "memory".to_string(),
                 catalog_uri: "memory://tenant".to_string(),
                 default_schemas: DefaultSchemas::default(),
+                materialized_labels: Default::default(),
             }),
             custom_schemas: Some({
                 let mut schemas = HashMap::new();
