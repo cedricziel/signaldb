@@ -28,9 +28,11 @@
 //! - Vector-scalar arithmetic (`expr * 2`, `expr / 60`), folded into the
 //!   plan as a [`ScalarOp`].
 //!
+//! - `label_replace(v, dst, replacement, src, regex)`, which rewrites a
+//!   label on the finished matrix (see [`LabelReplaceSpec`]).
+//!
 //! Vector-to-vector binary operators, comparisons, logical/set operators,
-//! `sort`/`sort_desc`, `vector()`, and `label_replace` return
-//! [`QuerierError::Unsupported`].
+//! `sort`/`sort_desc`, and `vector()` return [`QuerierError::Unsupported`].
 
 use logql::{AggregationFunction, BinOp, Grouping, LogQuery, MetricQuery, RangeFunction};
 
@@ -109,6 +111,21 @@ pub struct ScalarOp {
     pub scalar_is_lhs: bool,
 }
 
+/// `label_replace(v, dst, replacement, src, regex)`: rewrite each series'
+/// `dst` label from a regex capture of its `src` label, applied to the
+/// finished matrix.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LabelReplaceSpec {
+    /// Destination label to set (a logical label name, e.g. `service`).
+    pub dst: String,
+    /// Replacement template with `$1` / `${name}` capture references.
+    pub replacement: String,
+    /// Source label the regex matches against.
+    pub src: String,
+    /// The regex (anchored to the whole source value at execution).
+    pub regex: String,
+}
+
 /// `topk(k, ...)` / `bottomk(k, ...)`: keep the `k` highest (or lowest)
 /// series by value in each time bucket, applied after the range and any
 /// outer aggregation.
@@ -142,6 +159,8 @@ pub struct MetricPlan {
     pub scalar_op: Option<ScalarOp>,
     /// A `topk`/`bottomk` per-bucket ranking to apply after aggregation.
     pub topk: Option<TopKSpec>,
+    /// A `label_replace` label rewrite to apply to the finished matrix.
+    pub label_replace: Option<LabelReplaceSpec>,
     /// The `[range]` window in nanoseconds (informational; bucketing uses
     /// the caller's step).
     pub range_ns: u128,
@@ -219,7 +238,21 @@ pub fn plan_metric_query(query: &MetricQuery) -> Result<MetricPlan, QuerierError
         MetricQuery::Literal(_) | MetricQuery::VectorLiteral(_) => Err(QuerierError::Unsupported(
             "scalar/vector literal metric query".to_string(),
         )),
-        MetricQuery::LabelReplace(_) => Err(QuerierError::Unsupported("label_replace".to_string())),
+        MetricQuery::LabelReplace(lr) => {
+            let mut plan = plan_metric_query(&lr.inner)?;
+            if plan.label_replace.is_some() {
+                return Err(QuerierError::Unsupported(
+                    "chained label_replace".to_string(),
+                ));
+            }
+            plan.label_replace = Some(LabelReplaceSpec {
+                dst: lr.dst_label.clone(),
+                replacement: lr.replacement.clone(),
+                src: lr.src_label.clone(),
+                regex: lr.regex.clone(),
+            });
+            Ok(plan)
+        }
     }
 }
 
@@ -291,6 +324,7 @@ fn plan_range(
         outer_agg: None,
         scalar_op: None,
         topk: None,
+        label_replace: None,
         range_ns: range.range.as_nanos(),
     })
 }
@@ -590,6 +624,23 @@ mod tests {
             err(r#"rate({a="b"}[5m]) > 5"#),
             QuerierError::Unsupported(_)
         ));
+    }
+
+    #[test]
+    fn label_replace_folds_onto_the_plan() {
+        let p = plan(r#"label_replace(rate({a="b"}[5m]), "tier", "svc-$1", "service", "(.+)")"#);
+        assert_eq!(
+            p.label_replace,
+            Some(LabelReplaceSpec {
+                dst: "tier".to_string(),
+                replacement: "svc-$1".to_string(),
+                src: "service".to_string(),
+                regex: "(.+)".to_string(),
+            })
+        );
+        // The inner range aggregation is preserved underneath.
+        assert_eq!(p.aggregate, Aggregate::Count);
+        assert_eq!(p.rate_divisor_seconds, Some(300.0));
     }
 
     #[test]
