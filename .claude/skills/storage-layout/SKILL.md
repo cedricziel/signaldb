@@ -135,6 +135,10 @@ Note: `WalConfig::default()` uses `.wal` as the base directory; the TOML-level
 
 All tables partitioned by `Hour(timestamp)` as `timestamp_hour`.
 
+### Materialized labels
+
+`[schema.materialized_labels]` (per signal) promotes attribute keys from the `*_attributes` JSON into nullable `label_<key>` columns at ingest, so they match exactly / by regex / with ordered comparisons instead of the JSON substring approximation. Naming via `common::schema::materialized_column_name` (non-alphanumeric → `_`, `label_` prefix). Writer populates from resource→scope→record attributes (first non-null); `coerce_batch_to_schema` drops columns a table lacks and null-fills nullable ones it has. New tables carry the configured columns from creation (no schema evolution on the pinned iceberg-rust fork); older tables fall back to JSON. Querier routes via the column when the table schema has it. See `docs/architecture/storage-layout.md#materialized-labels`.
+
 ## Key Implementation Files
 
 | File | Purpose |

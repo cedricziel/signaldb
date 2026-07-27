@@ -35,7 +35,7 @@ use logql::{
     parse_selector,
 };
 
-use super::logql::log_query_filter;
+use super::logql::{MaterializedColumns, log_query_filter_with_columns};
 use super::logql_metric::{
     Aggregate, ArithOp, LabelReplaceSpec, OuterAgg, ScalarOp, SortSpec, TopKSpec, plan_metric_query,
 };
@@ -146,10 +146,10 @@ impl LogsService {
     ) -> Result<Vec<RecordBatch>, QuerierError> {
         let parsed =
             parse_query(&params.query).map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
-        let filter = log_query_filter(&parsed)?;
         let direction = Direction::parse(params.direction.as_deref());
 
         let df = self.logs_table(tenant_slug, dataset_slug).await?;
+        let filter = log_query_filter_with_columns(&parsed, &materialized_columns_of(&df))?;
         let df = shape_log_query(
             df,
             filter,
@@ -227,8 +227,6 @@ impl LogsService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
-        let filter = log_query_filter(&plan.log_query)?;
-
         // Resolve the output grouping columns (the `by` labels); unknown
         // labels can't be grouped with the substring attribute model.
         let out_group_cols: Vec<&'static str> = plan
@@ -253,6 +251,7 @@ impl LogsService {
         };
 
         let mut df = self.logs_table(tenant_slug, dataset_slug).await?;
+        let filter = log_query_filter_with_columns(&plan.log_query, &materialized_columns_of(&df))?;
         df = apply_window(df, params.start, params.end)?;
         if let Some(filter) = filter {
             df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
@@ -476,12 +475,13 @@ impl LogsService {
         // An empty matcher list is invalid in Loki's /series.
         let parsed = parse_selector(selector.trim())
             .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
-        let filter = log_query_filter(&LogQuery {
+        let query = LogQuery {
             selector: parsed,
             pipeline: Vec::new(),
-        })?;
+        };
 
         let mut df = self.logs_table(tenant_slug, dataset_slug).await?;
+        let filter = log_query_filter_with_columns(&query, &materialized_columns_of(&df))?;
         df = apply_window(df, start, end)?;
         if let Some(filter) = filter {
             df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
@@ -543,6 +543,17 @@ pub fn shape_log_query(
 }
 
 /// Inclusive nanosecond bounds on the `timestamp` column.
+/// The materialized `label_<key>` columns present in a logs table, so the
+/// filter lowering can route those labels to their columns.
+fn materialized_columns_of(df: &DataFrame) -> MaterializedColumns {
+    df.schema()
+        .fields()
+        .iter()
+        .map(|f| f.name().to_string())
+        .filter(|n| n.starts_with("label_"))
+        .collect()
+}
+
 fn apply_window(df: DataFrame, start: i64, end: i64) -> Result<DataFrame, QuerierError> {
     df.filter(col("timestamp").gt_eq(lit(ScalarValue::TimestampNanosecond(Some(start), None))))
         .map_err(QuerierError::QueryFailed)?
@@ -1287,6 +1298,70 @@ mod tests {
 
     fn str_col(values: &[&str]) -> Arc<StringArray> {
         Arc::new(StringArray::from(values.to_vec()))
+    }
+
+    /// A `t.d.logs` table with two materialized label columns
+    /// (`label_namespace`, `label_status`) so the querier routes those
+    /// labels to columns for exact / regex / ordered matching.
+    fn service_with_materialized_labels() -> LogsService {
+        let mut fields: Vec<Field> = logs_schema()
+            .fields()
+            .iter()
+            .map(|f| (**f).clone())
+            .collect();
+        fields.push(Field::new("label_namespace", DataType::Utf8, true));
+        fields.push(Field::new("label_status", DataType::Utf8, true));
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
+                str_col(&["a", "b", "c"]),
+                str_col(&["api", "api", "web"]),
+                str_col(&["error", "info", "error"]),
+                str_col(&["t1", "t2", "t3"]),
+                str_col(&["s1", "s2", "s3"]),
+                str_col(&["{}", "{}", "{}"]),
+                str_col(&["{}", "{}", "{}"]),
+                str_col(&["prod", "prod", "staging"]),
+                str_col(&["200", "500", "503"]),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        LogsService::new(ctx)
+    }
+
+    #[tokio::test]
+    async fn materialized_label_exact_and_ordered_matching() {
+        let service = service_with_materialized_labels();
+
+        // Exact match on the materialized `namespace` column.
+        let prod = rows(&service, r#"{namespace="prod"}"#, Direction::Forward).await;
+        assert_eq!(prod, vec![(100, "a".to_string()), (200, "b".to_string())]);
+
+        // Ordered comparison — impossible via the JSON substring path — on
+        // the materialized `status` column: keeps 500 and 503, drops 200.
+        let slow = rows(
+            &service,
+            r#"{service_name=~".+"} | logfmt | status >= 500"#,
+            Direction::Forward,
+        )
+        .await;
+        assert_eq!(slow, vec![(200, "b".to_string()), (300, "c".to_string())]);
+
+        // Regex on the materialized column.
+        let ns = rows(&service, r#"{namespace=~"pro.*"}"#, Direction::Forward).await;
+        assert_eq!(ns.len(), 2);
     }
 
     /// A context with a `t.d.logs` table holding three sample rows.

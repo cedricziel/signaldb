@@ -70,6 +70,13 @@ Env: `SIGNALDB__SCHEMA__CATALOG_TYPE`, `SIGNALDB__SCHEMA__CATALOG_URI` (double-u
 
 **Note**: Only SQLite supported for Iceberg catalog (not PostgreSQL).
 
+#### Materialized labels
+```toml
+[schema.materialized_labels]
+logs = ["namespace", "pod"]   # also: traces / metrics / profiles
+```
+Per-signal allowlists of attribute keys promoted from the `*_attributes` JSON into dedicated `label_<key>` columns at ingest, so they match exactly (and support regex / ordered comparisons) instead of the substring-in-JSON approximation. Default empty. Applies to tables created after the change; older tables fall back to JSON matching. See `docs/architecture/storage-layout.md#materialized-labels`.
+
 ### Authentication
 
 Tenant auth is always enforced on the tenant-facing APIs; there is no
