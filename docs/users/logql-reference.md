@@ -134,6 +134,10 @@ sum by (level) (rate({service_name="api"}[5m]))
   group (`stddev`/`stdvar` are population statistics, as in Prometheus).
 - **Selection**: `topk(k, ...)` / `bottomk(k, ...)` keep the `k` highest /
   lowest series by value in each time bucket, applied after aggregation.
+- **Ordering**: `sort(...)` / `sort_desc(...)` order the result series by
+  value. A range matrix has a value per bucket, so ordering uses each
+  series' value at its latest bucket (`sort` is strictly defined only for
+  instant queries).
 - **Scalar arithmetic**: a metric query combined with a scalar literal
   using `+` / `-` / `*` / `/` (`rate(...) / 60`, `100 * rate(...)`),
   scaling every value. Operand order is preserved for `-` and `/`.
@@ -169,7 +173,6 @@ exact results.
 
 These parse but return an "unsupported" error at execution:
 
-- `sort` / `sort_desc`
 - `on` / `ignoring` label matching (vector matching uses the full label
   set), `vector(N)`
 - `sum without (labels)` with a non-empty label list
