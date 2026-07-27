@@ -19,7 +19,7 @@ use datafusion::{
         Array, ArrayRef, Float64Array, RecordBatch, StringArray, TimestampNanosecondArray,
     },
     arrow::compute::{concat_batches, take},
-    arrow::datatypes::{DataType, IntervalMonthDayNano, SchemaRef},
+    arrow::datatypes::{DataType, Field, IntervalMonthDayNano, Schema, SchemaRef, TimeUnit},
     functions::datetime::expr_fn::date_bin,
     functions::unicode::expr_fn::character_length,
     functions_aggregate::expr_fn::{
@@ -33,7 +33,9 @@ use datafusion::{
 use logql::{BinOp, Expr as LogqlExpr, LogQuery, MetricQuery, parse, parse_query, parse_selector};
 
 use super::logql::log_query_filter;
-use super::logql_metric::{Aggregate, ArithOp, OuterAgg, ScalarOp, TopKSpec, plan_metric_query};
+use super::logql_metric::{
+    Aggregate, ArithOp, LabelReplaceSpec, OuterAgg, ScalarOp, TopKSpec, plan_metric_query,
+};
 use super::{
     LogQueryParams, MetricQueryParams, error::QuerierError, table_ref::build_table_reference,
 };
@@ -320,8 +322,14 @@ impl LogsService {
             .map_err(QuerierError::QueryFailed)?;
 
         // `topk`/`bottomk`: keep the k highest/lowest series per bucket.
-        match plan.topk {
-            Some(spec) => apply_topk(batches, spec),
+        let batches = match plan.topk {
+            Some(spec) => apply_topk(batches, spec)?,
+            None => batches,
+        };
+
+        // `label_replace`: rewrite a label from a regex capture of another.
+        match &plan.label_replace {
+            Some(spec) => apply_label_replace(batches, spec),
             None => Ok(batches),
         }
     }
@@ -882,6 +890,95 @@ fn join_logical(
     }
 
     rebuild_matrix(schema, out)
+}
+
+/// Apply `label_replace` to a finished matrix: for each series, match the
+/// `src` label's value against `regex` (anchored to the whole value) and,
+/// on a match, set the `dst` label to the expanded `replacement` (with
+/// `$1` / `${name}` captures). An empty result deletes the label; a
+/// non-match leaves the series unchanged. The output schema is the union
+/// of all labels present, so a new `dst` label adds a column.
+fn apply_label_replace(
+    batches: Vec<RecordBatch>,
+    spec: &LabelReplaceSpec,
+) -> Result<Vec<RecordBatch>, QuerierError> {
+    use std::collections::BTreeSet;
+
+    if batches.is_empty() {
+        return Ok(batches);
+    }
+    let re = regex::Regex::new(&format!("^(?:{})$", spec.regex))
+        .map_err(|e| QuerierError::InvalidInput(format!("invalid label_replace regex: {e}")))?;
+    // src/dst are logical label names; resolve to physical column names.
+    let src_col = column_for_label(&spec.src)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| spec.src.clone());
+    let dst_col = column_for_label(&spec.dst)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| spec.dst.clone());
+
+    let mut rows: Vec<(i64, BTreeMap<String, String>, f64)> = Vec::new();
+    for batch in &batches {
+        for (bucket, labels, value) in logql_matrix_rows(batch)? {
+            let mut map: BTreeMap<String, String> = labels.into_iter().collect();
+            let src_val = map.get(&src_col).cloned().unwrap_or_default();
+            if let Some(caps) = re.captures(&src_val) {
+                let mut dst_val = String::new();
+                caps.expand(&spec.replacement, &mut dst_val);
+                if dst_val.is_empty() {
+                    map.remove(&dst_col);
+                } else {
+                    map.insert(dst_col.clone(), dst_val);
+                }
+            }
+            rows.push((bucket, map, value));
+        }
+    }
+
+    // The output schema is the union of every label present after the
+    // rewrite (so a freshly-introduced `dst` becomes a column).
+    let names: Vec<String> = rows
+        .iter()
+        .flat_map(|(_, map, _)| map.keys().cloned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.iter().cmp(b.1.iter())));
+
+    let mut buckets = Vec::with_capacity(rows.len());
+    let mut label_values: Vec<Vec<Option<String>>> =
+        vec![Vec::with_capacity(rows.len()); names.len()];
+    let mut values = Vec::with_capacity(rows.len());
+    for (bucket, map, value) in &rows {
+        buckets.push(*bucket);
+        for (j, name) in names.iter().enumerate() {
+            label_values[j].push(map.get(name).cloned());
+        }
+        values.push(*value);
+    }
+
+    let mut fields = vec![Field::new(
+        "bucket",
+        DataType::Timestamp(TimeUnit::Nanosecond, None),
+        false,
+    )];
+    for name in &names {
+        fields.push(Field::new(name, DataType::Utf8, true));
+    }
+    fields.push(Field::new("value", DataType::Float64, false));
+    let schema = Arc::new(Schema::new(fields));
+
+    let mut columns: Vec<ArrayRef> = Vec::with_capacity(2 + names.len());
+    columns.push(Arc::new(TimestampNanosecondArray::from(buckets)));
+    for col_values in label_values {
+        columns.push(Arc::new(StringArray::from(col_values)));
+    }
+    columns.push(Arc::new(Float64Array::from(values)));
+
+    let batch = RecordBatch::try_new(schema, columns)
+        .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+    Ok(vec![batch])
 }
 
 /// Keep the `k` highest (or lowest, for `bottomk`) series by value in each
@@ -1524,6 +1621,50 @@ mod tests {
         let gt_bool = matrix(&service, &format!("{all} > bool {with_a}"), 1000).await;
         assert_eq!(gt_bool.len(), 1);
         assert_eq!(gt_bool[0].0, 1.0);
+    }
+
+    #[tokio::test]
+    async fn label_replace_adds_a_label_from_a_capture() {
+        let service = service_with_data();
+        // Capture the whole service_name into a new `tier` label.
+        let batches = service
+            .query_metric(
+                &metric_params(
+                    r#"label_replace(count_over_time({service_name="api"}[1000ns]), "tier", "be-$1", "service_name", "(.+)")"#,
+                    1000,
+                ),
+                "t",
+                "d",
+            )
+            .await
+            .expect("query");
+        let mut tiers = Vec::new();
+        for batch in &batches {
+            let tier = string_column(batch, "tier").expect("tier column present");
+            for i in 0..batch.num_rows() {
+                tiers.push(tier.value(i).to_string());
+            }
+        }
+        assert!(!tiers.is_empty());
+        assert!(tiers.iter().all(|t| t == "be-api"), "tiers {tiers:?}");
+    }
+
+    #[tokio::test]
+    async fn label_replace_leaves_series_unchanged_when_regex_misses() {
+        let service = service_with_data();
+        // The regex matches no service_name, so no `tier` column is added.
+        let batches = service
+            .query_metric(
+                &metric_params(
+                    r#"label_replace(count_over_time({service_name="api"}[1000ns]), "tier", "x", "service_name", "nomatch")"#,
+                    1000,
+                ),
+                "t",
+                "d",
+            )
+            .await
+            .expect("query");
+        assert!(batches.iter().all(|b| b.column_by_name("tier").is_none()));
     }
 
     #[tokio::test]

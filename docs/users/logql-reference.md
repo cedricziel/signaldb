@@ -148,6 +148,11 @@ sum by (level) (rate({service_name="api"}[5m]))
 - **Logical / set**: `and` (left series with a right match), `or` (union of
   both sides), `unless` (left series with no right match). Matching is on
   `(bucket, labels)`; values are carried through, never combined.
+- **`label_replace(v, dst, replacement, src, regex)`**: rewrites the `dst`
+  label from a regex capture of `src` (`$1` / `${name}` in `replacement`).
+  The regex is anchored to the whole source value; a non-match leaves the
+  series unchanged, and an empty result deletes the label. A new `dst`
+  becomes an additional series label.
 - **Grouping** is only supported by labels backed by a column
   (`service_name`, `level`, ...).
 
@@ -166,7 +171,7 @@ These parse but return an "unsupported" error at execution:
 
 - `sort` / `sort_desc`
 - `on` / `ignoring` label matching (vector matching uses the full label
-  set), `vector(N)`, `label_replace`
+  set), `vector(N)`
 - `sum without (labels)` with a non-empty label list
 - Grouping by an attribute (non-column) label
 
