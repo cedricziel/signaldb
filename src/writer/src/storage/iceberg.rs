@@ -432,6 +432,7 @@ mod tests {
                 catalog_type: "memory".to_string(),
                 catalog_uri: "memory://".to_string(),
                 default_schemas: Default::default(),
+                materialized_labels: Default::default(),
             },
             storage: StorageConfig {
                 dsn: "memory://".to_string(),

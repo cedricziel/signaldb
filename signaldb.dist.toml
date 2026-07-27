@@ -146,6 +146,18 @@ logs_enabled = true
 metrics_enabled = true
 profiles_enabled = true
 
+# Attribute keys to promote from the *_attributes JSON into dedicated,
+# queryable columns per signal type. Materialized labels are matched
+# exactly (and support regex / ordered comparisons) instead of the
+# substring-in-JSON approximation. Keep the lists short and low-cardinality
+# — every entry adds a column. Applies to tables created after the change;
+# pre-existing tables fall back to JSON matching for these keys.
+# [schema.materialized_labels]
+# logs = ["namespace", "pod", "container"]
+# traces = ["http.method", "http.status_code"]
+# metrics = []
+# profiles = []
+
 # Custom schema definitions (optional)
 # [schema.default_schemas.custom_schemas]
 # my_custom_table = '''{"fields": [...]}'''

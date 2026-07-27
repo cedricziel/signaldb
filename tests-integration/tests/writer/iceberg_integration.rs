@@ -128,6 +128,7 @@ async fn test_iceberg_namespace_slug_based() -> Result<()> {
             catalog_type: "sql".to_string(),
             catalog_uri: "sqlite::memory:".to_string(),
             default_schemas: Default::default(),
+            materialized_labels: Default::default(),
         },
         storage: StorageConfig {
             dsn: "memory://".to_string(),
@@ -196,6 +197,7 @@ async fn test_partition_spec_roundtrip() -> Result<()> {
             catalog_type: "sql".to_string(),
             catalog_uri: "sqlite::memory:".to_string(),
             default_schemas: Default::default(),
+            materialized_labels: Default::default(),
         },
         storage: StorageConfig {
             dsn: "memory://".to_string(),
@@ -288,6 +290,7 @@ async fn test_write_and_query_with_slugs() -> Result<()> {
             catalog_type: "sql".to_string(),
             catalog_uri: format!("sqlite://{}", catalog_path.display()),
             default_schemas: Default::default(),
+            materialized_labels: Default::default(),
         },
         storage: StorageConfig {
             dsn: format!("file://{}", storage_path.display()),

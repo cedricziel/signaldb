@@ -36,6 +36,7 @@ async fn test_retry_config_default() -> Result<()> {
                 profiles_enabled: true,
                 custom_schemas: Default::default(),
             },
+            materialized_labels: Default::default(),
         },
         storage: StorageConfig {
             dsn: "memory://".to_string(),
@@ -70,6 +71,7 @@ async fn test_retry_config_custom() -> Result<()> {
                 profiles_enabled: true,
                 custom_schemas: Default::default(),
             },
+            materialized_labels: Default::default(),
         },
         storage: StorageConfig {
             dsn: "memory://".to_string(),
@@ -113,6 +115,7 @@ async fn test_retry_logic_with_valid_batch() -> Result<()> {
                 profiles_enabled: true,
                 custom_schemas: Default::default(),
             },
+            materialized_labels: Default::default(),
         },
         storage: StorageConfig {
             dsn: "memory://".to_string(),

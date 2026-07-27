@@ -367,6 +367,7 @@ mod tests {
                 catalog_type: "memory".to_string(),
                 catalog_uri: "memory://".to_string(),
                 default_schemas: crate::config::DefaultSchemas::default(),
+                materialized_labels: Default::default(),
             }),
             ..Default::default()
         };

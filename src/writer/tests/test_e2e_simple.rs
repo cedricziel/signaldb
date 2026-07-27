@@ -35,6 +35,7 @@ fn create_simple_test_config() -> Configuration {
                 profiles_enabled: true,
                 custom_schemas: Default::default(),
             },
+            materialized_labels: Default::default(),
         },
         storage: StorageConfig {
             dsn: "memory://".to_string(),

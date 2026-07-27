@@ -7,6 +7,7 @@ async fn test_iceberg_sql_catalog_basic_operations() {
         catalog_type: "sql".to_string(),
         catalog_uri: "sqlite::memory:".to_string(),
         default_schemas: common::config::DefaultSchemas::default(),
+        materialized_labels: Default::default(),
     };
 
     // Create catalog
@@ -40,6 +41,7 @@ async fn ensure_table_reflects_commits_made_through_other_handles() {
         catalog_type: "sql".to_string(),
         catalog_uri: "sqlite::memory:".to_string(),
         default_schemas: common::config::DefaultSchemas::default(),
+        materialized_labels: Default::default(),
     };
     let catalog = create_catalog(config).await.unwrap();
     let manager = IcebergTableManager::new(catalog.clone());

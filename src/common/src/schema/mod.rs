@@ -17,6 +17,22 @@ pub use crate::iceberg::{
 
 use self::schema_parser::SchemaDefinitions;
 
+/// The column name a materialized attribute label is stored under. The
+/// label key is sanitized (non-alphanumeric → `_`) and prefixed with
+/// `label_` so promoted attributes never collide with the built-in schema
+/// columns and are valid SQL/Arrow identifiers (OTLP keys like
+/// `http.method` contain dots that DataFusion would treat as field
+/// access). Writer, schema generation, and querier all resolve a label to
+/// its column through this one function.
+pub fn materialized_column_name(label: &str) -> String {
+    let mut out = String::with_capacity(label.len() + 6);
+    out.push_str("label_");
+    for ch in label.chars() {
+        out.push(if ch.is_ascii_alphanumeric() { ch } else { '_' });
+    }
+    out
+}
+
 /// Embedded schema definitions from schemas.toml
 pub const SCHEMA_DEFINITIONS_TOML: &str = include_str!("../../../../schemas.toml");
 
@@ -212,6 +228,37 @@ mod tests {
     use crate::config::{DefaultSchemas, SchemaConfig, TenantSchemaConfig, TenantsConfig};
     use std::collections::HashMap;
 
+    #[test]
+    fn materialized_column_name_sanitizes_and_prefixes() {
+        assert_eq!(materialized_column_name("namespace"), "label_namespace");
+        // Dots and other non-alphanumerics become underscores.
+        assert_eq!(materialized_column_name("http.method"), "label_http_method");
+        assert_eq!(
+            materialized_column_name("k8s.pod/name"),
+            "label_k8s_pod_name"
+        );
+    }
+
+    #[test]
+    fn materialized_labels_default_is_empty_and_parses_from_toml() {
+        // Default: no materialized labels for any signal.
+        let cfg = SchemaConfig::default();
+        assert!(cfg.materialized_labels.logs.is_empty());
+
+        // A `[schema]` block with a materialized-labels table parses.
+        let toml = r#"
+catalog_type = "sql"
+catalog_uri = "sqlite::memory:"
+[materialized_labels]
+logs = ["namespace", "pod"]
+traces = ["http.method"]
+"#;
+        let parsed: SchemaConfig = toml::from_str(toml).expect("parse schema config");
+        assert_eq!(parsed.materialized_labels.logs, vec!["namespace", "pod"]);
+        assert_eq!(parsed.materialized_labels.traces, vec!["http.method"]);
+        assert!(parsed.materialized_labels.metrics.is_empty());
+    }
+
     #[tokio::test]
     async fn test_tenant_schema_registry_default() {
         let config = Configuration::default();
@@ -244,6 +291,7 @@ mod tests {
                 catalog_type: "memory".to_string(),
                 catalog_uri: "memory://".to_string(),
                 default_schemas: DefaultSchemas::default(),
+                materialized_labels: Default::default(),
             }),
             custom_schemas: Some({
                 let mut schemas = HashMap::new();
@@ -302,6 +350,7 @@ mod tests {
                 catalog_type: "memory".to_string(),
                 catalog_uri: "memory://".to_string(),
                 default_schemas: DefaultSchemas::default(),
+                materialized_labels: Default::default(),
             }),
             ..Default::default()
         };
