@@ -152,6 +152,9 @@ sum by (level) (rate({service_name="api"}[5m]))
 - **Logical / set**: `and` (left series with a right match), `or` (union of
   both sides), `unless` (left series with no right match). Matching is on
   `(bucket, labels)`; values are carried through, never combined.
+- **`vector(N)`**: a scalar promoted to a constant, no-label series valued
+  `N` at every step bucket (as in `... or vector(0)` in Prometheus, though
+  the `or` form itself is not supported yet).
 - **`label_replace(v, dst, replacement, src, regex)`**: rewrites the `dst`
   label from a regex capture of `src` (`$1` / `${name}` in `replacement`).
   The regex is anchored to the whole source value; a non-match leaves the
@@ -174,7 +177,7 @@ exact results.
 These parse but return an "unsupported" error at execution:
 
 - `on` / `ignoring` label matching (vector matching uses the full label
-  set), `vector(N)`
+  set) and `... or vector(0)` fallbacks
 - `sum without (labels)` with a non-empty label list
 - Grouping by an attribute (non-column) label
 
