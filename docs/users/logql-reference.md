@@ -143,8 +143,11 @@ sum by (level) (rate({service_name="api"}[5m]))
   scaling every value. Operand order is preserved for `-` and `/`.
 - **Vector arithmetic**: two metric queries combined with `+` / `-` / `*`
   / `/` (`sum(rate(...)) / sum(rate(...))` for a ratio). Series are matched
-  one-to-one on `(bucket, labels)`; unmatched series are dropped (there is
-  no `on` / `ignoring` yet).
+  one-to-one on `(bucket, labels)`; unmatched series are dropped.
+- **Vector matching**: an `on (...)` / `ignoring (...)` clause after the
+  operator restricts which labels series match on (`a / on(service) b`,
+  `a / ignoring(level) b`). Matching is one-to-one; a `group_left` /
+  `group_right` modifier is accepted but does not enable many-to-one.
 - **Vector comparison**: two metric queries compared with `==` / `!=` /
   `>` / `>=` / `<` / `<=`. Without `bool` the left series is kept where the
   comparison holds (a filter); with `bool` (`a > bool b`) each matched pair
@@ -176,8 +179,8 @@ exact results.
 
 These parse but return an "unsupported" error at execution:
 
-- `on` / `ignoring` label matching (vector matching uses the full label
-  set) and `... or vector(0)` fallbacks
+- Many-to-one vector matching (`group_left` / `group_right`) and
+  `... or vector(0)` fallbacks
 - `sum without (labels)` with a non-empty label list
 - Grouping by an attribute (non-column) label
 

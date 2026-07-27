@@ -13,7 +13,7 @@ use crate::ast::{
 use crate::lexer::{LexError, tokenize};
 use crate::metric::{
     AggregationFunction, BinOp, BinaryExpr, MetricQuery, RangeAggregation, RangeFunction,
-    VectorAggregation,
+    VectorAggregation, VectorMatch,
 };
 use crate::token::{SpannedToken, Token};
 
@@ -729,6 +729,9 @@ impl Parser {
                 false
             };
 
+            // Optional `on (...)` / `ignoring (...)` vector-matching clause.
+            let matching = self.parse_optional_vector_match()?;
+
             let next_min = if right_assoc { prec } else { prec + 1 };
             let right = self.parse_binary(next_min)?;
             left = MetricQuery::Binary(Box::new(BinaryExpr {
@@ -736,9 +739,60 @@ impl Parser {
                 left,
                 right,
                 bool_modifier,
+                matching,
             }));
         }
         Ok(left)
+    }
+
+    /// Optional `on (labels)` / `ignoring (labels)` clause, with an optional
+    /// trailing `group_left` / `group_right [ (labels) ]` modifier that is
+    /// accepted but recorded only as a flag (matching is one-to-one).
+    fn parse_optional_vector_match(&mut self) -> Result<Option<VectorMatch>, ParseError> {
+        let on = match self.peek().map(|t| &t.token) {
+            Some(Token::On) => true,
+            Some(Token::Ignoring) => false,
+            _ => return Ok(None),
+        };
+        self.next();
+        let labels = self.parse_label_paren_list("on/ignoring")?;
+
+        // Optional `group_left` / `group_right`, each with an optional
+        // parenthesised label list we consume and ignore.
+        let grouped = match self.peek().map(|t| &t.token) {
+            Some(Token::GroupLeft | Token::GroupRight) => {
+                self.next();
+                if matches!(self.peek().map(|t| &t.token), Some(Token::LParen)) {
+                    self.parse_label_paren_list("group_left/group_right")?;
+                }
+                true
+            }
+            _ => false,
+        };
+
+        Ok(Some(VectorMatch {
+            on,
+            labels,
+            grouped,
+        }))
+    }
+
+    /// Parse a parenthesised, comma-separated label list: `(a, b, c)`.
+    fn parse_label_paren_list(&mut self, what: &str) -> Result<Vec<String>, ParseError> {
+        self.expect(&Token::LParen, "'(' after label-list clause")?;
+        let mut labels = Vec::new();
+        if !matches!(self.peek().map(|t| &t.token), Some(Token::RParen)) {
+            loop {
+                labels.push(self.expect_ident(what)?);
+                if matches!(self.peek().map(|t| &t.token), Some(Token::Comma)) {
+                    self.next();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(&Token::RParen, "')' to close label list")?;
+        Ok(labels)
     }
 
     /// Map the upcoming token to a binary operator and its precedence.
@@ -775,6 +829,7 @@ impl Parser {
                 left: MetricQuery::Literal(0.0),
                 right: inner,
                 bool_modifier: false,
+                matching: None,
             })));
         }
         if matches!(self.peek().map(|t| &t.token), Some(Token::Add)) {
@@ -1525,6 +1580,29 @@ mod tests {
             MetricQuery::Binary(b) => b,
             other => panic!("expected binary expression, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_on_and_ignoring_vector_matching() {
+        let on = metric(r#"sum(rate({a="b"}[1m])) / on(service) sum(rate({a="c"}[1m]))"#);
+        let m = as_binary(&on).matching.as_ref().expect("matching clause");
+        assert!(m.on);
+        assert_eq!(m.labels, vec!["service".to_string()]);
+        assert!(!m.grouped);
+
+        let ign = metric(r#"sum(rate({a="b"}[1m])) / ignoring(level) sum(rate({a="c"}[1m]))"#);
+        let m = as_binary(&ign).matching.as_ref().expect("matching clause");
+        assert!(!m.on);
+        assert_eq!(m.labels, vec!["level".to_string()]);
+
+        // `group_left` is accepted and flagged.
+        let grp =
+            metric(r#"sum(rate({a="b"}[1m])) / on(service) group_left sum(rate({a="c"}[1m]))"#);
+        assert!(as_binary(&grp).matching.as_ref().unwrap().grouped);
+
+        // No clause → None.
+        let plain = metric(r#"sum(rate({a="b"}[1m])) / sum(rate({a="c"}[1m]))"#);
+        assert!(as_binary(&plain).matching.is_none());
     }
 
     #[test]

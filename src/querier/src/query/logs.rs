@@ -30,7 +30,10 @@ use datafusion::{
     prelude::{DataFrame, SessionContext},
     scalar::ScalarValue,
 };
-use logql::{BinOp, Expr as LogqlExpr, LogQuery, MetricQuery, parse, parse_query, parse_selector};
+use logql::{
+    BinOp, Expr as LogqlExpr, LogQuery, MetricQuery, VectorMatch, parse, parse_query,
+    parse_selector,
+};
 
 use super::logql::log_query_filter;
 use super::logql_metric::{
@@ -199,12 +202,13 @@ impl LogsService {
             let right_batches = self
                 .execute_plan(&right, params, tenant_slug, dataset_slug)
                 .await?;
+            let matching = bin.matching.as_ref();
             return match kind {
-                BinaryKind::Arith(op) => join_binary(left_batches, op, right_batches),
+                BinaryKind::Arith(op) => join_binary(left_batches, op, right_batches, matching),
                 BinaryKind::Compare(op) => {
-                    join_compare(left_batches, op, bin.bool_modifier, right_batches)
+                    join_compare(left_batches, op, bin.bool_modifier, right_batches, matching)
                 }
-                BinaryKind::Logical(op) => join_logical(left_batches, op, right_batches),
+                BinaryKind::Logical(op) => join_logical(left_batches, op, right_batches, matching),
             };
         }
 
@@ -750,12 +754,42 @@ fn logql_matrix_rows(batch: &RecordBatch) -> Result<Vec<MatrixRow>, QuerierError
     Ok(rows)
 }
 
-/// Index a matrix's rows by `(bucket, labels)` for one side of a join.
-fn index_matrix(batches: &[RecordBatch]) -> Result<JoinMap, QuerierError> {
+/// The labels used to match two series, honoring an `on`/`ignoring` clause.
+/// `on (L)` keeps only labels in `L`; `ignoring (L)` drops labels in `L`;
+/// no clause keeps them all (full-label matching).
+fn match_key(labels: &[(String, String)], matching: Option<&VectorMatch>) -> SeriesLabels {
+    match matching {
+        None => labels.to_vec(),
+        Some(vm) => {
+            // Resolve logical label names (`service`, `level`) to the
+            // physical columns the matrix rows are keyed by.
+            let clause: Vec<String> = vm
+                .labels
+                .iter()
+                .map(|l| {
+                    column_for_label(l)
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| l.clone())
+                })
+                .collect();
+            labels
+                .iter()
+                .filter(|(k, _)| clause.iter().any(|c| c == k) == vm.on)
+                .cloned()
+                .collect()
+        }
+    }
+}
+
+/// Index a matrix's rows by `(bucket, match_key)` for one side of a join.
+fn index_matrix(
+    batches: &[RecordBatch],
+    matching: Option<&VectorMatch>,
+) -> Result<JoinMap, QuerierError> {
     let mut index = BTreeMap::new();
     for batch in batches {
         for (bucket, labels, v) in logql_matrix_rows(batch)? {
-            index.insert((bucket, labels), v);
+            index.insert((bucket, match_key(&labels, matching)), v);
         }
     }
     Ok(index)
@@ -809,17 +843,19 @@ fn join_binary(
     left: Vec<RecordBatch>,
     op: ArithOp,
     right: Vec<RecordBatch>,
+    matching: Option<&VectorMatch>,
 ) -> Result<Vec<RecordBatch>, QuerierError> {
     if left.is_empty() {
         return Ok(left);
     }
     let schema = left[0].schema();
-    let rhs = index_matrix(&right)?;
+    let rhs = index_matrix(&right, matching)?;
 
+    // Output keeps the left series' full labels; matching uses `match_key`.
     let mut out: JoinMap = BTreeMap::new();
     for batch in &left {
         for (bucket, labels, lv) in logql_matrix_rows(batch)? {
-            if let Some(&rv) = rhs.get(&(bucket, labels.clone())) {
+            if let Some(&rv) = rhs.get(&(bucket, match_key(&labels, matching))) {
                 out.insert((bucket, labels), arith_apply(op, lv, rv));
             }
         }
@@ -836,17 +872,18 @@ fn join_compare(
     op: CmpOp,
     bool_modifier: bool,
     right: Vec<RecordBatch>,
+    matching: Option<&VectorMatch>,
 ) -> Result<Vec<RecordBatch>, QuerierError> {
     if left.is_empty() {
         return Ok(left);
     }
     let schema = left[0].schema();
-    let rhs = index_matrix(&right)?;
+    let rhs = index_matrix(&right, matching)?;
 
     let mut out: JoinMap = BTreeMap::new();
     for batch in &left {
         for (bucket, labels, lv) in logql_matrix_rows(batch)? {
-            if let Some(&rv) = rhs.get(&(bucket, labels.clone())) {
+            if let Some(&rv) = rhs.get(&(bucket, match_key(&labels, matching))) {
                 let holds = cmp_holds(op, lv, rv);
                 if bool_modifier {
                     out.insert((bucket, labels), if holds { 1.0 } else { 0.0 });
@@ -868,6 +905,7 @@ fn join_logical(
     left: Vec<RecordBatch>,
     op: LogicalOp,
     right: Vec<RecordBatch>,
+    matching: Option<&VectorMatch>,
 ) -> Result<Vec<RecordBatch>, QuerierError> {
     if left.is_empty() {
         // `or` still yields the right side when the left is empty.
@@ -877,12 +915,12 @@ fn join_logical(
         };
     }
     let schema = left[0].schema();
-    let rhs = index_matrix(&right)?;
+    let rhs = index_matrix(&right, matching)?;
 
     let mut out: JoinMap = BTreeMap::new();
     for batch in &left {
         for (bucket, labels, lv) in logql_matrix_rows(batch)? {
-            let matched = rhs.contains_key(&(bucket, labels.clone()));
+            let matched = rhs.contains_key(&(bucket, match_key(&labels, matching)));
             let keep = match op {
                 LogicalOp::And | LogicalOp::Or => matched,
                 LogicalOp::Unless => !matched,
@@ -896,10 +934,10 @@ fn join_logical(
 
     // `or` adds right series that have no left counterpart.
     if matches!(op, LogicalOp::Or) {
-        let lhs = index_matrix(&left)?;
+        let lhs = index_matrix(&left, matching)?;
         for batch in &right {
             for (bucket, labels, rv) in logql_matrix_rows(batch)? {
-                if !lhs.contains_key(&(bucket, labels.clone())) {
+                if !lhs.contains_key(&(bucket, match_key(&labels, matching))) {
                     out.insert((bucket, labels), rv);
                 }
             }
@@ -1798,6 +1836,33 @@ mod tests {
             .await
             .expect("query");
         assert!(batches.iter().all(|b| b.column_by_name("tier").is_none()));
+    }
+
+    #[tokio::test]
+    async fn on_ignoring_restrict_the_match_labels() {
+        let service = service_with_data();
+        // Left: api/error and api/info (both count 1). Right: only api/error.
+        let left = r#"count_over_time({service_name="api"}[1000ns])"#;
+        let right = r#"count_over_time({service_name="api", level="error"}[1000ns])"#;
+
+        // Full-label matching: only api/error matches → one series.
+        let full = matrix(&service, &format!("{left} / {right}"), 1000).await;
+        assert_eq!(full.len(), 1);
+
+        // `on(service_name)`: both api series match the single api/error
+        // series on service_name alone → two series, each 1/1 = 1.
+        let on = matrix(
+            &service,
+            &format!("{left} / on(service_name) {right}"),
+            1000,
+        )
+        .await;
+        assert_eq!(on.len(), 2);
+        assert!(on.iter().all(|(v, _)| *v == 1.0));
+
+        // `ignoring(level)` drops the differing label → same effect.
+        let ign = matrix(&service, &format!("{left} / ignoring(level) {right}"), 1000).await;
+        assert_eq!(ign.len(), 2);
     }
 
     #[tokio::test]
