@@ -320,6 +320,40 @@ Defined in `schemas.toml`.
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
+### Materialized labels
+
+By default every attribute other than the promoted columns above lives in
+the `*_attributes` JSON and is queried by a substring match — inexact and
+limited to `=` / `!=`. Configuring `[schema.materialized_labels]` promotes
+chosen attribute keys into dedicated columns so they can be matched exactly,
+by regex, and with ordered comparisons.
+
+```toml
+[schema.materialized_labels]
+logs = ["namespace", "pod"]
+# traces = [...]   # metrics / profiles likewise
+```
+
+- **Column naming**: a label key `k` becomes a nullable string column
+  `label_<k>` with non-alphanumeric characters replaced by `_` (so
+  `http.method` → `label_http_method`). This is the one mapping used by
+  schema generation, the writer, and the querier.
+- **Population** (writer): each row's value is taken from its **resource**,
+  then **scope**, then **record** attributes (first non-null wins); the value
+  is also left in the attribute JSON, so label discovery is unaffected.
+- **When it applies**: tables are created lazily and carry the columns from
+  their configured set at creation time (the pinned iceberg-rust fork has no
+  supported schema-evolution to add columns to an existing table). A table
+  that predates a label keeps matching it through the JSON substring path;
+  the writer's schema coercion drops columns a table lacks and null-fills
+  nullable columns it has but the current config no longer produces.
+- **Querying**: the querier routes a label to its `label_<key>` column when
+  the table has one, else to the JSON match (see the
+  [LogQL reference](../users/logql-reference.md#materialized-labels)).
+
+The same mechanism is intended for the trace, metric, and profile signals,
+which share the attribute-JSON pattern.
+
 #### Metrics Gauge Table (v1 -- current)
 
 Defined in `src/common/src/iceberg/schemas.rs`.

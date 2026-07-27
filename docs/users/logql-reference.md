@@ -57,6 +57,7 @@ labels resolve as follows:
 | `service_name`, `service`, `job` | the `service_name` column |
 | `level`, `severity`, `detected_level` | the `severity_text` column |
 | `trace_id`, `span_id` | the matching columns |
+| a **materialized** label (see below) | its dedicated `label_<key>` column |
 | any other label | a match inside the `log_attributes` / `resource_attributes` JSON |
 
 Labels backed by a column are exact. Any other label is matched by the
@@ -64,6 +65,22 @@ serialized `"key":"value"` fragment inside the attribute JSON — the same
 approximation the trace search API uses. It can occasionally over-match
 when another attribute's text embeds the same fragment; this is a known
 limitation until attributes are indexed.
+
+### Materialized labels
+
+Configured attribute keys are promoted to dedicated columns at ingest via
+`[schema.materialized_labels]` (see `signaldb.dist.toml` and
+[storage layout](../architecture/storage-layout.md#materialized-labels)).
+A materialized label is matched **exactly** — no substring over-match — and,
+unlike JSON attributes, supports regex (`=~` / `!~`) **and ordered
+comparisons** (`| latency_ms > 500`). The value is compared as a string for
+`=` / `!=` / `=~`, and cast to a number for `>` / `>=` / `<` / `<=`.
+
+Materialization applies to data written after the label was configured and
+to tables created after that point; a table that predates the column falls
+back to the JSON substring match for that label. Because the promoted value
+is also kept in the attribute JSON, label discovery (`/labels`,
+`/label/{name}/values`) is unchanged.
 
 Series identity (in `/series` results and un-grouped metric queries) is
 the `service_name` and `level` labels.
@@ -103,9 +120,11 @@ filter rows: they are accepted and pass through. A **label filter** after
 a stage (`| level="error"`, `| status="500"`) does filter, resolving
 labels via the mapping above.
 
-Label filters support `=`, `!=`, `=~`, `!~` against columns and `=`, `!=`
-against attributes, combined with `and`/`or`/comma. Ordered comparisons
-(`>`, `>=`, `<`, `<=`, e.g. `| duration > 1s`) are **not** supported yet.
+Label filters support `=`, `!=`, `=~`, `!~` against columns (including
+materialized labels) and `=`, `!=` against JSON attributes, combined with
+`and`/`or`/comma. Ordered comparisons (`>`, `>=`, `<`, `<=`, e.g.
+`| status >= 500`) work on **materialized** labels — which are cast to a
+number — but not on plain JSON attributes.
 
 ## Metric queries
 

@@ -24,15 +24,25 @@
 //!
 //! Line filters (`|=`, `!=`, `|~`, `!~`) match the `body` column.
 
+use std::collections::HashSet;
+
+use common::schema::materialized_column_name;
+use datafusion::arrow::datatypes::DataType;
 use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::expr_fn::contains;
-use datafusion::logical_expr::{Expr, col, lit, not};
+use datafusion::logical_expr::{Expr, cast, col, lit, not};
 use logql::{
     FilterOp, FilterValue, LabelFilterExpr, LabelMatcher, LineFilter, LineFilterOp, LogQuery,
     MatchOp, PipelineStage,
 };
 
 use super::error::QuerierError;
+
+/// The set of materialized `label_<key>` columns present in the table being
+/// queried. A label in this set routes to its dedicated column (exact,
+/// regex, and ordered comparisons); anything else falls back to the
+/// attribute-JSON substring match.
+pub type MaterializedColumns = HashSet<String>;
 
 /// Attribute columns searched for a label that is not a dedicated column.
 const LOG_ATTRIBUTES: &str = "log_attributes";
@@ -43,13 +53,23 @@ const RESOURCE_ATTRIBUTES: &str = "resource_attributes";
 ///
 /// The caller ANDs in the request's time-range predicate.
 pub fn log_query_filter(query: &LogQuery) -> Result<Option<Expr>, QuerierError> {
+    log_query_filter_with_columns(query, &MaterializedColumns::new())
+}
+
+/// Like [`log_query_filter`], but aware of which materialized `label_<key>`
+/// columns exist in the target table, so attribute labels backed by a
+/// column are matched exactly instead of by JSON substring.
+pub fn log_query_filter_with_columns(
+    query: &LogQuery,
+    columns: &MaterializedColumns,
+) -> Result<Option<Expr>, QuerierError> {
     let mut exprs: Vec<Expr> = Vec::new();
 
     for matcher in &query.selector.matchers {
-        exprs.push(matcher_expr(matcher)?);
+        exprs.push(matcher_expr(matcher, columns)?);
     }
     for stage in &query.pipeline {
-        if let Some(expr) = stage_expr(stage)? {
+        if let Some(expr) = stage_expr(stage, columns)? {
             exprs.push(expr);
         }
     }
@@ -58,7 +78,10 @@ pub fn log_query_filter(query: &LogQuery) -> Result<Option<Expr>, QuerierError> 
 }
 
 /// Lower a stream-selector matcher.
-fn matcher_expr(matcher: &LabelMatcher) -> Result<Expr, QuerierError> {
+fn matcher_expr(
+    matcher: &LabelMatcher,
+    columns: &MaterializedColumns,
+) -> Result<Expr, QuerierError> {
     let op = match matcher.op {
         MatchOp::Eq => FilterOp::Eq,
         MatchOp::Neq => FilterOp::Neq,
@@ -69,15 +92,19 @@ fn matcher_expr(matcher: &LabelMatcher) -> Result<Expr, QuerierError> {
         &matcher.name,
         op,
         &FilterValue::String(matcher.value.clone()),
+        columns,
     )
 }
 
 /// Lower a pipeline stage to an optional filter. Parser stages,
 /// formatters, and drop/keep reshape results without filtering rows.
-fn stage_expr(stage: &PipelineStage) -> Result<Option<Expr>, QuerierError> {
+fn stage_expr(
+    stage: &PipelineStage,
+    columns: &MaterializedColumns,
+) -> Result<Option<Expr>, QuerierError> {
     match stage {
         PipelineStage::LineFilter(f) => Ok(Some(line_filter_expr(f)?)),
-        PipelineStage::LabelFilter(expr) => Ok(Some(label_filter_expr(expr)?)),
+        PipelineStage::LabelFilter(expr) => Ok(Some(label_filter_expr(expr, columns)?)),
         PipelineStage::Json(_)
         | PipelineStage::Logfmt(_)
         | PipelineStage::Regexp(_)
@@ -112,11 +139,18 @@ fn line_filter_expr(f: &LineFilter) -> Result<Expr, QuerierError> {
 }
 
 /// Lower a label-filter expression, preserving its `and`/`or` structure.
-fn label_filter_expr(expr: &LabelFilterExpr) -> Result<Expr, QuerierError> {
+fn label_filter_expr(
+    expr: &LabelFilterExpr,
+    columns: &MaterializedColumns,
+) -> Result<Expr, QuerierError> {
     match expr {
-        LabelFilterExpr::Pred(p) => label_expr(&p.name, p.op, &p.value),
-        LabelFilterExpr::And(a, b) => Ok(label_filter_expr(a)?.and(label_filter_expr(b)?)),
-        LabelFilterExpr::Or(a, b) => Ok(label_filter_expr(a)?.or(label_filter_expr(b)?)),
+        LabelFilterExpr::Pred(p) => label_expr(&p.name, p.op, &p.value, columns),
+        LabelFilterExpr::And(a, b) => {
+            Ok(label_filter_expr(a, columns)?.and(label_filter_expr(b, columns)?))
+        }
+        LabelFilterExpr::Or(a, b) => {
+            Ok(label_filter_expr(a, columns)?.or(label_filter_expr(b, columns)?))
+        }
     }
 }
 
@@ -131,13 +165,79 @@ fn column_for_label(label: &str) -> Option<&'static str> {
     }
 }
 
-/// Lower a `name op value` predicate against a column or the attribute
-/// JSON columns.
-fn label_expr(name: &str, op: FilterOp, value: &FilterValue) -> Result<Expr, QuerierError> {
-    match column_for_label(name) {
-        Some(column) => column_expr(column, op, value),
-        None => attribute_expr(name, op, value),
+/// Lower a `name op value` predicate. Well-known labels resolve to their
+/// dedicated column; other labels resolve to a materialized `label_<key>`
+/// column when the table has one, else to the attribute-JSON substring
+/// match.
+fn label_expr(
+    name: &str,
+    op: FilterOp,
+    value: &FilterValue,
+    columns: &MaterializedColumns,
+) -> Result<Expr, QuerierError> {
+    if let Some(column) = column_for_label(name) {
+        return column_expr(column, op, value);
     }
+    let materialized = materialized_column_name(name);
+    if columns.contains(&materialized) {
+        return materialized_label_expr(&materialized, op, value);
+    }
+    attribute_expr(name, op, value)
+}
+
+/// Predicate against a materialized attribute column (nullable `Utf8`).
+/// Exact/regex comparisons match the string value; ordered comparisons cast
+/// the value to `Float64`. Negations also match rows where the label is
+/// absent (NULL), mirroring the JSON path where an absent key satisfies
+/// `!=`.
+fn materialized_label_expr(
+    column: &str,
+    op: FilterOp,
+    value: &FilterValue,
+) -> Result<Expr, QuerierError> {
+    let c = col(column);
+    Ok(match op {
+        FilterOp::Eq | FilterOp::CmpEq => c.eq(lit(string_value(value)?)),
+        FilterOp::Neq => c.clone().is_null().or(c.not_eq(lit(string_value(value)?))),
+        FilterOp::Re => regexp_like(c, lit(string_value(value)?), None),
+        FilterOp::Nre => {
+            c.clone()
+                .is_null()
+                .or(not(regexp_like(c, lit(string_value(value)?), None)))
+        }
+        FilterOp::Gt | FilterOp::Gte | FilterOp::Lt | FilterOp::Lte => {
+            let n = numeric_value(value)?;
+            let casted = cast(c, DataType::Float64);
+            match op {
+                FilterOp::Gt => casted.gt(lit(n)),
+                FilterOp::Gte => casted.gt_eq(lit(n)),
+                FilterOp::Lt => casted.lt(lit(n)),
+                FilterOp::Lte => casted.lt_eq(lit(n)),
+                _ => unreachable!(),
+            }
+        }
+    })
+}
+
+/// The numeric form of a filter value for ordered comparisons. Durations
+/// use nanoseconds and bytes their raw count, matching how the write path
+/// serializes them.
+fn numeric_value(value: &FilterValue) -> Result<f64, QuerierError> {
+    Ok(match value {
+        FilterValue::Number(n) => *n,
+        FilterValue::Bytes(b) => *b as f64,
+        FilterValue::Duration(d) => d.as_nanos() as f64,
+        FilterValue::String(s) => s.parse::<f64>().map_err(|_| {
+            QuerierError::Unsupported(format!(
+                "ordered comparison needs a numeric value, got '{s}'"
+            ))
+        })?,
+        FilterValue::Ip(_) => {
+            return Err(QuerierError::Unsupported(
+                "ordered comparison on an ip() value".to_string(),
+            ));
+        }
+    })
 }
 
 /// Predicate against a dedicated string column.
@@ -223,6 +323,58 @@ mod tests {
 
     fn lower(query: &str) -> Result<Option<Expr>, QuerierError> {
         log_query_filter(&parse_query(query).expect("parse"))
+    }
+
+    /// Lower with a set of materialized `label_<key>` columns present.
+    fn sql_with(query: &str, columns: &[&str]) -> String {
+        let q = parse_query(query).expect("parse");
+        let cols: MaterializedColumns = columns.iter().map(|c| c.to_string()).collect();
+        let expr = log_query_filter_with_columns(&q, &cols)
+            .expect("lower")
+            .expect("some filter");
+        format!("{expr}")
+    }
+
+    #[test]
+    fn materialized_label_routes_to_its_column() {
+        // Without the column: attribute JSON substring match.
+        assert_eq!(
+            sql(r#"{namespace="prod"}"#),
+            r#"contains(log_attributes, Utf8(""namespace":"prod"")) OR contains(resource_attributes, Utf8(""namespace":"prod""))"#
+        );
+        // With the column: exact equality on the dedicated column.
+        assert_eq!(
+            sql_with(r#"{namespace="prod"}"#, &["label_namespace"]),
+            r#"label_namespace = Utf8("prod")"#
+        );
+        // `!=` also matches rows where the label is absent (NULL).
+        assert_eq!(
+            sql_with(r#"{namespace!="prod"}"#, &["label_namespace"]),
+            r#"label_namespace IS NULL OR label_namespace != Utf8("prod")"#
+        );
+        // Regex against a materialized column.
+        assert_eq!(
+            sql_with(r#"{namespace=~"pr.*"}"#, &["label_namespace"]),
+            r#"regexp_like(label_namespace, Utf8("pr.*"))"#
+        );
+    }
+
+    #[test]
+    fn materialized_label_supports_ordered_comparison() {
+        // `| status > 500` on a materialized column casts to Float64.
+        assert_eq!(
+            sql_with(
+                r#"{service_name="api"} | logfmt | status > 500"#,
+                &["label_status"]
+            ),
+            r#"service_name = Utf8("api") AND CAST(label_status AS Float64) > Float64(500)"#
+        );
+        // Without the column, ordered comparison on an attribute is rejected.
+        let q = parse_query(r#"{service_name="api"} | logfmt | status > 500"#).expect("parse");
+        assert!(matches!(
+            log_query_filter_with_columns(&q, &MaterializedColumns::new()),
+            Err(QuerierError::Unsupported(_))
+        ));
     }
 
     #[test]
