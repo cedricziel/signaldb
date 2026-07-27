@@ -180,6 +180,11 @@ impl LogsService {
                 "not a metric query (use query_logs for log queries)".to_string(),
             ));
         };
+        // `vector(N)`: a scalar promoted to a constant, no-label series at
+        // every step bucket — no table scan.
+        if let MetricQuery::VectorLiteral(n) = metric {
+            return synthesize_vector(n, params.start, params.end, params.step);
+        }
         // Vector-to-vector operations (`a / b`, `a > b`): evaluate each
         // operand and join on (bucket, series labels). Scalar operations and
         // everything else lower to a single plan below.
@@ -993,6 +998,43 @@ fn apply_label_replace(
     Ok(vec![batch])
 }
 
+/// Synthesize the matrix for `vector(N)`: a single no-label series holding
+/// the constant `n` at every step-aligned bucket in `[start, end]`. Buckets
+/// align to the unix epoch, matching `date_bin(step, timestamp)` used by
+/// the scanning path.
+fn synthesize_vector(
+    n: f64,
+    start: i64,
+    end: i64,
+    step: i64,
+) -> Result<Vec<RecordBatch>, QuerierError> {
+    let mut buckets = Vec::new();
+    if step > 0 {
+        let mut b = start.div_euclid(step) * step;
+        while b <= end {
+            buckets.push(b);
+            b += step;
+        }
+    }
+    let values = vec![n; buckets.len()];
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "bucket",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(TimestampNanosecondArray::from(buckets)),
+        Arc::new(Float64Array::from(values)),
+    ];
+    let batch = RecordBatch::try_new(schema, columns)
+        .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+    Ok(vec![batch])
+}
+
 /// Order the output series by value for `sort` / `sort_desc`. Series are
 /// ranked by their value at their latest bucket (a range matrix has one
 /// value per bucket, so `sort` is only strictly defined for instant
@@ -1779,6 +1821,15 @@ mod tests {
         // `or`: union — the two api series plus the right-only web series.
         let or = matrix(&service, &format!("{api} or {all}"), 1000).await;
         assert_eq!(or.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn vector_literal_is_a_constant_no_label_series() {
+        let service = service_with_data();
+        // step 1000 over [0, 1000] → buckets 0 and 1000, both valued 5.
+        let out = matrix(&service, r#"vector(5)"#, 1000).await;
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|(v, s)| *v == 5.0 && s.is_none()));
     }
 
     #[tokio::test]

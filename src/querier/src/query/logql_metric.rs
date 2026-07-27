@@ -682,7 +682,10 @@ mod tests {
 
     #[test]
     fn unsupported_shapes_are_rejected() {
-        assert!(matches!(err(r#"vector(5)"#), QuerierError::Unsupported(_)));
+        assert!(matches!(
+            err(r#"absent_over_time({a="b"}[5m])"#),
+            QuerierError::Unsupported(_)
+        ));
         assert!(matches!(
             err(r#"sum(rate({a="b"}[1m])) / sum(rate({a="c"}[1m]))"#),
             QuerierError::Unsupported(_)
