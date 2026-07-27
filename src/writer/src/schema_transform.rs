@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Datelike, Timelike};
-use common::schema::SCHEMA_DEFINITIONS;
 use common::schema::schema_parser::ResolvedSchema;
+use common::schema::{SCHEMA_DEFINITIONS, materialized_column_name};
 use datafusion::arrow::{
     array::{
         Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Float64Array, Int32Array,
@@ -383,6 +383,109 @@ fn create_arrow_schema_from_resolved(resolved: &ResolvedSchema) -> Result<Arc<Sc
     Ok(Arc::new(Schema::new(fields)))
 }
 
+/// The configured materialized labels for a signal, from the global config
+/// (empty when the config is not initialized, e.g. unit tests).
+fn materialized_labels_for(signal: &str) -> Vec<String> {
+    common::config::CONFIG
+        .get()
+        .map(|c| {
+            let m = &c.schema.materialized_labels;
+            match signal {
+                "logs" => m.logs.clone(),
+                "traces" => m.traces.clone(),
+                "metrics" => m.metrics.clone(),
+                "profiles" => m.profiles.clone(),
+                _ => Vec::new(),
+            }
+        })
+        .unwrap_or_default()
+}
+
+/// Render a JSON attribute value as the string stored in a materialized
+/// column (bare for scalars, so it matches how the querier compares).
+fn attr_value_to_string(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Null => None,
+        other => Some(other.to_string()),
+    }
+}
+
+/// Parse a JSON-string column into per-row objects, optionally descending
+/// into a nested key (e.g. scope's `attributes`).
+fn parse_attr_objects(
+    batch: &RecordBatch,
+    column: &str,
+    nested_key: Option<&str>,
+) -> Result<Vec<Option<serde_json::Map<String, serde_json::Value>>>> {
+    let col = get_column_by_name(batch, column)?;
+    let arr = col
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| anyhow!("{column} is not StringArray"))?;
+    Ok((0..arr.len())
+        .map(|i| {
+            if arr.is_null(i) {
+                return None;
+            }
+            let root: serde_json::Value = serde_json::from_str(arr.value(i)).ok()?;
+            let obj = match nested_key {
+                Some(k) => root.get(k)?.clone(),
+                None => root,
+            };
+            match obj {
+                serde_json::Value::Object(m) => Some(m),
+                _ => None,
+            }
+        })
+        .collect())
+}
+
+/// Build the `label_<key>` columns for the configured materialized labels,
+/// extracting each label's value from the resource, scope, then record
+/// attributes (first non-null wins). Returns the extra fields and arrays to
+/// append to the base logs batch; empty when nothing is configured.
+fn materialized_label_columns(
+    batch: &RecordBatch,
+    num_rows: usize,
+    labels: &[String],
+) -> Result<(Vec<Field>, Vec<ArrayRef>)> {
+    if labels.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    // Attribute sources, in precedence order (resource → scope → record).
+    let resource = parse_attr_objects(batch, "resource_json", None)?;
+    let scope = parse_attr_objects(batch, "scope_json", Some("attributes"))?;
+    let record = parse_attr_objects(batch, "attributes_json", None)?;
+
+    let mut fields = Vec::new();
+    let mut columns: Vec<ArrayRef> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for label in labels {
+        let name = materialized_column_name(label);
+        if !seen.insert(name.clone()) {
+            continue; // duplicate label → single column
+        }
+        let values: Vec<Option<String>> = (0..num_rows)
+            .map(|i| {
+                for src in [&resource[i], &scope[i], &record[i]] {
+                    if let Some(map) = src
+                        && let Some(v) = map.get(label)
+                        && let Some(s) = attr_value_to_string(v)
+                    {
+                        return Some(s);
+                    }
+                }
+                None
+            })
+            .collect();
+        fields.push(Field::new(&name, DataType::Utf8, true));
+        columns.push(Arc::new(StringArray::from(values)));
+    }
+    Ok((fields, columns))
+}
+
 pub fn transform_logs_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatch> {
     let v1_schema = SCHEMA_DEFINITIONS.resolve_log_schema("v1")?;
     let arrow_schema = create_arrow_schema_from_resolved(&v1_schema)?;
@@ -667,7 +770,25 @@ pub fn transform_logs_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatch> {
         new_columns.push(column);
     }
 
-    let result = RecordBatch::try_new(arrow_schema, new_columns)
+    // Promote configured attribute keys into dedicated `label_<key>`
+    // columns. `coerce_batch_to_schema` later drops these for tables that
+    // predate the columns, so this is safe regardless of table age.
+    let (label_fields, label_columns) =
+        materialized_label_columns(&batch, num_rows, &materialized_labels_for("logs"))?;
+    let out_schema: Arc<Schema> = if label_fields.is_empty() {
+        arrow_schema
+    } else {
+        let mut fields: Vec<Field> = arrow_schema
+            .fields()
+            .iter()
+            .map(|f| (**f).clone())
+            .collect();
+        fields.extend(label_fields);
+        new_columns.extend(label_columns);
+        Arc::new(Schema::new(fields))
+    };
+
+    let result = RecordBatch::try_new(out_schema, new_columns)
         .map_err(|e| anyhow!("Failed to create transformed log RecordBatch: {}", e))?;
 
     log::debug!(
@@ -2016,6 +2137,79 @@ mod tests {
             ],
         )
         .unwrap()
+    }
+
+    fn attr_batch(
+        resource: Vec<Option<&str>>,
+        scope: Vec<Option<&str>>,
+        record: Vec<Option<&str>>,
+    ) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("resource_json", DataType::Utf8, true),
+            Field::new("scope_json", DataType::Utf8, true),
+            Field::new("attributes_json", DataType::Utf8, true),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(resource)),
+                Arc::new(StringArray::from(scope)),
+                Arc::new(StringArray::from(record)),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn materialized_label_columns_extract_with_precedence() {
+        // Row 1's `http.method` is in both resource and record → resource wins.
+        let batch = attr_batch(
+            vec![
+                Some(r#"{"namespace":"prod"}"#),
+                Some(r#"{"namespace":"staging","http.method":"PUT"}"#),
+            ],
+            vec![Some(r#"{"attributes":{"scopekey":"sv"}}"#), None],
+            vec![
+                Some(r#"{"http.method":"GET"}"#),
+                Some(r#"{"http.method":"POST"}"#),
+            ],
+        );
+        let labels = vec![
+            "namespace".to_string(),
+            "http.method".to_string(),
+            "scopekey".to_string(),
+        ];
+        let (fields, cols) = materialized_label_columns(&batch, 2, &labels).unwrap();
+
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0].name(), "label_namespace");
+        assert!(
+            fields
+                .iter()
+                .all(|f| f.is_nullable() && *f.data_type() == DataType::Utf8)
+        );
+
+        let val = |c: &ArrayRef, i: usize| {
+            let a = c.as_any().downcast_ref::<StringArray>().unwrap();
+            if a.is_null(i) {
+                None
+            } else {
+                Some(a.value(i).to_string())
+            }
+        };
+        // namespace: resource on both rows.
+        assert_eq!(val(&cols[0], 0).as_deref(), Some("prod"));
+        assert_eq!(val(&cols[0], 1).as_deref(), Some("staging"));
+        // http.method: row 0 only in record (GET); row 1 resource wins over record (PUT).
+        assert_eq!(val(&cols[1], 0).as_deref(), Some("GET"));
+        assert_eq!(val(&cols[1], 1).as_deref(), Some("PUT"));
+        // scopekey: row 0 from scope; row 1 absent.
+        assert_eq!(val(&cols[2], 0).as_deref(), Some("sv"));
+        assert_eq!(val(&cols[2], 1), None);
+
+        // No configured labels → no extra columns.
+        let (f, c) = materialized_label_columns(&batch, 2, &[]).unwrap();
+        assert!(f.is_empty() && c.is_empty());
     }
 
     #[test]
