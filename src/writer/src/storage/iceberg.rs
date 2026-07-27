@@ -7,7 +7,7 @@ use crate::schema_transform::{
 use anyhow::Result;
 use common::CatalogManager;
 
-use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::array::{RecordBatch, new_null_array};
 use datafusion::arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use iceberg_rust::arrow::write::write_parquet_partitioned;
 use iceberg_rust::catalog::Catalog as IcebergRustCatalog;
@@ -395,12 +395,20 @@ fn decode_marker_ids(value: &str) -> HashSet<uuid::Uuid> {
 fn coerce_batch_to_schema(batch: RecordBatch, target: &ArrowSchemaRef) -> Result<RecordBatch> {
     let mut columns = Vec::with_capacity(target.fields().len());
     for field in target.fields() {
-        let index = batch.schema().index_of(field.name()).map_err(|_| {
-            anyhow::anyhow!(
+        let Ok(index) = batch.schema().index_of(field.name()) else {
+            // A nullable target column absent from the batch (e.g. a
+            // materialized `label_<key>` on a table whose current config no
+            // longer lists it) is filled with nulls; a required one is a
+            // genuine schema mismatch.
+            if field.is_nullable() {
+                columns.push(new_null_array(field.data_type(), batch.num_rows()));
+                continue;
+            }
+            return Err(anyhow::anyhow!(
                 "Batch is missing column '{}' required by the table schema",
                 field.name()
-            )
-        })?;
+            ));
+        };
         let column = batch.column(index);
         let column = if column.data_type() == field.data_type() {
             column.clone()
@@ -424,7 +432,36 @@ fn coerce_batch_to_schema(batch: RecordBatch, target: &ArrowSchemaRef) -> Result
 mod tests {
     use super::*;
     use common::config::{Configuration, SchemaConfig, StorageConfig};
+    use datafusion::arrow::array::{Array, StringArray};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use object_store::memory::InMemory;
+    use std::sync::Arc;
+
+    #[test]
+    fn coerce_fills_null_for_missing_nullable_column() {
+        // Batch has only `body`; the target adds a nullable `label_ns`.
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("body", DataType::Utf8, true)])),
+            vec![Arc::new(StringArray::from(vec![Some("hi"), Some("yo")]))],
+        )
+        .unwrap();
+        let target = Arc::new(Schema::new(vec![
+            Field::new("body", DataType::Utf8, true),
+            Field::new("label_ns", DataType::Utf8, true),
+        ]));
+
+        let out = coerce_batch_to_schema(batch.clone(), &target).unwrap();
+        assert_eq!(out.num_columns(), 2);
+        let label = out.column_by_name("label_ns").unwrap();
+        assert_eq!(label.null_count(), 2);
+
+        // A missing *required* column is still a hard error.
+        let required_target = Arc::new(Schema::new(vec![
+            Field::new("body", DataType::Utf8, true),
+            Field::new("must_have", DataType::Utf8, false),
+        ]));
+        assert!(coerce_batch_to_schema(batch, &required_target).is_err());
+    }
 
     async fn create_test_catalog_manager() -> CatalogManager {
         let config = Configuration {
