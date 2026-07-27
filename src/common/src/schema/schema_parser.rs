@@ -166,8 +166,17 @@ impl SchemaDefinitions {
 }
 
 impl ResolvedSchema {
-    /// Convert to Iceberg Schema
+    /// Convert to Iceberg Schema.
     pub fn to_iceberg_schema(&self) -> Result<Schema> {
+        self.to_iceberg_schema_with_labels(&[])
+    }
+
+    /// Convert to an Iceberg Schema, appending an optional `label_<key>`
+    /// column for each materialized attribute label (see
+    /// [`crate::schema::materialized_column_name`]). Duplicate or
+    /// base-column-colliding labels are skipped, and field IDs continue
+    /// after the base columns.
+    pub fn to_iceberg_schema_with_labels(&self, labels: &[String]) -> Result<Schema> {
         let mut fields = Vec::new();
 
         for (idx, field) in self.fields.iter().enumerate() {
@@ -201,6 +210,26 @@ impl ResolvedSchema {
             fields.push(struct_field);
         }
 
+        // Append materialized-label columns after the base fields. They are
+        // always optional strings (a row may not carry the attribute).
+        let mut next_id = self.fields.len() as i32 + 1;
+        for label in labels {
+            let name = crate::schema::materialized_column_name(label);
+            if fields.iter().any(|f| f.name == name) {
+                continue; // collides with a base column or an earlier label
+            }
+            fields.push(StructField {
+                id: next_id,
+                name,
+                required: false,
+                field_type: Type::Primitive(PrimitiveType::String),
+                doc: Some(format!("Materialized attribute label '{label}'")),
+                initial_default: None,
+                write_default: None,
+            });
+            next_id += 1;
+        }
+
         Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
     }
 
@@ -216,6 +245,57 @@ impl ResolvedSchema {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn to_iceberg_schema_appends_materialized_label_columns() {
+        let base = ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![
+                ResolvedField {
+                    name: "timestamp".to_string(),
+                    field_type: "timestamp_ns".to_string(),
+                    required: true,
+                    computed: None,
+                    field_id: 1,
+                },
+                ResolvedField {
+                    name: "body".to_string(),
+                    field_type: "string".to_string(),
+                    required: false,
+                    computed: None,
+                    field_id: 2,
+                },
+            ],
+            partition_by: vec![],
+        };
+
+        // No labels → base schema unchanged.
+        let plain = base.to_iceberg_schema().unwrap();
+        assert_eq!(plain.fields().iter().count(), 2);
+
+        // Labels → one optional `label_<key>` column each; dotted keys are
+        // sanitized and duplicates collapsed.
+        let labels = vec![
+            "namespace".to_string(),
+            "http.method".to_string(),
+            "namespace".to_string(),
+        ];
+        let s = base.to_iceberg_schema_with_labels(&labels).unwrap();
+        let names: Vec<String> = s.fields().iter().map(|f| f.name.clone()).collect();
+        assert_eq!(names.len(), 4, "2 base + 2 unique labels, got {names:?}");
+        assert!(names.contains(&"label_namespace".to_string()));
+        assert!(names.contains(&"label_http_method".to_string()));
+
+        // Materialized columns are optional strings.
+        let ns = s
+            .fields()
+            .iter()
+            .find(|f| f.name == "label_namespace")
+            .unwrap();
+        assert!(!ns.required);
+        assert_eq!(ns.field_type, Type::Primitive(PrimitiveType::String));
+    }
 
     #[test]
     fn test_schema_parsing() {

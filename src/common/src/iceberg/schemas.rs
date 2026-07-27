@@ -75,14 +75,36 @@ pub fn create_traces_schema() -> Result<Schema> {
     resolved_schema.to_iceberg_schema()
 }
 
-/// Create Iceberg schema for logs table using TOML definitions
+/// Create Iceberg schema for logs table using TOML definitions, plus any
+/// configured materialized-label columns.
 pub fn create_logs_schema() -> Result<Schema> {
     // Get the current log schema version from TOML
     let current_version = SCHEMA_DEFINITIONS.metadata.current_log_version.as_str();
     let resolved_schema = SCHEMA_DEFINITIONS.resolve_log_schema(current_version)?;
 
-    // Convert resolved schema to Iceberg schema
-    resolved_schema.to_iceberg_schema()
+    // Promote configured attribute keys to dedicated columns. The schema is
+    // materialized once at table-creation time; the global config is the
+    // source of truth for which labels are promoted (empty when unset).
+    let labels = materialized_labels_for("logs");
+    resolved_schema.to_iceberg_schema_with_labels(&labels)
+}
+
+/// The configured materialized labels for a signal, read from the global
+/// config (empty when the config is not initialized, e.g. in unit tests).
+fn materialized_labels_for(signal: &str) -> Vec<String> {
+    crate::config::CONFIG
+        .get()
+        .map(|c| {
+            let m = &c.schema.materialized_labels;
+            match signal {
+                "logs" => m.logs.clone(),
+                "traces" => m.traces.clone(),
+                "metrics" => m.metrics.clone(),
+                "profiles" => m.profiles.clone(),
+                _ => Vec::new(),
+            }
+        })
+        .unwrap_or_default()
 }
 
 /// Create Iceberg schema for metrics gauge table
