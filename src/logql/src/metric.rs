@@ -179,6 +179,23 @@ pub struct BinaryExpr {
     /// `true` when a comparison carries the `bool` modifier
     /// (`> bool 5`), turning the filter into a 0/1 result.
     pub bool_modifier: bool,
+    /// Optional `on (...)` / `ignoring (...)` vector-matching clause that
+    /// restricts which labels series are matched on.
+    pub matching: Option<VectorMatch>,
+}
+
+/// An `on (...)` / `ignoring (...)` vector-matching clause. `group_left` /
+/// `group_right` (many-to-one) are accepted by the parser but recorded as
+/// flags only; matching is evaluated one-to-one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VectorMatch {
+    /// `true` for `on (...)` (match only these labels), `false` for
+    /// `ignoring (...)` (match on all labels except these).
+    pub on: bool,
+    /// The labels named in the clause.
+    pub labels: Vec<String>,
+    /// `true` when a `group_left` / `group_right` modifier was present.
+    pub grouped: bool,
 }
 
 /// Binary operators, grouped by precedence tier (see the parser).

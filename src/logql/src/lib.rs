@@ -28,7 +28,7 @@ pub use ast::{
 pub use lexer::{LexError, tokenize};
 pub use metric::{
     AggregationFunction, BinOp, BinaryExpr, LabelReplace, MetricQuery, RangeAggregation,
-    RangeFunction, VectorAggregation,
+    RangeFunction, VectorAggregation, VectorMatch,
 };
 pub use parser::{Expr, ParseError, parse, parse_query, parse_selector};
 pub use token::{SpannedToken, Token};

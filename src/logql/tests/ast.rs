@@ -312,8 +312,10 @@ fn cases() -> Vec<(&'static str, Expr)> {
                     ),
                     right: MetricQuery::Literal(2.0),
                     bool_modifier: false,
+                    matching: None,
                 })),
                 bool_modifier: false,
+                matching: None,
             }))),
         ),
         // --- bool modifier on a comparison ---
@@ -329,6 +331,7 @@ fn cases() -> Vec<(&'static str, Expr)> {
                 ),
                 right: MetricQuery::Literal(10.0),
                 bool_modifier: true,
+                matching: None,
             }))),
         ),
         // --- vector(0) fallback ---
