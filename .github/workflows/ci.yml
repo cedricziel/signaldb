@@ -362,7 +362,9 @@ jobs:
   docker-build-amd64:
     name: Build Docker Image (amd64)
     runs-on: ubuntu-latest
-    needs: build-musl-amd64
+    # test gates the image push: a commit with a red test suite must not
+    # be published to ghcr, even though the binaries already built
+    needs: [build-musl-amd64, test]
     permissions:
       contents: read
       packages: write
@@ -412,7 +414,8 @@ jobs:
   docker-build-arm64:
     name: Build Docker Image (arm64)
     runs-on: ubuntu-24.04-arm
-    needs: build-musl-arm64
+    # test gates the image push; see docker-build-amd64
+    needs: [build-musl-arm64, test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
