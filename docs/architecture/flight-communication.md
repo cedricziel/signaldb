@@ -172,6 +172,20 @@ that protocol does not use tickets.
 
 There is no `trace_by_id?id=...` ticket form at the Querier; that command exists only in the Router's metadata path. The Tempo HTTP endpoints bypass the Router's Flight commands entirely and send `find_trace:`/`search_traces:`/SQL tickets straight to the Querier.
 
+#### Self-Monitoring Anti-Loop Guard
+
+When self-monitoring is enabled, both Flight handlers apply the anti-loop
+guard from `src/common/src/self_monitoring/suppress.rs`: requests that touch
+the reserved `_system` tenant are processed with OpenTelemetry export
+suppressed, so handling SignalDB's own telemetry does not generate more of
+it. The Writer's `do_put` suppresses per batch based on the tenant in the
+Flight metadata (its background WAL loop does the same per WAL entry), and
+the Querier's `do_get` resolves the tenant — authenticated caller, the
+`op:{tenant_slug}:...` ticket segment, or the `x-tenant-id` header for raw
+SQL — before creating its processing span. The suppression marker is a tokio
+task-local: it crosses neither the Flight hop between services nor
+`tokio::spawn`, which is why each handler carries its own call site.
+
 ## 5. Implementation Details
 
 ### 5.1 Current Data Flow ✅ **Working**
