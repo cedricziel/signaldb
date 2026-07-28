@@ -88,6 +88,13 @@ impl ParquetRewriter {
 
         let rows_read: u64 = merged_batches.iter().map(|b| b.num_rows() as u64).sum();
 
+        // Advisory attribute-stats pass (epic #737 L4a): the data is
+        // already in memory for the rewrite, so per-key presence and
+        // approximate cardinality come nearly free. Logs promotion
+        // candidates; changes nothing.
+        let (attr_stats, scanned) = crate::attr_stats::analyze_batches(&merged_batches);
+        crate::attr_stats::log_promotion_candidates(&table_name, &attr_stats, scanned);
+
         // Chunk batches toward the target file size so the writer produces
         // reasonably sized files.
         let split_batches = self.split_batches_by_size(merged_batches, target_file_size_bytes)?;

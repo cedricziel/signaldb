@@ -284,6 +284,7 @@ flowchart LR
 - Distributed leases (`compactor_leases` catalog table) prevent concurrent compaction of the same partition
 - Flight admin interface exposes only `do_action` commands (`compact_now`, `compact_status`, `compact_dry_run`) and `list_actions`; all other Flight RPCs return `unimplemented`
 - Retention enforcement and orphan-file cleanup, configured via `[compactor.retention]` and `[compactor.orphan_cleanup]`
+- Advisory attribute-stats pass on every rewrite: logs per-key presence / approximate cardinality and would-be materialization candidates (epic #737 Layer 4a; read-only)
 - Disabled by default; enable with `[compactor].enabled = true`
 
 ## Multi-Tenancy and Authentication
