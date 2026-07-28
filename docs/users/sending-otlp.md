@@ -14,9 +14,11 @@ Goal: point an OpenTelemetry SDK or Collector at SignalDB so traces, logs,
 and metrics are ingested.
 
 SignalDB accepts OTLP over **gRPC on port 4317** for all three signals.
-Use gRPC. The OTLP/HTTP port (4318) does not ingest OTLP today — see
-[the HTTP limitation](#otlphttp-is-not-implemented) below. Port 4318 does
-serve [Prometheus remote_write](prometheus-remote-write.md).
+The OTLP/HTTP port (4318) additionally ingests **traces** at
+`POST /v1/traces` (protobuf and JSON bodies, authenticated); logs and
+metrics remain gRPC-only — see
+[OTLP/HTTP support](#otlphttp-support-is-partial) below. Port 4318 also
+serves [Prometheus remote_write](prometheus-remote-write.md).
 
 ## Prerequisites
 
@@ -29,18 +31,24 @@ serve [Prometheus remote_write](prometheus-remote-write.md).
 
 ### 1. Choose the endpoint
 
-Every OTLP export goes to the gRPC endpoint:
+Use the gRPC endpoint — it supports all signals:
 
 ```text
 http://<acceptor-host>:4317
 ```
 
+For traces only, the OTLP/HTTP endpoint is also available:
+
+```text
+http://<acceptor-host>:4318/v1/traces
+```
+
 ### 2. Attach the auth metadata
 
-Each gRPC request must carry these metadata keys (see
-[Authentication](authentication.md) for details):
+Each request — gRPC metadata or HTTP headers alike — must carry these keys
+(see [Authentication](authentication.md) for details):
 
-| Metadata key | Required | Value |
+| Metadata key / header | Required | Value |
 |---|---|---|
 | `authorization` | yes | `Bearer <api-key>` |
 | `x-tenant-id` | yes | your tenant ID |
@@ -94,23 +102,55 @@ successful export response means the data is durable.
 
 ## Per-signal support
 
-| Signal | OTLP/gRPC :4317 | Stored as |
-|---|---|---|
-| Traces | yes | `traces` table |
-| Logs | yes | `logs` table |
-| Metrics | yes | `metrics_gauge`, `metrics_sum`, `metrics_histogram` tables |
-| Profiles | yes | `profiles` table (see [profiles](profiles.md)) |
+| Signal | OTLP/gRPC :4317 | OTLP/HTTP :4318 | Stored as |
+|---|---|---|---|
+| Traces | yes | yes (`POST /v1/traces`) | `traces` table |
+| Logs | yes | no | `logs` table |
+| Metrics | yes | no | `metrics_gauge`, `metrics_sum`, `metrics_histogram` tables |
+| Profiles | yes | yes (`POST /v1development/profiles`) | `profiles` table (see [profiles](profiles.md)) |
 
 ## OTLP/HTTP support is partial
 
-The HTTP server on port 4318 exposes `POST /v1development/profiles` for
-the profiles signal (protobuf and JSON bodies, authenticated) — see
-[profiles](profiles.md). For the other signals it exposes only
-`POST /v1/traces`, and that handler is a stub: it logs the payload size
-and returns `200 OK` without writing anything. There are no `/v1/logs` or
-`/v1/metrics` routes. Do not point an `http/protobuf` or `http/json` OTLP
-exporter at SignalDB for traces, logs, or metrics — the export will
-appear to succeed but no data is stored.
+The HTTP server on port 4318 ingests **traces** at `POST /v1/traces` and
+**profiles** at `POST /v1development/profiles` (see
+[profiles](profiles.md)). Both accept `application/x-protobuf` and
+`application/json` (protojson encoding: trace and span IDs are hex
+strings) request bodies, require the same auth headers as gRPC, and
+enforce per-tenant rate limits and storage quotas. Compressed
+(`Content-Encoding: gzip`) request bodies are not supported — export
+uncompressed.
+
+A successful trace export returns `200 OK` with an
+`ExportTraceServiceResponse` body in the same encoding as the request.
+Error responses:
+
+| Status | Meaning |
+|---|---|
+| `400 Bad Request` | Malformed payload, or missing/malformed `Authorization` / `X-Tenant-ID` headers |
+| `401 Unauthorized` | API key is wrong or revoked |
+| `403 Forbidden` | Key does not belong to the tenant/dataset you named |
+| `429 Too Many Requests` | Per-tenant ingest rate limit or storage quota hit |
+
+There are no `/v1/logs` or `/v1/metrics` HTTP routes — an `http/protobuf`
+or `http/json` exporter pointed at SignalDB for logs or metrics gets
+`404 Not Found`. Use gRPC on :4317 for those signals.
+
+To use OTLP/HTTP for traces from the OpenTelemetry Collector:
+
+```yaml
+exporters:
+  otlphttp/signaldb:
+    endpoint: http://signaldb:4318
+    headers:
+      authorization: "Bearer sk-acme-prod-key-123"
+      x-tenant-id: "acme"
+    compression: none   # gzip request bodies are not supported
+
+service:
+  pipelines:
+    traces:
+      exporters: [otlphttp/signaldb]
+```
 
 ## Troubleshooting
 
@@ -122,5 +162,6 @@ appear to succeed but no data is stored.
 | `PERMISSION_DENIED` | Key does not belong to the tenant/dataset you named | Use a key issued for that tenant |
 | `RESOURCE_EXHAUSTED` | Per-tenant ingest rate limit hit | Back off and retry; ask your operator about tenant limits |
 | `RESOURCE_EXHAUSTED` mentioning `quota_exceeded` | Tenant is at or over its storage quota (`max_storage_bytes`) | Retrying will not help until data is deleted, retention shortens, or the quota is raised — talk to your operator |
-| `429 Too Many Requests` on `POST /v1development/profiles` | HTTP analog of the two `RESOURCE_EXHAUSTED` cases above | See [profiles](profiles.md) |
-| Exports return 200 but no data is queryable | Exporter uses OTLP/HTTP on :4318 | Switch the exporter to gRPC on :4317 |
+| `429 Too Many Requests` on `POST /v1/traces` or `POST /v1development/profiles` | HTTP analog of the two `RESOURCE_EXHAUSTED` cases above | Back off and retry (rate limit), or talk to your operator (quota) |
+| `400 Bad Request` on `POST /v1/traces` with a JSON body | Payload is not valid protojson (e.g. base64 trace IDs instead of hex) | Use a protojson-compliant encoder; trace/span IDs must be hex strings |
+| `404 Not Found` on `:4318/v1/logs` or `:4318/v1/metrics` | Logs and metrics have no OTLP/HTTP routes | Switch those pipelines to gRPC on :4317 |
