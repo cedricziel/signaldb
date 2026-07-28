@@ -351,10 +351,21 @@ logs = ["namespace", "pod"]
   the table has one, else to the JSON match (see the
   [LogQL reference](../users/logql-reference.md#materialized-labels)).
 
-The same mechanism applies to **traces** — a materialized label is matched
-exactly on its column by the Tempo search API (`tags` / TraceQL attribute
-selectors) instead of the JSON substring approximation — and is intended
-for the metric and profile signals, which share the attribute-JSON pattern.
+The same mechanism applies across all four signals:
+
+- **logs** — LogQL matches materialized labels exactly, with regex and
+  ordered comparisons;
+- **traces** — the Tempo search API (`tags` / TraceQL attribute selectors)
+  matches them exactly;
+- **metrics** — PromQL label matchers (`metric{key="v"}`) match exactly and
+  by regex on the column (grouping, `sum by (key)`, still resolves only
+  `service_name` — a follow-up);
+- **profiles** — the columns are populated for consistency; the Pyroscope
+  query surface filters only by `service_name` / sample type today.
+
+Each signal's writer transform extracts the label from that signal's
+attribute JSON (metrics per exploded data point); the querier routes to the
+column when the queried table has it, else the JSON substring match.
 
 #### Metrics Gauge Table (v1 -- current)
 
