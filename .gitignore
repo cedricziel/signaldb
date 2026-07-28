@@ -52,3 +52,6 @@ ENV/
 *.swp
 
 node_modules/
+
+# Staged binaries for prebuilt Docker images (CI)
+/dist/

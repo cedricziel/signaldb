@@ -1,8 +1,15 @@
 # Multi-stage production Dockerfile for SignalDB services
 # Uses Alpine Linux for minimal image sizes (~15-25MB per service)
+#
+# Two builder paths, selected via --build-arg BUILDER=<source|prebuilt>:
+#   source   (default) - compile everything inside the container; used by
+#              docker compose and local builds
+#   prebuilt - copy static musl binaries staged in dist/ by CI, skipping
+#              the in-container compile entirely
+ARG BUILDER=source
 
 # Builder stage - compile all services with musl for Alpine compatibility
-FROM rust:1.97-alpine AS builder
+FROM rust:1.97-alpine AS builder-source
 
 # Install build dependencies
 RUN apk add --no-cache \
@@ -98,6 +105,18 @@ RUN strip target/release/signaldb-acceptor && \
     strip target/release/signaldb-querier && \
     strip target/release/signaldb-compactor && \
     strip target/release/signaldb
+
+# Prebuilt-binary path - CI builds static musl binaries on the host runner
+# (where sccache/rust-cache make rebuilds incremental) and stages them in
+# dist/; nothing is compiled inside the container
+FROM alpine:3.24 AS builder-prebuilt
+
+WORKDIR /build
+COPY --chmod=755 dist/ target/release/
+
+# Builder selection - the service stages below copy from whichever
+# builder path the BUILDER build-arg picked
+FROM builder-${BUILDER} AS builder
 
 # Runtime base image - minimal Alpine with required libraries
 FROM alpine:3.24 AS runtime-base
