@@ -107,6 +107,8 @@ async fn main() -> Result<()> {
         tracing::info!("Configuration file not found, using defaults");
         Configuration::default()
     };
+    // Publish to the process-global for readers without a config handle.
+    let _ = common::config::CONFIG.set(config.clone());
 
     // Standalone services need shared discovery/catalog backends; the
     // in-memory defaults only make sense in monolithic mode (issue #554).
