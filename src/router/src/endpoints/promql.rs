@@ -316,11 +316,12 @@ fn batches_to_matrix(batches: &[RecordBatch]) -> Vec<RangeVector> {
                 if col.is_null(i) || col.value(i).is_empty() {
                     continue;
                 }
-                // `metric_name` is Prometheus's `__name__`.
+                // `metric_name` is Prometheus's `__name__`; materialized
+                // `label_<key>` columns surface under their label name.
                 let key = if name == "metric_name" {
                     "__name__"
                 } else {
-                    name.as_str()
+                    name.strip_prefix("label_").unwrap_or(name.as_str())
                 };
                 metric.insert(key.to_string(), col.value(i).to_string());
             }

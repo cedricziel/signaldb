@@ -101,8 +101,9 @@ curl -sG http://localhost:3000/prometheus/api/v1/series \
 ```
 
 Prometheus labels map onto SignalDB columns: `__name__` is the metric name,
-`job` is the service name, and other labels are matched against the metric's
-attributes.
+`job` is the service name, and [materialized labels](../architecture/storage-layout.md#materialized-labels)
+match (and group) on their dedicated columns. Any other label is matched
+against the metric's JSON attributes.
 
 ## Verify
 

@@ -38,7 +38,7 @@ wrong result.
 | `sum`, `avg`, `min`, `max`, `count` (with/without `by (…)`) | ✅ |
 | `topk(k, …)`, `bottomk(k, …)` (no `by`/`without`) | ✅ |
 | `stddev`, `stdvar` (population), `group` (with/without `by (…)`) | ✅ |
-| `without (…)` grouping | ✅ (over `job`/`service`; attribute labels aren't materialized) |
+| `without (…)` grouping | ✅ (over `job`/`service` and materialized labels) |
 | `quantile(phi, …)` (parameterized, with/without `by (…)`) | ✅ |
 | `count_values` | ✅ (distinct value → `service_name`; label name not materialized) |
 
@@ -97,11 +97,13 @@ wrong result.
 
 Tracked under epic #328 and #336. The full PromQL function and operator
 surface is now supported. Remaining differences from upstream Prometheus are
-backend-specific rather than missing features: only `service_name` is
-materialized as a queryable metric label (other labels live in JSON
-`attributes`), so label-writing (`label_replace`/`label_join`), `count_values`,
-and vector matching (`on`/`ignoring`/`group_left`) operate over
-`service_name`/`__name__`; and range aggregations use fixed `date_bin` step
-buckets rather than a sliding window (exact when the query step equals the
-range). Materializing more labels into columns is the highest-leverage way to
-close those gaps.
+backend-specific rather than missing features: `service_name` and any
+configured [materialized labels](../architecture/storage-layout.md#materialized-labels)
+are queryable metric labels — matchers filter on them exactly, `by`/`without`
+group on them, and they are part of each series' natural identity (a bare
+selector or `rate()` emits one series per label combination). Other labels
+live in JSON `attributes`. Label-writing (`label_replace`/`label_join`),
+`count_values`, and vector matching (`on`/`ignoring`/`group_left`) still
+operate over `service_name`/`__name__` only; and range aggregations use fixed
+`date_bin` step buckets rather than a sliding window (exact when the query
+step equals the range).

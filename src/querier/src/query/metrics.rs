@@ -28,6 +28,7 @@ use datafusion::logical_expr::{Expr, SortExpr, cast, col, lit, not};
 use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
+use super::logql::MaterializedColumns;
 use super::promql::{
     ArithOp, AtSpec, CalendarFn, CmpOp, Grouping, HistogramFn, LabelMatch, LabelOp, LogicalOp,
     MatchKind, MetricAgg, MetricPlan, QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_promql,
@@ -247,9 +248,12 @@ impl MetricsService {
             return eval_time(plan, start, end, step);
         }
 
-        let group_cols = self.group_columns(plan)?;
-
         let df = self.scan_union(tenant_slug, dataset_slug).await?;
+        // The materialized `label_<key>` columns of the scanned tables widen
+        // the natural series identity and are groupable like `service_name`.
+        let materialized = super::logs::materialized_columns_of(&df);
+        let series_cols = natural_series_columns(&materialized);
+        let group_cols = Self::group_columns_for(&plan.grouping, &materialized)?;
         // `offset` shifts the sampled window back in time.
         let df = apply_filters(df, plan, start - plan.offset_ns, end - plan.offset_ns)?;
 
@@ -261,13 +265,13 @@ impl MetricsService {
             // `timestamp(v)`: the value is each series' latest sample time in
             // seconds, rather than the sample value.
             let mut group_exprs = vec![bucket, col("metric_name")];
-            group_exprs.extend(group_cols.iter().map(|c| col(*c)));
+            group_exprs.extend(group_cols.iter().map(|c| col(c.as_str())));
             let secs = cast_value_f64(cast(cast_ns(col("timestamp")), DataType::Int64)) / lit(1e9);
             let df = df
                 .aggregate(group_exprs, vec![max(secs).alias("value")])
                 .map_err(QuerierError::QueryFailed)?;
             let mut proj = vec![col("bucket"), col("metric_name")];
-            proj.extend(group_cols.iter().map(|c| col(*c)));
+            proj.extend(group_cols.iter().map(|c| col(c.as_str())));
             proj.push(cast_value_f64(col("value")).alias("value"));
             df.select(proj).map_err(QuerierError::QueryFailed)?
         } else if let Some(range) = plan.range {
@@ -278,6 +282,7 @@ impl MetricsService {
                 plan.aggregate,
                 plan.agg_param,
                 &group_cols,
+                &series_cols,
             )?
         } else {
             self.simple_query(df, bucket, plan.aggregate, plan.agg_param, &group_cols)?
@@ -286,9 +291,9 @@ impl MetricsService {
         // A second aggregation folds the per-series result, e.g. the outer
         // `sum` in `sum(avg_over_time(x[5m]))`.
         let (df, group_cols) = if let Some((outer_agg, outer_grouping)) = &plan.outer_agg {
-            let outer_cols = Self::group_columns_for(outer_grouping)?;
+            let outer_cols = Self::group_columns_for(outer_grouping, &materialized)?;
             let mut group_exprs = vec![col("bucket"), col("metric_name")];
-            group_exprs.extend(outer_cols.iter().map(|c| col(*c)));
+            group_exprs.extend(outer_cols.iter().map(|c| col(c.as_str())));
             let df = df
                 .aggregate(
                     group_exprs,
@@ -296,7 +301,7 @@ impl MetricsService {
                 )
                 .map_err(QuerierError::QueryFailed)?;
             let mut proj = vec![col("bucket"), col("metric_name")];
-            proj.extend(outer_cols.iter().map(|c| col(*c)));
+            proj.extend(outer_cols.iter().map(|c| col(c.as_str())));
             proj.push(cast_value_f64(col("value")).alias("value"));
             let df = df.select(proj).map_err(QuerierError::QueryFailed)?;
             (df, outer_cols)
@@ -862,10 +867,10 @@ impl MetricsService {
         bucket: Expr,
         aggregate: MetricAgg,
         param: Option<f64>,
-        group_cols: &[&str],
+        group_cols: &[String],
     ) -> Result<DataFrame, QuerierError> {
         let mut group_exprs = vec![bucket, col("metric_name")];
-        group_exprs.extend(group_cols.iter().map(|c| col(*c)));
+        group_exprs.extend(group_cols.iter().map(|c| col(c.as_str())));
 
         let value = aggregate_expr(aggregate, param).alias("value");
         let df = df
@@ -874,13 +879,17 @@ impl MetricsService {
 
         // Normalize `value` to Float64 (count aggregates to Int64).
         let mut proj = vec![col("bucket"), col("metric_name")];
-        proj.extend(group_cols.iter().map(|c| col(*c)));
+        proj.extend(group_cols.iter().map(|c| col(c.as_str())));
         proj.push(cast_value_f64(col("value")).alias("value"));
         df.select(proj).map_err(QuerierError::QueryFailed)
     }
 
     /// Two-stage `rate`/`increase`: per-series counter delta over the
-    /// bucket, then an optional outer aggregation.
+    /// bucket, then an optional outer aggregation. `series_cols` is the
+    /// natural per-series identity (`service_name` plus the materialized
+    /// label columns), so counters that differ only in a label are never
+    /// merged before the delta.
+    #[allow(clippy::too_many_arguments)]
     fn range_query(
         &self,
         df: DataFrame,
@@ -888,11 +897,24 @@ impl MetricsService {
         range: super::promql::RangeSpec,
         aggregate: MetricAgg,
         param: Option<f64>,
-        group_cols: &[&str],
+        group_cols: &[String],
+        series_cols: &[String],
     ) -> Result<DataFrame, QuerierError> {
         use super::promql::RangeFn;
 
-        // Stage 1: reduce each (bucket, metric_name, service) to one `value`.
+        let series_group = |bucket: Expr| -> Vec<Expr> {
+            let mut exprs = vec![bucket, col("metric_name")];
+            exprs.extend(series_cols.iter().map(|c| col(c.as_str())));
+            exprs
+        };
+        let series_select = |value: Expr| -> Vec<Expr> {
+            let mut exprs = vec![col("bucket"), col("metric_name")];
+            exprs.extend(series_cols.iter().map(|c| col(c.as_str())));
+            exprs.push(cast_value_f64(value).alias("value"));
+            exprs
+        };
+
+        // Stage 1: reduce each (bucket, metric_name, series) to one `value`.
         let df = match range.function {
             // `deriv`: per-second slope from a linear regression of the
             // samples against time (nanoseconds → seconds).
@@ -900,16 +922,11 @@ impl MetricsService {
                 let secs = cast_value_f64(cast(cast_ns(col("timestamp")), DataType::Int64))
                     / lit(1_000_000_000.0);
                 df.aggregate(
-                    vec![bucket, col("metric_name"), col("service_name")],
+                    series_group(bucket),
                     vec![regr_slope(col("value"), secs).alias("value")],
                 )
                 .map_err(QuerierError::QueryFailed)?
-                .select(vec![
-                    col("bucket"),
-                    col("metric_name"),
-                    col("service_name"),
-                    cast_value_f64(col("value")).alias("value"),
-                ])
+                .select(series_select(col("value")))
                 .map_err(QuerierError::QueryFailed)?
             }
             // `irate`/`idelta`: the last two samples in the window.
@@ -919,7 +936,7 @@ impl MetricsService {
                     / lit(1_000_000_000.0);
                 let reduced = df
                     .aggregate(
-                        vec![bucket, col("metric_name"), col("service_name")],
+                        series_group(bucket),
                         vec![
                             nth_value(col("value"), -1, order.clone()).alias("v_last"),
                             nth_value(col("value"), -2, order.clone()).alias("v_prev"),
@@ -935,12 +952,7 @@ impl MetricsService {
                     _ => unreachable!("only irate/idelta here"),
                 };
                 reduced
-                    .select(vec![
-                        col("bucket"),
-                        col("metric_name"),
-                        col("service_name"),
-                        cast_value_f64(per_series).alias("value"),
-                    ])
+                    .select(series_select(per_series))
                     .map_err(QuerierError::QueryFailed)?
             }
             // rate/increase/delta: (last - first)[/seconds].
@@ -948,7 +960,7 @@ impl MetricsService {
                 let order = vec![SortExpr::new(col("timestamp"), true, true)];
                 let reduced = df
                     .aggregate(
-                        vec![bucket, col("metric_name"), col("service_name")],
+                        series_group(bucket),
                         vec![
                             first_value(col("value"), order.clone()).alias("first"),
                             last_value(col("value"), order).alias("last"),
@@ -964,24 +976,19 @@ impl MetricsService {
                     }
                 };
                 reduced
-                    .select(vec![
-                        col("bucket"),
-                        col("metric_name"),
-                        col("service_name"),
-                        cast_value_f64(per_series).alias("value"),
-                    ])
+                    .select(series_select(per_series))
                     .map_err(QuerierError::QueryFailed)?
             }
         };
 
         // Stage 2: an outer aggregation folds the per-series rates. A bare
-        // `rate(...)` (Natural grouping over `service_name`) is already the
-        // result.
-        if group_cols == ["service_name"] {
+        // `rate(...)` (Natural grouping over the series identity) is already
+        // the result.
+        if group_cols == series_cols {
             return Ok(df);
         }
         let mut group_exprs = vec![col("bucket"), col("metric_name")];
-        group_exprs.extend(group_cols.iter().map(|c| col(*c)));
+        group_exprs.extend(group_cols.iter().map(|c| col(c.as_str())));
         let df = df
             .aggregate(
                 group_exprs,
@@ -989,7 +996,7 @@ impl MetricsService {
             )
             .map_err(QuerierError::QueryFailed)?;
         let mut proj = vec![col("bucket"), col("metric_name")];
-        proj.extend(group_cols.iter().map(|c| col(*c)));
+        proj.extend(group_cols.iter().map(|c| col(c.as_str())));
         proj.push(cast_value_f64(col("value")).alias("value"));
         df.select(proj).map_err(QuerierError::QueryFailed)
     }
@@ -1317,51 +1324,64 @@ impl MetricsService {
         Ok(vec![batch])
     }
 
-    /// Resolve the grouping labels to physical columns. Only labels backed
-    /// by a dedicated column can be grouped.
-    fn group_columns(&self, plan: &MetricPlan) -> Result<Vec<&'static str>, QuerierError> {
-        Self::group_columns_for(&plan.grouping)
-    }
-
-    /// Resolve a [`Grouping`] to physical group columns.
-    fn group_columns_for(grouping: &Grouping) -> Result<Vec<&'static str>, QuerierError> {
+    /// Resolve a [`Grouping`] to physical group columns. A label is
+    /// groupable when it maps to a dedicated column (`job`/`service`) or to
+    /// a materialized `label_<key>` column of the scanned tables.
+    fn group_columns_for(
+        grouping: &Grouping,
+        materialized: &MaterializedColumns,
+    ) -> Result<Vec<String>, QuerierError> {
         match grouping {
-            // Bare selector: one series per service.
-            Grouping::Natural => Ok(vec!["service_name"]),
+            // Bare selector: the natural series identity.
+            Grouping::Natural => Ok(natural_series_columns(materialized)),
             // sum(x): collapse everything.
             Grouping::Collapse => Ok(vec![]),
             Grouping::By(labels) => labels
                 .iter()
                 .map(|l| {
-                    column_for_label(l).ok_or_else(|| {
-                        QuerierError::Unsupported(format!("grouping by attribute label '{l}'"))
-                    })
+                    if let Some(column) = column_for_label(l) {
+                        return Ok(column.to_string());
+                    }
+                    let name = materialized_column_name(l);
+                    if materialized.contains(&name) {
+                        return Ok(name);
+                    }
+                    Err(QuerierError::Unsupported(format!(
+                        "grouping by attribute label '{l}'"
+                    )))
                 })
                 .collect(),
-            // `without (labels)` keeps every materialized dimension except
-            // the excluded ones. `service_name` (job/service) is the only
-            // groupable column, so drop it when it is excluded, otherwise
-            // keep it — matching `by` semantics over the supported labels.
+            // `without (labels)` keeps every groupable dimension except the
+            // excluded ones. Excluded labels that resolve to no column are
+            // no-ops (there is nothing to drop).
             Grouping::Without(labels) => {
-                let drops_service = labels
+                let excluded: Vec<String> = labels
                     .iter()
-                    .any(|l| column_for_label(l) == Some("service_name"));
-                if drops_service {
-                    Ok(vec![])
-                } else {
-                    Ok(vec!["service_name"])
-                }
+                    .map(|l| {
+                        column_for_label(l)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| materialized_column_name(l))
+                    })
+                    .collect();
+                Ok(natural_series_columns(materialized)
+                    .into_iter()
+                    .filter(|c| !excluded.contains(c))
+                    .collect())
             }
         }
     }
 
-    /// The union of the metrics tables, each projected to [`SCAN_COLUMNS`].
+    /// The union of the metrics tables, each projected to [`SCAN_COLUMNS`]
+    /// plus every materialized `label_<key>` column found in any of them
+    /// (null-filled where a table lacks the column, so the union schemas
+    /// line up). Keeping the label columns in the scan is what lets
+    /// matchers and grouping use them.
     async fn scan_union(
         &self,
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<DataFrame, QuerierError> {
-        let mut union: Option<DataFrame> = None;
+        let mut tables: Vec<DataFrame> = Vec::with_capacity(METRIC_TABLES.len());
         for table in METRIC_TABLES {
             let table_ref = build_table_reference(tenant_slug, dataset_slug, table)
                 .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
@@ -1370,9 +1390,24 @@ impl MetricsService {
             let Ok(df) = self.session_context.table(table_ref).await else {
                 continue;
             };
-            let projected = df
-                .select_columns(SCAN_COLUMNS)
-                .map_err(QuerierError::QueryFailed)?;
+            tables.push(df);
+        }
+        let label_cols: BTreeSet<String> = tables
+            .iter()
+            .flat_map(|df| df.schema().fields().iter().map(|f| f.name().to_string()))
+            .filter(|n| n.starts_with("label_"))
+            .collect();
+        let mut union: Option<DataFrame> = None;
+        for df in tables {
+            let mut proj: Vec<Expr> = SCAN_COLUMNS.iter().map(|c| col(*c)).collect();
+            for label in &label_cols {
+                if df.schema().field_with_unqualified_name(label).is_ok() {
+                    proj.push(col(label.as_str()));
+                } else {
+                    proj.push(lit(ScalarValue::Utf8(None)).alias(label.as_str()));
+                }
+            }
+            let projected = df.select(proj).map_err(QuerierError::QueryFailed)?;
             union = Some(match union {
                 None => projected,
                 Some(existing) => existing
@@ -2107,6 +2142,17 @@ fn matcher_expr(m: &LabelMatch, ctx: &super::logql::AttrContext) -> Result<Expr,
     }
 }
 
+/// The natural series-identity columns: `service_name` plus every
+/// materialized `label_<key>` column of the scanned tables, in a stable
+/// order.
+fn natural_series_columns(materialized: &MaterializedColumns) -> Vec<String> {
+    let mut cols = vec!["service_name".to_string()];
+    let mut labels: Vec<String> = materialized.iter().cloned().collect();
+    labels.sort();
+    cols.extend(labels);
+    cols
+}
+
 /// Well-known PromQL labels mapped to dedicated columns.
 fn column_for_label(label: &str) -> Option<&'static str> {
     match label {
@@ -2325,13 +2371,13 @@ fn hist_cumulative(x: f64, bounds: &[f64], counts: &[f64]) -> f64 {
 fn apply_transforms_df(
     df: DataFrame,
     ops: &[ValueOp],
-    group_cols: &[&str],
+    group_cols: &[String],
 ) -> Result<DataFrame, QuerierError> {
     if ops.is_empty() {
         return Ok(df);
     }
     let mut proj = vec![col("bucket"), col("metric_name")];
-    proj.extend(group_cols.iter().map(|c| col(*c)));
+    proj.extend(group_cols.iter().map(|c| col(c.as_str())));
     proj.push(apply_value_ops_expr(col("value"), ops).alias("value"));
     df.select(proj).map_err(QuerierError::QueryFailed)
 }
@@ -2700,6 +2746,168 @@ mod tests {
             }
         }
         out
+    }
+
+    /// A gauge table with a materialized `label_namespace` column plus a
+    /// sum table without it, so the scan union has to null-fill.
+    fn service_with_labeled_data() -> MetricsService {
+        let gauge_schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            Field::new("attributes", DataType::Utf8, true),
+            Field::new("resource_attributes", DataType::Utf8, true),
+            Field::new("label_namespace", DataType::Utf8, true),
+        ]));
+        let gauge = RecordBatch::try_new(
+            gauge_schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300, 400])),
+                Arc::new(StringArray::from(vec!["api", "api", "api", "web"])),
+                Arc::new(StringArray::from(vec!["reqs", "reqs", "reqs", "reqs"])),
+                Arc::new(Float64Array::from(vec![1.0, 3.0, 10.0, 5.0])),
+                Arc::new(StringArray::from(vec!["{}", "{}", "{}", "{}"])),
+                Arc::new(StringArray::from(vec!["{}", "{}", "{}", "{}"])),
+                Arc::new(StringArray::from(vec!["prod", "prod", "dev", "prod"])),
+            ],
+        )
+        .unwrap();
+        let sum_schema = metrics_schema();
+        let sum = RecordBatch::try_new(
+            sum_schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![500])),
+                Arc::new(TimestampNanosecondArray::from(vec![None::<i64>])),
+                Arc::new(StringArray::from(vec!["api"])),
+                Arc::new(StringArray::from(vec!["reqs"])),
+                Arc::new(Float64Array::from(vec![100.0])),
+                Arc::new(StringArray::from(vec!["{}"])),
+                Arc::new(StringArray::from(vec!["{}"])),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table(
+                "metrics_gauge".to_string(),
+                Arc::new(MemTable::try_new(gauge_schema, vec![vec![gauge]]).unwrap()),
+            )
+            .unwrap();
+        schema_provider
+            .register_table(
+                "metrics_sum".to_string(),
+                Arc::new(MemTable::try_new(sum_schema, vec![vec![sum]]).unwrap()),
+            )
+            .unwrap();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        MetricsService::new(ctx)
+    }
+
+    /// Collect (label_namespace?, value) tuples from a matrix.
+    async fn matrix_by_namespace(
+        service: &MetricsService,
+        query: &str,
+    ) -> Vec<(Option<String>, f64)> {
+        let batches = service
+            .query_range(query, 0, 1000, 1000, "t", "d")
+            .await
+            .expect("query");
+        let mut out = Vec::new();
+        for batch in &batches {
+            let ns = batch
+                .column_by_name("label_namespace")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let value = batch
+                .column_by_name("value")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap();
+            for i in 0..batch.num_rows() {
+                let n = ns.and_then(|c| (!c.is_null(i)).then(|| c.value(i).to_string()));
+                out.push((n, value.value(i)));
+            }
+        }
+        out.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        out
+    }
+
+    #[tokio::test]
+    async fn sum_by_materialized_label_groups_series() {
+        let service = service_with_labeled_data();
+        // prod: api 1+3 and web 5 and the label-less sum-table row is null;
+        // dev: api 10.
+        let out = matrix_by_namespace(&service, "sum by (namespace) (reqs)").await;
+        assert_eq!(
+            out,
+            vec![
+                (None, 100.0),
+                (Some("dev".to_string()), 10.0),
+                (Some("prod".to_string()), 9.0),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn sum_without_materialized_label_folds_it_away() {
+        let service = service_with_labeled_data();
+        // Dropping `namespace` leaves service_name grouping: api 1+3+10+100, web 5.
+        let out = matrix(&service, "sum without (namespace) (reqs)", 1000).await;
+        let by = |svc: &str| {
+            out.iter()
+                .find(|(_, s, _)| s.as_deref() == Some(svc))
+                .unwrap()
+                .2
+        };
+        assert_eq!(by("api"), 114.0);
+        assert_eq!(by("web"), 5.0);
+    }
+
+    #[tokio::test]
+    async fn bare_selector_emits_per_label_series() {
+        let service = service_with_labeled_data();
+        // Natural identity includes the materialized label: api splits into
+        // prod (last 3.0) and dev (10.0) series instead of one merged series.
+        let out = matrix_by_namespace(&service, "reqs").await;
+        assert!(out.contains(&(Some("prod".to_string()), 3.0)), "{out:?}");
+        assert!(out.contains(&(Some("dev".to_string()), 10.0)), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn rate_sum_by_materialized_label() {
+        let service = service_with_labeled_data();
+        // increase() = last - first per series, summed per namespace:
+        // prod api [1,3] → 2, prod web [5] → 0, dev api [10] → 0.
+        let out = matrix_by_namespace(&service, "sum by (namespace) (increase(reqs[1m]))").await;
+        assert!(out.contains(&(Some("prod".to_string()), 2.0)), "{out:?}");
+        assert!(out.contains(&(Some("dev".to_string()), 0.0)), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn matcher_on_materialized_label_filters_exactly() {
+        let service = service_with_labeled_data();
+        // namespace="dev" matches only the api 10.0 sample via the column.
+        let out = matrix_by_namespace(&service, r#"sum(reqs{namespace="dev"})"#).await;
+        assert_eq!(out, vec![(None, 10.0)]);
+    }
+
+    #[tokio::test]
+    async fn grouping_by_unmaterialized_label_is_unsupported() {
+        let service = service_with_data();
+        let err = service
+            .query_range("sum by (namespace) (reqs)", 0, 1000, 1000, "t", "d")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, QuerierError::Unsupported(_)), "{err:?}");
     }
 
     #[tokio::test]
