@@ -41,7 +41,7 @@ pub struct PrometheusSample {
 }
 
 /// A Prometheus native histogram (remote_write v2)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PrometheusHistogram {
     pub count: u64,
     pub sum: f64,
@@ -49,9 +49,17 @@ pub struct PrometheusHistogram {
     pub zero_threshold: f64,
     pub zero_count: u64,
     pub negative_spans: Vec<BucketSpan>,
+    /// Delta-encoded bucket counts (integer histograms); each value is
+    /// relative to the previous bucket count, starting from 0.
     pub negative_deltas: Vec<i64>,
+    /// Absolute bucket counts (float histograms); mutually exclusive with deltas.
+    pub negative_counts: Vec<f64>,
     pub positive_spans: Vec<BucketSpan>,
+    /// Delta-encoded bucket counts (integer histograms); each value is
+    /// relative to the previous bucket count, starting from 0.
     pub positive_deltas: Vec<i64>,
+    /// Absolute bucket counts (float histograms); mutually exclusive with deltas.
+    pub positive_counts: Vec<f64>,
     pub timestamp: i64,
 }
 

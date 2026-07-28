@@ -11,8 +11,8 @@ use axum::{
 use common::auth::Authenticator;
 use common::config::Configuration;
 use common::flight::conversion::{
-    PrometheusLabel, PrometheusMetricMetadata, PrometheusMetricType, PrometheusSample,
-    PrometheusTimeSeries, PrometheusWriteRequest,
+    PrometheusHistogram, PrometheusLabel, PrometheusMetricMetadata, PrometheusMetricType,
+    PrometheusSample, PrometheusTimeSeries, PrometheusWriteRequest,
 };
 use common::flight::transport::InMemoryFlightTransport;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
@@ -53,7 +53,45 @@ fn encode_remote_write_request(request: &PrometheusWriteRequest) -> Vec<u8> {
                         )
                         .collect(),
                     exemplars: vec![],
-                    histograms: vec![],
+                    histograms: ts
+                        .histograms
+                        .iter()
+                        .map(|h| {
+                            common::flight::conversion::conversion_prometheus::proto::Histogram {
+                                count: Some(
+                                    common::flight::conversion::conversion_prometheus::proto::histogram::Count::CountInt(h.count),
+                                ),
+                                sum: h.sum,
+                                schema: h.schema,
+                                zero_threshold: h.zero_threshold,
+                                zero_count: Some(
+                                    common::flight::conversion::conversion_prometheus::proto::histogram::ZeroCount::ZeroCountInt(h.zero_count),
+                                ),
+                                negative_spans: h
+                                    .negative_spans
+                                    .iter()
+                                    .map(|s| common::flight::conversion::conversion_prometheus::proto::BucketSpan {
+                                        offset: s.offset,
+                                        length: s.length,
+                                    })
+                                    .collect(),
+                                negative_deltas: h.negative_deltas.clone(),
+                                negative_counts: h.negative_counts.clone(),
+                                positive_spans: h
+                                    .positive_spans
+                                    .iter()
+                                    .map(|s| common::flight::conversion::conversion_prometheus::proto::BucketSpan {
+                                        offset: s.offset,
+                                        length: s.length,
+                                    })
+                                    .collect(),
+                                positive_deltas: h.positive_deltas.clone(),
+                                positive_counts: h.positive_counts.clone(),
+                                reset_hint: 0,
+                                timestamp: h.timestamp,
+                            }
+                        })
+                        .collect(),
                 },
             )
             .collect(),
@@ -89,6 +127,13 @@ fn encode_remote_write_request(request: &PrometheusWriteRequest) -> Vec<u8> {
 
 /// Set up test infrastructure for Prometheus endpoint testing
 async fn setup_prometheus_test() -> (axum::Router, TempDir) {
+    let (app, _wal_manager, temp_dir) = setup_prometheus_test_with_wal().await;
+    (app, temp_dir)
+}
+
+/// Set up test infrastructure and also expose the WAL manager for
+/// asserting what was ingested.
+async fn setup_prometheus_test_with_wal() -> (axum::Router, Arc<WalManager>, TempDir) {
     let temp_dir = TempDir::new().unwrap();
 
     // Set up catalog
@@ -176,7 +221,7 @@ async fn setup_prometheus_test() -> (axum::Router, TempDir) {
     // Build router
     let app = prometheus_router(authenticator, prometheus_handler);
 
-    (app, temp_dir)
+    (app, wal_manager, temp_dir)
 }
 
 #[tokio::test]
@@ -367,6 +412,111 @@ async fn test_prometheus_remote_write_histogram() {
     let response = app.oneshot(http_request).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn test_prometheus_remote_write_native_histogram() {
+    let (app, wal_manager, _temp_dir) = setup_prometheus_test_with_wal().await;
+
+    let now = chrono::Utc::now().timestamp_millis();
+
+    // A remote_write v2 native histogram sample: span/delta encoded buckets
+    let request = PrometheusWriteRequest {
+        timeseries: vec![PrometheusTimeSeries {
+            labels: vec![
+                PrometheusLabel {
+                    name: "__name__".to_string(),
+                    value: "http_request_latency_seconds".to_string(),
+                },
+                PrometheusLabel {
+                    name: "job".to_string(),
+                    value: "api".to_string(),
+                },
+            ],
+            samples: vec![],
+            histograms: vec![PrometheusHistogram {
+                count: 6,
+                sum: 21.5,
+                schema: 3,
+                zero_threshold: 1e-128,
+                zero_count: 2,
+                positive_spans: vec![
+                    common::flight::conversion::BucketSpan {
+                        offset: 1,
+                        length: 2,
+                    },
+                    common::flight::conversion::BucketSpan {
+                        offset: 1,
+                        length: 1,
+                    },
+                ],
+                positive_deltas: vec![2, -1, 0],
+                timestamp: now,
+                ..Default::default()
+            }],
+        }],
+        metadata: vec![],
+    };
+
+    let body = encode_remote_write_request(&request);
+
+    let http_request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/write")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::CONTENT_ENCODING, "snappy")
+        .header("X-Prometheus-Remote-Write-Version", "2.0.0")
+        .header("Authorization", "Bearer test-api-key")
+        .header("X-Tenant-ID", "test-tenant")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(http_request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // The native histogram must land in the exponential histogram table path,
+    // not be silently dropped.
+    let wal = wal_manager
+        .get_wal("test-tenant", "metrics", "metrics")
+        .await
+        .expect("WAL for tenant");
+    let entries = wal.get_entries().await.expect("WAL entries");
+    assert!(!entries.is_empty(), "expected WAL entries for ingestion");
+
+    let exp_entry = entries
+        .iter()
+        .find(|e| {
+            e.metadata
+                .as_deref()
+                .map(|m| m.contains("\"target_table\":\"metrics_exponential_histogram\""))
+                .unwrap_or(false)
+        })
+        .expect("WAL entry targeting metrics_exponential_histogram");
+
+    // Decode the stored batch and verify the metric round-trips
+    let data = wal
+        .read_entry_data(exp_entry)
+        .await
+        .expect("WAL entry data");
+    let batch = common::wal::bytes_to_record_batch(&data).expect("record batch");
+    assert!(batch.num_rows() > 0, "expected rows in exponential batch");
+
+    let schema = batch.schema();
+    let name_idx = schema.index_of("name").expect("name column");
+    let type_idx = schema.index_of("metric_type").expect("metric_type column");
+    let names = batch
+        .column(name_idx)
+        .as_any()
+        .downcast_ref::<datafusion::arrow::array::StringArray>()
+        .expect("string name column");
+    let types = batch
+        .column(type_idx)
+        .as_any()
+        .downcast_ref::<datafusion::arrow::array::StringArray>()
+        .expect("string metric_type column");
+
+    assert_eq!(names.value(0), "http_request_latency_seconds");
+    assert_eq!(types.value(0), "exponential_histogram");
 }
 
 #[tokio::test]
