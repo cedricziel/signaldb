@@ -90,18 +90,34 @@ pub async fn auth_middleware(
         }
     };
 
-    log::debug!(
-        "Authenticated request for tenant '{}', dataset '{}' (source: {})",
-        tenant_context.tenant_id,
-        tenant_context.dataset_id,
-        tenant_context.source
-    );
+    // Anti-loop guard: processing the _system tenant's own telemetry must not
+    // generate more self-monitoring telemetry (infinite feedback loop). The
+    // suppression scope covers everything from here through the handler.
+    if crate::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id) {
+        crate::self_monitoring::suppress_self_telemetry(async move {
+            log::debug!(
+                "Authenticated request for tenant '{}', dataset '{}' (source: {})",
+                tenant_context.tenant_id,
+                tenant_context.dataset_id,
+                tenant_context.source
+            );
+            request.extensions_mut().insert(tenant_context);
+            next.run(request).await
+        })
+        .await
+    } else {
+        log::debug!(
+            "Authenticated request for tenant '{}', dataset '{}' (source: {})",
+            tenant_context.tenant_id,
+            tenant_context.dataset_id,
+            tenant_context.source
+        );
+        // Insert TenantContext into request extensions
+        request.extensions_mut().insert(tenant_context);
 
-    // Insert TenantContext into request extensions
-    request.extensions_mut().insert(tenant_context);
-
-    // Continue to next middleware/handler
-    next.run(request).await
+        // Continue to next middleware/handler
+        next.run(request).await
+    }
 }
 
 /// Axum middleware function for admin API authentication
@@ -373,6 +389,96 @@ mod tests {
 
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn system_tenant_requests_are_suppressed_from_otel_export() {
+        use axum::{Router, body::Body, http::Request, middleware, routing::get};
+        use tower::ServiceExt;
+
+        // Regression test for issue #760: the router's HTTP query handling
+        // goes through this middleware, so processing a _system-tenant
+        // request must not emit spans/log records that pass the OTel
+        // export filter (they would be re-ingested as _system telemetry).
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        let make_tenant = |id: &str, key: &str| TenantConfig {
+            id: id.to_string(),
+            slug: id.to_string(),
+            name: id.to_string(),
+            default_dataset: Some("production".to_string()),
+            datasets: vec![DatasetConfig {
+                id: "production".to_string(),
+                slug: "production".to_string(),
+                is_default: true,
+                storage: None,
+            }],
+            api_keys: vec![ApiKeyConfig {
+                key: key.to_string(),
+                name: Some("test-key".to_string()),
+            }],
+            schema_config: None,
+            limits: None,
+        };
+        let auth_config = AuthConfig {
+            tenants: vec![
+                make_tenant("_system", "system-key"),
+                make_tenant("acme", "acme-key"),
+            ],
+            ..Default::default()
+        };
+        let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
+
+        async fn handler() -> &'static str {
+            tracing::info!("handling query request");
+            "ok"
+        }
+
+        let auth = authenticator.clone();
+        let app = Router::new()
+            .route("/query", get(handler))
+            .layer(middleware::from_fn(move |req, next| {
+                auth_middleware(auth.clone(), req, next)
+            }));
+
+        let send = |app: Router, key: &'static str, tenant: &'static str| async move {
+            let request = Request::builder()
+                .uri("/query")
+                .header("authorization", format!("Bearer {key}"))
+                .header("x-tenant-id", tenant)
+                .body(Body::empty())
+                .unwrap();
+            app.oneshot(request).await.unwrap()
+        };
+
+        // _system-tenant request: nothing may pass the export filter.
+        let probe = crate::testing::OtelExportProbe::new();
+        {
+            let _guard = probe.install();
+            let response = send(app.clone(), "system-key", "_system").await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        assert_eq!(
+            probe.exported_events(),
+            0,
+            "_system request processing must not export log records"
+        );
+        assert_eq!(
+            probe.exported_spans(),
+            0,
+            "_system request processing must not export spans"
+        );
+
+        // Normal tenant: the handler's telemetry still exports.
+        let probe = crate::testing::OtelExportProbe::new();
+        {
+            let _guard = probe.install();
+            let response = send(app.clone(), "acme-key", "acme").await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        assert!(
+            probe.exported_events() > 0,
+            "normal tenant request processing must still export telemetry"
+        );
     }
 
     #[test]
