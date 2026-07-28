@@ -317,7 +317,6 @@ pub async fn serve_otlp_grpc(
 
 pub fn acceptor_router() -> Router {
     Router::new()
-        .route("/v1/traces", post(handle_traces))
         .route("/health", get(health))
         .layer(axum::middleware::from_fn(
             common::self_monitoring::http_metrics_middleware,
@@ -401,6 +400,158 @@ pub fn profiles_http_router(
         ))
 }
 
+/// Shared state for the OTLP/HTTP traces endpoint
+#[derive(Clone)]
+pub struct TracesHandlerState {
+    pub handler: Arc<TraceHandler>,
+    pub rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
+    pub storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
+}
+
+/// Create a router for the OTLP/HTTP traces ingestion endpoint with authentication
+///
+/// Handles `POST /v1/traces` with protobuf (`application/x-protobuf`) or JSON
+/// (`application/json`, protojson encoding with hex trace/span ids) request
+/// bodies, matching the OTLP/HTTP specification. Per-tenant ingest rate
+/// limits and storage quotas are enforced with HTTP 429; both are unlimited
+/// unless configured.
+pub fn traces_http_router(
+    authenticator: Arc<Authenticator>,
+    trace_handler: Arc<TraceHandler>,
+    rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
+    storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
+) -> Router {
+    use axum::middleware;
+
+    let state = TracesHandlerState {
+        handler: trace_handler,
+        rate_limiter,
+        storage_quota,
+    };
+
+    Router::new()
+        .route("/v1/traces", post(handle_http_traces))
+        .layer(Extension(state))
+        .layer(middleware::from_fn(move |req, next| {
+            let auth = authenticator.clone();
+            async move { auth_middleware(auth, req, next).await }
+        }))
+        .layer(middleware::from_fn(
+            common::self_monitoring::http_metrics_middleware,
+        ))
+}
+
+/// OTLP/HTTP traces export: decode by content type, hand off to the
+/// trace handler (WAL durability + Flight forward), and answer with an
+/// `ExportTraceServiceResponse` in the request's encoding.
+#[tracing::instrument(
+    skip_all,
+    fields(
+        tenant_id = %tenant_context.tenant_id,
+        dataset_id = %tenant_context.dataset_id
+    )
+)]
+async fn handle_http_traces(
+    Extension(state): Extension<TracesHandlerState>,
+    headers: axum::http::HeaderMap,
+    crate::middleware::TenantContextExtractor(tenant_context): crate::middleware::TenantContextExtractor,
+    body: axum::body::Bytes,
+) -> axum::response::Response<axum::body::Body> {
+    use opentelemetry_proto::tonic::collector::trace::v1::{
+        ExportTraceServiceRequest, ExportTraceServiceResponse,
+    };
+    use prost::Message;
+
+    // Per-tenant ingest rate limiting (HTTP 429 with the reason)
+    if let Err(e) = state
+        .rate_limiter
+        .check_ingest(&tenant_context.tenant_id, body.len())
+    {
+        return otlp_http_error(axum::http::StatusCode::TOO_MANY_REQUESTS, e.to_string());
+    }
+
+    // Per-tenant storage quota: a tenant at or over max_storage_bytes
+    // must free space (or get a raised quota) before ingesting more.
+    if let Err(e) = state.storage_quota.check_ingest(&tenant_context.tenant_id) {
+        return otlp_http_error(axum::http::StatusCode::TOO_MANY_REQUESTS, e.to_string());
+    }
+
+    let is_json = otlp_http_content_type_is_json(&headers);
+
+    let request = if is_json {
+        match serde_json::from_slice::<ExportTraceServiceRequest>(&body) {
+            Ok(request) => request,
+            Err(e) => {
+                return otlp_http_error(
+                    axum::http::StatusCode::BAD_REQUEST,
+                    format!("invalid OTLP/JSON traces payload: {e}"),
+                );
+            }
+        }
+    } else {
+        match ExportTraceServiceRequest::decode(body.as_ref()) {
+            Ok(request) => request,
+            Err(e) => {
+                return otlp_http_error(
+                    axum::http::StatusCode::BAD_REQUEST,
+                    format!("invalid OTLP/protobuf traces payload: {e}"),
+                );
+            }
+        }
+    };
+
+    match state
+        .handler
+        .handle_grpc_otlp_traces(&tenant_context, request)
+        .await
+    {
+        Ok(()) => {
+            // Per OTLP/HTTP spec the response body is a full
+            // ExportTraceServiceResponse in the same encoding as the request.
+            let builder = axum::response::Response::builder().status(axum::http::StatusCode::OK);
+            let response = if is_json {
+                builder
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from("{}"))
+            } else {
+                builder
+                    .header(axum::http::header::CONTENT_TYPE, "application/x-protobuf")
+                    .body(axum::body::Body::from(
+                        ExportTraceServiceResponse::default().encode_to_vec(),
+                    ))
+            };
+            match response {
+                Ok(response) => response,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to build OTLP/HTTP traces response");
+                    otlp_http_error(
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to build export response".to_string(),
+                    )
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to durably accept traces export via HTTP");
+            otlp_http_error(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                format!("failed to durably accept traces export: {e:#}"),
+            )
+        }
+    }
+}
+
+/// Whether an OTLP/HTTP request body is JSON-encoded.
+///
+/// OTLP/HTTP defaults to protobuf when no content type is present.
+fn otlp_http_content_type_is_json(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/x-protobuf")
+        .starts_with("application/json")
+}
+
 /// OTLP/HTTP profiles export: decode by content type, hand off to the
 /// profile handler, and answer with an empty export response.
 #[tracing::instrument(
@@ -433,12 +584,7 @@ async fn handle_http_profiles(
         return otlp_http_error(axum::http::StatusCode::TOO_MANY_REQUESTS, e.to_string());
     }
 
-    let content_type = headers
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("application/x-protobuf");
-
-    let request = if content_type.starts_with("application/json") {
+    let request = if otlp_http_content_type_is_json(&headers) {
         match serde_json::from_slice::<ExportProfilesServiceRequest>(&body) {
             Ok(request) => request,
             Err(e) => {
@@ -519,20 +665,6 @@ async fn health() -> &'static str {
     "ok"
 }
 
-#[tracing::instrument(skip_all)]
-async fn handle_traces(
-    axum::extract::Json(payload): axum::extract::Json<serde_json::Value>,
-) -> axum::response::Response<axum::body::Body> {
-    tracing::info!(
-        payload_size = payload.to_string().len(),
-        "Got traces via HTTP"
-    );
-    axum::response::Response::builder()
-        .status(200)
-        .body(axum::body::Body::empty())
-        .unwrap()
-}
-
 /// Configuration for the HTTP acceptor server
 pub struct HttpAcceptorConfig {
     pub addr: SocketAddr,
@@ -564,8 +696,20 @@ pub async fn serve_otlp_http(
         config.wal_manager.clone(),
     ));
 
+    // Create trace handler with shared resources (same WAL + Flight path as gRPC)
+    let trace_handler = Arc::new(TraceHandler::new(
+        config.flight_transport.clone(),
+        config.wal_manager.clone(),
+    ));
+
     // Build combined router with health, traces, Prometheus, and profiles endpoints
     let app = acceptor_router()
+        .merge(traces_http_router(
+            config.authenticator.clone(),
+            trace_handler,
+            config.rate_limiter.clone(),
+            config.storage_usage.clone(),
+        ))
         .merge(prometheus_router(
             config.authenticator.clone(),
             prometheus_handler,
@@ -577,6 +721,7 @@ pub async fn serve_otlp_http(
             config.storage_usage.clone(),
         ));
 
+    tracing::info!("OTLP traces endpoint enabled at POST /v1/traces");
     tracing::info!("Prometheus remote_write endpoint enabled at POST /api/v1/write");
     tracing::info!("OTLP profiles endpoint enabled at POST /v1development/profiles");
 
