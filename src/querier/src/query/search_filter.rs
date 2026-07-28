@@ -100,10 +100,12 @@ impl Condition {
             Selector::ResourceAttribute(key) if ctx.map_attrs => {
                 Ok(map_attribute_expr("resource_attributes", key, &self.value))
             }
-            Selector::AnyAttribute(key) if ctx.map_attrs => {
-                Ok(map_attribute_expr("span_attributes", key, &self.value)
-                    .or(map_attribute_expr("resource_attributes", key, &self.value)))
-            }
+            Selector::AnyAttribute(key) if ctx.map_attrs => Ok(map_attribute_expr(
+                "span_attributes",
+                key,
+                &self.value,
+            )
+            .or(map_attribute_expr("resource_attributes", key, &self.value))),
             Selector::SpanAttribute(key) => Ok(attribute_expr("span_attributes", key, &self.value)),
             Selector::ResourceAttribute(key) => {
                 Ok(attribute_expr("resource_attributes", key, &self.value))
@@ -479,10 +481,7 @@ mod tests {
             selector: Selector::SpanAttribute("http.method".to_string()),
             value: FilterValue::String("GET".to_string()),
         };
-        let rendered = format!(
-            "{:?}",
-            condition.to_expr(&AttrContext::default()).unwrap()
-        );
+        let rendered = format!("{:?}", condition.to_expr(&AttrContext::default()).unwrap());
         assert!(rendered.contains(r#""http.method":"GET""#), "{rendered}");
 
         // Numbers match both bare (real OTLP int) and quoted forms.
@@ -490,10 +489,7 @@ mod tests {
             selector: Selector::SpanAttribute("http.status_code".to_string()),
             value: FilterValue::Number("200".to_string()),
         };
-        let rendered = format!(
-            "{:?}",
-            numeric.to_expr(&AttrContext::default()).unwrap()
-        );
+        let rendered = format!("{:?}", numeric.to_expr(&AttrContext::default()).unwrap());
         assert!(rendered.contains(r#""http.status_code":200"#), "{rendered}");
         assert!(
             rendered.contains(r#""http.status_code":"200""#),
@@ -531,10 +527,7 @@ mod tests {
             value: FilterValue::String("prod".to_string()),
         };
         // Without the column: JSON substring across both attribute columns.
-        let json = format!(
-            "{:?}",
-            condition.to_expr(&AttrContext::default()).unwrap()
-        );
+        let json = format!("{:?}", condition.to_expr(&AttrContext::default()).unwrap());
         assert!(json.contains(r#""namespace":"prod""#), "{json}");
 
         // With the column: exact equality on `label_namespace`.
