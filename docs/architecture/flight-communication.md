@@ -339,3 +339,5 @@ Current implementation provides:
 - Comprehensive logging and debugging capabilities
 
 The Flight-based architecture with WAL integration provides a solid, production-ready foundation for observability data processing at scale.
+
+> The writer's `do_put` v1→storage transformation resolves materialized-label allowlists per tenant (a tenant schema override replaces the global set).

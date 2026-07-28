@@ -48,7 +48,12 @@ async fn ensure_table_reflects_commits_made_through_other_handles() {
 
     // First call creates the table.
     manager
-        .ensure_table("tenant", "dataset", "logs")
+        .ensure_table(
+            "tenant",
+            "dataset",
+            "logs",
+            &common::config::MaterializedLabels::default(),
+        )
         .await
         .unwrap();
 
@@ -71,7 +76,12 @@ async fn ensure_table_reflects_commits_made_through_other_handles() {
 
     // A second ensure_table call must observe that commit.
     let observed = manager
-        .ensure_table("tenant", "dataset", "logs")
+        .ensure_table(
+            "tenant",
+            "dataset",
+            "logs",
+            &common::config::MaterializedLabels::default(),
+        )
         .await
         .unwrap();
     assert_eq!(

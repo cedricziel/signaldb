@@ -144,8 +144,14 @@ impl CatalogManager {
     ) -> Result<iceberg_rust::table::Table> {
         let tenant_slug = self.get_tenant_slug(tenant_id);
         let dataset_slug = self.get_dataset_slug(tenant_id, dataset_id);
+        // Per-tenant materialized-label allowlists: a tenant schema
+        // override replaces the global set wholesale.
+        let labels = self
+            .config
+            .get_tenant_schema_config(tenant_id)
+            .materialized_labels;
         self.table_manager
-            .ensure_table(&tenant_slug, &dataset_slug, table_name)
+            .ensure_table(&tenant_slug, &dataset_slug, table_name, &labels)
             .await
     }
 

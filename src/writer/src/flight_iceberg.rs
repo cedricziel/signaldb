@@ -223,10 +223,22 @@ impl FlightService for IcebergWriterFlightService {
             if metadata.schema_version == "v1" {
                 let mut transformed = Vec::new();
                 for batch in batches {
+                    // Per-tenant materialized labels (tenant schema
+                    // override replaces the global set).
+                    let materialized = metadata
+                        .tenant_id
+                        .as_deref()
+                        .and_then(|t| {
+                            common::config::CONFIG
+                                .get()
+                                .map(|c| c.get_tenant_schema_config(t).materialized_labels)
+                        })
+                        .unwrap_or_default();
                     match transform_for_signal(
                         metadata.signal_type.as_deref(),
                         metadata.target_table.as_deref(),
                         batch,
+                        &materialized,
                     ) {
                         Ok(transformed_batch) => {
                             if schema_ref.is_none() {

@@ -152,6 +152,8 @@ profiles_enabled = true
 # substring-in-JSON approximation. Keep the lists short and low-cardinality
 # — every entry adds a column. Applies to tables created after the change;
 # pre-existing tables fall back to JSON matching for these keys.
+# Per-tenant override: a tenant schema block replaces the global set
+# wholesale ([[auth.tenants]] -> [auth.tenants.schema.materialized_labels]).
 # [schema.materialized_labels]
 # logs = ["namespace", "pod", "container"]
 # traces = ["http.method", "http.status_code"]

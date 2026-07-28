@@ -112,7 +112,7 @@ pub fn determine_wal_operation(signal_type: Option<&str>) -> common::wal::WalOpe
 }
 
 /// Transform a trace RecordBatch from v1 to v2 schema
-pub fn transform_trace_v1_to_v2(batch: RecordBatch) -> Result<RecordBatch> {
+pub fn transform_trace_v1_to_v2(batch: RecordBatch, labels: &[String]) -> Result<RecordBatch> {
     let v2_schema = SCHEMA_DEFINITIONS.resolve_trace_schema("v2")?;
     let arrow_schema = create_arrow_schema_from_resolved(&v2_schema)?;
 
@@ -284,7 +284,7 @@ pub fn transform_trace_v1_to_v2(batch: RecordBatch) -> Result<RecordBatch> {
     // Promote configured attribute keys into `label_<key>` columns (dropped
     // by coercion for tables that predate them).
     let (label_fields, label_columns) =
-        materialized_label_columns(&batch, batch.num_rows(), &materialized_labels_for("traces"))?;
+        materialized_label_columns(&batch, batch.num_rows(), labels)?;
     let out_schema =
         extend_schema_with_labels(arrow_schema, label_fields, &mut new_columns, label_columns);
 
@@ -392,24 +392,6 @@ fn create_arrow_schema_from_resolved(resolved: &ResolvedSchema) -> Result<Arc<Sc
     }
 
     Ok(Arc::new(Schema::new(fields)))
-}
-
-/// The configured materialized labels for a signal, from the global config
-/// (empty when the config is not initialized, e.g. unit tests).
-fn materialized_labels_for(signal: &str) -> Vec<String> {
-    common::config::CONFIG
-        .get()
-        .map(|c| {
-            let m = &c.schema.materialized_labels;
-            match signal {
-                "logs" => m.logs.clone(),
-                "traces" => m.traces.clone(),
-                "metrics" => m.metrics.clone(),
-                "profiles" => m.profiles.clone(),
-                _ => Vec::new(),
-            }
-        })
-        .unwrap_or_default()
 }
 
 /// Render a JSON attribute value as the string stored in a materialized
@@ -559,7 +541,7 @@ fn extend_schema_with_labels(
     Arc::new(Schema::new(fields))
 }
 
-pub fn transform_logs_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatch> {
+pub fn transform_logs_v1_to_iceberg(batch: RecordBatch, labels: &[String]) -> Result<RecordBatch> {
     let v1_schema = SCHEMA_DEFINITIONS.resolve_log_schema("v1")?;
     let arrow_schema = create_arrow_schema_from_resolved(&v1_schema)?;
 
@@ -846,8 +828,7 @@ pub fn transform_logs_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatch> {
     // Promote configured attribute keys into dedicated `label_<key>`
     // columns. `coerce_batch_to_schema` later drops these for tables that
     // predate the columns, so this is safe regardless of table age.
-    let (label_fields, label_columns) =
-        materialized_label_columns(&batch, num_rows, &materialized_labels_for("logs"))?;
+    let (label_fields, label_columns) = materialized_label_columns(&batch, num_rows, labels)?;
     let out_schema =
         extend_schema_with_labels(arrow_schema, label_fields, &mut new_columns, label_columns);
 
@@ -1206,7 +1187,10 @@ fn extract_scope_context(scope_json: Option<&str>) -> ScopeContext {
     }
 }
 
-pub fn transform_metrics_gauge_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatch> {
+pub fn transform_metrics_gauge_v1_to_iceberg(
+    batch: RecordBatch,
+    labels: &[String],
+) -> Result<RecordBatch> {
     let output_schema = create_metrics_gauge_arrow_schema();
 
     let name_array = get_typed_column::<StringArray>(&batch, "name")?;
@@ -1277,7 +1261,7 @@ pub fn transform_metrics_gauge_v1_to_iceberg(batch: RecordBatch) -> Result<Recor
         &resource_attributes,
         &scope_attributes,
         &attributes,
-        &materialized_labels_for("metrics"),
+        labels,
     );
     let mut columns: Vec<ArrayRef> = vec![
         Arc::new(TimestampNanosecondArray::from(timestamps)),
@@ -1310,7 +1294,10 @@ pub fn transform_metrics_gauge_v1_to_iceberg(batch: RecordBatch) -> Result<Recor
     })
 }
 
-pub fn transform_metrics_sum_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatch> {
+pub fn transform_metrics_sum_v1_to_iceberg(
+    batch: RecordBatch,
+    labels: &[String],
+) -> Result<RecordBatch> {
     let output_schema = create_metrics_sum_arrow_schema();
 
     let name_array = get_typed_column::<StringArray>(&batch, "name")?;
@@ -1390,7 +1377,7 @@ pub fn transform_metrics_sum_v1_to_iceberg(batch: RecordBatch) -> Result<RecordB
         &resource_attributes,
         &scope_attributes,
         &attributes,
-        &materialized_labels_for("metrics"),
+        labels,
     );
     let mut columns: Vec<ArrayRef> = vec![
         Arc::new(TimestampNanosecondArray::from(timestamps)),
@@ -1425,7 +1412,10 @@ pub fn transform_metrics_sum_v1_to_iceberg(batch: RecordBatch) -> Result<RecordB
     })
 }
 
-pub fn transform_metrics_histogram_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatch> {
+pub fn transform_metrics_histogram_v1_to_iceberg(
+    batch: RecordBatch,
+    labels: &[String],
+) -> Result<RecordBatch> {
     let output_schema = create_metrics_histogram_arrow_schema();
 
     let name_array = get_typed_column::<StringArray>(&batch, "name")?;
@@ -1511,7 +1501,7 @@ pub fn transform_metrics_histogram_v1_to_iceberg(batch: RecordBatch) -> Result<R
         &resource_attributes,
         &scope_attributes,
         &attributes,
-        &materialized_labels_for("metrics"),
+        labels,
     );
     let mut columns: Vec<ArrayRef> = vec![
         Arc::new(TimestampNanosecondArray::from(timestamps)),
@@ -1629,6 +1619,7 @@ fn create_metrics_summary_arrow_schema() -> Arc<Schema> {
 
 pub fn transform_metrics_exponential_histogram_v1_to_iceberg(
     batch: RecordBatch,
+    labels: &[String],
 ) -> Result<RecordBatch> {
     let output_schema = create_metrics_exponential_histogram_arrow_schema();
 
@@ -1732,7 +1723,7 @@ pub fn transform_metrics_exponential_histogram_v1_to_iceberg(
         &resource_attributes,
         &scope_attributes,
         &attributes,
-        &materialized_labels_for("metrics"),
+        labels,
     );
     let mut columns: Vec<ArrayRef> = vec![
         Arc::new(TimestampNanosecondArray::from(timestamps)),
@@ -1776,7 +1767,10 @@ pub fn transform_metrics_exponential_histogram_v1_to_iceberg(
     })
 }
 
-pub fn transform_metrics_summary_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatch> {
+pub fn transform_metrics_summary_v1_to_iceberg(
+    batch: RecordBatch,
+    labels: &[String],
+) -> Result<RecordBatch> {
     let output_schema = create_metrics_summary_arrow_schema();
 
     let name_array = get_typed_column::<StringArray>(&batch, "name")?;
@@ -1851,7 +1845,7 @@ pub fn transform_metrics_summary_v1_to_iceberg(batch: RecordBatch) -> Result<Rec
         &resource_attributes,
         &scope_attributes,
         &attributes,
-        &materialized_labels_for("metrics"),
+        labels,
     );
     let mut columns: Vec<ArrayRef> = vec![
         Arc::new(TimestampNanosecondArray::from(timestamps)),
@@ -1918,7 +1912,10 @@ pub fn create_profiles_arrow_schema() -> Arc<Schema> {
 /// Iceberg storage schema: binary identifiers become hex strings (joinable
 /// with traces/logs), `time_unix_nano` becomes `timestamp` plus computed
 /// `date_day`/`hour` partition helper columns.
-pub fn transform_profiles_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatch> {
+pub fn transform_profiles_v1_to_iceberg(
+    batch: RecordBatch,
+    labels: &[String],
+) -> Result<RecordBatch> {
     let schema = create_profiles_arrow_schema();
     let num_rows = batch.num_rows();
 
@@ -2043,8 +2040,7 @@ pub fn transform_profiles_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatc
         new_columns.push(column);
     }
 
-    let (label_fields, label_columns) =
-        materialized_label_columns(&batch, num_rows, &materialized_labels_for("profiles"))?;
+    let (label_fields, label_columns) = materialized_label_columns(&batch, num_rows, labels)?;
     let out_schema =
         extend_schema_with_labels(schema, label_fields, &mut new_columns, label_columns);
 
@@ -2056,21 +2052,27 @@ pub fn transform_for_signal(
     signal_type: Option<&str>,
     target_table: Option<&str>,
     batch: RecordBatch,
+    materialized: &common::config::MaterializedLabels,
 ) -> Result<RecordBatch> {
+    let m = materialized;
     match (signal_type, target_table) {
-        (Some("traces"), _) => transform_trace_v1_to_v2(batch),
-        (Some("logs"), _) => transform_logs_v1_to_iceberg(batch),
-        (Some("profiles"), _) => transform_profiles_v1_to_iceberg(batch),
-        (Some("metrics"), Some("metrics_gauge")) => transform_metrics_gauge_v1_to_iceberg(batch),
-        (Some("metrics"), Some("metrics_sum")) => transform_metrics_sum_v1_to_iceberg(batch),
+        (Some("traces"), _) => transform_trace_v1_to_v2(batch, &m.traces),
+        (Some("logs"), _) => transform_logs_v1_to_iceberg(batch, &m.logs),
+        (Some("profiles"), _) => transform_profiles_v1_to_iceberg(batch, &m.profiles),
+        (Some("metrics"), Some("metrics_gauge")) => {
+            transform_metrics_gauge_v1_to_iceberg(batch, &m.metrics)
+        }
+        (Some("metrics"), Some("metrics_sum")) => {
+            transform_metrics_sum_v1_to_iceberg(batch, &m.metrics)
+        }
         (Some("metrics"), Some("metrics_histogram")) => {
-            transform_metrics_histogram_v1_to_iceberg(batch)
+            transform_metrics_histogram_v1_to_iceberg(batch, &m.metrics)
         }
         (Some("metrics"), Some("metrics_exponential_histogram")) => {
-            transform_metrics_exponential_histogram_v1_to_iceberg(batch)
+            transform_metrics_exponential_histogram_v1_to_iceberg(batch, &m.metrics)
         }
         (Some("metrics"), Some("metrics_summary")) => {
-            transform_metrics_summary_v1_to_iceberg(batch)
+            transform_metrics_summary_v1_to_iceberg(batch, &m.metrics)
         }
         (Some("metrics"), Some(other)) => {
             log::warn!("No transform for metrics target_table={other}, passing through");
@@ -2119,7 +2121,7 @@ mod tests {
         };
 
         let wire_batch = common::flight::conversion::profiles_to_arrow(&[profile]);
-        let iceberg_batch = transform_profiles_v1_to_iceberg(wire_batch).unwrap();
+        let iceberg_batch = transform_profiles_v1_to_iceberg(wire_batch, &[]).unwrap();
 
         assert_eq!(iceberg_batch.num_rows(), 1);
         let schema = iceberg_batch.schema();
@@ -2311,7 +2313,7 @@ mod tests {
         let observed_ts: u64 = 1_700_000_001_000_000_000;
         let batch = make_log_flight_batch(&[real_ts], &[observed_ts]);
 
-        let result = transform_logs_v1_to_iceberg(batch).unwrap();
+        let result = transform_logs_v1_to_iceberg(batch, &[]).unwrap();
         let ts_col = result
             .column_by_name("timestamp")
             .unwrap()
@@ -2327,7 +2329,7 @@ mod tests {
         let observed_ts: u64 = 1_700_000_001_000_000_000;
         let batch = make_log_flight_batch(&[0], &[observed_ts]);
 
-        let result = transform_logs_v1_to_iceberg(batch).unwrap();
+        let result = transform_logs_v1_to_iceberg(batch, &[]).unwrap();
         let ts_col = result
             .column_by_name("timestamp")
             .unwrap()
@@ -2347,7 +2349,7 @@ mod tests {
         let observed_ts: u64 = 1_700_000_001_000_000_000;
         let batch = make_log_flight_batch(&[0], &[observed_ts]);
 
-        let result = transform_logs_v1_to_iceberg(batch).unwrap();
+        let result = transform_logs_v1_to_iceberg(batch, &[]).unwrap();
         let date_col = result
             .column_by_name("date_day")
             .unwrap()
@@ -2373,7 +2375,7 @@ mod tests {
             &[observed_ts, observed_ts, observed_ts],
         );
 
-        let result = transform_logs_v1_to_iceberg(batch).unwrap();
+        let result = transform_logs_v1_to_iceberg(batch, &[]).unwrap();
         let ts_col = result
             .column_by_name("timestamp")
             .unwrap()

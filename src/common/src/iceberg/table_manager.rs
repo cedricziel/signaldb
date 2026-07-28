@@ -40,6 +40,7 @@ impl IcebergTableManager {
         tenant_slug: &str,
         dataset_slug: &str,
         table_name: &str,
+        labels: &crate::config::MaterializedLabels,
     ) -> Result<Table> {
         let ident = names::build_table_identifier(tenant_slug, dataset_slug, table_name);
         if let Ok(tabular) = self.catalog.clone().load_tabular(&ident).await {
@@ -97,7 +98,7 @@ impl IcebergTableManager {
 
         let table_create = CreateTableBuilder::default()
             .with_name(table_name.to_string())
-            .with_schema(table_schema.schema()?)
+            .with_schema(table_schema.schema_with_labels(labels)?)
             .with_partition_spec(table_schema.partition_spec()?)
             .with_location(names::build_table_location(
                 tenant_slug,

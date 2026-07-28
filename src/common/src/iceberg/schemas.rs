@@ -105,18 +105,17 @@ fn create_hour_partition_spec(
 
 /// Create Iceberg schema for traces table using TOML definitions, plus any
 /// configured materialized-label columns.
-pub fn create_traces_schema() -> Result<Schema> {
+pub fn create_traces_schema_with(labels: &[String]) -> Result<Schema> {
     // Get the current trace schema version from TOML
     let current_version = SCHEMA_DEFINITIONS.current_trace_version();
     let resolved_schema = SCHEMA_DEFINITIONS.resolve_trace_schema(current_version)?;
 
-    let labels = materialized_labels_for("traces");
-    resolved_schema.to_iceberg_schema_with_labels(&labels)
+    resolved_schema.to_iceberg_schema_with_labels(labels)
 }
 
 /// Create Iceberg schema for logs table using TOML definitions, plus any
 /// configured materialized-label columns.
-pub fn create_logs_schema() -> Result<Schema> {
+pub fn create_logs_schema_with(labels: &[String]) -> Result<Schema> {
     // Get the current log schema version from TOML
     let current_version = SCHEMA_DEFINITIONS.metadata.current_log_version.as_str();
     let resolved_schema = SCHEMA_DEFINITIONS.resolve_log_schema(current_version)?;
@@ -124,8 +123,47 @@ pub fn create_logs_schema() -> Result<Schema> {
     // Promote configured attribute keys to dedicated columns. The schema is
     // materialized once at table-creation time; the global config is the
     // source of truth for which labels are promoted (empty when unset).
-    let labels = materialized_labels_for("logs");
-    resolved_schema.to_iceberg_schema_with_labels(&labels)
+    resolved_schema.to_iceberg_schema_with_labels(labels)
+}
+
+/// Global-config variant of [`create_traces_schema_with`].
+pub fn create_traces_schema() -> Result<Schema> {
+    create_traces_schema_with(&materialized_labels_for("traces"))
+}
+
+/// Global-config variant of [`create_logs_schema_with`].
+pub fn create_logs_schema() -> Result<Schema> {
+    create_logs_schema_with(&materialized_labels_for("logs"))
+}
+
+/// Global-config variant of [`create_metrics_gauge_schema_with`].
+pub fn create_metrics_gauge_schema() -> Result<Schema> {
+    create_metrics_gauge_schema_with(&materialized_labels_for("metrics"))
+}
+
+/// Global-config variant of [`create_metrics_sum_schema_with`].
+pub fn create_metrics_sum_schema() -> Result<Schema> {
+    create_metrics_sum_schema_with(&materialized_labels_for("metrics"))
+}
+
+/// Global-config variant of [`create_metrics_histogram_schema_with`].
+pub fn create_metrics_histogram_schema() -> Result<Schema> {
+    create_metrics_histogram_schema_with(&materialized_labels_for("metrics"))
+}
+
+/// Global-config variant of [`create_metrics_exponential_histogram_schema_with`].
+pub fn create_metrics_exponential_histogram_schema() -> Result<Schema> {
+    create_metrics_exponential_histogram_schema_with(&materialized_labels_for("metrics"))
+}
+
+/// Global-config variant of [`create_metrics_summary_schema_with`].
+pub fn create_metrics_summary_schema() -> Result<Schema> {
+    create_metrics_summary_schema_with(&materialized_labels_for("metrics"))
+}
+
+/// Global-config variant of [`create_profiles_schema_with`].
+pub fn create_profiles_schema() -> Result<Schema> {
+    create_profiles_schema_with(&materialized_labels_for("profiles"))
 }
 
 /// The configured materialized labels for a signal, read from the global
@@ -148,7 +186,7 @@ fn materialized_labels_for(signal: &str) -> Vec<String> {
 
 /// Create Iceberg schema for metrics gauge table
 /// Based on ClickHouse metrics_gauge_table.sql schema but adapted for Iceberg
-pub fn create_metrics_gauge_schema() -> Result<Schema> {
+pub fn create_metrics_gauge_schema_with(labels: &[String]) -> Result<Schema> {
     let mut fields = vec![
         // Timing
         required_field(1, "timestamp", PrimitiveType::Timestamp),
@@ -177,7 +215,7 @@ pub fn create_metrics_gauge_schema() -> Result<Schema> {
         required_field(18, "date_day", PrimitiveType::Date), // Partition key
         required_field(19, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
-    append_materialized_label_fields(&mut fields, &materialized_labels_for("metrics"));
+    append_materialized_label_fields(&mut fields, labels);
     mapify_attr_fields(
         &mut fields,
         &["resource_attributes", "scope_attributes", "attributes"],
@@ -188,7 +226,7 @@ pub fn create_metrics_gauge_schema() -> Result<Schema> {
 
 /// Create Iceberg schema for metrics sum table
 /// Based on ClickHouse metrics_sum_table.sql schema but adapted for Iceberg
-pub fn create_metrics_sum_schema() -> Result<Schema> {
+pub fn create_metrics_sum_schema_with(labels: &[String]) -> Result<Schema> {
     let mut fields = vec![
         // Timing
         required_field(1, "timestamp", PrimitiveType::Timestamp),
@@ -219,7 +257,7 @@ pub fn create_metrics_sum_schema() -> Result<Schema> {
         required_field(20, "date_day", PrimitiveType::Date), // Partition key
         required_field(21, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
-    append_materialized_label_fields(&mut fields, &materialized_labels_for("metrics"));
+    append_materialized_label_fields(&mut fields, labels);
     mapify_attr_fields(
         &mut fields,
         &["resource_attributes", "scope_attributes", "attributes"],
@@ -230,7 +268,7 @@ pub fn create_metrics_sum_schema() -> Result<Schema> {
 
 /// Create Iceberg schema for metrics histogram table
 /// Based on ClickHouse metrics_histogram_table.sql schema but adapted for Iceberg
-pub fn create_metrics_histogram_schema() -> Result<Schema> {
+pub fn create_metrics_histogram_schema_with(labels: &[String]) -> Result<Schema> {
     let mut fields = vec![
         // Timing
         required_field(1, "timestamp", PrimitiveType::Timestamp),
@@ -265,7 +303,7 @@ pub fn create_metrics_histogram_schema() -> Result<Schema> {
         required_field(24, "date_day", PrimitiveType::Date), // Partition key
         required_field(25, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
-    append_materialized_label_fields(&mut fields, &materialized_labels_for("metrics"));
+    append_materialized_label_fields(&mut fields, labels);
     mapify_attr_fields(
         &mut fields,
         &["resource_attributes", "scope_attributes", "attributes"],
@@ -276,7 +314,7 @@ pub fn create_metrics_histogram_schema() -> Result<Schema> {
 
 /// Create Iceberg schema for metrics exponential histogram table
 /// Similar to histogram but with exponential bucketing for better precision
-pub fn create_metrics_exponential_histogram_schema() -> Result<Schema> {
+pub fn create_metrics_exponential_histogram_schema_with(labels: &[String]) -> Result<Schema> {
     let mut fields = vec![
         // Timing
         required_field(1, "timestamp", PrimitiveType::Timestamp),
@@ -316,7 +354,7 @@ pub fn create_metrics_exponential_histogram_schema() -> Result<Schema> {
         required_field(29, "date_day", PrimitiveType::Date), // Partition key
         required_field(30, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
-    append_materialized_label_fields(&mut fields, &materialized_labels_for("metrics"));
+    append_materialized_label_fields(&mut fields, labels);
     mapify_attr_fields(
         &mut fields,
         &["resource_attributes", "scope_attributes", "attributes"],
@@ -327,7 +365,7 @@ pub fn create_metrics_exponential_histogram_schema() -> Result<Schema> {
 
 /// Create Iceberg schema for metrics summary table
 /// Stores quantile values for summary metrics
-pub fn create_metrics_summary_schema() -> Result<Schema> {
+pub fn create_metrics_summary_schema_with(labels: &[String]) -> Result<Schema> {
     let mut fields = vec![
         // Timing
         required_field(1, "timestamp", PrimitiveType::Timestamp),
@@ -358,7 +396,7 @@ pub fn create_metrics_summary_schema() -> Result<Schema> {
         required_field(20, "date_day", PrimitiveType::Date), // Partition key
         required_field(21, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
-    append_materialized_label_fields(&mut fields, &materialized_labels_for("metrics"));
+    append_materialized_label_fields(&mut fields, labels);
     mapify_attr_fields(
         &mut fields,
         &["resource_attributes", "scope_attributes", "attributes"],
@@ -372,7 +410,7 @@ pub fn create_metrics_summary_schema() -> Result<Schema> {
 /// Storage format for OpenTelemetry profiles with the OTLP dictionary
 /// resolved at ingest. Identifiers (profile_id, trace_id, span_id) are
 /// stored as hex strings to stay joinable with the traces and logs tables.
-pub fn create_profiles_schema() -> Result<Schema> {
+pub fn create_profiles_schema_with(labels: &[String]) -> Result<Schema> {
     let mut fields = vec![
         // Identity and timing
         required_field(1, "profile_id", PrimitiveType::String), // hex encoded
@@ -401,7 +439,7 @@ pub fn create_profiles_schema() -> Result<Schema> {
         required_field(17, "date_day", PrimitiveType::Date), // Partition key
         required_field(18, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
-    append_materialized_label_fields(&mut fields, &materialized_labels_for("profiles"));
+    append_materialized_label_fields(&mut fields, labels);
     mapify_attr_fields(
         &mut fields,
         &[
@@ -463,6 +501,26 @@ pub enum TableSchema {
 
 impl TableSchema {
     /// Get the schema for this table type
+    /// Like [`Self::schema`], but with an explicit per-tenant
+    /// materialized-labels resolution instead of the global config.
+    pub fn schema_with_labels(&self, m: &crate::config::MaterializedLabels) -> Result<Schema> {
+        match self {
+            TableSchema::Traces => create_traces_schema_with(&m.traces),
+            TableSchema::Logs => create_logs_schema_with(&m.logs),
+            TableSchema::MetricsGauge => create_metrics_gauge_schema_with(&m.metrics),
+            TableSchema::MetricsSum => create_metrics_sum_schema_with(&m.metrics),
+            TableSchema::MetricsHistogram => create_metrics_histogram_schema_with(&m.metrics),
+            TableSchema::MetricsExponentialHistogram => {
+                create_metrics_exponential_histogram_schema_with(&m.metrics)
+            }
+            TableSchema::MetricsSummary => create_metrics_summary_schema_with(&m.metrics),
+            TableSchema::Profiles => create_profiles_schema_with(&m.profiles),
+            TableSchema::Custom(_) => Err(anyhow::anyhow!(
+                "Custom schemas must be loaded from configuration"
+            )),
+        }
+    }
+
     pub fn schema(&self) -> Result<Schema> {
         match self {
             TableSchema::Traces => create_traces_schema(),
@@ -567,6 +625,27 @@ mod tests {
     /// Helper: find a field by name in a schema
     fn has_field(schema: &Schema, name: &str) -> bool {
         schema.fields().iter().any(|f| f.name == name)
+    }
+
+    #[test]
+    fn schema_with_labels_injects_the_given_allowlist() {
+        use crate::config::MaterializedLabels;
+        let m = MaterializedLabels {
+            logs: vec!["namespace".to_string()],
+            traces: vec!["http.method".to_string()],
+            ..Default::default()
+        };
+        let logs = TableSchema::Logs.schema_with_labels(&m).unwrap();
+        assert!(logs.fields().iter().any(|f| f.name == "label_namespace"));
+        // The logs schema must not pick up the traces list.
+        assert!(!logs.fields().iter().any(|f| f.name == "label_http_method"));
+        let traces = TableSchema::Traces.schema_with_labels(&m).unwrap();
+        assert!(
+            traces
+                .fields()
+                .iter()
+                .any(|f| f.name == "label_http_method")
+        );
     }
 
     #[test]
