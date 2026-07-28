@@ -228,15 +228,27 @@ impl LogsService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
-        // Resolve the output grouping columns (the `by` labels); unknown
-        // labels can't be grouped with the substring attribute model.
-        let out_group_cols: Vec<&'static str> = plan
+        let mut df = self.logs_table(tenant_slug, dataset_slug).await?;
+        let materialized = materialized_columns_of(&df);
+
+        // Resolve the output grouping columns (the `by` labels): a
+        // well-known label maps to its dedicated column, a materialized
+        // label to its `label_<key>` column; anything else can't be
+        // grouped with the substring attribute model.
+        let out_group_cols: Vec<String> = plan
             .group_labels
             .iter()
             .map(|label| {
-                column_for_label(label).ok_or_else(|| {
-                    QuerierError::Unsupported(format!("grouping by attribute label '{label}'"))
-                })
+                if let Some(column) = column_for_label(label) {
+                    return Ok(column.to_string());
+                }
+                let name = common::schema::materialized_column_name(label);
+                if materialized.contains(&name) {
+                    return Ok(name);
+                }
+                Err(QuerierError::Unsupported(format!(
+                    "grouping by attribute label '{label}'"
+                )))
             })
             .collect::<Result<_, _>>()?;
 
@@ -245,14 +257,15 @@ impl LogsService {
         // identity). A non-`sum` outer aggregation instead groups by the
         // full series identity so the second pass has per-series values to
         // reduce across.
-        let range_group_cols: Vec<&'static str> = match plan.outer_agg {
-            None if out_group_cols.is_empty() => SERIES_COLUMNS.to_vec(),
+        let range_group_cols: Vec<String> = match plan.outer_agg {
+            None if out_group_cols.is_empty() => {
+                SERIES_COLUMNS.iter().map(|c| c.to_string()).collect()
+            }
             None => out_group_cols.clone(),
-            Some(_) => SERIES_COLUMNS.to_vec(),
+            Some(_) => SERIES_COLUMNS.iter().map(|c| c.to_string()).collect(),
         };
 
-        let mut df = self.logs_table(tenant_slug, dataset_slug).await?;
-        let filter = log_query_filter_with_columns(&plan.log_query, &materialized_columns_of(&df))?;
+        let filter = log_query_filter_with_columns(&plan.log_query, &materialized)?;
         df = apply_window(df, params.start, params.end)?;
         if let Some(filter) = filter {
             df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
@@ -272,7 +285,7 @@ impl LogsService {
         let bucket = date_bin(stride, timestamp_ns, origin).alias("bucket");
 
         let mut group_exprs = vec![bucket];
-        group_exprs.extend(range_group_cols.iter().map(|c| col(*c)));
+        group_exprs.extend(range_group_cols.iter().map(|c| col(c.as_str())));
 
         let value = aggregate_expr(&plan.aggregate).alias("value");
         df = df
@@ -282,7 +295,7 @@ impl LogsService {
         // Normalize `value` to Float64 (count/bytes aggregate to Int64)
         // and apply the `rate` divisor in the same projection.
         let mut proj = vec![col("bucket")];
-        proj.extend(range_group_cols.iter().map(|c| col(*c)));
+        proj.extend(range_group_cols.iter().map(|c| col(c.as_str())));
         let value = cast(col("value"), DataType::Float64);
         let value = match plan.rate_divisor_seconds {
             Some(seconds) => value / lit(seconds),
@@ -295,7 +308,7 @@ impl LogsService {
         // within each output group (`avg`/`min`/`max`/`count`).
         if let Some(outer) = plan.outer_agg {
             let mut group_exprs = vec![col("bucket")];
-            group_exprs.extend(out_group_cols.iter().map(|c| col(*c)));
+            group_exprs.extend(out_group_cols.iter().map(|c| col(c.as_str())));
             let reduced = outer_agg_expr(outer, col("value")).alias("value");
             df = df
                 .aggregate(group_exprs, vec![reduced])
@@ -303,7 +316,7 @@ impl LogsService {
 
             // `count` reduces to Int64; keep the matrix value Float64.
             let mut proj = vec![col("bucket")];
-            proj.extend(out_group_cols.iter().map(|c| col(*c)));
+            proj.extend(out_group_cols.iter().map(|c| col(c.as_str())));
             proj.push(cast(col("value"), DataType::Float64).alias("value"));
             df = df.select(proj).map_err(QuerierError::QueryFailed)?;
         }
@@ -318,7 +331,7 @@ impl LogsService {
                 &range_group_cols
             };
             let mut proj = vec![col("bucket")];
-            proj.extend(current_group_cols.iter().map(|c| col(*c)));
+            proj.extend(current_group_cols.iter().map(|c| col(c.as_str())));
             proj.push(scalar_op_expr(col("value"), scalar_op).alias("value"));
             df = df.select(proj).map_err(QuerierError::QueryFailed)?;
         }
@@ -1453,6 +1466,56 @@ mod tests {
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
         LogsService::new(ctx)
+    }
+
+    #[tokio::test]
+    async fn sum_by_materialized_label_groups_on_its_column() {
+        let service = service_with_materialized_labels();
+        // label_namespace: prod, prod, staging → two groups (2 rows, 1 row).
+        let batches = service
+            .query_metric(
+                &metric_params(
+                    r#"sum by (namespace) (count_over_time({service_name=~".+"}[1000ns]))"#,
+                    1000,
+                ),
+                "t",
+                "d",
+            )
+            .await
+            .expect("grouped metric query");
+        let mut groups: Vec<(String, f64)> = Vec::new();
+        for batch in &batches {
+            let ns = string_column(batch, "label_namespace").expect("group column");
+            let value = batch
+                .column_by_name("value")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<datafusion::arrow::array::Float64Array>()
+                .unwrap();
+            for i in 0..batch.num_rows() {
+                groups.push((ns.value(i).to_string(), value.value(i)));
+            }
+        }
+        groups.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            groups,
+            vec![("prod".to_string(), 2.0), ("staging".to_string(), 1.0)]
+        );
+
+        // A label with no column still can't be grouped.
+        assert!(matches!(
+            service
+                .query_metric(
+                    &metric_params(
+                        r#"sum by (nope) (count_over_time({service_name=~".+"}[1000ns]))"#,
+                        1000
+                    ),
+                    "t",
+                    "d"
+                )
+                .await,
+            Err(QuerierError::Unsupported(_))
+        ));
     }
 
     #[tokio::test]

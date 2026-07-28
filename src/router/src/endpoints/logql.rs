@@ -447,10 +447,14 @@ fn batches_to_matrix(batches: &[RecordBatch]) -> Vec<loki_api::MetricSeries> {
             let mut labels: HashMap<String, String> = HashMap::new();
             for (name, col) in &label_cols {
                 if !col.is_null(i) && !col.value(i).is_empty() {
+                    // `severity_text` is Loki's `level`; a materialized
+                    // `label_<key>` column is presented as its label name
+                    // (sanitized form — dots became underscores at ingest,
+                    // matching Loki's own OTLP flattening).
                     let key = if name == "severity_text" {
                         "level"
                     } else {
-                        name.as_str()
+                        name.strip_prefix("label_").unwrap_or(name.as_str())
                     };
                     labels.insert(key.to_string(), col.value(i).to_string());
                 }
