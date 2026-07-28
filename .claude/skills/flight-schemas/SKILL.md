@@ -80,7 +80,7 @@ Applied in Writer's Flight `do_put` handler before WAL write -- all WAL data is 
 
 Key fields: `timestamp` (partition), `trace_id`, `span_id`, `severity_text`, `severity_number`, `service_name`, `body`, `resource_attributes`, `log_attributes`, `date_day`, `hour`.
 
-Plus, when `[schema.materialized_labels].logs` is configured, a nullable `label_<key>` column per key. `transform_logs_v1_to_iceberg` appends these (value from resource→scope→record attributes, first non-null) after the base fields. Default empty ⇒ unchanged schema. See `docs/architecture/storage-layout.md#materialized-labels`.
+Plus, when `[schema.materialized_labels].<signal>` is configured, a nullable `label_<key>` column per key. The `transform_*_v1_to_iceberg` transforms (logs and traces implemented; metrics/profiles share the pattern) append these via `materialized_label_columns` + `extend_schema_with_labels` — value from resource→scope→record attributes, first non-null — after the base fields. Default empty ⇒ unchanged schema. See `docs/architecture/storage-layout.md#materialized-labels`.
 
 ## Metrics Schemas
 

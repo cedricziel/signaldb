@@ -21,10 +21,12 @@
 //! another attribute's serialized text embeds the same fragment — a
 //! documented approximation until attributes are indexed.
 
+use common::schema::materialized_column_name;
 use datafusion::functions::string::expr_fn::contains;
 use datafusion::logical_expr::{Expr, col, lit};
 
 use super::error::QuerierError;
+use super::logql::MaterializedColumns;
 
 /// Where a filter condition applies.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,8 +61,10 @@ pub enum FilterValue {
 }
 
 impl Condition {
-    /// Lower the condition to a DataFusion filter expression.
-    pub fn to_expr(&self) -> Result<Expr, QuerierError> {
+    /// Lower the condition to a DataFusion filter expression, routing an
+    /// attribute key to its materialized `label_<key>` column (exact match)
+    /// when the table has one, else to the attribute-JSON substring match.
+    pub fn to_expr(&self, columns: &MaterializedColumns) -> Result<Expr, QuerierError> {
         match &self.selector {
             Selector::ServiceName => Ok(col("service_name").eq(lit(self.string_value()?))),
             Selector::SpanName => Ok(col("span_name").eq(lit(self.string_value()?))),
@@ -76,6 +80,16 @@ impl Condition {
                     }
                 };
                 Ok(col("status_code").eq(lit(status)))
+            }
+            Selector::SpanAttribute(key)
+            | Selector::ResourceAttribute(key)
+            | Selector::AnyAttribute(key)
+                if columns.contains(&materialized_column_name(key)) =>
+            {
+                Ok(materialized_expr(
+                    &materialized_column_name(key),
+                    &self.value,
+                ))
             }
             Selector::SpanAttribute(key) => Ok(attribute_expr("span_attributes", key, &self.value)),
             Selector::ResourceAttribute(key) => {
@@ -95,6 +109,17 @@ impl Condition {
             ))),
         }
     }
+}
+
+/// Exact equality against a materialized attribute column, comparing the
+/// value as its stored string form.
+fn materialized_expr(column: &str, value: &FilterValue) -> Expr {
+    let v = match value {
+        FilterValue::String(s) => s.clone(),
+        FilterValue::Number(n) => n.clone(),
+        FilterValue::Bool(b) => b.to_string(),
+    };
+    col(column).eq(lit(v))
 }
 
 /// Match the serialized `"key":value` fragment inside a flat-JSON
@@ -409,14 +434,17 @@ mod tests {
             selector: Selector::Status,
             value: FilterValue::String("error".to_string()),
         };
-        let expr = condition.to_expr().unwrap();
+        let expr = condition.to_expr(&MaterializedColumns::new()).unwrap();
         assert!(format!("{expr:?}").contains("Error"));
 
         let bad = Condition {
             selector: Selector::Status,
             value: FilterValue::String("bogus".to_string()),
         };
-        assert!(matches!(bad.to_expr(), Err(QuerierError::InvalidInput(_))));
+        assert!(matches!(
+            bad.to_expr(&MaterializedColumns::new()),
+            Err(QuerierError::InvalidInput(_))
+        ));
     }
 
     #[test]
@@ -425,7 +453,10 @@ mod tests {
             selector: Selector::SpanAttribute("http.method".to_string()),
             value: FilterValue::String("GET".to_string()),
         };
-        let rendered = format!("{:?}", condition.to_expr().unwrap());
+        let rendered = format!(
+            "{:?}",
+            condition.to_expr(&MaterializedColumns::new()).unwrap()
+        );
         assert!(rendered.contains(r#""http.method":"GET""#), "{rendered}");
 
         // Numbers match both bare (real OTLP int) and quoted forms.
@@ -433,11 +464,34 @@ mod tests {
             selector: Selector::SpanAttribute("http.status_code".to_string()),
             value: FilterValue::Number("200".to_string()),
         };
-        let rendered = format!("{:?}", numeric.to_expr().unwrap());
+        let rendered = format!(
+            "{:?}",
+            numeric.to_expr(&MaterializedColumns::new()).unwrap()
+        );
         assert!(rendered.contains(r#""http.status_code":200"#), "{rendered}");
         assert!(
             rendered.contains(r#""http.status_code":"200""#),
             "{rendered}"
         );
+    }
+
+    #[test]
+    fn materialized_attribute_routes_to_its_column() {
+        let condition = Condition {
+            selector: Selector::AnyAttribute("namespace".to_string()),
+            value: FilterValue::String("prod".to_string()),
+        };
+        // Without the column: JSON substring across both attribute columns.
+        let json = format!(
+            "{:?}",
+            condition.to_expr(&MaterializedColumns::new()).unwrap()
+        );
+        assert!(json.contains(r#""namespace":"prod""#), "{json}");
+
+        // With the column: exact equality on `label_namespace`.
+        let cols: MaterializedColumns = ["label_namespace".to_string()].into_iter().collect();
+        let rendered = format!("{:?}", condition.to_expr(&cols).unwrap());
+        assert!(rendered.contains("label_namespace"), "{rendered}");
+        assert!(!rendered.contains("span_attributes"), "{rendered}");
     }
 }

@@ -281,7 +281,14 @@ pub fn transform_trace_v1_to_v2(batch: RecordBatch) -> Result<RecordBatch> {
         new_columns.push(column);
     }
 
-    let result = RecordBatch::try_new(arrow_schema, new_columns)
+    // Promote configured attribute keys into `label_<key>` columns (dropped
+    // by coercion for tables that predate them).
+    let (label_fields, label_columns) =
+        materialized_label_columns(&batch, batch.num_rows(), &materialized_labels_for("traces"))?;
+    let out_schema =
+        extend_schema_with_labels(arrow_schema, label_fields, &mut new_columns, label_columns);
+
+    let result = RecordBatch::try_new(out_schema, new_columns)
         .map_err(|e| anyhow!("Failed to create transformed RecordBatch: {}", e))?;
 
     log::debug!(
@@ -484,6 +491,23 @@ fn materialized_label_columns(
         columns.push(Arc::new(StringArray::from(values)));
     }
     Ok((fields, columns))
+}
+
+/// Append materialized-label fields/columns to a base batch schema. Returns
+/// the base schema unchanged when there are no label fields.
+fn extend_schema_with_labels(
+    base: Arc<Schema>,
+    label_fields: Vec<Field>,
+    columns: &mut Vec<ArrayRef>,
+    label_columns: Vec<ArrayRef>,
+) -> Arc<Schema> {
+    if label_fields.is_empty() {
+        return base;
+    }
+    let mut fields: Vec<Field> = base.fields().iter().map(|f| (**f).clone()).collect();
+    fields.extend(label_fields);
+    columns.extend(label_columns);
+    Arc::new(Schema::new(fields))
 }
 
 pub fn transform_logs_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatch> {
@@ -775,18 +799,8 @@ pub fn transform_logs_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatch> {
     // predate the columns, so this is safe regardless of table age.
     let (label_fields, label_columns) =
         materialized_label_columns(&batch, num_rows, &materialized_labels_for("logs"))?;
-    let out_schema: Arc<Schema> = if label_fields.is_empty() {
-        arrow_schema
-    } else {
-        let mut fields: Vec<Field> = arrow_schema
-            .fields()
-            .iter()
-            .map(|f| (**f).clone())
-            .collect();
-        fields.extend(label_fields);
-        new_columns.extend(label_columns);
-        Arc::new(Schema::new(fields))
-    };
+    let out_schema =
+        extend_schema_with_labels(arrow_schema, label_fields, &mut new_columns, label_columns);
 
     let result = RecordBatch::try_new(out_schema, new_columns)
         .map_err(|e| anyhow!("Failed to create transformed log RecordBatch: {}", e))?;
