@@ -89,7 +89,7 @@ Key details:
 - **Phase 2**: Active Parquet file compaction for storage efficiency
 - **Phase 3**: Retention enforcement, snapshot expiration, and orphan file cleanup
 
-Each rewrite also runs a read-only attribute-stats pass logging per-key presence/cardinality + advisory materialization candidates (epic #737 L4a). The compactor runs concurrent background loops for compaction, retention enforcement, and orphan cleanup, all using tokio::select! for non-blocking execution.
+Each rewrite also runs a read-only attribute-stats pass logging per-key presence/cardinality + advisory materialization candidates (epic #737 L4a). The compactor runs concurrent background loops for compaction, retention enforcement, and orphan cleanup, all using tokio::select! for non-blocking execution. Every rewrite also runs the advisory attribute-stats pass (persisted to the catalog's `attribute_stats` table; dry-run promotion decisions under `[compactor.attr_promotion]` — epic #737 Layer 4).
 
 ## Dual Catalog System
 

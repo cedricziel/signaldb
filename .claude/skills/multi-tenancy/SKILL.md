@@ -161,3 +161,5 @@ signaldb-cli tui                # Interactive terminal UI
 | `src/router/src/endpoints/tenant.rs` | Tenant self-service API endpoints |
 | `src/common/src/ratelimit.rs` | Per-tenant token-bucket rate limiter |
 | `src/signaldb-cli/` | CLI for tenant management |
+
+Under `[compactor.attr_promotion]` (auto-promotion decision pass), a tenant's resolved materialized-label allowlist is the *pinned* set: those keys are never demotion candidates.

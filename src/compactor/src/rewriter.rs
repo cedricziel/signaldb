@@ -119,6 +119,8 @@ impl ParquetRewriter {
                     scanned,
                 )
                 .await;
+                self.run_promotion_pass(catalog, tenant, dataset, &table_name, table)
+                    .await;
             }
         }
 
@@ -163,6 +165,67 @@ impl ParquetRewriter {
             output_size_bytes,
             rows_written,
         }))
+    }
+
+    /// Advisory auto-promotion pass (epic #737, #734): score the freshly
+    /// persisted statistics against the configured guardrails, log the
+    /// promotion/demotion decision, and persist the hysteresis streaks.
+    /// Dry-run only for now — the rewrite-coupled schema change is the
+    /// follow-up half.
+    async fn run_promotion_pass(
+        &self,
+        catalog: &common::catalog::Catalog,
+        tenant: &str,
+        dataset: &str,
+        table_name: &str,
+        table: &Table,
+    ) {
+        let config = self.catalog_manager.config();
+        let promotion = &config.compactor.attr_promotion;
+        if !promotion.enabled {
+            return;
+        }
+        let signal = crate::attr_stats::signal_of_table(table_name);
+        let stats = match catalog.get_attribute_stats(tenant, dataset, signal).await {
+            Ok(stats) => stats,
+            Err(e) => {
+                tracing::warn!(error = %e, table = %table_name, "Failed to load attribute stats for promotion pass");
+                return;
+            }
+        };
+        // The table's current label_<key> columns and the pinned allowlist.
+        let label_columns: Vec<String> = table
+            .current_schema(None)
+            .map(|schema| {
+                schema
+                    .fields()
+                    .iter()
+                    .map(|f| f.name.clone())
+                    .filter(|n| n.starts_with("label_"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let materialized = crate::attr_promotion::materialized_keys_of(&label_columns, &stats);
+        let tenant_schema = config.get_tenant_schema_config(tenant);
+        let m = &tenant_schema.materialized_labels;
+        let pinned: &[String] = match signal {
+            "traces" => &m.traces,
+            "logs" => &m.logs,
+            "metrics" => &m.metrics,
+            "profiles" => &m.profiles,
+            _ => &[],
+        };
+        let (decision, new_streaks) =
+            crate::attr_promotion::decide(&stats, &materialized, pinned, promotion);
+        crate::attr_promotion::log_decision(table_name, &decision, promotion.dry_run);
+        for (key, streak) in new_streaks {
+            if let Err(e) = catalog
+                .set_attribute_promote_streak(tenant, dataset, signal, &key, streak)
+                .await
+            {
+                tracing::warn!(error = %e, attr_key = %key, "Failed to persist promotion streak");
+            }
+        }
     }
 
     /// Get sort columns for a given table type

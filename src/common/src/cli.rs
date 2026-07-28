@@ -103,13 +103,18 @@ pub mod utils {
 
     /// Load configuration with optional override from CLI
     pub fn load_config(config_path: Option<&PathBuf>) -> Result<Configuration> {
-        match config_path {
+        let config = match config_path {
             Some(path) => {
                 tracing::info!(path = %path.display(), "Loading configuration");
-                Configuration::load_from_path(path).context("Failed to load configuration")
+                Configuration::load_from_path(path).context("Failed to load configuration")?
             }
-            None => Configuration::load().context("Failed to load configuration"),
-        }
+            None => Configuration::load().context("Failed to load configuration")?,
+        };
+        // Publish to the process-global for readers without a config handle
+        // (e.g. the writer's Flight do_put per-tenant label resolution).
+        // First write wins; repeated loads in tests are fine.
+        let _ = crate::config::CONFIG.set(config.clone());
+        Ok(config)
     }
 
     /// Display configuration in human-readable or JSON format

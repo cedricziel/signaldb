@@ -60,7 +60,7 @@ CREATE TABLE ingesters (
 The same catalog also holds multi-tenancy tables (`tenants`, `api_keys`,
 `datasets`), `compactor_leases`, and the advisory `attribute_stats` table
 (epic #737: per-attribute-key presence/cardinality from the compactor's
-analyzer plus query-demand counters flushed by the querier).
+analyzer plus query-demand counters flushed by the querier, and a promote_streak hysteresis column for the auto-promotion decision pass).
 
 ## Discovery Mechanism
 

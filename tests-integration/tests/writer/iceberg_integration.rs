@@ -585,3 +585,204 @@ async fn test_map_attribute_column_end_to_end() -> Result<()> {
 
     Ok(())
 }
+
+/// Spike for the attribute-explorability epic (#737 / #734): schema
+/// evolution through the low-level catalog commit path — `AddSchema` +
+/// `SetCurrentSchema` via `Catalog::update_table` — followed by a write
+/// under the new schema and a read that null-fills the old files.
+///
+/// IGNORED: blocked on a fork limitation. The metadata-only commit works
+/// (schemas {0,1}, current_schema_id=1), but `TableMetadata::
+/// current_schema(branch)` prefers the *current snapshot's* pinned
+/// schema_id, and the Append/Replace transaction ops both derive their
+/// new snapshot's schema from `current_schema(branch)` — so every new
+/// snapshot re-pins the old schema and the flip never takes effect
+/// (`updated current_schema` stays `["timestamp", "body"]`). Fix belongs
+/// in the fork: stamp new snapshots with `metadata.current_schema_id`
+/// (see the analysis on #734). Un-ignore once the fork is patched.
+#[tokio::test]
+#[ignore = "blocked on iceberg-rust fork: new snapshots re-pin the old schema_id (#734)"]
+async fn test_schema_evolution_add_label_column() -> Result<()> {
+    use datafusion::prelude::SessionContext;
+    use futures::stream;
+    use iceberg_rust::arrow::write::write_parquet_partitioned;
+    use iceberg_rust::catalog::commit::{CommitTable, TableUpdate};
+    use iceberg_rust::catalog::create::CreateTableBuilder;
+    use iceberg_rust::catalog::tabular::Tabular;
+    use iceberg_rust::spec::partition::PartitionSpec;
+    use iceberg_rust::spec::schema::Schema as IcebergSchema;
+    use iceberg_rust::spec::types::{PrimitiveType, StructField, StructType, Type};
+
+    fn string_field(id: i32, name: &str, required: bool) -> StructField {
+        StructField {
+            id,
+            name: name.to_string(),
+            required,
+            field_type: Type::Primitive(PrimitiveType::String),
+            doc: None,
+            initial_default: None,
+            write_default: None,
+        }
+    }
+
+    let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
+    let catalog = catalog_manager.catalog();
+
+    let namespace = common::iceberg::names::build_namespace("spike", "evolve")?;
+    catalog.clone().create_namespace(&namespace, None).await?;
+
+    let ts_field = StructField {
+        id: 1,
+        name: "timestamp".to_string(),
+        required: true,
+        field_type: Type::Primitive(PrimitiveType::Timestamp),
+        doc: None,
+        initial_default: None,
+        write_default: None,
+    };
+    let v0 = IcebergSchema::from_struct_type(
+        StructType::new(vec![ts_field.clone(), string_field(2, "body", false)]),
+        0,
+        None,
+    );
+
+    let ident = common::iceberg::names::build_table_identifier("spike", "evolve", "events");
+    let table_create = CreateTableBuilder::default()
+        .with_name("events".to_string())
+        .with_schema(v0)
+        .with_partition_spec(PartitionSpec::default())
+        .with_location(common::iceberg::names::build_table_location(
+            "spike", "evolve", "events",
+        ))
+        .create()
+        .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
+    catalog
+        .clone()
+        .create_table(ident.clone(), table_create)
+        .await?;
+
+    // File 1 under the original schema.
+    let Tabular::Table(mut table) = catalog.clone().load_tabular(&ident).await? else {
+        panic!("expected a table");
+    };
+    use datafusion::arrow::array::TimestampMicrosecondArray;
+    let batch_v0 = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(datafusion::arrow::datatypes::TimeUnit::Microsecond, None),
+                false,
+            ),
+            Field::new("body", DataType::Utf8, true),
+        ])),
+        vec![
+            Arc::new(TimestampMicrosecondArray::from(vec![1_000_000_i64])),
+            Arc::new(StringArray::from(vec![Some("before evolution")])),
+        ],
+    )?;
+    let files = write_parquet_partitioned(&table, stream::iter(vec![Ok(batch_v0)]), None).await?;
+    table
+        .new_transaction(None)
+        .append_data(files)
+        .commit()
+        .await?;
+
+    // Metadata-only evolution commit: add schema v1 with `label_env` and
+    // make it current — the exact path auto-promotion will drive.
+    let v1 = IcebergSchema::from_struct_type(
+        StructType::new(vec![
+            ts_field,
+            string_field(2, "body", false),
+            string_field(3, "label_env", false),
+        ]),
+        1,
+        None,
+    );
+    let updated = catalog
+        .clone()
+        .update_table(CommitTable {
+            identifier: ident.clone(),
+            requirements: vec![],
+            updates: vec![
+                TableUpdate::AddSchema {
+                    schema: v1,
+                    last_column_id: Some(3),
+                },
+                TableUpdate::SetCurrentSchema { schema_id: 1 },
+            ],
+        })
+        .await?;
+    // The metadata-only half works: both schemas stored, current id flipped.
+    assert_eq!(updated.metadata().current_schema_id, 1);
+    assert_eq!(updated.metadata().schemas.len(), 2);
+
+    // File 2 under the evolved schema (the writer derives its Arrow schema
+    // from current_schema, which now includes the label column).
+    let Tabular::Table(mut table) = catalog.clone().load_tabular(&ident).await? else {
+        panic!("expected a table after evolution");
+    };
+    assert!(
+        table
+            .current_schema(None)?
+            .fields()
+            .iter()
+            .any(|f| f.name == "label_env"),
+        "evolved schema should carry label_env"
+    );
+    let batch_v1 = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(datafusion::arrow::datatypes::TimeUnit::Microsecond, None),
+                false,
+            ),
+            Field::new("body", DataType::Utf8, true),
+            Field::new("label_env", DataType::Utf8, true),
+        ])),
+        vec![
+            Arc::new(TimestampMicrosecondArray::from(vec![2_000_000_i64])),
+            Arc::new(StringArray::from(vec![Some("after evolution")])),
+            Arc::new(StringArray::from(vec![Some("prod")])),
+        ],
+    )?;
+    let files = write_parquet_partitioned(&table, stream::iter(vec![Ok(batch_v1)]), None).await?;
+    table
+        .new_transaction(None)
+        .append_data(files)
+        .commit()
+        .await?;
+
+    // Old file null-fills the new column; new file carries the value.
+    let Tabular::Table(table) = catalog.clone().load_tabular(&ident).await? else {
+        panic!("expected a table on reload");
+    };
+    let provider = Arc::new(datafusion_iceberg::DataFusionTable::new(
+        Tabular::Table(table),
+        None,
+        None,
+        None,
+    )) as Arc<dyn datafusion::datasource::TableProvider>;
+    let ctx = SessionContext::new();
+    ctx.register_table("events", provider)?;
+
+    let rows = ctx
+        .sql("SELECT body FROM events WHERE label_env = 'prod'")
+        .await?
+        .collect()
+        .await?;
+    let matched: usize = rows.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(
+        matched, 1,
+        "filter on the evolved column matches the new row"
+    );
+
+    let rows = ctx
+        .sql("SELECT body FROM events WHERE label_env IS NULL")
+        .await?
+        .collect()
+        .await?;
+    let nulls: usize = rows.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(nulls, 1, "pre-evolution file should null-fill label_env");
+
+    Ok(())
+}
