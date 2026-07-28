@@ -28,7 +28,10 @@ use common::auth::TenantContextExtractor;
 use common::flight::transport::ServiceCapability;
 use datafusion::arrow::array::{Array, RecordBatch, StringArray, TimestampNanosecondArray};
 use futures::StreamExt;
-use loki_api::{LabelsResponse, LogEntry, QueryResponse, QueryResult, SeriesResponse, Stream};
+use loki_api::{
+    DetectedField, DetectedFieldsResponse, LabelsResponse, LogEntry, QueryResponse, QueryResult,
+    SeriesResponse, Stream,
+};
 use serde::Deserialize;
 
 pub fn router<S: RouterState>() -> Router<S> {
@@ -38,6 +41,7 @@ pub fn router<S: RouterState>() -> Router<S> {
         .route("/api/v1/labels", get(labels::<S>))
         .route("/api/v1/label/{name}/values", get(label_values::<S>))
         .route("/api/v1/series", get(series::<S>))
+        .route("/api/v1/detected_fields", get(detected_fields::<S>))
 }
 
 fn default_limit() -> u32 {
@@ -283,6 +287,66 @@ pub async fn series<S: RouterState>(
     Ok(axum::Json(SeriesResponse::success(series_from_batches(
         &batches,
     ))))
+}
+
+/// Query parameters for `/detected_fields`.
+#[derive(Debug, Default, Deserialize)]
+pub struct DetectedFieldsParams {
+    /// Range start (unix epoch ns, s, or RFC3339).
+    pub start: Option<String>,
+    /// Range end (unix epoch ns, s, or RFC3339).
+    pub end: Option<String>,
+    /// Optional stream selector restricting the sample.
+    pub query: Option<String>,
+    /// Maximum fields returned.
+    #[serde(default = "default_limit")]
+    pub limit: u32,
+}
+
+/// GET /loki/api/v1/detected_fields — discover the attribute fields
+/// present in a window, with inferred type and approximate cardinality.
+/// Backs faceted exploration UIs (e.g. Grafana Logs Drilldown); fields
+/// need no prior declaration or indexing.
+#[tracing::instrument(
+    skip(state, tenant_ctx, params),
+    fields(
+        tenant_id = %tenant_ctx.0.tenant_id,
+        dataset_id = %tenant_ctx.0.dataset_id
+    )
+)]
+pub async fn detected_fields<S: RouterState>(
+    State(state): State<S>,
+    tenant_ctx: TenantContextExtractor,
+    Query(params): Query<DetectedFieldsParams>,
+) -> Result<axum::Json<DetectedFieldsResponse>, StatusCode> {
+    let meta = MetadataParams {
+        start: params.start.clone(),
+        end: params.end.clone(),
+        matcher: None,
+        query: None,
+    };
+    let (start, end) = metadata_window(&meta);
+    let payload = serde_json::json!({
+        "query": params.query,
+        "start": start,
+        "end": end,
+        "limit": params.limit,
+    });
+    let ticket = format!(
+        "query_logs_detected_fields:{}:{}:{payload}",
+        tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
+    );
+    let batches = execute_ticket(&state, ticket).await?;
+    let mut fields: Vec<DetectedField> = Vec::new();
+    for value in string_column(&batches, "fields") {
+        if let Ok(parsed) = serde_json::from_str::<Vec<DetectedField>>(&value) {
+            fields.extend(parsed);
+        }
+    }
+    Ok(axum::Json(DetectedFieldsResponse {
+        fields,
+        limit: params.limit,
+    }))
 }
 
 // ---- execution + conversion ----

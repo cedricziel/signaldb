@@ -200,6 +200,32 @@ impl SeriesResponse {
     }
 }
 
+/// One discovered field in a `/loki/api/v1/detected_fields` response.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DetectedField {
+    /// The attribute/field name.
+    pub label: String,
+    /// Inferred type: `string`, `int`, `float`, or `boolean`.
+    #[serde(rename = "type")]
+    pub field_type: String,
+    /// Approximate distinct-value count over the sampled window.
+    pub cardinality: u64,
+    /// Parsers needed to extract the field from the line. SignalDB
+    /// attributes are the structured-metadata analog, so this is empty.
+    #[serde(default)]
+    pub parsers: Vec<String>,
+}
+
+/// Response of `/loki/api/v1/detected_fields`. Loki returns the bare
+/// `fields` + `limit` object (no `status` wrapper).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DetectedFieldsResponse {
+    #[serde(default)]
+    pub fields: Vec<DetectedField>,
+    /// The field limit the response was truncated to.
+    pub limit: u32,
+}
+
 /// Query execution statistics (`data.stats`).
 ///
 /// SignalDB populates the summary block only; Loki's full statistics

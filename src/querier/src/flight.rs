@@ -33,8 +33,8 @@ use crate::query::profile::{
 };
 use crate::query::trace::TraceService;
 use crate::query::{
-    FindTraceByIdParams, LogQueryParams, LogSeriesParams, MetricQueryParams, MetricSeriesParams,
-    PromQlQueryParams, SearchQueryParams,
+    DetectedFieldsParams, FindTraceByIdParams, LogQueryParams, LogSeriesParams, MetricQueryParams,
+    MetricSeriesParams, PromQlQueryParams, SearchQueryParams,
 };
 
 /// Queries the Iceberg catalog directly, bypassing `datafusion_iceberg`'s
@@ -237,6 +237,11 @@ enum TicketRequest {
         tenant_slug: String,
         dataset_slug: String,
         params: LogSeriesParams,
+    },
+    QueryLogsDetectedFields {
+        tenant_slug: String,
+        dataset_slug: String,
+        params: DetectedFieldsParams,
     },
     QueryMetric {
         tenant_slug: String,
@@ -802,6 +807,27 @@ impl QuerierFlightService {
             ));
         }
 
+        // Field discovery:
+        // query_logs_detected_fields:{tenant}:{dataset}:{json DetectedFieldsParams}
+        if let Some(remainder) = ticket_content.strip_prefix("query_logs_detected_fields:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                let params: DetectedFieldsParams = serde_json::from_str(parts[2]).map_err(|e| {
+                    Status::invalid_argument(format!(
+                        "Invalid query_logs_detected_fields parameters: {e}"
+                    ))
+                })?;
+                return Ok(TicketRequest::QueryLogsDetectedFields {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    params,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid query_logs_detected_fields ticket format. Expected: query_logs_detected_fields:tenant:dataset:{json}",
+            ));
+        }
+
         // LogQL metric query: query_metric:{tenant}:{dataset}:{json MetricQueryParams}
         if let Some(remainder) = ticket_content.strip_prefix("query_metric:") {
             let parts: Vec<&str> = remainder.splitn(3, ':').collect();
@@ -1191,6 +1217,7 @@ impl FlightService for QuerierFlightService {
                     | TicketRequest::QueryLogsLabels { tenant_slug, .. }
                     | TicketRequest::QueryLogsLabelValues { tenant_slug, .. }
                     | TicketRequest::QueryLogsSeries { tenant_slug, .. }
+                    | TicketRequest::QueryLogsDetectedFields { tenant_slug, .. }
                     | TicketRequest::QueryMetric { tenant_slug, .. }
                     | TicketRequest::QueryPromql { tenant_slug, .. }
                     | TicketRequest::QueryMetricLabels { tenant_slug, .. }
@@ -1227,6 +1254,7 @@ impl FlightService for QuerierFlightService {
                 TicketRequest::QueryLogsLabels { .. } => "query_logs_labels",
                 TicketRequest::QueryLogsLabelValues { .. } => "query_logs_label_values",
                 TicketRequest::QueryLogsSeries { .. } => "query_logs_series",
+                TicketRequest::QueryLogsDetectedFields { .. } => "query_logs_detected_fields",
                 TicketRequest::QueryMetric { .. } => "query_metric",
                 TicketRequest::QueryPromql { .. } => "query_promql",
                 TicketRequest::QueryMetricLabels { .. } => "query_metric_labels",
@@ -1258,6 +1286,7 @@ impl FlightService for QuerierFlightService {
                     | TicketRequest::QueryLogsLabels { tenant_slug, .. }
                     | TicketRequest::QueryLogsLabelValues { tenant_slug, .. }
                     | TicketRequest::QueryLogsSeries { tenant_slug, .. }
+                    | TicketRequest::QueryLogsDetectedFields { tenant_slug, .. }
                     | TicketRequest::QueryMetric { tenant_slug, .. }
                     | TicketRequest::QueryPromql { tenant_slug, .. }
                     | TicketRequest::QueryMetricLabels { tenant_slug, .. }
@@ -1574,6 +1603,18 @@ impl FlightService for QuerierFlightService {
                             .await
                             .map_err(querier_error_to_status)?;
                         vec![json_to_batch("series", &series)?]
+                    }
+                    TicketRequest::QueryLogsDetectedFields {
+                        tenant_slug,
+                        dataset_slug,
+                        params,
+                    } => {
+                        let fields = self
+                            .logs_service
+                            .detected_fields(&params, &tenant_slug, &dataset_slug)
+                            .await
+                            .map_err(querier_error_to_status)?;
+                        vec![json_to_batch("fields", &fields)?]
                     }
                     TicketRequest::QueryMetric {
                         tenant_slug,
@@ -2173,6 +2214,17 @@ mod tests {
                 assert_eq!((params.start, params.end), (10, 20));
             }
             other => panic!("expected QueryLogsSeries, got {other:?}"),
+        }
+
+        let detected =
+            r#"query_logs_detected_fields:acme:prod:{"query":null,"start":10,"end":20,"limit":50}"#;
+        match service.parse_ticket(detected).unwrap() {
+            TicketRequest::QueryLogsDetectedFields { params, .. } => {
+                assert_eq!(params.query, None);
+                assert_eq!((params.start, params.end), (10, 20));
+                assert_eq!(params.limit, 50);
+            }
+            other => panic!("expected QueryLogsDetectedFields, got {other:?}"),
         }
     }
 

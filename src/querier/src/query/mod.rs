@@ -76,6 +76,34 @@ pub struct LogSeriesParams {
     pub end: i64,
 }
 
+/// Parameters carried in the `query_logs_detected_fields` Flight ticket.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DetectedFieldsParams {
+    /// Optional stream selector restricting the sample, e.g.
+    /// `{service_name="api"}`. Empty/absent samples everything in range.
+    #[serde(default)]
+    pub query: Option<String>,
+    /// Inclusive range start, unix epoch nanoseconds.
+    pub start: i64,
+    /// Inclusive range end, unix epoch nanoseconds.
+    pub end: i64,
+    /// Maximum number of fields to return.
+    pub limit: u32,
+}
+
+/// One discovered attribute field: its name, inferred type, and an
+/// approximate distinct-value count over the sampled window.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DetectedField {
+    pub label: String,
+    #[serde(rename = "type")]
+    pub field_type: String,
+    pub cardinality: u64,
+    /// Parsers Loki would need to extract the field; our attributes are
+    /// the structured-metadata analog, so this stays empty.
+    pub parsers: Vec<String>,
+}
+
 /// Parameters for single-trace lookup.
 #[derive(Debug)]
 pub struct FindTraceByIdParams {
