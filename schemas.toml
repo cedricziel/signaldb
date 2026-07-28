@@ -26,8 +26,8 @@ fields = [
     { name = "status_code", type = "string", required = true },
     { name = "status_message", type = "string", required = false },
     { name = "is_root", type = "boolean", required = true },
-    { name = "attributes_json", type = "string", required = false },
-    { name = "resource_json", type = "string", required = false },
+    { name = "attributes_json", type = "map<string,string>", required = false },
+    { name = "resource_json", type = "map<string,string>", required = false },
     { name = "events", type = "list<struct>", required = false },
     { name = "links", type = "list<struct>", required = false },
     { name = "trace_state", type = "string", required = false },
@@ -35,7 +35,7 @@ fields = [
     { name = "scope_name", type = "string", required = false },
     { name = "scope_version", type = "string", required = false },
     { name = "scope_schema_url", type = "string", required = false },
-    { name = "scope_attributes", type = "string", required = false },
+    { name = "scope_attributes", type = "map<string,string>", required = false },
 ]
 
 [traces.v2]

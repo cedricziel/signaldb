@@ -26,7 +26,7 @@ use datafusion::functions::string::expr_fn::contains;
 use datafusion::logical_expr::{Expr, col, lit};
 
 use super::error::QuerierError;
-use super::logql::MaterializedColumns;
+use super::logql::{AttrContext, MaterializedColumns};
 
 /// Where a filter condition applies.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,8 +63,11 @@ pub enum FilterValue {
 impl Condition {
     /// Lower the condition to a DataFusion filter expression, routing an
     /// attribute key to its materialized `label_<key>` column (exact match)
-    /// when the table has one, else to the attribute-JSON substring match.
-    pub fn to_expr(&self, columns: &MaterializedColumns) -> Result<Expr, QuerierError> {
+    /// when the table has one; otherwise to per-key `get_field` extraction
+    /// on map-typed attribute tables, else the attribute-JSON substring
+    /// match (legacy tables).
+    pub fn to_expr(&self, ctx: &AttrContext) -> Result<Expr, QuerierError> {
+        let columns: &MaterializedColumns = &ctx.materialized;
         match &self.selector {
             Selector::ServiceName => Ok(col("service_name").eq(lit(self.string_value()?))),
             Selector::SpanName => Ok(col("span_name").eq(lit(self.string_value()?))),
@@ -91,6 +94,18 @@ impl Condition {
                     &self.value,
                 ))
             }
+            Selector::SpanAttribute(key) if ctx.map_attrs => {
+                Ok(map_attribute_expr("span_attributes", key, &self.value))
+            }
+            Selector::ResourceAttribute(key) if ctx.map_attrs => {
+                Ok(map_attribute_expr("resource_attributes", key, &self.value))
+            }
+            Selector::AnyAttribute(key) if ctx.map_attrs => Ok(map_attribute_expr(
+                "span_attributes",
+                key,
+                &self.value,
+            )
+            .or(map_attribute_expr("resource_attributes", key, &self.value))),
             Selector::SpanAttribute(key) => Ok(attribute_expr("span_attributes", key, &self.value)),
             Selector::ResourceAttribute(key) => {
                 Ok(attribute_expr("resource_attributes", key, &self.value))
@@ -120,6 +135,19 @@ fn materialized_expr(column: &str, value: &FilterValue) -> Expr {
         FilterValue::Bool(b) => b.to_string(),
     };
     col(column).eq(lit(v))
+}
+
+/// Exact per-key equality on a map-typed attribute column. Values are
+/// stored as strings (numbers/bools rendered bare at ingest), so every
+/// filter value compares by its string form.
+fn map_attribute_expr(column: &str, key: &str, value: &FilterValue) -> Expr {
+    use datafusion::functions::core::expr_fn::get_field;
+    let v = match value {
+        FilterValue::String(s) => s.clone(),
+        FilterValue::Number(n) => n.clone(),
+        FilterValue::Bool(b) => b.to_string(),
+    };
+    get_field(col(column), key).eq(lit(v))
 }
 
 /// Match the serialized `"key":value` fragment inside a flat-JSON
@@ -434,7 +462,7 @@ mod tests {
             selector: Selector::Status,
             value: FilterValue::String("error".to_string()),
         };
-        let expr = condition.to_expr(&MaterializedColumns::new()).unwrap();
+        let expr = condition.to_expr(&AttrContext::default()).unwrap();
         assert!(format!("{expr:?}").contains("Error"));
 
         let bad = Condition {
@@ -442,7 +470,7 @@ mod tests {
             value: FilterValue::String("bogus".to_string()),
         };
         assert!(matches!(
-            bad.to_expr(&MaterializedColumns::new()),
+            bad.to_expr(&AttrContext::default()),
             Err(QuerierError::InvalidInput(_))
         ));
     }
@@ -453,10 +481,7 @@ mod tests {
             selector: Selector::SpanAttribute("http.method".to_string()),
             value: FilterValue::String("GET".to_string()),
         };
-        let rendered = format!(
-            "{:?}",
-            condition.to_expr(&MaterializedColumns::new()).unwrap()
-        );
+        let rendered = format!("{:?}", condition.to_expr(&AttrContext::default()).unwrap());
         assert!(rendered.contains(r#""http.method":"GET""#), "{rendered}");
 
         // Numbers match both bare (real OTLP int) and quoted forms.
@@ -464,15 +489,35 @@ mod tests {
             selector: Selector::SpanAttribute("http.status_code".to_string()),
             value: FilterValue::Number("200".to_string()),
         };
-        let rendered = format!(
-            "{:?}",
-            numeric.to_expr(&MaterializedColumns::new()).unwrap()
-        );
+        let rendered = format!("{:?}", numeric.to_expr(&AttrContext::default()).unwrap());
         assert!(rendered.contains(r#""http.status_code":200"#), "{rendered}");
         assert!(
             rendered.contains(r#""http.status_code":"200""#),
             "{rendered}"
         );
+    }
+
+    #[test]
+    fn map_attribute_tables_use_get_field_extraction() {
+        let ctx = AttrContext {
+            materialized: MaterializedColumns::new(),
+            map_attrs: true,
+        };
+        let condition = Condition {
+            selector: Selector::AnyAttribute("namespace".to_string()),
+            value: FilterValue::String("prod".to_string()),
+        };
+        let rendered = format!("{:?}", condition.to_expr(&ctx).unwrap());
+        assert!(rendered.contains("GetFieldFunc"), "{rendered}");
+        assert!(!rendered.contains("ContainsFunc"), "{rendered}");
+
+        // Numbers compare by their bare string form (ingest rendering).
+        let numeric = Condition {
+            selector: Selector::SpanAttribute("http.status_code".to_string()),
+            value: FilterValue::Number("200".to_string()),
+        };
+        let rendered = format!("{:?}", numeric.to_expr(&ctx).unwrap());
+        assert!(rendered.contains(r#"Utf8("200")"#), "{rendered}");
     }
 
     #[test]
@@ -482,15 +527,15 @@ mod tests {
             value: FilterValue::String("prod".to_string()),
         };
         // Without the column: JSON substring across both attribute columns.
-        let json = format!(
-            "{:?}",
-            condition.to_expr(&MaterializedColumns::new()).unwrap()
-        );
+        let json = format!("{:?}", condition.to_expr(&AttrContext::default()).unwrap());
         assert!(json.contains(r#""namespace":"prod""#), "{json}");
 
         // With the column: exact equality on `label_namespace`.
-        let cols: MaterializedColumns = ["label_namespace".to_string()].into_iter().collect();
-        let rendered = format!("{:?}", condition.to_expr(&cols).unwrap());
+        let ctx = AttrContext {
+            materialized: ["label_namespace".to_string()].into_iter().collect(),
+            map_attrs: false,
+        };
+        let rendered = format!("{:?}", condition.to_expr(&ctx).unwrap());
         assert!(rendered.contains("label_namespace"), "{rendered}");
         assert!(!rendered.contains("span_attributes"), "{rendered}");
     }

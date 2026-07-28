@@ -439,15 +439,24 @@ impl TraceService {
         if let Some(tags) = query.tags.as_deref().filter(|s| !s.trim().is_empty()) {
             conditions.extend(search_filter::parse_tags(tags)?);
         }
-        let materialized: super::logql::MaterializedColumns = df
-            .schema()
-            .fields()
-            .iter()
-            .map(|f| f.name().to_string())
-            .filter(|n| n.starts_with("label_"))
-            .collect();
+        let attr_ctx = super::logql::AttrContext {
+            materialized: df
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| f.name().to_string())
+                .filter(|n| n.starts_with("label_"))
+                .collect(),
+            map_attrs: df.schema().fields().iter().any(|f| {
+                f.name() == "span_attributes"
+                    && matches!(
+                        f.data_type(),
+                        datafusion::arrow::datatypes::DataType::Map(_, _)
+                    )
+            }),
+        };
         for condition in &conditions {
-            df = df.filter(condition.to_expr(&materialized)?).map_err(|e| {
+            df = df.filter(condition.to_expr(&attr_ctx)?).map_err(|e| {
                 log::error!("Failed to apply search filter {condition:?}: {e}");
                 QuerierError::QueryFailed(e)
             })?;

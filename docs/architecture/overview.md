@@ -57,8 +57,8 @@ Apache Iceberg provides ACID transactions and structured metadata management:
 - **Materialized labels**: configured attribute keys promoted to dedicated
   columns for exact querying across all four signal types (see
   [storage layout](storage-layout.md#materialized-labels))
-- **Typed attribute maps**: new logs tables store attributes as
-  `Map<String,String>` columns, so any attribute is exactly queryable
+- **Typed attribute maps**: new logs and traces tables store attributes
+  as `Map<String,String>` columns, so any attribute is exactly queryable
   (legacy tables keep JSON strings with per-table fallback)
 
 ### 5. Columnar Storage
