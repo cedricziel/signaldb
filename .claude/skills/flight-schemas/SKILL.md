@@ -34,7 +34,7 @@ The wire format and storage format differ intentionally. Writer applies `transfo
 |--------|-------------------|---------------------|
 | Span name | `name` | `span_name` |
 | Duration | `duration_nano` (UInt64) | `duration_nanos` (Int64) |
-| Attributes | `attributes_json` | `span_attributes` |
+| Attributes | `attributes_json` | `span_attributes` (Map on new tables; JSON string legacy) |
 | Resource | `resource_json` | `resource_attributes` |
 | Time fields | UInt64 (nanos) | Long/Int64 (nanos) |
 | Events/Links | `List<Struct>` (nested Arrow) | `String` (JSON) |
