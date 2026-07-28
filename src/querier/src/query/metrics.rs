@@ -28,12 +28,14 @@ use datafusion::logical_expr::{Expr, SortExpr, cast, col, lit, not};
 use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
+use super::logql::MaterializedColumns;
 use super::promql::{
     ArithOp, AtSpec, CalendarFn, CmpOp, Grouping, HistogramFn, LabelMatch, LabelOp, LogicalOp,
     MatchKind, MetricAgg, MetricPlan, QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_promql,
     plan_query,
 };
 use super::{error::QuerierError, table_ref::build_table_reference};
+use common::schema::materialized_column_name;
 
 /// The metrics tables a PromQL query scans (gauge + sum cover counters
 /// and gauges; histograms are handled separately with histogram_quantile).
@@ -1996,9 +1998,18 @@ fn apply_filters(
     start: i64,
     end: i64,
 ) -> Result<DataFrame, QuerierError> {
+    // Materialized `label_<key>` columns present in this metrics table, so
+    // label matchers on them are exact instead of JSON substring.
+    let materialized: MaterializedColumns = df
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.name().to_string())
+        .filter(|n| n.starts_with("label_"))
+        .collect();
     let mut predicate = col("metric_name").eq(lit(plan.metric_name.clone()));
     for m in &plan.matchers {
-        predicate = predicate.and(matcher_expr(m)?);
+        predicate = predicate.and(matcher_expr(m, &materialized)?);
     }
     df.filter(
         col("timestamp")
@@ -2011,7 +2022,24 @@ fn apply_filters(
 
 /// Lower one label matcher to a filter expression, mapping well-known
 /// labels to columns and others to the attribute JSON.
-fn matcher_expr(m: &LabelMatch) -> Result<Expr, QuerierError> {
+fn matcher_expr(m: &LabelMatch, materialized: &MaterializedColumns) -> Result<Expr, QuerierError> {
+    // A well-known or materialized label matches its dedicated column
+    // exactly (and supports regex); other labels fall back to the JSON
+    // substring match. A materialized column is nullable, so `!=`/`!~` also
+    // keeps rows where the label is absent.
+    let column_match = |column: String| match m.op {
+        MatchKind::Eq => col(&column).eq(lit(m.value.clone())),
+        MatchKind::Neq => col(&column)
+            .clone()
+            .is_null()
+            .or(col(&column).not_eq(lit(m.value.clone()))),
+        MatchKind::Re => regexp_like(col(&column), lit(m.value.clone()), None),
+        MatchKind::Nre => col(&column).clone().is_null().or(not(regexp_like(
+            col(&column),
+            lit(m.value.clone()),
+            None,
+        ))),
+    };
     match column_for_label(&m.name) {
         Some(column) => Ok(match m.op {
             MatchKind::Eq => col(column).eq(lit(m.value.clone())),
@@ -2019,6 +2047,9 @@ fn matcher_expr(m: &LabelMatch) -> Result<Expr, QuerierError> {
             MatchKind::Re => regexp_like(col(column), lit(m.value.clone()), None),
             MatchKind::Nre => not(regexp_like(col(column), lit(m.value.clone()), None)),
         }),
+        None if materialized.contains(&materialized_column_name(&m.name)) => {
+            Ok(column_match(materialized_column_name(&m.name)))
+        }
         None => {
             let fragment = attribute_fragment(&m.name, &m.value);
             let present = contains(col(LOG_ATTRIBUTES), lit(fragment.clone()))
@@ -2518,6 +2549,24 @@ mod tests {
     use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
     use datafusion::arrow::datatypes::{Field, Schema};
     use datafusion::catalog::memory::MemTable;
+
+    #[test]
+    fn matcher_routes_materialized_label_to_column() {
+        use std::collections::HashSet;
+        let m = LabelMatch {
+            name: "namespace".to_string(),
+            op: MatchKind::Eq,
+            value: "prod".to_string(),
+        };
+        // No materialized column → attribute-JSON substring match.
+        let json = format!("{:?}", matcher_expr(&m, &HashSet::new()).unwrap());
+        assert!(json.contains(r#""namespace":"prod""#), "{json}");
+        // With the column → exact equality on `label_namespace`.
+        let cols: HashSet<String> = ["label_namespace".to_string()].into_iter().collect();
+        let rendered = format!("{:?}", matcher_expr(&m, &cols).unwrap());
+        assert!(rendered.contains("label_namespace"), "{rendered}");
+        assert!(!rendered.contains("attributes"), "{rendered}");
+    }
     use datafusion::catalog::{
         CatalogProvider, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider,
     };

@@ -128,7 +128,7 @@ fn materialized_labels_for(signal: &str) -> Vec<String> {
 /// Create Iceberg schema for metrics gauge table
 /// Based on ClickHouse metrics_gauge_table.sql schema but adapted for Iceberg
 pub fn create_metrics_gauge_schema() -> Result<Schema> {
-    let fields = vec![
+    let mut fields = vec![
         // Timing
         required_field(1, "timestamp", PrimitiveType::Timestamp),
         optional_field(2, "start_timestamp", PrimitiveType::Timestamp),
@@ -156,6 +156,7 @@ pub fn create_metrics_gauge_schema() -> Result<Schema> {
         required_field(18, "date_day", PrimitiveType::Date), // Partition key
         required_field(19, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
+    append_materialized_label_fields(&mut fields, &materialized_labels_for("metrics"));
 
     Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
@@ -163,7 +164,7 @@ pub fn create_metrics_gauge_schema() -> Result<Schema> {
 /// Create Iceberg schema for metrics sum table
 /// Based on ClickHouse metrics_sum_table.sql schema but adapted for Iceberg
 pub fn create_metrics_sum_schema() -> Result<Schema> {
-    let fields = vec![
+    let mut fields = vec![
         // Timing
         required_field(1, "timestamp", PrimitiveType::Timestamp),
         optional_field(2, "start_timestamp", PrimitiveType::Timestamp),
@@ -193,6 +194,7 @@ pub fn create_metrics_sum_schema() -> Result<Schema> {
         required_field(20, "date_day", PrimitiveType::Date), // Partition key
         required_field(21, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
+    append_materialized_label_fields(&mut fields, &materialized_labels_for("metrics"));
 
     Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
@@ -200,7 +202,7 @@ pub fn create_metrics_sum_schema() -> Result<Schema> {
 /// Create Iceberg schema for metrics histogram table
 /// Based on ClickHouse metrics_histogram_table.sql schema but adapted for Iceberg
 pub fn create_metrics_histogram_schema() -> Result<Schema> {
-    let fields = vec![
+    let mut fields = vec![
         // Timing
         required_field(1, "timestamp", PrimitiveType::Timestamp),
         optional_field(2, "start_timestamp", PrimitiveType::Timestamp),
@@ -234,6 +236,7 @@ pub fn create_metrics_histogram_schema() -> Result<Schema> {
         required_field(24, "date_day", PrimitiveType::Date), // Partition key
         required_field(25, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
+    append_materialized_label_fields(&mut fields, &materialized_labels_for("metrics"));
 
     Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
@@ -241,7 +244,7 @@ pub fn create_metrics_histogram_schema() -> Result<Schema> {
 /// Create Iceberg schema for metrics exponential histogram table
 /// Similar to histogram but with exponential bucketing for better precision
 pub fn create_metrics_exponential_histogram_schema() -> Result<Schema> {
-    let fields = vec![
+    let mut fields = vec![
         // Timing
         required_field(1, "timestamp", PrimitiveType::Timestamp),
         optional_field(2, "start_timestamp", PrimitiveType::Timestamp),
@@ -280,6 +283,7 @@ pub fn create_metrics_exponential_histogram_schema() -> Result<Schema> {
         required_field(29, "date_day", PrimitiveType::Date), // Partition key
         required_field(30, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
+    append_materialized_label_fields(&mut fields, &materialized_labels_for("metrics"));
 
     Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
@@ -287,7 +291,7 @@ pub fn create_metrics_exponential_histogram_schema() -> Result<Schema> {
 /// Create Iceberg schema for metrics summary table
 /// Stores quantile values for summary metrics
 pub fn create_metrics_summary_schema() -> Result<Schema> {
-    let fields = vec![
+    let mut fields = vec![
         // Timing
         required_field(1, "timestamp", PrimitiveType::Timestamp),
         optional_field(2, "start_timestamp", PrimitiveType::Timestamp),
@@ -317,6 +321,7 @@ pub fn create_metrics_summary_schema() -> Result<Schema> {
         required_field(20, "date_day", PrimitiveType::Date), // Partition key
         required_field(21, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
+    append_materialized_label_fields(&mut fields, &materialized_labels_for("metrics"));
 
     Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
