@@ -1969,7 +1969,12 @@ pub fn transform_profiles_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatc
         new_columns.push(column);
     }
 
-    RecordBatch::try_new(schema, new_columns)
+    let (label_fields, label_columns) =
+        materialized_label_columns(&batch, num_rows, &materialized_labels_for("profiles"))?;
+    let out_schema =
+        extend_schema_with_labels(schema, label_fields, &mut new_columns, label_columns);
+
+    RecordBatch::try_new(out_schema, new_columns)
         .map_err(|e| anyhow!("Failed to create transformed profiles batch: {e}"))
 }
 

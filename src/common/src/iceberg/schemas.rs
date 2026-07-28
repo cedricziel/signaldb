@@ -33,6 +33,23 @@ fn optional_field(id: i32, name: &str, prim: PrimitiveType) -> StructField {
     }
 }
 
+/// Append an optional `label_<key>` string column per configured
+/// materialized label to a hand-built (Rust) schema's field list, with IDs
+/// continuing after the existing fields. Deduplicates and skips names that
+/// collide with an existing column. Used by the metrics and profiles
+/// schemas, whose fields are defined in code rather than `schemas.toml`.
+fn append_materialized_label_fields(fields: &mut Vec<StructField>, labels: &[String]) {
+    let mut next_id = fields.iter().map(|f| f.id).max().unwrap_or(0) + 1;
+    for label in labels {
+        let name = crate::schema::materialized_column_name(label);
+        if fields.iter().any(|f| f.name == name) {
+            continue;
+        }
+        fields.push(optional_field(next_id, &name, PrimitiveType::String));
+        next_id += 1;
+    }
+}
+
 /// Create an hour partition spec for a schema, partitioning on the given source field.
 /// Uses the Iceberg convention: partition field_id = 1000 + source_id.
 fn create_hour_partition_spec(
@@ -310,7 +327,7 @@ pub fn create_metrics_summary_schema() -> Result<Schema> {
 /// resolved at ingest. Identifiers (profile_id, trace_id, span_id) are
 /// stored as hex strings to stay joinable with the traces and logs tables.
 pub fn create_profiles_schema() -> Result<Schema> {
-    let fields = vec![
+    let mut fields = vec![
         // Identity and timing
         required_field(1, "profile_id", PrimitiveType::String), // hex encoded
         required_field(2, "timestamp", PrimitiveType::Timestamp),
@@ -338,6 +355,7 @@ pub fn create_profiles_schema() -> Result<Schema> {
         required_field(17, "date_day", PrimitiveType::Date), // Partition key
         required_field(18, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
+    append_materialized_label_fields(&mut fields, &materialized_labels_for("profiles"));
 
     Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
@@ -495,6 +513,28 @@ mod tests {
     /// Helper: find a field by name in a schema
     fn has_field(schema: &Schema, name: &str) -> bool {
         schema.fields().iter().any(|f| f.name == name)
+    }
+
+    #[test]
+    fn append_materialized_label_fields_adds_optional_columns() {
+        let mut fields = vec![
+            required_field(1, "timestamp", PrimitiveType::Timestamp),
+            optional_field(2, "attributes", PrimitiveType::String),
+        ];
+        append_materialized_label_fields(
+            &mut fields,
+            &[
+                "namespace".to_string(),
+                "http.method".to_string(),
+                "namespace".to_string(),
+            ],
+        );
+        // 2 base + 2 unique labels (duplicate namespace collapsed).
+        assert_eq!(fields.len(), 4);
+        let ns = fields.iter().find(|f| f.name == "label_namespace").unwrap();
+        assert!(!ns.required);
+        assert_eq!(ns.id, 3); // IDs continue after the base fields
+        assert!(fields.iter().any(|f| f.name == "label_http_method"));
     }
 
     #[test]
