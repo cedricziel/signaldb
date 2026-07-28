@@ -33,10 +33,9 @@ struct Cli {
     #[arg(
         long,
         env = "ACCEPTOR_WAL_DIR",
-        help = "WAL directory path",
-        default_value = ".wal/acceptor"
+        help = "WAL directory path (overrides [wal].wal_dir + \"/acceptor\"; default: .data/wal/acceptor)"
     )]
-    wal_dir: PathBuf,
+    wal_dir: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -114,7 +113,13 @@ async fn main() -> Result<()> {
     let advertise_addr =
         std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| grpc_addr.to_string());
 
-    let resources = init_acceptor_resources(config.clone(), advertise_addr, cli.wal_dir.clone())
+    // WAL directory: --wal-dir / ACCEPTOR_WAL_DIR override wins, otherwise
+    // [wal].wal_dir from the configuration with the service suffix appended.
+    let wal_dir = config
+        .wal
+        .wal_dir_for_service("acceptor", cli.wal_dir.clone());
+
+    let resources = init_acceptor_resources(config.clone(), advertise_addr, wal_dir)
         .await
         .context("Failed to initialize acceptor resources")?;
 

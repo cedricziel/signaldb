@@ -109,8 +109,11 @@ pub struct WalConfig {
 }
 ```
 
-Note: `WalConfig::default()` uses `.wal` as the base directory; the TOML-level
-`[wal] wal_dir` (see the `configuration` skill) is what sets `.data/wal` in dev.
+Note: the runtime `WalConfig::default()` uses `.wal` as the base directory, but
+the services resolve their WAL directory from the TOML-level `[wal] wal_dir`
+(see the `configuration` skill): acceptor `{wal_dir}/acceptor`, writer
+`{wal_dir}/writer` (default `.data/wal/{service}`), overridable per service via
+`ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR`.
 
 ### Segment Lifecycle
 1. **Write**: Append to current segment's `.log` and `.data`

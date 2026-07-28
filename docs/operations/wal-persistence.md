@@ -33,21 +33,30 @@ OTLP Client → Acceptor → WAL (Disk) → Writer → Parquet Storage
 
 ### Service WAL Usage
 
-- **Acceptor Service**: Uses WAL at `ACCEPTOR_WAL_DIR` (default: `.wal/acceptor`)
-- **Writer Service**: Uses WAL at `WRITER_WAL_DIR` (default: `.wal/writer`)
+Each service keeps its WAL in a per-service subdirectory of the configured base directory (`[wal].wal_dir`, default `.data/wal`):
+
+- **Acceptor Service**: `{wal_dir}/acceptor` (default: `.data/wal/acceptor`), overridable via `ACCEPTOR_WAL_DIR`
+- **Writer Service**: `{wal_dir}/writer` (default: `.data/wal/writer`), overridable via `WRITER_WAL_DIR`
 
 ⚠️ **Production Warning**: Default WAL directories use local paths that **will not persist** across container or pod restarts. Configure persistent volumes for production deployments.
 
 ## Configuration
 
+The WAL base directory is set in the `[wal]` TOML section and applies to both services. Precedence per service:
+
+1. Service-specific override (`ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR` env var, or `--wal-dir` CLI flag) — points at the **full** service directory
+2. `[wal].wal_dir` from `signaldb.toml` (or `SIGNALDB__WAL__WAL_DIR`) with `/acceptor` or `/writer` appended
+3. Built-in default `.data/wal`, i.e. `.data/wal/acceptor` and `.data/wal/writer`
+
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ACCEPTOR_WAL_DIR` | `.wal/acceptor` | WAL directory for acceptor service |
-| `WRITER_WAL_DIR` | `.wal/writer` | WAL directory for writer service |
+| `ACCEPTOR_WAL_DIR` | `{wal_dir}/acceptor` | Full WAL directory for acceptor service (override) |
+| `WRITER_WAL_DIR` | `{wal_dir}/writer` | Full WAL directory for writer service (override) |
+| `SIGNALDB__WAL__WAL_DIR` | `.data/wal` | Base WAL directory (figment; equivalent to `[wal].wal_dir`) |
 
-These are the only WAL-related environment variables. Per-service WAL directories are set exclusively through them (there are no `[wal.acceptor]`/`[wal.writer]` TOML subsections).
+There are no `[wal.acceptor]`/`[wal.writer]` TOML subsections; the per-service overrides are env/CLI only.
 
 ### TOML Configuration
 
@@ -62,7 +71,7 @@ flush_interval = "30s"          # Flush every 30 seconds
 max_buffer_size_bytes = 134217728  # 128MB
 ```
 
-Note: segment size, buffer, and flush tuning currently ship as built-in defaults compiled into the services (64MB segments, 1000-entry buffer, 30s flush; the acceptor uses more aggressive per-signal settings for logs and metrics). The `[wal]` TOML block matches these defaults but the services do not yet read the tuning knobs from it — only the directory env vars above change runtime behavior.
+Note: segment size, buffer, and flush tuning currently ship as built-in defaults compiled into the services (64MB segments, 1000-entry buffer, 30s flush; the acceptor uses more aggressive per-signal settings for logs and metrics). The `[wal]` TOML block matches these defaults but the services do not yet read the tuning knobs from it — of the `[wal]` settings, only `wal_dir` changes runtime behavior today.
 
 ## Docker Compose Configuration
 

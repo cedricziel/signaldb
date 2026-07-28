@@ -205,6 +205,11 @@ ttl = "300s"
 
 [wal]
 # Write-Ahead Log configuration
+#
+# Base directory for WAL files. Each service appends its own suffix:
+# the acceptor writes to {wal_dir}/acceptor and the writer to
+# {wal_dir}/writer. The ACCEPTOR_WAL_DIR / WRITER_WAL_DIR environment
+# variables (full service directory) override this per service.
 wal_dir = ".data/wal"
 max_segment_size = 67108864           # 64MB
 max_buffer_entries = 1000

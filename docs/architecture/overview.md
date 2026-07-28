@@ -473,7 +473,9 @@ dsn = "file:///.data/storage"
 # dsn = "memory://"
 # dsn = "s3://bucket/prefix"
 
-# WAL configuration
+# WAL configuration. wal_dir is the base directory: the acceptor writes
+# to {wal_dir}/acceptor and the writer to {wal_dir}/writer, overridable
+# per service via ACCEPTOR_WAL_DIR / WRITER_WAL_DIR.
 [wal]
 wal_dir = ".data/wal"
 max_segment_size = 67108864          # 64 MB
