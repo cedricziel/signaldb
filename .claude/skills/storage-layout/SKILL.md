@@ -135,6 +135,10 @@ Note: `WalConfig::default()` uses `.wal` as the base directory; the TOML-level
 
 All tables partitioned by `Hour(timestamp)` as `timestamp_hour`.
 
+### Typed attribute maps
+
+New logs tables store `log_attributes`/`resource_attributes`/`scope_attributes` as Iceberg `Map<String,String>` — any attribute matches exactly (incl. regex/ordered) via `get_field` extraction; legacy tables keep JSON strings with the substring approximation. The querier detects the form per table (`attr_context_of`); labels/values/detected_fields read either form (`attr_documents`; `distinct()` skipped for maps — Arrow row format can't sort them). Epic #737 L1 (#730), logs first.
+
 ### Materialized labels
 
 `[schema.materialized_labels]` (per signal) promotes attribute keys from the `*_attributes` JSON into nullable `label_<key>` columns at ingest, so they match exactly / by regex / with ordered comparisons instead of the JSON substring approximation. Naming via `common::schema::materialized_column_name` (non-alphanumeric → `_`, `label_` prefix). Writer populates from resource→scope→record attributes (first non-null); `coerce_batch_to_schema` drops columns a table lacks and null-fills nullable ones it has. New tables carry the configured columns from creation (no schema evolution on the pinned iceberg-rust fork); older tables fall back to JSON. Querier routes via the column when the table schema has it (LogQL `attribute_expr`, trace search `Condition::to_expr`, PromQL `matcher_expr`). Implemented for all four signals: **logs** (exact/regex/ordered), **traces** (exact), **metrics** (exact/regex filter; grouping still `service_name`-only), **profiles** (columns populated; no attribute-filter query surface yet). Metrics/profiles schemas append via `append_materialized_label_fields` (Rust-built schemas); metrics transforms extract per exploded data point via `materialized_label_columns_from_json`. See `docs/architecture/storage-layout.md#materialized-labels`.

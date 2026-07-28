@@ -412,6 +412,17 @@ fn coerce_batch_to_schema(batch: RecordBatch, target: &ArrowSchemaRef) -> Result
         let column = batch.column(index);
         let column = if column.data_type() == field.data_type() {
             column.clone()
+        } else if matches!(
+            (column.data_type(), field.data_type()),
+            (
+                datafusion::arrow::datatypes::DataType::Utf8,
+                datafusion::arrow::datatypes::DataType::Map(_, _)
+            )
+        ) {
+            // Attribute maps: the transforms emit flat JSON objects as
+            // strings; tables with a map-typed attribute column get the
+            // parsed entries.
+            json_strings_to_map_array(column, field)?
         } else {
             datafusion::arrow::compute::cast(column, field.data_type()).map_err(|e| {
                 anyhow::anyhow!(
@@ -428,6 +439,63 @@ fn coerce_batch_to_schema(batch: RecordBatch, target: &ArrowSchemaRef) -> Result
         .map_err(|e| anyhow::anyhow!("Failed to build coerced batch: {e}"))
 }
 
+/// Parse a column of flat-JSON-object strings into a `MapArray` matching
+/// `target_field`'s entry/key/value naming. Null or unparseable documents
+/// become null map entries; non-string JSON values are rendered with
+/// `to_string` (matching the substring-match era's serialized forms).
+fn json_strings_to_map_array(
+    column: &dyn datafusion::arrow::array::Array,
+    target_field: &datafusion::arrow::datatypes::Field,
+) -> Result<std::sync::Arc<dyn datafusion::arrow::array::Array>> {
+    use datafusion::arrow::array::{Array, MapBuilder, MapFieldNames, StringArray, StringBuilder};
+    use datafusion::arrow::datatypes::DataType;
+
+    let strings = column
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| anyhow::anyhow!("expected a Utf8 column for map coercion"))?;
+    let DataType::Map(entry_field, _) = target_field.data_type() else {
+        return Err(anyhow::anyhow!("target field is not a map"));
+    };
+    let DataType::Struct(kv_fields) = entry_field.data_type() else {
+        return Err(anyhow::anyhow!("map entries are not a struct"));
+    };
+    let names = MapFieldNames {
+        entry: entry_field.name().clone(),
+        key: kv_fields[0].name().clone(),
+        value: kv_fields[1].name().clone(),
+    };
+    let mut builder = MapBuilder::new(Some(names), StringBuilder::new(), StringBuilder::new());
+    for i in 0..strings.len() {
+        if strings.is_null(i) {
+            builder.append(false)?;
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(strings.value(i)) {
+            Ok(serde_json::Value::Object(map)) => {
+                for (k, v) in map {
+                    builder.keys().append_value(k);
+                    match v {
+                        serde_json::Value::String(s) => builder.values().append_value(s),
+                        other => builder.values().append_value(other.to_string()),
+                    }
+                }
+                builder.append(true)?;
+            }
+            _ => builder.append(false)?,
+        }
+    }
+    let built = builder.finish();
+    // Align entry-field nullability with the target (MapBuilder's inner
+    // struct layout matches by construction; the cast is a no-op check).
+    if built.data_type() == target_field.data_type() {
+        Ok(std::sync::Arc::new(built))
+    } else {
+        datafusion::arrow::compute::cast(&built, target_field.data_type())
+            .map_err(|e| anyhow::anyhow!("map coercion type mismatch: {e}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,6 +504,49 @@ mod tests {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use object_store::memory::InMemory;
     use std::sync::Arc;
+
+    #[test]
+    fn coerce_converts_json_strings_to_map_column() {
+        use datafusion::arrow::array::MapArray;
+
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "log_attributes",
+                DataType::Utf8,
+                true,
+            )])),
+            vec![Arc::new(StringArray::from(vec![
+                Some(r#"{"namespace":"prod","port":8080}"#),
+                None,
+                Some("not-json"),
+            ]))],
+        )
+        .unwrap();
+
+        let target = Arc::new(Schema::new(vec![Field::new_map(
+            "log_attributes",
+            "key_value",
+            Field::new("key", DataType::Utf8, false),
+            Field::new("value", DataType::Utf8, true),
+            false,
+            true,
+        )]));
+
+        let out = coerce_batch_to_schema(batch, &target).unwrap();
+        let map = out
+            .column_by_name("log_attributes")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<MapArray>()
+            .unwrap();
+        // Row 0: two entries, non-string value rendered as text.
+        assert!(!map.is_null(0));
+        let entries = map.value(0);
+        assert_eq!(entries.len(), 2);
+        // Rows 1 (null) and 2 (unparseable) become null maps.
+        assert!(map.is_null(1));
+        assert!(map.is_null(2));
+    }
 
     #[test]
     fn coerce_fills_null_for_missing_nullable_column() {

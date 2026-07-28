@@ -78,7 +78,7 @@ Applied in Writer's Flight `do_put` handler before WAL write -- all WAL data is 
 
 ## Logs Table Schema (v1)
 
-Key fields: `timestamp` (partition), `trace_id`, `span_id`, `severity_text`, `severity_number`, `service_name`, `body`, `resource_attributes`, `log_attributes`, `date_day`, `hour`.
+Key fields: `timestamp` (partition), `trace_id`, `span_id`, `severity_text`, `severity_number`, `service_name`, `body`, `resource_attributes`, `log_attributes`, `date_day`, `hour`. On tables created since the typed-attribute change, `log_attributes`/`resource_attributes`/`scope_attributes` are Iceberg `Map<String,String>` (schemas.toml `map<string,string>`; nested key/value field IDs allocated after all top-level IDs); legacy tables have JSON strings. Transforms still emit JSON strings — `coerce_batch_to_schema` converts to `MapArray` (`json_strings_to_map_array`) when the table schema declares a map.
 
 Plus, when `[schema.materialized_labels].<signal>` is configured, a nullable `label_<key>` column per key. All four `transform_*_v1_to_iceberg` transforms append these via `extend_schema_with_labels` — value from resource→scope→record attributes, first non-null. Logs/traces/profiles use the batch-level `materialized_label_columns`; the 5 exploded metrics transforms use `materialized_label_columns_from_json` (per data point). Rust-built metrics/profiles schemas append columns via `append_materialized_label_fields`; TOML logs/traces via `to_iceberg_schema_with_labels`. Default empty ⇒ unchanged schema. See `docs/architecture/storage-layout.md#materialized-labels`.
 

@@ -35,7 +35,7 @@ use logql::{
     parse_selector,
 };
 
-use super::logql::{MaterializedColumns, log_query_filter_with_columns};
+use super::logql::{AttrContext, MaterializedColumns, log_query_filter_with_columns};
 use super::logql_metric::{
     Aggregate, ArithOp, LabelReplaceSpec, OuterAgg, ScalarOp, SortSpec, TopKSpec, plan_metric_query,
 };
@@ -150,7 +150,7 @@ impl LogsService {
         let direction = Direction::parse(params.direction.as_deref());
 
         let df = self.logs_table(tenant_slug, dataset_slug).await?;
-        let filter = log_query_filter_with_columns(&parsed, &materialized_columns_of(&df))?;
+        let filter = log_query_filter_with_columns(&parsed, &attr_context_of(&df))?;
         let df = shape_log_query(
             df,
             filter,
@@ -265,7 +265,7 @@ impl LogsService {
             Some(_) => SERIES_COLUMNS.iter().map(|c| c.to_string()).collect(),
         };
 
-        let filter = log_query_filter_with_columns(&plan.log_query, &materialized)?;
+        let filter = log_query_filter_with_columns(&plan.log_query, &attr_context_of(&df))?;
         df = apply_window(df, params.start, params.end)?;
         if let Some(filter) = filter {
             df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
@@ -375,12 +375,19 @@ impl LogsService {
         let mut labels: BTreeSet<String> = KNOWN_LABELS.iter().map(|s| s.to_string()).collect();
 
         let df = self.logs_table(tenant_slug, dataset_slug).await?;
+        let map_attrs = attr_context_of(&df).map_attrs;
         let df = apply_window(df, start, end)?;
-        let batches = df
+        let df = df
             .select_columns(&["log_attributes", "resource_attributes"])
-            .map_err(QuerierError::QueryFailed)?
-            .distinct()
-            .map_err(QuerierError::QueryFailed)?
+            .map_err(QuerierError::QueryFailed)?;
+        // Arrow's row format cannot sort Map columns, so the JSON-era
+        // `distinct()` dedup is skipped for map-typed attribute tables.
+        let df = if map_attrs {
+            df
+        } else {
+            df.distinct().map_err(QuerierError::QueryFailed)?
+        };
+        let batches = df
             .limit(0, Some(LABEL_SCAN_LIMIT))
             .map_err(QuerierError::QueryFailed)?
             .collect()
@@ -389,16 +396,8 @@ impl LogsService {
 
         for batch in &batches {
             for column in ["log_attributes", "resource_attributes"] {
-                let attrs = string_column(batch, column)?;
-                for i in 0..batch.num_rows() {
-                    if attrs.is_null(i) {
-                        continue;
-                    }
-                    if let Ok(serde_json::Value::Object(map)) =
-                        serde_json::from_str::<serde_json::Value>(attrs.value(i))
-                    {
-                        labels.extend(map.keys().cloned());
-                    }
+                for doc in attr_documents(batch, column)?.into_iter().flatten() {
+                    labels.extend(doc.into_keys());
                 }
             }
         }
@@ -422,6 +421,7 @@ impl LogsService {
         }
 
         let df = self.logs_table(tenant_slug, dataset_slug).await?;
+        let map_attrs = attr_context_of(&df).map_attrs;
         let df = apply_window(df, start, end)?;
 
         // Known labels are dedicated columns: distinct on the column.
@@ -438,11 +438,15 @@ impl LogsService {
         }
 
         // Otherwise pull the value out of the attribute documents.
-        let batches = df
+        let df = df
             .select_columns(&["log_attributes", "resource_attributes"])
-            .map_err(QuerierError::QueryFailed)?
-            .distinct()
-            .map_err(QuerierError::QueryFailed)?
+            .map_err(QuerierError::QueryFailed)?;
+        let df = if map_attrs {
+            df
+        } else {
+            df.distinct().map_err(QuerierError::QueryFailed)?
+        };
+        let batches = df
             .limit(0, Some(LABEL_SCAN_LIMIT))
             .map_err(QuerierError::QueryFailed)?
             .collect()
@@ -452,23 +456,9 @@ impl LogsService {
         let mut values = BTreeSet::new();
         for batch in &batches {
             for column in ["log_attributes", "resource_attributes"] {
-                let attrs = string_column(batch, column)?;
-                for i in 0..batch.num_rows() {
-                    if attrs.is_null(i) {
-                        continue;
-                    }
-                    if let Ok(serde_json::Value::Object(map)) =
-                        serde_json::from_str::<serde_json::Value>(attrs.value(i))
-                        && let Some(value) = map.get(label)
-                    {
-                        match value {
-                            serde_json::Value::String(s) => {
-                                values.insert(s.clone());
-                            }
-                            other => {
-                                values.insert(other.to_string());
-                            }
-                        }
+                for mut doc in attr_documents(batch, column)?.into_iter().flatten() {
+                    if let Some(value) = doc.remove(label) {
+                        values.insert(value);
                     }
                 }
             }
@@ -496,7 +486,7 @@ impl LogsService {
             .filter(|s| !s.is_empty())
         {
             let parsed = parse_query(q).map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
-            let filter = log_query_filter_with_columns(&parsed, &materialized_columns_of(&df))?;
+            let filter = log_query_filter_with_columns(&parsed, &attr_context_of(&df))?;
             if let Some(filter) = filter {
                 df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
             }
@@ -512,7 +502,8 @@ impl LogsService {
             .map_err(QuerierError::QueryFailed)?;
 
         // Per-key aggregate over the sample: distinct values (capped) and
-        // the JSON types observed.
+        // a type inferred by sniffing the rendered value strings — the
+        // same inference for JSON-string and map-typed attribute tables.
         #[derive(Default)]
         struct FieldAgg {
             values: BTreeSet<String>,
@@ -526,40 +517,18 @@ impl LogsService {
 
         for batch in &batches {
             for column in ["log_attributes", "resource_attributes"] {
-                let attrs = string_column(batch, column)?;
-                for i in 0..batch.num_rows() {
-                    if attrs.is_null(i) {
-                        continue;
-                    }
-                    let Ok(serde_json::Value::Object(map)) =
-                        serde_json::from_str::<serde_json::Value>(attrs.value(i))
-                    else {
-                        continue;
-                    };
-                    for (key, value) in map {
+                for doc in attr_documents(batch, column)?.into_iter().flatten() {
+                    for (key, rendered) in doc {
                         let entry = agg.entry(key).or_default();
-                        let rendered = match &value {
-                            serde_json::Value::String(s) => {
-                                entry.saw_string = true;
-                                s.clone()
-                            }
-                            serde_json::Value::Number(n) => {
-                                if n.is_i64() || n.is_u64() {
-                                    entry.saw_int = true;
-                                } else {
-                                    entry.saw_float = true;
-                                }
-                                n.to_string()
-                            }
-                            serde_json::Value::Bool(b) => {
-                                entry.saw_bool = true;
-                                b.to_string()
-                            }
-                            other => {
-                                entry.saw_string = true;
-                                other.to_string()
-                            }
-                        };
+                        if rendered == "true" || rendered == "false" {
+                            entry.saw_bool = true;
+                        } else if rendered.parse::<i64>().is_ok() {
+                            entry.saw_int = true;
+                        } else if rendered.parse::<f64>().is_ok() {
+                            entry.saw_float = true;
+                        } else {
+                            entry.saw_string = true;
+                        }
                         if entry.values.len() < VALUE_CAP {
                             entry.values.insert(rendered);
                         }
@@ -608,7 +577,7 @@ impl LogsService {
         };
 
         let mut df = self.logs_table(tenant_slug, dataset_slug).await?;
-        let filter = log_query_filter_with_columns(&query, &materialized_columns_of(&df))?;
+        let filter = log_query_filter_with_columns(&query, &attr_context_of(&df))?;
         df = apply_window(df, start, end)?;
         if let Some(filter) = filter {
             df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
@@ -679,6 +648,21 @@ fn materialized_columns_of(df: &DataFrame) -> MaterializedColumns {
         .map(|f| f.name().to_string())
         .filter(|n| n.starts_with("label_"))
         .collect()
+}
+
+/// The attribute-matching context for a logs table: its materialized
+/// `label_<key>` columns, and whether its attribute columns are typed maps
+/// (new tables) or JSON strings (legacy tables).
+fn attr_context_of(df: &DataFrame) -> AttrContext {
+    let map_attrs = df
+        .schema()
+        .fields()
+        .iter()
+        .any(|f| f.name() == "log_attributes" && matches!(f.data_type(), DataType::Map(_, _)));
+    AttrContext {
+        materialized: materialized_columns_of(df),
+        map_attrs,
+    }
 }
 
 fn apply_window(df: DataFrame, start: i64, end: i64) -> Result<DataFrame, QuerierError> {
@@ -1385,6 +1369,80 @@ fn distinct_non_empty(batches: &[RecordBatch], column: &str) -> Result<Vec<Strin
     Ok(values.into_iter().collect())
 }
 
+/// Read an attribute column's per-row documents as string key/value maps,
+/// handling both storage forms: legacy Utf8 columns holding flat JSON
+/// objects, and typed `Map<Utf8, Utf8>` columns (new tables). Null,
+/// unparseable, or non-object rows yield `None`.
+fn attr_documents(
+    batch: &RecordBatch,
+    name: &str,
+) -> Result<Vec<Option<BTreeMap<String, String>>>, QuerierError> {
+    use datafusion::arrow::array::MapArray;
+
+    let column = batch
+        .column_by_name(name)
+        .ok_or_else(|| QuerierError::InvalidInput(format!("missing column '{name}'")))?;
+
+    if let Some(map) = column.as_any().downcast_ref::<MapArray>() {
+        let mut out = Vec::with_capacity(map.len());
+        for i in 0..map.len() {
+            if map.is_null(i) {
+                out.push(None);
+                continue;
+            }
+            let entries = map.value(i);
+            let keys = entries
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    QuerierError::InvalidInput(format!("'{name}' map keys are not strings"))
+                })?;
+            let values = entries
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    QuerierError::InvalidInput(format!("'{name}' map values are not strings"))
+                })?;
+            let mut doc = BTreeMap::new();
+            for j in 0..entries.len() {
+                if !keys.is_null(j) && !values.is_null(j) {
+                    doc.insert(keys.value(j).to_string(), values.value(j).to_string());
+                }
+            }
+            out.push(Some(doc));
+        }
+        return Ok(out);
+    }
+
+    let attrs = string_column(batch, name)?;
+    let mut out = Vec::with_capacity(attrs.len());
+    for i in 0..attrs.len() {
+        if attrs.is_null(i) {
+            out.push(None);
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(attrs.value(i)) {
+            Ok(serde_json::Value::Object(map)) => {
+                let doc = map
+                    .into_iter()
+                    .map(|(k, v)| {
+                        let rendered = match v {
+                            serde_json::Value::String(s) => s,
+                            other => other.to_string(),
+                        };
+                        (k, rendered)
+                    })
+                    .collect();
+                out.push(Some(doc));
+            }
+            _ => out.push(None),
+        }
+    }
+    Ok(out)
+}
+
 fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray, QuerierError> {
     batch
         .column_by_name(name)
@@ -1612,6 +1670,151 @@ mod tests {
             }
         }
         out
+    }
+
+    /// A `t.d.logs` table whose attribute columns are typed
+    /// `Map<Utf8, Utf8>` (the new-table storage form).
+    fn service_with_map_attrs() -> LogsService {
+        use datafusion::arrow::array::{MapBuilder, StringBuilder};
+
+        let mut fields: Vec<Field> = vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("body", DataType::Utf8, true),
+            Field::new("service_name", DataType::Utf8, true),
+            Field::new("severity_text", DataType::Utf8, true),
+            Field::new("trace_id", DataType::Utf8, true),
+            Field::new("span_id", DataType::Utf8, true),
+        ];
+        let map_field = |name: &str| {
+            Field::new_map(
+                name,
+                "key_value",
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", DataType::Utf8, true),
+                false,
+                true,
+            )
+        };
+        fields.push(map_field("log_attributes"));
+        fields.push(map_field("resource_attributes"));
+        let schema = Arc::new(Schema::new(fields));
+
+        let mut log_attrs = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
+        // Row 1: namespace=prod, status=200; row 2: namespace=prod, status=503;
+        // row 3: namespace=staging.
+        for (ns, status) in [
+            ("prod", Some("200")),
+            ("prod", Some("503")),
+            ("staging", None),
+        ] {
+            log_attrs.keys().append_value("namespace");
+            log_attrs.values().append_value(ns);
+            if let Some(st) = status {
+                log_attrs.keys().append_value("status");
+                log_attrs.values().append_value(st);
+            }
+            log_attrs.append(true).unwrap();
+        }
+        let log_attrs = log_attrs.finish();
+        let mut resource_attrs = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
+        for _ in 0..3 {
+            resource_attrs.append(true).unwrap();
+        }
+        let resource_attrs = resource_attrs.finish();
+
+        // MapBuilder's default field naming must match the schema fields.
+        let log_attrs = datafusion::arrow::compute::cast(
+            &(Arc::new(log_attrs) as Arc<dyn Array>),
+            schema
+                .field_with_name("log_attributes")
+                .unwrap()
+                .data_type(),
+        )
+        .unwrap();
+        let resource_attrs = datafusion::arrow::compute::cast(
+            &(Arc::new(resource_attrs) as Arc<dyn Array>),
+            schema
+                .field_with_name("resource_attributes")
+                .unwrap()
+                .data_type(),
+        )
+        .unwrap();
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
+                str_col(&["a", "b", "c"]),
+                str_col(&["api", "api", "web"]),
+                str_col(&["info", "error", "info"]),
+                str_col(&["t1", "t2", "t3"]),
+                str_col(&["s1", "s2", "s3"]),
+                log_attrs,
+                resource_attrs,
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        LogsService::new(ctx)
+    }
+
+    #[tokio::test]
+    async fn map_attribute_table_supports_exact_ordered_and_discovery() {
+        let service = service_with_map_attrs();
+
+        // Exact attribute match on the map.
+        let prod = rows(&service, r#"{namespace="prod"}"#, Direction::Forward).await;
+        assert_eq!(prod, vec![(100, "a".to_string()), (200, "b".to_string())]);
+
+        // Ordered comparison on an arbitrary attribute.
+        let slow = rows(
+            &service,
+            r#"{service_name=~".+"} | logfmt | status >= 500"#,
+            Direction::Forward,
+        )
+        .await;
+        assert_eq!(slow, vec![(200, "b".to_string())]);
+
+        // Label discovery reads map keys.
+        let labels = service.get_labels(0, 1000, "t", "d").await.unwrap();
+        assert!(labels.contains(&"namespace".to_string()));
+        assert!(labels.contains(&"status".to_string()));
+        let values = service
+            .get_label_values("namespace", 0, 1000, "t", "d")
+            .await
+            .unwrap();
+        assert_eq!(values, vec!["prod".to_string(), "staging".to_string()]);
+
+        // detected_fields works over the map form with sniffed types.
+        let fields = service
+            .detected_fields(
+                &DetectedFieldsParams {
+                    query: None,
+                    start: 0,
+                    end: 1000,
+                    limit: 100,
+                },
+                "t",
+                "d",
+            )
+            .await
+            .unwrap();
+        let status = fields.iter().find(|f| f.label == "status").unwrap();
+        assert_eq!(status.field_type, "int");
+        assert_eq!(status.cardinality, 2);
     }
 
     #[tokio::test]

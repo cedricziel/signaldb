@@ -309,12 +309,12 @@ Defined in `schemas.toml`.
 | 8 | `service_name` | String | Yes | |
 | 9 | `body` | String | No | |
 | 10 | `resource_schema_url` | String | No | |
-| 11 | `resource_attributes` | String | No | JSON |
+| 11 | `resource_attributes` | Map<String,String> | No | typed map (legacy tables: JSON string) |
 | 12 | `scope_schema_url` | String | No | |
 | 13 | `scope_name` | String | No | |
 | 14 | `scope_version` | String | No | |
-| 15 | `scope_attributes` | String | No | JSON |
-| 16 | `log_attributes` | String | No | JSON |
+| 15 | `scope_attributes` | Map<String,String> | No | typed map (legacy tables: JSON string) |
+| 16 | `log_attributes` | Map<String,String> | No | typed map (legacy tables: JSON string) |
 | 17 | `date_day` | Date | Yes | Computed from timestamp |
 | 18 | `hour` | Int | Yes | Computed from timestamp |
 
