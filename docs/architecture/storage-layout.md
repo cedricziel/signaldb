@@ -332,6 +332,10 @@ by regex, and with ordered comparisons.
 [schema.materialized_labels]
 logs = ["namespace", "pod"]
 # traces = [...]   # metrics / profiles likewise
+
+# Per-tenant override: replaces the global set wholesale for that tenant
+[auth.tenants.schema.materialized_labels]
+logs = ["team", "region"]
 ```
 
 - **Column naming**: a label key `k` becomes a nullable string column
@@ -341,6 +345,10 @@ logs = ["namespace", "pod"]
 - **Population** (writer): each row's value is taken from its **resource**,
   then **scope**, then **record** attributes (first non-null wins); the value
   is also left in the attribute JSON, so label discovery is unaffected.
+- **Per-tenant resolution**: allowlists resolve per tenant — a tenant
+  schema override replaces the global set wholesale (no merging) — both
+  where tables are created (`CatalogManager::ensure_table`) and in the
+  writer's transforms.
 - **When it applies**: tables are created lazily and carry the columns from
   their configured set at creation time (the pinned iceberg-rust fork has no
   supported schema-evolution to add columns to an existing table). A table

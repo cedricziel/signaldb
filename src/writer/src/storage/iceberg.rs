@@ -58,6 +58,9 @@ pub struct IcebergTableWriter {
     object_store: Arc<dyn ObjectStore>,
     tenant_id: String,
     dataset_id: String,
+    /// Tenant-resolved materialized-label allowlists (a tenant schema
+    /// override replaces the global set), used by the transforms.
+    materialized: common::config::MaterializedLabels,
     /// Retry configuration for failed operations
     retry_config: RetryConfig,
 }
@@ -86,12 +89,18 @@ impl IcebergTableWriter {
         log::debug!("Table location: {}", table_metadata.location);
         log::debug!("Schema has {} fields", current_schema.fields().len());
 
+        let materialized = catalog_manager
+            .config()
+            .get_tenant_schema_config(&tenant_id)
+            .materialized_labels;
+
         Ok(Self {
             catalog,
             table,
             object_store,
             tenant_id,
             dataset_id,
+            materialized,
             retry_config: RetryConfig::default(),
         })
     }
@@ -121,7 +130,7 @@ impl IcebergTableWriter {
                 // computed fields; v2 uses "span_name" plus "timestamp"/"date_day"/"hour".
                 if has_field("name") && !has_field("span_name") {
                     log::debug!("Detected v1 traces batch, applying v1->v2 transformation");
-                    transform_trace_v1_to_v2(batch)
+                    transform_trace_v1_to_v2(batch, &self.materialized.traces)
                 } else if has_field("span_name") {
                     log::debug!("Detected v2 traces batch, no transformation needed");
                     Ok(batch)
@@ -136,21 +145,26 @@ impl IcebergTableWriter {
             // schema uses computed "timestamp"/"date_day"/"hour" columns.
             "logs" if has_field("time_unix_nano") => {
                 log::debug!("Detected v1 logs batch, applying logs->iceberg transformation");
-                transform_logs_v1_to_iceberg(batch)
+                transform_logs_v1_to_iceberg(batch, &self.materialized.logs)
             }
             // Wire-format metrics carry the raw "data_json" payload column.
             "metrics_gauge" if has_field("data_json") => {
-                transform_metrics_gauge_v1_to_iceberg(batch)
+                transform_metrics_gauge_v1_to_iceberg(batch, &self.materialized.metrics)
             }
-            "metrics_sum" if has_field("data_json") => transform_metrics_sum_v1_to_iceberg(batch),
+            "metrics_sum" if has_field("data_json") => {
+                transform_metrics_sum_v1_to_iceberg(batch, &self.materialized.metrics)
+            }
             "metrics_histogram" if has_field("data_json") => {
-                transform_metrics_histogram_v1_to_iceberg(batch)
+                transform_metrics_histogram_v1_to_iceberg(batch, &self.materialized.metrics)
             }
             "metrics_exponential_histogram" if has_field("data_json") => {
-                transform_metrics_exponential_histogram_v1_to_iceberg(batch)
+                transform_metrics_exponential_histogram_v1_to_iceberg(
+                    batch,
+                    &self.materialized.metrics,
+                )
             }
             "metrics_summary" if has_field("data_json") => {
-                transform_metrics_summary_v1_to_iceberg(batch)
+                transform_metrics_summary_v1_to_iceberg(batch, &self.materialized.metrics)
             }
             // Wire-format profiles carry raw OTLP "time_unix_nano"; the
             // storage schema uses computed "timestamp"/"date_day"/"hour".
@@ -158,7 +172,7 @@ impl IcebergTableWriter {
                 log::debug!(
                     "Detected v1 profiles batch, applying profiles->iceberg transformation"
                 );
-                transform_profiles_v1_to_iceberg(batch)
+                transform_profiles_v1_to_iceberg(batch, &self.materialized.profiles)
             }
             _ => Ok(batch),
         }

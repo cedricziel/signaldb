@@ -75,7 +75,7 @@ Env: `SIGNALDB__SCHEMA__CATALOG_TYPE`, `SIGNALDB__SCHEMA__CATALOG_URI` (double-u
 [schema.materialized_labels]
 logs = ["namespace", "pod"]   # also: traces / metrics / profiles
 ```
-Per-signal allowlists of attribute keys promoted from the `*_attributes` JSON into dedicated `label_<key>` columns at ingest, so they match exactly (and support regex / ordered comparisons) instead of the substring-in-JSON approximation. Default empty. Applies to tables created after the change; older tables fall back to JSON matching. See `docs/architecture/storage-layout.md#materialized-labels`.
+Per-signal allowlists of attribute keys promoted from the `*_attributes` JSON into dedicated `label_<key>` columns at ingest, so they match exactly (and support regex / ordered comparisons) instead of the substring-in-JSON approximation. Default empty. Applies to tables created after the change; older tables fall back to JSON matching. Per-tenant: a tenant schema override (`[auth.tenants.schema.materialized_labels]`) replaces the global set wholesale — resolved at table creation and in the writer's transforms. See `docs/architecture/storage-layout.md#materialized-labels`.
 
 ### Authentication
 
