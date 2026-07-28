@@ -65,14 +65,15 @@ fn create_hour_partition_spec(
         .map_err(|e| anyhow::anyhow!("Failed to build partition spec: {}", e))
 }
 
-/// Create Iceberg schema for traces table using TOML definitions
+/// Create Iceberg schema for traces table using TOML definitions, plus any
+/// configured materialized-label columns.
 pub fn create_traces_schema() -> Result<Schema> {
     // Get the current trace schema version from TOML
     let current_version = SCHEMA_DEFINITIONS.current_trace_version();
     let resolved_schema = SCHEMA_DEFINITIONS.resolve_trace_schema(current_version)?;
 
-    // Convert resolved schema to Iceberg schema
-    resolved_schema.to_iceberg_schema()
+    let labels = materialized_labels_for("traces");
+    resolved_schema.to_iceberg_schema_with_labels(&labels)
 }
 
 /// Create Iceberg schema for logs table using TOML definitions, plus any
