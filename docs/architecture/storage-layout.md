@@ -366,8 +366,9 @@ The same mechanism applies across all four signals:
 - **traces** — the Tempo search API (`tags` / TraceQL attribute selectors)
   matches them exactly;
 - **metrics** — PromQL label matchers (`metric{key="v"}`) match exactly and
-  by regex on the column (grouping, `sum by (key)`, still resolves only
-  `service_name` — a follow-up);
+  by regex on the column; `by (key)` / `without (key)` group on it, and the
+  label is part of each series' natural identity (bare selectors and
+  `rate()` emit one series per label combination);
 - **profiles** — the columns are populated for consistency; the Pyroscope
   query surface filters only by `service_name` / sample type today.
 

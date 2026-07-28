@@ -639,9 +639,10 @@ pub fn shape_log_query(
 }
 
 /// Inclusive nanosecond bounds on the `timestamp` column.
-/// The materialized `label_<key>` columns present in a logs table, so the
-/// filter lowering can route those labels to their columns.
-fn materialized_columns_of(df: &DataFrame) -> MaterializedColumns {
+/// The materialized `label_<key>` columns present in a table, so the
+/// filter lowering can route those labels to their columns. Shared with the
+/// metrics path, which resolves grouping labels the same way.
+pub(super) fn materialized_columns_of(df: &DataFrame) -> MaterializedColumns {
     df.schema()
         .fields()
         .iter()
