@@ -19,6 +19,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-proto",
  "prost",
+ "serde",
  "serde_json",
  "tempfile",
  "tikv-jemallocator",
