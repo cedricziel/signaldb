@@ -223,6 +223,7 @@ flowchart LR
 | `GET /loki/api/v1/labels` | Implemented -- known + attribute label names via Querier |
 | `GET /loki/api/v1/label/{name}/values` | Implemented -- distinct label values via Querier |
 | `GET /loki/api/v1/series` | Implemented -- label sets matching a selector via Querier |
+| `GET /loki/api/v1/detected_fields` | Implemented -- sampled attribute-field discovery (name, type, cardinality) |
 | `GET /loki/api/v1/tail` | Not implemented (WebSocket streaming, #380) |
 | LogQL metric queries (`rate`, `count_over_time`, `sum by (...)`) | Implemented via `query_range` -- `date_bin(step)` bucketed matrix (no binary ops / `topk` / `quantile` yet) |
 

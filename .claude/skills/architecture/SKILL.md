@@ -64,7 +64,7 @@ Key details:
 4. Results stream back as Arrow RecordBatches via Flight (trace not found -> Flight `not_found` status)
 5. Standalone querier also serves Tempo's `tempopb.Querier` gRPC protocol on the Flight port (see `tempo-api` skill)
 6. Router also nests query APIs for every signal, each lowering a parsed query to a DataFusion `Expr`/aggregate over the signal's Iceberg tables (never a SQL string, matching the trace path):
-   - `/loki` (LogQL, epic #366): `LogsService` executes log queries (streams) and metric queries (`rate`/`count_over_time`/`sum by`, `date_bin` bucketed matrix); `LogsService` also backs `/loki` labels/values/series.
+   - `/loki` (LogQL, epic #366): `LogsService` executes log queries (streams) and metric queries (`rate`/`count_over_time`/`sum by`, `date_bin` bucketed matrix); `LogsService` also backs `/loki` labels/values/series and `detected_fields` (sampled attribute-field discovery: name, inferred type, approx cardinality — epic #737 L3).
    - `/prometheus` (PromQL, epic #328): `MetricsService` executes selectors, `sum/avg/min/max/count [by]`, and `rate`/`increase` over `metrics_gauge`+`metrics_sum` (`date_bin` bucketed matrix), plus `histogram_quantile(phi, metric)` interpolated from `metrics_histogram` OTLP buckets; `MetricsService` also backs `/prometheus` labels/values/series. `histogram_quantile` over an inner `rate()`, binary ops, and `topk` remain pending (#335).
    - `/pyroscope` (profiles) via `ProfileService`.
 
