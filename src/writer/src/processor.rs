@@ -100,15 +100,27 @@ impl WalProcessor {
                     continue;
                 }
             };
-            let batch = match self.deserialize_entry_data(&entry).await {
+            let (tenant_id, dataset_id, table_name) = routed;
+            // Anti-loop guard (#760): processing the _system tenant's own
+            // telemetry must not emit logs/spans that get exported and
+            // re-ingested as _system telemetry.
+            let suppress = common::self_monitoring::is_self_monitoring_tenant(&tenant_id);
+            let batch = match common::self_monitoring::maybe_suppress_self_telemetry(
+                suppress,
+                self.deserialize_entry_data(&entry),
+            )
+            .await
+            {
                 Ok(batch) => batch,
                 Err(e) => {
-                    tracing::warn!(entry_id = %entry.id, error = %e, "Failed to deserialize WAL entry");
-                    self.record_entry_failure(entry.id).await;
+                    common::self_monitoring::maybe_suppress_self_telemetry(suppress, async {
+                        tracing::warn!(entry_id = %entry.id, error = %e, "Failed to deserialize WAL entry");
+                        self.record_entry_failure(entry.id).await;
+                    })
+                    .await;
                     continue;
                 }
             };
-            let (tenant_id, dataset_id, table_name) = routed;
 
             grouped_entries
                 .entry((tenant_id, dataset_id, table_name))
@@ -121,28 +133,35 @@ impl WalProcessor {
         // the idempotency-marker invariant.
         for ((tenant_id, dataset_id, table_name), entries) in grouped_entries {
             let group_ids: Vec<Uuid> = entries.iter().map(|(id, _)| *id).collect();
-            match self
-                .process_batch_for_table(&tenant_id, &dataset_id, &table_name, entries)
-                .await
-            {
-                Ok(processed_ids) => {
-                    for entry_id in &processed_ids {
-                        self.entry_failures.remove(entry_id);
+            // Anti-loop guard (#760): suppression is per group because the
+            // loop interleaves tenants — only the _system tenant's batches
+            // must not be re-instrumented.
+            let suppress = common::self_monitoring::is_self_monitoring_tenant(&tenant_id);
+            common::self_monitoring::maybe_suppress_self_telemetry(suppress, async {
+                match self
+                    .process_batch_for_table(&tenant_id, &dataset_id, &table_name, entries)
+                    .await
+                {
+                    Ok(processed_ids) => {
+                        for entry_id in &processed_ids {
+                            self.entry_failures.remove(entry_id);
+                        }
+                        tracing::debug!(
+                            entry_count = processed_ids.len(),
+                            tenant_id = %tenant_id,
+                            table_name = %table_name,
+                            "Processed and marked entries for table"
+                        );
                     }
-                    tracing::debug!(
-                        entry_count = processed_ids.len(),
-                        tenant_id = %tenant_id,
-                        table_name = %table_name,
-                        "Processed and marked entries for table"
-                    );
-                }
-                Err(e) => {
-                    tracing::error!(tenant_id = %tenant_id, table_name = %table_name, error = %e, "Failed to process batch for table");
-                    for entry_id in group_ids {
-                        self.record_entry_failure(entry_id).await;
+                    Err(e) => {
+                        tracing::error!(tenant_id = %tenant_id, table_name = %table_name, error = %e, "Failed to process batch for table");
+                        for entry_id in group_ids {
+                            self.record_entry_failure(entry_id).await;
+                        }
                     }
                 }
-            }
+            })
+            .await;
         }
 
         Ok(())
@@ -360,26 +379,33 @@ impl WalProcessor {
         }
 
         let (tenant_id, dataset_id, table_name) = self.determine_target_table(&entry)?;
-        let batch = self.deserialize_entry_data(&entry).await?;
+        // Anti-loop guard (#760): processing the _system tenant's own
+        // telemetry must not emit logs/spans that get exported and
+        // re-ingested as _system telemetry.
+        let suppress = common::self_monitoring::is_self_monitoring_tenant(&tenant_id);
+        common::self_monitoring::maybe_suppress_self_telemetry(suppress, async {
+            let batch = self.deserialize_entry_data(&entry).await?;
 
-        match self
-            .process_batch_for_table(
-                &tenant_id,
-                &dataset_id,
-                &table_name,
-                vec![(entry_id, batch)],
-            )
-            .await
-        {
-            Ok(_) => {
-                tracing::debug!(entry_id = %entry_id, "Successfully processed single WAL entry");
-                Ok(())
+            match self
+                .process_batch_for_table(
+                    &tenant_id,
+                    &dataset_id,
+                    &table_name,
+                    vec![(entry_id, batch)],
+                )
+                .await
+            {
+                Ok(_) => {
+                    tracing::debug!(entry_id = %entry_id, "Successfully processed single WAL entry");
+                    Ok(())
+                }
+                Err(e) => {
+                    tracing::error!(entry_id = %entry_id, error = %e, "Failed to process WAL entry");
+                    Err(e)
+                }
             }
-            Err(e) => {
-                tracing::error!(entry_id = %entry_id, error = %e, "Failed to process WAL entry");
-                Err(e)
-            }
-        }
+        })
+        .await
     }
 
     /// Get statistics about the processor
@@ -551,6 +577,76 @@ mod tests {
             .join(format!("{}.bin", entry_id.simple()));
         let preserved = tokio::fs::read(&dead_letter_path).await.unwrap();
         assert_eq!(preserved, b"not arrow ipc");
+    }
+
+    #[tokio::test]
+    async fn system_tenant_wal_processing_is_suppressed_from_otel_export() {
+        // Regression test for issue #760: the background WAL-processing
+        // loop must not emit log records that pass the OTel export filter
+        // while processing _system-tenant entries — they would be exported
+        // and re-ingested as _system telemetry (feedback loop). A normal
+        // tenant's processing logs must still export.
+        //
+        // Garbage payloads route fine but fail deserialization, which
+        // makes the loop emit warn-level logs — exactly the kind of
+        // telemetry that fed the loop.
+        let temp_dir = tempdir().unwrap();
+        let wal_config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            max_segment_size: 1024 * 1024,
+            max_buffer_entries: 1000,
+            flush_interval_secs: 5,
+            tenant_id: "default".to_string(),
+            dataset_id: "default".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+        let wal = Arc::new(Wal::new(wal_config).await.unwrap());
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+        let mut processor = WalProcessor::new(wal.clone(), catalog_manager, object_store);
+
+        // _system-tenant entry: nothing may pass the export filter.
+        wal.append(
+            WalOperation::WriteTraces,
+            b"not arrow ipc".to_vec(),
+            Some(r#"{"tenant_id":"_system","dataset_id":"_monitoring"}"#.to_string()),
+        )
+        .await
+        .unwrap();
+        wal.flush().await.unwrap();
+
+        let probe = common::testing::OtelExportProbe::new();
+        {
+            let _guard = probe.install();
+            processor.process_pending_entries().await.unwrap();
+        }
+        assert_eq!(
+            probe.exported_events(),
+            0,
+            "_system WAL entry processing must not export log records"
+        );
+
+        // Normal-tenant entry: processing logs still export.
+        wal.append(
+            WalOperation::WriteTraces,
+            b"not arrow ipc".to_vec(),
+            Some(r#"{"tenant_id":"acme","dataset_id":"production"}"#.to_string()),
+        )
+        .await
+        .unwrap();
+        wal.flush().await.unwrap();
+
+        let probe = common::testing::OtelExportProbe::new();
+        {
+            let _guard = probe.install();
+            processor.process_pending_entries().await.unwrap();
+        }
+        assert!(
+            probe.exported_events() > 0,
+            "normal tenant WAL entry processing must still export telemetry"
+        );
     }
 
     #[tokio::test]

@@ -151,12 +151,6 @@ impl FlightService for IcebergWriterFlightService {
             if flight_metadata.is_none() && !d.app_metadata.is_empty() {
                 match extract_flight_metadata(&d.app_metadata) {
                     Ok(metadata) => {
-                        tracing::info!(
-                            schema_version = %metadata.schema_version,
-                            signal_type = ?metadata.signal_type,
-                            target_table = ?metadata.target_table,
-                            "Received data"
-                        );
                         flight_metadata = Some(metadata);
                     }
                     Err(e) => {
@@ -181,9 +175,24 @@ impl FlightService for IcebergWriterFlightService {
             return Err(Status::invalid_argument("No FlightData received"));
         }
 
+        // Anti-loop guard (#760): persisting the _system tenant's own
+        // telemetry must not emit logs/spans that get exported and
+        // re-ingested as _system telemetry.
+        let suppress = flight_metadata
+            .as_ref()
+            .and_then(|m| m.tenant_id.as_deref())
+            .is_some_and(common::self_monitoring::is_self_monitoring_tenant);
+
         // Process within a span that joins the sender's distributed trace
-        // (parent must be set before the span is first entered).
-        let span = tracing::info_span!("flight_do_put");
+        // (parent must be set before the span is first entered). The span is
+        // created under the suppression scope so it is itself not exported
+        // for _system batches.
+        let make_span = || tracing::info_span!("flight_do_put");
+        let span = if suppress {
+            common::self_monitoring::suppress_self_telemetry_sync(make_span)
+        } else {
+            make_span()
+        };
         if let Some(ref metadata) = flight_metadata {
             common::flight::trace_context::set_parent_from_fields(
                 &span,
@@ -191,7 +200,16 @@ impl FlightService for IcebergWriterFlightService {
                 metadata.tracestate.as_deref(),
             );
         }
-        async move {
+        common::self_monitoring::maybe_suppress_self_telemetry(suppress, async move {
+        if let Some(ref metadata) = flight_metadata {
+            tracing::info!(
+                schema_version = %metadata.schema_version,
+                signal_type = ?metadata.signal_type,
+                target_table = ?metadata.target_table,
+                "Received data"
+            );
+        }
+
         // Convert FlightData stream into Arrow RecordBatches
         let batches =
             flight_data_to_batches(&data_vec).map_err(|e| Status::internal(e.to_string()))?;
@@ -321,7 +339,7 @@ impl FlightService for IcebergWriterFlightService {
         let out = stream::once(async move { Ok(result) }).boxed();
         Ok(Response::new(out))
         }
-        .instrument(span)
+        .instrument(span))
         .await
     }
 
