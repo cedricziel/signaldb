@@ -72,6 +72,7 @@ testcontainers-modules.workspace = true
 testcontainers.workspace = true
 tempfile.workspace = true
 figment = { workspace = true, features = ["test"] }
+opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "logs", "testing"] }
 sha2 = "0.11"
 
 [package.metadata.cargo-machete]
