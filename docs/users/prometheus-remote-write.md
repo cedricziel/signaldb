@@ -5,6 +5,7 @@ status: living
 sources:
   - src/acceptor/src/handler/prometheus_handler.rs
   - src/acceptor/src/middleware/auth.rs
+  - src/common/src/flight/conversion/conversion_prometheus/to_otel.rs
 ---
 
 # Send Prometheus metrics via remote_write
@@ -22,7 +23,11 @@ It accepts snappy-compressed protobuf (block format, not framed) with
 `Content-Type: application/x-protobuf`, remote_write protocol v1 and v2
 (v2 adds native histograms and metadata). Incoming samples are converted
 to OpenTelemetry metrics and stored in the same metrics tables as OTLP
-metrics (`metrics_gauge`, `metrics_sum`, `metrics_histogram`).
+metrics (`metrics_gauge`, `metrics_sum`, `metrics_histogram`). Native
+histogram samples (v2) are converted to OpenTelemetry exponential
+histograms and stored in `metrics_exponential_histogram`; custom-bucket
+native histograms (NHCB) cannot be represented as exponential histograms
+and are dropped with a warning in the acceptor logs.
 
 ## Prerequisites
 

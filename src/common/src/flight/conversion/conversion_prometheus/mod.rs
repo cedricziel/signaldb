@@ -749,6 +749,209 @@ mod tests {
         assert_eq!(normalize_unit("requests/second"), "requests_per_second");
     }
 
+    // Native histogram (remote_write v2) → OTLP exponential histogram tests
+
+    /// A native histogram sample equivalent to observations:
+    /// two in (1, 2], one in (2, 4], one in (8, 16], two exactly zero.
+    fn sample_native_histogram() -> PrometheusHistogram {
+        PrometheusHistogram {
+            count: 6,
+            sum: 21.5,
+            schema: 0,
+            zero_threshold: 1e-128,
+            zero_count: 2,
+            // Prometheus positive bucket index 1 = (1, 2], 2 = (2, 4], 4 = (8, 16]
+            positive_spans: vec![
+                BucketSpan {
+                    offset: 1,
+                    length: 2,
+                },
+                BucketSpan {
+                    offset: 1,
+                    length: 1,
+                },
+            ],
+            positive_deltas: vec![2, -1, 0],
+            timestamp: 1_700_000_000_000,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn native_histogram_series_converts_to_exponential_histogram() {
+        let request = PrometheusWriteRequest {
+            timeseries: vec![PrometheusTimeSeries {
+                labels: vec![
+                    PrometheusLabel {
+                        name: "__name__".to_string(),
+                        value: "http_request_latency_seconds".to_string(),
+                    },
+                    PrometheusLabel {
+                        name: "job".to_string(),
+                        value: "api".to_string(),
+                    },
+                    PrometheusLabel {
+                        name: "method".to_string(),
+                        value: "GET".to_string(),
+                    },
+                ],
+                samples: vec![],
+                histograms: vec![sample_native_histogram()],
+            }],
+            metadata: vec![],
+        };
+
+        let result = prometheus_to_otel_metrics(&request);
+
+        assert_eq!(result.resource_metrics.len(), 1);
+        let metrics = &result.resource_metrics[0].scope_metrics[0].metrics;
+        assert_eq!(metrics.len(), 1, "expected exactly one metric");
+        let metric = &metrics[0];
+        assert_eq!(metric.name, "http_request_latency_seconds");
+
+        let Some(Data::ExponentialHistogram(exp)) = &metric.data else {
+            panic!("Expected exponential histogram data, got {:?}", metric.data);
+        };
+        assert_eq!(
+            exp.aggregation_temporality,
+            AggregationTemporality::Cumulative as i32
+        );
+        assert_eq!(exp.data_points.len(), 1);
+
+        let dp = &exp.data_points[0];
+        assert_eq!(dp.count, 6);
+        assert_eq!(dp.sum, Some(21.5));
+        assert_eq!(dp.scale, 0);
+        assert_eq!(dp.zero_count, 2);
+        assert_eq!(dp.zero_threshold, 1e-128);
+        assert_eq!(dp.time_unix_nano, 1_700_000_000_000 * 1_000_000);
+
+        // Prometheus indexes 1,2,4 (upper-bound based) map to OTLP indexes 0,1,3
+        // (lower-bound based); the gap at index 2 is a zero in the dense encoding.
+        let positive = dp.positive.as_ref().expect("positive buckets");
+        assert_eq!(positive.offset, 0);
+        assert_eq!(positive.bucket_counts, vec![2, 1, 0, 1]);
+        assert!(dp.negative.is_none());
+
+        // Attributes keep metric labels but not __name__/job/instance
+        assert!(dp.attributes.iter().any(|kv| kv.key == "method"));
+        assert!(!dp.attributes.iter().any(|kv| kv.key == "__name__"));
+    }
+
+    #[test]
+    fn native_histogram_with_unsupported_schema_is_dropped() {
+        // Schema outside -4..=8 (e.g. custom-bucket NHCB histograms) cannot be
+        // represented as OTLP exponential histograms and must be dropped.
+        for schema in [-53, 127, 9, -5] {
+            let request = PrometheusWriteRequest {
+                timeseries: vec![PrometheusTimeSeries {
+                    labels: vec![PrometheusLabel {
+                        name: "__name__".to_string(),
+                        value: "custom_bucket_histogram".to_string(),
+                    }],
+                    samples: vec![],
+                    histograms: vec![PrometheusHistogram {
+                        schema,
+                        ..sample_native_histogram()
+                    }],
+                }],
+                metadata: vec![],
+            };
+
+            let result = prometheus_to_otel_metrics(&request);
+            let metrics = &result.resource_metrics[0].scope_metrics[0].metrics;
+            assert!(
+                metrics.is_empty(),
+                "schema {schema} should be dropped, got {metrics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stale_native_histogram_sample_is_skipped() {
+        let mut histogram = sample_native_histogram();
+        histogram.sum = f64::from_bits(0x7ff0000000000002); // stale marker
+
+        let request = PrometheusWriteRequest {
+            timeseries: vec![PrometheusTimeSeries {
+                labels: vec![PrometheusLabel {
+                    name: "__name__".to_string(),
+                    value: "stale_histogram".to_string(),
+                }],
+                samples: vec![],
+                histograms: vec![histogram],
+            }],
+            metadata: vec![],
+        };
+
+        let result = prometheus_to_otel_metrics(&request);
+        let metrics = &result.resource_metrics[0].scope_metrics[0].metrics;
+        assert!(metrics.is_empty(), "stale sample should produce no metric");
+    }
+
+    #[test]
+    fn float_native_histogram_uses_absolute_counts() {
+        let request = PrometheusWriteRequest {
+            timeseries: vec![PrometheusTimeSeries {
+                labels: vec![PrometheusLabel {
+                    name: "__name__".to_string(),
+                    value: "float_histogram".to_string(),
+                }],
+                samples: vec![],
+                histograms: vec![PrometheusHistogram {
+                    count: 5,
+                    sum: 10.0,
+                    schema: 2,
+                    positive_spans: vec![BucketSpan {
+                        offset: 0,
+                        length: 2,
+                    }],
+                    positive_deltas: vec![],
+                    positive_counts: vec![3.0, 2.0],
+                    timestamp: 1_700_000_000_000,
+                    ..Default::default()
+                }],
+            }],
+            metadata: vec![],
+        };
+
+        let result = prometheus_to_otel_metrics(&request);
+        let metrics = &result.resource_metrics[0].scope_metrics[0].metrics;
+        assert_eq!(metrics.len(), 1);
+        let Some(Data::ExponentialHistogram(exp)) = &metrics[0].data else {
+            panic!("Expected exponential histogram data");
+        };
+        let positive = exp.data_points[0].positive.as_ref().expect("positive");
+        assert_eq!(positive.offset, -1);
+        assert_eq!(positive.bucket_counts, vec![3, 2]);
+    }
+
+    #[test]
+    fn native_histogram_metadata_populates_description_and_unit() {
+        let request = PrometheusWriteRequest {
+            timeseries: vec![PrometheusTimeSeries {
+                labels: vec![PrometheusLabel {
+                    name: "__name__".to_string(),
+                    value: "http_request_latency_seconds".to_string(),
+                }],
+                samples: vec![],
+                histograms: vec![sample_native_histogram()],
+            }],
+            metadata: vec![PrometheusMetricMetadata {
+                metric_family_name: "http_request_latency_seconds".to_string(),
+                metric_type: PrometheusMetricType::Histogram,
+                help: "Request latency".to_string(),
+                unit: "seconds".to_string(),
+            }],
+        };
+
+        let result = prometheus_to_otel_metrics(&request);
+        let metric = &result.resource_metrics[0].scope_metrics[0].metrics[0];
+        assert_eq!(metric.description, "Request latency");
+        assert_eq!(metric.unit, "seconds");
+        assert!(matches!(metric.data, Some(Data::ExponentialHistogram(_)),));
+    }
+
     #[test]
     fn test_metric_name_normalization() {
         use from_otel::normalize_metric_name;
