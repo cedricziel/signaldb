@@ -84,7 +84,7 @@ Plus, when `[schema.materialized_labels].<signal>` is configured, a nullable `la
 
 ## Metrics Schemas
 
-Two definitions coexist:
+On new tables the metric/profile attribute columns are `Map<String,String>` (`mapify_attr_fields`, nested IDs after labels); legacy JSON strings. Two definitions coexist:
 - `schemas.toml` defines v1 schemas for `metrics_gauge`, `metrics_sum`, and
   `metrics_histogram` (used by the TOML schema parser / wire side).
 - The **Iceberg** metrics table schemas are built by hardcoded Rust functions in

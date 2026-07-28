@@ -280,11 +280,21 @@ impl ProfileService {
     ) -> Result<Vec<String>, QuerierError> {
         let df = self.profiles_table(tenant_slug, dataset_slug).await?;
         let df = Self::apply_time_window(df, params.start, params.end)?;
-        let batches = df
+        let df = df
             .select_columns(&["profile_attributes"])
-            .map_err(QuerierError::QueryFailed)?
-            .distinct()
-            .map_err(QuerierError::QueryFailed)?
+            .map_err(QuerierError::QueryFailed)?;
+        // Arrow's row format cannot sort Map columns; skip the dedup there.
+        let df = if df.schema().fields().iter().any(|f| {
+            matches!(
+                f.data_type(),
+                datafusion::arrow::datatypes::DataType::Map(_, _)
+            )
+        }) {
+            df
+        } else {
+            df.distinct().map_err(QuerierError::QueryFailed)?
+        };
+        let batches = df
             .limit(0, Some(LABEL_SCAN_LIMIT))
             .map_err(QuerierError::QueryFailed)?
             .collect()
@@ -294,16 +304,11 @@ impl ProfileService {
         let mut names: BTreeSet<String> = BTreeSet::new();
         names.insert("service_name".to_string());
         for batch in &batches {
-            let attrs = string_column(batch, "profile_attributes")?;
-            for i in 0..batch.num_rows() {
-                if attrs.is_null(i) {
-                    continue;
-                }
-                if let Ok(serde_json::Value::Object(map)) =
-                    serde_json::from_str::<serde_json::Value>(attrs.value(i))
-                {
-                    names.extend(map.keys().cloned());
-                }
+            for doc in super::logs::attr_documents(batch, "profile_attributes")?
+                .into_iter()
+                .flatten()
+            {
+                names.extend(doc.into_keys());
             }
         }
         Ok(names.into_iter().collect())
@@ -348,11 +353,21 @@ impl ProfileService {
             return Ok(values.into_iter().collect());
         }
 
-        let batches = df
+        let df = df
             .select_columns(&["profile_attributes"])
-            .map_err(QuerierError::QueryFailed)?
-            .distinct()
-            .map_err(QuerierError::QueryFailed)?
+            .map_err(QuerierError::QueryFailed)?;
+        // Arrow's row format cannot sort Map columns; skip the dedup there.
+        let df = if df.schema().fields().iter().any(|f| {
+            matches!(
+                f.data_type(),
+                datafusion::arrow::datatypes::DataType::Map(_, _)
+            )
+        }) {
+            df
+        } else {
+            df.distinct().map_err(QuerierError::QueryFailed)?
+        };
+        let batches = df
             .limit(0, Some(LABEL_SCAN_LIMIT))
             .map_err(QuerierError::QueryFailed)?
             .collect()
@@ -361,23 +376,12 @@ impl ProfileService {
 
         let mut values = BTreeSet::new();
         for batch in &batches {
-            let attrs = string_column(batch, "profile_attributes")?;
-            for i in 0..batch.num_rows() {
-                if attrs.is_null(i) {
-                    continue;
-                }
-                if let Ok(serde_json::Value::Object(map)) =
-                    serde_json::from_str::<serde_json::Value>(attrs.value(i))
-                    && let Some(value) = map.get(label_name)
-                {
-                    match value {
-                        serde_json::Value::String(s) => {
-                            values.insert(s.clone());
-                        }
-                        other => {
-                            values.insert(other.to_string());
-                        }
-                    }
+            for mut doc in super::logs::attr_documents(batch, "profile_attributes")?
+                .into_iter()
+                .flatten()
+            {
+                if let Some(value) = doc.remove(label_name) {
+                    values.insert(value);
                 }
             }
         }

@@ -84,7 +84,7 @@ The router serves a Pyroscope-compatible surface under `/pyroscope`:
 | `GET /pyroscope/render` | Flamegraph for a query and time range |
 | `GET /pyroscope/render-diff` | Differential flamegraph between two ranges |
 | `GET /pyroscope/profile-types` | Available profile types |
-| `GET /pyroscope/label-names` | Label discovery |
+| `GET /pyroscope/label-names` | Label discovery (reads JSON-string or map-typed attribute tables) |
 | `GET /pyroscope/label-values?label=…` | Values for one label |
 
 Queries use Pyroscope selector syntax; time bounds accept unix seconds,

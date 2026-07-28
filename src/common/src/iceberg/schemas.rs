@@ -5,7 +5,7 @@ use iceberg_rust::spec::partition::{
     PartitionField, PartitionSpec, PartitionSpecBuilder, Transform,
 };
 use iceberg_rust::spec::schema::Schema;
-use iceberg_rust::spec::types::{PrimitiveType, StructField, StructType, Type};
+use iceberg_rust::spec::types::{MapType, PrimitiveType, StructField, StructType, Type};
 
 /// Helper to create a required StructField
 fn required_field(id: i32, name: &str, prim: PrimitiveType) -> StructField {
@@ -47,6 +47,27 @@ fn append_materialized_label_fields(fields: &mut Vec<StructField>, labels: &[Str
         }
         fields.push(optional_field(next_id, &name, PrimitiveType::String));
         next_id += 1;
+    }
+}
+
+/// Convert the named top-level string fields of a hand-built schema into
+/// `Map<String, String>` attribute columns, allocating nested key/value
+/// field IDs after every existing top-level ID. Call this **after**
+/// [`append_materialized_label_fields`] so nested IDs cannot collide with
+/// label-column IDs (nested IDs are invisible to top-level `max(id)`).
+fn mapify_attr_fields(fields: &mut [StructField], names: &[&str]) {
+    let mut next_id = fields.iter().map(|f| f.id).max().unwrap_or(0) + 1;
+    for field in fields.iter_mut() {
+        if names.contains(&field.name.as_str()) {
+            field.field_type = Type::Map(MapType {
+                key_id: next_id,
+                key: Box::new(Type::Primitive(PrimitiveType::String)),
+                value_id: next_id + 1,
+                value_required: false,
+                value: Box::new(Type::Primitive(PrimitiveType::String)),
+            });
+            next_id += 2;
+        }
     }
 }
 
@@ -157,6 +178,10 @@ pub fn create_metrics_gauge_schema() -> Result<Schema> {
         required_field(19, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
     append_materialized_label_fields(&mut fields, &materialized_labels_for("metrics"));
+    mapify_attr_fields(
+        &mut fields,
+        &["resource_attributes", "scope_attributes", "attributes"],
+    );
 
     Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
@@ -195,6 +220,10 @@ pub fn create_metrics_sum_schema() -> Result<Schema> {
         required_field(21, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
     append_materialized_label_fields(&mut fields, &materialized_labels_for("metrics"));
+    mapify_attr_fields(
+        &mut fields,
+        &["resource_attributes", "scope_attributes", "attributes"],
+    );
 
     Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
@@ -237,6 +266,10 @@ pub fn create_metrics_histogram_schema() -> Result<Schema> {
         required_field(25, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
     append_materialized_label_fields(&mut fields, &materialized_labels_for("metrics"));
+    mapify_attr_fields(
+        &mut fields,
+        &["resource_attributes", "scope_attributes", "attributes"],
+    );
 
     Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
@@ -284,6 +317,10 @@ pub fn create_metrics_exponential_histogram_schema() -> Result<Schema> {
         required_field(30, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
     append_materialized_label_fields(&mut fields, &materialized_labels_for("metrics"));
+    mapify_attr_fields(
+        &mut fields,
+        &["resource_attributes", "scope_attributes", "attributes"],
+    );
 
     Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
@@ -322,6 +359,10 @@ pub fn create_metrics_summary_schema() -> Result<Schema> {
         required_field(21, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
     append_materialized_label_fields(&mut fields, &materialized_labels_for("metrics"));
+    mapify_attr_fields(
+        &mut fields,
+        &["resource_attributes", "scope_attributes", "attributes"],
+    );
 
     Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }
@@ -361,6 +402,14 @@ pub fn create_profiles_schema() -> Result<Schema> {
         required_field(18, "hour", PrimitiveType::Int),      // Sub-partition key
     ];
     append_materialized_label_fields(&mut fields, &materialized_labels_for("profiles"));
+    mapify_attr_fields(
+        &mut fields,
+        &[
+            "resource_attributes",
+            "scope_attributes",
+            "profile_attributes",
+        ],
+    );
 
     Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
 }

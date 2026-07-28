@@ -388,7 +388,7 @@ Defined in `src/common/src/iceberg/schemas.rs`.
 | 13 | `scope_schema_url` | String | No | |
 | 14 | `scope_attributes` | String | No | JSON |
 | 15 | `scope_dropped_attr_count` | Int | No | |
-| 16 | `attributes` | String | No | JSON |
+| 16 | `attributes` | Map<String,String> | No | typed map (legacy: JSON string) |
 | 17 | `exemplars` | String | No | JSON |
 | 18 | `date_day` | Date | Yes | Computed |
 | 19 | `hour` | Int | Yes | Computed |

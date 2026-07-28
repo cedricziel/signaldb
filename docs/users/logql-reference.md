@@ -95,7 +95,7 @@ without any declaration: for a window (and optional `query` stream
 selector) it samples the stored attribute documents and returns each key
 with an inferred type (`string`/`int`/`float`/`boolean`) and an
 approximate distinct-value count. Parameters: `start`, `end`, `query`,
-`limit` (default 100). Cardinality is a lower-bound estimate from the
+`limit` (default 100). Works on both JSON-string and map-typed attribute tables. Cardinality is a lower-bound estimate from the
 sample — intended for exploration UIs (faceted field pickers), not exact
 counts.
 
