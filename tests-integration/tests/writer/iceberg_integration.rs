@@ -479,7 +479,10 @@ async fn test_map_attribute_column_end_to_end() -> Result<()> {
         ))
         .create()
         .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
-    catalog.clone().create_table(ident.clone(), table_create).await?;
+    catalog
+        .clone()
+        .create_table(ident.clone(), table_create)
+        .await?;
 
     // Load the table and derive the Arrow schema the way the writer does.
     let Tabular::Table(mut table) = catalog.clone().load_tabular(&ident).await? else {
@@ -568,7 +571,10 @@ async fn test_map_attribute_column_end_to_end() -> Result<()> {
         .collect()
         .await?;
     let total: usize = rows.iter().map(|b| b.num_rows()).sum();
-    assert_eq!(total, 1, "map-subscript filter should match exactly one row");
+    assert_eq!(
+        total, 1,
+        "map-subscript filter should match exactly one row"
+    );
     let body_col = rows[0]
         .column_by_name("body")
         .unwrap()
