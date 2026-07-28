@@ -40,6 +40,7 @@ APIs (see [Authentication](authentication.md)):
 | `GET /loki/api/v1/labels` | Label names available in the window |
 | `GET /loki/api/v1/label/{name}/values` | Distinct values of one label |
 | `GET /loki/api/v1/series` | Series (label sets) matching a selector |
+| `GET /loki/api/v1/detected_fields` | Discover attribute fields in a window: name, inferred type, approximate cardinality (samples the data; no declaration or indexing needed) |
 | `GET /loki/api/v1/tail` | Not implemented — live tail is tracked separately |
 
 Common query parameters: `query` (the LogQL string), `start`/`end`
@@ -84,6 +85,17 @@ is also kept in the attribute JSON, label discovery (`/labels`,
 
 Series identity (in `/series` results and un-grouped metric queries) is
 the `service_name` and `level` labels.
+
+### Discovering fields
+
+`GET /loki/api/v1/detected_fields` answers "what attributes exist here?"
+without any declaration: for a window (and optional `query` stream
+selector) it samples the stored attribute documents and returns each key
+with an inferred type (`string`/`int`/`float`/`boolean`) and an
+approximate distinct-value count. Parameters: `start`, `end`, `query`,
+`limit` (default 100). Cardinality is a lower-bound estimate from the
+sample — intended for exploration UIs (faceted field pickers), not exact
+counts.
 
 ## Log queries
 

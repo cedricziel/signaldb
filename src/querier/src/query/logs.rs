@@ -40,7 +40,8 @@ use super::logql_metric::{
     Aggregate, ArithOp, LabelReplaceSpec, OuterAgg, ScalarOp, SortSpec, TopKSpec, plan_metric_query,
 };
 use super::{
-    LogQueryParams, MetricQueryParams, error::QuerierError, table_ref::build_table_reference,
+    DetectedField, DetectedFieldsParams, LogQueryParams, MetricQueryParams, error::QuerierError,
+    table_ref::build_table_reference,
 };
 
 /// Columns projected for a log-line query, in wire order. The Flight
@@ -460,6 +461,119 @@ impl LogsService {
             }
         }
         Ok(values.into_iter().collect())
+    }
+
+    /// Discover the attribute fields present in a window (optionally
+    /// restricted by a stream selector): for each key seen in the sampled
+    /// attribute documents, report an inferred type and an approximate
+    /// distinct-value count. Sampling is capped at [`LABEL_SCAN_LIMIT`]
+    /// rows, so cardinality is a lower-bound estimate by design — this
+    /// backs the Loki-compatible `detected_fields` discovery endpoint.
+    pub async fn detected_fields(
+        &self,
+        params: &DetectedFieldsParams,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<DetectedField>, QuerierError> {
+        let mut df = self.logs_table(tenant_slug, dataset_slug).await?;
+        if let Some(q) = params
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let parsed = parse_query(q).map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+            let filter = log_query_filter_with_columns(&parsed, &materialized_columns_of(&df))?;
+            if let Some(filter) = filter {
+                df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
+            }
+        }
+        let df = apply_window(df, params.start, params.end)?;
+        let batches = df
+            .select_columns(&["log_attributes", "resource_attributes"])
+            .map_err(QuerierError::QueryFailed)?
+            .limit(0, Some(LABEL_SCAN_LIMIT))
+            .map_err(QuerierError::QueryFailed)?
+            .collect()
+            .await
+            .map_err(QuerierError::QueryFailed)?;
+
+        // Per-key aggregate over the sample: distinct values (capped) and
+        // the JSON types observed.
+        #[derive(Default)]
+        struct FieldAgg {
+            values: BTreeSet<String>,
+            saw_string: bool,
+            saw_int: bool,
+            saw_float: bool,
+            saw_bool: bool,
+        }
+        const VALUE_CAP: usize = 1000;
+        let mut agg: BTreeMap<String, FieldAgg> = BTreeMap::new();
+
+        for batch in &batches {
+            for column in ["log_attributes", "resource_attributes"] {
+                let attrs = string_column(batch, column)?;
+                for i in 0..batch.num_rows() {
+                    if attrs.is_null(i) {
+                        continue;
+                    }
+                    let Ok(serde_json::Value::Object(map)) =
+                        serde_json::from_str::<serde_json::Value>(attrs.value(i))
+                    else {
+                        continue;
+                    };
+                    for (key, value) in map {
+                        let entry = agg.entry(key).or_default();
+                        let rendered = match &value {
+                            serde_json::Value::String(s) => {
+                                entry.saw_string = true;
+                                s.clone()
+                            }
+                            serde_json::Value::Number(n) => {
+                                if n.is_i64() || n.is_u64() {
+                                    entry.saw_int = true;
+                                } else {
+                                    entry.saw_float = true;
+                                }
+                                n.to_string()
+                            }
+                            serde_json::Value::Bool(b) => {
+                                entry.saw_bool = true;
+                                b.to_string()
+                            }
+                            other => {
+                                entry.saw_string = true;
+                                other.to_string()
+                            }
+                        };
+                        if entry.values.len() < VALUE_CAP {
+                            entry.values.insert(rendered);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut fields: Vec<DetectedField> = agg
+            .into_iter()
+            .map(|(label, a)| {
+                let field_type = match (a.saw_string, a.saw_int, a.saw_float, a.saw_bool) {
+                    (false, false, false, true) => "boolean",
+                    (false, true, false, false) => "int",
+                    (false, _, true, false) => "float",
+                    _ => "string",
+                };
+                DetectedField {
+                    label,
+                    field_type: field_type.to_string(),
+                    cardinality: a.values.len() as u64,
+                    parsers: Vec::new(),
+                }
+            })
+            .collect();
+        fields.truncate(params.limit.max(1) as usize);
+        Ok(fields)
     }
 
     /// List the distinct series (label sets) matching a stream selector.
@@ -1531,6 +1645,62 @@ mod tests {
         assert!(labels.contains(&"level".to_string()));
         assert!(labels.contains(&"namespace".to_string()));
         assert!(labels.contains(&"pod".to_string()));
+    }
+
+    #[tokio::test]
+    async fn detected_fields_reports_keys_types_and_cardinality() {
+        let service = service_with_data();
+        let fields = service
+            .detected_fields(
+                &DetectedFieldsParams {
+                    query: None,
+                    start: 0,
+                    end: 1000,
+                    limit: 100,
+                },
+                "t",
+                "d",
+            )
+            .await
+            .unwrap();
+        let get = |label: &str| fields.iter().find(|f| f.label == label).unwrap();
+        // namespace: prod, staging → 2 distinct; pod: 3 distinct; strings.
+        assert_eq!(get("namespace").cardinality, 2);
+        assert_eq!(get("namespace").field_type, "string");
+        assert_eq!(get("pod").cardinality, 3);
+
+        // A selector restricts the sample: api rows only see prod.
+        let api_fields = service
+            .detected_fields(
+                &DetectedFieldsParams {
+                    query: Some(r#"{service_name="api"}"#.to_string()),
+                    start: 0,
+                    end: 1000,
+                    limit: 100,
+                },
+                "t",
+                "d",
+            )
+            .await
+            .unwrap();
+        let ns = api_fields.iter().find(|f| f.label == "namespace").unwrap();
+        assert_eq!(ns.cardinality, 1);
+
+        // The limit truncates the field list.
+        let one = service
+            .detected_fields(
+                &DetectedFieldsParams {
+                    query: None,
+                    start: 0,
+                    end: 1000,
+                    limit: 1,
+                },
+                "t",
+                "d",
+            )
+            .await
+            .unwrap();
+        assert_eq!(one.len(), 1);
     }
 
     #[tokio::test]
