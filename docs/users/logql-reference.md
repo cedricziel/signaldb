@@ -59,13 +59,15 @@ labels resolve as follows:
 | `level`, `severity`, `detected_level` | the `severity_text` column |
 | `trace_id`, `span_id` | the matching columns |
 | a **materialized** label (see below) | its dedicated `label_<key>` column |
-| any other label | a match inside the `log_attributes` / `resource_attributes` JSON |
+| any other label | the `log_attributes` / `resource_attributes` maps |
 
-Labels backed by a column are exact. Any other label is matched by the
-serialized `"key":"value"` fragment inside the attribute JSON — the same
-approximation the trace search API uses. It can occasionally over-match
-when another attribute's text embeds the same fragment; this is a known
-limitation until attributes are indexed.
+Labels backed by a column are exact. On tables created since attributes
+became typed maps, **any other label is also exact**: the value is looked
+up per key, and regex plus ordered comparisons (`| status >= 500`) work on
+every attribute. Older tables store attributes as serialized JSON, where a
+label is matched by its `"key":"value"` fragment — an approximation that
+can over-match and supports only `=`/`!=`; the querier picks the right
+form per table automatically.
 
 ### Materialized labels
 
@@ -133,10 +135,11 @@ a stage (`| level="error"`, `| status="500"`) does filter, resolving
 labels via the mapping above.
 
 Label filters support `=`, `!=`, `=~`, `!~` against columns (including
-materialized labels) and `=`, `!=` against JSON attributes, combined with
+materialized labels) and against map-typed attributes, combined with
 `and`/`or`/comma. Ordered comparisons (`>`, `>=`, `<`, `<=`, e.g.
-`| status >= 500`) work on **materialized** labels — which are cast to a
-number — but not on plain JSON attributes.
+`| status >= 500`) work on **materialized** labels and on any attribute of
+a map-typed table — values are cast to a number. Legacy JSON-attribute
+tables support only `=`/`!=` on non-materialized attributes.
 
 ## Metric queries
 

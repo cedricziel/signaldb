@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use iceberg_rust::spec::schema::Schema;
-use iceberg_rust::spec::types::{PrimitiveType, StructField, StructType, Type};
+use iceberg_rust::spec::types::{MapType, PrimitiveType, StructField, StructType, Type};
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -179,6 +179,12 @@ impl ResolvedSchema {
     pub fn to_iceberg_schema_with_labels(&self, labels: &[String]) -> Result<Schema> {
         let mut fields = Vec::new();
 
+        // Nested (map key/value) field IDs must be unique across the whole
+        // schema; allocate them after every top-level ID so the top-level
+        // numbering stays identical to the historical string-only layout.
+        let mut next_nested_id = self.fields.len() as i32 + 1;
+        let mut map_slots: Vec<usize> = Vec::new();
+
         for (idx, field) in self.fields.iter().enumerate() {
             let field_type = match field.field_type.as_str() {
                 "string" => Type::Primitive(PrimitiveType::String),
@@ -189,6 +195,12 @@ impl ResolvedSchema {
                 "boolean" => Type::Primitive(PrimitiveType::Boolean),
                 "timestamp_ns" => Type::Primitive(PrimitiveType::Timestamp), // No TimestampNs in iceberg-rust
                 "date" => Type::Primitive(PrimitiveType::Date),
+                // Attribute maps: string keys to string values. Key/value
+                // IDs are assigned in a second pass below.
+                "map<string,string>" => {
+                    map_slots.push(idx);
+                    Type::Primitive(PrimitiveType::String) // placeholder
+                }
                 "list<struct>" => {
                     // For now, use string for complex types
                     // TODO: Properly handle nested structures
@@ -210,9 +222,23 @@ impl ResolvedSchema {
             fields.push(struct_field);
         }
 
+        // Second pass: fill in map types with globally-unique nested IDs.
+        for idx in map_slots {
+            let key_id = next_nested_id;
+            let value_id = next_nested_id + 1;
+            next_nested_id += 2;
+            fields[idx].field_type = Type::Map(MapType {
+                key_id,
+                key: Box::new(Type::Primitive(PrimitiveType::String)),
+                value_id,
+                value_required: false,
+                value: Box::new(Type::Primitive(PrimitiveType::String)),
+            });
+        }
+
         // Append materialized-label columns after the base fields. They are
         // always optional strings (a row may not carry the attribute).
-        let mut next_id = self.fields.len() as i32 + 1;
+        let mut next_id = next_nested_id;
         for label in labels {
             let name = crate::schema::materialized_column_name(label);
             if fields.iter().any(|f| f.name == name) {

@@ -44,6 +44,15 @@ use super::error::QuerierError;
 /// attribute-JSON substring match.
 pub type MaterializedColumns = HashSet<String>;
 
+/// What the target table offers for attribute matching: which materialized
+/// `label_<key>` columns exist, and whether the attribute columns are
+/// typed maps (new tables) or JSON strings (legacy tables).
+#[derive(Debug, Default, Clone)]
+pub struct AttrContext {
+    pub materialized: MaterializedColumns,
+    pub map_attrs: bool,
+}
+
 /// Attribute columns searched for a label that is not a dedicated column.
 const LOG_ATTRIBUTES: &str = "log_attributes";
 const RESOURCE_ATTRIBUTES: &str = "resource_attributes";
@@ -53,7 +62,7 @@ const RESOURCE_ATTRIBUTES: &str = "resource_attributes";
 ///
 /// The caller ANDs in the request's time-range predicate.
 pub fn log_query_filter(query: &LogQuery) -> Result<Option<Expr>, QuerierError> {
-    log_query_filter_with_columns(query, &MaterializedColumns::new())
+    log_query_filter_with_columns(query, &AttrContext::default())
 }
 
 /// Like [`log_query_filter`], but aware of which materialized `label_<key>`
@@ -61,15 +70,15 @@ pub fn log_query_filter(query: &LogQuery) -> Result<Option<Expr>, QuerierError> 
 /// column are matched exactly instead of by JSON substring.
 pub fn log_query_filter_with_columns(
     query: &LogQuery,
-    columns: &MaterializedColumns,
+    ctx: &AttrContext,
 ) -> Result<Option<Expr>, QuerierError> {
     let mut exprs: Vec<Expr> = Vec::new();
 
     for matcher in &query.selector.matchers {
-        exprs.push(matcher_expr(matcher, columns)?);
+        exprs.push(matcher_expr(matcher, ctx)?);
     }
     for stage in &query.pipeline {
-        if let Some(expr) = stage_expr(stage, columns)? {
+        if let Some(expr) = stage_expr(stage, ctx)? {
             exprs.push(expr);
         }
     }
@@ -78,10 +87,7 @@ pub fn log_query_filter_with_columns(
 }
 
 /// Lower a stream-selector matcher.
-fn matcher_expr(
-    matcher: &LabelMatcher,
-    columns: &MaterializedColumns,
-) -> Result<Expr, QuerierError> {
+fn matcher_expr(matcher: &LabelMatcher, ctx: &AttrContext) -> Result<Expr, QuerierError> {
     let op = match matcher.op {
         MatchOp::Eq => FilterOp::Eq,
         MatchOp::Neq => FilterOp::Neq,
@@ -92,19 +98,16 @@ fn matcher_expr(
         &matcher.name,
         op,
         &FilterValue::String(matcher.value.clone()),
-        columns,
+        ctx,
     )
 }
 
 /// Lower a pipeline stage to an optional filter. Parser stages,
 /// formatters, and drop/keep reshape results without filtering rows.
-fn stage_expr(
-    stage: &PipelineStage,
-    columns: &MaterializedColumns,
-) -> Result<Option<Expr>, QuerierError> {
+fn stage_expr(stage: &PipelineStage, ctx: &AttrContext) -> Result<Option<Expr>, QuerierError> {
     match stage {
         PipelineStage::LineFilter(f) => Ok(Some(line_filter_expr(f)?)),
-        PipelineStage::LabelFilter(expr) => Ok(Some(label_filter_expr(expr, columns)?)),
+        PipelineStage::LabelFilter(expr) => Ok(Some(label_filter_expr(expr, ctx)?)),
         PipelineStage::Json(_)
         | PipelineStage::Logfmt(_)
         | PipelineStage::Regexp(_)
@@ -139,18 +142,13 @@ fn line_filter_expr(f: &LineFilter) -> Result<Expr, QuerierError> {
 }
 
 /// Lower a label-filter expression, preserving its `and`/`or` structure.
-fn label_filter_expr(
-    expr: &LabelFilterExpr,
-    columns: &MaterializedColumns,
-) -> Result<Expr, QuerierError> {
+fn label_filter_expr(expr: &LabelFilterExpr, ctx: &AttrContext) -> Result<Expr, QuerierError> {
     match expr {
-        LabelFilterExpr::Pred(p) => label_expr(&p.name, p.op, &p.value, columns),
+        LabelFilterExpr::Pred(p) => label_expr(&p.name, p.op, &p.value, ctx),
         LabelFilterExpr::And(a, b) => {
-            Ok(label_filter_expr(a, columns)?.and(label_filter_expr(b, columns)?))
+            Ok(label_filter_expr(a, ctx)?.and(label_filter_expr(b, ctx)?))
         }
-        LabelFilterExpr::Or(a, b) => {
-            Ok(label_filter_expr(a, columns)?.or(label_filter_expr(b, columns)?))
-        }
+        LabelFilterExpr::Or(a, b) => Ok(label_filter_expr(a, ctx)?.or(label_filter_expr(b, ctx)?)),
     }
 }
 
@@ -173,16 +171,71 @@ fn label_expr(
     name: &str,
     op: FilterOp,
     value: &FilterValue,
-    columns: &MaterializedColumns,
+    ctx: &AttrContext,
 ) -> Result<Expr, QuerierError> {
     if let Some(column) = column_for_label(name) {
         return column_expr(column, op, value);
     }
     let materialized = materialized_column_name(name);
-    if columns.contains(&materialized) {
+    if ctx.materialized.contains(&materialized) {
         return materialized_label_expr(&materialized, op, value);
     }
+    if ctx.map_attrs {
+        return map_attribute_expr(name, op, value);
+    }
     attribute_expr(name, op, value)
+}
+
+/// Predicate against typed `Map<Utf8, Utf8>` attribute columns: the value
+/// is extracted per key with `get_field` and compared exactly — no
+/// substring approximation. Regex and ordered comparisons work on any
+/// attribute (ordered casts the value to `Float64`); negations also match
+/// rows where the key is absent (NULL), mirroring the JSON path.
+fn map_attribute_expr(key: &str, op: FilterOp, value: &FilterValue) -> Result<Expr, QuerierError> {
+    use datafusion::functions::core::expr_fn::get_field;
+
+    let in_log = get_field(col(LOG_ATTRIBUTES), key);
+    let in_resource = get_field(col(RESOURCE_ATTRIBUTES), key);
+    let both = |f: &dyn Fn(Expr) -> Expr| f(in_log.clone()).or(f(in_resource.clone()));
+    let both_and = |f: &dyn Fn(Expr) -> Expr| f(in_log.clone()).and(f(in_resource.clone()));
+
+    Ok(match op {
+        FilterOp::Eq | FilterOp::CmpEq => {
+            let v = string_value(value)?;
+            both(&|e: Expr| e.eq(lit(v.clone())))
+        }
+        // Absent-or-different in *both* attribute maps.
+        FilterOp::Neq => {
+            let v = string_value(value)?;
+            both_and(&|e: Expr| e.clone().is_null().or(e.not_eq(lit(v.clone()))))
+        }
+        FilterOp::Re => {
+            let v = string_value(value)?;
+            both(&|e: Expr| regexp_like(e, lit(v.clone()), None))
+        }
+        FilterOp::Nre => {
+            let v = string_value(value)?;
+            both_and(&|e: Expr| {
+                e.clone()
+                    .is_null()
+                    .or(not(regexp_like(e, lit(v.clone()), None)))
+            })
+        }
+        FilterOp::Gt | FilterOp::Gte | FilterOp::Lt | FilterOp::Lte => {
+            let n = numeric_value(value)?;
+            let cmp = move |e: Expr| {
+                let casted = cast(e, DataType::Float64);
+                match op {
+                    FilterOp::Gt => casted.gt(lit(n)),
+                    FilterOp::Gte => casted.gt_eq(lit(n)),
+                    FilterOp::Lt => casted.lt(lit(n)),
+                    FilterOp::Lte => casted.lt_eq(lit(n)),
+                    _ => unreachable!(),
+                }
+            };
+            both(&cmp)
+        }
+    })
 }
 
 /// Predicate against a materialized attribute column (nullable `Utf8`).
@@ -328,11 +381,60 @@ mod tests {
     /// Lower with a set of materialized `label_<key>` columns present.
     fn sql_with(query: &str, columns: &[&str]) -> String {
         let q = parse_query(query).expect("parse");
-        let cols: MaterializedColumns = columns.iter().map(|c| c.to_string()).collect();
-        let expr = log_query_filter_with_columns(&q, &cols)
+        let ctx = AttrContext {
+            materialized: columns.iter().map(|c| c.to_string()).collect(),
+            map_attrs: false,
+        };
+        let expr = log_query_filter_with_columns(&q, &ctx)
             .expect("lower")
             .expect("some filter");
         format!("{expr}")
+    }
+
+    /// Lower against a map-typed attribute table.
+    fn sql_map(query: &str) -> String {
+        let q = parse_query(query).expect("parse");
+        let ctx = AttrContext {
+            materialized: MaterializedColumns::new(),
+            map_attrs: true,
+        };
+        let expr = log_query_filter_with_columns(&q, &ctx)
+            .expect("lower")
+            .expect("some filter");
+        format!("{expr}")
+    }
+
+    #[test]
+    fn map_attribute_tables_get_exact_regex_and_ordered_matching() {
+        // Exact equality per key via get_field on both attribute maps.
+        let eq = sql_map(r#"{namespace="prod"}"#);
+        assert!(
+            eq.contains("get_field(log_attributes") && eq.contains(r#"= Utf8("prod")"#),
+            "{eq}"
+        );
+        assert!(eq.contains("get_field(resource_attributes"), "{eq}");
+
+        // Regex on any attribute — impossible on the JSON path.
+        let re = sql_map(r#"{namespace=~"pro.*"}"#);
+        assert!(re.contains("regexp_like(get_field(log_attributes"), "{re}");
+
+        // Ordered comparison on any attribute, cast to Float64.
+        let gt = sql_map(r#"{service_name="api"} | logfmt | status > 500"#);
+        assert!(
+            gt.contains("CAST(get_field(log_attributes") && gt.contains("Float64(500)"),
+            "{gt}"
+        );
+
+        // != matches absent keys too (NULL-or-different in both maps).
+        let ne = sql_map(r#"{namespace!="prod"}"#);
+        assert!(ne.contains("IS NULL OR"), "{ne}");
+
+        // The JSON path still rejects ordered/regex on attributes.
+        let q = parse_query(r#"{service_name="api"} | logfmt | status > 500"#).expect("parse");
+        assert!(matches!(
+            log_query_filter_with_columns(&q, &AttrContext::default()),
+            Err(QuerierError::Unsupported(_))
+        ));
     }
 
     #[test]
@@ -372,7 +474,7 @@ mod tests {
         // Without the column, ordered comparison on an attribute is rejected.
         let q = parse_query(r#"{service_name="api"} | logfmt | status > 500"#).expect("parse");
         assert!(matches!(
-            log_query_filter_with_columns(&q, &MaterializedColumns::new()),
+            log_query_filter_with_columns(&q, &AttrContext::default()),
             Err(QuerierError::Unsupported(_))
         ));
     }

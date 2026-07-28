@@ -377,6 +377,10 @@ fn create_arrow_schema_from_resolved(resolved: &ResolvedSchema) -> Result<Arc<Sc
                 DataType::Timestamp(datafusion::arrow::datatypes::TimeUnit::Nanosecond, None)
             }
             "date" => DataType::Date32,
+            // The transform emits attribute maps as JSON strings; the
+            // writer's schema coercion converts them to MapArray for
+            // tables whose stored schema declares a map.
+            "map<string,string>" => DataType::Utf8,
             "list<struct>" => {
                 // For now, treat as string (will be handled properly later)
                 DataType::Utf8
