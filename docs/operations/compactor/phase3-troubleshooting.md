@@ -797,3 +797,5 @@ If you encounter issues not covered in this guide:
 3. **Gather Metrics:** `curl localhost:9091/metrics | grep compactor > metrics.txt`
 4. **Configuration:** Share `signaldb.toml` (redact sensitive values)
 5. **Open Issue:** https://github.com/cedricziel/signaldb/issues with above information
+
+> The `Attribute-stats analyzer` log line on each rewrite is advisory only (epic #737); it never blocks or alters compaction.

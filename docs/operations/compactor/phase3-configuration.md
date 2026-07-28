@@ -584,3 +584,5 @@ Invalid retention configuration for tenant 'acme': Invalid retention period for 
 - [Phase 3 Operations Guide](phase3-operations.md)
 - [Phase 3 Troubleshooting Guide](phase3-troubleshooting.md)
 - [Compactor README](../../../src/compactor/README.md)
+
+> Note: every compaction rewrite also runs a read-only attribute-statistics pass that logs per-key presence, approximate cardinality, and advisory materialization candidates (`Attribute-stats analyzer` log line). It requires no configuration and changes no data.

@@ -12,6 +12,7 @@
 //!   operation
 //! - `flight`/`http`: on-demand admin actions and observability endpoints
 
+pub mod attr_stats;
 pub mod commit;
 pub mod executor;
 pub mod flight;

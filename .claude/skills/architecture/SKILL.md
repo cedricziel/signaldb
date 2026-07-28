@@ -89,7 +89,7 @@ Key details:
 - **Phase 2**: Active Parquet file compaction for storage efficiency
 - **Phase 3**: Retention enforcement, snapshot expiration, and orphan file cleanup
 
-The compactor runs concurrent background loops for compaction, retention enforcement, and orphan cleanup, all using tokio::select! for non-blocking execution.
+Each rewrite also runs a read-only attribute-stats pass logging per-key presence/cardinality + advisory materialization candidates (epic #737 L4a). The compactor runs concurrent background loops for compaction, retention enforcement, and orphan cleanup, all using tokio::select! for non-blocking execution.
 
 ## Dual Catalog System
 
