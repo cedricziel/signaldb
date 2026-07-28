@@ -277,6 +277,11 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
+          # latest=false: metadata-action's latest=auto default would add a
+          # plain (unsuffixed) latest tag here, letting a single-arch image
+          # overwrite it; the manifest job owns the multi-arch latest tag.
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag_name }},suffix=-amd64
 
@@ -322,6 +327,9 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
+          # latest=false: see the amd64 job; the manifest job owns latest.
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag_name }},suffix=-arm64
 
