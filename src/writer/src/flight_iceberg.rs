@@ -200,7 +200,9 @@ impl FlightService for IcebergWriterFlightService {
                 metadata.tracestate.as_deref(),
             );
         }
-        common::self_monitoring::maybe_suppress_self_telemetry(suppress, async move {
+        // Boxed: the state machine is large, and nesting it by value inside
+        // the suppression wrapper overflows rustc's layout-query depth.
+        common::self_monitoring::maybe_suppress_self_telemetry(suppress, Box::pin(async move {
         if let Some(ref metadata) = flight_metadata {
             tracing::info!(
                 schema_version = %metadata.schema_version,
@@ -339,7 +341,7 @@ impl FlightService for IcebergWriterFlightService {
         let out = stream::once(async move { Ok(result) }).boxed();
         Ok(Response::new(out))
         }
-        .instrument(span))
+        .instrument(span)))
         .await
     }
 
