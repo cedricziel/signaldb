@@ -1175,102 +1175,58 @@ impl FlightService for QuerierFlightService {
         &self,
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
+        let metadata = request.metadata().clone();
+        // Tenant-scoped caller identity, inserted by the Flight auth
+        // interceptor. None for internal-service callers and for
+        // deployments without Flight auth configured.
+        let caller_tenant = request
+            .extensions()
+            .get::<common::auth::TenantContext>()
+            .cloned();
+        let ticket = request.into_inner();
+        let ticket_content = String::from_utf8(ticket.ticket.to_vec())
+            .map_err(|e| Status::invalid_argument(format!("Invalid ticket: {e}")))?;
+
+        // Anti-loop guard (#760): executing a query over the _system
+        // tenant's own telemetry must not emit logs/spans that get exported
+        // and re-ingested as _system telemetry. The tenant is the
+        // authenticated caller when present, else the one named in the
+        // ticket (every prefixed ticket form is `op:tenant_slug:...`, so a
+        // cheap segment scan suffices before parsing — parsing itself
+        // logs), else (raw SQL from internal callers) the x-tenant-id
+        // header.
+        let suppress = caller_tenant
+            .as_ref()
+            .map(|ctx| ctx.tenant_id.as_str())
+            .or_else(|| metadata.get("x-tenant-id").and_then(|v| v.to_str().ok()))
+            .is_some_and(common::self_monitoring::is_self_monitoring_tenant)
+            || ticket_content
+                .split(':')
+                .nth(1)
+                .is_some_and(common::self_monitoring::is_self_monitoring_tenant);
+
         // Process within a span that joins the caller's distributed trace
         // (e.g. Router -> Querier); the parent must be set before the span
-        // is first entered.
-        let span = tracing::info_span!("flight_do_get");
-        common::flight::trace_context::set_parent_from_request(&span, &request);
-        async move {
-            let metadata = request.metadata().clone();
-            // Tenant-scoped caller identity, inserted by the Flight auth
-            // interceptor. None for internal-service callers and for
-            // deployments without Flight auth configured.
-            let caller_tenant = request
-                .extensions()
-                .get::<common::auth::TenantContext>()
-                .cloned();
-            let ticket = request.into_inner();
-            let ticket_content = String::from_utf8(ticket.ticket.to_vec())
-                .map_err(|e| Status::invalid_argument(format!("Invalid ticket: {e}")))?;
+        // is first entered. The span is created under the suppression scope
+        // so it is itself not exported for _system queries.
+        let make_span = || tracing::info_span!("flight_do_get");
+        let span = if suppress {
+            common::self_monitoring::suppress_self_telemetry_sync(make_span)
+        } else {
+            make_span()
+        };
+        common::flight::trace_context::set_parent_from_metadata(&span, &metadata);
+        common::self_monitoring::maybe_suppress_self_telemetry(
+            suppress,
+            async move {
+                tracing::info!(ticket = %ticket_content, "Processing Flight ticket");
 
-            tracing::info!(ticket = %ticket_content, "Processing Flight ticket");
+                // Parse ticket to determine request type
+                let ticket_request = self.parse_ticket(&ticket_content)?;
 
-            // Parse ticket to determine request type
-            let ticket_request = self.parse_ticket(&ticket_content)?;
-
-            // Tenant-scoped callers may only touch their own tenant's data,
-            // regardless of what the ticket claims.
-            if let Some(ctx) = &caller_tenant {
-                let ticket_tenant = match &ticket_request {
-                    TicketRequest::FindTrace { tenant_slug, .. }
-                    | TicketRequest::SearchTraces { tenant_slug, .. }
-                    | TicketRequest::FindProfile { tenant_slug, .. }
-                    | TicketRequest::SearchProfiles { tenant_slug, .. }
-                    | TicketRequest::ProfileTypes { tenant_slug, .. }
-                    | TicketRequest::ProfileLabelNames { tenant_slug, .. }
-                    | TicketRequest::ProfileLabelValues { tenant_slug, .. }
-                    | TicketRequest::ProfileFlamegraph { tenant_slug, .. }
-                    | TicketRequest::ProfileDiff { tenant_slug, .. }
-                    | TicketRequest::SqlProfiles { tenant_slug, .. }
-                    | TicketRequest::ProfilesByTrace { tenant_slug, .. }
-                    | TicketRequest::QueryLogs { tenant_slug, .. }
-                    | TicketRequest::QueryLogsLabels { tenant_slug, .. }
-                    | TicketRequest::QueryLogsLabelValues { tenant_slug, .. }
-                    | TicketRequest::QueryLogsSeries { tenant_slug, .. }
-                    | TicketRequest::QueryLogsDetectedFields { tenant_slug, .. }
-                    | TicketRequest::QueryMetric { tenant_slug, .. }
-                    | TicketRequest::QueryPromql { tenant_slug, .. }
-                    | TicketRequest::QueryMetricLabels { tenant_slug, .. }
-                    | TicketRequest::QueryMetricLabelValues { tenant_slug, .. }
-                    | TicketRequest::QueryMetricSeries { tenant_slug, .. } => Some(tenant_slug),
-                    TicketRequest::SqlQuery { .. } => None,
-                };
-                if let Some(ticket_tenant) = ticket_tenant
-                    && ticket_tenant != &ctx.tenant_slug
-                {
-                    tracing::warn!(
-                        caller_tenant = %ctx.tenant_slug,
-                        ticket_tenant = %ticket_tenant,
-                        "Rejecting cross-tenant Flight ticket"
-                    );
-                    return Err(Status::permission_denied(
-                        "ticket tenant does not match authenticated tenant",
-                    ));
-                }
-            }
-            let query_type = match &ticket_request {
-                TicketRequest::FindTrace { .. } => "trace_by_id",
-                TicketRequest::SearchTraces { .. } => "trace_search",
-                TicketRequest::FindProfile { .. } => "profile_by_id",
-                TicketRequest::SearchProfiles { .. } => "profile_search",
-                TicketRequest::ProfileTypes { .. } => "profile_types",
-                TicketRequest::ProfileLabelNames { .. } => "profile_label_names",
-                TicketRequest::ProfileLabelValues { .. } => "profile_label_values",
-                TicketRequest::ProfileFlamegraph { .. } => "profile_flamegraph",
-                TicketRequest::ProfileDiff { .. } => "profile_diff",
-                TicketRequest::SqlProfiles { .. } => "sql_profiles",
-                TicketRequest::ProfilesByTrace { .. } => "profiles_by_trace",
-                TicketRequest::QueryLogs { .. } => "query_logs",
-                TicketRequest::QueryLogsLabels { .. } => "query_logs_labels",
-                TicketRequest::QueryLogsLabelValues { .. } => "query_logs_label_values",
-                TicketRequest::QueryLogsSeries { .. } => "query_logs_series",
-                TicketRequest::QueryLogsDetectedFields { .. } => "query_logs_detected_fields",
-                TicketRequest::QueryMetric { .. } => "query_metric",
-                TicketRequest::QueryPromql { .. } => "query_promql",
-                TicketRequest::QueryMetricLabels { .. } => "query_metric_labels",
-                TicketRequest::QueryMetricLabelValues { .. } => "query_metric_label_values",
-                TicketRequest::QueryMetricSeries { .. } => "query_metric_series",
-                TicketRequest::SqlQuery { .. } => "sql",
-            };
-
-            // Per-tenant concurrent-query cap. The tenant is the
-            // authenticated caller when present, else the tenant named in
-            // the ticket (internal callers proxy on behalf of tenants).
-            // Internal raw-SQL callers carry no tenant and are exempt.
-            let permit_tenant = caller_tenant
-                .as_ref()
-                .map(|ctx| ctx.tenant_id.clone())
-                .or_else(|| match &ticket_request {
+                // The tenant named in the ticket, when it names one (raw
+                // SQL tickets carry the tenant out of band).
+                let ticket_tenant_slug: Option<String> = match &ticket_request {
                     TicketRequest::FindTrace { tenant_slug, .. }
                     | TicketRequest::SearchTraces { tenant_slug, .. }
                     | TicketRequest::FindProfile { tenant_slug, .. }
@@ -1295,519 +1251,575 @@ impl FlightService for QuerierFlightService {
                         Some(tenant_slug.clone())
                     }
                     TicketRequest::SqlQuery { .. } => None,
-                });
-            // Held until the query's batches are fully computed.
-            let _query_permit = match &permit_tenant {
-                Some(tenant) => self.try_acquire_query_permit(tenant)?,
-                None => None,
-            };
-            let query_start = std::time::Instant::now();
-            let query_future = async {
-                Ok(match ticket_request {
-                    TicketRequest::FindTrace {
-                        tenant_slug,
-                        dataset_slug,
-                        trace_id,
-                        start,
-                        end,
-                    } => {
-                        tracing::info!(
-                            tenant_slug = %tenant_slug,
-                            dataset_slug = %dataset_slug,
-                            trace_id = %trace_id,
-                            start = ?start,
-                            end = ?end,
-                            "Executing find_trace"
-                        );
+                };
 
-                        let params = FindTraceByIdParams {
+                // Tenant-scoped callers may only touch their own tenant's data,
+                // regardless of what the ticket claims.
+                if let Some(ctx) = &caller_tenant
+                    && let Some(ticket_tenant) = ticket_tenant_slug.as_deref()
+                    && ticket_tenant != ctx.tenant_slug
+                {
+                    tracing::warn!(
+                        caller_tenant = %ctx.tenant_slug,
+                        ticket_tenant = %ticket_tenant,
+                        "Rejecting cross-tenant Flight ticket"
+                    );
+                    return Err(Status::permission_denied(
+                        "ticket tenant does not match authenticated tenant",
+                    ));
+                }
+                let query_type = match &ticket_request {
+                    TicketRequest::FindTrace { .. } => "trace_by_id",
+                    TicketRequest::SearchTraces { .. } => "trace_search",
+                    TicketRequest::FindProfile { .. } => "profile_by_id",
+                    TicketRequest::SearchProfiles { .. } => "profile_search",
+                    TicketRequest::ProfileTypes { .. } => "profile_types",
+                    TicketRequest::ProfileLabelNames { .. } => "profile_label_names",
+                    TicketRequest::ProfileLabelValues { .. } => "profile_label_values",
+                    TicketRequest::ProfileFlamegraph { .. } => "profile_flamegraph",
+                    TicketRequest::ProfileDiff { .. } => "profile_diff",
+                    TicketRequest::SqlProfiles { .. } => "sql_profiles",
+                    TicketRequest::ProfilesByTrace { .. } => "profiles_by_trace",
+                    TicketRequest::QueryLogs { .. } => "query_logs",
+                    TicketRequest::QueryLogsLabels { .. } => "query_logs_labels",
+                    TicketRequest::QueryLogsLabelValues { .. } => "query_logs_label_values",
+                    TicketRequest::QueryLogsSeries { .. } => "query_logs_series",
+                    TicketRequest::QueryLogsDetectedFields { .. } => "query_logs_detected_fields",
+                    TicketRequest::QueryMetric { .. } => "query_metric",
+                    TicketRequest::QueryPromql { .. } => "query_promql",
+                    TicketRequest::QueryMetricLabels { .. } => "query_metric_labels",
+                    TicketRequest::QueryMetricLabelValues { .. } => "query_metric_label_values",
+                    TicketRequest::QueryMetricSeries { .. } => "query_metric_series",
+                    TicketRequest::SqlQuery { .. } => "sql",
+                };
+
+                // Per-tenant concurrent-query cap. The tenant is the
+                // authenticated caller when present, else the tenant named in
+                // the ticket (internal callers proxy on behalf of tenants).
+                // Internal raw-SQL callers carry no tenant and are exempt.
+                let permit_tenant = caller_tenant
+                    .as_ref()
+                    .map(|ctx| ctx.tenant_id.clone())
+                    .or_else(|| ticket_tenant_slug.clone());
+                // Held until the query's batches are fully computed.
+                let _query_permit = match &permit_tenant {
+                    Some(tenant) => self.try_acquire_query_permit(tenant)?,
+                    None => None,
+                };
+                let query_start = std::time::Instant::now();
+                let query_future = async {
+                    Ok(match ticket_request {
+                        TicketRequest::FindTrace {
+                            tenant_slug,
+                            dataset_slug,
                             trace_id,
                             start,
                             end,
-                        };
+                        } => {
+                            tracing::info!(
+                                tenant_slug = %tenant_slug,
+                                dataset_slug = %dataset_slug,
+                                trace_id = %trace_id,
+                                start = ?start,
+                                end = ?end,
+                                "Executing find_trace"
+                            );
 
-                        match self
-                            .trace_service
-                            .find_by_id_with_tenant(params, &tenant_slug, &dataset_slug)
-                            .await
-                        {
-                            Ok(Some(trace)) => {
-                                tracing::info!(span_count = trace.spans.len(), "Found trace");
-                                self.trace_to_record_batches(&trace).await.map_err(|e| {
-                                    Status::internal(format!(
-                                        "Failed to convert trace to batches: {e}"
-                                    ))
-                                })?
-                            }
-                            Ok(None) => {
-                                tracing::info!("No trace found");
-                                let e = crate::query::error::QuerierError::TraceNotFound;
-                                return Err(Status::not_found(e.to_string()));
-                            }
-                            Err(e) => {
-                                tracing::error!(error = ?e, "Error querying trace");
-                                // Mirror the search arm: caller errors are
-                                // surfaced as such instead of a blanket 500.
-                                return Err(match e {
-                                    crate::query::error::QuerierError::InvalidInput(msg) => {
-                                        Status::invalid_argument(msg)
-                                    }
-                                    crate::query::error::QuerierError::Unsupported(msg) => {
-                                        Status::unimplemented(msg)
-                                    }
-                                    other => {
-                                        Status::internal(format!("Trace query failed: {other:?}"))
-                                    }
-                                });
-                            }
-                        }
-                    }
-                    TicketRequest::SearchTraces {
-                        tenant_slug,
-                        dataset_slug,
-                        params,
-                    } => {
-                        tracing::info!(
-                            tenant_slug = %tenant_slug,
-                            dataset_slug = %dataset_slug,
-                            params = ?params,
-                            "Executing search_traces"
-                        );
+                            let params = FindTraceByIdParams {
+                                trace_id,
+                                start,
+                                end,
+                            };
 
-                        match self
-                            .trace_service
-                            .find_traces_with_tenant(params, &tenant_slug, &dataset_slug)
-                            .await
-                        {
-                            Ok(traces) => {
-                                tracing::info!(trace_count = traces.len(), "Found traces");
-
-                                let mut all_batches = Vec::new();
-                                for trace in &traces {
-                                    let trace_batches =
-                                        self.trace_to_record_batches(trace).await.map_err(|e| {
-                                            Status::internal(format!(
-                                                "Failed to convert trace to batches: {e}"
-                                            ))
-                                        })?;
-                                    all_batches.extend(trace_batches);
+                            match self
+                                .trace_service
+                                .find_by_id_with_tenant(params, &tenant_slug, &dataset_slug)
+                                .await
+                            {
+                                Ok(Some(trace)) => {
+                                    tracing::info!(span_count = trace.spans.len(), "Found trace");
+                                    self.trace_to_record_batches(&trace).await.map_err(|e| {
+                                        Status::internal(format!(
+                                            "Failed to convert trace to batches: {e}"
+                                        ))
+                                    })?
                                 }
-                                all_batches
-                            }
-                            Err(e) => {
-                                tracing::error!(error = ?e, "Error searching traces");
-                                // Distinguish caller errors from server
-                                // errors so bad or unsupported selectors
-                                // surface as 400/501, not 500.
-                                return Err(match e {
-                                    crate::query::error::QuerierError::InvalidInput(msg) => {
-                                        Status::invalid_argument(msg)
-                                    }
-                                    crate::query::error::QuerierError::Unsupported(msg) => {
-                                        Status::unimplemented(msg)
-                                    }
-                                    other => {
-                                        Status::internal(format!("Trace search failed: {other:?}"))
-                                    }
-                                });
+                                Ok(None) => {
+                                    tracing::info!("No trace found");
+                                    let e = crate::query::error::QuerierError::TraceNotFound;
+                                    return Err(Status::not_found(e.to_string()));
+                                }
+                                Err(e) => {
+                                    tracing::error!(error = ?e, "Error querying trace");
+                                    // Mirror the search arm: caller errors are
+                                    // surfaced as such instead of a blanket 500.
+                                    return Err(match e {
+                                        crate::query::error::QuerierError::InvalidInput(msg) => {
+                                            Status::invalid_argument(msg)
+                                        }
+                                        crate::query::error::QuerierError::Unsupported(msg) => {
+                                            Status::unimplemented(msg)
+                                        }
+                                        other => Status::internal(format!(
+                                            "Trace query failed: {other:?}"
+                                        )),
+                                    });
+                                }
                             }
                         }
-                    }
-                    TicketRequest::FindProfile {
-                        tenant_slug,
-                        dataset_slug,
-                        profile_id,
-                    } => {
-                        tracing::info!(
-                            tenant_slug = %tenant_slug,
-                            dataset_slug = %dataset_slug,
-                            profile_id = %profile_id,
-                            "Executing find_profile"
-                        );
-                        let batches = self
-                            .profile_service
-                            .find_by_id_with_tenant(
-                                FindProfileByIdParams { profile_id },
-                                &tenant_slug,
-                                &dataset_slug,
-                            )
-                            .await
-                            .map_err(querier_error_to_status)?;
-                        if batches.is_empty() {
-                            return Err(Status::not_found("Profile not found"));
+                        TicketRequest::SearchTraces {
+                            tenant_slug,
+                            dataset_slug,
+                            params,
+                        } => {
+                            tracing::info!(
+                                tenant_slug = %tenant_slug,
+                                dataset_slug = %dataset_slug,
+                                params = ?params,
+                                "Executing search_traces"
+                            );
+
+                            match self
+                                .trace_service
+                                .find_traces_with_tenant(params, &tenant_slug, &dataset_slug)
+                                .await
+                            {
+                                Ok(traces) => {
+                                    tracing::info!(trace_count = traces.len(), "Found traces");
+
+                                    let mut all_batches = Vec::new();
+                                    for trace in &traces {
+                                        let trace_batches = self
+                                            .trace_to_record_batches(trace)
+                                            .await
+                                            .map_err(|e| {
+                                                Status::internal(format!(
+                                                    "Failed to convert trace to batches: {e}"
+                                                ))
+                                            })?;
+                                        all_batches.extend(trace_batches);
+                                    }
+                                    all_batches
+                                }
+                                Err(e) => {
+                                    tracing::error!(error = ?e, "Error searching traces");
+                                    // Distinguish caller errors from server
+                                    // errors so bad or unsupported selectors
+                                    // surface as 400/501, not 500.
+                                    return Err(match e {
+                                        crate::query::error::QuerierError::InvalidInput(msg) => {
+                                            Status::invalid_argument(msg)
+                                        }
+                                        crate::query::error::QuerierError::Unsupported(msg) => {
+                                            Status::unimplemented(msg)
+                                        }
+                                        other => Status::internal(format!(
+                                            "Trace search failed: {other:?}"
+                                        )),
+                                    });
+                                }
+                            }
                         }
-                        batches
-                    }
-                    TicketRequest::SearchProfiles {
-                        tenant_slug,
-                        dataset_slug,
-                        params,
-                    } => {
-                        tracing::info!(
-                            tenant_slug = %tenant_slug,
-                            dataset_slug = %dataset_slug,
-                            params = ?params,
-                            "Executing search_profiles"
-                        );
-                        self.profile_service
-                            .search_with_tenant(params, &tenant_slug, &dataset_slug)
-                            .await
-                            .map_err(querier_error_to_status)?
-                    }
-                    TicketRequest::ProfileTypes {
-                        tenant_slug,
-                        dataset_slug,
-                        params,
-                    } => {
-                        let types = self
-                            .profile_service
-                            .profile_types_with_tenant(params, &tenant_slug, &dataset_slug)
-                            .await
-                            .map_err(querier_error_to_status)?;
-                        vec![strings_to_batch("profile_type", types)?]
-                    }
-                    TicketRequest::ProfileLabelNames {
-                        tenant_slug,
-                        dataset_slug,
-                        params,
-                    } => {
-                        let names = self
-                            .profile_service
-                            .label_names_with_tenant(params, &tenant_slug, &dataset_slug)
-                            .await
-                            .map_err(querier_error_to_status)?;
-                        vec![strings_to_batch("label_name", names)?]
-                    }
-                    TicketRequest::ProfileLabelValues {
-                        tenant_slug,
-                        dataset_slug,
-                        label_name,
-                        params,
-                    } => {
-                        let values = self
-                            .profile_service
-                            .label_values_with_tenant(
-                                &label_name,
-                                params,
-                                &tenant_slug,
-                                &dataset_slug,
-                            )
-                            .await
-                            .map_err(querier_error_to_status)?;
-                        vec![strings_to_batch("label_value", values)?]
-                    }
-                    TicketRequest::ProfileFlamegraph {
-                        tenant_slug,
-                        dataset_slug,
-                        params,
-                    } => {
-                        let flamegraph = self
-                            .profile_service
-                            .flamegraph_with_tenant(params, &tenant_slug, &dataset_slug)
-                            .await
-                            .map_err(querier_error_to_status)?;
-                        vec![json_to_batch("flamegraph", &flamegraph)?]
-                    }
-                    TicketRequest::ProfileDiff {
-                        tenant_slug,
-                        dataset_slug,
-                        params,
-                    } => {
-                        let diff = self
-                            .profile_service
-                            .diff_with_tenant(params, &tenant_slug, &dataset_slug)
-                            .await
-                            .map_err(querier_error_to_status)?;
-                        vec![json_to_batch("diff", &diff)?]
-                    }
-                    TicketRequest::ProfilesByTrace {
-                        tenant_slug,
-                        dataset_slug,
-                        trace_id,
-                        span_id,
-                    } => {
-                        tracing::info!(
-                            tenant_slug = %tenant_slug,
-                            dataset_slug = %dataset_slug,
-                            trace_id = %trace_id,
-                            span_id = ?span_id,
-                            "Executing profiles_by_trace"
-                        );
-                        self.profile_service
-                            .find_by_trace_with_tenant(
-                                &trace_id,
-                                span_id.as_deref(),
-                                &tenant_slug,
-                                &dataset_slug,
-                            )
-                            .await
-                            .map_err(querier_error_to_status)?
-                    }
-                    TicketRequest::QueryLogs {
-                        tenant_slug,
-                        dataset_slug,
-                        params,
-                    } => {
-                        tracing::info!(
-                            tenant_slug = %tenant_slug,
-                            dataset_slug = %dataset_slug,
-                            query = %params.query,
-                            "Executing query_logs"
-                        );
-                        self.logs_service
-                            .query_logs(&params, &tenant_slug, &dataset_slug)
-                            .await
-                            .map_err(querier_error_to_status)?
-                    }
-                    TicketRequest::QueryLogsLabels {
-                        tenant_slug,
-                        dataset_slug,
-                        start,
-                        end,
-                    } => {
-                        let labels = self
-                            .logs_service
-                            .get_labels(start, end, &tenant_slug, &dataset_slug)
-                            .await
-                            .map_err(querier_error_to_status)?;
-                        vec![strings_to_batch("label", labels)?]
-                    }
-                    TicketRequest::QueryLogsLabelValues {
-                        tenant_slug,
-                        dataset_slug,
-                        label,
-                        start,
-                        end,
-                    } => {
-                        let values = self
-                            .logs_service
-                            .get_label_values(&label, start, end, &tenant_slug, &dataset_slug)
-                            .await
-                            .map_err(querier_error_to_status)?;
-                        vec![strings_to_batch("value", values)?]
-                    }
-                    TicketRequest::QueryLogsSeries {
-                        tenant_slug,
-                        dataset_slug,
-                        params,
-                    } => {
-                        let series = self
-                            .logs_service
-                            .get_series(
-                                &params.selector,
-                                params.start,
-                                params.end,
-                                &tenant_slug,
-                                &dataset_slug,
-                            )
-                            .await
-                            .map_err(querier_error_to_status)?;
-                        vec![json_to_batch("series", &series)?]
-                    }
-                    TicketRequest::QueryLogsDetectedFields {
-                        tenant_slug,
-                        dataset_slug,
-                        params,
-                    } => {
-                        let fields = self
-                            .logs_service
-                            .detected_fields(&params, &tenant_slug, &dataset_slug)
-                            .await
-                            .map_err(querier_error_to_status)?;
-                        vec![json_to_batch("fields", &fields)?]
-                    }
-                    TicketRequest::QueryMetric {
-                        tenant_slug,
-                        dataset_slug,
-                        params,
-                    } => {
-                        tracing::info!(
-                            tenant_slug = %tenant_slug,
-                            dataset_slug = %dataset_slug,
-                            query = %params.query,
-                            "Executing query_metric"
-                        );
-                        self.logs_service
-                            .query_metric(&params, &tenant_slug, &dataset_slug)
-                            .await
-                            .map_err(querier_error_to_status)?
-                    }
-                    TicketRequest::QueryPromql {
-                        tenant_slug,
-                        dataset_slug,
-                        params,
-                    } => {
-                        tracing::info!(
-                            tenant_slug = %tenant_slug,
-                            dataset_slug = %dataset_slug,
-                            query = %params.query,
-                            "Executing query_promql"
-                        );
-                        self.metrics_service
-                            .query_range(
-                                &params.query,
-                                params.start,
-                                params.end,
-                                params.step,
-                                &tenant_slug,
-                                &dataset_slug,
-                            )
-                            .await
-                            .map_err(querier_error_to_status)?
-                    }
-                    TicketRequest::QueryMetricLabels {
-                        tenant_slug,
-                        dataset_slug,
-                        start,
-                        end,
-                    } => {
-                        let labels = self
-                            .metrics_service
-                            .get_labels(start, end, &tenant_slug, &dataset_slug)
-                            .await
-                            .map_err(querier_error_to_status)?;
-                        vec![strings_to_batch("label", labels)?]
-                    }
-                    TicketRequest::QueryMetricLabelValues {
-                        tenant_slug,
-                        dataset_slug,
-                        label,
-                        start,
-                        end,
-                    } => {
-                        let values = self
-                            .metrics_service
-                            .get_label_values(&label, start, end, &tenant_slug, &dataset_slug)
-                            .await
-                            .map_err(querier_error_to_status)?;
-                        vec![strings_to_batch("value", values)?]
-                    }
-                    TicketRequest::QueryMetricSeries {
-                        tenant_slug,
-                        dataset_slug,
-                        params,
-                    } => {
-                        let series = self
-                            .metrics_service
-                            .get_series(
-                                &params.selector,
-                                params.start,
-                                params.end,
-                                &tenant_slug,
-                                &dataset_slug,
-                            )
-                            .await
-                            .map_err(querier_error_to_status)?;
-                        vec![json_to_batch("series", &series)?]
-                    }
-                    TicketRequest::SqlProfiles {
-                        tenant_slug,
-                        dataset_slug,
-                        sql,
-                    } => {
-                        tracing::info!(
-                            tenant_slug = %tenant_slug,
-                            dataset_slug = %dataset_slug,
-                            sql = %sql,
-                            "Executing sql_profiles"
-                        );
-                        // Pin the session defaults to the ticket's
-                        // tenant/dataset so unqualified table names like
-                        // `profiles` resolve inside the tenant's catalog.
-                        let request_ctx =
-                            self.session_for_request(Some(&tenant_slug), Some(&dataset_slug));
-                        self.execute_distributed_query(&request_ctx, &sql)
-                            .await
-                            .map_err(|e| {
-                                Status::internal(format!("Profiles SQL query failed: {e}"))
-                            })?
-                    }
-                    TicketRequest::SqlQuery { sql } => {
-                        // Tenant-scoped callers are pinned to their
-                        // authenticated tenant/dataset; only internal or
-                        // unauthenticated callers may scope via headers.
-                        let (tenant_slug, dataset_slug) = match &caller_tenant {
-                            Some(ctx) => (
-                                Some(ctx.tenant_slug.clone()),
-                                Some(ctx.dataset_slug.clone()),
-                            ),
-                            None => (
-                                metadata
-                                    .get("x-tenant-id")
-                                    .and_then(|v| v.to_str().ok())
-                                    .map(|s| s.to_string()),
-                                metadata
-                                    .get("x-dataset-id")
-                                    .and_then(|v| v.to_str().ok())
-                                    .map(|s| s.to_string()),
-                            ),
-                        };
+                        TicketRequest::FindProfile {
+                            tenant_slug,
+                            dataset_slug,
+                            profile_id,
+                        } => {
+                            tracing::info!(
+                                tenant_slug = %tenant_slug,
+                                dataset_slug = %dataset_slug,
+                                profile_id = %profile_id,
+                                "Executing find_profile"
+                            );
+                            let batches = self
+                                .profile_service
+                                .find_by_id_with_tenant(
+                                    FindProfileByIdParams { profile_id },
+                                    &tenant_slug,
+                                    &dataset_slug,
+                                )
+                                .await
+                                .map_err(querier_error_to_status)?;
+                            if batches.is_empty() {
+                                return Err(Status::not_found("Profile not found"));
+                            }
+                            batches
+                        }
+                        TicketRequest::SearchProfiles {
+                            tenant_slug,
+                            dataset_slug,
+                            params,
+                        } => {
+                            tracing::info!(
+                                tenant_slug = %tenant_slug,
+                                dataset_slug = %dataset_slug,
+                                params = ?params,
+                                "Executing search_profiles"
+                            );
+                            self.profile_service
+                                .search_with_tenant(params, &tenant_slug, &dataset_slug)
+                                .await
+                                .map_err(querier_error_to_status)?
+                        }
+                        TicketRequest::ProfileTypes {
+                            tenant_slug,
+                            dataset_slug,
+                            params,
+                        } => {
+                            let types = self
+                                .profile_service
+                                .profile_types_with_tenant(params, &tenant_slug, &dataset_slug)
+                                .await
+                                .map_err(querier_error_to_status)?;
+                            vec![strings_to_batch("profile_type", types)?]
+                        }
+                        TicketRequest::ProfileLabelNames {
+                            tenant_slug,
+                            dataset_slug,
+                            params,
+                        } => {
+                            let names = self
+                                .profile_service
+                                .label_names_with_tenant(params, &tenant_slug, &dataset_slug)
+                                .await
+                                .map_err(querier_error_to_status)?;
+                            vec![strings_to_batch("label_name", names)?]
+                        }
+                        TicketRequest::ProfileLabelValues {
+                            tenant_slug,
+                            dataset_slug,
+                            label_name,
+                            params,
+                        } => {
+                            let values = self
+                                .profile_service
+                                .label_values_with_tenant(
+                                    &label_name,
+                                    params,
+                                    &tenant_slug,
+                                    &dataset_slug,
+                                )
+                                .await
+                                .map_err(querier_error_to_status)?;
+                            vec![strings_to_batch("label_value", values)?]
+                        }
+                        TicketRequest::ProfileFlamegraph {
+                            tenant_slug,
+                            dataset_slug,
+                            params,
+                        } => {
+                            let flamegraph = self
+                                .profile_service
+                                .flamegraph_with_tenant(params, &tenant_slug, &dataset_slug)
+                                .await
+                                .map_err(querier_error_to_status)?;
+                            vec![json_to_batch("flamegraph", &flamegraph)?]
+                        }
+                        TicketRequest::ProfileDiff {
+                            tenant_slug,
+                            dataset_slug,
+                            params,
+                        } => {
+                            let diff = self
+                                .profile_service
+                                .diff_with_tenant(params, &tenant_slug, &dataset_slug)
+                                .await
+                                .map_err(querier_error_to_status)?;
+                            vec![json_to_batch("diff", &diff)?]
+                        }
+                        TicketRequest::ProfilesByTrace {
+                            tenant_slug,
+                            dataset_slug,
+                            trace_id,
+                            span_id,
+                        } => {
+                            tracing::info!(
+                                tenant_slug = %tenant_slug,
+                                dataset_slug = %dataset_slug,
+                                trace_id = %trace_id,
+                                span_id = ?span_id,
+                                "Executing profiles_by_trace"
+                            );
+                            self.profile_service
+                                .find_by_trace_with_tenant(
+                                    &trace_id,
+                                    span_id.as_deref(),
+                                    &tenant_slug,
+                                    &dataset_slug,
+                                )
+                                .await
+                                .map_err(querier_error_to_status)?
+                        }
+                        TicketRequest::QueryLogs {
+                            tenant_slug,
+                            dataset_slug,
+                            params,
+                        } => {
+                            tracing::info!(
+                                tenant_slug = %tenant_slug,
+                                dataset_slug = %dataset_slug,
+                                query = %params.query,
+                                "Executing query_logs"
+                            );
+                            self.logs_service
+                                .query_logs(&params, &tenant_slug, &dataset_slug)
+                                .await
+                                .map_err(querier_error_to_status)?
+                        }
+                        TicketRequest::QueryLogsLabels {
+                            tenant_slug,
+                            dataset_slug,
+                            start,
+                            end,
+                        } => {
+                            let labels = self
+                                .logs_service
+                                .get_labels(start, end, &tenant_slug, &dataset_slug)
+                                .await
+                                .map_err(querier_error_to_status)?;
+                            vec![strings_to_batch("label", labels)?]
+                        }
+                        TicketRequest::QueryLogsLabelValues {
+                            tenant_slug,
+                            dataset_slug,
+                            label,
+                            start,
+                            end,
+                        } => {
+                            let values = self
+                                .logs_service
+                                .get_label_values(&label, start, end, &tenant_slug, &dataset_slug)
+                                .await
+                                .map_err(querier_error_to_status)?;
+                            vec![strings_to_batch("value", values)?]
+                        }
+                        TicketRequest::QueryLogsSeries {
+                            tenant_slug,
+                            dataset_slug,
+                            params,
+                        } => {
+                            let series = self
+                                .logs_service
+                                .get_series(
+                                    &params.selector,
+                                    params.start,
+                                    params.end,
+                                    &tenant_slug,
+                                    &dataset_slug,
+                                )
+                                .await
+                                .map_err(querier_error_to_status)?;
+                            vec![json_to_batch("series", &series)?]
+                        }
+                        TicketRequest::QueryLogsDetectedFields {
+                            tenant_slug,
+                            dataset_slug,
+                            params,
+                        } => {
+                            let fields = self
+                                .logs_service
+                                .detected_fields(&params, &tenant_slug, &dataset_slug)
+                                .await
+                                .map_err(querier_error_to_status)?;
+                            vec![json_to_batch("fields", &fields)?]
+                        }
+                        TicketRequest::QueryMetric {
+                            tenant_slug,
+                            dataset_slug,
+                            params,
+                        } => {
+                            tracing::info!(
+                                tenant_slug = %tenant_slug,
+                                dataset_slug = %dataset_slug,
+                                query = %params.query,
+                                "Executing query_metric"
+                            );
+                            self.logs_service
+                                .query_metric(&params, &tenant_slug, &dataset_slug)
+                                .await
+                                .map_err(querier_error_to_status)?
+                        }
+                        TicketRequest::QueryPromql {
+                            tenant_slug,
+                            dataset_slug,
+                            params,
+                        } => {
+                            tracing::info!(
+                                tenant_slug = %tenant_slug,
+                                dataset_slug = %dataset_slug,
+                                query = %params.query,
+                                "Executing query_promql"
+                            );
+                            self.metrics_service
+                                .query_range(
+                                    &params.query,
+                                    params.start,
+                                    params.end,
+                                    params.step,
+                                    &tenant_slug,
+                                    &dataset_slug,
+                                )
+                                .await
+                                .map_err(querier_error_to_status)?
+                        }
+                        TicketRequest::QueryMetricLabels {
+                            tenant_slug,
+                            dataset_slug,
+                            start,
+                            end,
+                        } => {
+                            let labels = self
+                                .metrics_service
+                                .get_labels(start, end, &tenant_slug, &dataset_slug)
+                                .await
+                                .map_err(querier_error_to_status)?;
+                            vec![strings_to_batch("label", labels)?]
+                        }
+                        TicketRequest::QueryMetricLabelValues {
+                            tenant_slug,
+                            dataset_slug,
+                            label,
+                            start,
+                            end,
+                        } => {
+                            let values = self
+                                .metrics_service
+                                .get_label_values(&label, start, end, &tenant_slug, &dataset_slug)
+                                .await
+                                .map_err(querier_error_to_status)?;
+                            vec![strings_to_batch("value", values)?]
+                        }
+                        TicketRequest::QueryMetricSeries {
+                            tenant_slug,
+                            dataset_slug,
+                            params,
+                        } => {
+                            let series = self
+                                .metrics_service
+                                .get_series(
+                                    &params.selector,
+                                    params.start,
+                                    params.end,
+                                    &tenant_slug,
+                                    &dataset_slug,
+                                )
+                                .await
+                                .map_err(querier_error_to_status)?;
+                            vec![json_to_batch("series", &series)?]
+                        }
+                        TicketRequest::SqlProfiles {
+                            tenant_slug,
+                            dataset_slug,
+                            sql,
+                        } => {
+                            tracing::info!(
+                                tenant_slug = %tenant_slug,
+                                dataset_slug = %dataset_slug,
+                                sql = %sql,
+                                "Executing sql_profiles"
+                            );
+                            // Pin the session defaults to the ticket's
+                            // tenant/dataset so unqualified table names like
+                            // `profiles` resolve inside the tenant's catalog.
+                            let request_ctx =
+                                self.session_for_request(Some(&tenant_slug), Some(&dataset_slug));
+                            self.execute_distributed_query(&request_ctx, &sql)
+                                .await
+                                .map_err(|e| {
+                                    Status::internal(format!("Profiles SQL query failed: {e}"))
+                                })?
+                        }
+                        TicketRequest::SqlQuery { sql } => {
+                            // Tenant-scoped callers are pinned to their
+                            // authenticated tenant/dataset; only internal or
+                            // unauthenticated callers may scope via headers.
+                            let (tenant_slug, dataset_slug) = match &caller_tenant {
+                                Some(ctx) => (
+                                    Some(ctx.tenant_slug.clone()),
+                                    Some(ctx.dataset_slug.clone()),
+                                ),
+                                None => (
+                                    metadata
+                                        .get("x-tenant-id")
+                                        .and_then(|v| v.to_str().ok())
+                                        .map(|s| s.to_string()),
+                                    metadata
+                                        .get("x-dataset-id")
+                                        .and_then(|v| v.to_str().ok())
+                                        .map(|s| s.to_string()),
+                                ),
+                            };
 
-                        tracing::info!(
-                            tenant_id = ?tenant_slug,
-                            dataset_id = ?dataset_slug,
-                            sql = %sql,
-                            "Executing SQL query"
-                        );
+                            tracing::info!(
+                                tenant_id = ?tenant_slug,
+                                dataset_id = ?dataset_slug,
+                                sql = %sql,
+                                "Executing SQL query"
+                            );
 
-                        // Per-request context: tenant/dataset defaults must
-                        // never be applied to the shared session (see
-                        // session_for_request).
-                        let request_ctx = self
-                            .session_for_request(tenant_slug.as_deref(), dataset_slug.as_deref());
+                            // Per-request context: tenant/dataset defaults must
+                            // never be applied to the shared session (see
+                            // session_for_request).
+                            let request_ctx = self.session_for_request(
+                                tenant_slug.as_deref(),
+                                dataset_slug.as_deref(),
+                            );
 
-                        self.execute_distributed_query(&request_ctx, &sql)
-                            .await
-                            .map_err(|e| Status::internal(format!("Query execution failed: {e}")))?
-                    }
-                })
-            };
-            // Bound every query's wall-clock time so a heavy scan cannot
-            // occupy the querier indefinitely.
-            let batches_result: Result<Vec<_>, Status> =
-                match tokio::time::timeout(self.limits.query_timeout, query_future).await {
-                    Ok(result) => result,
-                    Err(_) => Err(Status::deadline_exceeded(format!(
-                        "query exceeded the configured timeout of {:?}",
-                        self.limits.query_timeout
-                    ))),
+                            self.execute_distributed_query(&request_ctx, &sql)
+                                .await
+                                .map_err(|e| {
+                                    Status::internal(format!("Query execution failed: {e}"))
+                                })?
+                        }
+                    })
                 };
+                // Bound every query's wall-clock time so a heavy scan cannot
+                // occupy the querier indefinitely.
+                let batches_result: Result<Vec<_>, Status> =
+                    match tokio::time::timeout(self.limits.query_timeout, query_future).await {
+                        Ok(result) => result,
+                        Err(_) => Err(Status::deadline_exceeded(format!(
+                            "query exceeded the configured timeout of {:?}",
+                            self.limits.query_timeout
+                        ))),
+                    };
 
-            let app_metrics = common::self_monitoring::app_metrics();
-            let query_attrs = [opentelemetry::KeyValue::new("query_type", query_type)];
-            app_metrics
-                .query_duration
-                .record(query_start.elapsed().as_secs_f64(), &query_attrs);
-            app_metrics.flight_request_duration.record(
-                query_start.elapsed().as_secs_f64(),
-                &[opentelemetry::KeyValue::new("rpc.method", "do_get")],
-            );
-            let batches = match batches_result {
-                Ok(batches) => batches,
-                Err(status) => {
-                    app_metrics.query_errors.add(1, &query_attrs);
-                    return Err(status);
+                let app_metrics = common::self_monitoring::app_metrics();
+                let query_attrs = [opentelemetry::KeyValue::new("query_type", query_type)];
+                app_metrics
+                    .query_duration
+                    .record(query_start.elapsed().as_secs_f64(), &query_attrs);
+                app_metrics.flight_request_duration.record(
+                    query_start.elapsed().as_secs_f64(),
+                    &[opentelemetry::KeyValue::new("rpc.method", "do_get")],
+                );
+                let batches = match batches_result {
+                    Ok(batches) => batches,
+                    Err(status) => {
+                        app_metrics.query_errors.add(1, &query_attrs);
+                        return Err(status);
+                    }
+                };
+                let rows_returned: u64 = batches.iter().map(|b| b.num_rows() as u64).sum();
+                app_metrics
+                    .query_rows_returned
+                    .record(rows_returned, &query_attrs);
+
+                if batches.is_empty() {
+                    let out = stream::empty().boxed();
+                    return Ok(Response::new(out));
                 }
-            };
-            let rows_returned: u64 = batches.iter().map(|b| b.num_rows() as u64).sum();
-            app_metrics
-                .query_rows_returned
-                .record(rows_returned, &query_attrs);
 
-            if batches.is_empty() {
-                let out = stream::empty().boxed();
-                return Ok(Response::new(out));
+                // Convert results to Flight data
+                let schema = batches[0].schema();
+                let flight_data = batches_to_flight_data(&schema, batches)
+                    .map_err(|e| Status::internal(format!("Failed to convert results: {e}")))?;
+
+                let out = stream::iter(flight_data.into_iter().map(Ok)).boxed();
+                Ok(Response::new(out))
             }
-
-            // Convert results to Flight data
-            let schema = batches[0].schema();
-            let flight_data = batches_to_flight_data(&schema, batches)
-                .map_err(|e| Status::internal(format!("Failed to convert results: {e}")))?;
-
-            let out = stream::iter(flight_data.into_iter().map(Ok)).boxed();
-            Ok(Response::new(out))
-        }
-        .instrument(span)
+            .instrument(span),
+        )
         .await
     }
 
@@ -2397,6 +2409,59 @@ mod tests {
             Ok(_) => panic!("cross-tenant ticket must be rejected"),
             Err(status) => assert_eq!(status.code(), tonic::Code::PermissionDenied),
         }
+    }
+
+    #[tokio::test]
+    async fn system_tenant_query_is_suppressed_from_otel_export() {
+        // Regression test for issue #760: executing a query for the
+        // _system tenant must not emit spans/log records that pass the
+        // OTel export filter — they would be exported and re-ingested as
+        // _system telemetry (feedback loop). A normal tenant's query
+        // telemetry must still export.
+        let service = make_service().await;
+
+        let query = |tenant: &str| {
+            let mut request = Request::new(Ticket::new(format!(
+                "find_trace:{tenant}:_monitoring:abc123"
+            )));
+            request
+                .extensions_mut()
+                .insert(common::auth::TenantContext::new(
+                    tenant.to_string(),
+                    "_monitoring".to_string(),
+                    tenant.to_string(),
+                    "_monitoring".to_string(),
+                    None,
+                    common::auth::TenantSource::Config,
+                ));
+            request
+        };
+
+        let probe = common::testing::OtelExportProbe::new();
+        {
+            let _guard = probe.install();
+            let _ = service.do_get(query("_system")).await;
+        }
+        assert_eq!(
+            probe.exported_events(),
+            0,
+            "_system query processing must not export log records"
+        );
+        assert_eq!(
+            probe.exported_spans(),
+            0,
+            "_system query processing must not export spans"
+        );
+
+        let probe = common::testing::OtelExportProbe::new();
+        {
+            let _guard = probe.install();
+            let _ = service.do_get(query("tenant_a")).await;
+        }
+        assert!(
+            probe.exported_events() > 0,
+            "normal tenant query processing must still export telemetry"
+        );
     }
 
     #[tokio::test]

@@ -74,8 +74,18 @@ pub fn inject_context_into_request<T>(request: &mut tonic::Request<T>) {
 /// parent can no longer be changed afterwards. Create the span, call this,
 /// then run the handler via `.instrument(span)`.
 pub fn set_parent_from_request<T>(span: &tracing::Span, request: &tonic::Request<T>) {
+    set_parent_from_metadata(span, request.metadata());
+}
+
+/// Extract the remote trace context from gRPC metadata and set it as
+/// `span`'s parent.
+///
+/// Variant of [`set_parent_from_request`] for call sites that have already
+/// consumed the request and only kept its metadata. Same caveat: must be
+/// called before `span` is first entered.
+pub fn set_parent_from_metadata(span: &tracing::Span, metadata: &tonic::metadata::MetadataMap) {
     let cx = opentelemetry::global::get_text_map_propagator(|propagator| {
-        propagator.extract(&MetadataMapExtractor(request.metadata()))
+        propagator.extract(&MetadataMapExtractor(metadata))
     });
     if let Err(err) = span.set_parent(cx) {
         // Benign when no OTel layer is attached (self-monitoring disabled).
