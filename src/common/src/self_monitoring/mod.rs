@@ -12,8 +12,8 @@ pub use app_metrics::{AppMetrics, app_metrics, http_metrics_middleware, should_c
 pub use profiling::{ProfilingHandle, init_profiling};
 pub use suppress::{
     OtelExportFilter, SELF_MONITORING_DATASET, SELF_MONITORING_TENANT,
-    SelfTelemetrySuppressionFilter, is_self_monitoring_tenant, self_telemetry_suppressed,
-    suppress_self_telemetry, suppress_self_telemetry_sync,
+    SelfTelemetrySuppressionFilter, is_self_monitoring_tenant, maybe_suppress_self_telemetry,
+    self_telemetry_suppressed, suppress_self_telemetry, suppress_self_telemetry_sync,
 };
 
 use anyhow::{Context, Result};

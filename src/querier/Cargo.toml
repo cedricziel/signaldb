@@ -39,6 +39,9 @@ promql-parser.workspace = true
 
 # PromQL support
 
+[dev-dependencies]
+common = { path = "../common", features = ["testing"] }
+
 [[bin]]
 name = "signaldb-querier"
 path = "src/main.rs"
