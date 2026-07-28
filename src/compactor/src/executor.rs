@@ -113,6 +113,13 @@ impl CompactionExecutor {
         }
     }
 
+    /// Persist the rewriter's advisory attribute statistics to the service
+    /// catalog (epic #737, #733).
+    pub fn with_service_catalog(mut self, catalog: Arc<common::catalog::Catalog>) -> Self {
+        self.rewriter.set_service_catalog(catalog);
+        self
+    }
+
     /// Execute compaction for a candidate
     pub async fn execute_candidate(
         &self,

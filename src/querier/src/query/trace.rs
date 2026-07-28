@@ -455,6 +455,16 @@ impl TraceService {
                     )
             }),
         };
+        // Query demand (epic #737, #733): attribute conditions are
+        // materialization candidates.
+        for condition in &conditions {
+            if let search_filter::Selector::SpanAttribute(key)
+            | search_filter::Selector::ResourceAttribute(key)
+            | search_filter::Selector::AnyAttribute(key) = &condition.selector
+            {
+                common::attr_demand::record(tenant_slug, dataset_slug, "traces", key);
+            }
+        }
         for condition in &conditions {
             df = df.filter(condition.to_expr(&attr_ctx)?).map_err(|e| {
                 log::error!("Failed to apply search filter {condition:?}: {e}");

@@ -57,6 +57,11 @@ CREATE TABLE ingesters (
 );
 ```
 
+The same catalog also holds multi-tenancy tables (`tenants`, `api_keys`,
+`datasets`), `compactor_leases`, and the advisory `attribute_stats` table
+(epic #737: per-attribute-key presence/cardinality from the compactor's
+analyzer plus query-demand counters flushed by the querier).
+
 ## Discovery Mechanism
 
 - **InMemoryFlightTransport**: Connection pooling (max 50 connections, 30s timeout, 5min expiry) + capability-based client lookup
