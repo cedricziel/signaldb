@@ -184,6 +184,25 @@ impl Catalog {
                 )
                 .execute(pool)
                 .await?;
+
+                // Advisory attribute statistics (epic #737, #733): per-key
+                // presence/cardinality written by the compactor's analyzer
+                // and query-demand hit counters written by the querier.
+                let create_attribute_stats = r#"
+                CREATE TABLE IF NOT EXISTS attribute_stats (
+                    tenant_id TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    attr_key TEXT NOT NULL,
+                    present_rows BIGINT NOT NULL DEFAULT 0,
+                    total_rows BIGINT NOT NULL DEFAULT 0,
+                    distinct_estimate BIGINT NOT NULL DEFAULT 0,
+                    capped INTEGER NOT NULL DEFAULT 0,
+                    query_hits BIGINT NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (tenant_id, dataset_id, signal, attr_key)
+                )"#;
+                query(create_attribute_stats).execute(pool).await?;
             }
             Catalog::Postgres(pool) => {
                 // PostgreSQL schema
@@ -285,6 +304,25 @@ impl Catalog {
                 )
                 .execute(pool)
                 .await?;
+
+                // Advisory attribute statistics (epic #737, #733): per-key
+                // presence/cardinality written by the compactor's analyzer
+                // and query-demand hit counters written by the querier.
+                let create_attribute_stats = r#"
+                CREATE TABLE IF NOT EXISTS attribute_stats (
+                    tenant_id TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    attr_key TEXT NOT NULL,
+                    present_rows BIGINT NOT NULL DEFAULT 0,
+                    total_rows BIGINT NOT NULL DEFAULT 0,
+                    distinct_estimate BIGINT NOT NULL DEFAULT 0,
+                    capped BOOLEAN NOT NULL DEFAULT FALSE,
+                    query_hits BIGINT NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (tenant_id, dataset_id, signal, attr_key)
+                )"#;
+                query(create_attribute_stats).execute(pool).await?;
             }
         }
 
@@ -856,6 +894,214 @@ pub struct DatasetRecord {
     pub tenant_id: String,
     pub name: String,
     pub created_at: DateTime<Utc>,
+}
+
+/// A per-attribute-key statistics row (epic #737, #733): scan-side
+/// presence/cardinality from the compactor's analyzer plus query-demand
+/// hit counters from the querier.
+#[derive(Debug, Clone)]
+pub struct AttributeStatsRecord {
+    pub tenant_id: String,
+    pub dataset_id: String,
+    pub signal: String,
+    pub attr_key: String,
+    pub present_rows: i64,
+    pub total_rows: i64,
+    pub distinct_estimate: i64,
+    pub capped: bool,
+    pub query_hits: i64,
+}
+
+/// Advisory attribute-statistics methods (epic #737, #733).
+impl Catalog {
+    /// Upsert the scan-side statistics for one attribute key, replacing the
+    /// previous presence/cardinality observation (the analyzer sees the
+    /// whole rewritten table, so newer observations supersede older ones).
+    /// `query_hits` is left untouched.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_attribute_scan_stats(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+        attr_key: &str,
+        present_rows: i64,
+        total_rows: i64,
+        distinct_estimate: i64,
+        capped: bool,
+    ) -> Result<(), sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(
+                    r#"
+                INSERT INTO attribute_stats
+                    (tenant_id, dataset_id, signal, attr_key, present_rows,
+                     total_rows, distinct_estimate, capped, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT (tenant_id, dataset_id, signal, attr_key) DO UPDATE SET
+                    present_rows = excluded.present_rows,
+                    total_rows = excluded.total_rows,
+                    distinct_estimate = excluded.distinct_estimate,
+                    capped = excluded.capped,
+                    updated_at = datetime('now')
+                "#,
+                )
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .bind(attr_key)
+                .bind(present_rows)
+                .bind(total_rows)
+                .bind(distinct_estimate)
+                .bind(capped)
+                .execute(pool)
+                .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    r#"
+                INSERT INTO attribute_stats
+                    (tenant_id, dataset_id, signal, attr_key, present_rows,
+                     total_rows, distinct_estimate, capped, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                ON CONFLICT (tenant_id, dataset_id, signal, attr_key) DO UPDATE SET
+                    present_rows = EXCLUDED.present_rows,
+                    total_rows = EXCLUDED.total_rows,
+                    distinct_estimate = EXCLUDED.distinct_estimate,
+                    capped = EXCLUDED.capped,
+                    updated_at = NOW()
+                "#,
+                )
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .bind(attr_key)
+                .bind(present_rows)
+                .bind(total_rows)
+                .bind(distinct_estimate)
+                .bind(capped)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Add query-demand hits for one attribute key (accumulating counter).
+    /// Scan-side columns are left untouched.
+    pub async fn add_attribute_query_hits(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+        attr_key: &str,
+        hits: i64,
+    ) -> Result<(), sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(
+                    r#"
+                INSERT INTO attribute_stats
+                    (tenant_id, dataset_id, signal, attr_key, query_hits, updated_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT (tenant_id, dataset_id, signal, attr_key) DO UPDATE SET
+                    query_hits = attribute_stats.query_hits + excluded.query_hits,
+                    updated_at = datetime('now')
+                "#,
+                )
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .bind(attr_key)
+                .bind(hits)
+                .execute(pool)
+                .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    r#"
+                INSERT INTO attribute_stats
+                    (tenant_id, dataset_id, signal, attr_key, query_hits, updated_at)
+                VALUES ($1, $2, $3, $4, $5, NOW())
+                ON CONFLICT (tenant_id, dataset_id, signal, attr_key) DO UPDATE SET
+                    query_hits = attribute_stats.query_hits + EXCLUDED.query_hits,
+                    updated_at = NOW()
+                "#,
+                )
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .bind(attr_key)
+                .bind(hits)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The stored statistics for one (tenant, dataset, signal), sorted by
+    /// attribute key.
+    pub async fn get_attribute_stats(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+    ) -> Result<Vec<AttributeStatsRecord>, sqlx::Error> {
+        let sql_sqlite = r#"
+            SELECT tenant_id, dataset_id, signal, attr_key, present_rows,
+                   total_rows, distinct_estimate, capped, query_hits
+            FROM attribute_stats
+            WHERE tenant_id = ? AND dataset_id = ? AND signal = ?
+            ORDER BY attr_key
+        "#;
+        let sql_pg = r#"
+            SELECT tenant_id, dataset_id, signal, attr_key, present_rows,
+                   total_rows, distinct_estimate, capped, query_hits
+            FROM attribute_stats
+            WHERE tenant_id = $1 AND dataset_id = $2 AND signal = $3
+            ORDER BY attr_key
+        "#;
+        fn record<R: Row>(row: &R) -> AttributeStatsRecord
+        where
+            for<'a> &'a str: sqlx::ColumnIndex<R>,
+            for<'a> String: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+            for<'a> i64: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+            for<'a> bool: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+        {
+            AttributeStatsRecord {
+                tenant_id: row.get("tenant_id"),
+                dataset_id: row.get("dataset_id"),
+                signal: row.get("signal"),
+                attr_key: row.get("attr_key"),
+                present_rows: row.get("present_rows"),
+                total_rows: row.get("total_rows"),
+                distinct_estimate: row.get("distinct_estimate"),
+                capped: row.get("capped"),
+                query_hits: row.get("query_hits"),
+            }
+        }
+        match self {
+            Catalog::Sqlite(pool) => Ok(query(sql_sqlite)
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .map(record)
+                .collect()),
+            Catalog::Postgres(pool) => Ok(query(sql_pg)
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .map(record)
+                .collect()),
+        }
+    }
 }
 
 /// Multi-tenancy catalog methods
@@ -1969,6 +2215,56 @@ mod multi_tenancy_tests {
         let fake_hash = "nonexistent_hash";
         let result = catalog.validate_api_key(fake_hash).await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn attribute_stats_scan_upsert_and_demand_accumulate() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        catalog
+            .upsert_attribute_scan_stats("t", "d", "logs", "namespace", 80, 100, 5, false)
+            .await
+            .unwrap();
+        // Demand accumulates across flushes; scan stats replace.
+        catalog
+            .add_attribute_query_hits("t", "d", "logs", "namespace", 3)
+            .await
+            .unwrap();
+        catalog
+            .add_attribute_query_hits("t", "d", "logs", "namespace", 2)
+            .await
+            .unwrap();
+        catalog
+            .upsert_attribute_scan_stats("t", "d", "logs", "namespace", 90, 120, 7, true)
+            .await
+            .unwrap();
+        // A demand-only key exists with zeroed scan stats.
+        catalog
+            .add_attribute_query_hits("t", "d", "logs", "pod", 1)
+            .await
+            .unwrap();
+
+        let stats = catalog.get_attribute_stats("t", "d", "logs").await.unwrap();
+        assert_eq!(stats.len(), 2);
+        let ns = &stats[0];
+        assert_eq!(ns.attr_key, "namespace");
+        assert_eq!(ns.present_rows, 90);
+        assert_eq!(ns.total_rows, 120);
+        assert_eq!(ns.distinct_estimate, 7);
+        assert!(ns.capped);
+        assert_eq!(ns.query_hits, 5);
+        let pod = &stats[1];
+        assert_eq!(pod.attr_key, "pod");
+        assert_eq!(pod.query_hits, 1);
+        assert_eq!(pod.present_rows, 0);
+
+        assert!(
+            catalog
+                .get_attribute_stats("t", "d", "traces")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

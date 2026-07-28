@@ -1,3 +1,4 @@
+pub mod attr_demand;
 pub mod auth;
 pub mod catalog;
 pub mod catalog_manager;

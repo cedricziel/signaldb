@@ -147,6 +147,7 @@ impl LogsService {
     ) -> Result<Vec<RecordBatch>, QuerierError> {
         let parsed =
             parse_query(&params.query).map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        record_attr_demand(&parsed, tenant_slug, dataset_slug);
         let direction = Direction::parse(params.direction.as_deref());
 
         let df = self.logs_table(tenant_slug, dataset_slug).await?;
@@ -228,6 +229,7 @@ impl LogsService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
+        record_attr_demand(&plan.log_query, tenant_slug, dataset_slug);
         let mut df = self.logs_table(tenant_slug, dataset_slug).await?;
         let materialized = materialized_columns_of(&df);
 
@@ -1346,6 +1348,17 @@ fn unwrap_value(label: &str) -> Expr {
 }
 
 /// The dedicated column a known label maps to.
+/// Record query demand (epic #737, #733) for every selector label that is
+/// not backed by a dedicated column — the keys that would benefit from
+/// materialization (or, if already materialized, from staying so).
+fn record_attr_demand(query: &LogQuery, tenant_slug: &str, dataset_slug: &str) {
+    for matcher in &query.selector.matchers {
+        if column_for_label(&matcher.name).is_none() {
+            common::attr_demand::record(tenant_slug, dataset_slug, "logs", &matcher.name);
+        }
+    }
+}
+
 fn column_for_label(label: &str) -> Option<&'static str> {
     match label {
         "service_name" | "service" | "job" => Some("service_name"),

@@ -798,4 +798,4 @@ If you encounter issues not covered in this guide:
 4. **Configuration:** Share `signaldb.toml` (redact sensitive values)
 5. **Open Issue:** https://github.com/cedricziel/signaldb/issues with above information
 
-> The `Attribute-stats analyzer` log line on each rewrite is advisory only (epic #737); it never blocks or alters compaction.
+> The `Attribute-stats analyzer` log line on each rewrite is advisory only (epic #737); it never blocks or alters compaction. Its statistics are persisted to the catalog's `attribute_stats` table; a `Failed to persist attribute scan stats` warning means the catalog write failed and is safe to ignore for compaction correctness.

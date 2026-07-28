@@ -242,6 +242,13 @@ curl -G 'http://localhost:3000/loki/api/v1/query_range' \
   --data-urlencode 'step=5m'
 ```
 
+## Query-demand statistics
+
+Attribute labels used in filters (any label that is not a dedicated
+column) are counted as *query demand* and flushed to the catalog's
+advisory `attribute_stats` table, where they inform which attributes are
+worth materializing (see the storage layout docs on materialized labels).
+
 ## Related
 
 - [Grafana datasource](grafana-datasource.md) — connecting Grafana

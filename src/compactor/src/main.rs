@@ -167,11 +167,15 @@ async fn main() -> Result<()> {
     // Create compaction executor
     let executor_config = ExecutorConfig::from(&planner_config);
     let compaction_metrics = CompactionMetrics::new();
-    let executor = Arc::new(CompactionExecutor::new(
-        catalog_manager.clone(),
-        executor_config,
-        compaction_metrics.clone(),
-    ));
+    let executor = Arc::new(
+        CompactionExecutor::new(
+            catalog_manager.clone(),
+            executor_config,
+            compaction_metrics.clone(),
+        )
+        // Persist advisory attribute statistics (epic #737, #733).
+        .with_service_catalog(Arc::new(bootstrap.catalog().clone())),
+    );
 
     tracing::info!(
         "Compaction planner and executor initialized with tick interval: {:?}",

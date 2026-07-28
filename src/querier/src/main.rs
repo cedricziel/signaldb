@@ -109,6 +109,11 @@ async fn main() -> anyhow::Result<()> {
     // bootstrap moves into the transport
     let sql_catalog = Arc::new(service_bootstrap.catalog().clone());
 
+    // Periodically flush attribute query-demand counters (epic #737, #733)
+    // into the catalog's advisory `attribute_stats` table.
+    let _demand_flusher =
+        common::attr_demand::spawn_flusher(sql_catalog.clone(), std::time::Duration::from_secs(60));
+
     // Create Flight transport and register this querier's Flight service
     let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
 

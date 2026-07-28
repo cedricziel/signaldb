@@ -61,6 +61,12 @@ CREATE TABLE shard_owners (
 );
 ```
 
+The same catalog database also holds the multi-tenancy tables (`tenants`,
+`api_keys`, `datasets`), the `compactor_leases` table, and the advisory
+`attribute_stats` table (per-attribute-key presence and cardinality written
+by the compactor's analyzer, plus query-demand hit counters flushed
+periodically by the querier — see the attribute-explorability ADR).
+
 ## Service Roles and Discovery
 
 | Service Role | Discovery Method | Registration | Status |

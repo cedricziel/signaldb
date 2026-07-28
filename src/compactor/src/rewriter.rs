@@ -27,12 +27,24 @@ pub struct RewriteOutcome {
 /// Handles Parquet file merging and rewriting
 pub struct ParquetRewriter {
     catalog_manager: Arc<CatalogManager>,
+    /// Service catalog for persisting advisory attribute statistics
+    /// (epic #737, #733). `None` (e.g. in tests) keeps the analyzer
+    /// log-only.
+    service_catalog: Option<Arc<common::catalog::Catalog>>,
 }
 
 impl ParquetRewriter {
     /// Create a new Parquet rewriter
     pub fn new(catalog_manager: Arc<CatalogManager>) -> Self {
-        Self { catalog_manager }
+        Self {
+            catalog_manager,
+            service_catalog: None,
+        }
+    }
+
+    /// Persist the advisory attribute statistics to this service catalog.
+    pub fn set_service_catalog(&mut self, catalog: Arc<common::catalog::Catalog>) {
+        self.service_catalog = Some(catalog);
     }
 
     /// Load a table with fresh metadata, without creating it if missing.
@@ -94,6 +106,21 @@ impl ParquetRewriter {
         // candidates; changes nothing.
         let (attr_stats, scanned) = crate::attr_stats::analyze_batches(&merged_batches);
         crate::attr_stats::log_promotion_candidates(&table_name, &attr_stats, scanned);
+        if let Some(catalog) = &self.service_catalog {
+            // The identifier namespace is [tenant_slug, dataset_slug].
+            let ns = table.identifier().namespace();
+            if let [tenant, dataset] = ns.as_ref() {
+                crate::attr_stats::persist_stats(
+                    catalog,
+                    tenant,
+                    dataset,
+                    &table_name,
+                    &attr_stats,
+                    scanned,
+                )
+                .await;
+            }
+        }
 
         // Chunk batches toward the target file size so the writer produces
         // reasonably sized files.

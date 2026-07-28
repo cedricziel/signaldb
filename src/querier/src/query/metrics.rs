@@ -248,6 +248,14 @@ impl MetricsService {
             return eval_time(plan, start, end, step);
         }
 
+        // Query demand (epic #737, #733): every matcher label without a
+        // dedicated column is a materialization candidate.
+        for m in &plan.matchers {
+            if column_for_label(&m.name).is_none() {
+                common::attr_demand::record(tenant_slug, dataset_slug, "metrics", &m.name);
+            }
+        }
+
         let df = self.scan_union(tenant_slug, dataset_slug).await?;
         // The materialized `label_<key>` columns of the scanned tables widen
         // the natural series identity and are groupable like `service_name`.

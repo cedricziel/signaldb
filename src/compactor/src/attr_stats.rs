@@ -26,6 +26,17 @@ const ATTR_COLUMNS: &[&str] = &[
     "profile_attributes",
 ];
 
+/// The signal a table's statistics are recorded under.
+pub fn signal_of_table(table_name: &str) -> &'static str {
+    match table_name {
+        "traces" => "traces",
+        "logs" => "logs",
+        "profiles" => "profiles",
+        t if t.starts_with("metrics_") => "metrics",
+        _ => "unknown",
+    }
+}
+
 /// Cap on the tracked distinct values per key. Keys that exceed it are
 /// reported as `>= CARDINALITY_CAP` and are never promotion candidates.
 const CARDINALITY_CAP: usize = 10_000;
@@ -176,6 +187,38 @@ fn attr_documents(array: &dyn Array) -> Vec<Option<Vec<(String, String)>>> {
     Vec::new()
 }
 
+/// Persist the analyzer's per-key statistics into the service catalog's
+/// `attribute_stats` table (epic #737, #733), keyed by
+/// (tenant, dataset, signal, key). Failures are logged and swallowed —
+/// the stats are advisory and must never fail a compaction.
+pub async fn persist_stats(
+    catalog: &common::catalog::Catalog,
+    tenant_id: &str,
+    dataset_id: &str,
+    table_name: &str,
+    stats: &BTreeMap<String, AttrFieldStats>,
+    total_rows: u64,
+) {
+    let signal = signal_of_table(table_name);
+    for (key, s) in stats {
+        if let Err(e) = catalog
+            .upsert_attribute_scan_stats(
+                tenant_id,
+                dataset_id,
+                signal,
+                key,
+                s.present_rows as i64,
+                total_rows as i64,
+                s.distinct as i64,
+                s.capped,
+            )
+            .await
+        {
+            tracing::warn!(error = %e, attr_key = %key, "Failed to persist attribute scan stats");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,5 +255,41 @@ mod tests {
         // Advisory logging must not panic on real stats or empty input.
         log_promotion_candidates("logs", &stats, total);
         log_promotion_candidates("logs", &BTreeMap::new(), 0);
+    }
+
+    #[tokio::test]
+    async fn persist_stats_writes_scan_rows_under_the_signal() {
+        let catalog = common::catalog::Catalog::new("sqlite::memory:")
+            .await
+            .unwrap();
+        let mut stats = BTreeMap::new();
+        stats.insert(
+            "namespace".to_string(),
+            AttrFieldStats {
+                present_rows: 80,
+                distinct: 5,
+                capped: false,
+            },
+        );
+        super::persist_stats(&catalog, "t", "d", "metrics_gauge", &stats, 100).await;
+
+        let rows = catalog
+            .get_attribute_stats("t", "d", "metrics")
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].attr_key, "namespace");
+        assert_eq!(rows[0].present_rows, 80);
+        assert_eq!(rows[0].total_rows, 100);
+        assert_eq!(rows[0].distinct_estimate, 5);
+        assert!(!rows[0].capped);
+    }
+
+    #[test]
+    fn signal_of_table_maps_all_tables() {
+        assert_eq!(super::signal_of_table("traces"), "traces");
+        assert_eq!(super::signal_of_table("logs"), "logs");
+        assert_eq!(super::signal_of_table("metrics_histogram"), "metrics");
+        assert_eq!(super::signal_of_table("profiles"), "profiles");
     }
 }
