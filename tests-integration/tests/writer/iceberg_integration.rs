@@ -402,3 +402,180 @@ async fn test_write_and_query_with_slugs() -> Result<()> {
 
     Ok(())
 }
+
+/// Spike for the attribute-explorability epic (#737 / #730): prove that a
+/// `Map<String, String>` attribute column survives the full pinned-fork
+/// pipeline — table creation, Parquet write (including the leaf-column
+/// statistics path in `parquet_to_datafile`, the identified risk), commit,
+/// and a DataFusion read with a map-subscript filter.
+///
+/// Unpartitioned on purpose: partition computation only touches the
+/// timestamp column and is orthogonal to the Map risk being validated.
+#[tokio::test]
+async fn test_map_attribute_column_end_to_end() -> Result<()> {
+    use datafusion::arrow::array::{Array as _, MapBuilder, MapFieldNames, StringBuilder};
+    use datafusion::arrow::datatypes::SchemaRef as ArrowSchemaRef;
+    use datafusion::prelude::SessionContext;
+    use futures::stream;
+    use iceberg_rust::arrow::write::write_parquet_partitioned;
+    use iceberg_rust::catalog::create::CreateTableBuilder;
+    use iceberg_rust::catalog::tabular::Tabular;
+    use iceberg_rust::spec::partition::PartitionSpec;
+    use iceberg_rust::spec::schema::Schema as IcebergSchema;
+    use iceberg_rust::spec::types::{MapType, PrimitiveType, StructField, StructType, Type};
+
+    let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
+    let catalog = catalog_manager.catalog();
+
+    // Namespace + table with a Map-typed `attributes` column.
+    let namespace = common::iceberg::names::build_namespace("spike", "maps")?;
+    catalog.clone().create_namespace(&namespace, None).await?;
+
+    let fields = vec![
+        StructField {
+            id: 1,
+            name: "timestamp".to_string(),
+            required: true,
+            field_type: Type::Primitive(PrimitiveType::Timestamp),
+            doc: None,
+            initial_default: None,
+            write_default: None,
+        },
+        StructField {
+            id: 2,
+            name: "body".to_string(),
+            required: false,
+            field_type: Type::Primitive(PrimitiveType::String),
+            doc: None,
+            initial_default: None,
+            write_default: None,
+        },
+        StructField {
+            id: 3,
+            name: "attributes".to_string(),
+            required: false,
+            field_type: Type::Map(MapType {
+                key_id: 4,
+                key: Box::new(Type::Primitive(PrimitiveType::String)),
+                value_id: 5,
+                value_required: false,
+                value: Box::new(Type::Primitive(PrimitiveType::String)),
+            }),
+            doc: None,
+            initial_default: None,
+            write_default: None,
+        },
+    ];
+    let schema = IcebergSchema::from_struct_type(StructType::new(fields), 0, None);
+    let partition_spec = PartitionSpec::default();
+
+    let ident = common::iceberg::names::build_table_identifier("spike", "maps", "events");
+    let table_create = CreateTableBuilder::default()
+        .with_name("events".to_string())
+        .with_schema(schema)
+        .with_partition_spec(partition_spec)
+        .with_location(common::iceberg::names::build_table_location(
+            "spike", "maps", "events",
+        ))
+        .create()
+        .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
+    catalog.clone().create_table(ident.clone(), table_create).await?;
+
+    // Load the table and derive the Arrow schema the way the writer does.
+    let Tabular::Table(mut table) = catalog.clone().load_tabular(&ident).await? else {
+        panic!("expected a table");
+    };
+    let arrow_schema: ArrowSchemaRef = Arc::new(
+        table
+            .current_schema(None)?
+            .fields()
+            .try_into()
+            .map_err(|e: iceberg_rust::spec::error::Error| anyhow::anyhow!("to arrow: {e}"))?,
+    );
+
+    // Build a MapArray whose entry/key/value field names match the derived
+    // schema, so the batch aligns with what the table declares.
+    let attr_field = arrow_schema.field_with_name("attributes")?;
+    let DataType::Map(entry_field, _) = attr_field.data_type() else {
+        panic!("attributes should convert to an Arrow Map");
+    };
+    let DataType::Struct(kv_fields) = entry_field.data_type() else {
+        panic!("map entries should be a struct");
+    };
+    let field_names = MapFieldNames {
+        entry: entry_field.name().clone(),
+        key: kv_fields[0].name().clone(),
+        value: kv_fields[1].name().clone(),
+    };
+    let mut attrs = MapBuilder::new(
+        Some(field_names),
+        StringBuilder::new(),
+        StringBuilder::new(),
+    );
+    // Row 1: env=prod, pod=api-1. Row 2: env=staging.
+    attrs.keys().append_value("env");
+    attrs.values().append_value("prod");
+    attrs.keys().append_value("pod");
+    attrs.values().append_value("api-1");
+    attrs.append(true)?;
+    attrs.keys().append_value("env");
+    attrs.values().append_value("staging");
+    attrs.append(true)?;
+    let attrs = attrs.finish();
+
+    use datafusion::arrow::array::TimestampMicrosecondArray;
+    let ts = TimestampMicrosecondArray::from(vec![1_000_000_i64, 2_000_000]);
+    let body = StringArray::from(vec![Some("hello prod"), Some("hello staging")]);
+
+    // Batch schema derived from the actual arrays (field names aligned
+    // above; nullability follows the builders).
+    let batch_schema = Arc::new(Schema::new(vec![
+        Field::new("timestamp", ts.data_type().clone(), false),
+        Field::new("body", DataType::Utf8, true),
+        Field::new("attributes", attrs.data_type().clone(), true),
+    ]));
+    let batch = RecordBatch::try_new(
+        batch_schema,
+        vec![Arc::new(ts), Arc::new(body), Arc::new(attrs)],
+    )?;
+
+    // Write through the fork's Parquet path (exercises parquet_to_datafile's
+    // leaf-column stats handling for the map) and commit.
+    let files = write_parquet_partitioned(&table, stream::iter(vec![Ok(batch)]), None).await?;
+    assert!(!files.is_empty(), "expected at least one data file");
+    table
+        .new_transaction(None)
+        .append_data(files)
+        .commit()
+        .await?;
+
+    // Read back through datafusion_iceberg and filter via map subscript.
+    let Tabular::Table(table) = catalog.clone().load_tabular(&ident).await? else {
+        panic!("expected a table on reload");
+    };
+    let provider = Arc::new(datafusion_iceberg::DataFusionTable::new(
+        Tabular::Table(table),
+        None,
+        None,
+        None,
+    )) as Arc<dyn datafusion::datasource::TableProvider>;
+    let ctx = SessionContext::new();
+    ctx.register_table("events", provider)?;
+
+    let rows = ctx
+        .sql("SELECT body FROM events WHERE attributes['env'] = 'prod'")
+        .await?
+        .collect()
+        .await?;
+    let total: usize = rows.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(total, 1, "map-subscript filter should match exactly one row");
+    let body_col = rows[0]
+        .column_by_name("body")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(body_col.value(0), "hello prod");
+
+    Ok(())
+}
