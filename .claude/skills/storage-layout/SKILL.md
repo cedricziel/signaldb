@@ -137,7 +137,7 @@ All tables partitioned by `Hour(timestamp)` as `timestamp_hour`.
 
 ### Typed attribute maps
 
-New logs AND traces tables store their attribute columns (`log_attributes`/`span_attributes`/`resource_attributes`/`scope_attributes`) as Iceberg `Map<String,String>` — any attribute matches exactly (incl. regex/ordered) via `get_field` extraction; legacy tables keep JSON strings with the substring approximation. The querier detects the form per table (`attr_context_of`); labels/values/detected_fields read either form (`attr_documents`; `distinct()` skipped for maps — Arrow row format can't sort them). Epic #737 L1 (#730), logs first.
+New tables across all four signals store their attribute columns as Iceberg `Map<String,String>` — any attribute matches exactly (incl. regex/ordered) via `get_field` extraction; legacy tables keep JSON strings with the substring approximation. The querier detects the form per table (`attr_context_of`); labels/values/detected_fields read either form (`attr_documents`; `distinct()` skipped for maps — Arrow row format can't sort them). Epic #737 L1 (#730), logs first.
 
 ### Materialized labels
 

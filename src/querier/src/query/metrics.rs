@@ -28,7 +28,6 @@ use datafusion::logical_expr::{Expr, SortExpr, cast, col, lit, not};
 use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
-use super::logql::MaterializedColumns;
 use super::promql::{
     ArithOp, AtSpec, CalendarFn, CmpOp, Grouping, HistogramFn, LabelMatch, LabelOp, LogicalOp,
     MatchKind, MetricAgg, MetricPlan, QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_promql,
@@ -1400,11 +1399,22 @@ impl MetricsService {
             ["__name__", "job"].iter().map(|s| s.to_string()).collect();
         let df = self.scan_union(tenant_slug, dataset_slug).await?;
         let df = window(df, start, end)?;
-        let batches = df
+        let df = df
             .select_columns(&[LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES])
-            .map_err(QuerierError::QueryFailed)?
-            .distinct()
-            .map_err(QuerierError::QueryFailed)?
+            .map_err(QuerierError::QueryFailed)?;
+        // Arrow's row format cannot sort Map columns; skip the dedup there.
+        let attrs_are_map = df.schema().fields().iter().any(|f| {
+            matches!(
+                f.data_type(),
+                datafusion::arrow::datatypes::DataType::Map(_, _)
+            )
+        });
+        let df = if attrs_are_map {
+            df
+        } else {
+            df.distinct().map_err(QuerierError::QueryFailed)?
+        };
+        let batches = df
             .limit(0, Some(LABEL_SCAN_LIMIT))
             .map_err(QuerierError::QueryFailed)?
             .collect()
@@ -1453,11 +1463,22 @@ impl MetricsService {
         }
 
         // Otherwise pull the value out of the attribute documents.
-        let batches = df
+        let df = df
             .select_columns(&[LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES])
-            .map_err(QuerierError::QueryFailed)?
-            .distinct()
-            .map_err(QuerierError::QueryFailed)?
+            .map_err(QuerierError::QueryFailed)?;
+        // Arrow's row format cannot sort Map columns; skip the dedup there.
+        let attrs_are_map = df.schema().fields().iter().any(|f| {
+            matches!(
+                f.data_type(),
+                datafusion::arrow::datatypes::DataType::Map(_, _)
+            )
+        });
+        let df = if attrs_are_map {
+            df
+        } else {
+            df.distinct().map_err(QuerierError::QueryFailed)?
+        };
+        let batches = df
             .limit(0, Some(LABEL_SCAN_LIMIT))
             .map_err(QuerierError::QueryFailed)?
             .collect()
@@ -1542,50 +1563,36 @@ fn distinct_non_empty(batches: &[RecordBatch], column: &str) -> Result<Vec<Strin
     Ok(values.into_iter().collect())
 }
 
-/// Add every JSON object key from an attribute column to `keys`.
+/// Add every attribute key from an attribute column (JSON-string or
+/// map-typed) to `keys`.
 fn collect_attribute_keys(
     batch: &RecordBatch,
     column: &str,
     keys: &mut BTreeSet<String>,
 ) -> Result<(), QuerierError> {
-    let attrs = string_column(batch, column)?;
-    for i in 0..batch.num_rows() {
-        if attrs.is_null(i) {
-            continue;
-        }
-        if let Ok(serde_json::Value::Object(map)) =
-            serde_json::from_str::<serde_json::Value>(attrs.value(i))
-        {
-            keys.extend(map.keys().cloned());
-        }
+    for doc in super::logs::attr_documents(batch, column)?
+        .into_iter()
+        .flatten()
+    {
+        keys.extend(doc.into_keys());
     }
     Ok(())
 }
 
-/// Add the value of `label` from each attribute document to `values`.
+/// Add the value of `label` from each attribute document (JSON-string or
+/// map-typed) to `values`.
 fn collect_attribute_values(
     batch: &RecordBatch,
     column: &str,
     label: &str,
     values: &mut BTreeSet<String>,
 ) -> Result<(), QuerierError> {
-    let attrs = string_column(batch, column)?;
-    for i in 0..batch.num_rows() {
-        if attrs.is_null(i) {
-            continue;
-        }
-        if let Ok(serde_json::Value::Object(map)) =
-            serde_json::from_str::<serde_json::Value>(attrs.value(i))
-            && let Some(value) = map.get(label)
-        {
-            match value {
-                serde_json::Value::String(s) => {
-                    values.insert(s.clone());
-                }
-                other => {
-                    values.insert(other.to_string());
-                }
-            }
+    for mut doc in super::logs::attr_documents(batch, column)?
+        .into_iter()
+        .flatten()
+    {
+        if let Some(value) = doc.remove(label) {
+            values.insert(value);
         }
     }
     Ok(())
@@ -2000,16 +2007,25 @@ fn apply_filters(
 ) -> Result<DataFrame, QuerierError> {
     // Materialized `label_<key>` columns present in this metrics table, so
     // label matchers on them are exact instead of JSON substring.
-    let materialized: MaterializedColumns = df
-        .schema()
-        .fields()
-        .iter()
-        .map(|f| f.name().to_string())
-        .filter(|n| n.starts_with("label_"))
-        .collect();
+    let attr_ctx = super::logql::AttrContext {
+        materialized: df
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().to_string())
+            .filter(|n| n.starts_with("label_"))
+            .collect(),
+        map_attrs: df.schema().fields().iter().any(|f| {
+            f.name() == LOG_ATTRIBUTES
+                && matches!(
+                    f.data_type(),
+                    datafusion::arrow::datatypes::DataType::Map(_, _)
+                )
+        }),
+    };
     let mut predicate = col("metric_name").eq(lit(plan.metric_name.clone()));
     for m in &plan.matchers {
-        predicate = predicate.and(matcher_expr(m, &materialized)?);
+        predicate = predicate.and(matcher_expr(m, &attr_ctx)?);
     }
     df.filter(
         col("timestamp")
@@ -2022,7 +2038,8 @@ fn apply_filters(
 
 /// Lower one label matcher to a filter expression, mapping well-known
 /// labels to columns and others to the attribute JSON.
-fn matcher_expr(m: &LabelMatch, materialized: &MaterializedColumns) -> Result<Expr, QuerierError> {
+fn matcher_expr(m: &LabelMatch, ctx: &super::logql::AttrContext) -> Result<Expr, QuerierError> {
+    let materialized = &ctx.materialized;
     // A well-known or materialized label matches its dedicated column
     // exactly (and supports regex); other labels fall back to the JSON
     // substring match. A materialized column is nullable, so `!=`/`!~` also
@@ -2049,6 +2066,30 @@ fn matcher_expr(m: &LabelMatch, materialized: &MaterializedColumns) -> Result<Ex
         }),
         None if materialized.contains(&materialized_column_name(&m.name)) => {
             Ok(column_match(materialized_column_name(&m.name)))
+        }
+        // Map-typed attribute tables: per-key extraction, all four
+        // operators, on both attribute columns.
+        None if ctx.map_attrs => {
+            use datafusion::functions::core::expr_fn::get_field;
+            let per = |column: &str| {
+                let e = get_field(col(column), m.name.as_str());
+                match m.op {
+                    MatchKind::Eq => e.eq(lit(m.value.clone())),
+                    MatchKind::Neq => e.clone().is_null().or(e.not_eq(lit(m.value.clone()))),
+                    MatchKind::Re => regexp_like(e, lit(m.value.clone()), None),
+                    MatchKind::Nre => {
+                        e.clone()
+                            .is_null()
+                            .or(not(regexp_like(e, lit(m.value.clone()), None)))
+                    }
+                }
+            };
+            Ok(match m.op {
+                MatchKind::Eq | MatchKind::Re => per(LOG_ATTRIBUTES).or(per(RESOURCE_ATTRIBUTES)),
+                MatchKind::Neq | MatchKind::Nre => {
+                    per(LOG_ATTRIBUTES).and(per(RESOURCE_ATTRIBUTES))
+                }
+            })
         }
         None => {
             let fragment = attribute_fragment(&m.name, &m.value);
@@ -2552,18 +2593,21 @@ mod tests {
 
     #[test]
     fn matcher_routes_materialized_label_to_column() {
-        use std::collections::HashSet;
         let m = LabelMatch {
             name: "namespace".to_string(),
             op: MatchKind::Eq,
             value: "prod".to_string(),
         };
         // No materialized column → attribute-JSON substring match.
-        let json = format!("{:?}", matcher_expr(&m, &HashSet::new()).unwrap());
+        let ctx = super::super::logql::AttrContext::default();
+        let json = format!("{:?}", matcher_expr(&m, &ctx).unwrap());
         assert!(json.contains(r#""namespace":"prod""#), "{json}");
         // With the column → exact equality on `label_namespace`.
-        let cols: HashSet<String> = ["label_namespace".to_string()].into_iter().collect();
-        let rendered = format!("{:?}", matcher_expr(&m, &cols).unwrap());
+        let ctx = super::super::logql::AttrContext {
+            materialized: ["label_namespace".to_string()].into_iter().collect(),
+            map_attrs: false,
+        };
+        let rendered = format!("{:?}", matcher_expr(&m, &ctx).unwrap());
         assert!(rendered.contains("label_namespace"), "{rendered}");
         assert!(!rendered.contains("attributes"), "{rendered}");
     }

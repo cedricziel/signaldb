@@ -1373,7 +1373,7 @@ fn distinct_non_empty(batches: &[RecordBatch], column: &str) -> Result<Vec<Strin
 /// handling both storage forms: legacy Utf8 columns holding flat JSON
 /// objects, and typed `Map<Utf8, Utf8>` columns (new tables). Null,
 /// unparseable, or non-object rows yield `None`.
-fn attr_documents(
+pub(super) fn attr_documents(
     batch: &RecordBatch,
     name: &str,
 ) -> Result<Vec<Option<BTreeMap<String, String>>>, QuerierError> {

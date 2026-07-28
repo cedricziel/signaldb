@@ -24,7 +24,7 @@ wrong result.
 | Feature | Status |
 |---------|--------|
 | Instant vector selector `metric{…}` | ✅ |
-| Label matchers `=`, `!=`, `=~`, `!~` | ✅ (all four operators on `service_name` and on **materialized** labels; a non-materialized attribute label supports `=`/`!=` only, matched by JSON substring) |
+| Label matchers `=`, `!=`, `=~`, `!~` | ✅ (all four operators on `service_name` and on **materialized** labels; on map-typed tables any attribute supports all four; legacy JSON tables: `=`/`!=` substring only) |
 | `__name__` matcher | ✅ |
 | Range vector selector `metric[5m]` (as a function argument) | ✅ |
 | `offset` modifier (`metric offset 5m`) | ✅ |
