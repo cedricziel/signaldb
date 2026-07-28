@@ -194,8 +194,10 @@ sum by (level) (rate({service_name="api"}[5m]))
   The regex is anchored to the whole source value; a non-match leaves the
   series unchanged, and an empty result deletes the label. A new `dst`
   becomes an additional series label.
-- **Grouping** is only supported by labels backed by a column
-  (`service_name`, `level`, ...).
+- **Grouping** is supported by labels backed by a column: the built-in
+  ones (`service_name`, `level`, ...) and any **materialized** label
+  (`sum by (namespace) (...)` groups on its `label_namespace` column; the
+  result series carry the label under its sanitized name).
 
 ### Time bucketing — the key approximation
 
@@ -213,7 +215,7 @@ These parse but return an "unsupported" error at execution:
 - Many-to-one vector matching (`group_left` / `group_right`) and
   `... or vector(0)` fallbacks
 - `sum without (labels)` with a non-empty label list
-- Grouping by an attribute (non-column) label
+- Grouping by a plain (non-materialized) attribute label
 
 ## Examples
 
