@@ -344,6 +344,25 @@ pub struct WalConfig {
     pub max_buffer_size_bytes: usize,
 }
 
+impl WalConfig {
+    /// Resolve the effective WAL directory for a service.
+    ///
+    /// Precedence:
+    /// 1. `override_dir` — a service-specific override pointing at the full
+    ///    service directory (from `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR` or a
+    ///    `--wal-dir` CLI flag) wins outright.
+    /// 2. Otherwise `[wal].wal_dir` with the service name appended, e.g.
+    ///    `.data/wal/acceptor`. Tenant/dataset/signal subdirectories are
+    ///    created below this path at runtime.
+    pub fn wal_dir_for_service(
+        &self,
+        service: &str,
+        override_dir: Option<std::path::PathBuf>,
+    ) -> std::path::PathBuf {
+        override_dir.unwrap_or_else(|| std::path::Path::new(&self.wal_dir).join(service))
+    }
+}
+
 impl Default for WalConfig {
     fn default() -> Self {
         Self {
@@ -1249,6 +1268,80 @@ mod tests {
             assert_eq!(config.querier.max_search_limit, 50);
             Ok(())
         });
+    }
+
+    #[test]
+    fn wal_dir_for_service_appends_service_suffix_to_default() {
+        let config = Configuration::default();
+        assert_eq!(
+            config.wal.wal_dir_for_service("acceptor", None),
+            std::path::PathBuf::from(".data/wal/acceptor")
+        );
+        assert_eq!(
+            config.wal.wal_dir_for_service("writer", None),
+            std::path::PathBuf::from(".data/wal/writer")
+        );
+    }
+
+    #[test]
+    fn wal_dir_for_service_honors_toml_wal_dir() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                [wal]
+                wal_dir = "/data/wal"
+                "#,
+            )?;
+            let config: Configuration = Figment::new()
+                .merge(Serialized::defaults(Configuration::default()))
+                .merge(figment::providers::Toml::file("signaldb.toml"))
+                .extract()?;
+            assert_eq!(
+                config.wal.wal_dir_for_service("acceptor", None),
+                std::path::PathBuf::from("/data/wal/acceptor")
+            );
+            assert_eq!(
+                config.wal.wal_dir_for_service("writer", None),
+                std::path::PathBuf::from("/data/wal/writer")
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn wal_dir_for_service_env_wal_dir_flows_through_figment() {
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB__WAL__WAL_DIR", "/env/wal");
+            let config: Configuration = Figment::new()
+                .merge(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB__").split("__"))
+                .extract()?;
+            assert_eq!(
+                config.wal.wal_dir_for_service("acceptor", None),
+                std::path::PathBuf::from("/env/wal/acceptor")
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn wal_dir_for_service_override_wins_over_configured_dir() {
+        let config = Configuration {
+            wal: WalConfig {
+                wal_dir: "/data/wal".to_string(),
+                ..WalConfig::default()
+            },
+            ..Configuration::default()
+        };
+        // Service-specific override (ACCEPTOR_WAL_DIR / WRITER_WAL_DIR or
+        // --wal-dir) points at the full service directory and wins outright.
+        assert_eq!(
+            config
+                .wal
+                .wal_dir_for_service("acceptor", Some("/custom/acceptor-wal".into())),
+            std::path::PathBuf::from("/custom/acceptor-wal")
+        );
     }
 
     #[test]

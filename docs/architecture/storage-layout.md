@@ -490,7 +490,7 @@ The WAL is organized by tenant, dataset, and signal type under the configured ba
 
 ### Concrete Example
 
-The runtime `WalConfig` (`src/common/src/wal/mod.rs`) defaults to `wal_dir = ".wal"`; the `.data/wal` path shown below is the `[wal]` config-file default used by the dev scripts. With `wal_dir = ".data/wal"`:
+The runtime `WalConfig` (`src/common/src/wal/mod.rs`) defaults to `wal_dir = ".wal"`, but the services derive their WAL directory from the `[wal].wal_dir` config value (default `.data/wal`) with a per-service suffix: the acceptor uses `{wal_dir}/acceptor` and the writer `{wal_dir}/writer`, overridable via `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR`. The tenant tree shown below sits under the acceptor's service directory; with the defaults that is `.data/wal/acceptor`:
 
 ```
 .data/wal/

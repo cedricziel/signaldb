@@ -29,10 +29,9 @@ struct Cli {
     #[arg(
         long,
         env = "WRITER_WAL_DIR",
-        help = "WAL directory path",
-        default_value = ".wal/writer"
+        help = "WAL directory path (overrides [wal].wal_dir + \"/writer\"; default: .data/wal/writer)"
     )]
-    wal_dir: PathBuf,
+    wal_dir: Option<PathBuf>,
 
     #[arg(long, help = "Bind address for servers", default_value = "0.0.0.0")]
     bind: String,
@@ -144,9 +143,15 @@ async fn main() -> anyhow::Result<()> {
     let object_store = common::storage::create_object_store(&config.storage)
         .context("Failed to initialize object store")?;
 
-    // Initialize WAL for durability
+    // Initialize WAL for durability. The --wal-dir / WRITER_WAL_DIR override
+    // wins, otherwise [wal].wal_dir from the configuration with the service
+    // suffix appended.
+    let wal_dir = config
+        .wal
+        .wal_dir_for_service("writer", cli.wal_dir.clone());
+    tracing::info!(wal_dir = %wal_dir.display(), "Initializing writer WAL");
     let wal_config = WalConfig {
-        wal_dir: cli.wal_dir,
+        wal_dir,
         ..Default::default()
     };
 

@@ -140,10 +140,13 @@ async fn main() -> Result<()> {
     let object_store = common::storage::create_object_store(&config.storage)
         .context("Failed to initialize object store")?;
 
-    let writer_wal_dir =
-        std::env::var("WRITER_WAL_DIR").unwrap_or_else(|_| ".data/wal/writer".to_string());
+    // WRITER_WAL_DIR override wins, otherwise [wal].wal_dir + "/writer".
+    let writer_wal_dir = config.wal.wal_dir_for_service(
+        "writer",
+        std::env::var("WRITER_WAL_DIR").ok().map(Into::into),
+    );
     let writer_wal_config = WalConfig {
-        wal_dir: writer_wal_dir.into(),
+        wal_dir: writer_wal_dir,
         ..Default::default()
     };
 
@@ -298,10 +301,12 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Initialize shared acceptor resources for both gRPC and HTTP servers
-    let wal_dir = std::env::var("ACCEPTOR_WAL_DIR")
-        .unwrap_or_else(|_| ".wal/acceptor".to_string())
-        .into();
+    // Initialize shared acceptor resources for both gRPC and HTTP servers.
+    // ACCEPTOR_WAL_DIR override wins, otherwise [wal].wal_dir + "/acceptor".
+    let wal_dir = config.wal.wal_dir_for_service(
+        "acceptor",
+        std::env::var("ACCEPTOR_WAL_DIR").ok().map(Into::into),
+    );
     let grpc_addr = SocketAddr::from(([0, 0, 0, 0], 4317));
     let http_addr = SocketAddr::from(([0, 0, 0, 0], 4318));
     let advertise_addr =
