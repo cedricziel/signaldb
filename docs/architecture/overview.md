@@ -55,7 +55,7 @@ Apache Iceberg provides ACID transactions and structured metadata management:
 - **Hour-based partitioning** on `timestamp` for all table types
 - **Namespace isolation**: Tables namespaced as `[tenant_slug, dataset_slug]`
 - **Materialized labels**: configured attribute keys promoted to dedicated
-  columns for exact querying (see
+  columns for exact querying across all four signal types (see
   [storage layout](storage-layout.md#materialized-labels))
 
 ### 5. Columnar Storage

@@ -448,10 +448,12 @@ fn parse_attr_objects(
         .collect())
 }
 
-/// Build the `label_<key>` columns for the configured materialized labels,
-/// extracting each label's value from the resource, scope, then record
-/// attributes (first non-null wins). Returns the extra fields and arrays to
-/// append to the base logs batch; empty when nothing is configured.
+/// One row's parsed attribute object (or `None` when absent / not an object).
+type AttrMap = serde_json::Map<String, serde_json::Value>;
+
+/// Build the `label_<key>` columns for the configured materialized labels
+/// from a batch's `resource_json` / `scope_json` / `attributes_json`
+/// columns. Empty when nothing is configured.
 fn materialized_label_columns(
     batch: &RecordBatch,
     num_rows: usize,
@@ -466,6 +468,49 @@ fn materialized_label_columns(
     let scope = parse_attr_objects(batch, "scope_json", Some("attributes"))?;
     let record = parse_attr_objects(batch, "attributes_json", None)?;
 
+    Ok(label_columns_from_maps(
+        &resource, &scope, &record, num_rows, labels,
+    ))
+}
+
+/// Build materialized-label columns from already-serialized attribute JSON
+/// strings (the metrics transforms explode data points and hold per-row
+/// resource/scope/record attribute JSON rather than a batch column).
+fn materialized_label_columns_from_json(
+    resource: &[Option<String>],
+    scope: &[Option<String>],
+    record: &[Option<String>],
+    labels: &[String],
+) -> (Vec<Field>, Vec<ArrayRef>) {
+    if labels.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let parse = |rows: &[Option<String>]| -> Vec<Option<AttrMap>> {
+        rows.iter()
+            .map(|s| {
+                s.as_ref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                    .and_then(|v| match v {
+                        serde_json::Value::Object(m) => Some(m),
+                        _ => None,
+                    })
+            })
+            .collect()
+    };
+    let (r, sc, rec) = (parse(resource), parse(scope), parse(record));
+    label_columns_from_maps(&r, &sc, &rec, resource.len(), labels)
+}
+
+/// Build one `label_<key>` column per label from per-row attribute maps,
+/// taking each value from resource, then scope, then record (first
+/// non-null). Duplicate labels collapse to a single column.
+fn label_columns_from_maps(
+    resource: &[Option<AttrMap>],
+    scope: &[Option<AttrMap>],
+    record: &[Option<AttrMap>],
+    num_rows: usize,
+    labels: &[String],
+) -> (Vec<Field>, Vec<ArrayRef>) {
     let mut fields = Vec::new();
     let mut columns: Vec<ArrayRef> = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -476,8 +521,8 @@ fn materialized_label_columns(
         }
         let values: Vec<Option<String>> = (0..num_rows)
             .map(|i| {
-                for src in [&resource[i], &scope[i], &record[i]] {
-                    if let Some(map) = src
+                for src in [resource.get(i), scope.get(i), record.get(i)] {
+                    if let Some(Some(map)) = src
                         && let Some(v) = map.get(label)
                         && let Some(s) = attr_value_to_string(v)
                     {
@@ -490,7 +535,7 @@ fn materialized_label_columns(
         fields.push(Field::new(&name, DataType::Utf8, true));
         columns.push(Arc::new(StringArray::from(values)));
     }
-    Ok((fields, columns))
+    (fields, columns)
 }
 
 /// Append materialized-label fields/columns to a base batch schema. Returns
@@ -1224,31 +1269,36 @@ pub fn transform_metrics_gauge_v1_to_iceberg(batch: RecordBatch) -> Result<Recor
         }
     }
 
-    RecordBatch::try_new(
-        output_schema,
-        vec![
-            Arc::new(TimestampNanosecondArray::from(timestamps)),
-            Arc::new(TimestampNanosecondArray::from(start_timestamps)),
-            Arc::new(StringArray::from(service_names)),
-            Arc::new(StringArray::from(metric_names)),
-            Arc::new(StringArray::from(metric_descriptions)),
-            Arc::new(StringArray::from(metric_units)),
-            Arc::new(Float64Array::from(values)),
-            Arc::new(Int32Array::from(flags)),
-            Arc::new(StringArray::from(resource_schema_urls)),
-            Arc::new(StringArray::from(resource_attributes)),
-            Arc::new(StringArray::from(scope_names)),
-            Arc::new(StringArray::from(scope_versions)),
-            Arc::new(StringArray::from(scope_schema_urls)),
-            Arc::new(StringArray::from(scope_attributes)),
-            Arc::new(Int32Array::from(scope_dropped_attr_counts)),
-            Arc::new(StringArray::from(attributes)),
-            Arc::new(StringArray::from(exemplars)),
-            Arc::new(Date32Array::from(date_days)),
-            Arc::new(Int32Array::from(hours)),
-        ],
-    )
-    .map_err(|e| {
+    let (label_fields, label_columns) = materialized_label_columns_from_json(
+        &resource_attributes,
+        &scope_attributes,
+        &attributes,
+        &materialized_labels_for("metrics"),
+    );
+    let mut columns: Vec<ArrayRef> = vec![
+        Arc::new(TimestampNanosecondArray::from(timestamps)),
+        Arc::new(TimestampNanosecondArray::from(start_timestamps)),
+        Arc::new(StringArray::from(service_names)),
+        Arc::new(StringArray::from(metric_names)),
+        Arc::new(StringArray::from(metric_descriptions)),
+        Arc::new(StringArray::from(metric_units)),
+        Arc::new(Float64Array::from(values)),
+        Arc::new(Int32Array::from(flags)),
+        Arc::new(StringArray::from(resource_schema_urls)),
+        Arc::new(StringArray::from(resource_attributes)),
+        Arc::new(StringArray::from(scope_names)),
+        Arc::new(StringArray::from(scope_versions)),
+        Arc::new(StringArray::from(scope_schema_urls)),
+        Arc::new(StringArray::from(scope_attributes)),
+        Arc::new(Int32Array::from(scope_dropped_attr_counts)),
+        Arc::new(StringArray::from(attributes)),
+        Arc::new(StringArray::from(exemplars)),
+        Arc::new(Date32Array::from(date_days)),
+        Arc::new(Int32Array::from(hours)),
+    ];
+    let out_schema =
+        extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
+    RecordBatch::try_new(out_schema, columns).map_err(|e| {
         anyhow!(
             "Failed to create transformed metrics_gauge RecordBatch: {}",
             e
@@ -1332,33 +1382,38 @@ pub fn transform_metrics_sum_v1_to_iceberg(batch: RecordBatch) -> Result<RecordB
         }
     }
 
-    RecordBatch::try_new(
-        output_schema,
-        vec![
-            Arc::new(TimestampNanosecondArray::from(timestamps)),
-            Arc::new(TimestampNanosecondArray::from(start_timestamps)),
-            Arc::new(StringArray::from(service_names)),
-            Arc::new(StringArray::from(metric_names)),
-            Arc::new(StringArray::from(metric_descriptions)),
-            Arc::new(StringArray::from(metric_units)),
-            Arc::new(Float64Array::from(values)),
-            Arc::new(Int32Array::from(flags)),
-            Arc::new(Int32Array::from(aggregation_temporalities)),
-            Arc::new(BooleanArray::from(is_monotonics)),
-            Arc::new(StringArray::from(resource_schema_urls)),
-            Arc::new(StringArray::from(resource_attributes)),
-            Arc::new(StringArray::from(scope_names)),
-            Arc::new(StringArray::from(scope_versions)),
-            Arc::new(StringArray::from(scope_schema_urls)),
-            Arc::new(StringArray::from(scope_attributes)),
-            Arc::new(Int32Array::from(scope_dropped_attr_counts)),
-            Arc::new(StringArray::from(attributes)),
-            Arc::new(StringArray::from(exemplars)),
-            Arc::new(Date32Array::from(date_days)),
-            Arc::new(Int32Array::from(hours)),
-        ],
-    )
-    .map_err(|e| {
+    let (label_fields, label_columns) = materialized_label_columns_from_json(
+        &resource_attributes,
+        &scope_attributes,
+        &attributes,
+        &materialized_labels_for("metrics"),
+    );
+    let mut columns: Vec<ArrayRef> = vec![
+        Arc::new(TimestampNanosecondArray::from(timestamps)),
+        Arc::new(TimestampNanosecondArray::from(start_timestamps)),
+        Arc::new(StringArray::from(service_names)),
+        Arc::new(StringArray::from(metric_names)),
+        Arc::new(StringArray::from(metric_descriptions)),
+        Arc::new(StringArray::from(metric_units)),
+        Arc::new(Float64Array::from(values)),
+        Arc::new(Int32Array::from(flags)),
+        Arc::new(Int32Array::from(aggregation_temporalities)),
+        Arc::new(BooleanArray::from(is_monotonics)),
+        Arc::new(StringArray::from(resource_schema_urls)),
+        Arc::new(StringArray::from(resource_attributes)),
+        Arc::new(StringArray::from(scope_names)),
+        Arc::new(StringArray::from(scope_versions)),
+        Arc::new(StringArray::from(scope_schema_urls)),
+        Arc::new(StringArray::from(scope_attributes)),
+        Arc::new(Int32Array::from(scope_dropped_attr_counts)),
+        Arc::new(StringArray::from(attributes)),
+        Arc::new(StringArray::from(exemplars)),
+        Arc::new(Date32Array::from(date_days)),
+        Arc::new(Int32Array::from(hours)),
+    ];
+    let out_schema =
+        extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
+    RecordBatch::try_new(out_schema, columns).map_err(|e| {
         anyhow!(
             "Failed to create transformed metrics_sum RecordBatch: {}",
             e
@@ -1448,37 +1503,42 @@ pub fn transform_metrics_histogram_v1_to_iceberg(batch: RecordBatch) -> Result<R
         }
     }
 
-    RecordBatch::try_new(
-        output_schema,
-        vec![
-            Arc::new(TimestampNanosecondArray::from(timestamps)),
-            Arc::new(TimestampNanosecondArray::from(start_timestamps)),
-            Arc::new(StringArray::from(service_names)),
-            Arc::new(StringArray::from(metric_names)),
-            Arc::new(StringArray::from(metric_descriptions)),
-            Arc::new(StringArray::from(metric_units)),
-            Arc::new(Int64Array::from(counts)),
-            Arc::new(Float64Array::from(sums)),
-            Arc::new(Float64Array::from(mins)),
-            Arc::new(Float64Array::from(maxes)),
-            Arc::new(StringArray::from(bucket_counts)),
-            Arc::new(StringArray::from(explicit_bounds)),
-            Arc::new(Int32Array::from(flags)),
-            Arc::new(Int32Array::from(aggregation_temporalities)),
-            Arc::new(StringArray::from(resource_schema_urls)),
-            Arc::new(StringArray::from(resource_attributes)),
-            Arc::new(StringArray::from(scope_names)),
-            Arc::new(StringArray::from(scope_versions)),
-            Arc::new(StringArray::from(scope_schema_urls)),
-            Arc::new(StringArray::from(scope_attributes)),
-            Arc::new(Int32Array::from(scope_dropped_attr_counts)),
-            Arc::new(StringArray::from(attributes)),
-            Arc::new(StringArray::from(exemplars)),
-            Arc::new(Date32Array::from(date_days)),
-            Arc::new(Int32Array::from(hours)),
-        ],
-    )
-    .map_err(|e| {
+    let (label_fields, label_columns) = materialized_label_columns_from_json(
+        &resource_attributes,
+        &scope_attributes,
+        &attributes,
+        &materialized_labels_for("metrics"),
+    );
+    let mut columns: Vec<ArrayRef> = vec![
+        Arc::new(TimestampNanosecondArray::from(timestamps)),
+        Arc::new(TimestampNanosecondArray::from(start_timestamps)),
+        Arc::new(StringArray::from(service_names)),
+        Arc::new(StringArray::from(metric_names)),
+        Arc::new(StringArray::from(metric_descriptions)),
+        Arc::new(StringArray::from(metric_units)),
+        Arc::new(Int64Array::from(counts)),
+        Arc::new(Float64Array::from(sums)),
+        Arc::new(Float64Array::from(mins)),
+        Arc::new(Float64Array::from(maxes)),
+        Arc::new(StringArray::from(bucket_counts)),
+        Arc::new(StringArray::from(explicit_bounds)),
+        Arc::new(Int32Array::from(flags)),
+        Arc::new(Int32Array::from(aggregation_temporalities)),
+        Arc::new(StringArray::from(resource_schema_urls)),
+        Arc::new(StringArray::from(resource_attributes)),
+        Arc::new(StringArray::from(scope_names)),
+        Arc::new(StringArray::from(scope_versions)),
+        Arc::new(StringArray::from(scope_schema_urls)),
+        Arc::new(StringArray::from(scope_attributes)),
+        Arc::new(Int32Array::from(scope_dropped_attr_counts)),
+        Arc::new(StringArray::from(attributes)),
+        Arc::new(StringArray::from(exemplars)),
+        Arc::new(Date32Array::from(date_days)),
+        Arc::new(Int32Array::from(hours)),
+    ];
+    let out_schema =
+        extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
+    RecordBatch::try_new(out_schema, columns).map_err(|e| {
         anyhow!(
             "Failed to create transformed metrics_histogram RecordBatch: {}",
             e
@@ -1664,42 +1724,47 @@ pub fn transform_metrics_exponential_histogram_v1_to_iceberg(
         }
     }
 
-    RecordBatch::try_new(
-        output_schema,
-        vec![
-            Arc::new(TimestampNanosecondArray::from(timestamps)),
-            Arc::new(TimestampNanosecondArray::from(start_timestamps)),
-            Arc::new(StringArray::from(service_names)),
-            Arc::new(StringArray::from(metric_names)),
-            Arc::new(StringArray::from(metric_descriptions)),
-            Arc::new(StringArray::from(metric_units)),
-            Arc::new(Int64Array::from(counts)),
-            Arc::new(Float64Array::from(sums)),
-            Arc::new(Float64Array::from(mins)),
-            Arc::new(Float64Array::from(maxes)),
-            Arc::new(Int32Array::from(scales)),
-            Arc::new(Int64Array::from(zero_counts)),
-            Arc::new(Int32Array::from(positive_offsets)),
-            Arc::new(StringArray::from(positive_bucket_counts)),
-            Arc::new(Int32Array::from(negative_offsets)),
-            Arc::new(StringArray::from(negative_bucket_counts)),
-            Arc::new(Int32Array::from(flags)),
-            Arc::new(Int32Array::from(aggregation_temporalities)),
-            Arc::new(Float64Array::from(zero_thresholds)),
-            Arc::new(StringArray::from(resource_schema_urls)),
-            Arc::new(StringArray::from(resource_attributes)),
-            Arc::new(StringArray::from(scope_names)),
-            Arc::new(StringArray::from(scope_versions)),
-            Arc::new(StringArray::from(scope_schema_urls)),
-            Arc::new(StringArray::from(scope_attributes)),
-            Arc::new(Int32Array::from(scope_dropped_attr_counts)),
-            Arc::new(StringArray::from(attributes)),
-            Arc::new(StringArray::from(exemplars)),
-            Arc::new(Date32Array::from(date_days)),
-            Arc::new(Int32Array::from(hours)),
-        ],
-    )
-    .map_err(|e| {
+    let (label_fields, label_columns) = materialized_label_columns_from_json(
+        &resource_attributes,
+        &scope_attributes,
+        &attributes,
+        &materialized_labels_for("metrics"),
+    );
+    let mut columns: Vec<ArrayRef> = vec![
+        Arc::new(TimestampNanosecondArray::from(timestamps)),
+        Arc::new(TimestampNanosecondArray::from(start_timestamps)),
+        Arc::new(StringArray::from(service_names)),
+        Arc::new(StringArray::from(metric_names)),
+        Arc::new(StringArray::from(metric_descriptions)),
+        Arc::new(StringArray::from(metric_units)),
+        Arc::new(Int64Array::from(counts)),
+        Arc::new(Float64Array::from(sums)),
+        Arc::new(Float64Array::from(mins)),
+        Arc::new(Float64Array::from(maxes)),
+        Arc::new(Int32Array::from(scales)),
+        Arc::new(Int64Array::from(zero_counts)),
+        Arc::new(Int32Array::from(positive_offsets)),
+        Arc::new(StringArray::from(positive_bucket_counts)),
+        Arc::new(Int32Array::from(negative_offsets)),
+        Arc::new(StringArray::from(negative_bucket_counts)),
+        Arc::new(Int32Array::from(flags)),
+        Arc::new(Int32Array::from(aggregation_temporalities)),
+        Arc::new(Float64Array::from(zero_thresholds)),
+        Arc::new(StringArray::from(resource_schema_urls)),
+        Arc::new(StringArray::from(resource_attributes)),
+        Arc::new(StringArray::from(scope_names)),
+        Arc::new(StringArray::from(scope_versions)),
+        Arc::new(StringArray::from(scope_schema_urls)),
+        Arc::new(StringArray::from(scope_attributes)),
+        Arc::new(Int32Array::from(scope_dropped_attr_counts)),
+        Arc::new(StringArray::from(attributes)),
+        Arc::new(StringArray::from(exemplars)),
+        Arc::new(Date32Array::from(date_days)),
+        Arc::new(Int32Array::from(hours)),
+    ];
+    let out_schema =
+        extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
+    RecordBatch::try_new(out_schema, columns).map_err(|e| {
         anyhow!(
             "Failed to create transformed metrics_exponential_histogram RecordBatch: {}",
             e
@@ -1778,33 +1843,38 @@ pub fn transform_metrics_summary_v1_to_iceberg(batch: RecordBatch) -> Result<Rec
         }
     }
 
-    RecordBatch::try_new(
-        output_schema,
-        vec![
-            Arc::new(TimestampNanosecondArray::from(timestamps)),
-            Arc::new(TimestampNanosecondArray::from(start_timestamps)),
-            Arc::new(StringArray::from(service_names)),
-            Arc::new(StringArray::from(metric_names)),
-            Arc::new(StringArray::from(metric_descriptions)),
-            Arc::new(StringArray::from(metric_units)),
-            Arc::new(Int64Array::from(counts)),
-            Arc::new(Float64Array::from(sums)),
-            Arc::new(StringArray::from(quantile_values)),
-            Arc::new(Int32Array::from(flags)),
-            Arc::new(StringArray::from(resource_schema_urls)),
-            Arc::new(StringArray::from(resource_attributes)),
-            Arc::new(StringArray::from(scope_names)),
-            Arc::new(StringArray::from(scope_versions)),
-            Arc::new(StringArray::from(scope_schema_urls)),
-            Arc::new(StringArray::from(scope_attributes)),
-            Arc::new(Int32Array::from(scope_dropped_attr_counts)),
-            Arc::new(StringArray::from(attributes)),
-            Arc::new(StringArray::from(exemplars)),
-            Arc::new(Date32Array::from(date_days)),
-            Arc::new(Int32Array::from(hours)),
-        ],
-    )
-    .map_err(|e| {
+    let (label_fields, label_columns) = materialized_label_columns_from_json(
+        &resource_attributes,
+        &scope_attributes,
+        &attributes,
+        &materialized_labels_for("metrics"),
+    );
+    let mut columns: Vec<ArrayRef> = vec![
+        Arc::new(TimestampNanosecondArray::from(timestamps)),
+        Arc::new(TimestampNanosecondArray::from(start_timestamps)),
+        Arc::new(StringArray::from(service_names)),
+        Arc::new(StringArray::from(metric_names)),
+        Arc::new(StringArray::from(metric_descriptions)),
+        Arc::new(StringArray::from(metric_units)),
+        Arc::new(Int64Array::from(counts)),
+        Arc::new(Float64Array::from(sums)),
+        Arc::new(StringArray::from(quantile_values)),
+        Arc::new(Int32Array::from(flags)),
+        Arc::new(StringArray::from(resource_schema_urls)),
+        Arc::new(StringArray::from(resource_attributes)),
+        Arc::new(StringArray::from(scope_names)),
+        Arc::new(StringArray::from(scope_versions)),
+        Arc::new(StringArray::from(scope_schema_urls)),
+        Arc::new(StringArray::from(scope_attributes)),
+        Arc::new(Int32Array::from(scope_dropped_attr_counts)),
+        Arc::new(StringArray::from(attributes)),
+        Arc::new(StringArray::from(exemplars)),
+        Arc::new(Date32Array::from(date_days)),
+        Arc::new(Int32Array::from(hours)),
+    ];
+    let out_schema =
+        extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
+    RecordBatch::try_new(out_schema, columns).map_err(|e| {
         anyhow!(
             "Failed to create transformed metrics_summary RecordBatch: {}",
             e
@@ -1969,7 +2039,12 @@ pub fn transform_profiles_v1_to_iceberg(batch: RecordBatch) -> Result<RecordBatc
         new_columns.push(column);
     }
 
-    RecordBatch::try_new(schema, new_columns)
+    let (label_fields, label_columns) =
+        materialized_label_columns(&batch, num_rows, &materialized_labels_for("profiles"))?;
+    let out_schema =
+        extend_schema_with_labels(schema, label_fields, &mut new_columns, label_columns);
+
+    RecordBatch::try_new(out_schema, new_columns)
         .map_err(|e| anyhow!("Failed to create transformed profiles batch: {e}"))
 }
 
