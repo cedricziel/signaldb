@@ -24,5 +24,7 @@
 //! ```
 
 mod config_builder;
+mod otel_capture;
 
 pub use config_builder::TestConfigBuilder;
+pub use otel_capture::OtelExportProbe;

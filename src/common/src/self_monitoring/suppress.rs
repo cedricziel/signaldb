@@ -11,6 +11,16 @@
 //! [`SelfTelemetrySuppressionFilter`] so that no spans or log records are
 //! exported while the marker is set. Ingestion still happens normally — the
 //! telemetry data itself is stored — it just isn't re-instrumented.
+//!
+//! The marker crosses neither process boundaries nor `tokio::spawn`, so
+//! every service needs its own call sites wherever it touches
+//! `_system`-tenant data: the acceptor's auth middleware and gRPC services,
+//! the writer's `do_put` and background WAL-processing loop, the querier's
+//! Flight query execution, and the HTTP auth middleware used by the router.
+//! When adding a new `_system` processing path (or a background task that
+//! handles `_system` batches), wrap it with one of the suppression helpers —
+//! otherwise its logs/spans are exported and re-ingested as `_system`
+//! telemetry, a self-sustaining feedback loop (issue #760).
 
 use std::future::Future;
 
@@ -44,6 +54,21 @@ pub async fn suppress_self_telemetry<F: Future>(fut: F) -> F::Output {
 /// Run `f` synchronously with self-monitoring telemetry export suppressed.
 pub fn suppress_self_telemetry_sync<T>(f: impl FnOnce() -> T) -> T {
     SUPPRESS_SELF_TELEMETRY.sync_scope((), f)
+}
+
+/// Run `fut` with self-monitoring telemetry export suppressed when
+/// `suppress` is true, unchanged otherwise.
+///
+/// Convenience for code paths that interleave tenants (e.g. the writer's
+/// WAL-processing loop or the querier's query execution): decide per
+/// batch/request with [`is_self_monitoring_tenant`] and wrap the processing
+/// future once.
+pub async fn maybe_suppress_self_telemetry<F: Future>(suppress: bool, fut: F) -> F::Output {
+    if suppress {
+        suppress_self_telemetry(fut).await
+    } else {
+        fut.await
+    }
 }
 
 /// Whether the current task is processing a self-monitoring request.
