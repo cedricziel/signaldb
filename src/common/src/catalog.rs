@@ -199,6 +199,7 @@ impl Catalog {
                     distinct_estimate BIGINT NOT NULL DEFAULT 0,
                     capped INTEGER NOT NULL DEFAULT 0,
                     query_hits BIGINT NOT NULL DEFAULT 0,
+                    promote_streak BIGINT NOT NULL DEFAULT 0,
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                     PRIMARY KEY (tenant_id, dataset_id, signal, attr_key)
                 )"#;
@@ -319,6 +320,7 @@ impl Catalog {
                     distinct_estimate BIGINT NOT NULL DEFAULT 0,
                     capped BOOLEAN NOT NULL DEFAULT FALSE,
                     query_hits BIGINT NOT NULL DEFAULT 0,
+                    promote_streak BIGINT NOT NULL DEFAULT 0,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY (tenant_id, dataset_id, signal, attr_key)
                 )"#;
@@ -910,6 +912,9 @@ pub struct AttributeStatsRecord {
     pub distinct_estimate: i64,
     pub capped: bool,
     pub query_hits: i64,
+    /// Consecutive analyzer cycles this key scored above the promotion
+    /// threshold (hysteresis state for auto-promotion, #734).
+    pub promote_streak: i64,
 }
 
 /// Advisory attribute-statistics methods (epic #737, #733).
@@ -1040,6 +1045,45 @@ impl Catalog {
         Ok(())
     }
 
+    /// Store the new promotion streak for one attribute key (hysteresis
+    /// state for auto-promotion, #734).
+    pub async fn set_attribute_promote_streak(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+        attr_key: &str,
+        streak: i64,
+    ) -> Result<(), sqlx::Error> {
+        let sql_sqlite = "UPDATE attribute_stats SET promote_streak = ? \
+             WHERE tenant_id = ? AND dataset_id = ? AND signal = ? AND attr_key = ?";
+        let sql_pg = "UPDATE attribute_stats SET promote_streak = $1 \
+             WHERE tenant_id = $2 AND dataset_id = $3 AND signal = $4 AND attr_key = $5";
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(sql_sqlite)
+                    .bind(streak)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(signal)
+                    .bind(attr_key)
+                    .execute(pool)
+                    .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(sql_pg)
+                    .bind(streak)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(signal)
+                    .bind(attr_key)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     /// The stored statistics for one (tenant, dataset, signal), sorted by
     /// attribute key.
     pub async fn get_attribute_stats(
@@ -1050,14 +1094,16 @@ impl Catalog {
     ) -> Result<Vec<AttributeStatsRecord>, sqlx::Error> {
         let sql_sqlite = r#"
             SELECT tenant_id, dataset_id, signal, attr_key, present_rows,
-                   total_rows, distinct_estimate, capped, query_hits
+                   total_rows, distinct_estimate, capped, query_hits,
+                   promote_streak
             FROM attribute_stats
             WHERE tenant_id = ? AND dataset_id = ? AND signal = ?
             ORDER BY attr_key
         "#;
         let sql_pg = r#"
             SELECT tenant_id, dataset_id, signal, attr_key, present_rows,
-                   total_rows, distinct_estimate, capped, query_hits
+                   total_rows, distinct_estimate, capped, query_hits,
+                   promote_streak
             FROM attribute_stats
             WHERE tenant_id = $1 AND dataset_id = $2 AND signal = $3
             ORDER BY attr_key
@@ -1079,6 +1125,7 @@ impl Catalog {
                 distinct_estimate: row.get("distinct_estimate"),
                 capped: row.get("capped"),
                 query_hits: row.get("query_hits"),
+                promote_streak: row.get("promote_streak"),
             }
         }
         match self {

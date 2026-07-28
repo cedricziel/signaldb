@@ -97,6 +97,80 @@ impl Default for RetentionConfig {
     }
 }
 
+/// Attribute auto-promotion at compaction rewrite (epic #737, #734).
+///
+/// The compactor's analyzer already computes per-key presence and
+/// approximate cardinality and persists them (with the querier's
+/// query-demand counters) to the catalog's `attribute_stats` table. This
+/// config drives the promotion/demotion decision on top of those stats.
+/// With `dry_run = true` (default) decisions are only logged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttrPromotionConfig {
+    /// Enable the promotion decision pass (dry-run by default).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Log decisions without changing any schema (safe default).
+    #[serde(default = "default_true")]
+    pub dry_run: bool,
+
+    /// Schema-width budget: maximum materialized `label_<key>` columns per
+    /// table, including the pinned `[schema.materialized_labels]` entries.
+    #[serde(default = "default_attr_promotion_max_labels")]
+    pub max_labels_per_table: usize,
+
+    /// Minimum fraction of rows a key must appear in to be promotable.
+    #[serde(default = "default_attr_promotion_min_presence")]
+    pub min_presence: f64,
+
+    /// Minimum accumulated query-demand hits for a key to be promotable.
+    #[serde(default = "default_attr_promotion_min_query_hits")]
+    pub min_query_hits: i64,
+
+    /// Consecutive over-threshold analyzer cycles required before a key is
+    /// promoted (hysteresis).
+    #[serde(default = "default_attr_promotion_promote_streak")]
+    pub promote_streak: i64,
+
+    /// Maximum promotions per rewrite cycle.
+    #[serde(default = "default_attr_promotion_max_per_cycle")]
+    pub max_promotions_per_cycle: usize,
+}
+
+impl Default for AttrPromotionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dry_run: true,
+            max_labels_per_table: default_attr_promotion_max_labels(),
+            min_presence: default_attr_promotion_min_presence(),
+            min_query_hits: default_attr_promotion_min_query_hits(),
+            promote_streak: default_attr_promotion_promote_streak(),
+            max_promotions_per_cycle: default_attr_promotion_max_per_cycle(),
+        }
+    }
+}
+
+fn default_attr_promotion_max_labels() -> usize {
+    32
+}
+
+fn default_attr_promotion_min_presence() -> f64 {
+    0.005
+}
+
+fn default_attr_promotion_min_query_hits() -> i64 {
+    1
+}
+
+fn default_attr_promotion_promote_streak() -> i64 {
+    3
+}
+
+fn default_attr_promotion_max_per_cycle() -> usize {
+    4
+}
+
 /// Orphan file cleanup configuration for compactor (Phase 3).
 /// This is a lightweight config-only version that matches the full OrphanCleanupConfig
 /// in the compactor crate but lives in common for TOML/env deserialization.
@@ -320,6 +394,11 @@ pub struct CompactorConfig {
     #[serde(default)]
     pub orphan_cleanup: OrphanCleanupConfig,
 
+    /// Attribute auto-promotion configuration (epic #737, #734)
+    /// Env: SIGNALDB__COMPACTOR__ATTR_PROMOTION__*
+    #[serde(default)]
+    pub attr_promotion: AttrPromotionConfig,
+
     /// Maximum compaction candidates to process per scheduling cycle (Phase 4).
     ///
     /// Limits total work per tick across all tenants.
@@ -377,6 +456,7 @@ impl Default for CompactorConfig {
             max_files_per_job: 50,
             retention: RetentionConfig::default(),
             orphan_cleanup: OrphanCleanupConfig::default(),
+            attr_promotion: AttrPromotionConfig::default(),
             max_candidates_per_cycle: default_max_candidates_per_cycle(),
             max_per_tenant: default_max_per_tenant(),
             lease_ttl_seconds: default_lease_ttl_seconds(),

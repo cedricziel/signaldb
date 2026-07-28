@@ -324,6 +324,21 @@ metrics = "90d"                       # Metric data retention (default: 90 days)
 # Uses a 4-phase detection algorithm with safety-first design.
 #
 # IMPORTANT: Always test with dry_run = true first!
+# Attribute auto-promotion (epic #737): decide from the persisted
+# attribute statistics (compactor scan stats + querier query-demand
+# counters in the catalog's attribute_stats table) which attribute keys
+# should become materialized label_<key> columns. Dry-run logs the
+# decision only; the schema-changing rewrite is gated behind dry_run=false
+# (not yet implemented).
+# [compactor.attr_promotion]
+# enabled = false               # Enable the decision pass (default: false)
+# dry_run = true                # Log decisions without schema changes (default: true)
+# max_labels_per_table = 32     # Schema-width budget incl. pinned [schema.materialized_labels]
+# min_presence = 0.005          # Minimum fraction of rows carrying the key
+# min_query_hits = 1            # Minimum accumulated query demand
+# promote_streak = 3            # Consecutive over-threshold cycles before promotion
+# max_promotions_per_cycle = 4  # Promotion cap per rewrite cycle
+
 [compactor.orphan_cleanup]
 enabled = false                       # Enable orphan cleanup (opt-in, default: false)
 dry_run = true                        # Log orphans without deleting (safe default: true)
