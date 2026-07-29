@@ -502,6 +502,7 @@ mod tests {
         let ctx = AttrContext {
             materialized: MaterializedColumns::new(),
             map_attrs: true,
+            ..Default::default()
         };
         let condition = Condition {
             selector: Selector::AnyAttribute("namespace".to_string()),
@@ -533,7 +534,7 @@ mod tests {
         // With the column: exact equality on `label_namespace`.
         let ctx = AttrContext {
             materialized: ["label_namespace".to_string()].into_iter().collect(),
-            map_attrs: false,
+            ..Default::default()
         };
         let rendered = format!("{:?}", condition.to_expr(&ctx).unwrap());
         assert!(rendered.contains("label_namespace"), "{rendered}");

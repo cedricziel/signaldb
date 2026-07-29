@@ -2065,6 +2065,8 @@ fn apply_filters(
                     datafusion::arrow::datatypes::DataType::Map(_, _)
                 )
         }),
+        // Metrics tables carry no derived token column (logs only).
+        attr_tokens: false,
     };
     let mut predicate = col("metric_name").eq(lit(plan.metric_name.clone()));
     for m in &plan.matchers {
@@ -2659,7 +2661,7 @@ mod tests {
         // With the column → exact equality on `label_namespace`.
         let ctx = super::super::logql::AttrContext {
             materialized: ["label_namespace".to_string()].into_iter().collect(),
-            map_attrs: false,
+            ..Default::default()
         };
         let rendered = format!("{:?}", matcher_expr(&m, &ctx).unwrap());
         assert!(rendered.contains("label_namespace"), "{rendered}");
