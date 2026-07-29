@@ -10,10 +10,10 @@ use thiserror::Error;
 /// Retention policy configuration with support for tenant and dataset overrides.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RetentionConfig {
-    /// Enable retention enforcement.
+    /// Enable retention enforcement (enabled by default).
     ///
     /// Env: SIGNALDB__COMPACTOR__RETENTION__ENABLED
-    #[serde(default)]
+    #[serde(default = "default_enabled")]
     pub enabled: bool,
 
     /// Interval between retention checks.
@@ -77,18 +77,22 @@ fn default_timezone() -> String {
     "UTC".to_string()
 }
 
+fn default_enabled() -> bool {
+    true // Retention enforcement is on by default
+}
+
 fn default_dry_run() -> bool {
-    true // Dry-run enabled by default for safety
+    false // Retention enforces (deletes expired data) by default
 }
 
 impl Default for RetentionConfig {
     fn default() -> Self {
         Self {
-            enabled: false,                                      // Disabled by default for safety
+            enabled: default_enabled(),
             retention_check_interval: Duration::from_secs(3600), // 1 hour
-            traces: Duration::from_secs(7 * 24 * 3600),          // 7 days
+            traces: Duration::from_secs(30 * 24 * 3600),         // 30 days
             logs: Duration::from_secs(30 * 24 * 3600),           // 30 days
-            metrics: Duration::from_secs(90 * 24 * 3600),        // 90 days
+            metrics: Duration::from_secs(30 * 24 * 3600),        // 30 days
             tenant_overrides: HashMap::new(),
             grace_period: default_grace_period(),
             timezone: default_timezone(),

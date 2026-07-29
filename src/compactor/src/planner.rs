@@ -536,7 +536,7 @@ mod tests {
     fn test_compactor_config_defaults() {
         let config = CompactorConfig::default();
 
-        assert!(!config.enabled); // Disabled by default
+        assert!(config.enabled); // Compaction is enabled by default
         assert_eq!(config.tick_interval, std::time::Duration::from_secs(300)); // 5 minutes
         assert_eq!(config.target_file_size_mb, 128);
         assert_eq!(config.file_count_threshold, 10);

@@ -25,11 +25,13 @@ Complete reference for configuring SignalDB Compactor Phase 3: Retention Enforce
 Phase 3 configuration is located in the `[compactor]` section of `signaldb.toml` or via environment variables with the `SIGNALDB__COMPACTOR__` prefix (double underscores separate nesting levels).
 
 **Configuration Precedence:**
+
 1. Environment variables (highest priority)
 2. `signaldb.toml` configuration file
 3. Default values (lowest priority)
 
 **Configuration Files:**
+
 - **Production:** `/etc/signaldb/signaldb.toml`
 - **Development:** `./signaldb.toml` (copy from `signaldb.dist.toml`)
 - **Container:** the compactor's `--config` flag defaults to `./signaldb.toml` relative to the working directory. If you mount a config file elsewhere (e.g. `/config/signaldb.toml`), you must pass `--config /config/signaldb.toml` explicitly or the mounted file is silently ignored.
@@ -44,14 +46,15 @@ Controls automatic retention enforcement and partition lifecycle management.
 
 #### Basic Settings
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | `bool` | `false` | Enable retention enforcement (opt-in) |
-| `dry_run` | `bool` | `true` | Log actions without executing (safe default) |
-| `retention_check_interval` | duration string | `"1h"` | Interval between retention checks |
-| `timezone` | `string` | `"UTC"` | Timezone for logging (internal uses UTC) |
+| Field                      | Type            | Default | Description                                  |
+| -------------------------- | --------------- | ------- | -------------------------------------------- |
+| `enabled`                  | `bool`          | `true`  | Enable retention enforcement (on by default) |
+| `dry_run`                  | `bool`          | `false` | When `true`, log actions without executing   |
+| `retention_check_interval` | duration string | `"1h"`  | Interval between retention checks            |
+| `timezone`                 | `string`        | `"UTC"` | Timezone for logging (internal uses UTC)     |
 
 **Example:**
+
 ```toml
 [compactor.retention]
 enabled = true
@@ -64,13 +67,16 @@ timezone = "America/New_York"  # For logging only
 
 Default retention periods for all tenants/datasets (unless overridden).
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `traces` | duration string | `"7d"` | Trace data retention |
-| `logs` | duration string | `"30d"` | Log data retention |
-| `metrics` | duration string | `"90d"` | Metric data retention |
+| Field     | Type            | Default | Description           |
+| --------- | --------------- | ------- | --------------------- |
+| `traces`  | duration string | `"30d"` | Trace data retention  |
+| `logs`    | duration string | `"30d"` | Log data retention    |
+| `metrics` | duration string | `"30d"` | Metric data retention |
+
+> **Warning:** Retention enforcement is enabled by default with `dry_run = false`, so a default deployment deletes data older than 30 days. To keep data indefinitely, set `[compactor.retention].enabled = false`; to keep it longer, raise the per-signal durations or use tenant/dataset overrides.
 
 **Example:**
+
 ```toml
 [compactor.retention]
 traces = "7d"
@@ -79,18 +85,20 @@ metrics = "90d"
 ```
 
 **Signal Type Mapping:**
+
 - `traces` → `traces` table
 - `logs` → `logs` table
 - `metrics` → any table whose name starts with `metrics_` (`metrics_gauge`, `metrics_sum`, `metrics_histogram` by default)
 
 #### Safety Settings
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `grace_period` | duration string | `"1h"` | Safety margin before cutoff |
-| `snapshots_to_keep` | `usize` (optional) | `10` | Minimum snapshots to retain per table |
+| Field               | Type               | Default | Description                           |
+| ------------------- | ------------------ | ------- | ------------------------------------- |
+| `grace_period`      | duration string    | `"1h"`  | Safety margin before cutoff           |
+| `snapshots_to_keep` | `usize` (optional) | `10`    | Minimum snapshots to retain per table |
 
 **Example:**
+
 ```toml
 [compactor.retention]
 grace_period = "2h"     # 2-hour safety margin
@@ -120,6 +128,7 @@ Partitions older than 2026-02-02 09:00:00 are dropped.
 Override global retention periods for specific tenants. `tenant_overrides` is a map keyed by tenant ID.
 
 **Structure:**
+
 ```toml
 [compactor.retention.tenant_overrides.<tenant-id>]
 traces = "14d"    # Optional override
@@ -128,6 +137,7 @@ metrics = "60d"   # Optional override
 ```
 
 **Example:**
+
 ```toml
 # Production tenant keeps data longer
 [compactor.retention.tenant_overrides.production]
@@ -157,6 +167,7 @@ traces = "90d"  # Only override traces
 Override retention periods for specific tenant+dataset combinations (highest priority). `dataset_overrides` is a map keyed by dataset ID, nested inside a tenant override.
 
 **Structure:**
+
 ```toml
 [compactor.retention.tenant_overrides.<tenant-id>.dataset_overrides.<dataset-id>]
 traces = "90d"    # Optional override
@@ -165,6 +176,7 @@ metrics = "180d"  # Optional override
 ```
 
 **Example:**
+
 ```toml
 [compactor.retention.tenant_overrides.acme]
 traces = "14d"  # Tenant default: 14 days
@@ -181,6 +193,7 @@ traces = "3d"  # Dataset override: 3 days
 **Resolution Example:**
 
 With this configuration:
+
 ```toml
 [compactor.retention]
 traces = "7d"  # Global default
@@ -193,6 +206,7 @@ traces = "90d"  # Dataset override
 ```
 
 Results:
+
 - `acme/critical` → **90 days** (dataset override)
 - `acme/production` → **14 days** (tenant override)
 - `other/anything` → **7 days** (global default)
@@ -249,13 +263,14 @@ Controls automatic detection and deletion of orphaned Parquet files.
 
 #### Basic Settings
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | `bool` | `false` | Enable orphan cleanup (opt-in) |
-| `dry_run` | `bool` | `true` | Log orphans without deleting (safe default) |
-| `cleanup_interval_hours` | `u64` | `24` | Interval between cleanup runs (hours) |
+| Field                    | Type   | Default | Description                                 |
+| ------------------------ | ------ | ------- | ------------------------------------------- |
+| `enabled`                | `bool` | `false` | Enable orphan cleanup (opt-in)              |
+| `dry_run`                | `bool` | `true`  | Log orphans without deleting (safe default) |
+| `cleanup_interval_hours` | `u64`  | `24`    | Interval between cleanup runs (hours)       |
 
 **Example:**
+
 ```toml
 [compactor.orphan_cleanup]
 enabled = true
@@ -265,13 +280,14 @@ cleanup_interval_hours = 24  # Run once per day
 
 #### Safety Settings
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `grace_period_hours` | `u64` | `24` | Don't delete files younger than this (hours) |
-| `revalidate_before_delete` | `bool` | `true` | Re-check file status before deletion |
-| `max_snapshot_age_hours` | `u64` | `720` | Consider snapshots within this age (hours) |
+| Field                      | Type   | Default | Description                                  |
+| -------------------------- | ------ | ------- | -------------------------------------------- |
+| `grace_period_hours`       | `u64`  | `24`    | Don't delete files younger than this (hours) |
+| `revalidate_before_delete` | `bool` | `true`  | Re-check file status before deletion         |
+| `max_snapshot_age_hours`   | `u64`  | `720`   | Consider snapshots within this age (hours)   |
 
 **Example:**
+
 ```toml
 [compactor.orphan_cleanup]
 grace_period_hours = 48          # 2-day grace period
@@ -298,12 +314,13 @@ max_snapshot_age_hours = 168     # 7-day snapshot window
 
 #### Performance Settings
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `batch_size` | `usize` | `1000` | Files to process per batch |
+| Field                      | Type    | Default  | Description                                                                                                                                                                |
+| -------------------------- | ------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `batch_size`               | `usize` | `1000`   | Files to process per batch                                                                                                                                                 |
 | `max_live_files_threshold` | `usize` | `500000` | Skip cleanup for tables whose estimated live file count exceeds this cap (`0` disables the cap; bounds memory; skips recorded in `compactor_orphan_cleanup_skipped_total`) |
 
 **Example:**
+
 ```toml
 [compactor.orphan_cleanup]
 batch_size = 500                    # Smaller batches = more checkpoints
@@ -356,6 +373,7 @@ SIGNALDB__COMPACTOR__<SECTION>__<FIELD>
 ### Retention Environment Variables
 
 **Basic:**
+
 ```bash
 SIGNALDB__COMPACTOR__RETENTION__ENABLED=true
 SIGNALDB__COMPACTOR__RETENTION__DRY_RUN=false
@@ -364,6 +382,7 @@ SIGNALDB__COMPACTOR__RETENTION__TIMEZONE="UTC"
 ```
 
 **Retention Periods:**
+
 ```bash
 SIGNALDB__COMPACTOR__RETENTION__TRACES=7d
 SIGNALDB__COMPACTOR__RETENTION__LOGS=30d
@@ -371,6 +390,7 @@ SIGNALDB__COMPACTOR__RETENTION__METRICS=90d
 ```
 
 **Safety:**
+
 ```bash
 SIGNALDB__COMPACTOR__RETENTION__GRACE_PERIOD=1h
 SIGNALDB__COMPACTOR__RETENTION__SNAPSHOTS_TO_KEEP=10
@@ -396,7 +416,7 @@ SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__MAX_LIVE_FILES_THRESHOLD=500000
 ### Example: Docker Compose
 
 ```yaml
-version: '3.8'
+version: "3.8"
 services:
   signaldb:
     image: signaldb:latest

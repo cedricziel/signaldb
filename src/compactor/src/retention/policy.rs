@@ -270,14 +270,14 @@ mod tests {
         assert_eq!(cutoff.dataset_id, "dataset1");
         assert_eq!(cutoff.signal_type, SignalType::Traces);
         assert_eq!(cutoff.source, RetentionPolicySource::Global);
-        assert_eq!(cutoff.retention_period, Duration::from_secs(7 * 24 * 3600));
+        assert_eq!(cutoff.retention_period, Duration::from_secs(30 * 24 * 3600));
 
-        // Cutoff should be approximately 7 days + 1 hour ago (with grace period)
-        let expected_cutoff = Utc::now() - chrono::Duration::seconds((7 * 24 + 1) * 3600);
+        // Cutoff should be approximately 30 days + 1 hour ago (with grace period)
+        let expected_cutoff = Utc::now() - chrono::Duration::seconds((30 * 24 + 1) * 3600);
         let diff = (cutoff.cutoff_timestamp - expected_cutoff)
             .num_seconds()
             .abs();
-        assert!(diff < 2, "Cutoff should be approximately 7d 1h ago");
+        assert!(diff < 2, "Cutoff should be approximately 30d 1h ago");
     }
 
     #[test]
@@ -336,7 +336,7 @@ mod tests {
     fn test_override_hierarchy_precedence() {
         let mut config = create_default_config();
 
-        // Global: 7 days
+        // Global: 30 days
         // Tenant: 14 days
         // Dataset: 30 days
 
@@ -389,13 +389,20 @@ mod tests {
         assert_eq!(cutoff_other.source, RetentionPolicySource::Global);
         assert_eq!(
             cutoff_other.retention_period,
-            Duration::from_secs(7 * 24 * 3600)
+            Duration::from_secs(30 * 24 * 3600)
         );
     }
 
     #[test]
     fn test_different_signal_types() {
-        let config = create_default_config();
+        // Use distinct per-signal periods so the test proves each signal
+        // type resolves to its own configured duration.
+        let config = RetentionConfig {
+            traces: Duration::from_secs(7 * 24 * 3600),
+            logs: Duration::from_secs(30 * 24 * 3600),
+            metrics: Duration::from_secs(90 * 24 * 3600),
+            ..Default::default()
+        };
         let resolver = RetentionPolicyResolver::new(config).unwrap();
 
         let traces_cutoff = resolver

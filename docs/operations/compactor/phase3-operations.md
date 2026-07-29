@@ -30,19 +30,22 @@ Phase 3 provides automatic data lifecycle management through:
 
 All operations respect Iceberg's transactional guarantees and snapshot isolation.
 
+> **Default behavior:** The compactor and retention enforcement are **enabled by default** with `dry_run = false` and a 30-day retention period for traces, logs, and metrics. A default deployment deletes data older than 30 days. To keep data indefinitely, set `[compactor.retention].enabled = false`; to keep it longer, raise the per-signal durations. Orphan cleanup remains opt-in (`enabled = false`, `dry_run = true`).
+
 ## Enabling Retention Enforcement
 
 ### Step 1: Plan Your Retention Policies
 
 Determine appropriate retention periods for each signal type:
 
-| Signal Type | Typical Retention | Production Example |
-|-------------|------------------|-------------------|
-| Traces | 7-30 days | 7 days (dev), 30 days (prod) |
-| Logs | 3-14 days | 3 days (dev), 7 days (prod) |
-| Metrics | 30-90 days | 30 days (dev), 90 days (prod) |
+| Signal Type | Typical Retention | Production Example            |
+| ----------- | ----------------- | ----------------------------- |
+| Traces      | 7-30 days         | 7 days (dev), 30 days (prod)  |
+| Logs        | 3-14 days         | 3 days (dev), 7 days (prod)   |
+| Metrics     | 30-90 days        | 30 days (dev), 90 days (prod) |
 
 Consider:
+
 - Regulatory requirements (GDPR, HIPAA, etc.)
 - Storage costs vs. query needs
 - Incident investigation timeframes
@@ -93,6 +96,7 @@ INFO compactor::retention::enforcer: [DRY RUN] Would drop partition tenant_id=ac
 ```
 
 **Validate:**
+
 - Partitions identified for deletion are expected
 - Cutoff timestamps are correct
 - No unexpected data would be deleted
@@ -164,6 +168,7 @@ traces = "90d"  # Critical data kept 90 days
 ```
 
 **Rollout Checklist:**
+
 - [ ] Dry-run validation completed
 - [ ] Test tenant validation successful
 - [ ] Retention periods reviewed and approved
@@ -203,6 +208,7 @@ INFO compactor::orphan::cleaner: Batch deletion complete would_delete=42 would_f
 ```
 
 **Validate:**
+
 - Orphan count seems reasonable (expect 0-5% of total files)
 - Ages are all beyond grace period (24+ hours)
 - No recently modified files flagged
@@ -246,6 +252,7 @@ curl -s localhost:9091/metrics | grep -E "compactor_(orphan_candidates_identifie
 ```
 
 **Validation:**
+
 - `compactor_files_deleted_total` should equal `compactor_orphan_candidates_identified_total`
 - `compactor_bytes_freed_total` shows actual storage reclaimed
 - No deletion failures (`compactor_deletion_failures_total` = 0)
@@ -259,6 +266,7 @@ All Phase 3 counters are exported at `localhost:9091/metrics` (see `src/compacto
 #### Retention Enforcement
 
 **Partitions Dropped:**
+
 ```promql
 # Partitions dropped (last 24h)
 increase(compactor_partitions_dropped_total[24h])
@@ -268,12 +276,14 @@ increase(compactor_partitions_evaluated_total[24h])
 ```
 
 **Retention Duration:**
+
 ```promql
 # Wall-clock milliseconds spent enforcing retention per second
 rate(compactor_retention_duration_ms_total[5m])
 ```
 
 **Bytes Reclaimed by Retention:**
+
 ```promql
 increase(compactor_bytes_reclaimed_total[24h])
 ```
@@ -281,6 +291,7 @@ increase(compactor_bytes_reclaimed_total[24h])
 #### Orphan Cleanup
 
 **Storage Reclaimed:**
+
 ```promql
 # Total storage freed (last 24h)
 increase(compactor_bytes_freed_total[24h])
@@ -290,6 +301,7 @@ rate(compactor_bytes_freed_total[5m])
 ```
 
 **Cleanup Success Rate:**
+
 ```promql
 # Success rate (should be ~100%)
 sum(rate(compactor_files_deleted_total[5m]))
@@ -298,12 +310,14 @@ sum(rate(compactor_orphan_candidates_identified_total[5m]))
 ```
 
 **Deletion Failures:**
+
 ```promql
 # Should be 0 or very low
 increase(compactor_deletion_failures_total[1h])
 ```
 
 **Skipped Cleanups:**
+
 ```promql
 # Cleanup runs skipped because the live-file estimate exceeded
 # max_live_files_threshold
@@ -315,6 +329,7 @@ increase(compactor_orphan_cleanup_skipped_total[24h])
 #### Critical Alerts
 
 **High Deletion Failure Rate:**
+
 ```yaml
 alert: CompactorHighDeletionFailureRate
 expr: |
@@ -328,6 +343,7 @@ annotations:
 ```
 
 **Retention Enforcement Stuck:**
+
 ```yaml
 # No last-run timestamp metric exists; alert on the cutoff-computation
 # counter stalling instead (it increments on every retention cycle).
@@ -344,6 +360,7 @@ annotations:
 #### Warning Alerts
 
 **High Orphan Rate:**
+
 ```yaml
 alert: CompactorHighOrphanRate
 expr: |
@@ -357,6 +374,7 @@ annotations:
 ```
 
 **Orphan Cleanup Skipped:**
+
 ```yaml
 alert: CompactorOrphanCleanupSkipped
 expr: |
@@ -373,6 +391,7 @@ annotations:
 Example dashboard queries:
 
 **Panel: Storage Reclaimed (Bytes)**
+
 ```promql
 # Orphan cleanup
 increase(compactor_bytes_freed_total[24h])
@@ -381,11 +400,13 @@ increase(compactor_bytes_reclaimed_total[24h])
 ```
 
 **Panel: Partitions Dropped Over Time**
+
 ```promql
 rate(compactor_partitions_dropped_total[5m]) * 300
 ```
 
 **Panel: Retention Duration**
+
 ```promql
 rate(compactor_retention_duration_ms_total[5m])
 ```
@@ -538,6 +559,7 @@ systemctl restart signaldb-compactor
 ```
 
 **Investigate** (against compactor stdout, journalctl, or `.data/logs/monolithic.log`):
+
 ```bash
 # Check revalidation logs
 grep -i "revalidation" .data/logs/monolithic.log
@@ -573,6 +595,7 @@ jq '.snapshots[] | {snapshot_id: ."snapshot-id", timestamp_ms: ."timestamp-ms", 
 3. **Restore:** rolling the table back to the pre-drop snapshot requires manual Iceberg surgery with external Iceberg tooling; it is not currently possible through SignalDB itself.
 
 **Prevention:**
+
 - Always test retention in dry-run mode first
 - Use test tenants before production rollout
 - Keep `snapshots_to_keep` high enough for recovery window
@@ -583,6 +606,7 @@ jq '.snapshots[] | {snapshot_id: ."snapshot-id", timestamp_ms: ."timestamp-ms", 
 ### Retention Enforcement Performance
 
 **Symptoms:**
+
 - Retention checks taking too long (> 5 minutes)
 - High CPU usage during retention cycles
 
@@ -600,6 +624,7 @@ snapshots_to_keep = 3
 ### Orphan Cleanup Performance
 
 **Symptoms:**
+
 - Cleanup taking hours to complete
 - High memory usage during cleanup
 - Object store rate limiting
@@ -623,6 +648,7 @@ max_live_files_threshold = 500000
 ```
 
 **Memory Optimization:**
+
 ```rust
 // For very large tables (millions of files), consider:
 // - Incremental scanning (scan per partition)
@@ -633,6 +659,7 @@ max_live_files_threshold = 500000
 ### Concurrent Operation Tuning
 
 **Symptoms:**
+
 - Queries failing during retention operations
 - Snapshot conflicts
 

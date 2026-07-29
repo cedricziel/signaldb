@@ -16,13 +16,16 @@ defaults -> TOML file (`signaldb.toml`) -> environment variables (`SIGNALDB_*`)
 ## All Configuration Sections
 
 ### Database (Service Catalog)
+
 ```toml
 [database]
 dsn = "sqlite://.data/signaldb.db"   # or postgres://user:pass@host/db
 ```
+
 Env: `SIGNALDB_DATABASE_DSN`
 
 ### Discovery (Service Registration)
+
 ```toml
 [discovery]
 dsn = "sqlite://.data/signaldb.db"   # Falls back to [database].dsn
@@ -30,18 +33,22 @@ heartbeat_interval = "30s"
 poll_interval = "60s"
 ttl = "300s"
 ```
+
 Env: `SIGNALDB_DISCOVERY_DSN`, `SIGNALDB_DISCOVERY_TTL`. Multi-word fields need the double-underscore form: `SIGNALDB__DISCOVERY__HEARTBEAT_INTERVAL`, `SIGNALDB__DISCOVERY__POLL_INTERVAL` (the single-underscore form splits to `discovery.heartbeat.interval` and silently does nothing).
 
 ### Storage (Object Store for Parquet)
+
 ```toml
 [storage]
 dsn = "file:///.data/storage"
 # dsn = "memory://"
 # dsn = "s3://bucket/prefix"
 ```
+
 Env: `SIGNALDB_STORAGE_DSN`
 
 For S3/MinIO:
+
 ```bash
 AWS_ENDPOINT_URL=http://localhost:9000
 AWS_ACCESS_KEY_ID=minioadmin
@@ -50,6 +57,7 @@ AWS_REGION=us-east-1
 ```
 
 ### WAL
+
 ```toml
 [wal]
 wal_dir = ".data/wal"
@@ -58,23 +66,28 @@ max_buffer_entries = 1000
 flush_interval = "30s"
 max_buffer_size_bytes = 134217728    # 128 MB
 ```
+
 `wal_dir` is the base directory: the acceptor uses `{wal_dir}/acceptor` and the writer `{wal_dir}/writer` (default `.data/wal/acceptor` / `.data/wal/writer`). The service-specific env overrides `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR` (read directly by the binaries, not via figment; also available as `--wal-dir`) point at the full service directory and win over `[wal].wal_dir`. Sizing knobs use the double-underscore form: `SIGNALDB__WAL__MAX_SEGMENT_SIZE`, `SIGNALDB__WAL__MAX_BUFFER_ENTRIES`, `SIGNALDB__WAL__FLUSH_INTERVAL` (as does `SIGNALDB__WAL__WAL_DIR`).
 
 ### Iceberg Schema Catalog
+
 ```toml
 [schema]
 catalog_type = "sql"
 catalog_uri = "sqlite::memory:"      # or sqlite:///path/to/catalog.db
 ```
+
 Env: `SIGNALDB__SCHEMA__CATALOG_TYPE`, `SIGNALDB__SCHEMA__CATALOG_URI` (double-underscore form). Beware: `signaldb.dist.toml` and `scripts/run-dev.sh` mention/set the single-underscore forms `SIGNALDB_SCHEMA_CATALOG_TYPE`/`SIGNALDB_SCHEMA_CATALOG_URI`, which split to `schema.catalog.type` and silently do nothing.
 
 **Note**: Only SQLite supported for Iceberg catalog (not PostgreSQL).
 
 #### Materialized labels
+
 ```toml
 [schema.materialized_labels]
 logs = ["namespace", "pod"]   # also: traces / metrics / profiles
 ```
+
 Per-signal allowlists of attribute keys promoted from the `*_attributes` JSON into dedicated `label_<key>` columns at ingest, so they match exactly (and support regex / ordered comparisons) instead of the substring-in-JSON approximation. Default empty. Applies to tables created after the change; older tables fall back to JSON matching. Per-tenant: a tenant schema override (`[auth.tenants.schema.materialized_labels]`) replaces the global set wholesale — resolved at table creation and in the writer's transforms. See `docs/architecture/storage-layout.md#materialized-labels`.
 
 ### Authentication
@@ -129,9 +142,10 @@ max_query_requests_per_sec = 200
 ```
 
 ### Compactor
+
 ```toml
 [compactor]
-enabled = false                        # Default disabled
+enabled = true                        # Default enabled
 tick_interval = "5m"                  # Planning cycle interval
 target_file_size_mb = 128             # Target size after compaction
 file_count_threshold = 10             # Min files to trigger compaction
@@ -142,24 +156,26 @@ max_per_tenant = 5                    # Max candidates per tenant per cycle (0 =
 lease_ttl_seconds = 300               # Compaction lease validity without renewal
 metrics_addr = "0.0.0.0:9091"         # Observability HTTP endpoint ("" = disabled)
 ```
+
 Env: `SIGNALDB__COMPACTOR__ENABLED`, `SIGNALDB__COMPACTOR__TICK_INTERVAL`, `SIGNALDB__COMPACTOR__TARGET_FILE_SIZE_MB`, `SIGNALDB__COMPACTOR__FILE_COUNT_THRESHOLD`, `SIGNALDB__COMPACTOR__MIN_INPUT_FILE_SIZE_KB`, `SIGNALDB__COMPACTOR__MAX_FILES_PER_JOB`, `SIGNALDB__COMPACTOR__MAX_CANDIDATES_PER_CYCLE`, `SIGNALDB__COMPACTOR__MAX_PER_TENANT`, `SIGNALDB__COMPACTOR__LEASE_TTL_SECONDS`, `SIGNALDB__COMPACTOR__METRICS_ADDR` (or `COMPACTOR_METRICS_ADDR`)
 
 **Note**: Environment variables for compactor use double-underscore (`__`) separator to support field names with underscores.
 
 #### Retention Enforcement (Phase 3)
+
 ```toml
 [compactor.retention]
-enabled = false                       # Enable retention enforcement (opt-in)
-dry_run = true                        # Log actions without executing (safe default)
+enabled = true                        # Enabled by default; deletes data past retention!
+dry_run = false                       # Default false; set true to log without deleting
 retention_check_interval = "1h"       # Interval between retention checks
 grace_period = "1h"                   # Safety margin before cutoff
 timezone = "UTC"                      # Timezone for logging
 snapshots_to_keep = 10                # Keep last N snapshots per table (default: 10)
 
-# Global defaults (per signal type, humantime durations)
-traces = "7d"
+# Global defaults (per signal type, humantime durations; default 30d each)
+traces = "30d"
 logs = "30d"
-metrics = "90d"
+metrics = "30d"
 
 # Tenant overrides (optional) -- a map keyed by tenant ID
 [compactor.retention.tenant_overrides.production]
@@ -171,9 +187,11 @@ metrics = "90d"
 [compactor.retention.tenant_overrides.production.dataset_overrides.critical]
 traces = "90d"
 ```
+
 Env: `SIGNALDB__COMPACTOR__RETENTION__ENABLED`, `SIGNALDB__COMPACTOR__RETENTION__DRY_RUN`, `SIGNALDB__COMPACTOR__RETENTION__RETENTION_CHECK_INTERVAL`, `SIGNALDB__COMPACTOR__RETENTION__TRACES`, `SIGNALDB__COMPACTOR__RETENTION__LOGS`, `SIGNALDB__COMPACTOR__RETENTION__METRICS`, `SIGNALDB__COMPACTOR__RETENTION__GRACE_PERIOD`, `SIGNALDB__COMPACTOR__RETENTION__TIMEZONE`, `SIGNALDB__COMPACTOR__RETENTION__SNAPSHOTS_TO_KEEP`
 
 #### Attribute Auto-Promotion (epic #737)
+
 ```toml
 [compactor.attr_promotion]
 enabled = false               # Decision pass off by default
@@ -184,9 +202,11 @@ min_query_hits = 1            # Min accumulated query demand
 promote_streak = 3            # Consecutive over-threshold cycles (hysteresis)
 max_promotions_per_cycle = 4
 ```
+
 Scores persisted attribute stats (compactor scan stats + querier demand counters in the catalog's `attribute_stats` table) as demand × presence; rejects capped-cardinality and generated-looking keys; pinned `[schema.materialized_labels]` entries are never demoted. Env: `SIGNALDB__COMPACTOR__ATTR_PROMOTION__*`.
 
 #### Orphan Cleanup (Phase 3)
+
 ```toml
 [compactor.orphan_cleanup]
 enabled = false                       # Enable orphan cleanup (opt-in)
@@ -198,9 +218,11 @@ max_snapshot_age_hours = 720          # Consider snapshots within last N hours
 batch_size = 1000                     # Process N files per batch
 max_live_files_threshold = 500000     # Skip cleanup when estimated live files exceed this (0 = no cap)
 ```
+
 Env: `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__ENABLED`, `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__DRY_RUN`, `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__CLEANUP_INTERVAL_HOURS`, `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__GRACE_PERIOD_HOURS`, `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__REVALIDATE_BEFORE_DELETE`, `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__MAX_SNAPSHOT_AGE_HOURS`, `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__BATCH_SIZE`, `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__MAX_LIVE_FILES_THRESHOLD`
 
 ### Querier (Resource Limits)
+
 ```toml
 [querier]
 memory_limit_mb = 4096                # Unset = unbounded (startup warning)
@@ -212,6 +234,7 @@ max_concurrent_queries_per_tenant = 8 # Unset = unlimited
 ```
 
 ### Self-Monitoring (Dogfooding)
+
 ```toml
 [self_monitoring]
 enabled = false
@@ -223,6 +246,7 @@ trace_sample_ratio = 0.1              # 0.0-1.0; OTEL_TRACES_SAMPLER env vars wi
 ```
 
 ### Profiling (Continuous Profiling)
+
 ```toml
 [profiling]
 enabled = false
@@ -232,6 +256,7 @@ memory_profiling = false              # Needs `jemalloc-profiling` build feature
 ```
 
 ### Tenants (Per-Tenant Schema Overrides)
+
 ```toml
 [tenants]
 default_tenant = "default"            # Tenant ID used when none is specified
@@ -240,15 +265,15 @@ default_tenant = "default"            # Tenant ID used when none is specified
 
 ## Service Ports (Defaults)
 
-| Service | Protocol | Port |
-|---------|----------|------|
-| Acceptor | gRPC | 4317 |
-| Acceptor | HTTP | 4318 |
-| Writer | Flight | 50061 (standalone), 50051 (monolithic) |
-| Router | HTTP | 3000 |
-| Router | Flight | 50053 |
-| Querier | Flight | 50054 |
-| Compactor | Flight | 50055 (`COMPACTOR_FLIGHT_ADDR`) |
+| Service   | Protocol                     | Port                                          |
+| --------- | ---------------------------- | --------------------------------------------- |
+| Acceptor  | gRPC                         | 4317                                          |
+| Acceptor  | HTTP                         | 4318                                          |
+| Writer    | Flight                       | 50061 (standalone), 50051 (monolithic)        |
+| Router    | HTTP                         | 3000                                          |
+| Router    | Flight                       | 50053                                         |
+| Querier   | Flight                       | 50054                                         |
+| Compactor | Flight                       | 50055 (`COMPACTOR_FLIGHT_ADDR`)               |
 | Compactor | HTTP (metrics/status/health) | 9091 (`metrics_addr`, default `0.0.0.0:9091`) |
 
 ## Key File
