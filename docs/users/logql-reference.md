@@ -33,15 +33,15 @@ APIs (see [Authentication](authentication.md)):
 
 ## Endpoints
 
-| Endpoint | Status |
-|----------|--------|
-| `GET /loki/api/v1/query_range` | Range query. Returns a **streams** result for log queries, a **matrix** for metric queries |
-| `GET /loki/api/v1/query` | Instant query. Returns the most recent lines over a one-hour window ending at `time` (log queries only) |
-| `GET /loki/api/v1/labels` | Label names available in the window |
-| `GET /loki/api/v1/label/{name}/values` | Distinct values of one label |
-| `GET /loki/api/v1/series` | Series (label sets) matching a selector |
-| `GET /loki/api/v1/detected_fields` | Discover attribute fields in a window: name, inferred type, approximate cardinality (samples the data; no declaration or indexing needed) |
-| `GET /loki/api/v1/tail` | Not implemented — live tail is tracked separately |
+| Endpoint                               | Status                                                                                                                                    |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /loki/api/v1/query_range`         | Range query. Returns a **streams** result for log queries, a **matrix** for metric queries                                                |
+| `GET /loki/api/v1/query`               | Instant query. Returns the most recent lines over a one-hour window ending at `time` (log queries only)                                   |
+| `GET /loki/api/v1/labels`              | Label names available in the window                                                                                                       |
+| `GET /loki/api/v1/label/{name}/values` | Distinct values of one label                                                                                                              |
+| `GET /loki/api/v1/series`              | Series (label sets) matching a selector                                                                                                   |
+| `GET /loki/api/v1/detected_fields`     | Discover attribute fields in a window: name, inferred type, approximate cardinality (samples the data; no declaration or indexing needed) |
+| `GET /loki/api/v1/tail`                | Not implemented — live tail is tracked separately                                                                                         |
 
 Common query parameters: `query` (the LogQL string), `start`/`end`
 (unix nanoseconds, unix seconds, or RFC3339), `limit`, `direction`
@@ -53,13 +53,13 @@ Common query parameters: `query` (the LogQL string), `start`/`end`
 SignalDB stores logs in columnar form, not as free-form label sets. LogQL
 labels resolve as follows:
 
-| LogQL label | Resolves to |
-|-------------|-------------|
-| `service_name`, `service`, `job` | the `service_name` column |
-| `level`, `severity`, `detected_level` | the `severity_text` column |
-| `trace_id`, `span_id` | the matching columns |
-| a **materialized** label (see below) | its dedicated `label_<key>` column |
-| any other label | the `log_attributes` / `resource_attributes` maps |
+| LogQL label                           | Resolves to                                       |
+| ------------------------------------- | ------------------------------------------------- |
+| `service_name`, `service`, `job`      | the `service_name` column                         |
+| `level`, `severity`, `detected_level` | the `severity_text` column                        |
+| `trace_id`, `span_id`                 | the matching columns                              |
+| a **materialized** label (see below)  | its dedicated `label_<key>` column                |
+| any other label                       | the `log_attributes` / `resource_attributes` maps |
 
 Labels backed by a column are exact. On tables created since attributes
 became typed maps, **any other label is also exact**: the value is looked
@@ -204,7 +204,7 @@ sum by (level) (rate({service_name="api"}[5m]))
 
 ### Time bucketing — the key approximation
 
-Loki evaluates a range aggregation over a *sliding* `[range]` window at
+Loki evaluates a range aggregation over a _sliding_ `[range]` window at
 each step. SignalDB instead buckets into **fixed, step-aligned windows**
 with `date_bin(step, timestamp)`. This is **exact when `step` equals the
 range** (Grafana's default for `count_over_time` panels) and an
@@ -242,10 +242,27 @@ curl -G 'http://localhost:3000/loki/api/v1/query_range' \
   --data-urlencode 'step=5m'
 ```
 
+## Errors
+
+Failures return a JSON body in the Prometheus/Loki error shape:
+
+```json
+{
+  "status": "error",
+  "errorType": "bad_data",
+  "error": "expected matcher operator, found end of input at line 1, column 10"
+}
+```
+
+`errorType` is `bad_data` (400), `not_found` (404), `rate_limited` (429),
+`timeout` (504), `unavailable` (503, no querier), `not_implemented` (501),
+or `internal` (500). A query that matches nothing is not an error — it
+returns `200` with an empty `result` array.
+
 ## Query-demand statistics
 
 Attribute labels used in filters (any label that is not a dedicated
-column) are counted as *query demand* and flushed to the catalog's
+column) are counted as _query demand_ and flushed to the catalog's
 advisory `attribute_stats` table, where they inform which attributes are
 worth materializing (see the storage layout docs on materialized labels).
 
