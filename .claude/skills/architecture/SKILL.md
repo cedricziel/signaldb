@@ -20,6 +20,7 @@ SignalDB is built on Flight, DataFusion, Arrow, Parquet:
 - **Parquet**: Persistent columnar storage via Iceberg table format
 
 **Critical rule**: Always use Arrow/Parquet types re-exported by DataFusion to ensure version compatibility:
+
 ```rust
 // CORRECT
 use datafusion::arrow::array::StringArray;
@@ -40,6 +41,7 @@ OTLP Client (gRPC :4317 / HTTP :4318)
 ```
 
 Key details:
+
 1. Acceptor writes to WAL before acknowledging client
 2. Acceptor converts OTLP protobuf -> Arrow RecordBatches using Flight schemas (v1)
 3. Writer transforms v1 Flight schema -> v2 Iceberg schema (field renames, type conversions, computed partition fields, materialized `label_<key>` columns for configured attributes across all four signals, allowlists resolved per tenant (tenant schema override replaces the global set); new tables (all signals) store attributes as typed `Map<String,String>` columns for exact any-attribute matching)
@@ -58,6 +60,7 @@ HTTP Client (Tempo / Pyroscope / Loki APIs)
 ```
 
 Key details:
+
 1. Router validates auth, discovers Queriers via `QueryExecution` capability
 2. Flight tickets encode query type + tenant context: `find_trace:{tenant}:{dataset}:{trace_id}[:{start}:{end}]` (optional unix-second time hints)
 3. Querier uses `TenantCatalog` to bridge DataFusion 3-level model to Iceberg 2-level namespace
@@ -70,21 +73,22 @@ Key details:
 
 ## Service Components
 
-| Service | Ports | Capability | Key Files |
-|---------|-------|------------|-----------|
-| **Acceptor** | gRPC:4317, HTTP:4318 | `TraceIngestion` | `src/acceptor/` |
-| **Writer** | Flight:50061 (standalone), 50051 (mono) | `TraceIngestion`, `Storage` | `src/writer/` |
-| **Router** | HTTP:3000, Flight:50053 | `Routing` | `src/router/` |
-| **Querier** | Flight:50054 | `QueryExecution` | `src/querier/` |
-| **Compactor** | None (background task) | `Compaction` | `src/compactor/` |
+| Service       | Ports                                   | Capability                  | Key Files        |
+| ------------- | --------------------------------------- | --------------------------- | ---------------- |
+| **Acceptor**  | gRPC:4317, HTTP:4318                    | `TraceIngestion`            | `src/acceptor/`  |
+| **Writer**    | Flight:50061 (standalone), 50051 (mono) | `TraceIngestion`, `Storage` | `src/writer/`    |
+| **Router**    | HTTP:3000, Flight:50053                 | `Routing`                   | `src/router/`    |
+| **Querier**   | Flight:50054                            | `QueryExecution`            | `src/querier/`   |
+| **Compactor** | None (background task)                  | `Compaction`                | `src/compactor/` |
 
 ## Deployment Models
 
-- **Monolithic** (`cargo run --bin signaldb`): All services in one process, shared SQLite catalog. Compactor included if enabled in config.
+- **Monolithic** (`cargo run --bin signaldb`): All services in one process, shared SQLite catalog. Compactor included (enabled by default; opt out with `[compactor].enabled = false`).
 - **Microservices**: Independent binaries, shared catalog (PostgreSQL or SQLite)
 - **Hybrid**: Mix of co-located and distributed services
 
-**Note**: Monolithic mode integrates the Compactor service (Phases 1-3 complete) when `[compactor].enabled = true`. The compactor provides:
+**Note**: Monolithic mode integrates the Compactor service (Phases 1-3 complete) when `[compactor].enabled = true` (the default; retention enforcement is also on by default with 30d per signal). The compactor provides:
+
 - **Phase 1**: Dry-run compaction planning
 - **Phase 2**: Active Parquet file compaction for storage efficiency
 - **Phase 3**: Retention enforcement, snapshot expiration, and orphan file cleanup

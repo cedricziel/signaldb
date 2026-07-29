@@ -75,26 +75,26 @@ Parquet storage with DataFusion query processing:
 
 ### Workspace Members
 
-| Crate | Path | Type | Description |
-|-------|------|------|-------------|
-| **acceptor** | `src/acceptor/` | Binary + Library | OTLP gRPC/HTTP ingestion endpoint |
-| **router** | `src/router/` | Binary + Library | HTTP API + Flight routing layer |
-| **writer** | `src/writer/` | Binary + Library | Iceberg-based data persistence (the "Ingester") |
-| **querier** | `src/querier/` | Binary + Library | Query execution engine via DataFusion |
-| **compactor** | `src/compactor/` | Binary + Library | Storage maintenance: compaction, retention (bin `signaldb-compactor`) |
-| **common** | `src/common/` | Library | Shared config, auth, WAL, Flight, catalog, schema |
-| **pyroscope-api** | `src/pyroscope-api/` | Library | Pyroscope-compatible API types (flamebearer, profile types) |
-| **tempo-api** | `src/tempo-api/` | Library | Grafana Tempo API types and protobuf definitions |
-| **loki-api** | `src/loki-api/` | Library | Loki HTTP API response types (LogQL query surface) |
-| **prometheus-api** | `src/prometheus-api/` | Library | Prometheus HTTP API response types (PromQL query surface) |
-| **signaldb-bin** | `src/signaldb-bin/` | Binary | Monolithic mode runner (all services in one process) |
-| **signaldb-api** | `src/signaldb-api/` | Library | OpenAPI-generated admin API types |
-| **signaldb-cli** | `src/signaldb-cli/` | Binary | CLI and TUI for tenant, API key, and dataset management |
-| **signaldb-sdk** | `src/signaldb-sdk/` | Library | Generated SDK client |
-| **grafana-plugin** | `src/grafana-plugin/backend` | Plugin | Grafana datasource (TypeScript frontend + Rust backend; the backend is a standalone cargo workspace excluded from the root workspace, since grafana-plugin-sdk pins its own Arrow major) |
-| **signal-producer** | `src/signal-producer/` | Binary | Test data generator (OTLP traces) |
-| **tests-integration** | `tests-integration/` | Test crate | Integration test suite |
-| **xtask** | `xtask/` | Binary | Build automation tasks |
+| Crate                 | Path                         | Type             | Description                                                                                                                                                                              |
+| --------------------- | ---------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **acceptor**          | `src/acceptor/`              | Binary + Library | OTLP gRPC/HTTP ingestion endpoint                                                                                                                                                        |
+| **router**            | `src/router/`                | Binary + Library | HTTP API + Flight routing layer                                                                                                                                                          |
+| **writer**            | `src/writer/`                | Binary + Library | Iceberg-based data persistence (the "Ingester")                                                                                                                                          |
+| **querier**           | `src/querier/`               | Binary + Library | Query execution engine via DataFusion                                                                                                                                                    |
+| **compactor**         | `src/compactor/`             | Binary + Library | Storage maintenance: compaction, retention (bin `signaldb-compactor`)                                                                                                                    |
+| **common**            | `src/common/`                | Library          | Shared config, auth, WAL, Flight, catalog, schema                                                                                                                                        |
+| **pyroscope-api**     | `src/pyroscope-api/`         | Library          | Pyroscope-compatible API types (flamebearer, profile types)                                                                                                                              |
+| **tempo-api**         | `src/tempo-api/`             | Library          | Grafana Tempo API types and protobuf definitions                                                                                                                                         |
+| **loki-api**          | `src/loki-api/`              | Library          | Loki HTTP API response types (LogQL query surface)                                                                                                                                       |
+| **prometheus-api**    | `src/prometheus-api/`        | Library          | Prometheus HTTP API response types (PromQL query surface)                                                                                                                                |
+| **signaldb-bin**      | `src/signaldb-bin/`          | Binary           | Monolithic mode runner (all services in one process)                                                                                                                                     |
+| **signaldb-api**      | `src/signaldb-api/`          | Library          | OpenAPI-generated admin API types                                                                                                                                                        |
+| **signaldb-cli**      | `src/signaldb-cli/`          | Binary           | CLI and TUI for tenant, API key, and dataset management                                                                                                                                  |
+| **signaldb-sdk**      | `src/signaldb-sdk/`          | Library          | Generated SDK client                                                                                                                                                                     |
+| **grafana-plugin**    | `src/grafana-plugin/backend` | Plugin           | Grafana datasource (TypeScript frontend + Rust backend; the backend is a standalone cargo workspace excluded from the root workspace, since grafana-plugin-sdk pins its own Arrow major) |
+| **signal-producer**   | `src/signal-producer/`       | Binary           | Test data generator (OTLP traces)                                                                                                                                                        |
+| **tests-integration** | `tests-integration/`         | Test crate       | Integration test suite                                                                                                                                                                   |
+| **xtask**             | `xtask/`                     | Binary           | Build automation tasks                                                                                                                                                                   |
 
 ### Data Flow Overview
 
@@ -152,12 +152,12 @@ flowchart LR
 
 **Purpose**: OTLP data ingestion with multi-protocol support
 
-| Property | Value |
-|----------|-------|
-| **Ports** | gRPC: 4317, HTTP: 4318 |
-| **Capability** | `TraceIngestion` |
-| **Protocols** | OTLP/gRPC, OTLP/HTTP, Prometheus remote_write |
-| **Signal types** | Traces, Logs, Metrics |
+| Property         | Value                                         |
+| ---------------- | --------------------------------------------- |
+| **Ports**        | gRPC: 4317, HTTP: 4318                        |
+| **Capability**   | `TraceIngestion`                              |
+| **Protocols**    | OTLP/gRPC, OTLP/HTTP, Prometheus remote_write |
+| **Signal types** | Traces, Logs, Metrics                         |
 
 - Runs separate gRPC (tonic) and HTTP (Axum) servers in parallel
 - `WalManager` creates per-tenant/dataset/signal WAL instances with tuned configs:
@@ -171,12 +171,12 @@ flowchart LR
 
 **Purpose**: Data persistence to Apache Iceberg tables
 
-| Property | Value |
-|----------|-------|
-| **Port** | Flight: 50061 (standalone), 50051 (monolithic) |
-| **Capabilities** | `TraceIngestion`, `Storage` |
-| **Input** | Arrow data via Flight `do_put` from Acceptors |
-| **Output** | Iceberg tables (Parquet + metadata) to object store |
+| Property         | Value                                               |
+| ---------------- | --------------------------------------------------- |
+| **Port**         | Flight: 50061 (standalone), 50051 (monolithic)      |
+| **Capabilities** | `TraceIngestion`, `Storage`                         |
+| **Input**        | Arrow data via Flight `do_put` from Acceptors       |
+| **Output**       | Iceberg tables (Parquet + metadata) to object store |
 
 - `IcebergWriterFlightService`: Flight server accepting `do_put` for trace/log/metric data
 - Transforms v1 Flight schema to v2 Iceberg schema before WAL write
@@ -188,65 +188,65 @@ flowchart LR
 
 **Purpose**: HTTP API gateway and query routing
 
-| Property | Value |
-|----------|-------|
-| **Ports** | HTTP: 3000, Flight: 50053 |
-| **Capability** | `Routing` |
-| **APIs** | Tempo-compatible, Pyroscope-compatible, Loki-compatible (stubs), Admin API, OpenAPI |
+| Property       | Value                                                                               |
+| -------------- | ----------------------------------------------------------------------------------- |
+| **Ports**      | HTTP: 3000, Flight: 50053                                                           |
+| **Capability** | `Routing`                                                                           |
+| **APIs**       | Tempo-compatible, Pyroscope-compatible, Loki-compatible (stubs), Admin API, OpenAPI |
 
 **Tempo API Endpoints**:
 
-| Endpoint | Status |
-|----------|--------|
-| `GET /tempo/api/echo` | Implemented |
-| `GET /tempo/api/traces/{trace_id}` | Implemented -- routes to Querier |
-| `GET /tempo/api/v2/traces/{trace_id}` | Implemented -- same handler as v1 |
-| `GET /tempo/api/search` | Implemented -- routes to Querier |
-| `GET /tempo/api/search/tags` | Implemented -- static list of resource + intrinsic tag names |
-| `GET /tempo/api/search/tag/{tag_name}/values` | Implemented -- distinct column values via Querier; 501 for attribute tags without an index |
-| `GET /tempo/api/v2/search/tags` | Implemented -- same tag names, v2 scoped response |
-| `GET /tempo/api/v2/search/tag/{tag_name}/values` | Implemented -- same lookup, v2 response shape |
-| `GET /tempo/api/metrics/query` | 501 Not Implemented (TraceQL metrics) |
-| `GET /tempo/api/metrics/query_range` | 501 Not Implemented (TraceQL metrics) |
+| Endpoint                                         | Status                                                                                     |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `GET /tempo/api/echo`                            | Implemented                                                                                |
+| `GET /tempo/api/traces/{trace_id}`               | Implemented -- routes to Querier                                                           |
+| `GET /tempo/api/v2/traces/{trace_id}`            | Implemented -- same handler as v1                                                          |
+| `GET /tempo/api/search`                          | Implemented -- routes to Querier                                                           |
+| `GET /tempo/api/search/tags`                     | Implemented -- static list of resource + intrinsic tag names                               |
+| `GET /tempo/api/search/tag/{tag_name}/values`    | Implemented -- distinct column values via Querier; 501 for attribute tags without an index |
+| `GET /tempo/api/v2/search/tags`                  | Implemented -- same tag names, v2 scoped response                                          |
+| `GET /tempo/api/v2/search/tag/{tag_name}/values` | Implemented -- same lookup, v2 response shape                                              |
+| `GET /tempo/api/metrics/query`                   | 501 Not Implemented (TraceQL metrics)                                                      |
+| `GET /tempo/api/metrics/query_range`             | 501 Not Implemented (TraceQL metrics)                                                      |
 
 **Pyroscope API Endpoints** (profiles, nested at `/pyroscope` plus `/api/profiles`):
 
-| Endpoint | Status |
-|----------|--------|
-| `GET /pyroscope/render` | Implemented -- flamegraph via Querier |
-| `GET /pyroscope/render-diff` | Implemented -- differential flamegraph |
-| `GET /pyroscope/label-names`, `/label-values`, `/profile-types` | Implemented -- discovery via Querier |
-| `GET /api/profiles/trace/{trace_id}` | Implemented -- profiles linked to a trace |
+| Endpoint                                                        | Status                                    |
+| --------------------------------------------------------------- | ----------------------------------------- |
+| `GET /pyroscope/render`                                         | Implemented -- flamegraph via Querier     |
+| `GET /pyroscope/render-diff`                                    | Implemented -- differential flamegraph    |
+| `GET /pyroscope/label-names`, `/label-values`, `/profile-types` | Implemented -- discovery via Querier      |
+| `GET /api/profiles/trace/{trace_id}`                            | Implemented -- profiles linked to a trace |
 
 **Loki API Endpoints** (logs, nested at `/loki`; see epic #366):
 
-| Endpoint | Status |
-|----------|--------|
-| `GET /loki/api/v1/query` | Implemented -- log query over a one-hour window ending at `time` |
-| `GET /loki/api/v1/query_range` | Implemented -- transpiles LogQL to a querier filter, returns Loki streams |
-| `GET /loki/api/v1/labels` | Implemented -- known + attribute label names via Querier |
-| `GET /loki/api/v1/label/{name}/values` | Implemented -- distinct label values via Querier |
-| `GET /loki/api/v1/series` | Implemented -- label sets matching a selector via Querier |
-| `GET /loki/api/v1/detected_fields` | Implemented -- sampled attribute-field discovery (name, type, cardinality) |
-| `GET /loki/api/v1/tail` | Not implemented (WebSocket streaming, #380) |
+| Endpoint                                                         | Status                                                                                                      |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `GET /loki/api/v1/query`                                         | Implemented -- log query over a one-hour window ending at `time`                                            |
+| `GET /loki/api/v1/query_range`                                   | Implemented -- transpiles LogQL to a querier filter, returns Loki streams                                   |
+| `GET /loki/api/v1/labels`                                        | Implemented -- known + attribute label names via Querier                                                    |
+| `GET /loki/api/v1/label/{name}/values`                           | Implemented -- distinct label values via Querier                                                            |
+| `GET /loki/api/v1/series`                                        | Implemented -- label sets matching a selector via Querier                                                   |
+| `GET /loki/api/v1/detected_fields`                               | Implemented -- sampled attribute-field discovery (name, type, cardinality)                                  |
+| `GET /loki/api/v1/tail`                                          | Not implemented (WebSocket streaming, #380)                                                                 |
 | LogQL metric queries (`rate`, `count_over_time`, `sum by (...)`) | Implemented via `query_range` -- `date_bin(step)` bucketed matrix (no binary ops / `topk` / `quantile` yet) |
 
 **Prometheus API Endpoints** (metrics, nested at `/prometheus`; see epic #328):
 
-| Endpoint | Status |
-|----------|--------|
-| `GET\|POST /prometheus/api/v1/query_range` | Implemented -- PromQL over `metrics_gauge`+`metrics_sum`, `date_bin(step)` matrix |
-| `GET\|POST /prometheus/api/v1/query` | Implemented -- instant vector (latest sample per series) |
+| Endpoint                                                           | Status                                                                            |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| `GET\|POST /prometheus/api/v1/query_range`                         | Implemented -- PromQL over `metrics_gauge`+`metrics_sum`, `date_bin(step)` matrix |
+| `GET\|POST /prometheus/api/v1/query`                               | Implemented -- instant vector (latest sample per series)                          |
 | `GET /prometheus/api/v1/labels`, `/label/{name}/values`, `/series` | Implemented -- metric label names/values and `{__name__, job}` series via Querier |
-| PromQL `rate`/`increase` | Implemented -- counter delta over `date_bin` buckets |
-| PromQL `histogram_quantile(phi, metric)` | Implemented -- interpolated per series from `metrics_histogram` OTLP buckets |
-| PromQL `histogram_quantile` over `rate()`, binary ops, `topk` | Not implemented yet (#335) |
+| PromQL `rate`/`increase`                                           | Implemented -- counter delta over `date_bin` buckets                              |
+| PromQL `histogram_quantile(phi, metric)`                           | Implemented -- interpolated per series from `metrics_histogram` OTLP buckets      |
+| PromQL `histogram_quantile` over `rate()`, binary ops, `topk`      | Not implemented yet (#335)                                                        |
 
 **Admin API Endpoints** (requires `admin_api_key`):
 
-| Endpoint | Description |
-|----------|-------------|
-| `/api/v1/admin/tenants` | CRUD for tenants |
+| Endpoint                              | Description            |
+| ------------------------------------- | ---------------------- |
+| `/api/v1/admin/tenants`               | CRUD for tenants       |
 | `/api/v1/admin/tenants/{id}/api-keys` | Manage tenant API keys |
 | `/api/v1/admin/tenants/{id}/datasets` | Manage tenant datasets |
 
@@ -257,11 +257,11 @@ flowchart LR
 
 **Purpose**: Query execution against Iceberg tables via DataFusion
 
-| Property | Value |
-|----------|-------|
-| **Port** | Flight: 50054 (standalone mode also serves Tempo's `tempopb.Querier` gRPC protocol on this port) |
-| **Capability** | `QueryExecution` |
-| **Engine** | DataFusion with Iceberg integration |
+| Property       | Value                                                                                            |
+| -------------- | ------------------------------------------------------------------------------------------------ |
+| **Port**       | Flight: 50054 (standalone mode also serves Tempo's `tempopb.Querier` gRPC protocol on this port) |
+| **Capability** | `QueryExecution`                                                                                 |
+| **Engine**     | DataFusion with Iceberg integration                                                              |
 
 - Creates a DataFusion `SessionContext` with per-tenant `TenantCatalog` wrappers
 - `TenantCatalog` bridges DataFusion's 3-level model (`catalog.schema.table`) to Iceberg's 2-level namespace (`[tenant_slug, dataset_slug]`)
@@ -275,18 +275,18 @@ flowchart LR
 
 **Purpose**: Storage maintenance -- Parquet compaction and data lifecycle
 
-| Property | Value |
-|----------|-------|
-| **Ports** | Flight admin: 50055 (standalone, `COMPACTOR_FLIGHT_ADDR`), metrics HTTP: 9091 (`[compactor].metrics_addr`) |
-| **Capability** | `StorageMaintenance` |
-| **Binary** | `signaldb-compactor` |
+| Property       | Value                                                                                                      |
+| -------------- | ---------------------------------------------------------------------------------------------------------- |
+| **Ports**      | Flight admin: 50055 (standalone, `COMPACTOR_FLIGHT_ADDR`), metrics HTTP: 9091 (`[compactor].metrics_addr`) |
+| **Capability** | `StorageMaintenance`                                                                                       |
+| **Binary**     | `signaldb-compactor`                                                                                       |
 
 - Plans compaction candidates from Iceberg manifest data on a `tick_interval` loop
 - Distributed leases (`compactor_leases` catalog table) prevent concurrent compaction of the same partition
 - Flight admin interface exposes only `do_action` commands (`compact_now`, `compact_status`, `compact_dry_run`) and `list_actions`; all other Flight RPCs return `unimplemented`
 - Retention enforcement and orphan-file cleanup, configured via `[compactor.retention]` and `[compactor.orphan_cleanup]`
 - Advisory attribute-stats pass on every rewrite: logs per-key presence / approximate cardinality, persists the statistics to the catalog's `attribute_stats` table, and — when `[compactor.attr_promotion]` is enabled — logs a dry-run promotion/demotion decision (demand × presence under a schema-width budget with streak hysteresis; epic #737 Layer 4)
-- Disabled by default; enable with `[compactor].enabled = true`
+- Enabled by default (retention enforcement included, 30d per signal); disable with `[compactor].enabled = false`
 
 ## Multi-Tenancy and Authentication
 
@@ -315,13 +315,13 @@ Tenant (e.g., "acme")
 
 ### Isolation Layers
 
-| Layer | Isolation Mechanism |
-|-------|-------------------|
-| **WAL** | Separate directories: `{wal_dir}/{tenant}/{dataset}/{signal_type}/` |
-| **Iceberg Namespace** | Per-tenant/dataset: `[tenant_slug, dataset_slug]` |
-| **Object Store** | Per-tenant/dataset paths: `{base}/{tenant_slug}/{dataset_slug}/{table}/` |
-| **DataFusion** | Per-tenant catalog registration in SessionContext |
-| **Storage Backend** | Per-dataset storage override (different datasets can use different backends) |
+| Layer                 | Isolation Mechanism                                                          |
+| --------------------- | ---------------------------------------------------------------------------- |
+| **WAL**               | Separate directories: `{wal_dir}/{tenant}/{dataset}/{signal_type}/`          |
+| **Iceberg Namespace** | Per-tenant/dataset: `[tenant_slug, dataset_slug]`                            |
+| **Object Store**      | Per-tenant/dataset paths: `{base}/{tenant_slug}/{dataset_slug}/{table}/`     |
+| **DataFusion**        | Per-tenant catalog registration in SessionContext                            |
+| **Storage Backend**   | Per-dataset storage override (different datasets can use different backends) |
 
 ### Configuration
 
@@ -358,13 +358,13 @@ name = "Production Key"
 
 Services register with specific capabilities enabling automatic routing:
 
-| Service | Capabilities | Discovery Pattern |
-|---------|-------------|------------------|
-| Acceptor | `TraceIngestion` | Clients connect directly via OTLP |
-| Writer | `TraceIngestion`, `Storage` | Acceptors discover via `Storage` capability |
-| Router | `Routing` | Clients connect directly via HTTP |
-| Querier | `QueryExecution` | Routers discover via `QueryExecution` capability |
-| Compactor | `StorageMaintenance` | Registered for observability; not discovered by other services |
+| Service   | Capabilities                | Discovery Pattern                                              |
+| --------- | --------------------------- | -------------------------------------------------------------- |
+| Acceptor  | `TraceIngestion`            | Clients connect directly via OTLP                              |
+| Writer    | `TraceIngestion`, `Storage` | Acceptors discover via `Storage` capability                    |
+| Router    | `Routing`                   | Clients connect directly via HTTP                              |
+| Querier   | `QueryExecution`            | Routers discover via `QueryExecution` capability               |
+| Compactor | `StorageMaintenance`        | Registered for observability; not discovered by other services |
 
 The `ServiceCapability` enum (`src/common/src/flight/transport.rs`) defines six variants: `TraceIngestion`, `QueryExecution`, `Routing`, `Storage`, `KafkaIngestion`, and `StorageMaintenance`. `KafkaIngestion` is defined but not registered by any service today.
 
@@ -410,12 +410,13 @@ cargo run --bin signaldb
 ```
 
 Starts Acceptor, Router, Writer, and Querier in a single process:
+
 - Acceptor: `0.0.0.0:4317` (gRPC), `0.0.0.0:4318` (HTTP)
 - Router: `0.0.0.0:3000` (HTTP), `0.0.0.0:50053` (Flight)
 - Writer: `0.0.0.0:50051` (Flight)
 - Querier: `0.0.0.0:50054` (Flight)
 
-When `[compactor].enabled = true`, the monolithic binary also runs the compactor planning loop (no compactor Flight/HTTP endpoints in this mode).
+When `[compactor].enabled = true` (the default), the monolithic binary also runs the compactor planning loop (no compactor Flight/HTTP endpoints in this mode).
 
 Shared SQLite database for both service catalog and Iceberg catalog. Zero-config startup with sensible defaults.
 

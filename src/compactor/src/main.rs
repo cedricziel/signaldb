@@ -661,8 +661,11 @@ mod tests {
     #[test]
     fn test_retention_config_defaults() {
         let config = RetentionConfig::default();
-        assert!(!config.enabled, "Retention should be disabled by default");
-        assert!(config.dry_run, "Dry-run should be enabled by default");
+        assert!(config.enabled, "Retention should be enabled by default");
+        assert!(
+            !config.dry_run,
+            "Retention should enforce (not dry-run) by default"
+        );
         assert_eq!(
             config.retention_check_interval,
             Duration::from_secs(3600),

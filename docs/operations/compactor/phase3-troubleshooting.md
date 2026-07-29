@@ -76,6 +76,7 @@ chmod +x /tmp/compactor_status.sh
 ### Issue 1: No Partitions Being Dropped
 
 **Symptoms:**
+
 - `compactor_partitions_dropped_total` metric is 0
 - Data older than retention period still exists
 - No drop operations in logs
@@ -103,13 +104,13 @@ find .data/storage/<tenant>/<dataset>/traces -name "*.parquet" -mtime +7 | head
 
 **Common Causes and Solutions:**
 
-| Cause | Verification | Solution |
-|-------|-------------|----------|
-| Retention disabled | `enabled = false` in config | Set `enabled = true` |
-| Dry-run mode enabled | `dry_run = true` in config | Set `dry_run = false` |
-| Grace period too large | Check `grace_period` | Reduce grace period |
-| No data old enough | Check partition timestamps | Wait for data to age |
-| Retention check hasn't run | Check `compactor_retention_cutoffs_computed_total` | Restart compactor or wait for interval |
+| Cause                      | Verification                                       | Solution                                                                                                   |
+| -------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Retention disabled         | `enabled = false` in config                        | Set `enabled = true` (retention is enabled by default; `enabled = false` only appears when set explicitly) |
+| Dry-run mode enabled       | `dry_run = true` in config                         | Set `dry_run = false` (the default is `false`)                                                             |
+| Grace period too large     | Check `grace_period`                               | Reduce grace period                                                                                        |
+| No data old enough         | Check partition timestamps                         | Wait for data to age                                                                                       |
+| Retention check hasn't run | Check `compactor_retention_cutoffs_computed_total` | Restart compactor or wait for interval                                                                     |
 
 **Example Fix:**
 
@@ -129,6 +130,7 @@ traces = "7d"
 ### Issue 2: Partitions Dropped Too Aggressively
 
 **Symptoms:**
+
 - More partitions dropped than expected
 - Data deleted sooner than configured retention
 - Unexpected partition drop logs
@@ -187,6 +189,7 @@ grace_period = "0s"  # ← No safety margin
 ### Issue 3: Retention Check Not Running
 
 **Symptoms:**
+
 - `compactor_retention_cutoffs_computed_total` not increasing
 - No retention logs in recent time window
 - Partitions not being evaluated
@@ -241,6 +244,7 @@ retention_check_interval = "24h"  # Won't run often
 ### Issue 4: Snapshot Expiration Not Working
 
 **Symptoms:**
+
 - Snapshot count keeps growing
 - `compactor_snapshots_expired_total` is 0
 - Metadata size increasing
@@ -287,6 +291,7 @@ curl -s localhost:9091/metrics | grep compactor_snapshots_expired_total
 ### Issue 5: Orphan Files Not Being Deleted
 
 **Symptoms:**
+
 - `compactor_orphan_candidates_identified_total` > 0
 - `compactor_files_deleted_total` = 0
 - Orphan files identified but not removed
@@ -306,13 +311,13 @@ journalctl -u signaldb-compactor | grep -i "revalidation" | tail -10
 
 **Common Causes:**
 
-| Cause | Verification | Solution |
-|-------|-------------|----------|
-| Dry-run mode enabled | `dry_run = true` | Set `dry_run = false` |
-| Revalidation finding files live | Check revalidation logs | Normal - files no longer orphaned |
-| Permission errors | Check error logs for "Permission denied" | Fix object store permissions |
-| Grace period not met | Check file ages | Wait for grace period to elapse |
-| Object store unavailable | Check network/S3 connectivity | Restore object store access |
+| Cause                           | Verification                             | Solution                          |
+| ------------------------------- | ---------------------------------------- | --------------------------------- |
+| Dry-run mode enabled            | `dry_run = true`                         | Set `dry_run = false`             |
+| Revalidation finding files live | Check revalidation logs                  | Normal - files no longer orphaned |
+| Permission errors               | Check error logs for "Permission denied" | Fix object store permissions      |
+| Grace period not met            | Check file ages                          | Wait for grace period to elapse   |
+| Object store unavailable        | Check network/S3 connectivity            | Restore object store access       |
 
 **Example Fix:**
 
@@ -333,6 +338,7 @@ revalidate_before_delete = true
 ### Issue 6: False Orphan Detection
 
 **Symptoms:**
+
 - High orphan count (> 10% of total files)
 - Recently written files flagged as orphans
 - Revalidation preventing most deletions
@@ -377,6 +383,7 @@ Compaction creates new files that reference data from old files. The old files b
 ### Issue 7: Orphan Cleanup Taking Too Long
 
 **Symptoms:**
+
 - Cleanup runs for hours
 - High memory usage during cleanup
 - Cleanup skipped with `compactor_orphan_cleanup_skipped_total` increasing
@@ -426,6 +433,7 @@ reduce file counts before raising the threshold.
 ### Issue 8: High CPU Usage During Retention
 
 **Symptoms:**
+
 - CPU spikes during retention check
 - Retention check duration > 5 minutes
 - System slowdown during retention
@@ -467,6 +475,7 @@ If many partitions exist, consider implementing partition pruning in the query p
 ### Issue 9: High Memory Usage
 
 **Symptoms:**
+
 - OOM errors during orphan cleanup
 - Memory usage growing over time
 - System swapping during cleanup
@@ -504,7 +513,7 @@ max_snapshot_age_hours = 168  # 7 days
 # compose.yml
 services:
   compactor:
-    mem_limit: 4g  # Increase from default
+    mem_limit: 4g # Increase from default
 ```
 
 ## Data Integrity Issues
@@ -512,6 +521,7 @@ services:
 ### Issue 10: Queries Failing After Retention
 
 **Symptoms:**
+
 - "Snapshot not found" errors
 - "Partition not found" errors
 - Query failures correlated with retention runs
@@ -550,6 +560,7 @@ Configure query service to refresh snapshot references more frequently.
 ### Issue 11: Accidental Data Deletion
 
 **Symptoms:**
+
 - More data deleted than expected
 - Incorrect retention cutoff applied
 - Production data missing
@@ -715,16 +726,20 @@ find .data/storage -name "*.parquet" -mtime -1 -ls
 ### Error: "Table retention enforcement failed"
 
 **Full Message:**
+
 ```
 WARN compactor::retention::enforcer: Table retention enforcement failed tenant_id=acme dataset_id=prod table_name=traces error=Failed to commit partition drop: ...
 ```
 
 **Causes:**
+
 - Catalog connection lost
 - Concurrent modification conflict (snapshot conflicts are retried a few times first; look for "Partition drop hit a snapshot conflict; retrying against fresh metadata")
 
 **Solutions:**
+
 1. Check catalog connectivity:
+
    ```bash
    psql -h localhost -U signaldb -d signaldb -c "SELECT 1"
    ```
@@ -734,23 +749,28 @@ WARN compactor::retention::enforcer: Table retention enforcement failed tenant_i
 ### Error: "Failed to delete orphan file"
 
 **Full Message:**
+
 ```
 ERROR compactor::orphan::cleaner: Failed to delete orphan file path=acme/prod/traces/data/data-001.parquet error=Failed to delete file: ... table=acme/prod/traces
 ```
 
 **Causes:**
+
 - Insufficient object store permissions
 - Object store credentials invalid
 - Object store unavailable
 
 **Solutions:**
+
 1. Check object store credentials:
+
    ```bash
    env | grep AWS
    # Verify AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
    ```
 
 2. Test object store access:
+
    ```bash
    aws s3 ls s3://signaldb-data/
    ```
@@ -762,6 +782,7 @@ ERROR compactor::orphan::cleaner: Failed to delete orphan file path=acme/prod/tr
 ### Warning: "File no longer orphan after revalidation, skipping deletion"
 
 **Full Message:**
+
 ```
 WARN compactor::orphan::cleaner: File no longer orphan after revalidation, skipping deletion path=acme/prod/traces/data/data-001.parquet table=acme/prod/traces
 ```
@@ -773,6 +794,7 @@ WARN compactor::orphan::cleaner: File no longer orphan after revalidation, skipp
 ### Debug: "Skipping recent file (within grace period)"
 
 **Full Message:**
+
 ```
 DEBUG compactor::orphan::detector: Skipping recent file (within grace period) path=acme/prod/traces/data/data-001.parquet last_modified=2026-02-09T09:30:00Z cutoff_time=2026-02-08T10:00:00Z grace_period_hours=24
 ```

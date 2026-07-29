@@ -251,7 +251,7 @@ max_search_limit = 1000
 #   Phase 3: Retention enforcement and lifecycle management (NEW)
 #
 # Phase 2: Compaction Settings
-enabled = false                       # Enable compactor service (opt-in)
+enabled = true                        # Enable compactor service (enabled by default)
 tick_interval = "5m"                  # Interval between compaction planning cycles
 target_file_size_mb = 128             # Target file size after compaction (MB)
 file_count_threshold = 5              # Minimum files to trigger compaction
@@ -276,10 +276,12 @@ metrics_addr = "0.0.0.0:9091"
 # Automatically drops expired partitions based on configurable retention policies.
 # Uses a 3-tier hierarchy: Global defaults → Tenant overrides → Dataset overrides.
 #
-# IMPORTANT: Always test with dry_run = true first!
+# IMPORTANT: Retention enforcement is ON by default and DELETES data older
+# than 30 days. Set enabled = false (or longer durations) to keep data
+# longer; set dry_run = true to log decisions without deleting.
 [compactor.retention]
-enabled = false                       # Enable retention enforcement (opt-in, default: false)
-dry_run = true                        # Log actions without executing (safe default: true)
+enabled = true                        # Enable retention enforcement (default: true)
+dry_run = false                       # Enforce deletions (default: false; set true to only log)
 retention_check_interval = "1h"       # Interval between retention checks (default: 1h)
 grace_period = "1h"                   # Safety margin before cutoff (prevents clock skew issues)
 timezone = "UTC"                      # Timezone for logging (internal storage uses UTC)
@@ -287,9 +289,9 @@ snapshots_to_keep = 5                 # Keep last N snapshots per table (minimum
 
 # Global Default Retention Periods (per signal type)
 # These apply to all tenants/datasets unless overridden below.
-traces = "7d"                         # Trace data retention (default: 7 days)
+traces = "30d"                        # Trace data retention (default: 30 days)
 logs = "30d"                          # Log data retention (default: 30 days)
-metrics = "90d"                       # Metric data retention (default: 90 days)
+metrics = "30d"                       # Metric data retention (default: 30 days)
 
 # Tenant-Specific Retention Overrides (optional)
 # Override global defaults for specific tenants.
@@ -315,14 +317,14 @@ metrics = "90d"                       # Metric data retention (default: 90 days)
 # logs = "1d"                         # Override: Keep staging logs for only 1 day
 #
 # Resolution Example:
-#   Global:    traces = 7 days
+#   Global:    traces = 30 days
 #   Tenant:    traces = 30 days (overrides global)
 #   Dataset:   traces = 90 days (overrides tenant)
 # Result:
 #   - production/critical → 90 days (dataset override)
 #   - production/staging  → 1 day (dataset override)
 #   - production/default  → 30 days (tenant override)
-#   - other/any          → 7 days (global default)
+#   - other/any          → 30 days (global default)
 
 # Phase 3: Orphan File Cleanup Configuration
 # Automatically detects and deletes unreferenced Parquet files to reclaim storage.

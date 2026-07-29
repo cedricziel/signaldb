@@ -13,8 +13,14 @@ The Compactor Service manages the data lifecycle for observability signals
    memory guard that skips oversized tables instead of risking OOM)
 
 All operations respect Iceberg's transactional guarantees and snapshot
-isolation. Destructive features default to off (`enabled = false`) and to
-dry-run (`dry_run = true`) when enabled.
+isolation.
+
+> **Default behavior:** Compaction and retention enforcement are **enabled by
+> default**, with `dry_run = false` and a 30-day retention period for traces,
+> logs, and metrics — a default deployment deletes data older than 30 days.
+> Set `[compactor.retention].enabled = false` for infinite retention, or raise
+> the per-signal durations. Orphan cleanup remains opt-in
+> (`enabled = false`, `dry_run = true`).
 
 ## Configuration
 
@@ -29,12 +35,12 @@ enabled = true
 tick_interval = "5m"  # Interval between compaction planning cycles
 
 [compactor.retention]
-enabled = true
-dry_run = true                    # Start with dry-run; set false to enforce
+enabled = true                    # Default: true
+dry_run = false                   # Default: false (set true to log without deleting)
 retention_check_interval = "1h"
-traces = "7d"
+traces = "30d"                    # Default: 30d for all three signal types
 logs = "30d"
-metrics = "90d"
+metrics = "30d"
 grace_period = "1h"
 snapshots_to_keep = 10
 
@@ -91,10 +97,10 @@ PostgreSQL):
 Each instance serves an Arrow Flight admin endpoint (default port `50055`,
 override with `COMPACTOR_FLIGHT_ADDR`) with three DoAction verbs:
 
-| Action | Effect |
-|--------|--------|
-| `compact_now` | Run a full plan → lease → execute cycle immediately |
-| `compact_status` | Return active leases + cumulative metrics as JSON |
+| Action            | Effect                                              |
+| ----------------- | --------------------------------------------------- |
+| `compact_now`     | Run a full plan → lease → execute cycle immediately |
+| `compact_status`  | Return active leases + cumulative metrics as JSON   |
 | `compact_dry_run` | Plan candidates without executing, return JSON list |
 
 Covered by `tests-integration/tests/compactor/multi_instance.rs`.

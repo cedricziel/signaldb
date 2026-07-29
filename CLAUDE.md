@@ -203,23 +203,26 @@ RUST_LOG=debug,compactor=trace cargo run --bin signaldb-compactor
 ### Phase 3: Retention & Lifecycle Management
 
 **Key Features:**
+
 - 3-tier retention policies (Global → Tenant → Dataset)
 - Per-signal type retention (traces/logs/metrics)
 - Automatic partition dropping
 - Snapshot expiration
 - Orphan file cleanup
 
+**Defaults:** the compactor and retention enforcement are enabled by default with `dry_run = false` and 30-day retention for traces, logs, and metrics — a default deployment deletes data older than 30 days. Set `[compactor.retention].enabled = false` for infinite retention. Orphan cleanup stays opt-in.
+
 **Configuration Example:**
 
 ```toml
 [compactor.retention]
-enabled = true
-dry_run = false  # Start with true for testing
+enabled = true   # default: true
+dry_run = false  # default: false; set true to log without deleting
 retention_check_interval = "1h"
 grace_period = "1h"
-traces = "7d"
+traces = "30d"   # default: 30d for all three signal types
 logs = "30d"
-metrics = "90d"
+metrics = "30d"
 snapshots_to_keep = 10
 
 # Tenant override (map keyed by tenant id)
@@ -273,6 +276,7 @@ curl -s localhost:9091/metrics | grep compactor
 - README: `src/compactor/README.md`
 
 **Important Notes:**
+
 - Always test retention with `dry_run = true` first
 - Use grace periods to prevent accidental deletion
 - Monitor `compactor_deletion_failures_total` metric

@@ -30,15 +30,15 @@ pub fn redact_dsn(dsn: &str) -> String {
 /// in the compactor crate but lives in common for TOML/env deserialization.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RetentionConfig {
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(with = "humantime_serde", default = "default_retention_check_interval")]
     pub retention_check_interval: Duration,
-    #[serde(with = "humantime_serde", default = "default_traces_retention")]
+    #[serde(with = "humantime_serde", default = "default_signal_retention")]
     pub traces: Duration,
-    #[serde(with = "humantime_serde", default = "default_logs_retention")]
+    #[serde(with = "humantime_serde", default = "default_signal_retention")]
     pub logs: Duration,
-    #[serde(with = "humantime_serde", default = "default_metrics_retention")]
+    #[serde(with = "humantime_serde", default = "default_signal_retention")]
     pub metrics: Duration,
     #[serde(with = "humantime_serde", default = "default_grace_period")]
     pub grace_period: Duration,
@@ -56,16 +56,8 @@ fn default_retention_check_interval() -> Duration {
     Duration::from_secs(3600) // 1 hour
 }
 
-fn default_traces_retention() -> Duration {
-    Duration::from_secs(7 * 24 * 3600) // 7 days
-}
-
-fn default_logs_retention() -> Duration {
-    Duration::from_secs(30 * 24 * 3600) // 30 days
-}
-
-fn default_metrics_retention() -> Duration {
-    Duration::from_secs(90 * 24 * 3600) // 90 days
+fn default_signal_retention() -> Duration {
+    Duration::from_secs(30 * 24 * 3600) // 30 days for traces, logs, and metrics
 }
 
 fn default_grace_period() -> Duration {
@@ -77,17 +69,17 @@ fn default_timezone() -> String {
 }
 
 fn default_dry_run() -> bool {
-    true
+    false // Retention enforces (deletes expired data) by default
 }
 
 impl Default for RetentionConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true, // Retention enforcement is on by default (30d)
             retention_check_interval: default_retention_check_interval(),
-            traces: default_traces_retention(),
-            logs: default_logs_retention(),
-            metrics: default_metrics_retention(),
+            traces: default_signal_retention(),
+            logs: default_signal_retention(),
+            metrics: default_signal_retention(),
             grace_period: default_grace_period(),
             timezone: default_timezone(),
             dry_run: default_dry_run(),
@@ -377,9 +369,9 @@ impl Default for WalConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CompactorConfig {
-    /// Enable compactor service
+    /// Enable compactor service (enabled by default)
     /// Env: SIGNALDB__COMPACTOR__ENABLED
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
 
     /// Interval between compaction planning cycles
@@ -467,7 +459,7 @@ fn default_compactor_metrics_addr() -> String {
 impl Default for CompactorConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             tick_interval: Duration::from_secs(300), // 5 minutes
             target_file_size_mb: 128,
             file_count_threshold: 10,
@@ -1493,6 +1485,43 @@ mod tests {
 
             Ok(())
         });
+    }
+
+    #[test]
+    fn compactor_defaults_enable_compaction_and_30d_retention() {
+        let config = Configuration::default();
+
+        // Compaction runs by default
+        assert!(config.compactor.enabled, "compactor enabled by default");
+
+        // Retention enforcement is on by default and actually deletes
+        let retention = &config.compactor.retention;
+        assert!(
+            retention.enabled,
+            "retention enforcement enabled by default"
+        );
+        assert!(
+            !retention.dry_run,
+            "retention enforces (not dry-run) by default"
+        );
+
+        // All three signal defaults are 30 days
+        let thirty_days = Duration::from_secs(30 * 24 * 3600);
+        assert_eq!(retention.traces, thirty_days);
+        assert_eq!(retention.logs, thirty_days);
+        assert_eq!(retention.metrics, thirty_days);
+
+        // Unchanged defaults
+        assert_eq!(
+            retention.retention_check_interval,
+            Duration::from_secs(3600)
+        );
+        assert_eq!(retention.grace_period, Duration::from_secs(3600));
+        assert_eq!(retention.snapshots_to_keep, Some(10));
+
+        // Orphan cleanup stays opt-in
+        assert!(!config.compactor.orphan_cleanup.enabled);
+        assert!(config.compactor.orphan_cleanup.dry_run);
     }
 
     #[test]
