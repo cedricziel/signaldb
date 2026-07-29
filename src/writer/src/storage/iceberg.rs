@@ -85,7 +85,7 @@ impl IcebergTableWriter {
         );
 
         let table_metadata = table.metadata();
-        let current_schema = table.current_schema(None)?;
+        let current_schema = table.current_schema()?;
         log::debug!("Table location: {}", table_metadata.location);
         log::debug!("Schema has {} fields", current_schema.fields().len());
 
@@ -277,7 +277,7 @@ impl IcebergTableWriter {
         // timestamps), so coerce after the wire→storage transformation.
         let target_schema: ArrowSchemaRef = Arc::new(
             self.table
-                .current_schema(None)
+                .current_schema()
                 .map_err(|e| anyhow::anyhow!("Failed to get current Iceberg schema: {e}"))?
                 .fields()
                 .try_into()

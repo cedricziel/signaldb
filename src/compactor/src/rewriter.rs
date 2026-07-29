@@ -195,7 +195,7 @@ impl ParquetRewriter {
         };
         // The table's current label_<key> columns and the pinned allowlist.
         let label_columns: Vec<String> = table
-            .current_schema(None)
+            .current_schema()
             .map(|schema| {
                 schema
                     .fields()

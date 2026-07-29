@@ -2399,7 +2399,7 @@ dependencies = [
 [[package]]
 name = "datafusion_iceberg"
 version = "0.10.0"
-source = "git+https://github.com/JanKaul/iceberg-rust?rev=170ef972#170ef97276860d85edfa86bfd3d40cda5f56b383"
+source = "git+https://github.com/JanKaul/iceberg-rust?rev=96f28c18#96f28c18b69debcbff8b9db2b2b1c3e761097a5c"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3469,7 +3469,7 @@ dependencies = [
 [[package]]
 name = "iceberg-rust"
 version = "0.10.0"
-source = "git+https://github.com/JanKaul/iceberg-rust?rev=170ef972#170ef97276860d85edfa86bfd3d40cda5f56b383"
+source = "git+https://github.com/JanKaul/iceberg-rust?rev=96f28c18#96f28c18b69debcbff8b9db2b2b1c3e761097a5c"
 dependencies = [
  "apache-avro",
  "arrow",
@@ -3505,7 +3505,7 @@ dependencies = [
 [[package]]
 name = "iceberg-rust-spec"
 version = "0.10.0"
-source = "git+https://github.com/JanKaul/iceberg-rust?rev=170ef972#170ef97276860d85edfa86bfd3d40cda5f56b383"
+source = "git+https://github.com/JanKaul/iceberg-rust?rev=96f28c18#96f28c18b69debcbff8b9db2b2b1c3e761097a5c"
 dependencies = [
  "apache-avro",
  "arrow-schema",
@@ -3531,7 +3531,7 @@ dependencies = [
 [[package]]
 name = "iceberg-sql-catalog"
 version = "0.10.0"
-source = "git+https://github.com/JanKaul/iceberg-rust?rev=170ef972#170ef97276860d85edfa86bfd3d40cda5f56b383"
+source = "git+https://github.com/JanKaul/iceberg-rust?rev=96f28c18#96f28c18b69debcbff8b9db2b2b1c3e761097a5c"
 dependencies = [
  "async-trait",
  "futures",
@@ -5446,7 +5446,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "petgraph",
@@ -5467,7 +5467,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
