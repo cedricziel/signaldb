@@ -140,8 +140,9 @@ pub fn log_promotion_candidates(
 
 /// Iterate an attribute column's per-row documents as key/value pairs,
 /// handling both storage forms: `Map<Utf8, Utf8>` (new tables) and Utf8
-/// columns holding flat JSON objects (legacy tables).
-fn attr_documents(array: &dyn Array) -> Vec<Option<Vec<(String, String)>>> {
+/// columns holding flat JSON objects (legacy tables). Also used by the
+/// rewrite-coupled promotion backfill in [`crate::attr_promotion`].
+pub(crate) fn attr_documents(array: &dyn Array) -> Vec<Option<Vec<(String, String)>>> {
     if let Some(map) = array.as_any().downcast_ref::<MapArray>() {
         return (0..map.len())
             .map(|i| {

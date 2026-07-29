@@ -23,9 +23,13 @@
 //! - **Pinned labels** (from `[schema.materialized_labels]`) are never
 //!   demoted.
 
+use anyhow::{Context, Result};
 use common::catalog::AttributeStatsRecord;
 use common::config::AttrPromotionConfig;
 use common::schema::materialized_column_name;
+use datafusion::arrow::array::{ArrayRef, RecordBatch, StringArray};
+use datafusion::arrow::datatypes::{DataType, Field, Schema};
+use std::sync::Arc;
 
 /// The outcome of a promotion pass over one table's statistics.
 #[derive(Debug, Default, PartialEq)]
@@ -177,9 +181,107 @@ pub fn materialized_keys_of(
         .collect()
 }
 
+/// Attribute source columns for the backfill, in the writer's value
+/// precedence order: resource, then scope, then the record-level column
+/// (only one of the record-level names exists per table).
+const BACKFILL_SOURCE_COLUMNS: &[&str] = &[
+    "resource_attributes",
+    "scope_attributes",
+    "span_attributes",
+    "log_attributes",
+    "attributes",
+    "profile_attributes",
+];
+
+/// Recompute the materialized `label_<column>` value columns of the given
+/// batches from their attribute source columns.
+///
+/// `pairs` maps attribute keys to their target column names (deduplicated
+/// by column — see [`materialized_column_name`]). Existing Utf8 columns
+/// are overwritten in place (healing rows the writer left null, e.g. data
+/// ingested after an auto-promotion); missing columns are appended in
+/// `pairs` order, matching the evolved schema which appends promoted
+/// columns at the end. Values follow the writer's source precedence
+/// (resource → scope → record attributes) and rows without the key stay
+/// null — old rows are backfilled by construction since every row is
+/// rewritten.
+pub(crate) fn backfill_label_columns(
+    batches: Vec<RecordBatch>,
+    pairs: &[(String, String)],
+) -> Result<Vec<RecordBatch>> {
+    if pairs.is_empty() {
+        return Ok(batches);
+    }
+    batches
+        .into_iter()
+        .map(|batch| backfill_batch(batch, pairs))
+        .collect()
+}
+
+/// One attribute source column parsed into per-row key/value documents.
+type AttrDocuments = Vec<Option<Vec<(String, String)>>>;
+
+fn backfill_batch(batch: RecordBatch, pairs: &[(String, String)]) -> Result<RecordBatch> {
+    let num_rows = batch.num_rows();
+
+    // Parse each attribute source column present in the batch once, in
+    // precedence order.
+    let sources: Vec<AttrDocuments> = BACKFILL_SOURCE_COLUMNS
+        .iter()
+        .filter_map(|column| batch.column_by_name(column))
+        .map(|array| crate::attr_stats::attr_documents(array.as_ref()))
+        .filter(|docs| docs.len() == num_rows)
+        .collect();
+
+    let mut fields: Vec<Field> = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.as_ref().clone())
+        .collect();
+    let mut columns: Vec<ArrayRef> = batch.columns().to_vec();
+
+    for (key, column) in pairs {
+        let values: StringArray = (0..num_rows)
+            .map(|row| {
+                sources.iter().find_map(|docs| {
+                    docs[row]
+                        .as_ref()
+                        .and_then(|doc| doc.iter().find(|(k, _)| k == key))
+                        .map(|(_, v)| v.clone())
+                })
+            })
+            .collect();
+        match fields.iter().position(|f| f.name() == column) {
+            Some(idx) if fields[idx].data_type() == &DataType::Utf8 => {
+                if !fields[idx].is_nullable() {
+                    fields[idx] = fields[idx].clone().with_nullable(true);
+                }
+                columns[idx] = Arc::new(values);
+            }
+            Some(_) => {
+                tracing::warn!(
+                    column = %column,
+                    attr_key = %key,
+                    "Materialized label column has a non-string type; skipping backfill"
+                );
+            }
+            None => {
+                fields.push(Field::new(column, DataType::Utf8, true));
+                columns.push(Arc::new(values));
+            }
+        }
+    }
+
+    let schema = Arc::new(Schema::new(fields));
+    RecordBatch::try_new(schema, columns)
+        .context("Failed to rebuild batch with backfilled label columns")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::array::Array;
 
     fn record(key: &str, present: i64, total: i64, hits: i64, streak: i64) -> AttributeStatsRecord {
         AttributeStatsRecord {
@@ -275,6 +377,84 @@ mod tests {
         assert!(looks_generated("session_12345678"));
         assert!(!looks_generated("http.method"));
         assert!(!looks_generated("k8s.pod.name"));
+    }
+
+    fn json_utf8_batch() -> RecordBatch {
+        // Two source columns: resource attrs win over record attrs.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("body", DataType::Utf8, true),
+            Field::new("resource_attributes", DataType::Utf8, true),
+            Field::new("log_attributes", DataType::Utf8, true),
+            Field::new("label_env", DataType::Utf8, true),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("a"), Some("b"), Some("c")])),
+                Arc::new(StringArray::from(vec![
+                    Some(r#"{"env":"prod"}"#),
+                    None,
+                    Some("{}"),
+                ])),
+                Arc::new(StringArray::from(vec![
+                    Some(r#"{"env":"record-level","pod":"api-1"}"#),
+                    Some(r#"{"env":"staging"}"#),
+                    Some("{}"),
+                ])),
+                // Existing column with writer-left nulls to be healed.
+                Arc::new(StringArray::from(vec![None::<&str>, None, None])),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> &'a StringArray {
+        batch
+            .column_by_name(name)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+    }
+
+    #[test]
+    fn backfill_overwrites_existing_column_with_source_precedence() {
+        let pairs = vec![("env".to_string(), "label_env".to_string())];
+        let out = backfill_label_columns(vec![json_utf8_batch()], &pairs).unwrap();
+        assert_eq!(out.len(), 1);
+        let env = string_column(&out[0], "label_env");
+        // Row 0: resource wins over the record-level value.
+        assert_eq!(env.value(0), "prod");
+        // Row 1: only the record-level source carries the key.
+        assert_eq!(env.value(1), "staging");
+        // Row 2: key absent everywhere -> null.
+        assert!(env.is_null(2));
+        // Column count unchanged: the existing column was replaced.
+        assert_eq!(out[0].num_columns(), 4);
+    }
+
+    #[test]
+    fn backfill_appends_missing_columns_in_pair_order() {
+        let pairs = vec![
+            ("pod".to_string(), "label_pod".to_string()),
+            ("env".to_string(), "label_env".to_string()),
+        ];
+        let out = backfill_label_columns(vec![json_utf8_batch()], &pairs).unwrap();
+        let batch = &out[0];
+        // `label_pod` is new and appended before the (replaced) `label_env`.
+        assert_eq!(batch.num_columns(), 5);
+        assert_eq!(batch.schema().field(4).name(), "label_pod");
+        let pod = string_column(batch, "label_pod");
+        assert_eq!(pod.value(0), "api-1");
+        assert!(pod.is_null(1));
+        assert!(pod.is_null(2));
+    }
+
+    #[test]
+    fn backfill_without_pairs_is_a_no_op() {
+        let batch = json_utf8_batch();
+        let out = backfill_label_columns(vec![batch.clone()], &[]).unwrap();
+        assert_eq!(out[0], batch);
     }
 
     #[test]

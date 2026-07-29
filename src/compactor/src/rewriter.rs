@@ -7,11 +7,26 @@
 
 use anyhow::{Context, Result};
 use common::CatalogManager;
+use common::schema::materialized_column_name;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::prelude::*;
+use iceberg_rust::catalog::identifier::Identifier;
 use iceberg_rust::spec::manifest::DataFile;
 use iceberg_rust::table::Table;
+use std::collections::HashSet;
 use std::sync::Arc;
+
+/// What the promotion pass decided to do to this rewrite (epic #737,
+/// #734). Empty/default when promotion is disabled or dry-run.
+#[derive(Debug, Default)]
+struct PromotionOutcome {
+    /// `(attribute key, label column)` pairs whose columns should be
+    /// recomputed from the attribute sources during this rewrite.
+    backfill: Vec<(String, String)>,
+    /// Whether the table's schema was evolved (new label columns added)
+    /// and must be reloaded before writing.
+    evolved: bool,
+}
 
 /// Result of rewriting a table's data files.
 pub struct RewriteOutcome {
@@ -106,6 +121,7 @@ impl ParquetRewriter {
         // candidates; changes nothing.
         let (attr_stats, scanned) = crate::attr_stats::analyze_batches(&merged_batches);
         crate::attr_stats::log_promotion_candidates(&table_name, &attr_stats, scanned);
+        let mut promotion = PromotionOutcome::default();
         if let Some(catalog) = &self.service_catalog {
             // The identifier namespace is [tenant_slug, dataset_slug].
             let ns = table.identifier().namespace();
@@ -119,10 +135,44 @@ impl ParquetRewriter {
                     scanned,
                 )
                 .await;
-                self.run_promotion_pass(catalog, tenant, dataset, &table_name, table)
+                promotion = self
+                    .run_promotion_pass(catalog, tenant, dataset, &table_name, table)
                     .await;
             }
         }
+
+        // When the promotion pass evolved the schema (new label columns),
+        // the write must happen under the reloaded table so the new files
+        // are written with the evolved schema.
+        let reloaded_table;
+        let write_table: &Table = if promotion.evolved {
+            reloaded_table = self
+                .load_fresh_by_identifier(table.identifier())
+                .await
+                .context("Failed to reload table after schema evolution")?;
+            &reloaded_table
+        } else {
+            table
+        };
+
+        // Recompute the materialized label columns from the attribute
+        // sources. Since every live row is rewritten, pre-existing rows
+        // get their values backfilled by construction.
+        let merged_batches = if promotion.backfill.is_empty() {
+            merged_batches
+        } else {
+            let schema_columns: HashSet<String> = write_table
+                .current_schema()
+                .map(|schema| schema.fields().iter().map(|f| f.name.clone()).collect())
+                .unwrap_or_default();
+            let pairs: Vec<(String, String)> = promotion
+                .backfill
+                .into_iter()
+                .filter(|(_, column)| schema_columns.contains(column))
+                .collect();
+            crate::attr_promotion::backfill_label_columns(merged_batches, &pairs)
+                .context("Failed to backfill materialized label columns")?
+        };
 
         // Chunk batches toward the target file size so the writer produces
         // reasonably sized files.
@@ -135,7 +185,7 @@ impl ParquetRewriter {
         );
 
         let new_files =
-            iceberg_rust::arrow::write::write_parquet_partitioned(table, batch_stream, None)
+            iceberg_rust::arrow::write::write_parquet_partitioned(write_table, batch_stream, None)
                 .await
                 .context("Failed to write compacted Parquet files")?;
 
@@ -167,11 +217,18 @@ impl ParquetRewriter {
         }))
     }
 
-    /// Advisory auto-promotion pass (epic #737, #734): score the freshly
-    /// persisted statistics against the configured guardrails, log the
+    /// Auto-promotion pass (epic #737, #734): score the freshly persisted
+    /// statistics against the configured guardrails, log the
     /// promotion/demotion decision, and persist the hysteresis streaks.
-    /// Dry-run only for now — the rewrite-coupled schema change is the
-    /// follow-up half.
+    ///
+    /// With `dry_run = false` the pass also *acts* on the decision: it
+    /// evolves the table schema (adds the promoted `label_<key>` columns
+    /// via the metadata-only AddSchema/SetCurrentSchema commit) and
+    /// returns the backfill plan for this rewrite. The two commits per
+    /// table — schema flip here, file replace after the rewrite — are
+    /// safe in that order: writer and querier read the schema live and
+    /// null-fill the new columns until the rewrite lands. Demotion
+    /// (dropping columns) is a later pass and is only ever logged.
     async fn run_promotion_pass(
         &self,
         catalog: &common::catalog::Catalog,
@@ -179,18 +236,19 @@ impl ParquetRewriter {
         dataset: &str,
         table_name: &str,
         table: &Table,
-    ) {
+    ) -> PromotionOutcome {
+        let mut outcome = PromotionOutcome::default();
         let config = self.catalog_manager.config();
         let promotion = &config.compactor.attr_promotion;
         if !promotion.enabled {
-            return;
+            return outcome;
         }
         let signal = crate::attr_stats::signal_of_table(table_name);
         let stats = match catalog.get_attribute_stats(tenant, dataset, signal).await {
             Ok(stats) => stats,
             Err(e) => {
                 tracing::warn!(error = %e, table = %table_name, "Failed to load attribute stats for promotion pass");
-                return;
+                return outcome;
             }
         };
         // The table's current label_<key> columns and the pinned allowlist.
@@ -225,6 +283,74 @@ impl ParquetRewriter {
             {
                 tracing::warn!(error = %e, attr_key = %key, "Failed to persist promotion streak");
             }
+        }
+
+        // Act on the decision when the pass is out of dry-run: evolve the
+        // schema before the rewrite so the new files carry the promoted
+        // columns. An evolution failure is logged and the compaction
+        // continues under the old schema — promotion must never fail a
+        // rewrite.
+        if promotion.dry_run {
+            return outcome;
+        }
+        if !decision.promote.is_empty() {
+            match common::iceberg::evolution::add_label_columns(
+                self.catalog_manager.catalog(),
+                table.identifier(),
+                &decision.promote,
+            )
+            .await
+            {
+                Ok(_) => {
+                    outcome.evolved = true;
+                    // TODO(#731): set bloom-filter table properties for the
+                    // newly promoted label columns once the
+                    // `bloom_filter_properties_for_labels` helper lands in
+                    // common.
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        table = %table_name,
+                        keys = ?decision.promote,
+                        "Failed to evolve schema for attribute promotion; continuing compaction without it"
+                    );
+                }
+            }
+        }
+
+        // Backfill plan: the freshly promoted keys plus every label column
+        // whose source key is still known (already-materialized keys from
+        // the stats, and the pinned allowlist). Recomputing existing
+        // columns heals rows the writer left null during the transition
+        // window. Deduplicated by column name — the key -> column encoding
+        // is lossy.
+        let mut seen_columns = HashSet::new();
+        let promoted: &[String] = if outcome.evolved {
+            &decision.promote
+        } else {
+            &[]
+        };
+        for key in promoted.iter().chain(materialized.iter()).chain(pinned) {
+            let column = materialized_column_name(key);
+            if seen_columns.insert(column.clone()) {
+                outcome.backfill.push((key.clone(), column));
+            }
+        }
+        outcome
+    }
+
+    /// Load a table with fresh metadata by its Iceberg identifier.
+    async fn load_fresh_by_identifier(&self, identifier: &Identifier) -> Result<Table> {
+        let tabular = self
+            .catalog_manager
+            .catalog()
+            .load_tabular(identifier)
+            .await
+            .with_context(|| format!("Failed to load table {identifier} with fresh metadata"))?;
+        match tabular {
+            iceberg_rust::catalog::tabular::Tabular::Table(table) => Ok(table),
+            _ => Err(anyhow::anyhow!("Expected table but got view: {identifier}")),
         }
     }
 

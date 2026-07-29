@@ -19,6 +19,7 @@ Comprehensive troubleshooting guide for SignalDB Compactor Phase 3: Retention En
 - [Data Integrity Issues](#data-integrity-issues)
 - [Debug Procedures](#debug-procedures)
 - [Common Error Messages](#common-error-messages)
+- [Attribute Promotion](#attribute-promotion)
 
 ## Quick Diagnosis
 
@@ -803,6 +804,16 @@ DEBUG compactor::orphan::detector: Skipping recent file (within grace period) pa
 
 **Solution:** Nothing to fix. The file becomes eligible after the grace period elapses.
 
+## Attribute Promotion
+
+**A `label_<key>` column appeared that is not in `[schema.materialized_labels]`:** attribute auto-promotion added it. With `[compactor.attr_promotion].dry_run = false`, the compactor promotes frequently queried attribute keys to columns at rewrite (see the [operations guide](phase3-operations.md#attribute-promotion)).
+
+**How to tell a promotion happened:** look for `Added materialized label columns via schema evolution` in the compactor logs (table, schema id, columns), or compare the table's current schema against your pinned config. The preceding `Attribute promotion decision` line shows why the key qualified.
+
+**How to stop promotions:** set `[compactor.attr_promotion].dry_run = true` (decisions are still logged, nothing changes) or `enabled = false` (no decision pass at all). Columns already added stay in place; they are nullable and harmless to queries.
+
+**Removing a promoted column:** demotion is decided and logged (`demote` in the decision line) but not yet acted on — dropping columns is follow-up work.
+
 ## Additional Resources
 
 - [Phase 3 Operations Guide](phase3-operations.md)
@@ -820,4 +831,4 @@ If you encounter issues not covered in this guide:
 4. **Configuration:** Share `signaldb.toml` (redact sensitive values)
 5. **Open Issue:** https://github.com/cedricziel/signaldb/issues with above information
 
-> The `Attribute-stats analyzer` log line on each rewrite is advisory only (epic #737); it never blocks or alters compaction. Its statistics are persisted to the catalog's `attribute_stats` table; a `Failed to persist attribute scan stats` warning means the catalog write failed and is safe to ignore for compaction correctness. The dry-run `Attribute promotion decision` line (when `[compactor.attr_promotion]` is enabled) is likewise advisory.
+> The `Attribute-stats analyzer` log line on each rewrite is advisory only (epic #737); it never blocks or alters compaction. Its statistics are persisted to the catalog's `attribute_stats` table; a `Failed to persist attribute scan stats` warning means the catalog write failed and is safe to ignore for compaction correctness. The `Attribute promotion decision` line (when `[compactor.attr_promotion]` is enabled) is advisory while `dry_run = true`; with `dry_run = false` the compactor acts on it — see [Attribute Promotion](#attribute-promotion).
