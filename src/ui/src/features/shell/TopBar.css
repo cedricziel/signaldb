@@ -26,6 +26,57 @@
   font-weight: 600;
 }
 
+.topbar-sep {
+  color: var(--faint);
+}
+
+.tenant-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.tenant-chip:hover {
+  border-color: var(--dim);
+}
+
+.tenant-sep {
+  color: var(--faint);
+}
+
+.tenant-caret {
+  color: var(--faint);
+  font-size: 10px;
+}
+
+.tenant-form {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.tenant-form input {
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  border-radius: 5px;
+  padding: 3px 8px;
+  font-size: 12px;
+  width: 130px;
+}
+
+.tenant-form button {
+  font-size: 12px;
+  color: var(--dim);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 9px;
+}
+
 .app-frame {
   display: flex;
   flex-direction: column;

@@ -19,7 +19,7 @@ interface Props {
 
 export function MetricsView({ state, update }: Props) {
   const [draft, setDraft] = useState(state.promql);
-  const rangeKey = rangeToParam(state.range);
+  const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
   const promql = state.promql;
 
   const query = useQuery({

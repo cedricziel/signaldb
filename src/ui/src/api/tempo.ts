@@ -1,6 +1,7 @@
 // Client for the router's Tempo-compatible API (/tempo/api).
 
 import type { ResolvedRange } from "../lib/time";
+import { tenantHeaders } from "./http";
 
 export type AttrValue = string | number | boolean;
 
@@ -86,7 +87,7 @@ async function tempoFetch<T>(
 ): Promise<T> {
   const query = params.size > 0 ? `?${params}` : "";
   const res = await fetch(`/tempo/api/${path}${query}`, {
-    headers: { Accept: "application/json" },
+    headers: tenantHeaders(),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");

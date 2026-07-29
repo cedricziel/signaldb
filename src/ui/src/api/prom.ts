@@ -1,6 +1,7 @@
 // Client for the router's Prometheus-compatible API (/prometheus/api/v1).
 
 import type { ResolvedRange } from "../lib/time";
+import { tenantHeaders } from "./http";
 
 export interface PromSeries {
   labels: Record<string, string>;
@@ -31,7 +32,7 @@ export async function promQueryRange(
     step: String(stepSeconds),
   });
   const res = await fetch(`/prometheus/api/v1/query_range?${params}`, {
-    headers: { Accept: "application/json" },
+    headers: tenantHeaders(),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");

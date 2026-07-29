@@ -3,6 +3,7 @@
 // attributes appear as stream labels.
 
 import { msToNanos, nanosToMs, type ResolvedRange } from "../lib/time";
+import { tenantHeaders } from "./http";
 
 export interface LogRow {
   tsNs: string;
@@ -34,7 +35,7 @@ interface LokiResponse<T> {
 
 async function lokiFetch<T>(path: string, params: URLSearchParams): Promise<T> {
   const res = await fetch(`/loki/api/v1/${path}?${params}`, {
-    headers: { Accept: "application/json" },
+    headers: tenantHeaders(),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");

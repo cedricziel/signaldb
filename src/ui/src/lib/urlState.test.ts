@@ -54,7 +54,18 @@ describe("buildSearch", () => {
       live: true,
       trace: "deadbeef",
       promql: "rate(x[5m])",
+      tenant: "acme",
+      dataset: "production",
     };
     expect(parseExploreState(buildSearch(state))).toEqual(state);
+  });
+
+  it("omits tenant params for the ambient default context", () => {
+    expect(buildSearch({ ...DEFAULT_STATE, signal: "traces" })).not.toContain(
+      "tenant",
+    );
+    const state = parseExploreState("?tenant=acme&dataset=prod");
+    expect(state.tenant).toBe("acme");
+    expect(state.dataset).toBe("prod");
   });
 });

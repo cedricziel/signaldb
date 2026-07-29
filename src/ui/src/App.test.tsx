@@ -31,6 +31,28 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
+  it("changes the tenant context from the top bar", async () => {
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/labels?", body: emptyLabels },
+    ]);
+    renderWithClient(<App />);
+    const user = (await import("@testing-library/user-event")).default;
+    await user.click(
+      screen.getByTitle("Tenant / dataset context for all queries"),
+    );
+    await user.clear(screen.getByLabelText("Tenant"));
+    await user.type(screen.getByLabelText("Tenant"), "acme");
+    await user.clear(screen.getByLabelText("Dataset"));
+    await user.type(screen.getByLabelText("Dataset"), "prod");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    expect(window.location.search).toContain("tenant=acme");
+    expect(window.location.search).toContain("dataset=prod");
+    expect(screen.getByRole("button", { name: /acme/ })).toHaveTextContent(
+      "acme·prod",
+    );
+  });
+
   it("switches signals via tabs", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyMatrix },

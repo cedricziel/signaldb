@@ -2,7 +2,7 @@ import { TimeRangePicker } from "../shell/TimeRangePicker";
 import { LogsView } from "../logs/LogsView";
 import { MetricsView } from "../metrics/MetricsView";
 import { TracesView } from "../traces/TracesView";
-import { useExploreState, type Signal } from "../../lib/urlState";
+import type { ExploreState, Signal } from "../../lib/urlState";
 import "./explore.css";
 
 const SIGNAL_TABS: { id: Signal; label: string }[] = [
@@ -11,9 +11,12 @@ const SIGNAL_TABS: { id: Signal; label: string }[] = [
   { id: "metrics", label: "Metrics" },
 ];
 
-export function ExploreView() {
-  const [state, update] = useExploreState();
+interface Props {
+  state: ExploreState;
+  update: (patch: Partial<ExploreState>) => void;
+}
 
+export function ExploreView({ state, update }: Props) {
   return (
     <div className="explore">
       <div className="explore-controls">

@@ -24,6 +24,12 @@ export interface ExploreState {
   trace: string;
   /** PromQL expression for the metrics view. */
   promql: string;
+  /**
+   * Explicit tenant/dataset context. Empty means "ambient default": the dev
+   * proxy (or a future session) supplies it and no header is sent.
+   */
+  tenant: string;
+  dataset: string;
 }
 
 export const DEFAULT_STATE: ExploreState = {
@@ -36,6 +42,8 @@ export const DEFAULT_STATE: ExploreState = {
   live: false,
   trace: "",
   promql: "",
+  tenant: "",
+  dataset: "",
 };
 
 const SIGNALS: Signal[] = ["logs", "traces", "metrics"];
@@ -60,6 +68,8 @@ export function parseExploreState(search: string): ExploreState {
     live: p.get("live") === "1",
     trace: p.get("trace") ?? "",
     promql: p.get("promql") ?? "",
+    tenant: p.get("tenant") ?? "",
+    dataset: p.get("dataset") ?? "",
   };
 }
 
@@ -75,6 +85,8 @@ export function buildSearch(state: ExploreState): string {
   if (state.live) p.set("live", "1");
   if (state.trace) p.set("trace", state.trace);
   if (state.promql) p.set("promql", state.promql);
+  if (state.tenant) p.set("tenant", state.tenant);
+  if (state.dataset) p.set("dataset", state.dataset);
   const s = p.toString();
   return s === "" ? "" : `?${s}`;
 }

@@ -24,7 +24,7 @@ export function TracesView({ state, update }: Props) {
 }
 
 function TraceSearch({ state, update }: Props) {
-  const rangeKey = rangeToParam(state.range);
+  const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
   const search = useQuery({
     queryKey: ["tempo-search", rangeKey, state.limit],
     queryFn: () =>
@@ -93,7 +93,7 @@ function TraceSearch({ state, update }: Props) {
 function TraceDetail({ state, update }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
   const trace = useQuery({
-    queryKey: ["tempo-trace", state.trace],
+    queryKey: ["tempo-trace", state.trace, state.tenant, state.dataset],
     queryFn: () => tempoGetTrace(state.trace),
   });
 

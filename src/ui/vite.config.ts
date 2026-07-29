@@ -11,14 +11,6 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, __dirname, "SIGNALDB_");
   const target = env.SIGNALDB_TARGET || "http://localhost:3000";
 
-  // Auth is injected by the proxy from .env.local so API keys never reach
-  // browser code during development.
-  const headers: Record<string, string> = {};
-  if (env.SIGNALDB_API_KEY)
-    headers["Authorization"] = `Bearer ${env.SIGNALDB_API_KEY}`;
-  if (env.SIGNALDB_TENANT) headers["X-Tenant-ID"] = env.SIGNALDB_TENANT;
-  if (env.SIGNALDB_DATASET) headers["X-Dataset-ID"] = env.SIGNALDB_DATASET;
-
   const proxy = Object.fromEntries(
     PROXIED_PATHS.map((path): [string, ProxyOptions] => [
       path,
@@ -27,7 +19,25 @@ export default defineConfig(({ mode }) => {
         changeOrigin: true,
         // Dev-only proxy: accept self-signed certs on homelab targets.
         secure: false,
-        headers,
+        configure(proxyServer) {
+          proxyServer.on("proxyReq", (proxyReq, req) => {
+            // The API key never reaches browser code; always injected here.
+            if (env.SIGNALDB_API_KEY) {
+              proxyReq.setHeader(
+                "Authorization",
+                `Bearer ${env.SIGNALDB_API_KEY}`,
+              );
+            }
+            // Tenant context: the UI's selector sends its own headers; the
+            // env values are only defaults for requests without them.
+            if (!req.headers["x-tenant-id"] && env.SIGNALDB_TENANT) {
+              proxyReq.setHeader("X-Tenant-ID", env.SIGNALDB_TENANT);
+            }
+            if (!req.headers["x-dataset-id"] && env.SIGNALDB_DATASET) {
+              proxyReq.setHeader("X-Dataset-ID", env.SIGNALDB_DATASET);
+            }
+          });
+        },
       },
     ]),
   );
@@ -36,6 +46,11 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     // Served by the router under /ui/ in production.
     base: "/ui/",
+    // Surface the dev defaults so the tenant selector can display them.
+    define: {
+      __SIGNALDB_DEFAULT_TENANT__: JSON.stringify(env.SIGNALDB_TENANT ?? ""),
+      __SIGNALDB_DEFAULT_DATASET__: JSON.stringify(env.SIGNALDB_DATASET ?? ""),
+    },
     server: { port: 5173, proxy },
     test: {
       environment: "jsdom",

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setTenantContext } from "./http";
 import {
   lokiLabels,
   lokiLabelValues,
@@ -48,6 +49,24 @@ describe("lokiQueryLogs", () => {
       level: "error",
     });
     expect(rows[0]?.tsMs).toBe(3000);
+  });
+
+  it("attaches tenant headers from the current context", async () => {
+    const fn = mockFetchOnce({
+      status: "success",
+      data: { resultType: "streams", result: [] },
+    });
+    setTenantContext({ tenant: "acme", dataset: "prod" });
+    try {
+      await lokiQueryLogs("{}", RANGE, 10);
+    } finally {
+      setTenantContext({ tenant: "", dataset: "" });
+    }
+    const init = fn.mock.calls[0]?.[1] as RequestInit;
+    expect(init.headers).toMatchObject({
+      "X-Tenant-ID": "acme",
+      "X-Dataset-ID": "prod",
+    });
   });
 
   it("sends nanosecond bounds and backward direction", async () => {
