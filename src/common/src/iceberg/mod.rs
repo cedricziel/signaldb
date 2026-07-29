@@ -24,12 +24,10 @@ pub(crate) fn create_object_store_builder_from_config(
 
     match url.scheme() {
         "file" => {
-            let path = url.path();
-            if path.is_empty() || path == "/" {
-                return Err(anyhow::anyhow!(
-                    "File DSN must specify a path: file:///path/to/storage"
-                ));
-            }
+            // Pre-create the directory: iceberg-rust unwraps
+            // LocalFileSystem::new_with_prefix internally and would panic on a
+            // missing path. Also applies the /.foo -> relative normalization.
+            let path = crate::storage::ensure_file_dsn_dir(&url)?;
             Ok(ObjectStoreBuilder::filesystem(path))
         }
         "memory" => Ok(ObjectStoreBuilder::memory()),
