@@ -3,6 +3,7 @@ pub mod completions;
 pub mod dataset;
 pub mod query;
 pub mod tenant;
+pub mod user;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -52,6 +53,11 @@ enum Commands {
     Query {
         #[command(subcommand)]
         action: query::QueryAction,
+    },
+    /// Bootstrap human users directly in the service catalog
+    User {
+        #[command(subcommand)]
+        action: user::UserAction,
     },
     /// Generate a shell completion script on stdout
     ///
@@ -125,6 +131,16 @@ impl Cli {
             return completions::generate(shell);
         }
 
+        if let Commands::User { action } = self.command {
+            let config_path = self
+                .config
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("user commands require --config"))?;
+            let config = common::config::Configuration::load_from_path(config_path)
+                .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
+            return action.run(&config).await;
+        }
+
         let config_admin_key = self.try_resolve_admin_key();
 
         if let Commands::Tui {
@@ -174,6 +190,7 @@ impl Cli {
             Commands::Tenant { action } => action.run(&client).await,
             Commands::ApiKey { action } => action.run(&client).await,
             Commands::Dataset { action } => action.run(&client).await,
+            Commands::User { .. } => unreachable!(),
             Commands::Query { .. } => unreachable!(),
             Commands::Completions { .. } => unreachable!(),
             Commands::Tui { .. } => unreachable!(),
