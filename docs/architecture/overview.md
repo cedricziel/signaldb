@@ -198,6 +198,13 @@ The router also serves the explore UI (a static SPA built from `src/ui`)
 under `/ui`, from the directory named by `SIGNALDB_UI_DIR`. See
 [the explore UI guide](../users/explore-ui.md).
 
+For browsers, the router exposes `POST`/`DELETE /ui/session`
+(`src/router/src/endpoints/session.rs`): a public login endpoint that
+validates tenant credentials and sets/clears an `HttpOnly` session cookie
+the auth middleware accepts in place of the auth headers. A tenant-scoped
+`GET /api/v1/whoami` returns the authenticated tenant and its datasets
+for the UI's tenant selector.
+
 **Tempo API Endpoints**:
 
 | Endpoint                                         | Status                                                                                     |

@@ -8,6 +8,7 @@ sources:
   - src/common/src/ratelimit.rs
   - src/router/src/endpoints/admin.rs
   - src/router/src/endpoints/tenant.rs
+  - src/router/src/endpoints/session.rs
 ---
 
 # SignalDB Multi-Tenancy & Authentication
@@ -33,20 +34,31 @@ Tenant (e.g., "acme", slug: "acme")
 4. Resolves dataset: explicit header -> tenant default_dataset -> first `is_default` -> 400 error
 5. Returns `TenantContext { tenant_id, dataset_id, tenant_slug, dataset_slug }`
 
+### Session-Cookie Fallback (Embedded UI)
+
+When a router HTTP request has no `Authorization` header, `auth_middleware`
+falls back to the `signaldb_session` cookie (base64 JSON of
+api_key/tenant/dataset; codec in `src/common/src/auth/session.rs`). The
+cookie supplies the API key; explicit `X-Tenant-ID`/`X-Dataset-ID` headers
+still win over cookie values. The cookie is set by `POST /ui/session` and
+cleared by `DELETE /ui/session` (`src/router/src/endpoints/session.rs`),
+both public routes on the router.
+
 ### Error Codes
+
 - **400**: Missing/malformed auth headers
 - **401**: Invalid API key
 - **403**: Key valid but wrong tenant/dataset
 
 ## Isolation Layers
 
-| Layer | Mechanism |
-|-------|-----------|
-| **WAL** | `{wal_dir}/{tenant_id}/{dataset_id}/{signal_type}/` |
-| **Iceberg Namespace** | `[tenant_slug, dataset_slug]` |
-| **Object Store** | `{base}/{tenant_slug}/{dataset_slug}/{table}/` |
-| **DataFusion** | Per-tenant catalog in SessionContext |
-| **Storage Backend** | Per-dataset storage override |
+| Layer                 | Mechanism                                           |
+| --------------------- | --------------------------------------------------- |
+| **WAL**               | `{wal_dir}/{tenant_id}/{dataset_id}/{signal_type}/` |
+| **Iceberg Namespace** | `[tenant_slug, dataset_slug]`                       |
+| **Object Store**      | `{base}/{tenant_slug}/{dataset_slug}/{table}/`      |
+| **DataFusion**        | Per-tenant catalog in SessionContext                |
+| **Storage Backend**   | Per-dataset storage override                        |
 
 ## Slug-Based Naming
 
@@ -94,14 +106,14 @@ name = "Production Key"
 `[[auth.tenants]].limits`; resolved by `AuthConfig::limits_for`). Unset
 fields mean unlimited; DB-provisioned tenants get the defaults.
 
-| Limit | Enforced at | On exceed |
-|-------|-------------|-----------|
-| `max_ingest_requests_per_sec` / `max_ingest_bytes_per_sec` | Acceptor (OTLP gRPC incl. profiles, OTLP/HTTP profiles, remote_write) | 429 / RESOURCE_EXHAUSTED |
-| `max_query_requests_per_sec` | Router HTTP query API (`/tempo`, `/api/v1`) | 429 |
-| `max_api_keys` (active keys only) | Admin API key creation | 429 `quota_exceeded` |
-| `max_datasets` | Admin API dataset creation | 429 `quota_exceeded` |
-| `max_storage_bytes` | Acceptor (OTLP gRPC incl. profiles, OTLP/HTTP profiles, remote_write) | 429 / RESOURCE_EXHAUSTED `quota_exceeded` |
-| `[querier] max_concurrent_queries_per_tenant` | Querier | query rejected |
+| Limit                                                      | Enforced at                                                           | On exceed                                 |
+| ---------------------------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------- |
+| `max_ingest_requests_per_sec` / `max_ingest_bytes_per_sec` | Acceptor (OTLP gRPC incl. profiles, OTLP/HTTP profiles, remote_write) | 429 / RESOURCE_EXHAUSTED                  |
+| `max_query_requests_per_sec`                               | Router HTTP query API (`/tempo`, `/api/v1`)                           | 429                                       |
+| `max_api_keys` (active keys only)                          | Admin API key creation                                                | 429 `quota_exceeded`                      |
+| `max_datasets`                                             | Admin API dataset creation                                            | 429 `quota_exceeded`                      |
+| `max_storage_bytes`                                        | Acceptor (OTLP gRPC incl. profiles, OTLP/HTTP profiles, remote_write) | 429 / RESOURCE_EXHAUSTED `quota_exceeded` |
+| `[querier] max_concurrent_queries_per_tenant`              | Querier                                                               | query rejected                            |
 
 Token buckets per dimension (`common::ratelimit::TenantRateLimiter`);
 ingest and query budgets are independent. Storage quotas
@@ -115,27 +127,28 @@ usage is exported as the `signaldb.tenant.storage_usage` gauge.
 
 Mounted at `/api/v1/admin`, requires `admin_api_key` (`src/router/src/lib.rs`):
 
-| Endpoint | Methods | Description |
-|----------|---------|-------------|
-| `/api/v1/admin/tenants` | GET, POST | List/create tenants |
-| `/api/v1/admin/tenants/{id}` | GET, PUT, DELETE | Manage a tenant |
-| `/api/v1/admin/tenants/{id}/api-keys` | GET, POST | List/create API keys |
-| `/api/v1/admin/tenants/{id}/api-keys/{key_id}` | DELETE | Revoke API key |
-| `/api/v1/admin/tenants/{id}/datasets` | GET, POST | List/create datasets |
-| `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE | Delete dataset |
+| Endpoint                                           | Methods          | Description          |
+| -------------------------------------------------- | ---------------- | -------------------- |
+| `/api/v1/admin/tenants`                            | GET, POST        | List/create tenants  |
+| `/api/v1/admin/tenants/{id}`                       | GET, PUT, DELETE | Manage a tenant      |
+| `/api/v1/admin/tenants/{id}/api-keys`              | GET, POST        | List/create API keys |
+| `/api/v1/admin/tenants/{id}/api-keys/{key_id}`     | DELETE           | Revoke API key       |
+| `/api/v1/admin/tenants/{id}/datasets`              | GET, POST        | List/create datasets |
+| `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE           | Delete dataset       |
 
 ## Tenant Self-Service API (Router)
 
 Mounted at `/api/v1` with tenant auth (`src/router/src/endpoints/tenant.rs`):
 
-| Endpoint | Methods | Description |
-|----------|---------|-------------|
-| `/api/v1/tenants` | GET | List tenants visible to the caller |
-| `/api/v1/tenants/{id}` | GET | Tenant details |
-| `/api/v1/tenants/{id}/tables` | GET | List tenant tables |
-| `/api/v1/tenants/{id}/tables/create` | POST | Create tenant tables |
-| `/api/v1/tenants/{id}/schemas` | GET | List tenant schemas |
-| `/api/v1/schemas/available` | GET | List available schema definitions |
+| Endpoint                             | Methods | Description                                                                                 |
+| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------- |
+| `/api/v1/whoami`                     | GET     | Authenticated tenant (id, slug, name) + datasets + default dataset (`endpoints/session.rs`) |
+| `/api/v1/tenants`                    | GET     | List tenants visible to the caller                                                          |
+| `/api/v1/tenants/{id}`               | GET     | Tenant details                                                                              |
+| `/api/v1/tenants/{id}/tables`        | GET     | List tenant tables                                                                          |
+| `/api/v1/tenants/{id}/tables/create` | POST    | Create tenant tables                                                                        |
+| `/api/v1/tenants/{id}/schemas`       | GET     | List tenant schemas                                                                         |
+| `/api/v1/schemas/available`          | GET     | List available schema definitions                                                           |
 
 ## CLI Tool
 
@@ -152,14 +165,16 @@ signaldb-cli tui                # Interactive terminal UI
 
 ## Key Implementation Files
 
-| File | Purpose |
-|------|---------|
-| `src/common/src/config/mod.rs` | Tenant/dataset config structs |
-| `src/common/src/auth/` | Authenticator, TenantContext, middleware, validation |
-| `src/common/src/catalog_manager.rs` | Slug resolution |
-| `src/router/src/endpoints/admin.rs` | Admin API endpoints (incl. quota checks) |
-| `src/router/src/endpoints/tenant.rs` | Tenant self-service API endpoints |
-| `src/common/src/ratelimit.rs` | Per-tenant token-bucket rate limiter |
-| `src/signaldb-cli/` | CLI for tenant management |
+| File                                  | Purpose                                              |
+| ------------------------------------- | ---------------------------------------------------- |
+| `src/common/src/config/mod.rs`        | Tenant/dataset config structs                        |
+| `src/common/src/auth/`                | Authenticator, TenantContext, middleware, validation |
+| `src/common/src/catalog_manager.rs`   | Slug resolution                                      |
+| `src/router/src/endpoints/admin.rs`   | Admin API endpoints (incl. quota checks)             |
+| `src/router/src/endpoints/tenant.rs`  | Tenant self-service API endpoints                    |
+| `src/router/src/endpoints/session.rs` | UI session login/logout + whoami endpoints           |
+| `src/common/src/auth/session.rs`      | Session cookie codec (`signaldb_session`)            |
+| `src/common/src/ratelimit.rs`         | Per-tenant token-bucket rate limiter                 |
+| `src/signaldb-cli/`                   | CLI for tenant management                            |
 
-Under `[compactor.attr_promotion]` (auto-promotion decision pass), a tenant's resolved materialized-label allowlist is the *pinned* set: those keys are never demotion candidates.
+Under `[compactor.attr_promotion]` (auto-promotion decision pass), a tenant's resolved materialized-label allowlist is the _pinned_ set: those keys are never demotion candidates.

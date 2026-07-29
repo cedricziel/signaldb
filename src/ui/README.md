@@ -12,10 +12,13 @@ pnpm ui:dev                                # http://localhost:5173/ui/
 ```
 
 The dev server hot-reloads and proxies all API paths (`/loki`, `/tempo`,
-`/prometheus`, `/api`) to `SIGNALDB_TARGET` — a local `./scripts/run-dev.sh`
-instance or any live deployment. Auth headers are injected by the proxy from
-`.env.local`, so browser code is identical to the embedded production build
-and API keys never reach the client.
+`/prometheus`, `/api`, `/ui/session`) to `SIGNALDB_TARGET` — a local
+`./scripts/run-dev.sh` instance or any live deployment. Auth headers are
+injected by the proxy from `.env.local`, so browser code is identical to
+the embedded production build and API keys never reach the client. In the
+embedded build there is no proxy; queries rejected with 401 open a login
+form that creates an HttpOnly session cookie via `POST /ui/session` (see
+`docs/users/explore-ui.md`).
 
 ## Commands
 

@@ -6,6 +6,8 @@ sources:
   - src/acceptor/src/middleware/grpc_auth.rs
   - src/acceptor/src/middleware/auth.rs
   - src/router/src/endpoints/tenant.rs
+  - src/router/src/endpoints/session.rs
+  - src/common/src/auth/session.rs
 ---
 
 # Authentication reference
@@ -19,11 +21,11 @@ Every authenticated surface uses the same three values. HTTP APIs read
 them as headers; gRPC/Flight surfaces read them as request metadata
 (lowercase keys).
 
-| HTTP header | gRPC metadata key | Required | Value |
-|---|---|---|---|
-| `Authorization` | `authorization` | yes | `Bearer <api-key>` (HTTP accepts any casing of the scheme; gRPC/Flight accepts only `Bearer` or `bearer`) |
-| `X-Tenant-ID` | `x-tenant-id` | yes | tenant the request acts on |
-| `X-Dataset-ID` | `x-dataset-id` | no | dataset within the tenant; omitted → the tenant's default dataset |
+| HTTP header     | gRPC metadata key | Required | Value                                                                                                     |
+| --------------- | ----------------- | -------- | --------------------------------------------------------------------------------------------------------- |
+| `Authorization` | `authorization`   | yes      | `Bearer <api-key>` (HTTP accepts any casing of the scheme; gRPC/Flight accepts only `Bearer` or `bearer`) |
+| `X-Tenant-ID`   | `x-tenant-id`     | yes      | tenant the request acts on                                                                                |
+| `X-Dataset-ID`  | `x-dataset-id`    | no       | dataset within the tenant; omitted → the tenant's default dataset                                         |
 
 Tenant and dataset IDs are validated: restricted character set, length
 cap, and path-traversal patterns rejected (they become WAL paths and
@@ -31,22 +33,36 @@ Iceberg namespaces). Invalid IDs fail with 400 / `INVALID_ARGUMENT`.
 
 ## Where the headers are required
 
-| Surface | Port | Doc |
-|---|---|---|
-| OTLP gRPC ingestion | 4317 | [Sending OTLP data](sending-otlp.md) |
-| Prometheus remote_write (`/api/v1/write`) | 4318 | [Prometheus remote_write](prometheus-remote-write.md) |
-| Tempo HTTP API (`/tempo/*`) | 3000 | [Tempo API reference](tempo-api-reference.md) |
-| Loki HTTP API (`/loki/*`) | 3000 | [LogQL reference](logql-reference.md) |
-| Flight SQL queries | 50053 | [Querying with SQL](querying-sql.md); enforced when the operator has enabled Flight auth |
-| Tenant self-service API (`/api/v1/*`) | 3000 | see below |
+| Surface                                   | Port  | Doc                                                                                      |
+| ----------------------------------------- | ----- | ---------------------------------------------------------------------------------------- |
+| OTLP gRPC ingestion                       | 4317  | [Sending OTLP data](sending-otlp.md)                                                     |
+| Prometheus remote_write (`/api/v1/write`) | 4318  | [Prometheus remote_write](prometheus-remote-write.md)                                    |
+| Tempo HTTP API (`/tempo/*`)               | 3000  | [Tempo API reference](tempo-api-reference.md)                                            |
+| Loki HTTP API (`/loki/*`)                 | 3000  | [LogQL reference](logql-reference.md)                                                    |
+| Flight SQL queries                        | 50053 | [Querying with SQL](querying-sql.md); enforced when the operator has enabled Flight auth |
+| Tenant self-service API (`/api/v1/*`)     | 3000  | see below                                                                                |
+
+## Browser sessions (embedded UI)
+
+The router's HTTP APIs additionally accept a session cookie in place of
+the headers, for browsers using the [embedded explore UI](explore-ui.md):
+
+- `POST /ui/session` (public) takes `{"api_key", "tenant", "dataset"?}`
+  as JSON, validates it exactly like the headers, and sets an `HttpOnly`,
+  `SameSite=Strict` cookie (`signaldb_session`) carrying those values.
+  Returns 204 on success, an error status with a JSON `error` message
+  otherwise. `DELETE /ui/session` clears the cookie.
+- On requests without an `Authorization` header, the router falls back to
+  the cookie for the API key and for any tenant/dataset values not given
+  as headers. Explicit headers always win over cookie values.
 
 ## Error codes
 
-| HTTP | gRPC | Meaning |
-|---|---|---|
-| 400 | `INVALID_ARGUMENT` | Header missing or malformed (wrong scheme, invalid tenant/dataset ID) |
-| 401 | `UNAUTHENTICATED` | API key unknown or revoked |
-| 403 | `PERMISSION_DENIED` | Key is valid but not authorized for the named tenant or dataset |
+| HTTP | gRPC                | Meaning                                                               |
+| ---- | ------------------- | --------------------------------------------------------------------- |
+| 400  | `INVALID_ARGUMENT`  | Header missing or malformed (wrong scheme, invalid tenant/dataset ID) |
+| 401  | `UNAUTHENTICATED`   | API key unknown or revoked                                            |
+| 403  | `PERMISSION_DENIED` | Key is valid but not authorized for the named tenant or dataset       |
 
 ## Tenants and datasets
 
@@ -64,11 +80,11 @@ Iceberg namespaces). Invalid IDs fail with 400 / `INVALID_ARGUMENT`.
 Tenants, datasets, and API keys are managed by your SignalDB operator via
 one of:
 
-| Method | Where |
-|---|---|
-| Static config | `[[auth.tenants]]` blocks in `signaldb.toml` |
-| Admin API | `/api/v1/admin/*` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>` |
-| CLI | `signaldb-cli tenant\|api-key\|dataset ...` — a client for the admin API (`--url`, default `http://localhost:3000`; `--admin-key` or `SIGNALDB_ADMIN_KEY`) |
+| Method        | Where                                                                                                                                                      |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Static config | `[[auth.tenants]]` blocks in `signaldb.toml`                                                                                                               |
+| Admin API     | `/api/v1/admin/*` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>`                                                    |
+| CLI           | `signaldb-cli tenant\|api-key\|dataset ...` — a client for the admin API (`--url`, default `http://localhost:3000`; `--admin-key` or `SIGNALDB_ADMIN_KEY`) |
 
 Example (operator-side):
 
@@ -85,11 +101,12 @@ With a regular tenant API key (the three headers above), the router
 exposes tenant-scoped endpoints under `/api/v1` (read-only, plus one
 table-creation endpoint):
 
-| Method | Path | Returns |
-|---|---|---|
-| GET | `/api/v1/tenants` | All configured tenants |
-| GET | `/api/v1/tenants/{tenant_id}` | Tenant details |
-| GET | `/api/v1/tenants/{tenant_id}/tables` | The tenant's tables |
-| POST | `/api/v1/tenants/{tenant_id}/tables/create` | Creates the tenant's signal tables |
-| GET | `/api/v1/tenants/{tenant_id}/schemas` | The tenant's schema configuration |
-| GET | `/api/v1/schemas/available` | Available schema definitions |
+| Method | Path                                        | Returns                                                                          |
+| ------ | ------------------------------------------- | -------------------------------------------------------------------------------- |
+| GET    | `/api/v1/whoami`                            | The authenticated tenant (id, slug, name), its datasets, and the default dataset |
+| GET    | `/api/v1/tenants`                           | All configured tenants                                                           |
+| GET    | `/api/v1/tenants/{tenant_id}`               | Tenant details                                                                   |
+| GET    | `/api/v1/tenants/{tenant_id}/tables`        | The tenant's tables                                                              |
+| POST   | `/api/v1/tenants/{tenant_id}/tables/create` | Creates the tenant's signal tables                                               |
+| GET    | `/api/v1/tenants/{tenant_id}/schemas`       | The tenant's schema configuration                                                |
+| GET    | `/api/v1/schemas/available`                 | Available schema definitions                                                     |
