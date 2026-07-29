@@ -1,7 +1,7 @@
 // Client for the router's Tempo-compatible API (/tempo/api).
 
 import type { ResolvedRange } from "../lib/time";
-import { tenantHeaders } from "./http";
+import { ApiError, tenantHeaders } from "./http";
 
 export type AttrValue = string | number | boolean;
 
@@ -91,8 +91,9 @@ async function tempoFetch<T>(
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(
+    throw new ApiError(
       `Tempo API ${path} failed (${res.status}): ${body.slice(0, 300)}`,
+      res.status,
     );
   }
   return (await res.json()) as T;

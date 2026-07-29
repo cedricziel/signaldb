@@ -7,6 +7,24 @@ export interface TenantContext {
   dataset: string;
 }
 
+/** HTTP error with the response status attached, so callers can react to
+ * specific codes (401 → show the login form). */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+/** True when the error is an authentication failure (missing/invalid
+ * credentials) that a login can fix. */
+export function isAuthError(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 401;
+}
+
 let current: TenantContext = { tenant: "", dataset: "" };
 
 export function setTenantContext(ctx: TenantContext): void {

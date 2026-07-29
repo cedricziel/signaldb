@@ -3,7 +3,7 @@
 // attributes appear as stream labels.
 
 import { msToNanos, nanosToMs, type ResolvedRange } from "../lib/time";
-import { tenantHeaders } from "./http";
+import { ApiError, tenantHeaders } from "./http";
 
 export interface LogRow {
   tsNs: string;
@@ -39,8 +39,9 @@ async function lokiFetch<T>(path: string, params: URLSearchParams): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(
+    throw new ApiError(
       `Loki API ${path} failed (${res.status}): ${body.slice(0, 300)}`,
+      res.status,
     );
   }
   return (await res.json()) as T;

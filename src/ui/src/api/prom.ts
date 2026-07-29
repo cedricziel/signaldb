@@ -1,7 +1,7 @@
 // Client for the router's Prometheus-compatible API (/prometheus/api/v1).
 
 import type { ResolvedRange } from "../lib/time";
-import { tenantHeaders } from "./http";
+import { ApiError, tenantHeaders } from "./http";
 
 export interface PromSeries {
   labels: Record<string, string>;
@@ -36,8 +36,9 @@ export async function promQueryRange(
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(
+    throw new ApiError(
       `Prometheus query_range failed (${res.status}): ${body.slice(0, 300)}`,
+      res.status,
     );
   }
   const json = (await res.json()) as PromResponse;

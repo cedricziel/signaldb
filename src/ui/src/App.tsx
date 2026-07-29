@@ -1,5 +1,6 @@
 import { setTenantContext } from "./api/http";
 import { ExploreView } from "./features/explore/ExploreView";
+import { LoginGate } from "./features/shell/LoginPanel";
 import { TopBar } from "./features/shell/TopBar";
 import { useExploreState } from "./lib/urlState";
 
@@ -14,6 +15,11 @@ export function App() {
       <main className="app-main">
         <ExploreView state={state} update={update} />
       </main>
+      <LoginGate
+        tenant={state.tenant}
+        dataset={state.dataset}
+        onLoggedIn={({ tenant, dataset }) => update({ tenant, dataset })}
+      />
     </div>
   );
 }
