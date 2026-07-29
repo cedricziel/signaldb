@@ -66,6 +66,12 @@ user_sessions      (id, token_hash UNIQUE, user_id, created_at,
 Both catalog backends (SQLite and PostgreSQL) carry the same tables,
 following the existing inline-DDL pattern.
 
+Email is the login identity and is **case-insensitive**: values are
+canonicalized (trimmed, lowercased) at account creation and at login, and
+the unique constraint applies to that canonical form. Normalizing in the
+application keeps identity semantics identical on both backends instead of
+depending on backend-specific collation behavior.
+
 ### Authentication model
 
 - **API keys stay** as the machine credential for OTLP ingestion. The gRPC
@@ -79,7 +85,19 @@ following the existing inline-DDL pattern.
 - **Server-side sessions replace the raw-key cookie.** The session cookie
   becomes an opaque random token whose SHA-256 hash is stored in
   `user_sessions`, so logout and revocation actually work and no long-lived
-  credential lives in the browser.
+  credential lives in the browser. The token is still a bearer credential,
+  so the session contract bounds its blast radius: sessions carry a bounded
+  absolute lifetime (`expires_at`) plus an idle timeout; the cookie is set
+  `HttpOnly; Secure; SameSite=Strict` (the current UI cookie already ships
+  `HttpOnly` and `SameSite=Strict`); a fresh token is issued on every login
+  rather than reusing an existing one; and CSRF is mitigated by
+  `SameSite=Strict` combined with origin checks on state-changing requests.
+  The improvement over the raw-key cookie is bounded lifetime and real
+  server-side revocation — not immunity to cookie theft.
+- **Disabled users are cut off immediately.** A non-null `disabled_at`
+  fails both password login and session validation: session lookup joins
+  against `users`, so disabling a user invalidates their existing sessions
+  at the next request without requiring per-session revocation.
 - **Tenant resolution via membership.** For a user request, the requested
   tenant is validated against `tenant_memberships` instead of key ownership.
   This is what makes one-person-many-tenants work; `whoami` naturally
