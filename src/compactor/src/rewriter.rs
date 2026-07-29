@@ -23,9 +23,13 @@ struct PromotionOutcome {
     /// `(attribute key, label column)` pairs whose columns should be
     /// recomputed from the attribute sources during this rewrite.
     backfill: Vec<(String, String)>,
-    /// Whether the table's schema was evolved (new label columns added)
-    /// and must be reloaded before writing.
+    /// Whether the table's schema was evolved (label columns added or
+    /// dropped) and must be reloaded before writing.
     evolved: bool,
+    /// `label_<key>` columns dropped by the demotion half: the rewrite
+    /// must project them out of the merged batches, since the read
+    /// happened under the pre-demotion schema.
+    dropped_columns: Vec<String>,
 }
 
 /// Result of rewriting a table's data files.
@@ -155,6 +159,18 @@ impl ParquetRewriter {
             table
         };
 
+        // Drop demoted label columns from the merged batches: the read
+        // happened under the pre-demotion schema, so the batches still
+        // carry the columns the demotion just removed. The attribute
+        // values themselves stay in the map attributes column, so nothing
+        // is lost.
+        let merged_batches = if promotion.dropped_columns.is_empty() {
+            merged_batches
+        } else {
+            Self::drop_columns(merged_batches, &promotion.dropped_columns)
+                .context("Failed to drop demoted label columns from rewrite batches")?
+        };
+
         // Recompute the materialized label columns from the attribute
         // sources. Since every live row is rewritten, pre-existing rows
         // get their values backfilled by construction.
@@ -223,12 +239,15 @@ impl ParquetRewriter {
     ///
     /// With `dry_run = false` the pass also *acts* on the decision: it
     /// evolves the table schema (adds the promoted `label_<key>` columns
-    /// via the metadata-only AddSchema/SetCurrentSchema commit) and
-    /// returns the backfill plan for this rewrite. The two commits per
-    /// table — schema flip here, file replace after the rewrite — are
-    /// safe in that order: writer and querier read the schema live and
-    /// null-fill the new columns until the rewrite lands. Demotion
-    /// (dropping columns) is a later pass and is only ever logged.
+    /// and drops the demoted ones via the metadata-only
+    /// AddSchema/SetCurrentSchema commits) and returns the backfill plan
+    /// for this rewrite. The two commits per table — schema flip here,
+    /// file replace after the rewrite — are safe in that order: writer
+    /// and querier read the schema live, null-fill new columns until the
+    /// rewrite lands, and fall back to map/JSON matching for dropped
+    /// ones (label routing is derived from the table schema per query).
+    /// Pinned `[schema.materialized_labels]` keys are never demoted —
+    /// the decision engine excludes them.
     async fn run_promotion_pass(
         &self,
         catalog: &common::catalog::Catalog,
@@ -319,25 +338,87 @@ impl ParquetRewriter {
             }
         }
 
+        // Demotion (#734 P3): drop the long-unqueried auto-promoted
+        // columns before the rewrite so the new files stop carrying
+        // them. Like promotion, a failure is logged and the compaction
+        // continues — at worst the column lives until the next cycle.
+        let mut demoted: Vec<String> = Vec::new();
+        if !decision.demote.is_empty() {
+            match common::iceberg::evolution::remove_label_columns(
+                self.catalog_manager.catalog(),
+                table.identifier(),
+                &decision.demote,
+            )
+            .await
+            {
+                Ok(_) => {
+                    outcome.evolved = true;
+                    demoted = decision.demote;
+                    outcome.dropped_columns = demoted
+                        .iter()
+                        .map(|key| materialized_column_name(key))
+                        .collect();
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        table = %table_name,
+                        keys = ?decision.demote,
+                        "Failed to evolve schema for attribute demotion; continuing compaction without it"
+                    );
+                }
+            }
+        }
+
         // Backfill plan: the freshly promoted keys plus every label column
         // whose source key is still known (already-materialized keys from
-        // the stats, and the pinned allowlist). Recomputing existing
-        // columns heals rows the writer left null during the transition
-        // window. Deduplicated by column name — the key -> column encoding
-        // is lossy.
+        // the stats, and the pinned allowlist), minus what was just
+        // demoted. Recomputing existing columns heals rows the writer
+        // left null during the transition window. Deduplicated by column
+        // name — the key -> column encoding is lossy.
         let mut seen_columns = HashSet::new();
         let promoted: &[String] = if outcome.evolved {
             &decision.promote
         } else {
             &[]
         };
-        for key in promoted.iter().chain(materialized.iter()).chain(pinned) {
+        for key in promoted
+            .iter()
+            .chain(materialized.iter())
+            .chain(pinned)
+            .filter(|key| !demoted.contains(key))
+        {
             let column = materialized_column_name(key);
             if seen_columns.insert(column.clone()) {
                 outcome.backfill.push((key.clone(), column));
             }
         }
         outcome
+    }
+
+    /// Project the named columns out of every batch (missing columns are
+    /// ignored). Used to strip demoted label columns that were read under
+    /// the pre-demotion schema.
+    fn drop_columns(batches: Vec<RecordBatch>, columns: &[String]) -> Result<Vec<RecordBatch>> {
+        batches
+            .into_iter()
+            .map(|batch| {
+                let keep: Vec<usize> = batch
+                    .schema()
+                    .fields()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, field)| !columns.contains(field.name()))
+                    .map(|(idx, _)| idx)
+                    .collect();
+                if keep.len() == batch.num_columns() {
+                    return Ok(batch);
+                }
+                batch
+                    .project(&keep)
+                    .context("Failed to project batch without demoted columns")
+            })
+            .collect()
     }
 
     /// Load a table with fresh metadata by its Iceberg identifier.
