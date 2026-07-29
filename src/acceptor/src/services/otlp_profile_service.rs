@@ -200,6 +200,10 @@ mod tests {
             tenant_slug: "test-tenant".to_string(),
             dataset_slug: "test-dataset".to_string(),
             api_key_name: Some("test-key".to_string()),
+            user_id: None,
+            role: None,
+            is_instance_admin: false,
+            session_id: None,
             source: common::auth::TenantSource::Config,
         });
 
@@ -235,6 +239,10 @@ mod tests {
             tenant_slug: "test-tenant".to_string(),
             dataset_slug: "test-dataset".to_string(),
             api_key_name: Some("test-key".to_string()),
+            user_id: None,
+            role: None,
+            is_instance_admin: false,
+            session_id: None,
             source: common::auth::TenantSource::Config,
         });
 

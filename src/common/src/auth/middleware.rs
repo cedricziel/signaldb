@@ -15,12 +15,28 @@ use std::sync::Arc;
 /// Extract authentication headers from HTTP request
 ///
 /// When the request carries no `Authorization` header, falls back to the
-/// UI session cookie (see [`super::session`]) for the API key and any
-/// tenant/dataset values not supplied as explicit headers. Explicit
-/// headers always win over cookie values.
+/// opaque UI session cookie (see [`super::session`]). Tenant and dataset
+/// context must still be supplied through headers.
+#[derive(Debug)]
+enum RequestCredentials {
+    ApiKey(String),
+    UserSession(String),
+}
+
+#[cfg(test)]
+impl PartialEq<&str> for RequestCredentials {
+    fn eq(&self, other: &&str) -> bool {
+        match self {
+            RequestCredentials::ApiKey(value) | RequestCredentials::UserSession(value) => {
+                value == other
+            }
+        }
+    }
+}
+
 fn extract_auth_headers(
     headers: &HeaderMap,
-) -> Result<(String, String, Option<String>), AuthError> {
+) -> Result<(RequestCredentials, String, Option<String>), AuthError> {
     // Extract Authorization header, falling back to the session cookie.
     let Some(auth_value) = headers.get("authorization") else {
         return extract_auth_from_session(headers);
@@ -51,41 +67,43 @@ fn extract_auth_headers(
         None => None,
     };
 
-    Ok((api_key, tenant_id, dataset_id))
+    Ok((RequestCredentials::ApiKey(api_key), tenant_id, dataset_id))
 }
 
 /// Resolve credentials from the UI session cookie for requests without an
 /// `Authorization` header.
 ///
-/// The cookie supplies the API key; tenant and dataset come from explicit
-/// `X-Tenant-ID`/`X-Dataset-ID` headers when present (headers win) and
-/// from the cookie otherwise. All values pass the same validation as
-/// header-supplied ones. A missing or malformed cookie yields the same
-/// error as a missing Authorization header.
+/// The cookie supplies only an opaque token. Tenant and dataset come from
+/// `X-Tenant-ID`/`X-Dataset-ID`; all values pass the same validation as
+/// API-key requests. A missing or malformed cookie yields the same error
+/// as a missing Authorization header.
 fn extract_auth_from_session(
     headers: &HeaderMap,
-) -> Result<(String, String, Option<String>), AuthError> {
-    let session = super::session::session_from_headers(headers)
+) -> Result<(RequestCredentials, String, Option<String>), AuthError> {
+    let token = super::session::session_token_from_headers(headers)
         .ok_or_else(|| AuthError::unauthorized("Missing Authorization header"))?;
 
-    let tenant_id_raw = match headers.get("x-tenant-id") {
-        Some(value) => value
-            .to_str()
-            .map_err(|_| AuthError::bad_request("Invalid X-Tenant-ID header"))?,
-        None => session.tenant.as_str(),
-    };
+    let tenant_id_raw = headers
+        .get("x-tenant-id")
+        .ok_or_else(|| AuthError::unauthorized("Missing X-Tenant-ID header"))?
+        .to_str()
+        .map_err(|_| AuthError::bad_request("Invalid X-Tenant-ID header"))?;
     let tenant_id = validate_tenant_id(tenant_id_raw)?;
 
-    let dataset_raw = match headers.get("x-dataset-id").and_then(|v| v.to_str().ok()) {
-        Some(id) => Some(id.to_string()),
-        None => session.dataset.clone(),
-    };
+    let dataset_raw = headers
+        .get("x-dataset-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     let dataset_id = match dataset_raw {
         Some(id) => Some(validate_dataset_id(&id)?),
         None => None,
     };
 
-    Ok((session.api_key, tenant_id, dataset_id))
+    Ok((
+        RequestCredentials::UserSession(token),
+        tenant_id,
+        dataset_id,
+    ))
 }
 
 /// Axum middleware function for HTTP authentication
@@ -100,7 +118,7 @@ pub async fn auth_middleware(
     next: Next,
 ) -> Response {
     // Extract authentication headers
-    let (api_key, tenant_id, dataset_id) = match extract_auth_headers(request.headers()) {
+    let (credentials, tenant_id, dataset_id) = match extract_auth_headers(request.headers()) {
         Ok(headers) => headers,
         Err(err) => {
             return (
@@ -112,10 +130,19 @@ pub async fn auth_middleware(
     };
 
     // Authenticate using the Authenticator
-    let tenant_context = match authenticator
-        .authenticate(&api_key, &tenant_id, dataset_id.as_deref())
-        .await
-    {
+    let auth_result = match credentials {
+        RequestCredentials::ApiKey(api_key) => {
+            authenticator
+                .authenticate(&api_key, &tenant_id, dataset_id.as_deref())
+                .await
+        }
+        RequestCredentials::UserSession(token) => {
+            authenticator
+                .authenticate_session(&token, &tenant_id, dataset_id.as_deref())
+                .await
+        }
+    };
+    let tenant_context = match auth_result {
         Ok(ctx) => ctx,
         Err(err) => {
             log::warn!(
@@ -443,37 +470,30 @@ mod tests {
 
     #[test]
     fn test_extract_auth_headers_uses_session_cookie_without_authorization() {
-        use crate::auth::session::{SESSION_COOKIE, SessionData, encode_session};
+        use crate::auth::{SESSION_COOKIE, generate_session_token};
 
-        let cookie = encode_session(&SessionData {
-            api_key: "cookie-key".to_string(),
-            tenant: "acme".to_string(),
-            dataset: Some("production".to_string()),
-        });
+        let cookie = generate_session_token();
         let mut headers = HeaderMap::new();
         headers.insert(
             "cookie",
             HeaderValue::from_str(&format!("{SESSION_COOKIE}={cookie}")).unwrap(),
         );
+        headers.insert("x-tenant-id", HeaderValue::from_static("acme"));
+        headers.insert("x-dataset-id", HeaderValue::from_static("production"));
 
-        let (api_key, tenant_id, dataset_id) = extract_auth_headers(&headers).unwrap();
-        assert_eq!(api_key, "cookie-key");
+        let (credentials, tenant_id, dataset_id) = extract_auth_headers(&headers).unwrap();
+        assert_eq!(credentials, cookie.as_str());
         assert_eq!(tenant_id, "acme");
         assert_eq!(dataset_id, Some("production".to_string()));
     }
 
     #[test]
     fn test_extract_auth_headers_explicit_headers_win_over_cookie() {
-        use crate::auth::session::{SESSION_COOKIE, SessionData, encode_session};
+        use crate::auth::{SESSION_COOKIE, generate_session_token};
 
-        let cookie = encode_session(&SessionData {
-            api_key: "cookie-key".to_string(),
-            tenant: "acme".to_string(),
-            dataset: Some("production".to_string()),
-        });
+        let cookie = generate_session_token();
 
-        // Tenant/dataset headers override the cookie's values (the cookie
-        // still supplies the key when Authorization is absent).
+        // Tenant/dataset headers provide context for an opaque session.
         let mut headers = HeaderMap::new();
         headers.insert(
             "cookie",
@@ -482,8 +502,8 @@ mod tests {
         headers.insert("x-tenant-id", HeaderValue::from_static("other"));
         headers.insert("x-dataset-id", HeaderValue::from_static("staging"));
 
-        let (api_key, tenant_id, dataset_id) = extract_auth_headers(&headers).unwrap();
-        assert_eq!(api_key, "cookie-key");
+        let (credentials, tenant_id, dataset_id) = extract_auth_headers(&headers).unwrap();
+        assert_eq!(credentials, cookie.as_str());
         assert_eq!(tenant_id, "other");
         assert_eq!(dataset_id, Some("staging".to_string()));
 
@@ -499,8 +519,8 @@ mod tests {
         );
         headers.insert("x-tenant-id", HeaderValue::from_static("other"));
 
-        let (api_key, tenant_id, dataset_id) = extract_auth_headers(&headers).unwrap();
-        assert_eq!(api_key, "header-key");
+        let (credentials, tenant_id, dataset_id) = extract_auth_headers(&headers).unwrap();
+        assert_eq!(credentials, "header-key");
         assert_eq!(tenant_id, "other");
         assert_eq!(dataset_id, None);
     }
@@ -520,18 +540,15 @@ mod tests {
 
     #[test]
     fn test_extract_auth_headers_cookie_values_are_validated() {
-        use crate::auth::session::{SESSION_COOKIE, SessionData, encode_session};
+        use crate::auth::{SESSION_COOKIE, generate_session_token};
 
-        let cookie = encode_session(&SessionData {
-            api_key: "cookie-key".to_string(),
-            tenant: "../evil".to_string(),
-            dataset: None,
-        });
+        let cookie = generate_session_token();
         let mut headers = HeaderMap::new();
         headers.insert(
             "cookie",
             HeaderValue::from_str(&format!("{SESSION_COOKIE}={cookie}")).unwrap(),
         );
+        headers.insert("x-tenant-id", HeaderValue::from_static("../evil"));
 
         let err = extract_auth_headers(&headers).unwrap_err();
         assert_eq!(err.status_code, 400);
@@ -540,7 +557,8 @@ mod tests {
 
     #[tokio::test]
     async fn session_cookie_round_trip_authenticates_request() {
-        use crate::auth::session::{SESSION_COOKIE, SessionData, encode_session};
+        use crate::auth::{SESSION_COOKIE, generate_session_token, hash_session_token};
+        use crate::catalog::MembershipRole;
         use axum::{
             Router,
             body::Body,
@@ -548,6 +566,7 @@ mod tests {
             middleware,
             routing::get,
         };
+        use chrono::{Duration, Utc};
         use tower::ServiceExt;
 
         let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
@@ -572,6 +591,24 @@ mod tests {
             }],
             ..Default::default()
         };
+        catalog.sync_config_tenants(&auth_config).await.unwrap();
+        let user = catalog
+            .create_user("user@example.com", None, "unused", false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        let cookie = generate_session_token();
+        catalog
+            .create_user_session(
+                &user.id,
+                &hash_session_token(&cookie),
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .unwrap();
         let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
         async fn test_handler(tenant_ctx: TenantContextExtractor) -> String {
@@ -588,16 +625,11 @@ mod tests {
                 auth_middleware(auth.clone(), req, next)
             }));
 
-        let cookie = encode_session(&SessionData {
-            api_key: "test-key-123".to_string(),
-            tenant: "acme".to_string(),
-            dataset: None,
-        });
-
-        // Cookie alone authenticates and resolves the default dataset.
+        // The opaque cookie plus tenant context resolves the default dataset.
         let request = Request::builder()
             .uri("/test")
             .header("cookie", format!("{SESSION_COOKIE}={cookie}"))
+            .header("x-tenant-id", "acme")
             .body(Body::empty())
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
@@ -607,15 +639,12 @@ mod tests {
             .unwrap();
         assert_eq!(body, "tenant=acme,dataset=production");
 
-        // A wrong key in the cookie still fails authentication.
-        let bad_cookie = encode_session(&SessionData {
-            api_key: "wrong-key".to_string(),
-            tenant: "acme".to_string(),
-            dataset: None,
-        });
+        // An unknown opaque session token fails authentication.
+        let bad_cookie = generate_session_token();
         let request = Request::builder()
             .uri("/test")
             .header("cookie", format!("{SESSION_COOKIE}={bad_cookie}"))
+            .header("x-tenant-id", "acme")
             .body(Body::empty())
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();

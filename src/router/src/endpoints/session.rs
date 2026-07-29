@@ -2,11 +2,9 @@
 //!
 //! Browser-facing authentication for the embedded explore UI:
 //!
-//! - `POST /ui/session` validates an API key + tenant (+ optional dataset)
-//!   with the same [`Authenticator`] path the auth middleware uses and, on
-//!   success, sets an `HttpOnly` session cookie the middleware accepts in
-//!   place of the auth headers.
-//! - `DELETE /ui/session` clears that cookie.
+//! - `POST /ui/session` validates a human user's email/password and tenant
+//!   membership, then issues an opaque server-side session token.
+//! - `DELETE /ui/session` revokes that session and clears its cookie.
 //! - `GET /api/v1/whoami` (behind the tenant auth middleware) returns the
 //!   authenticated tenant and its datasets, strictly scoped to that tenant.
 
@@ -18,10 +16,12 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
+use chrono::{Duration, Utc};
 use common::auth::{
-    SESSION_COOKIE, SessionData, TenantContextExtractor, encode_session, validate_dataset_id,
-    validate_tenant_id,
+    SESSION_COOKIE, TenantContextExtractor, generate_session_token, hash_session_token,
+    session_token_from_headers, validate_dataset_id, validate_tenant_id, verify_password,
 };
+use common::catalog::MembershipRole;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -30,13 +30,14 @@ use serde_json::json;
 pub fn router<S: RouterState>() -> Router<S> {
     Router::new().route(
         "/ui/session",
-        post(create_session::<S>).delete(delete_session),
+        post(create_session::<S>).delete(delete_session::<S>),
     )
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
-    pub api_key: String,
+    pub email: String,
+    pub password: String,
     pub tenant: String,
     #[serde(default)]
     pub dataset: Option<String>,
@@ -44,7 +45,7 @@ pub struct CreateSessionRequest {
 
 /// POST /ui/session
 ///
-/// Validates the credentials and sets the session cookie. 204 on success,
+/// Validates the credentials and sets the session cookie. 200 on success,
 /// 401/403 with a JSON error body on invalid credentials, 400 on malformed
 /// tenant/dataset IDs.
 pub async fn create_session<S: RouterState>(
@@ -63,28 +64,95 @@ pub async fn create_session<S: RouterState>(
         },
     };
 
+    let user = match state.catalog().get_user_by_email(&body.email).await {
+        Ok(Some(user)) if user.disabled_at.is_none() => user,
+        Ok(_) => return error_response(401, "Invalid email or password".to_string()),
+        Err(error) => {
+            tracing::error!(error = %error, "UI session user lookup failed");
+            return error_response(500, "Unable to create session".to_string());
+        }
+    };
+    let password = body.password;
+    let password_hash = user.password_hash.clone();
+    let password_matches = match tokio::task::spawn_blocking(move || {
+        verify_password(&password, &password_hash)
+    })
+    .await
+    {
+        Ok(Ok(matches)) => matches,
+        Ok(Err(error)) => {
+            tracing::error!(user_id = %user.id, error = %error, "Stored password hash is invalid");
+            return error_response(500, "Unable to create session".to_string());
+        }
+        Err(error) => {
+            tracing::error!(error = %error, "Password verification task failed");
+            return error_response(500, "Unable to create session".to_string());
+        }
+    };
+    if !password_matches {
+        return error_response(401, "Invalid email or password".to_string());
+    }
+
+    let membership = match state
+        .catalog()
+        .get_tenant_membership(&user.id, &tenant)
+        .await
+    {
+        Ok(Some(membership)) => membership,
+        Ok(None) => return error_response(403, "User is not a member of this tenant".to_string()),
+        Err(error) => {
+            tracing::error!(user_id = %user.id, error = %error, "Membership lookup failed");
+            return error_response(500, "Unable to create session".to_string());
+        }
+    };
+
+    let token = generate_session_token();
+    let token_hash = hash_session_token(&token);
+    let expires_at = Utc::now() + Duration::hours(12);
+    let session = match state
+        .catalog()
+        .create_user_session(&user.id, &token_hash, expires_at)
+        .await
+    {
+        Ok(session) => session,
+        Err(error) => {
+            tracing::error!(user_id = %user.id, error = %error, "Session persistence failed");
+            return error_response(500, "Unable to create session".to_string());
+        }
+    };
+
     match state
         .authenticator()
-        .authenticate(&body.api_key, &tenant, dataset.as_deref())
+        .authenticate_session(&token, &tenant, dataset.as_deref())
         .await
     {
         Ok(ctx) => {
-            tracing::info!(tenant_id = %ctx.tenant_id, dataset = %ctx.dataset_id, "UI session created");
-            let cookie = encode_session(&SessionData {
-                api_key: body.api_key,
-                tenant,
-                dataset,
-            });
+            tracing::info!(
+                user_id = %user.id,
+                tenant_id = %ctx.tenant_id,
+                dataset = %ctx.dataset_id,
+                role = %membership.role,
+                "UI session created"
+            );
             (
-                StatusCode::NO_CONTENT,
+                StatusCode::OK,
                 [(
                     header::SET_COOKIE,
-                    format!("{SESSION_COOKIE}={cookie}; HttpOnly; SameSite=Strict; Path=/"),
+                    format!(
+                        "{SESSION_COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=43200"
+                    ),
                 )],
+                Json(json!({
+                    "tenant": ctx.tenant_id,
+                    "dataset": ctx.dataset_id,
+                })),
             )
                 .into_response()
         }
         Err(err) => {
+            if let Err(error) = state.catalog().revoke_session(&session.id).await {
+                tracing::error!(session_id = %session.id, error = %error, "Failed to revoke rejected session");
+            }
             tracing::warn!(tenant_id = %tenant, "UI session login failed: {}", err.message);
             error_response(err.status_code, err.message)
         }
@@ -94,7 +162,29 @@ pub async fn create_session<S: RouterState>(
 /// DELETE /ui/session
 ///
 /// Clears the session cookie (logout).
-pub async fn delete_session() -> Response {
+pub async fn delete_session<S: RouterState>(
+    State(state): State<S>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(token) = session_token_from_headers(&headers) {
+        match state
+            .catalog()
+            .get_valid_session(&hash_session_token(&token))
+            .await
+        {
+            Ok(Some(session)) => {
+                if let Err(error) = state.catalog().revoke_session(&session.id).await {
+                    tracing::error!(session_id = %session.id, error = %error, "Session revocation failed");
+                    return error_response(500, "Unable to revoke session".to_string());
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::error!(error = %error, "Session lookup during logout failed");
+                return error_response(500, "Unable to revoke session".to_string());
+            }
+        }
+    }
     (
         StatusCode::NO_CONTENT,
         [(
@@ -129,9 +219,26 @@ pub struct WhoamiDataset {
 
 #[derive(Debug, Serialize)]
 pub struct WhoamiResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<WhoamiUser>,
+    pub memberships: Vec<WhoamiMembership>,
     pub tenant: WhoamiTenant,
     pub datasets: Vec<WhoamiDataset>,
     pub default_dataset: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WhoamiUser {
+    pub id: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub is_instance_admin: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WhoamiMembership {
+    pub tenant_id: String,
+    pub role: MembershipRole,
 }
 
 /// GET /api/v1/whoami
@@ -144,6 +251,42 @@ pub async fn whoami<S: RouterState>(
     State(state): State<S>,
     TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> Response {
+    let (user, memberships) = match &ctx.user_id {
+        Some(user_id) => {
+            let user = match state.catalog().get_user(user_id).await {
+                Ok(Some(user)) => user,
+                Ok(None) => return error_response(401, "Session user not found".to_string()),
+                Err(error) => {
+                    tracing::error!(user_id = %user_id, error = %error, "whoami: user lookup failed");
+                    return error_response(500, "Failed to resolve user".to_string());
+                }
+            };
+            let memberships = match state.catalog().list_memberships_for_user(user_id).await {
+                Ok(memberships) => memberships
+                    .into_iter()
+                    .map(|membership| WhoamiMembership {
+                        tenant_id: membership.tenant_id,
+                        role: membership.role,
+                    })
+                    .collect(),
+                Err(error) => {
+                    tracing::error!(user_id = %user_id, error = %error, "whoami: membership lookup failed");
+                    return error_response(500, "Failed to resolve memberships".to_string());
+                }
+            };
+            (
+                Some(WhoamiUser {
+                    id: user.id,
+                    email: user.email,
+                    display_name: user.display_name,
+                    is_instance_admin: user.is_instance_admin,
+                }),
+                memberships,
+            )
+        }
+        None => (None, Vec::new()),
+    };
+
     // Config-defined tenants first (mirrors Authenticator precedence).
     if let Some(tc) = state
         .config()
@@ -159,6 +302,8 @@ pub async fn whoami<S: RouterState>(
                 .map(|d| d.id.clone())
         });
         let response = WhoamiResponse {
+            user,
+            memberships,
             tenant: WhoamiTenant {
                 id: tc.id.clone(),
                 slug: tc.slug.clone(),
@@ -198,6 +343,8 @@ pub async fn whoami<S: RouterState>(
     };
 
     let response = WhoamiResponse {
+        user,
+        memberships,
         tenant: WhoamiTenant {
             // DB tenants use IDs as slugs, matching the Authenticator.
             id: tenant.id.clone(),
@@ -222,7 +369,7 @@ mod tests {
     use crate::{InMemoryStateImpl, create_router};
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
-    use common::catalog::Catalog;
+    use common::catalog::{Catalog, MembershipRole};
     use common::config::{ApiKeyConfig, AuthConfig, Configuration, DatasetConfig, TenantConfig};
     use serde_json::Value;
     use tower::ServiceExt;
@@ -273,6 +420,16 @@ mod tests {
             },
             ..Default::default()
         };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let password_hash = common::auth::hash_password("correct horse battery staple").unwrap();
+        let user = catalog
+            .create_user("alice@example.com", Some("Alice"), &password_hash, true)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Admin)
+            .await
+            .unwrap();
         create_router(InMemoryStateImpl::new(catalog, config))
     }
 
@@ -309,15 +466,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_session_with_valid_key_sets_httponly_cookie() {
+    async fn password_login_sets_opaque_secure_cookie() {
         let app = test_app().await;
         let res = create_session(
             &app,
-            serde_json::json!({"api_key": "acme-key", "tenant": "acme", "dataset": "staging"}),
+            serde_json::json!({
+                "email": "Alice@Example.com",
+                "password": "correct horse battery staple",
+                "tenant": "acme",
+                "dataset": "staging"
+            }),
         )
         .await;
 
-        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        assert_eq!(res.status(), StatusCode::OK);
         let set_cookie = res
             .headers()
             .get(header::SET_COOKIE)
@@ -327,31 +489,32 @@ mod tests {
             .to_string();
         assert!(set_cookie.starts_with("signaldb_session="));
         assert!(set_cookie.contains("HttpOnly"));
+        assert!(set_cookie.contains("Secure"));
         assert!(set_cookie.contains("SameSite=Strict"));
         assert!(set_cookie.contains("Path=/"));
-
-        // The cookie value round-trips through the shared session codec.
         let value = cookie_pair(&res);
         let value = value.strip_prefix("signaldb_session=").unwrap();
-        let session = common::auth::decode_session(value).expect("decodable session");
-        assert_eq!(session.api_key, "acme-key");
-        assert_eq!(session.tenant, "acme");
-        assert_eq!(session.dataset.as_deref(), Some("staging"));
+        assert!(value.starts_with(common::auth::SESSION_TOKEN_PREFIX));
+        assert!(!value.contains("correct horse battery staple"));
     }
 
     #[tokio::test]
-    async fn create_session_with_invalid_key_returns_401_json() {
+    async fn password_login_with_invalid_password_returns_generic_401() {
         let app = test_app().await;
         let res = create_session(
             &app,
-            serde_json::json!({"api_key": "wrong-key", "tenant": "acme"}),
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "wrong password",
+                "tenant": "acme"
+            }),
         )
         .await;
 
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
         assert!(res.headers().get(header::SET_COOKIE).is_none());
         let body = json_body(res).await;
-        assert!(body["error"].as_str().unwrap().contains("API key"));
+        assert_eq!(body["error"], "Invalid email or password");
     }
 
     #[tokio::test]
@@ -359,7 +522,12 @@ mod tests {
         let app = test_app().await;
         let res = create_session(
             &app,
-            serde_json::json!({"api_key": "acme-key", "tenant": "acme", "dataset": "nope"}),
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple",
+                "tenant": "acme",
+                "dataset": "nope"
+            }),
         )
         .await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
@@ -371,7 +539,11 @@ mod tests {
         let app = test_app().await;
         let res = create_session(
             &app,
-            serde_json::json!({"api_key": "acme-key", "tenant": "acme"}),
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple",
+                "tenant": "acme"
+            }),
         )
         .await;
         let cookie = cookie_pair(&res);
@@ -380,6 +552,7 @@ mod tests {
         let request = Request::builder()
             .uri("/tempo/api/echo")
             .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "acme")
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(request).await.unwrap();
@@ -396,11 +569,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_headers_override_session_cookie() {
+    async fn user_whoami_returns_identity_memberships_and_role() {
+        let app = test_app().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header(header::COOKIE, cookie)
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["user"]["email"], "alice@example.com");
+        assert_eq!(body["user"]["display_name"], "Alice");
+        assert_eq!(body["user"]["is_instance_admin"], true);
+        assert_eq!(body["memberships"][0]["tenant_id"], "acme");
+        assert_eq!(body["memberships"][0]["role"], "admin");
+    }
+
+    #[tokio::test]
+    async fn session_cannot_select_tenant_without_membership() {
+        let app = test_app().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header(header::COOKIE, cookie)
+            .header("x-tenant-id", "globex")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn explicit_bearer_headers_override_session_cookie() {
         let app = test_app().await;
         let res = create_session(
             &app,
-            serde_json::json!({"api_key": "acme-key", "tenant": "acme"}),
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple",
+                "tenant": "acme"
+            }),
         )
         .await;
         let cookie = cookie_pair(&res);
@@ -417,6 +646,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = json_body(res).await;
         assert_eq!(body["tenant"]["id"], "globex");
+        assert!(body.get("user").is_none());
     }
 
     #[tokio::test]
@@ -436,6 +666,8 @@ mod tests {
         assert_eq!(body["tenant"]["slug"], "acme-slug");
         assert_eq!(body["tenant"]["name"], "acme Inc");
         assert_eq!(body["default_dataset"], "production");
+        assert!(body.get("user").is_none());
+        assert_eq!(body["memberships"].as_array().unwrap().len(), 0);
         let datasets = body["datasets"].as_array().unwrap();
         assert_eq!(datasets.len(), 2);
         assert_eq!(datasets[0]["id"], "production");
@@ -458,11 +690,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn logout_clears_session_cookie() {
+    async fn logout_revokes_and_clears_session_cookie() {
         let app = test_app().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
         let request = Request::builder()
             .method("DELETE")
             .uri("/ui/session")
+            .header(header::COOKIE, &cookie)
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(request).await.unwrap();
@@ -477,5 +720,14 @@ mod tests {
         assert!(set_cookie.starts_with("signaldb_session=;"));
         assert!(set_cookie.contains("Max-Age=0"));
         assert!(set_cookie.contains("HttpOnly"));
+
+        let request = Request::builder()
+            .uri("/tempo/api/echo")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 }

@@ -237,6 +237,10 @@ async fn setup_test_services() -> TestServices {
                 tenant_slug: "test-tenant".to_string(),
                 dataset_slug: "test-dataset".to_string(),
                 api_key_name: Some("test-key".to_string()),
+                user_id: None,
+                role: None,
+                is_instance_admin: false,
+                session_id: None,
                 source: common::auth::TenantSource::Config,
             });
             Ok(req)
@@ -1032,6 +1036,10 @@ async fn setup_multi_tenant_test_services() -> TestServices {
                 tenant_slug: tenant_id,
                 dataset_slug: dataset_id,
                 api_key_name: Some("test-key".to_string()),
+                user_id: None,
+                role: None,
+                is_instance_admin: false,
+                session_id: None,
                 source: common::auth::TenantSource::Config,
             });
 

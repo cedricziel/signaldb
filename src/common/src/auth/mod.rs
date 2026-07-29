@@ -15,7 +15,7 @@ pub use password::{
     PasswordError, SESSION_TOKEN_PREFIX, generate_session_token, hash_password, hash_session_token,
     verify_password,
 };
-pub use session::{SESSION_COOKIE, SessionData, decode_session, encode_session};
+pub use session::{SESSION_COOKIE, session_token_from_headers};
 pub use validation::{ValidationError, validate_dataset_id, validate_id, validate_tenant_id};
 
 /// Tenant context extracted from authenticated request
@@ -31,6 +31,14 @@ pub struct TenantContext {
     pub dataset_slug: String,
     /// Optional API key name for logging/audit
     pub api_key_name: Option<String>,
+    /// Human user ID when the request was authenticated with a user session.
+    pub user_id: Option<String>,
+    /// Tenant role when the request was authenticated with a user session.
+    pub role: Option<crate::catalog::MembershipRole>,
+    /// Whether the authenticated human user is an instance administrator.
+    pub is_instance_admin: bool,
+    /// Server-side session ID, used to revoke the current browser session.
+    pub session_id: Option<String>,
     /// Source of the tenant configuration (config file or database)
     pub source: TenantSource,
 }
@@ -51,8 +59,27 @@ impl TenantContext {
             tenant_slug,
             dataset_slug,
             api_key_name,
+            user_id: None,
+            role: None,
+            is_instance_admin: false,
+            session_id: None,
             source,
         }
+    }
+
+    /// Attach the human principal that produced this tenant context.
+    pub fn with_user(
+        mut self,
+        user_id: String,
+        role: crate::catalog::MembershipRole,
+        is_instance_admin: bool,
+        session_id: String,
+    ) -> Self {
+        self.user_id = Some(user_id);
+        self.role = Some(role);
+        self.is_instance_admin = is_instance_admin;
+        self.session_id = Some(session_id);
+        self
     }
 }
 

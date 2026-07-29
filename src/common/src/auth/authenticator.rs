@@ -3,8 +3,8 @@
 //! This module provides the Authenticator which handles API key validation,
 //! tenant resolution, and dataset resolution across config-based and database-based tenants.
 
-use super::{AuthError, TenantContext, TenantSource};
-use crate::catalog::Catalog;
+use super::{AuthError, TenantContext, TenantSource, hash_session_token};
+use crate::catalog::{Catalog, MembershipRole};
 use crate::config::{AuthConfig, TenantConfig};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -105,6 +105,109 @@ impl Authenticator {
         // Fall back to database-based authentication
         self.authenticate_from_database(&key_hash, tenant_id, dataset_id)
             .await
+    }
+
+    /// Authenticate an opaque browser session and resolve its requested
+    /// tenant/dataset through the user's tenant membership.
+    pub async fn authenticate_session(
+        &self,
+        token: &str,
+        tenant_id: &str,
+        dataset_id: Option<&str>,
+    ) -> Result<TenantContext, AuthError> {
+        let session = self
+            .catalog
+            .get_valid_session(&hash_session_token(token))
+            .await
+            .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?
+            .ok_or_else(|| AuthError::unauthorized("Invalid or expired session"))?;
+        let user = self
+            .catalog
+            .get_user(&session.user_id)
+            .await
+            .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?
+            .ok_or_else(|| AuthError::unauthorized("Session user not found"))?;
+        let membership = self
+            .catalog
+            .get_tenant_membership(&user.id, tenant_id)
+            .await
+            .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?
+            .ok_or_else(|| {
+                AuthError::forbidden(format!("User is not a member of tenant '{tenant_id}'"))
+            })?;
+
+        self.resolve_user_tenant(
+            tenant_id,
+            dataset_id,
+            user.id,
+            membership.role,
+            user.is_instance_admin,
+            session.id,
+        )
+        .await
+    }
+
+    async fn resolve_user_tenant(
+        &self,
+        tenant_id: &str,
+        dataset_id: Option<&str>,
+        user_id: String,
+        role: MembershipRole,
+        is_instance_admin: bool,
+        session_id: String,
+    ) -> Result<TenantContext, AuthError> {
+        if let Some(tenant_config) = self.config_tenants.get(tenant_id) {
+            let resolved_dataset = self.resolve_dataset(tenant_config, dataset_id)?;
+            let dataset_slug = tenant_config
+                .datasets
+                .iter()
+                .find(|d| d.id == resolved_dataset)
+                .map(|d| d.slug.clone())
+                .unwrap_or_else(|| resolved_dataset.clone());
+            return Ok(TenantContext::new(
+                tenant_id.to_string(),
+                resolved_dataset,
+                tenant_config.slug.clone(),
+                dataset_slug,
+                None,
+                TenantSource::Config,
+            )
+            .with_user(user_id, role, is_instance_admin, session_id));
+        }
+
+        let tenant = self
+            .catalog
+            .get_tenant(tenant_id)
+            .await
+            .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?
+            .ok_or_else(|| AuthError::forbidden(format!("Tenant '{tenant_id}' not found")))?;
+        let resolved_dataset = match dataset_id {
+            Some(id) => id.to_string(),
+            None => tenant.default_dataset.ok_or_else(|| {
+                AuthError::bad_request(
+                    "X-Dataset-ID header required (tenant has no default dataset)",
+                )
+            })?,
+        };
+        let datasets = self
+            .catalog
+            .get_datasets(tenant_id)
+            .await
+            .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?;
+        if !datasets.iter().any(|d| d.name == resolved_dataset) {
+            return Err(AuthError::forbidden(format!(
+                "Dataset '{resolved_dataset}' not found for tenant '{tenant_id}'"
+            )));
+        }
+        Ok(TenantContext::new(
+            tenant_id.to_string(),
+            resolved_dataset.clone(),
+            tenant_id.to_string(),
+            resolved_dataset,
+            None,
+            TenantSource::Database,
+        )
+        .with_user(user_id, role, is_instance_admin, session_id))
     }
 
     /// Authenticate using database catalog
