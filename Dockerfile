@@ -8,6 +8,23 @@
 #              the in-container compile entirely
 ARG BUILDER=source
 
+# Explore UI builder - always built in-container (fast), consumed by the
+# router and monolithic runtime stages. A failing UI build fails the image
+# build; images never ship silently without their UI.
+FROM node:22-alpine AS ui-builder
+
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
+
+WORKDIR /build
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY src/ui/package.json src/ui/
+COPY src/grafana-plugin/package.json src/grafana-plugin/
+RUN pnpm install --frozen-lockfile --filter signaldb-ui
+
+COPY src/ui/ src/ui/
+RUN pnpm --filter signaldb-ui build
+
 # Builder stage - compile all services with musl for Alpine compatibility
 FROM rust:1.97-alpine AS builder-source
 
@@ -145,6 +162,8 @@ ENTRYPOINT ["/usr/local/bin/signaldb-acceptor"]
 FROM runtime-base AS router
 
 COPY --from=builder /build/target/release/signaldb-router /usr/local/bin/signaldb-router
+COPY --from=ui-builder /build/src/ui/dist /usr/share/signaldb/ui
+ENV SIGNALDB_UI_DIR=/usr/share/signaldb/ui
 
 USER signaldb
 EXPOSE 50053 3001
@@ -180,6 +199,8 @@ ENTRYPOINT ["/usr/local/bin/signaldb-compactor"]
 FROM runtime-base AS monolithic
 
 COPY --from=builder /build/target/release/signaldb /usr/local/bin/signaldb
+COPY --from=ui-builder /build/src/ui/dist /usr/share/signaldb/ui
+ENV SIGNALDB_UI_DIR=/usr/share/signaldb/ui
 
 USER signaldb
 EXPOSE 4317 4318 50051 50053 3000

@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 pub mod discovery;
 pub mod endpoints;
+pub mod ui;
 
 pub trait RouterState: std::fmt::Debug + Clone + Send + Sync + 'static {
     fn catalog(&self) -> &Catalog;
@@ -229,6 +230,8 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
                 .layer(query_rate_layer.clone())
                 .layer(auth_layer.clone()),
         )
+        // Explore UI static assets (public, served from SIGNALDB_UI_DIR)
+        .nest_service("/ui", ui::service_from_env())
         // Admin routes with admin authentication
         .nest("/api/v1/admin", admin_router)
         .nest(
