@@ -33,6 +33,36 @@ pub fn materialized_column_name(label: &str) -> String {
     out
 }
 
+/// Per-column Parquet bloom-filter table properties for a set of
+/// materialized attribute labels.
+///
+/// For each label key this yields
+/// `write.parquet.bloom-filter-enabled.column.label_<key> = "true"`, the
+/// standard Iceberg property the pinned iceberg-rust Parquet writer honors
+/// per column. Column names come from [`materialized_column_name`], so the
+/// properties always target the promoted `label_<key>` columns. Duplicate
+/// labels (after sanitization) collapse to a single property.
+///
+/// Shared by table creation and the compactor's attribute-promotion path,
+/// so both set identical properties for a promoted label.
+pub fn bloom_filter_properties_for_labels(labels: &[String]) -> Vec<(String, String)> {
+    use iceberg_rust::spec::table_metadata::WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX;
+
+    let mut seen = std::collections::HashSet::new();
+    labels
+        .iter()
+        .filter_map(|label| {
+            let column = materialized_column_name(label);
+            seen.insert(column.clone()).then(|| {
+                (
+                    format!("{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{column}"),
+                    "true".to_string(),
+                )
+            })
+        })
+        .collect()
+}
+
 /// Embedded schema definitions from schemas.toml
 pub const SCHEMA_DEFINITIONS_TOML: &str = include_str!("../../../../schemas.toml");
 
@@ -237,6 +267,30 @@ mod tests {
             materialized_column_name("k8s.pod/name"),
             "label_k8s_pod_name"
         );
+    }
+
+    #[test]
+    fn bloom_filter_properties_target_materialized_columns() {
+        let labels = vec![
+            "namespace".to_string(),
+            "http.method".to_string(),
+            // Sanitizes to the same column as `http.method` → collapsed.
+            "http_method".to_string(),
+        ];
+        assert_eq!(
+            bloom_filter_properties_for_labels(&labels),
+            vec![
+                (
+                    "write.parquet.bloom-filter-enabled.column.label_namespace".to_string(),
+                    "true".to_string()
+                ),
+                (
+                    "write.parquet.bloom-filter-enabled.column.label_http_method".to_string(),
+                    "true".to_string()
+                ),
+            ]
+        );
+        assert!(bloom_filter_properties_for_labels(&[]).is_empty());
     }
 
     #[test]
