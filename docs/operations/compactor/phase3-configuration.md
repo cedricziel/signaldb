@@ -16,6 +16,7 @@ Complete reference for configuring SignalDB Compactor Phase 3: Retention Enforce
 - [Configuration Overview](#configuration-overview)
 - [Retention Configuration](#retention-configuration)
 - [Orphan Cleanup Configuration](#orphan-cleanup-configuration)
+- [Attribute Promotion Configuration](#attribute-promotion-configuration)
 - [Environment Variables](#environment-variables)
 - [Configuration Examples](#configuration-examples)
 - [Validation Rules](#validation-rules)
@@ -358,6 +359,42 @@ max_live_files_threshold = 500000
 # max_snapshot_age_hours = 24     # Only last 24h snapshots
 ```
 
+## Attribute Promotion Configuration
+
+### `[compactor.attr_promotion]`
+
+Attribute auto-promotion (epic #737) turns frequently queried attribute keys into materialized `label_<key>` columns at compaction time. Every rewrite already runs a read-only attribute-statistics pass; when this section is enabled, a decision pass scores the persisted statistics (query demand x row presence) against guardrails and — with `dry_run = false` — acts on the result during the same rewrite.
+
+```toml
+[compactor.attr_promotion]
+enabled = true
+dry_run = true    # observe decisions first; set false to act on them
+max_labels_per_table = 32
+min_presence = 0.005
+min_query_hits = 1
+promote_streak = 3
+max_promotions_per_cycle = 4
+```
+
+| Setting                    | Type    | Default | Description                                                                                                                       |
+| -------------------------- | ------- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                  | boolean | `false` | Run the promotion decision pass on each rewrite                                                                                   |
+| `dry_run`                  | boolean | `true`  | Log decisions only; never change schemas or data                                                                                  |
+| `max_labels_per_table`     | integer | `32`    | Schema-width budget: maximum materialized `label_<key>` columns per table, pinned `[schema.materialized_labels]` entries included |
+| `min_presence`             | float   | `0.005` | Minimum fraction of rows a key must appear in to be promotable                                                                    |
+| `min_query_hits`           | integer | `1`     | Minimum accumulated query-demand hits for a key to be promotable                                                                  |
+| `promote_streak`           | integer | `3`     | Consecutive over-threshold cycles before promotion (hysteresis)                                                                   |
+| `max_promotions_per_cycle` | integer | `4`     | Maximum promotions per rewrite cycle                                                                                              |
+
+**`dry_run` semantics:**
+
+- `dry_run = true` (default): the pass only logs an `Attribute promotion decision` line per table. No schema or data changes.
+- `dry_run = false`: the compactor **acts** on promote decisions at the next rewrite of each table. It evolves the table schema (adds the promoted columns through a metadata-only commit), backfills the column values from the attributes map while rewriting the files, and commits the rewrite through the normal replace path. See the [operations guide](phase3-operations.md#attribute-promotion) for the observable sequence.
+
+The guardrails live in the decision engine and apply in both modes: machine-generated keys (embedded UUIDs, long hex or digit runs) are never promoted, keys whose distinct-value tracking hit the analyzer cap are rejected, a key must qualify for `promote_streak` consecutive cycles, and the schema-width budget caps the total number of label columns. Pinned `[schema.materialized_labels]` entries are never demoted or otherwise touched. Demotion (dropping unqueried auto-promoted columns) is decided and logged but not yet acted on.
+
+**Recommendation:** run with `dry_run = true` for several compaction cycles and review the `Attribute promotion decision` log lines. Flip to `false` only once the keys they announce are ones you want as columns.
+
 ## Environment Variables
 
 All scalar configuration can be overridden via environment variables.
@@ -605,4 +642,4 @@ Invalid retention configuration for tenant 'acme': Invalid retention period for 
 - [Phase 3 Troubleshooting Guide](phase3-troubleshooting.md)
 - [Compactor README](../../../src/compactor/README.md)
 
-> Note: every compaction rewrite also runs a read-only attribute-statistics pass that logs per-key presence, approximate cardinality, and advisory materialization candidates (`Attribute-stats analyzer` log line), and persists the per-key statistics to the service catalog's `attribute_stats` table (joined there with query-demand counters flushed by the querier). When `[compactor.attr_promotion]` is enabled, a dry-run decision pass scores those statistics (demand × presence under a schema-width budget, with cardinality and generated-key guardrails plus streak hysteresis) and logs an `Attribute promotion decision` line. It requires no configuration and changes no table data.
+> Note: every compaction rewrite also runs a read-only attribute-statistics pass that logs per-key presence, approximate cardinality, and advisory materialization candidates (`Attribute-stats analyzer` log line), and persists the per-key statistics to the service catalog's `attribute_stats` table (joined there with query-demand counters flushed by the querier). This statistics pass requires no configuration and changes no table data. The promotion decision pass built on those statistics is configured via [`[compactor.attr_promotion]`](#attribute-promotion-configuration).
