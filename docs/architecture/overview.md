@@ -200,10 +200,11 @@ under `/ui`, from the directory named by `SIGNALDB_UI_DIR`. See
 
 For browsers, the router exposes `POST`/`DELETE /ui/session`
 (`src/router/src/endpoints/session.rs`): a public login endpoint that
-validates tenant credentials and sets/clears an `HttpOnly` session cookie
-the auth middleware accepts in place of the auth headers. A tenant-scoped
-`GET /api/v1/whoami` returns the authenticated tenant and its datasets
-for the UI's tenant selector.
+validates a user's email/password and tenant membership, then creates or
+revokes an opaque server-side session. `GET /api/v1/whoami` returns the
+human identity and memberships plus the selected tenant's datasets for the
+UI's tenant selector. API-key authentication remains available for machine
+clients and ingestion.
 
 **Tempo API Endpoints**:
 

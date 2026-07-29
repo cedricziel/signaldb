@@ -47,22 +47,27 @@ Iceberg namespaces). Invalid IDs fail with 400 / `INVALID_ARGUMENT`.
 The router's HTTP APIs additionally accept a session cookie in place of
 the headers, for browsers using the [embedded explore UI](explore-ui.md):
 
-- `POST /ui/session` (public) takes `{"api_key", "tenant", "dataset"?}`
-  as JSON, validates it exactly like the headers, and sets an `HttpOnly`,
-  `SameSite=Strict` cookie (`signaldb_session`) carrying those values.
-  Returns 204 on success, an error status with a JSON `error` message
-  otherwise. `DELETE /ui/session` clears the cookie.
-- On requests without an `Authorization` header, the router falls back to
-  the cookie for the API key and for any tenant/dataset values not given
-  as headers. Explicit headers always win over cookie values.
+- `POST /ui/session` (public) takes
+  `{"email", "password", "tenant", "dataset"?}` as JSON. It verifies the
+  password and tenant membership, creates a 12-hour server-side session,
+  and sets an `HttpOnly`, `Secure`, `SameSite=Strict` cookie containing
+  only an opaque random token.
+- On requests without an `Authorization` header, the router validates the
+  opaque session and resolves `X-Tenant-ID` through the user's memberships.
+  The optional `X-Dataset-ID` selects a dataset in that tenant.
+- `DELETE /ui/session` revokes the server-side session before clearing the
+  cookie. Disabling a user immediately invalidates all of their sessions.
+- `GET /api/v1/whoami` returns the human identity, all memberships, and the
+  selected tenant's datasets. API-key requests remain supported and omit
+  the human identity.
 
 ## Error codes
 
 | HTTP | gRPC                | Meaning                                                                                    |
 | ---- | ------------------- | ------------------------------------------------------------------------------------------ |
 | 400  | `INVALID_ARGUMENT`  | Header malformed (wrong scheme, invalid tenant/dataset ID)                                 |
-| 401  | `UNAUTHENTICATED`   | Credentials missing (no auth header/cookie or no tenant ID), or API key unknown or revoked |
-| 403  | `PERMISSION_DENIED` | Key is valid but not authorized for the named tenant or dataset                            |
+| 401  | `UNAUTHENTICATED`   | Credentials missing/invalid, or the API key/session is unknown, revoked, expired, or disabled |
+| 403  | `PERMISSION_DENIED` | Principal is not authorized for the named tenant or dataset                                  |
 
 ## Tenants and datasets
 
@@ -90,6 +95,15 @@ Example (operator-side):
 
 ```bash
 signaldb-cli --admin-key <admin-key> api-key create acme --name "Production Key"
+```
+
+Bootstrap the first human user directly into the service catalog using the
+same configuration file as SignalDB:
+
+```bash
+SIGNALDB_USER_PASSWORD='a-long-bootstrap-password' \
+  signaldb-cli --config signaldb.toml user create admin@example.com \
+  --tenant acme --role admin --instance-admin
 ```
 
 The `signaldb-sdk` Rust crate is a client for this admin API only; it is
