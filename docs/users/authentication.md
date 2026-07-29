@@ -58,11 +58,11 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
 
 ## Error codes
 
-| HTTP | gRPC                | Meaning                                                               |
-| ---- | ------------------- | --------------------------------------------------------------------- |
-| 400  | `INVALID_ARGUMENT`  | Header missing or malformed (wrong scheme, invalid tenant/dataset ID) |
-| 401  | `UNAUTHENTICATED`   | API key unknown or revoked                                            |
-| 403  | `PERMISSION_DENIED` | Key is valid but not authorized for the named tenant or dataset       |
+| HTTP | gRPC                | Meaning                                                                                    |
+| ---- | ------------------- | ------------------------------------------------------------------------------------------ |
+| 400  | `INVALID_ARGUMENT`  | Header malformed (wrong scheme, invalid tenant/dataset ID)                                 |
+| 401  | `UNAUTHENTICATED`   | Credentials missing (no auth header/cookie or no tenant ID), or API key unknown or revoked |
+| 403  | `PERMISSION_DENIED` | Key is valid but not authorized for the named tenant or dataset                            |
 
 ## Tenants and datasets
 
