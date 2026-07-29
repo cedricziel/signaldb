@@ -1,3 +1,4 @@
+import { ExploreView } from "./features/explore/ExploreView";
 import { TopBar } from "./features/shell/TopBar";
 
 export function App() {
@@ -5,9 +6,7 @@ export function App() {
     <div className="app-frame">
       <TopBar />
       <main className="app-main">
-        <p className="placeholder">
-          Explore is under construction — logs, traces, and metrics land here.
-        </p>
+        <ExploreView />
       </main>
     </div>
   );
