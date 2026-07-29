@@ -5,11 +5,16 @@
 
 mod authenticator;
 mod middleware;
+pub mod password;
 pub mod session;
 pub mod validation;
 
 pub use authenticator::Authenticator;
 pub use middleware::{TenantContextExtractor, admin_auth_middleware, auth_middleware};
+pub use password::{
+    PasswordError, SESSION_TOKEN_PREFIX, generate_session_token, hash_password, hash_session_token,
+    verify_password,
+};
 pub use session::{SESSION_COOKIE, SessionData, decode_session, encode_session};
 pub use validation::{ValidationError, validate_dataset_id, validate_id, validate_tenant_id};
 

@@ -163,12 +163,22 @@ signaldb-cli query ...          # SQL queries against SignalDB
 signaldb-cli tui                # Interactive terminal UI
 ```
 
+### User credential primitives (groundwork)
+
+`src/common/src/auth/password.rs` provides the hashing primitives for the
+planned user/tenant-membership model (users-tenant-membership ADR):
+Argon2id `hash_password`/`verify_password` (PHC strings) for low-entropy
+user passwords, and `generate_session_token` (`sdbs_` prefix, 32 OS-random
+bytes) + SHA-256 `hash_session_token` for opaque browser-session tokens.
+API keys keep the existing fast SHA-256 path — the split is entropy-based.
+
 ## Key Implementation Files
 
 | File                                  | Purpose                                              |
 | ------------------------------------- | ---------------------------------------------------- |
 | `src/common/src/config/mod.rs`        | Tenant/dataset config structs                        |
 | `src/common/src/auth/`                | Authenticator, TenantContext, middleware, validation |
+| `src/common/src/auth/password.rs`     | Argon2id password hashing + opaque session tokens    |
 | `src/common/src/catalog_manager.rs`   | Slug resolution                                      |
 | `src/router/src/endpoints/admin.rs`   | Admin API endpoints (incl. quota checks)             |
 | `src/router/src/endpoints/tenant.rs`  | Tenant self-service API endpoints                    |
