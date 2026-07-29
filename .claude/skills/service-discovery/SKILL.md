@@ -58,7 +58,8 @@ CREATE TABLE ingesters (
 ```
 
 The same catalog also holds multi-tenancy tables (`tenants`, `api_keys`,
-`datasets`), `compactor_leases`, and the advisory `attribute_stats` table
+`datasets`), user-identity tables (`users`, `tenant_memberships`,
+`user_sessions`; users-tenant-membership ADR), `compactor_leases`, and the advisory `attribute_stats` table
 (epic #737: per-attribute-key presence/cardinality from the compactor's
 analyzer plus query-demand counters flushed by the querier, and a promote_streak hysteresis column for the auto-promotion decision pass).
 
