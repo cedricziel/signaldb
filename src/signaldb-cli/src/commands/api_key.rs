@@ -1,17 +1,22 @@
 use clap::Subcommand;
+use clap_complete::engine::ArgValueCompleter;
 use signaldb_sdk::Client;
 use signaldb_sdk::types::CreateApiKeyRequest;
+
+use super::completions::tenant_id_completer;
 
 #[derive(Subcommand)]
 pub enum ApiKeyAction {
     /// List API keys for a tenant
     List {
         /// Tenant ID
+        #[arg(add = ArgValueCompleter::new(tenant_id_completer))]
         tenant_id: String,
     },
     /// Create a new API key for a tenant
     Create {
         /// Tenant ID
+        #[arg(add = ArgValueCompleter::new(tenant_id_completer))]
         tenant_id: String,
         /// Optional key name
         #[arg(long)]
@@ -20,6 +25,7 @@ pub enum ApiKeyAction {
     /// Revoke an API key
     Revoke {
         /// Tenant ID
+        #[arg(add = ArgValueCompleter::new(tenant_id_completer))]
         tenant_id: String,
         /// API key ID to revoke
         key_id: String,

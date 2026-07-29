@@ -1,17 +1,22 @@
 use clap::Subcommand;
+use clap_complete::engine::ArgValueCompleter;
 use signaldb_sdk::Client;
 use signaldb_sdk::types::CreateDatasetRequest;
+
+use super::completions::tenant_id_completer;
 
 #[derive(Subcommand)]
 pub enum DatasetAction {
     /// List datasets for a tenant
     List {
         /// Tenant ID
+        #[arg(add = ArgValueCompleter::new(tenant_id_completer))]
         tenant_id: String,
     },
     /// Create a new dataset for a tenant
     Create {
         /// Tenant ID
+        #[arg(add = ArgValueCompleter::new(tenant_id_completer))]
         tenant_id: String,
         /// Dataset name
         #[arg(long)]
@@ -20,6 +25,7 @@ pub enum DatasetAction {
     /// Delete a dataset
     Delete {
         /// Tenant ID
+        #[arg(add = ArgValueCompleter::new(tenant_id_completer))]
         tenant_id: String,
         /// Dataset ID
         dataset_id: String,
