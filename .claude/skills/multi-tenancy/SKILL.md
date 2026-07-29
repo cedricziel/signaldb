@@ -37,12 +37,60 @@ Tenant (e.g., "acme", slug: "acme")
 ### Session-Cookie Fallback (Embedded UI)
 
 When a router HTTP request has no `Authorization` header, `auth_middleware`
-falls back to the `signaldb_session` cookie (base64 JSON of
-api_key/tenant/dataset; codec in `src/common/src/auth/session.rs`). The
-cookie supplies the API key; explicit `X-Tenant-ID`/`X-Dataset-ID` headers
-still win over cookie values. The cookie is set by `POST /ui/session` and
-cleared by `DELETE /ui/session` (`src/router/src/endpoints/session.rs`),
-both public routes on the router.
+falls back to the `signaldb_session` cookie. The cookie value has **two
+formats**, dispatched on prefix (`session_cookie_value` in
+`src/common/src/auth/session.rs` returns the raw value):
+
+| Cookie value        | Credential   | Middleware path                                   |
+| ------------------- | ------------ | ------------------------------------------------- |
+| base64 JSON         | API key      | `decode_session` -> `Authenticator::authenticate` |
+| starts with `sdbs_` | user session | `Authenticator::authenticate_user_session`        |
+
+For the **API-key format** the cookie supplies the API key; explicit
+`X-Tenant-ID`/`X-Dataset-ID` headers still win over cookie values. The
+cookie is set by `POST /ui/session` and cleared by `DELETE /ui/session`
+(`src/router/src/endpoints/session.rs`), both public routes on the router.
+
+### User-Session Auth (Phase 1 of users-tenant-membership ADR)
+
+`POST /ui/session` also accepts `{"email", "password"}` (untagged serde
+enum alongside the API-key shape). The flow:
+
+1. `catalog.get_user_by_email` (email canonicalized); disabled users
+   rejected.
+2. `verify_password` (Argon2id) on a `spawn_blocking` thread.
+3. `generate_session_token()` -> `create_user_session(user_id,
+   hash_session_token(token), now + 24h)`; the cookie holds the **raw**
+   token, the catalog only its SHA-256 hash. 24h absolute lifetime is the
+   Phase 1 default; idle timeout is deferred.
+4. Failures answer a uniform 401 (`Invalid email or password`) for
+   unknown email / wrong password / disabled account alike.
+
+`Authenticator::authenticate_user_session(token, tenant?, dataset?)`
+validates the token via `get_valid_session` (which already excludes
+revoked, expired, and disabled-user sessions) and resolves the tenant
+from `tenant_memberships`:
+
+- explicit `X-Tenant-ID` must match a membership -> else 403
+- no header + exactly one membership -> that tenant
+- no header + several memberships -> 400 asking for `X-Tenant-ID`
+- no memberships -> 403
+
+Dataset/slug resolution then reuses the shared `resolve_tenant_context`
+helper (config tenants first, then DB tenants), so it is identical to the
+API-key path. The resulting `TenantContext` carries
+`user: Option<UserIdentity { user_id, email, role }>`;
+`TenantContext::new` stays API-key shaped and `with_user` attaches the
+identity. The `_system` suppression in `auth_middleware` keys off the
+resolved `tenant_id`, so it covers user-session requests too.
+
+`DELETE /ui/session` revokes the session row (`get_valid_session` ->
+`revoke_session`) when the cookie holds an `sdbs_` token, and clears the
+cookie unconditionally. `GET /api/v1/whoami` adds
+`user {id, email, display_name}` and `memberships [{tenant_id, role}]`
+for user sessions (both `skip_serializing_if = "Option::is_none"`, so
+API-key responses are byte-identical to before). Roles are surfaced but
+**not enforced** yet — that is Phase 2.
 
 ### Error Codes
 
@@ -142,7 +190,7 @@ Mounted at `/api/v1` with tenant auth (`src/router/src/endpoints/tenant.rs`):
 
 | Endpoint                             | Methods | Description                                                                                 |
 | ------------------------------------ | ------- | ------------------------------------------------------------------------------------------- |
-| `/api/v1/whoami`                     | GET     | Authenticated tenant (id, slug, name) + datasets + default dataset (`endpoints/session.rs`) |
+| `/api/v1/whoami`                     | GET     | Authenticated tenant (id, slug, name) + datasets + default dataset (`endpoints/session.rs`); user sessions also get `user` + `memberships` |
 | `/api/v1/tenants`                    | GET     | List tenants visible to the caller                                                          |
 | `/api/v1/tenants/{id}`               | GET     | Tenant details                                                                              |
 | `/api/v1/tenants/{id}/tables`        | GET     | List tenant tables                                                                          |
@@ -163,14 +211,15 @@ signaldb-cli query ...          # SQL queries against SignalDB
 signaldb-cli tui                # Interactive terminal UI
 ```
 
-### User credential primitives (groundwork)
+### User credential primitives
 
 `src/common/src/auth/password.rs` provides the hashing primitives for the
-planned user/tenant-membership model (users-tenant-membership ADR):
-Argon2id `hash_password`/`verify_password` (PHC strings) for low-entropy
-user passwords, and `generate_session_token` (`sdbs_` prefix, 32 OS-random
+user/tenant-membership model (users-tenant-membership ADR): Argon2id
+`hash_password`/`verify_password` (PHC strings) for low-entropy user
+passwords, and `generate_session_token` (`sdbs_` prefix, 32 OS-random
 bytes) + SHA-256 `hash_session_token` for opaque browser-session tokens.
 API keys keep the existing fast SHA-256 path — the split is entropy-based.
+These are wired up by the user-session auth flow described above.
 
 ## Key Implementation Files
 

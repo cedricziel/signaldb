@@ -47,14 +47,35 @@ Iceberg namespaces). Invalid IDs fail with 400 / `INVALID_ARGUMENT`.
 The router's HTTP APIs additionally accept a session cookie in place of
 the headers, for browsers using the [embedded explore UI](explore-ui.md):
 
-- `POST /ui/session` (public) takes `{"api_key", "tenant", "dataset"?}`
-  as JSON, validates it exactly like the headers, and sets an `HttpOnly`,
-  `SameSite=Strict` cookie (`signaldb_session`) carrying those values.
-  Returns 204 on success, an error status with a JSON `error` message
-  otherwise. `DELETE /ui/session` clears the cookie.
+`POST /ui/session` (public) accepts either credential shape as JSON and,
+on success, sets an `HttpOnly`, `SameSite=Strict` cookie
+(`signaldb_session`). It returns 204 on success, an error status with a
+JSON `error` message otherwise.
+
+| Body                                   | Credential           | Cookie contents                                                     |
+| -------------------------------------- | -------------------- | ------------------------------------------------------------------- |
+| `{"api_key", "tenant", "dataset"?}`    | tenant API key       | the same three values, validated exactly like the headers           |
+| `{"email", "password"}`                | user account         | an opaque server-issued session token (prefix `sdbs_`), valid 24h   |
+
 - On requests without an `Authorization` header, the router falls back to
-  the cookie for the API key and for any tenant/dataset values not given
-  as headers. Explicit headers always win over cookie values.
+  the cookie.
+  - **API-key cookie**: supplies the API key and any tenant/dataset value
+    not given as a header. Explicit headers always win over cookie
+    values.
+  - **User-session cookie** (`sdbs_…`): the token is validated
+    server-side; the tenant comes from the user's tenant memberships. If
+    the user belongs to exactly one tenant it is used implicitly;
+    otherwise `X-Tenant-ID` is required (400) and must name a tenant the
+    user is a member of (403 otherwise). Dataset resolution is unchanged
+    (`X-Dataset-ID`, else the tenant's default).
+- Email/password login answers with a single, uniform 401 (`Invalid email
+  or password`) for an unknown email, a wrong password, and a disabled
+  account alike.
+- `DELETE /ui/session` clears the cookie; for a user-session cookie it
+  also revokes the session server-side, so the token stops working
+  immediately even if it was copied elsewhere.
+- Sessions also end when they expire (24 hours after login) or when the
+  user account is disabled.
 
 ## Error codes
 
@@ -104,6 +125,13 @@ table-creation endpoint):
 | Method | Path                                        | Returns                                                                          |
 | ------ | ------------------------------------------- | -------------------------------------------------------------------------------- |
 | GET    | `/api/v1/whoami`                            | The authenticated tenant (id, slug, name), its datasets, and the default dataset |
+
+For a request authenticated with a **user session**, `/api/v1/whoami` adds
+two fields alongside the unchanged tenant/dataset ones: `user`
+(`id`, `email`, `display_name`) and `memberships` (one
+`{tenant_id, role}` entry per tenant the user belongs to; roles are
+`admin`, `member`, or `viewer`). API-key responses do not carry them.
+Roles are reported but not yet enforced.
 | GET    | `/api/v1/tenants`                           | All configured tenants                                                           |
 | GET    | `/api/v1/tenants/{tenant_id}`               | Tenant details                                                                   |
 | GET    | `/api/v1/tenants/{tenant_id}/tables`        | The tenant's tables                                                              |

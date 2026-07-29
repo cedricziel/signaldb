@@ -31,17 +31,27 @@ visible in the UI is equally queryable from Grafana.
 ## Signing in
 
 On an embedded deployment (the UI served by the router at `/ui`), the
-first query that fails as unauthenticated opens a sign-in form. Enter a
-tenant API key, the tenant ID, and optionally a dataset (defaults to the
-tenant's default dataset) — the same credentials any API client uses, see
-[the authentication reference](authentication.md).
+first query that fails as unauthenticated opens a sign-in form. Two kinds
+of credential work — see [the authentication reference](authentication.md):
+
+- **Tenant API key**: the key, the tenant ID, and optionally a dataset
+  (defaults to the tenant's default dataset) — the same credentials any
+  API client uses.
+- **Email and password**, if your operator created a user account for
+  you. A user can belong to several tenants; with more than one, pick the
+  tenant explicitly (the top-bar selector sends `X-Tenant-ID`).
 
 Signing in calls `POST /ui/session`, which validates the credentials and
 sets an `HttpOnly`, `SameSite=Strict` session cookie. Subsequent API
-requests from the browser authenticate through that cookie, so the key
-never lives in page JavaScript, `localStorage`, or URLs. The session
-lasts for the browser session; `DELETE /ui/session` (or clearing cookies)
-ends it.
+requests from the browser authenticate through that cookie, so the
+credential never lives in page JavaScript, `localStorage`, or URLs.
+
+For an API-key sign-in the cookie carries the key itself, and clearing it
+is what ends the session. For an email/password sign-in the cookie
+carries only an opaque server-issued token (the password is never stored
+in the browser); that session expires 24 hours after login, and
+`DELETE /ui/session` revokes it server-side so the token cannot be
+replayed. Disabling a user account also invalidates their sessions.
 
 Once signed in, the tenant/dataset selector in the top bar shows the
 session's tenant read-only and offers the tenant's datasets as a

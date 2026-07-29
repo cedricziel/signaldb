@@ -1,12 +1,22 @@
 //! # UI session cookie
 //!
 //! Encoding/decoding for the browser session cookie used by the embedded
-//! explore UI. The cookie holds the same three values the auth headers
-//! carry (API key, tenant, optional dataset) as base64-encoded JSON — it
-//! is deliberately not encrypted: the key is client-held credential
-//! material either way, and `HttpOnly` keeps it out of reach of page
-//! scripts. The auth middleware falls back to this cookie when a request
-//! carries no `Authorization` header.
+//! explore UI. The cookie value comes in two formats, distinguished by
+//! prefix:
+//!
+//! - **API-key sessions** (this module's codec): the same three values the
+//!   auth headers carry (API key, tenant, optional dataset) as
+//!   base64-encoded JSON — deliberately not encrypted: the key is
+//!   client-held credential material either way, and `HttpOnly` keeps it
+//!   out of reach of page scripts.
+//! - **User sessions**: an opaque server-issued token starting with
+//!   [`crate::auth::SESSION_TOKEN_PREFIX`] (`sdbs_`), whose SHA-256 hash
+//!   is stored in the catalog's `user_sessions` table. Use
+//!   [`session_cookie_value`] to obtain the raw value and check the
+//!   prefix before attempting to [`decode_session`] it.
+//!
+//! The auth middleware falls back to this cookie when a request carries
+//! no `Authorization` header.
 
 use axum::http::HeaderMap;
 use base64::Engine;
@@ -43,9 +53,13 @@ pub fn decode_session(value: &str) -> Option<SessionData> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// Extract session data from a request's `Cookie` header(s), if present
-/// and well-formed.
-pub fn session_from_headers(headers: &HeaderMap) -> Option<SessionData> {
+/// Extract the raw value of the session cookie from a request's `Cookie`
+/// header(s), if present.
+///
+/// Returns the first non-empty occurrence, trimmed. The value may be
+/// either an API-key session (base64 JSON, see [`decode_session`]) or a
+/// user session token (prefixed `sdbs_`); callers dispatch on the prefix.
+pub fn session_cookie_value(headers: &HeaderMap) -> Option<String> {
     for header in headers.get_all(axum::http::header::COOKIE) {
         let Ok(cookies) = header.to_str() else {
             continue;
@@ -54,14 +68,21 @@ pub fn session_from_headers(headers: &HeaderMap) -> Option<SessionData> {
             let Some((name, value)) = pair.split_once('=') else {
                 continue;
             };
-            if name.trim() == SESSION_COOKIE
-                && let Some(session) = decode_session(value)
-            {
-                return Some(session);
+            if name.trim() == SESSION_COOKIE {
+                let value = value.trim();
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
             }
         }
     }
     None
+}
+
+/// Extract session data from a request's `Cookie` header(s), if present
+/// and well-formed.
+pub fn session_from_headers(headers: &HeaderMap) -> Option<SessionData> {
+    decode_session(&session_cookie_value(headers)?)
 }
 
 #[cfg(test)]
@@ -111,6 +132,31 @@ mod tests {
             HeaderValue::from_str(&value).unwrap(),
         );
         assert_eq!(session_from_headers(&headers), Some(sample()));
+    }
+
+    #[test]
+    fn session_cookie_value_returns_raw_user_session_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            HeaderValue::from_static("theme=dark; signaldb_session=sdbs_abc123; other=1"),
+        );
+        assert_eq!(
+            session_cookie_value(&headers).as_deref(),
+            Some("sdbs_abc123")
+        );
+        // A raw user-session token is not decodable as an API-key session.
+        assert_eq!(session_from_headers(&headers), None);
+    }
+
+    #[test]
+    fn session_cookie_value_skips_empty_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            HeaderValue::from_static("signaldb_session="),
+        );
+        assert_eq!(session_cookie_value(&headers), None);
     }
 
     #[test]

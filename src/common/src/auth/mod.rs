@@ -15,8 +15,24 @@ pub use password::{
     PasswordError, SESSION_TOKEN_PREFIX, generate_session_token, hash_password, hash_session_token,
     verify_password,
 };
-pub use session::{SESSION_COOKIE, SessionData, decode_session, encode_session};
+pub use session::{
+    SESSION_COOKIE, SessionData, decode_session, encode_session, session_cookie_value,
+};
 pub use validation::{ValidationError, validate_dataset_id, validate_id, validate_tenant_id};
+
+use crate::catalog::MembershipRole;
+
+/// Identity of the human user behind a request, when the request was
+/// authenticated with a user session token rather than a tenant API key.
+#[derive(Debug, Clone)]
+pub struct UserIdentity {
+    /// The user's catalog id (`users.id`).
+    pub user_id: String,
+    /// Canonicalized login email.
+    pub email: String,
+    /// The user's role in the resolved tenant (from `tenant_memberships`).
+    pub role: MembershipRole,
+}
 
 /// Tenant context extracted from authenticated request
 #[derive(Debug, Clone)]
@@ -33,10 +49,13 @@ pub struct TenantContext {
     pub api_key_name: Option<String>,
     /// Source of the tenant configuration (config file or database)
     pub source: TenantSource,
+    /// User identity when authenticated via a user session (None for
+    /// API-key authentication)
+    pub user: Option<UserIdentity>,
 }
 
 impl TenantContext {
-    /// Create a new TenantContext
+    /// Create a new TenantContext (API-key style, no user identity)
     pub fn new(
         tenant_id: String,
         dataset_id: String,
@@ -52,7 +71,14 @@ impl TenantContext {
             dataset_slug,
             api_key_name,
             source,
+            user: None,
         }
+    }
+
+    /// Attach a user identity (builder-style, for user-session auth)
+    pub fn with_user(mut self, user: UserIdentity) -> Self {
+        self.user = Some(user);
+        self
     }
 }
 
@@ -138,6 +164,29 @@ mod tests {
         assert_eq!(ctx.dataset_slug, "production");
         assert_eq!(ctx.api_key_name, Some("prod-key".to_string()));
         assert_eq!(ctx.source, TenantSource::Config);
+        assert!(ctx.user.is_none());
+    }
+
+    #[test]
+    fn test_tenant_context_with_user() {
+        let ctx = TenantContext::new(
+            "acme".to_string(),
+            "production".to_string(),
+            "acme".to_string(),
+            "production".to_string(),
+            None,
+            TenantSource::Database,
+        )
+        .with_user(UserIdentity {
+            user_id: "user-1".to_string(),
+            email: "alice@example.com".to_string(),
+            role: MembershipRole::Member,
+        });
+
+        let user = ctx.user.expect("user identity attached");
+        assert_eq!(user.user_id, "user-1");
+        assert_eq!(user.email, "alice@example.com");
+        assert_eq!(user.role, MembershipRole::Member);
     }
 
     #[test]

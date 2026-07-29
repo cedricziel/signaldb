@@ -3,7 +3,11 @@
 //! This module provides Tower middleware for extracting and validating
 //! authentication headers on HTTP requests.
 
-use super::{AuthError, Authenticator, TenantContext, validate_dataset_id, validate_tenant_id};
+use super::{
+    AuthError, Authenticator, TenantContext, session::session_cookie_value, validate_dataset_id,
+    validate_tenant_id,
+};
+use crate::auth::password::SESSION_TOKEN_PREFIX;
 use axum::{
     extract::Request,
     http::{HeaderMap, StatusCode},
@@ -88,10 +92,61 @@ fn extract_auth_from_session(
     Ok((session.api_key, tenant_id, dataset_id))
 }
 
+/// Extract optional, validated `X-Tenant-ID` / `X-Dataset-ID` headers for
+/// the user-session path (where the tenant is resolved from memberships
+/// when no header is supplied).
+fn extract_optional_tenant_headers(
+    headers: &HeaderMap,
+) -> Result<(Option<String>, Option<String>), AuthError> {
+    let tenant_id = match headers.get("x-tenant-id") {
+        Some(value) => {
+            let raw = value
+                .to_str()
+                .map_err(|_| AuthError::bad_request("Invalid X-Tenant-ID header"))?;
+            Some(validate_tenant_id(raw)?)
+        }
+        None => None,
+    };
+    let dataset_id = match headers.get("x-dataset-id").and_then(|v| v.to_str().ok()) {
+        Some(id) => Some(validate_dataset_id(id)?),
+        None => None,
+    };
+    Ok((tenant_id, dataset_id))
+}
+
+/// Resolve the request's [`TenantContext`] from either credential kind.
+///
+/// A request without an `Authorization` header whose session cookie holds
+/// an `sdbs_`-prefixed value is a **user session**: the token is validated
+/// against the catalog and the tenant resolved from the user's memberships
+/// (see [`Authenticator::authenticate_user_session`]). Any other cookie
+/// value is the API-key session format, handled by the existing
+/// header/cookie extraction plus [`Authenticator::authenticate`].
+async fn resolve_tenant_context(
+    authenticator: &Authenticator,
+    headers: &HeaderMap,
+) -> Result<TenantContext, AuthError> {
+    if headers.get("authorization").is_none()
+        && let Some(cookie_value) = session_cookie_value(headers)
+        && cookie_value.starts_with(SESSION_TOKEN_PREFIX)
+    {
+        let (tenant_id, dataset_id) = extract_optional_tenant_headers(headers)?;
+        return authenticator
+            .authenticate_user_session(&cookie_value, tenant_id.as_deref(), dataset_id.as_deref())
+            .await;
+    }
+
+    let (api_key, tenant_id, dataset_id) = extract_auth_headers(headers)?;
+    authenticator
+        .authenticate(&api_key, &tenant_id, dataset_id.as_deref())
+        .await
+}
+
 /// Axum middleware function for HTTP authentication
 ///
-/// Extracts authentication headers, validates them using the Authenticator,
-/// and inserts TenantContext into request extensions on success.
+/// Extracts authentication credentials (headers, API-key session cookie,
+/// or user session cookie), validates them using the Authenticator, and
+/// inserts TenantContext into request extensions on success.
 ///
 /// Returns appropriate HTTP error responses (400/401/403) on auth failure.
 pub async fn auth_middleware(
@@ -99,30 +154,10 @@ pub async fn auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Response {
-    // Extract authentication headers
-    let (api_key, tenant_id, dataset_id) = match extract_auth_headers(request.headers()) {
-        Ok(headers) => headers,
-        Err(err) => {
-            return (
-                StatusCode::from_u16(err.status_code).unwrap_or(StatusCode::BAD_REQUEST),
-                err.message,
-            )
-                .into_response();
-        }
-    };
-
-    // Authenticate using the Authenticator
-    let tenant_context = match authenticator
-        .authenticate(&api_key, &tenant_id, dataset_id.as_deref())
-        .await
-    {
+    let tenant_context = match resolve_tenant_context(&authenticator, request.headers()).await {
         Ok(ctx) => ctx,
         Err(err) => {
-            log::warn!(
-                "Authentication failed for tenant '{}': {}",
-                tenant_id,
-                err.message
-            );
+            log::warn!("Authentication failed: {}", err.message);
             return (
                 StatusCode::from_u16(err.status_code).unwrap_or(StatusCode::UNAUTHORIZED),
                 err.message,
@@ -620,6 +655,251 @@ mod tests {
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    mod user_session_cookie {
+        use super::*;
+        use crate::auth::password::{generate_session_token, hash_session_token};
+        use crate::catalog::MembershipRole;
+        use axum::{
+            Router,
+            body::Body,
+            http::{Request, StatusCode},
+            middleware,
+            routing::get,
+        };
+        use chrono::{Duration, Utc};
+        use tower::ServiceExt;
+
+        async fn seed_tenant(catalog: &Catalog, tenant_id: &str, dataset: &str) {
+            catalog
+                .upsert_tenant(tenant_id, tenant_id, Some(dataset), "database")
+                .await
+                .unwrap();
+            catalog.create_dataset(tenant_id, dataset).await.unwrap();
+        }
+
+        async fn seed_user_with_session(
+            catalog: &Catalog,
+            email: &str,
+            memberships: &[(&str, MembershipRole)],
+        ) -> String {
+            let user = catalog
+                .create_user(email, None, "unused-hash", false)
+                .await
+                .unwrap();
+            for (tenant_id, role) in memberships {
+                catalog
+                    .upsert_tenant_membership(&user.id, tenant_id, *role)
+                    .await
+                    .unwrap();
+            }
+            let token = generate_session_token();
+            catalog
+                .create_user_session(
+                    &user.id,
+                    &hash_session_token(&token),
+                    Utc::now() + Duration::hours(24),
+                )
+                .await
+                .unwrap();
+            token
+        }
+
+        fn app_for(catalog: Arc<Catalog>, auth_config: AuthConfig) -> Router {
+            let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
+
+            async fn test_handler(tenant_ctx: TenantContextExtractor) -> String {
+                let user = tenant_ctx
+                    .0
+                    .user
+                    .map(|u| format!("{}:{}", u.email, u.role))
+                    .unwrap_or_else(|| "none".to_string());
+                format!(
+                    "tenant={},dataset={},user={user}",
+                    tenant_ctx.0.tenant_id, tenant_ctx.0.dataset_id
+                )
+            }
+
+            Router::new()
+                .route("/test", get(test_handler))
+                .layer(middleware::from_fn(move |req, next| {
+                    auth_middleware(authenticator.clone(), req, next)
+                }))
+        }
+
+        async fn send(
+            app: &Router,
+            token: &str,
+            tenant_header: Option<&str>,
+        ) -> axum::response::Response {
+            let mut builder = Request::builder()
+                .uri("/test")
+                .header("cookie", format!("{}={token}", crate::auth::SESSION_COOKIE));
+            if let Some(tenant) = tenant_header {
+                builder = builder.header("x-tenant-id", tenant);
+            }
+            app.clone()
+                .oneshot(builder.body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+        }
+
+        async fn body_string(res: axum::response::Response) -> String {
+            let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            String::from_utf8(bytes.to_vec()).unwrap()
+        }
+
+        #[tokio::test]
+        async fn sdbs_cookie_authenticates_with_user_context() {
+            let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+            seed_tenant(&catalog, "acme", "production").await;
+            let token = seed_user_with_session(
+                &catalog,
+                "alice@example.com",
+                &[("acme", MembershipRole::Member)],
+            )
+            .await;
+            let app = app_for(catalog, AuthConfig::default());
+
+            // Single membership resolves implicitly, user identity attached.
+            let res = send(&app, &token, None).await;
+            assert_eq!(res.status(), StatusCode::OK);
+            assert_eq!(
+                body_string(res).await,
+                "tenant=acme,dataset=production,user=alice@example.com:member"
+            );
+
+            // Explicit matching tenant header also works.
+            let res = send(&app, &token, Some("acme")).await;
+            assert_eq!(res.status(), StatusCode::OK);
+        }
+
+        #[tokio::test]
+        async fn tenant_resolution_rules_apply() {
+            let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+            seed_tenant(&catalog, "acme", "production").await;
+            seed_tenant(&catalog, "globex", "main").await;
+            let multi_token = seed_user_with_session(
+                &catalog,
+                "multi@example.com",
+                &[
+                    ("acme", MembershipRole::Member),
+                    ("globex", MembershipRole::Viewer),
+                ],
+            )
+            .await;
+            let single_token = seed_user_with_session(
+                &catalog,
+                "single@example.com",
+                &[("acme", MembershipRole::Member)],
+            )
+            .await;
+            let app = app_for(catalog, AuthConfig::default());
+
+            // Multiple memberships without a header: 400 asking for it.
+            let res = send(&app, &multi_token, None).await;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+            // Explicit header selects among memberships.
+            let res = send(&app, &multi_token, Some("globex")).await;
+            assert_eq!(res.status(), StatusCode::OK);
+            assert_eq!(
+                body_string(res).await,
+                "tenant=globex,dataset=main,user=multi@example.com:viewer"
+            );
+
+            // Non-member tenant: 403.
+            let res = send(&app, &single_token, Some("globex")).await;
+            assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        }
+
+        #[tokio::test]
+        async fn expired_or_revoked_sessions_are_unauthorized() {
+            let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+            seed_tenant(&catalog, "acme", "production").await;
+            let user = catalog
+                .create_user("alice@example.com", None, "unused-hash", false)
+                .await
+                .unwrap();
+            catalog
+                .upsert_tenant_membership(&user.id, "acme", MembershipRole::Member)
+                .await
+                .unwrap();
+
+            let expired_token = generate_session_token();
+            catalog
+                .create_user_session(
+                    &user.id,
+                    &hash_session_token(&expired_token),
+                    Utc::now() - Duration::minutes(1),
+                )
+                .await
+                .unwrap();
+
+            let revoked_token = generate_session_token();
+            let revoked = catalog
+                .create_user_session(
+                    &user.id,
+                    &hash_session_token(&revoked_token),
+                    Utc::now() + Duration::hours(24),
+                )
+                .await
+                .unwrap();
+            catalog.revoke_session(&revoked.id).await.unwrap();
+
+            let app = app_for(catalog, AuthConfig::default());
+            for token in [expired_token, revoked_token] {
+                let res = send(&app, &token, None).await;
+                assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+            }
+        }
+
+        #[tokio::test]
+        async fn system_tenant_user_requests_are_suppressed_from_otel_export() {
+            // The _system suppression keys off the resolved tenant_id, so it
+            // must hold when that tenant is reached via a user session too.
+            let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+            seed_tenant(&catalog, "_system", "production").await;
+            let token = seed_user_with_session(
+                &catalog,
+                "op@example.com",
+                &[("_system", MembershipRole::Admin)],
+            )
+            .await;
+
+            let authenticator = Arc::new(Authenticator::new(AuthConfig::default(), catalog));
+
+            async fn handler() -> &'static str {
+                tracing::info!("handling query request");
+                "ok"
+            }
+
+            let app = Router::new()
+                .route("/test", get(handler))
+                .layer(middleware::from_fn(move |req, next| {
+                    auth_middleware(authenticator.clone(), req, next)
+                }));
+
+            let probe = crate::testing::OtelExportProbe::new();
+            {
+                let _guard = probe.install();
+                let res = send(&app, &token, None).await;
+                assert_eq!(res.status(), StatusCode::OK);
+            }
+            assert_eq!(
+                probe.exported_events(),
+                0,
+                "_system user-session request must not export log records"
+            );
+            assert_eq!(
+                probe.exported_spans(),
+                0,
+                "_system user-session request must not export spans"
+            );
+        }
     }
 
     #[tokio::test]
