@@ -165,7 +165,7 @@ uuid = { version = "1.21.0", features = ["serde", "v4"] }
 humantime-serde = "1.1.1"
 
 hex = "0.4"
-base64 = "0.22"
+base64 = "0.23"
 env_logger = "0.11.5"
 tower = "0.5.2"
 dashmap = "6.2"
