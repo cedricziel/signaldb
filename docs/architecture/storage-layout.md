@@ -99,17 +99,19 @@ With `dsn = "file:///.data/storage"`, tenant "acme" (slug `acme`), datasets "pro
 
 The `[storage].dsn` config accepts three URL schemes:
 
-| Scheme | Backend | Example | Notes |
-|--------|---------|---------|-------|
-| `file://` | Local filesystem | `file:///.data/storage` | `LocalFileSystem` with prefix |
-| `memory://` | In-memory | `memory://` | For testing only; data lost on restart |
-| `s3://` | S3-compatible | `s3://bucket/prefix` | AWS S3, MinIO, or compatible. Uses env vars for credentials. |
+| Scheme      | Backend          | Example                 | Notes                                                        |
+| ----------- | ---------------- | ----------------------- | ------------------------------------------------------------ |
+| `file://`   | Local filesystem | `file:///.data/storage` | `LocalFileSystem` with prefix                                |
+| `memory://` | In-memory        | `memory://`             | For testing only; data lost on restart                       |
+| `s3://`     | S3-compatible    | `s3://bucket/prefix`    | AWS S3, MinIO, or compatible. Uses env vars for credentials. |
 
 **Path resolution** (`storage_dsn_to_path()` in `src/common/src/storage.rs`):
 
-- `file:///.data/storage` -> `.data/storage` (strips leading `/.` for relative paths)
+- `file:///.data/storage` -> `.data/storage` (strips leading `/.` for relative paths, resolved against the working directory)
 - `file:///tmp/data` -> `/tmp/data` (keeps absolute paths)
 - `s3://bucket/prefix` -> kept as-is
+
+`file://` storage directories are created automatically at startup (`ensure_file_dsn_dir()` in `src/common/src/storage.rs`), so a missing directory on a fresh checkout is not an error.
 
 ### Per-Dataset Storage Override
 
@@ -170,11 +172,11 @@ Full:      Identifier([tenant_slug, dataset_slug], table_name)
 
 Examples:
 
-| Tenant | Dataset | Table | Iceberg Identifier |
-|--------|---------|-------|--------------------|
-| acme | prod | traces | `Identifier(["acme", "prod"], "traces")` |
-| acme | archive | logs | `Identifier(["acme", "archive"], "logs")` |
-| beta | staging | metrics_gauge | `Identifier(["beta", "staging"], "metrics_gauge")` |
+| Tenant | Dataset | Table         | Iceberg Identifier                                 |
+| ------ | ------- | ------------- | -------------------------------------------------- |
+| acme   | prod    | traces        | `Identifier(["acme", "prod"], "traces")`           |
+| acme   | archive | logs          | `Identifier(["acme", "archive"], "logs")`          |
+| beta   | staging | metrics_gauge | `Identifier(["beta", "staging"], "metrics_gauge")` |
 
 Namespaces are created explicitly: `IcebergTableManager::ensure_table()` (`src/common/src/iceberg/table_manager.rs`) calls `create_namespace` before creating a table, treating "already exists" errors from concurrent creators as success.
 
@@ -225,15 +227,15 @@ SignalDB creates up to 7 table types per tenant-dataset combination. Table creat
 
 ### Signal Type to Table Mapping
 
-| Signal Type | Table Name | WalOperation | Schema Source |
-|-------------|-----------|--------------|---------------|
-| Traces | `traces` | `WriteTraces` | `schemas.toml` (v2, inherits v1) |
-| Logs | `logs` | `WriteLogs` | `schemas.toml` (v1) |
-| Metrics (Gauge) | `metrics_gauge` | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
-| Metrics (Sum) | `metrics_sum` | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
-| Metrics (Histogram) | `metrics_histogram` | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
+| Signal Type              | Table Name                      | WalOperation   | Schema Source                    |
+| ------------------------ | ------------------------------- | -------------- | -------------------------------- |
+| Traces                   | `traces`                        | `WriteTraces`  | `schemas.toml` (v2, inherits v1) |
+| Logs                     | `logs`                          | `WriteLogs`    | `schemas.toml` (v1)              |
+| Metrics (Gauge)          | `metrics_gauge`                 | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
+| Metrics (Sum)            | `metrics_sum`                   | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
+| Metrics (Histogram)      | `metrics_histogram`             | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
 | Metrics (Exp. Histogram) | `metrics_exponential_histogram` | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
-| Metrics (Summary) | `metrics_summary` | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
+| Metrics (Summary)        | `metrics_summary`               | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
 
 For metrics, the target table name is extracted from the WAL entry's `metadata` JSON field (`target_table`), defaulting to `metrics_gauge`.
 
@@ -263,33 +265,33 @@ Schema definitions come from two sources:
 
 Defined in `schemas.toml` via v1 base + v2 inheritance with renames and additions.
 
-| # | Field | Iceberg Type | Required | Notes |
-|---|-------|-------------|----------|-------|
-| 1 | `trace_id` | String | Yes | |
-| 2 | `span_id` | String | Yes | |
-| 3 | `parent_span_id` | String | No | |
-| 4 | `span_name` | String | Yes | Renamed from `name` in v2 |
-| 5 | `service_name` | String | Yes | |
-| 6 | `start_time_unix_nano` | Long | Yes | Nanoseconds since epoch |
-| 7 | `end_time_unix_nano` | Long | Yes | Nanoseconds since epoch |
-| 8 | `duration_nanos` | Long | Yes | Renamed from `duration_nano` in v2 |
-| 9 | `span_kind` | String | Yes | |
-| 10 | `status_code` | String | Yes | |
-| 11 | `status_message` | String | No | |
-| 12 | `is_root` | Boolean | Yes | |
-| 13 | `span_attributes` | String | No | JSON. Renamed from `attributes_json` in v2 |
-| 14 | `resource_attributes` | String | No | JSON. Renamed from `resource_json` in v2 |
-| 15 | `events` | String | No | JSON serialized (nested List<Struct> in Flight) |
-| 16 | `links` | String | No | JSON serialized (nested List<Struct> in Flight) |
-| 17 | `trace_state` | String | No | |
-| 18 | `resource_schema_url` | String | No | |
-| 19 | `scope_name` | String | No | |
-| 20 | `scope_version` | String | No | |
-| 21 | `scope_schema_url` | String | No | |
-| 22 | `scope_attributes` | String | No | |
-| 23 | `timestamp` | Timestamp | Yes | Computed from `start_time_unix_nano`. Partition key. |
-| 24 | `date_day` | Date | Yes | Computed from timestamp |
-| 25 | `hour` | Int | Yes | Computed from timestamp |
+| #   | Field                  | Iceberg Type | Required | Notes                                                |
+| --- | ---------------------- | ------------ | -------- | ---------------------------------------------------- |
+| 1   | `trace_id`             | String       | Yes      |                                                      |
+| 2   | `span_id`              | String       | Yes      |                                                      |
+| 3   | `parent_span_id`       | String       | No       |                                                      |
+| 4   | `span_name`            | String       | Yes      | Renamed from `name` in v2                            |
+| 5   | `service_name`         | String       | Yes      |                                                      |
+| 6   | `start_time_unix_nano` | Long         | Yes      | Nanoseconds since epoch                              |
+| 7   | `end_time_unix_nano`   | Long         | Yes      | Nanoseconds since epoch                              |
+| 8   | `duration_nanos`       | Long         | Yes      | Renamed from `duration_nano` in v2                   |
+| 9   | `span_kind`            | String       | Yes      |                                                      |
+| 10  | `status_code`          | String       | Yes      |                                                      |
+| 11  | `status_message`       | String       | No       |                                                      |
+| 12  | `is_root`              | Boolean      | Yes      |                                                      |
+| 13  | `span_attributes`      | String       | No       | JSON. Renamed from `attributes_json` in v2           |
+| 14  | `resource_attributes`  | String       | No       | JSON. Renamed from `resource_json` in v2             |
+| 15  | `events`               | String       | No       | JSON serialized (nested List<Struct> in Flight)      |
+| 16  | `links`                | String       | No       | JSON serialized (nested List<Struct> in Flight)      |
+| 17  | `trace_state`          | String       | No       |                                                      |
+| 18  | `resource_schema_url`  | String       | No       |                                                      |
+| 19  | `scope_name`           | String       | No       |                                                      |
+| 20  | `scope_version`        | String       | No       |                                                      |
+| 21  | `scope_schema_url`     | String       | No       |                                                      |
+| 22  | `scope_attributes`     | String       | No       |                                                      |
+| 23  | `timestamp`            | Timestamp    | Yes      | Computed from `start_time_unix_nano`. Partition key. |
+| 24  | `date_day`             | Date         | Yes      | Computed from timestamp                              |
+| 25  | `hour`                 | Int          | Yes      | Computed from timestamp                              |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
@@ -297,26 +299,26 @@ Defined in `schemas.toml` via v1 base + v2 inheritance with renames and addition
 
 Defined in `schemas.toml`.
 
-| # | Field | Iceberg Type | Required | Notes |
-|---|-------|-------------|----------|-------|
-| 1 | `timestamp` | Timestamp | Yes | Partition key |
-| 2 | `observed_timestamp` | Timestamp | No | |
-| 3 | `trace_id` | String | No | Correlation with traces |
-| 4 | `span_id` | String | No | Correlation with traces |
-| 5 | `trace_flags` | Int | No | |
-| 6 | `severity_text` | String | No | |
-| 7 | `severity_number` | Int | No | |
-| 8 | `service_name` | String | Yes | |
-| 9 | `body` | String | No | |
-| 10 | `resource_schema_url` | String | No | |
-| 11 | `resource_attributes` | Map<String,String> | No | typed map (legacy tables: JSON string) |
-| 12 | `scope_schema_url` | String | No | |
-| 13 | `scope_name` | String | No | |
-| 14 | `scope_version` | String | No | |
-| 15 | `scope_attributes` | Map<String,String> | No | typed map (legacy tables: JSON string) |
-| 16 | `log_attributes` | Map<String,String> | No | typed map (legacy tables: JSON string) |
-| 17 | `date_day` | Date | Yes | Computed from timestamp |
-| 18 | `hour` | Int | Yes | Computed from timestamp |
+| #   | Field                 | Iceberg Type       | Required | Notes                                  |
+| --- | --------------------- | ------------------ | -------- | -------------------------------------- |
+| 1   | `timestamp`           | Timestamp          | Yes      | Partition key                          |
+| 2   | `observed_timestamp`  | Timestamp          | No       |                                        |
+| 3   | `trace_id`            | String             | No       | Correlation with traces                |
+| 4   | `span_id`             | String             | No       | Correlation with traces                |
+| 5   | `trace_flags`         | Int                | No       |                                        |
+| 6   | `severity_text`       | String             | No       |                                        |
+| 7   | `severity_number`     | Int                | No       |                                        |
+| 8   | `service_name`        | String             | Yes      |                                        |
+| 9   | `body`                | String             | No       |                                        |
+| 10  | `resource_schema_url` | String             | No       |                                        |
+| 11  | `resource_attributes` | Map<String,String> | No       | typed map (legacy tables: JSON string) |
+| 12  | `scope_schema_url`    | String             | No       |                                        |
+| 13  | `scope_name`          | String             | No       |                                        |
+| 14  | `scope_version`       | String             | No       |                                        |
+| 15  | `scope_attributes`    | Map<String,String> | No       | typed map (legacy tables: JSON string) |
+| 16  | `log_attributes`      | Map<String,String> | No       | typed map (legacy tables: JSON string) |
+| 17  | `date_day`            | Date               | Yes      | Computed from timestamp                |
+| 18  | `hour`                | Int                | Yes      | Computed from timestamp                |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
@@ -380,27 +382,27 @@ column when the queried table has it, else the JSON substring match.
 
 Defined in `src/common/src/iceberg/schemas.rs`.
 
-| # | Field | Iceberg Type | Required | Notes |
-|---|-------|-------------|----------|-------|
-| 1 | `timestamp` | Timestamp | Yes | Partition key |
-| 2 | `start_timestamp` | Timestamp | No | |
-| 3 | `service_name` | String | Yes | |
-| 4 | `metric_name` | String | Yes | |
-| 5 | `metric_description` | String | No | |
-| 6 | `metric_unit` | String | No | |
-| 7 | `value` | Double | Yes | |
-| 8 | `flags` | Int | No | |
-| 9 | `resource_schema_url` | String | No | |
-| 10 | `resource_attributes` | String | No | JSON |
-| 11 | `scope_name` | String | No | |
-| 12 | `scope_version` | String | No | |
-| 13 | `scope_schema_url` | String | No | |
-| 14 | `scope_attributes` | String | No | JSON |
-| 15 | `scope_dropped_attr_count` | Int | No | |
-| 16 | `attributes` | Map<String,String> | No | typed map (legacy: JSON string) |
-| 17 | `exemplars` | String | No | JSON |
-| 18 | `date_day` | Date | Yes | Computed |
-| 19 | `hour` | Int | Yes | Computed |
+| #   | Field                      | Iceberg Type       | Required | Notes                           |
+| --- | -------------------------- | ------------------ | -------- | ------------------------------- |
+| 1   | `timestamp`                | Timestamp          | Yes      | Partition key                   |
+| 2   | `start_timestamp`          | Timestamp          | No       |                                 |
+| 3   | `service_name`             | String             | Yes      |                                 |
+| 4   | `metric_name`              | String             | Yes      |                                 |
+| 5   | `metric_description`       | String             | No       |                                 |
+| 6   | `metric_unit`              | String             | No       |                                 |
+| 7   | `value`                    | Double             | Yes      |                                 |
+| 8   | `flags`                    | Int                | No       |                                 |
+| 9   | `resource_schema_url`      | String             | No       |                                 |
+| 10  | `resource_attributes`      | String             | No       | JSON                            |
+| 11  | `scope_name`               | String             | No       |                                 |
+| 12  | `scope_version`            | String             | No       |                                 |
+| 13  | `scope_schema_url`         | String             | No       |                                 |
+| 14  | `scope_attributes`         | String             | No       | JSON                            |
+| 15  | `scope_dropped_attr_count` | Int                | No       |                                 |
+| 16  | `attributes`               | Map<String,String> | No       | typed map (legacy: JSON string) |
+| 17  | `exemplars`                | String             | No       | JSON                            |
+| 18  | `date_day`                 | Date               | Yes      | Computed                        |
+| 19  | `hour`                     | Int                | Yes      | Computed                        |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
@@ -408,64 +410,64 @@ Defined in `src/common/src/iceberg/schemas.rs`.
 
 Extends Gauge with aggregation fields.
 
-| # | Field | Iceberg Type | Required | Notes |
-|---|-------|-------------|----------|-------|
-| 1-8 | *(same as Gauge 1-8)* | | | |
-| 9 | `aggregation_temporality` | Int | Yes | 0=Unspecified, 1=Delta, 2=Cumulative |
-| 10 | `is_monotonic` | Boolean | Yes | |
-| 11-21 | *(same as Gauge 9-19)* | | | |
+| #     | Field                     | Iceberg Type | Required | Notes                                |
+| ----- | ------------------------- | ------------ | -------- | ------------------------------------ |
+| 1-8   | _(same as Gauge 1-8)_     |              |          |                                      |
+| 9     | `aggregation_temporality` | Int          | Yes      | 0=Unspecified, 1=Delta, 2=Cumulative |
+| 10    | `is_monotonic`            | Boolean      | Yes      |                                      |
+| 11-21 | _(same as Gauge 9-19)_    |              |          |                                      |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
 #### Metrics Histogram Table (v1 -- current)
 
-| # | Field | Iceberg Type | Required | Notes |
-|---|-------|-------------|----------|-------|
-| 1-6 | *(same as Gauge 1-6)* | | | |
-| 7 | `count` | Long | Yes | Total count |
-| 8 | `sum` | Double | No | |
-| 9 | `min` | Double | No | |
-| 10 | `max` | Double | No | |
-| 11 | `bucket_counts` | String | No | JSON array |
-| 12 | `explicit_bounds` | String | No | JSON array |
-| 13 | `flags` | Int | No | |
-| 14 | `aggregation_temporality` | Int | Yes | |
-| 15-25 | *(resource/scope/attributes/exemplars/date_day/hour)* | | | |
+| #     | Field                                                 | Iceberg Type | Required | Notes       |
+| ----- | ----------------------------------------------------- | ------------ | -------- | ----------- |
+| 1-6   | _(same as Gauge 1-6)_                                 |              |          |             |
+| 7     | `count`                                               | Long         | Yes      | Total count |
+| 8     | `sum`                                                 | Double       | No       |             |
+| 9     | `min`                                                 | Double       | No       |             |
+| 10    | `max`                                                 | Double       | No       |             |
+| 11    | `bucket_counts`                                       | String       | No       | JSON array  |
+| 12    | `explicit_bounds`                                     | String       | No       | JSON array  |
+| 13    | `flags`                                               | Int          | No       |             |
+| 14    | `aggregation_temporality`                             | Int          | Yes      |             |
+| 15-25 | _(resource/scope/attributes/exemplars/date_day/hour)_ |              |          |             |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
 #### Metrics Exponential Histogram Table (v1 -- current)
 
-| # | Field | Iceberg Type | Required | Notes |
-|---|-------|-------------|----------|-------|
-| 1-6 | *(same as Gauge 1-6)* | | | |
-| 7 | `count` | Long | Yes | |
-| 8 | `sum` | Double | No | |
-| 9 | `min` | Double | No | |
-| 10 | `max` | Double | No | |
-| 11 | `scale` | Int | No | |
-| 12 | `zero_count` | Long | No | |
-| 13 | `positive_offset` | Int | No | |
-| 14 | `positive_bucket_counts` | String | No | JSON array |
-| 15 | `negative_offset` | Int | No | |
-| 16 | `negative_bucket_counts` | String | No | JSON array |
-| 17 | `flags` | Int | No | |
-| 18 | `aggregation_temporality` | Int | Yes | |
-| 19 | `zero_threshold` | Double | No | |
-| 20-30 | *(resource/scope/attributes/exemplars/date_day/hour)* | | | |
+| #     | Field                                                 | Iceberg Type | Required | Notes      |
+| ----- | ----------------------------------------------------- | ------------ | -------- | ---------- |
+| 1-6   | _(same as Gauge 1-6)_                                 |              |          |            |
+| 7     | `count`                                               | Long         | Yes      |            |
+| 8     | `sum`                                                 | Double       | No       |            |
+| 9     | `min`                                                 | Double       | No       |            |
+| 10    | `max`                                                 | Double       | No       |            |
+| 11    | `scale`                                               | Int          | No       |            |
+| 12    | `zero_count`                                          | Long         | No       |            |
+| 13    | `positive_offset`                                     | Int          | No       |            |
+| 14    | `positive_bucket_counts`                              | String       | No       | JSON array |
+| 15    | `negative_offset`                                     | Int          | No       |            |
+| 16    | `negative_bucket_counts`                              | String       | No       | JSON array |
+| 17    | `flags`                                               | Int          | No       |            |
+| 18    | `aggregation_temporality`                             | Int          | Yes      |            |
+| 19    | `zero_threshold`                                      | Double       | No       |            |
+| 20-30 | _(resource/scope/attributes/exemplars/date_day/hour)_ |              |          |            |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
 #### Metrics Summary Table (v1 -- current)
 
-| # | Field | Iceberg Type | Required | Notes |
-|---|-------|-------------|----------|-------|
-| 1-6 | *(same as Gauge 1-6)* | | | |
-| 7 | `count` | Long | Yes | |
-| 8 | `sum` | Double | Yes | |
-| 9 | `quantile_values` | String | No | JSON array of `{quantile, value}` objects |
-| 10 | `flags` | Int | No | |
-| 11-21 | *(resource/scope/attributes/exemplars/date_day/hour)* | | | |
+| #     | Field                                                 | Iceberg Type | Required | Notes                                     |
+| ----- | ----------------------------------------------------- | ------------ | -------- | ----------------------------------------- |
+| 1-6   | _(same as Gauge 1-6)_                                 |              |          |                                           |
+| 7     | `count`                                               | Long         | Yes      |                                           |
+| 8     | `sum`                                                 | Double       | Yes      |                                           |
+| 9     | `quantile_values`                                     | String       | No       | JSON array of `{quantile, value}` objects |
+| 10    | `flags`                                               | Int          | No       |                                           |
+| 11-21 | _(resource/scope/attributes/exemplars/date_day/hour)_ |              |          |                                           |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
@@ -539,11 +541,11 @@ The WAL enforces non-empty `tenant_id` and `dataset_id` at construction time.
 
 Each WAL segment consists of three files:
 
-| File | Format | Content |
-|------|--------|---------|
-| `.log` | Length-prefixed bincode | Sequence of `WalEntry` structs (8-byte length prefix + bincode bytes) |
-| `.data` | Raw bytes | Arrow IPC `StreamWriter` format. Entries reference data by offset and size. |
-| `.index` | Binary | 8-byte count + 16-byte UUIDs of processed entries |
+| File     | Format                  | Content                                                                     |
+| -------- | ----------------------- | --------------------------------------------------------------------------- |
+| `.log`   | Length-prefixed bincode | Sequence of `WalEntry` structs (8-byte length prefix + bincode bytes)       |
+| `.data`  | Raw bytes               | Arrow IPC `StreamWriter` format. Entries reference data by offset and size. |
+| `.index` | Binary                  | 8-byte count + 16-byte UUIDs of processed entries                           |
 
 ### WAL Entry Structure
 
@@ -600,13 +602,13 @@ let batch = reader.into_iter().next().unwrap()?;
 
 Schemas are defined in `schemas.toml` at the repository root and compiled into the binary via `include_str!`. The system supports:
 
-| Feature | Description |
-|---------|-------------|
-| **Versioning** | Each signal type tracks a current version (e.g., `current_trace_version = "v2"`) |
-| **Inheritance** | A version can inherit all fields from a parent: `inherits = "v1"` |
-| **Field renames** | Rename fields across versions: `{ from = "name", to = "span_name" }` |
+| Feature             | Description                                                                                        |
+| ------------------- | -------------------------------------------------------------------------------------------------- |
+| **Versioning**      | Each signal type tracks a current version (e.g., `current_trace_version = "v2"`)                   |
+| **Inheritance**     | A version can inherit all fields from a parent: `inherits = "v1"`                                  |
+| **Field renames**   | Rename fields across versions: `{ from = "name", to = "span_name" }`                               |
 | **Field additions** | Add new fields: `{ name = "timestamp", type = "timestamp_ns", computed = "start_time_unix_nano" }` |
-| **Computed fields** | Fields derived from other fields at write time |
+| **Computed fields** | Fields derived from other fields at write time                                                     |
 
 ### Schema Resolution
 
@@ -621,15 +623,15 @@ The `SchemaDefinitions` struct (`src/common/src/schema/schema_parser.rs`) resolv
 
 The Flight wire format (v1) and Iceberg storage format (v2) are intentionally different:
 
-| Aspect | Flight Schema (v1) | Iceberg Schema (v2) |
-|--------|-------------------|---------------------|
-| Span name field | `name` | `span_name` |
-| Duration field | `duration_nano` (UInt64) | `duration_nanos` (Long/Int64) |
-| Attributes field | `attributes_json` | `span_attributes` |
-| Resource field | `resource_json` | `resource_attributes` |
-| Time fields | UInt64 (nanoseconds) | Long/Int64 (nanoseconds) |
-| Events/Links | `List<Struct>` (nested Arrow) | `String` (JSON serialized) |
-| Partition fields | None | `timestamp`, `date_day`, `hour` |
+| Aspect           | Flight Schema (v1)            | Iceberg Schema (v2)             |
+| ---------------- | ----------------------------- | ------------------------------- |
+| Span name field  | `name`                        | `span_name`                     |
+| Duration field   | `duration_nano` (UInt64)      | `duration_nanos` (Long/Int64)   |
+| Attributes field | `attributes_json`             | `span_attributes`               |
+| Resource field   | `resource_json`               | `resource_attributes`           |
+| Time fields      | UInt64 (nanoseconds)          | Long/Int64 (nanoseconds)        |
+| Events/Links     | `List<Struct>` (nested Arrow) | `String` (JSON serialized)      |
+| Partition fields | None                          | `timestamp`, `date_day`, `hour` |
 
 ### Write-Time Transformation
 
@@ -706,21 +708,21 @@ metrics_enabled = true
 
 ## Key Implementation Files
 
-| File | Purpose |
-|------|---------|
-| `schemas.toml` | Schema definitions with versioning and inheritance |
-| `src/common/src/iceberg/mod.rs` | Iceberg catalog creation (SQLite `SqlCatalog`) |
-| `src/common/src/iceberg/schemas.rs` | Table schemas, partition specs, `TableSchema` enum |
-| `src/common/src/iceberg/names.rs` | Namespace/identifier/location builders |
-| `src/common/src/iceberg/table_manager.rs` | `IcebergTableManager::ensure_table()` -- load-or-create tables |
-| `src/common/src/schema/schema_parser.rs` | TOML schema parser with inheritance resolution |
-| `src/common/src/schema/iceberg_schemas.rs` | Backward-compatibility re-export of `iceberg/schemas.rs` |
-| `src/common/src/catalog_manager.rs` | `CatalogManager` singleton for shared Iceberg catalog |
-| `src/common/src/storage.rs` | Object store creation from DSN, path resolution |
-| `src/common/src/wal/mod.rs` | WAL implementation (segments, entries, flush, cleanup) |
-| `src/common/src/config/mod.rs` | Configuration structs including tenant/dataset/storage |
-| `src/writer/src/storage/iceberg.rs` | `IcebergTableWriter` -- table creation and data writes |
-| `src/writer/src/processor.rs` | `WalProcessor` -- background WAL-to-Iceberg processing |
-| `src/writer/src/schema_transform.rs` | Flight v1 -> Iceberg v2 schema transformation |
-| `src/querier/src/flight.rs` | `TenantCatalog` -- DataFusion/Iceberg namespace bridge |
-| `src/querier/src/query/table_ref.rs` | Safe table reference construction with slug validation |
+| File                                       | Purpose                                                        |
+| ------------------------------------------ | -------------------------------------------------------------- |
+| `schemas.toml`                             | Schema definitions with versioning and inheritance             |
+| `src/common/src/iceberg/mod.rs`            | Iceberg catalog creation (SQLite `SqlCatalog`)                 |
+| `src/common/src/iceberg/schemas.rs`        | Table schemas, partition specs, `TableSchema` enum             |
+| `src/common/src/iceberg/names.rs`          | Namespace/identifier/location builders                         |
+| `src/common/src/iceberg/table_manager.rs`  | `IcebergTableManager::ensure_table()` -- load-or-create tables |
+| `src/common/src/schema/schema_parser.rs`   | TOML schema parser with inheritance resolution                 |
+| `src/common/src/schema/iceberg_schemas.rs` | Backward-compatibility re-export of `iceberg/schemas.rs`       |
+| `src/common/src/catalog_manager.rs`        | `CatalogManager` singleton for shared Iceberg catalog          |
+| `src/common/src/storage.rs`                | Object store creation from DSN, path resolution                |
+| `src/common/src/wal/mod.rs`                | WAL implementation (segments, entries, flush, cleanup)         |
+| `src/common/src/config/mod.rs`             | Configuration structs including tenant/dataset/storage         |
+| `src/writer/src/storage/iceberg.rs`        | `IcebergTableWriter` -- table creation and data writes         |
+| `src/writer/src/processor.rs`              | `WalProcessor` -- background WAL-to-Iceberg processing         |
+| `src/writer/src/schema_transform.rs`       | Flight v1 -> Iceberg v2 schema transformation                  |
+| `src/querier/src/flight.rs`                | `TenantCatalog` -- DataFusion/Iceberg namespace bridge         |
+| `src/querier/src/query/table_ref.rs`       | Safe table reference construction with slug validation         |

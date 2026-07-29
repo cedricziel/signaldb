@@ -39,20 +39,24 @@ Path structure: `{storage_base}/{tenant_slug}/{dataset_slug}/{table_name}/`
 
 ### Storage Backends
 
-| Scheme | Backend | Example |
-|--------|---------|---------|
-| `file://` | Local filesystem | `file:///.data/storage` |
-| `memory://` | In-memory (testing) | `memory://` |
-| `s3://` | S3-compatible | `s3://bucket/prefix` |
+| Scheme      | Backend             | Example                 |
+| ----------- | ------------------- | ----------------------- |
+| `file://`   | Local filesystem    | `file:///.data/storage` |
+| `memory://` | In-memory (testing) | `memory://`             |
+| `s3://`     | S3-compatible       | `s3://bucket/prefix`    |
 
 Path resolution in `src/common/src/storage.rs` (`storage_dsn_to_path()`):
-- `file:///.data/storage` -> `.data/storage`
+
+- `file:///.data/storage` -> `.data/storage` (relative to the working directory)
 - `file:///tmp/data` -> `/tmp/data`
 - `s3://bucket/prefix` -> kept as-is
+
+`file://` storage directories are auto-created at startup (`ensure_file_dsn_dir()`), so a fresh checkout works without pre-creating them.
 
 ### Per-Dataset Storage Override
 
 Datasets can override global storage:
+
 ```toml
 [[auth.tenants.datasets]]
 id = "archive"
@@ -62,6 +66,7 @@ dsn = "s3://acme-archive/signals"
 ```
 
 Resolution chain in `Configuration::get_dataset_storage_config()`:
+
 1. Check `dataset.storage` -- if `Some`, use it
 2. Fall back to global `config.storage`
 
@@ -80,6 +85,7 @@ Path: `{wal_dir}/{tenant_id}/{dataset_id}/{signal_type}/`
 ```
 
 ### WAL Entry Structure
+
 ```rust
 pub struct WalEntry {
     pub id: Uuid,
@@ -95,6 +101,7 @@ pub struct WalEntry {
 ```
 
 ### WAL Config
+
 ```rust
 pub struct WalConfig {
     pub wal_dir: PathBuf,               // Default: ".wal"
@@ -116,6 +123,7 @@ the services resolve their WAL directory from the TOML-level `[wal] wal_dir`
 `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR`.
 
 ### Segment Lifecycle
+
 1. **Write**: Append to current segment's `.log` and `.data`
 2. **Rotation**: When segment exceeds `max_segment_size`, create new segment
 3. **Processing**: WalProcessor reads unprocessed entries, writes to Iceberg, marks in `.index`
@@ -130,10 +138,10 @@ the services resolve their WAL directory from the TOML-level `[wal] wal_dir`
 
 ## Table Types (up to 7 per tenant-dataset)
 
-| Signal | Table Name | Schema Source |
-|--------|-----------|---------------|
-| Traces | `traces` | `schemas.toml` (v2, inherits v1) |
-| Logs | `logs` | `schemas.toml` (v1) |
+| Signal  | Table Name                                                                                              | Schema Source                    |
+| ------- | ------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| Traces  | `traces`                                                                                                | `schemas.toml` (v2, inherits v1) |
+| Logs    | `logs`                                                                                                  | `schemas.toml` (v1)              |
 | Metrics | `metrics_gauge`, `metrics_sum`, `metrics_histogram`, `metrics_exponential_histogram`, `metrics_summary` | `iceberg_schemas.rs` (hardcoded) |
 
 All tables partitioned by `Hour(timestamp)` as `timestamp_hour`.
@@ -148,18 +156,18 @@ New tables across all four signals store their attribute columns as Iceberg `Map
 
 ## Key Implementation Files
 
-| File | Purpose |
-|------|---------|
-| `schemas.toml` | Schema definitions with versioning |
-| `src/common/src/iceberg/mod.rs` | Iceberg catalog creation, object store builders |
-| `src/common/src/iceberg/schemas.rs` | Schema creation functions for traces/logs/metrics, partition specs |
-| `src/common/src/iceberg/names.rs` | Naming utilities for table identifiers, namespaces, locations |
-| `src/common/src/iceberg/table_manager.rs` | IcebergTableManager for table operations |
-| `src/common/src/schema/mod.rs` | Schema registry, re-exports iceberg modules |
-| `src/common/src/schema/schema_parser.rs` | TOML schema parser |
-| `src/common/src/catalog_manager.rs` | CatalogManager singleton |
-| `src/common/src/storage.rs` | Object store creation from DSN |
-| `src/common/src/wal/mod.rs` | WAL implementation |
-| `src/writer/src/storage/iceberg.rs` | IcebergTableWriter |
-| `src/writer/src/processor.rs` | WalProcessor |
-| `src/writer/src/schema_transform.rs` | v1->v2 schema transformation |
+| File                                      | Purpose                                                            |
+| ----------------------------------------- | ------------------------------------------------------------------ |
+| `schemas.toml`                            | Schema definitions with versioning                                 |
+| `src/common/src/iceberg/mod.rs`           | Iceberg catalog creation, object store builders                    |
+| `src/common/src/iceberg/schemas.rs`       | Schema creation functions for traces/logs/metrics, partition specs |
+| `src/common/src/iceberg/names.rs`         | Naming utilities for table identifiers, namespaces, locations      |
+| `src/common/src/iceberg/table_manager.rs` | IcebergTableManager for table operations                           |
+| `src/common/src/schema/mod.rs`            | Schema registry, re-exports iceberg modules                        |
+| `src/common/src/schema/schema_parser.rs`  | TOML schema parser                                                 |
+| `src/common/src/catalog_manager.rs`       | CatalogManager singleton                                           |
+| `src/common/src/storage.rs`               | Object store creation from DSN                                     |
+| `src/common/src/wal/mod.rs`               | WAL implementation                                                 |
+| `src/writer/src/storage/iceberg.rs`       | IcebergTableWriter                                                 |
+| `src/writer/src/processor.rs`             | WalProcessor                                                       |
+| `src/writer/src/schema_transform.rs`      | v1->v2 schema transformation                                       |

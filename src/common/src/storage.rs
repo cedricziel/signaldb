@@ -1,5 +1,6 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use object_store::{ObjectStore, aws::AmazonS3Builder, local::LocalFileSystem, memory::InMemory};
+use std::path::PathBuf;
 use std::sync::Arc;
 use url::Url;
 
@@ -27,22 +28,7 @@ pub fn storage_dsn_to_path(dsn: &str) -> Result<String> {
         Url::parse(dsn).map_err(|e| anyhow::anyhow!("Invalid storage DSN '{}': {}", dsn, e))?;
 
     match url.scheme() {
-        "file" => {
-            let path = url.path();
-            if path.is_empty() || path == "/" {
-                return Err(anyhow::anyhow!(
-                    "File DSN must specify a path: file:///path/to/storage"
-                ));
-            }
-            // Remove leading slash for relative paths like /.data/storage -> .data/storage
-            // Keep leading slash for absolute paths like /tmp/data -> /tmp/data
-            let path = if path.starts_with("/.") {
-                &path[1..]
-            } else {
-                path
-            };
-            Ok(path.to_string())
-        }
+        "file" => normalize_file_url_path(&url).map(str::to_string),
         "memory" => Ok("memory://".to_string()),
         "s3" => Ok(dsn.to_string()), // Keep S3 URLs as-is
         scheme => Err(anyhow::anyhow!(
@@ -52,6 +38,42 @@ pub fn storage_dsn_to_path(dsn: &str) -> Result<String> {
     }
 }
 
+/// Normalize the path component of a `file://` URL.
+///
+/// Remove the leading slash for relative paths like `/.data/storage` ->
+/// `.data/storage` (a `file:///.foo` DSN is interpreted relative to the
+/// working directory); keep it for absolute paths like `/tmp/data`.
+fn normalize_file_url_path(url: &Url) -> Result<&str> {
+    let path = url.path();
+    if path.is_empty() || path == "/" {
+        return Err(anyhow::anyhow!(
+            "File DSN must specify a path: file:///path/to/storage"
+        ));
+    }
+    Ok(
+        if let Some(relative) = path.strip_prefix('/').filter(|_| path.starts_with("/.")) {
+            relative
+        } else {
+            path
+        },
+    )
+}
+
+/// Resolve a `file://` DSN's directory: applies the same `/.foo` -> relative
+/// normalization as [`storage_dsn_to_path`] and creates the directory tree so
+/// object stores (including iceberg-rust, which unwraps
+/// `LocalFileSystem::new_with_prefix` internally) never hit a missing path.
+pub fn ensure_file_dsn_dir(url: &Url) -> Result<PathBuf> {
+    let path = PathBuf::from(normalize_file_url_path(url)?);
+    std::fs::create_dir_all(&path).with_context(|| {
+        format!(
+            "Failed to create storage directory '{}' for DSN '{url}'",
+            path.display()
+        )
+    })?;
+    Ok(path)
+}
+
 /// Create an object store from a DSN string
 pub fn create_object_store_from_dsn(dsn: &str) -> Result<Arc<dyn ObjectStore>> {
     let url =
@@ -59,13 +81,7 @@ pub fn create_object_store_from_dsn(dsn: &str) -> Result<Arc<dyn ObjectStore>> {
 
     match url.scheme() {
         "file" => {
-            // Extract path from file:// URL
-            let path = url.path();
-            if path.is_empty() || path == "/" {
-                return Err(anyhow::anyhow!(
-                    "File DSN must specify a path: file:///path/to/storage"
-                ));
-            }
+            let path = ensure_file_dsn_dir(&url)?;
             Ok(Arc::new(LocalFileSystem::new_with_prefix(path)?))
         }
         "memory" => Ok(Arc::new(InMemory::new())),
@@ -291,5 +307,82 @@ mod tests {
                 .to_string()
                 .contains("File DSN must specify a path")
         );
+    }
+
+    #[test]
+    fn test_ensure_file_dsn_dir_creates_missing_nested_directory() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let nested = temp_dir.path().join("does").join("not").join("exist");
+        let dsn = format!("file://{}", nested.display());
+        let url = Url::parse(&dsn).unwrap();
+
+        let resolved = ensure_file_dsn_dir(&url).unwrap();
+        assert_eq!(resolved, nested);
+        assert!(nested.is_dir());
+    }
+
+    #[test]
+    fn test_ensure_file_dsn_dir_normalizes_relative_dot_path() {
+        // A "/.foo" path is interpreted as relative to the working directory,
+        // matching storage_dsn_to_path. Verify via the returned path (no chdir:
+        // tests run in parallel).
+        let unique = format!(".test-ensure-file-dsn-{}", std::process::id());
+        let url = Url::parse(&format!("file:///{unique}/nested")).unwrap();
+
+        let resolved = ensure_file_dsn_dir(&url).unwrap();
+        assert!(resolved.is_relative());
+        assert_eq!(resolved, PathBuf::from(&unique).join("nested"));
+        assert!(resolved.is_dir());
+
+        // Clean up the directory created relative to the crate root.
+        std::fs::remove_dir_all(&unique).unwrap();
+    }
+
+    #[test]
+    fn test_ensure_file_dsn_dir_empty_path_errors() {
+        let url = Url::parse("file://").unwrap();
+        let result = ensure_file_dsn_dir(&url);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("File DSN must specify a path")
+        );
+    }
+
+    #[test]
+    fn test_ensure_file_dsn_dir_uncreatable_path_names_path_in_error() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("blocker");
+        std::fs::write(&file_path, b"not a directory").unwrap();
+
+        // A directory under a regular file cannot be created.
+        let under_file = file_path.join("sub");
+        let url = Url::parse(&format!("file://{}", under_file.display())).unwrap();
+
+        let err = ensure_file_dsn_dir(&url).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(&under_file.display().to_string()),
+            "error should mention the path, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_create_filesystem_object_store_creates_missing_directory() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let nested = temp_dir.path().join("fresh").join("storage");
+        let dsn = format!("file://{}", nested.display());
+
+        let object_store = create_object_store_from_dsn(&dsn).unwrap();
+        assert!(Arc::strong_count(&object_store) == 1);
+        assert!(nested.is_dir());
     }
 }
