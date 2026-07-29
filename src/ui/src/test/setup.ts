@@ -68,3 +68,19 @@ class ResizeObserverStub implements ResizeObserver {
 }
 
 globalThis.ResizeObserver = globalThis.ResizeObserver ?? ResizeObserverStub;
+
+// jsdom has no matchMedia; uPlot queries it at module load for pixel-ratio
+// tracking.
+if (typeof window.matchMedia !== "function") {
+  window.matchMedia = (query: string) =>
+    ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }) as MediaQueryList;
+}
