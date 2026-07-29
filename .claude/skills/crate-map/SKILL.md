@@ -38,7 +38,7 @@ This is the shared foundation. Key modules:
 | Module                     | Path                                  | Purpose                                                                               |
 | -------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------- |
 | `config`                   | `src/common/src/config/mod.rs`        | Configuration structs, TOML parsing, env vars                                         |
-| `auth`                     | `src/common/src/auth/`                | Authenticator, middleware, validation, TenantContext                                  |
+| `auth`                     | `src/common/src/auth/`                | Authenticator, middleware, validation, TenantContext, password/session-token hashing  |
 | `catalog`                  | `src/common/src/catalog.rs`           | Service catalog (PostgreSQL/SQLite)                                                   |
 | `cli`                      | `src/common/src/cli.rs`               | Common CLI functionality shared across binaries                                       |
 | `dataset`                  | `src/common/src/dataset.rs`           | `DataSetType` enum (signal type naming)                                               |
