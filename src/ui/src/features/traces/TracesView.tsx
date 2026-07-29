@@ -16,6 +16,10 @@ interface Props {
   update: (patch: Partial<ExploreState>) => void;
 }
 
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
 export function TracesView({ state, update }: Props) {
   if (state.trace !== "") {
     return <TraceDetail state={state} update={update} />;
@@ -120,10 +124,19 @@ function TraceDetail({ state, update }: Props) {
         </button>
         <h3>{trace.data.rootTraceName}</h3>
         <span className="tmeta">
-          {formatDurationMs(trace.data.durationMs)} · {waterfall.rows.length}{" "}
-          spans · {waterfall.services.length} services
+          {formatDurationMs(
+            // The search API truncates durationMs; span extents are exact.
+            trace.data.durationMs > 0
+              ? trace.data.durationMs
+              : Number(waterfall.traceDurationNs) / 1e6,
+          )}{" "}
+          · {plural(waterfall.rows.length, "span")} ·{" "}
+          {plural(waterfall.services.length, "service")}
           {waterfall.errorCount > 0 && (
-            <em className="tmeta-err"> · {waterfall.errorCount} error(s)</em>
+            <em className="tmeta-err">
+              {" "}
+              · {plural(waterfall.errorCount, "error")}
+            </em>
           )}
         </span>
         <span className="trace-id">{trace.data.traceId}</span>

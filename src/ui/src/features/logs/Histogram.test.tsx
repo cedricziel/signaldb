@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { bucketize, Histogram, normalizeLevel } from "./Histogram";
+import { bucketize, Histogram, normalizeLevel, padBuckets } from "./Histogram";
 
 describe("normalizeLevel", () => {
   it("maps synonyms onto canonical levels", () => {
@@ -38,6 +38,33 @@ describe("bucketize", () => {
       { level: "warning", points: [[1000, 5]] },
     ]);
     expect(buckets[0]?.counts).toEqual({ warn: 7 });
+  });
+});
+
+describe("padBuckets", () => {
+  it("fills the selected range with empty buckets on the step grid", () => {
+    const data = bucketize([{ level: "info", points: [[2000, 5]] }]);
+    const padded = padBuckets(data, 0, 4000, 1000);
+    expect(padded.map((b) => b.tMs)).toEqual([0, 1000, 2000, 3000, 4000]);
+    expect(padded.map((b) => b.total)).toEqual([0, 0, 5, 0, 0]);
+  });
+
+  it("keeps off-grid buckets and ignores degenerate steps", () => {
+    const data = bucketize([{ level: "info", points: [[1500, 2]] }]);
+    const padded = padBuckets(data, 1000, 3000, 1000);
+    expect(padded.map((b) => b.tMs)).toEqual([1000, 1500, 2000, 3000]);
+    expect(padBuckets(data, 1000, 3000, 0)).toEqual(data);
+  });
+
+  it("pads via the component when range and step are provided", () => {
+    render(
+      <Histogram
+        series={[{ level: "info", points: [[2000, 5]] }]}
+        rangeMs={{ fromMs: 0, toMs: 4000 }}
+        stepMs={1000}
+      />,
+    );
+    expect(screen.getAllByTestId("histo-bar")).toHaveLength(5);
   });
 });
 

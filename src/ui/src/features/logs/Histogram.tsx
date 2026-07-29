@@ -46,13 +46,44 @@ export function bucketize(series: HistogramSeries[]): HistogramBucket[] {
     }));
 }
 
+/**
+ * Fill the selected range with empty buckets so sparse data doesn't stretch
+ * across the full width. Bucket alignment follows the backend's epoch-aligned
+ * date_bin grid.
+ */
+export function padBuckets(
+  buckets: HistogramBucket[],
+  fromMs: number,
+  toMs: number,
+  stepMs: number,
+): HistogramBucket[] {
+  if (stepMs <= 0 || toMs <= fromMs) return buckets;
+  const byTime = new Map(buckets.map((b) => [b.tMs, b]));
+  const start = Math.floor(fromMs / stepMs) * stepMs;
+  const out: HistogramBucket[] = [];
+  for (let t = start; t <= toMs; t += stepMs) {
+    out.push(byTime.get(t) ?? { tMs: t, counts: {}, total: 0 });
+  }
+  // Keep any buckets that fall outside the aligned grid (defensive).
+  for (const b of buckets) {
+    if (!out.some((o) => o.tMs === b.tMs)) out.push(b);
+  }
+  return out.sort((a, b) => a.tMs - b.tMs);
+}
+
 interface Props {
   series: HistogramSeries[];
   height?: number;
+  /** Selected time range; when given, empty buckets pad the full range. */
+  rangeMs?: { fromMs: number; toMs: number };
+  stepMs?: number;
 }
 
-export function Histogram({ series, height = 72 }: Props) {
-  const buckets = bucketize(series);
+export function Histogram({ series, height = 72, rangeMs, stepMs }: Props) {
+  let buckets = bucketize(series);
+  if (rangeMs && stepMs && buckets.length > 0) {
+    buckets = padBuckets(buckets, rangeMs.fromMs, rangeMs.toMs, stepMs);
+  }
   const max = Math.max(1, ...buckets.map((b) => b.total));
   const levels = [...LEVEL_ORDER, "other"];
 

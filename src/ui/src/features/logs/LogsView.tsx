@@ -7,7 +7,12 @@ import {
   upsertFilter,
   type LabelFilter,
 } from "../../lib/filters";
-import { rangeToParam, resolveRange, stepForRange } from "../../lib/time";
+import {
+  durationToSeconds,
+  rangeToParam,
+  resolveRange,
+  stepForRange,
+} from "../../lib/time";
 import type { ExploreState } from "../../lib/urlState";
 import { FieldSidebar } from "./FieldSidebar";
 import { FilterChips } from "./FilterChips";
@@ -162,7 +167,13 @@ export function LogsView({ state, update }: Props) {
                   <span className="histo-note">updating…</span>
                 )}
               </div>
-              {histogram.data && <Histogram series={histogram.data} />}
+              {histogram.data && (
+                <Histogram
+                  series={histogram.data}
+                  rangeMs={resolvedForStep}
+                  stepMs={(durationToSeconds(step) ?? 60) * 1000}
+                />
+              )}
             </div>
           )}
           {logs.isError && (
