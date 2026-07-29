@@ -50,11 +50,11 @@ http://<acceptor-host>:4318/v1/metrics
 Each request — gRPC metadata or HTTP headers alike — must carry these keys
 (see [Authentication](authentication.md) for details):
 
-| Metadata key / header | Required | Value |
-|---|---|---|
-| `authorization` | yes | `Bearer <api-key>` |
-| `x-tenant-id` | yes | your tenant ID |
-| `x-dataset-id` | no | dataset within the tenant; omitted → tenant default |
+| Metadata key / header | Required | Value                                               |
+| --------------------- | -------- | --------------------------------------------------- |
+| `authorization`       | yes      | `Bearer <api-key>`                                  |
+| `x-tenant-id`         | yes      | your tenant ID                                      |
+| `x-dataset-id`        | no       | dataset within the tenant; omitted → tenant default |
 
 ### 3. Configure your exporter
 
@@ -104,12 +104,12 @@ successful export response means the data is durable.
 
 ## Per-signal support
 
-| Signal | OTLP/gRPC :4317 | OTLP/HTTP :4318 | Stored as |
-|---|---|---|---|
-| Traces | yes | yes (`POST /v1/traces`) | `traces` table |
-| Logs | yes | yes (`POST /v1/logs`) | `logs` table |
-| Metrics | yes | yes (`POST /v1/metrics`) | `metrics_gauge`, `metrics_sum`, `metrics_histogram` tables |
-| Profiles | yes | yes (`POST /v1development/profiles`) | `profiles` table (see [profiles](profiles.md)) |
+| Signal   | OTLP/gRPC :4317 | OTLP/HTTP :4318                      | Stored as                                                  |
+| -------- | --------------- | ------------------------------------ | ---------------------------------------------------------- |
+| Traces   | yes             | yes (`POST /v1/traces`)              | `traces` table                                             |
+| Logs     | yes             | yes (`POST /v1/logs`)                | `logs` table                                               |
+| Metrics  | yes             | yes (`POST /v1/metrics`)             | `metrics_gauge`, `metrics_sum`, `metrics_histogram` tables |
+| Profiles | yes             | yes (`POST /v1development/profiles`) | `profiles` table (see [profiles](profiles.md))             |
 
 ## OTLP/HTTP support
 
@@ -126,12 +126,12 @@ uncompressed.
 A successful export returns `200 OK` with an `Export*ServiceResponse`
 body in the same encoding as the request. Error responses:
 
-| Status | Meaning |
-|---|---|
-| `400 Bad Request` | Malformed payload, or missing/malformed `Authorization` / `X-Tenant-ID` headers |
-| `401 Unauthorized` | API key is wrong or revoked |
-| `403 Forbidden` | Key does not belong to the tenant/dataset you named |
-| `429 Too Many Requests` | Per-tenant ingest rate limit or storage quota hit |
+| Status                  | Meaning                                                                      |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| `400 Bad Request`       | Malformed payload, or malformed `Authorization` / `X-Tenant-ID` headers      |
+| `401 Unauthorized`      | Missing `Authorization` / `X-Tenant-ID` headers, or API key wrong or revoked |
+| `403 Forbidden`         | Key does not belong to the tenant/dataset you named                          |
+| `429 Too Many Requests` | Per-tenant ingest rate limit or storage quota hit                            |
 
 To use OTLP/HTTP from the OpenTelemetry Collector:
 
@@ -142,7 +142,7 @@ exporters:
     headers:
       authorization: "Bearer sk-acme-prod-key-123"
       x-tenant-id: "acme"
-    compression: none   # gzip request bodies are not supported
+    compression: none # gzip request bodies are not supported
 
 service:
   pipelines:
@@ -156,13 +156,13 @@ service:
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| `INVALID_ARGUMENT: Missing authorization metadata` | No `authorization` metadata on the request | Add `authorization: Bearer <key>` to exporter headers |
-| `INVALID_ARGUMENT: Missing x-tenant-id metadata` | No tenant header | Add `x-tenant-id` |
-| `UNAUTHENTICATED` | API key is wrong or revoked | Check the key with your operator, see [Authentication](authentication.md) |
-| `PERMISSION_DENIED` | Key does not belong to the tenant/dataset you named | Use a key issued for that tenant |
-| `RESOURCE_EXHAUSTED` | Per-tenant ingest rate limit hit | Back off and retry; ask your operator about tenant limits |
-| `RESOURCE_EXHAUSTED` mentioning `quota_exceeded` | Tenant is at or over its storage quota (`max_storage_bytes`) | Retrying will not help until data is deleted, retention shortens, or the quota is raised — talk to your operator |
-| `429 Too Many Requests` on an OTLP/HTTP endpoint | HTTP analog of the two `RESOURCE_EXHAUSTED` cases above | Back off and retry (rate limit), or talk to your operator (quota) |
-| `400 Bad Request` on an OTLP/HTTP endpoint with a JSON body | Payload is not valid protojson (e.g. base64 trace IDs instead of hex) | Use a protojson-compliant encoder; trace/span IDs must be hex strings |
+| Symptom                                                     | Cause                                                                 | Fix                                                                                                              |
+| ----------------------------------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `UNAUTHENTICATED: Missing authorization metadata`           | No `authorization` metadata on the request                            | Add `authorization: Bearer <key>` to exporter headers                                                            |
+| `UNAUTHENTICATED: Missing x-tenant-id metadata`             | No tenant header                                                      | Add `x-tenant-id`                                                                                                |
+| `UNAUTHENTICATED`                                           | API key is wrong or revoked                                           | Check the key with your operator, see [Authentication](authentication.md)                                        |
+| `PERMISSION_DENIED`                                         | Key does not belong to the tenant/dataset you named                   | Use a key issued for that tenant                                                                                 |
+| `RESOURCE_EXHAUSTED`                                        | Per-tenant ingest rate limit hit                                      | Back off and retry; ask your operator about tenant limits                                                        |
+| `RESOURCE_EXHAUSTED` mentioning `quota_exceeded`            | Tenant is at or over its storage quota (`max_storage_bytes`)          | Retrying will not help until data is deleted, retention shortens, or the quota is raised — talk to your operator |
+| `429 Too Many Requests` on an OTLP/HTTP endpoint            | HTTP analog of the two `RESOURCE_EXHAUSTED` cases above               | Back off and retry (rate limit), or talk to your operator (quota)                                                |
+| `400 Bad Request` on an OTLP/HTTP endpoint with a JSON body | Payload is not valid protojson (e.g. base64 trace IDs instead of hex) | Use a protojson-compliant encoder; trace/span IDs must be hex strings                                            |

@@ -340,7 +340,7 @@ mod tests {
         let result = grpc_auth_interceptor(authenticator, request);
         assert!(result.is_err());
         let status = result.unwrap_err();
-        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(status.code(), tonic::Code::Unauthenticated);
     }
 
     #[tokio::test(flavor = "multi_thread")]
