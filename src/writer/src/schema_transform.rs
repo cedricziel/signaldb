@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Datelike, Timelike};
 use common::schema::schema_parser::ResolvedSchema;
-use common::schema::{SCHEMA_DEFINITIONS, materialized_column_name};
+use common::schema::{ATTR_TOKENS_COLUMN, SCHEMA_DEFINITIONS, materialized_column_name};
 use datafusion::arrow::{
     array::{
         Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Float64Array, Int32Array,
@@ -524,6 +524,74 @@ fn label_columns_from_maps(
     (fields, columns)
 }
 
+/// Parse a JSON-string column into per-row attribute objects the way the
+/// attribute *columns* are extracted: prefer the nested `attributes` object
+/// when present, else treat the root object as the attributes (matching the
+/// `resource_attributes` column's fallback).
+fn parse_attr_objects_with_root_fallback(
+    batch: &RecordBatch,
+    column: &str,
+) -> Result<Vec<Option<AttrMap>>> {
+    let col = get_column_by_name(batch, column)?;
+    let arr = col
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| anyhow!("{column} is not StringArray"))?;
+    Ok((0..arr.len())
+        .map(|i| {
+            if arr.is_null(i) {
+                return None;
+            }
+            let root: serde_json::Value = serde_json::from_str(arr.value(i)).ok()?;
+            match root.get("attributes") {
+                Some(serde_json::Value::Object(m)) => Some(m.clone()),
+                _ => match root {
+                    serde_json::Value::Object(m) => Some(m),
+                    _ => None,
+                },
+            }
+        })
+        .collect())
+}
+
+/// Build the derived `attr_tokens` `List<Utf8>` column: one `key=value`
+/// token per attribute across resource, scope, and record scopes,
+/// deduplicated per row. Rows always get a (possibly empty) list, never
+/// null, so an ANDed containment predicate cannot null out rows the
+/// attribute-column predicate matched.
+///
+/// The sources mirror the attribute-column extractions exactly — the
+/// querier ANDs `array_has(attr_tokens, 'key=value')` onto predicates over
+/// `log_attributes`/`resource_attributes`, so the tokens must cover at
+/// least everything those columns contain.
+fn attr_tokens_column(batch: &RecordBatch, num_rows: usize) -> Result<(Field, ArrayRef)> {
+    use datafusion::arrow::array::{ListBuilder, StringBuilder};
+
+    let resource = parse_attr_objects_with_root_fallback(batch, "resource_json")?;
+    let scope = parse_attr_objects(batch, "scope_json", Some("attributes"))?;
+    let record = parse_attr_objects(batch, "attributes_json", None)?;
+
+    let mut builder = ListBuilder::new(StringBuilder::new());
+    for i in 0..num_rows {
+        let mut seen = std::collections::HashSet::new();
+        for src in [resource.get(i), scope.get(i), record.get(i)] {
+            let Some(Some(map)) = src else { continue };
+            for (key, value) in map {
+                if let Some(s) = attr_value_to_string(value) {
+                    let token = format!("{key}={s}");
+                    if seen.insert(token.clone()) {
+                        builder.values().append_value(token);
+                    }
+                }
+            }
+        }
+        builder.append(true);
+    }
+    let array = builder.finish();
+    let field = Field::new(ATTR_TOKENS_COLUMN, array.data_type().clone(), true);
+    Ok((field, Arc::new(array)))
+}
+
 /// Append materialized-label fields/columns to a base batch schema. Returns
 /// the base schema unchanged when there are no label fields.
 fn extend_schema_with_labels(
@@ -831,6 +899,16 @@ pub fn transform_logs_v1_to_iceberg(batch: RecordBatch, labels: &[String]) -> Re
     let (label_fields, label_columns) = materialized_label_columns(&batch, num_rows, labels)?;
     let out_schema =
         extend_schema_with_labels(arrow_schema, label_fields, &mut new_columns, label_columns);
+
+    // Derived `key=value` token column for bloom-filtered containment
+    // checks; also dropped by coercion on tables that predate it.
+    let (token_field, token_column) = attr_tokens_column(&batch, num_rows)?;
+    let out_schema = extend_schema_with_labels(
+        out_schema,
+        vec![token_field],
+        &mut new_columns,
+        vec![token_column],
+    );
 
     let result = RecordBatch::try_new(out_schema, new_columns)
         .map_err(|e| anyhow!("Failed to create transformed log RecordBatch: {}", e))?;
@@ -2185,6 +2263,23 @@ mod tests {
         time_unix_nanos: &[u64],
         observed_time_unix_nanos: &[u64],
     ) -> RecordBatch {
+        let n = time_unix_nanos.len();
+        make_log_flight_batch_with_attrs(
+            time_unix_nanos,
+            observed_time_unix_nanos,
+            vec![None; n],
+            vec![None; n],
+            vec![None; n],
+        )
+    }
+
+    fn make_log_flight_batch_with_attrs(
+        time_unix_nanos: &[u64],
+        observed_time_unix_nanos: &[u64],
+        resource_json: Vec<Option<&str>>,
+        scope_json: Vec<Option<&str>>,
+        attributes_json: Vec<Option<&str>>,
+    ) -> RecordBatch {
         use datafusion::arrow::array::BinaryArray;
         use datafusion::arrow::datatypes::Fields;
 
@@ -2223,9 +2318,9 @@ mod tests {
                 Arc::new(BinaryArray::from(null_binaries.clone())),
                 Arc::new(BinaryArray::from(null_binaries)),
                 Arc::new(UInt32Array::from(null_u32.clone())),
-                Arc::new(StringArray::from(null_strings.clone())),
-                Arc::new(StringArray::from(null_strings.clone())),
-                Arc::new(StringArray::from(null_strings.clone())),
+                Arc::new(StringArray::from(attributes_json)),
+                Arc::new(StringArray::from(resource_json)),
+                Arc::new(StringArray::from(scope_json)),
                 Arc::new(UInt32Array::from(null_u32)),
                 Arc::new(StringArray::from(service_names)),
                 Arc::new(StringArray::from(null_strings)),
@@ -2305,6 +2400,74 @@ mod tests {
         // No configured labels → no extra columns.
         let (f, c) = materialized_label_columns(&batch, 2, &[]).unwrap();
         assert!(f.is_empty() && c.is_empty());
+    }
+
+    /// One row's tokens, sorted for stable comparison.
+    fn tokens_of(batch: &RecordBatch, row: usize) -> Vec<String> {
+        let list = batch
+            .column_by_name("attr_tokens")
+            .expect("attr_tokens column present")
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .expect("attr_tokens is a ListArray");
+        assert!(!list.is_null(row), "attr_tokens must never be null");
+        let values = list.value(row);
+        let strings = values.as_any().downcast_ref::<StringArray>().unwrap();
+        let mut out: Vec<String> = (0..strings.len())
+            .map(|i| strings.value(i).to_string())
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn log_transform_emits_attr_tokens_from_all_scopes() {
+        let ts: u64 = 1_700_000_000_000_000_000;
+        let batch = make_log_flight_batch_with_attrs(
+            &[ts, ts],
+            &[ts, ts],
+            vec![
+                // Flat root object (legacy shape).
+                Some(r#"{"namespace":"prod"}"#),
+                // Nested shape: tokens must come from `attributes`, not the
+                // envelope keys — mirroring the resource_attributes column.
+                Some(r#"{"attributes":{"env":"staging"},"schema_url":"http://x"}"#),
+            ],
+            vec![Some(r#"{"attributes":{"lib":"otel"}}"#), None],
+            vec![
+                // Non-string values serialize like the attribute columns do.
+                Some(r#"{"http.method":"GET","retries":2}"#),
+                Some(r#"{"http.method":"POST"}"#),
+            ],
+        );
+
+        let result = transform_logs_v1_to_iceberg(batch, &[]).unwrap();
+        assert_eq!(
+            tokens_of(&result, 0),
+            vec!["http.method=GET", "lib=otel", "namespace=prod", "retries=2"],
+        );
+        assert_eq!(
+            tokens_of(&result, 1),
+            vec!["env=staging", "http.method=POST"]
+        );
+    }
+
+    #[test]
+    fn log_transform_attr_tokens_dedupes_and_defaults_to_empty() {
+        let ts: u64 = 1_700_000_000_000_000_000;
+        let batch = make_log_flight_batch_with_attrs(
+            &[ts, ts],
+            &[ts, ts],
+            vec![Some(r#"{"env":"prod"}"#), None],
+            vec![None, None],
+            // Row 0 repeats env=prod in the record scope → single token.
+            vec![Some(r#"{"env":"prod"}"#), None],
+        );
+
+        let result = transform_logs_v1_to_iceberg(batch, &[]).unwrap();
+        assert_eq!(tokens_of(&result, 0), vec!["env=prod"]);
+        // No attributes anywhere → empty list, not null.
+        assert_eq!(tokens_of(&result, 1), Vec::<String>::new());
     }
 
     #[test]

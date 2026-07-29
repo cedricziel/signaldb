@@ -708,6 +708,142 @@ async fn label_column_write_produces_parquet_bloom_filter() -> Result<()> {
     Ok(())
 }
 
+/// End-to-end proof for #731 part 2: a wire-format logs batch written
+/// through `IcebergTableWriter` (transform → coercion → Parquet) lands with
+/// a populated `attr_tokens` column whose List leaf carries a bloom filter,
+/// and `array_has(attr_tokens, 'key=value')` filters rows correctly.
+#[tokio::test]
+async fn attr_tokens_write_populates_column_and_bloom_filter() -> Result<()> {
+    use datafusion::arrow::array::{BinaryArray, Int32Array, UInt32Array, UInt64Array};
+    use datafusion::parquet::file::reader::{FileReader, SerializedFileReader};
+    use datafusion::prelude::SessionContext;
+    use iceberg_rust::catalog::tabular::Tabular;
+    use object_store::ObjectStoreExt as _;
+
+    let mut config = Configuration::default();
+    config.schema.catalog_uri =
+        "sqlite:file:signaldb_attr_tokens?mode=memory&cache=shared".to_string();
+    let manager = CatalogManager::new(config).await?;
+    let object_store = Arc::new(InMemory::new());
+
+    let mut writer = IcebergTableWriter::new(
+        &manager,
+        object_store,
+        "default".to_string(),
+        "default".to_string(),
+        "logs".to_string(),
+    )
+    .await?;
+
+    // Two-row wire-format (v1) logs batch with attributes in all scopes.
+    let n = 2;
+    let ts: u64 = 1_700_000_000_000_000_000;
+    let wire_schema = Arc::new(Schema::new(vec![
+        Field::new("time_unix_nano", DataType::UInt64, false),
+        Field::new("observed_time_unix_nano", DataType::UInt64, false),
+        Field::new("severity_number", DataType::Int32, true),
+        Field::new("severity_text", DataType::Utf8, true),
+        Field::new("body", DataType::Utf8, true),
+        Field::new("trace_id", DataType::Binary, true),
+        Field::new("span_id", DataType::Binary, true),
+        Field::new("flags", DataType::UInt32, true),
+        Field::new("attributes_json", DataType::Utf8, true),
+        Field::new("resource_json", DataType::Utf8, true),
+        Field::new("scope_json", DataType::Utf8, true),
+        Field::new("dropped_attributes_count", DataType::UInt32, true),
+        Field::new("service_name", DataType::Utf8, true),
+        Field::new("event_name", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        wire_schema,
+        vec![
+            Arc::new(UInt64Array::from(vec![ts; n])),
+            Arc::new(UInt64Array::from(vec![ts; n])),
+            Arc::new(Int32Array::from(vec![None::<i32>; n])),
+            Arc::new(StringArray::from(vec![None::<&str>; n])),
+            Arc::new(StringArray::from(vec![Some("prod row"), Some("dev row")])),
+            Arc::new(BinaryArray::from(vec![None::<&[u8]>; n])),
+            Arc::new(BinaryArray::from(vec![None::<&[u8]>; n])),
+            Arc::new(UInt32Array::from(vec![None::<u32>; n])),
+            Arc::new(StringArray::from(vec![
+                Some(r#"{"env":"prod","team":"core"}"#),
+                Some(r#"{"env":"dev"}"#),
+            ])),
+            Arc::new(StringArray::from(vec![
+                Some(r#"{"attributes":{"namespace":"backend"}}"#),
+                None,
+            ])),
+            Arc::new(StringArray::from(vec![None::<&str>; n])),
+            Arc::new(UInt32Array::from(vec![None::<u32>; n])),
+            Arc::new(StringArray::from(vec![Some("api"); n])),
+            Arc::new(StringArray::from(vec![None::<&str>; n])),
+        ],
+    )?;
+
+    writer
+        .append_batches_with_marker("attr-tokens-test", vec![(uuid::Uuid::new_v4(), batch)])
+        .await?;
+
+    // Query back: token containment matches exactly one row per token.
+    let ident = manager.build_table_identifier("default", "default", "logs");
+    let Tabular::Table(table) = manager.catalog().load_tabular(&ident).await? else {
+        panic!("expected logs table");
+    };
+    let ctx = SessionContext::new();
+    ctx.register_table(
+        "logs",
+        Arc::new(datafusion_iceberg::DataFusionTable::from(table.clone())),
+    )?;
+    for (token, expected_body) in [
+        ("env=prod", "prod row"),
+        ("namespace=backend", "prod row"),
+        ("env=dev", "dev row"),
+    ] {
+        let rows = ctx
+            .sql(&format!(
+                "SELECT body FROM logs WHERE array_has(attr_tokens, '{token}')"
+            ))
+            .await?
+            .collect()
+            .await?;
+        let total: usize = rows.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 1, "token {token} should match exactly one row");
+        let body = rows[0]
+            .column_by_name("body")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(body.value(0), expected_body, "token {token}");
+    }
+
+    // The written file's attr_tokens List leaf carries a bloom filter.
+    let store = table.object_store();
+    let mut listing = store.list(None);
+    let mut parquet_paths = Vec::new();
+    while let Some(meta) = futures::StreamExt::next(&mut listing).await {
+        let meta = meta?;
+        if meta.location.as_ref().ends_with(".parquet") {
+            parquet_paths.push(meta.location);
+        }
+    }
+    assert_eq!(parquet_paths.len(), 1, "expected one data file");
+    let bytes = store.get(&parquet_paths[0]).await?.bytes().await?;
+    let reader = SerializedFileReader::new(bytes)?;
+    let row_group = reader.metadata().row_group(0);
+    let leaf = row_group
+        .columns()
+        .iter()
+        .find(|c| c.column_path().string() == "attr_tokens.list.item")
+        .expect("attr_tokens.list.item leaf column present");
+    assert!(
+        leaf.bloom_filter_offset().is_some(),
+        "attr_tokens leaf should carry a bloom filter"
+    );
+
+    Ok(())
+}
+
 /// Spike for the attribute-explorability epic (#737 / #734): schema
 /// evolution through the low-level catalog commit path — `AddSchema` +
 /// `SetCurrentSchema` via `Catalog::update_table` — followed by a write
