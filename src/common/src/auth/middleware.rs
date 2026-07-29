@@ -13,13 +13,19 @@ use axum::{
 use std::sync::Arc;
 
 /// Extract authentication headers from HTTP request
+///
+/// When the request carries no `Authorization` header, falls back to the
+/// UI session cookie (see [`super::session`]) for the API key and any
+/// tenant/dataset values not supplied as explicit headers. Explicit
+/// headers always win over cookie values.
 fn extract_auth_headers(
     headers: &HeaderMap,
 ) -> Result<(String, String, Option<String>), AuthError> {
-    // Extract Authorization header
-    let auth_header = headers
-        .get("authorization")
-        .ok_or_else(|| AuthError::bad_request("Missing Authorization header"))?
+    // Extract Authorization header, falling back to the session cookie.
+    let Some(auth_value) = headers.get("authorization") else {
+        return extract_auth_from_session(headers);
+    };
+    let auth_header = auth_value
         .to_str()
         .map_err(|_| AuthError::bad_request("Invalid Authorization header"))?;
 
@@ -45,6 +51,40 @@ fn extract_auth_headers(
     };
 
     Ok((api_key, tenant_id, dataset_id))
+}
+
+/// Resolve credentials from the UI session cookie for requests without an
+/// `Authorization` header.
+///
+/// The cookie supplies the API key; tenant and dataset come from explicit
+/// `X-Tenant-ID`/`X-Dataset-ID` headers when present (headers win) and
+/// from the cookie otherwise. All values pass the same validation as
+/// header-supplied ones. A missing or malformed cookie yields the same
+/// error as a missing Authorization header.
+fn extract_auth_from_session(
+    headers: &HeaderMap,
+) -> Result<(String, String, Option<String>), AuthError> {
+    let session = super::session::session_from_headers(headers)
+        .ok_or_else(|| AuthError::bad_request("Missing Authorization header"))?;
+
+    let tenant_id_raw = match headers.get("x-tenant-id") {
+        Some(value) => value
+            .to_str()
+            .map_err(|_| AuthError::bad_request("Invalid X-Tenant-ID header"))?,
+        None => session.tenant.as_str(),
+    };
+    let tenant_id = validate_tenant_id(tenant_id_raw)?;
+
+    let dataset_raw = match headers.get("x-dataset-id").and_then(|v| v.to_str().ok()) {
+        Some(id) => Some(id.to_string()),
+        None => session.dataset.clone(),
+    };
+    let dataset_id = match dataset_raw {
+        Some(id) => Some(validate_dataset_id(&id)?),
+        None => None,
+    };
+
+    Ok((session.api_key, tenant_id, dataset_id))
 }
 
 /// Axum middleware function for HTTP authentication
@@ -387,6 +427,187 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_extract_auth_headers_uses_session_cookie_without_authorization() {
+        use crate::auth::session::{SESSION_COOKIE, SessionData, encode_session};
+
+        let cookie = encode_session(&SessionData {
+            api_key: "cookie-key".to_string(),
+            tenant: "acme".to_string(),
+            dataset: Some("production".to_string()),
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "cookie",
+            HeaderValue::from_str(&format!("{SESSION_COOKIE}={cookie}")).unwrap(),
+        );
+
+        let (api_key, tenant_id, dataset_id) = extract_auth_headers(&headers).unwrap();
+        assert_eq!(api_key, "cookie-key");
+        assert_eq!(tenant_id, "acme");
+        assert_eq!(dataset_id, Some("production".to_string()));
+    }
+
+    #[test]
+    fn test_extract_auth_headers_explicit_headers_win_over_cookie() {
+        use crate::auth::session::{SESSION_COOKIE, SessionData, encode_session};
+
+        let cookie = encode_session(&SessionData {
+            api_key: "cookie-key".to_string(),
+            tenant: "acme".to_string(),
+            dataset: Some("production".to_string()),
+        });
+
+        // Tenant/dataset headers override the cookie's values (the cookie
+        // still supplies the key when Authorization is absent).
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "cookie",
+            HeaderValue::from_str(&format!("{SESSION_COOKIE}={cookie}")).unwrap(),
+        );
+        headers.insert("x-tenant-id", HeaderValue::from_static("other"));
+        headers.insert("x-dataset-id", HeaderValue::from_static("staging"));
+
+        let (api_key, tenant_id, dataset_id) = extract_auth_headers(&headers).unwrap();
+        assert_eq!(api_key, "cookie-key");
+        assert_eq!(tenant_id, "other");
+        assert_eq!(dataset_id, Some("staging".to_string()));
+
+        // An Authorization header disables the cookie entirely.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "cookie",
+            HeaderValue::from_str(&format!("{SESSION_COOKIE}={cookie}")).unwrap(),
+        );
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer header-key"),
+        );
+        headers.insert("x-tenant-id", HeaderValue::from_static("other"));
+
+        let (api_key, tenant_id, dataset_id) = extract_auth_headers(&headers).unwrap();
+        assert_eq!(api_key, "header-key");
+        assert_eq!(tenant_id, "other");
+        assert_eq!(dataset_id, None);
+    }
+
+    #[test]
+    fn test_extract_auth_headers_malformed_cookie_is_missing_auth() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "cookie",
+            HeaderValue::from_static("signaldb_session=not-a-session"),
+        );
+
+        let err = extract_auth_headers(&headers).unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("Authorization"));
+    }
+
+    #[test]
+    fn test_extract_auth_headers_cookie_values_are_validated() {
+        use crate::auth::session::{SESSION_COOKIE, SessionData, encode_session};
+
+        let cookie = encode_session(&SessionData {
+            api_key: "cookie-key".to_string(),
+            tenant: "../evil".to_string(),
+            dataset: None,
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "cookie",
+            HeaderValue::from_str(&format!("{SESSION_COOKIE}={cookie}")).unwrap(),
+        );
+
+        let err = extract_auth_headers(&headers).unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("path traversal"));
+    }
+
+    #[tokio::test]
+    async fn session_cookie_round_trip_authenticates_request() {
+        use crate::auth::session::{SESSION_COOKIE, SessionData, encode_session};
+        use axum::{
+            Router,
+            body::Body,
+            http::{Request, StatusCode},
+            middleware,
+            routing::get,
+        };
+        use tower::ServiceExt;
+
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        let auth_config = AuthConfig {
+            tenants: vec![TenantConfig {
+                id: "acme".to_string(),
+                slug: "acme".to_string(),
+                name: "Acme Corp".to_string(),
+                default_dataset: Some("production".to_string()),
+                datasets: vec![DatasetConfig {
+                    id: "production".to_string(),
+                    slug: "production".to_string(),
+                    is_default: true,
+                    storage: None,
+                }],
+                api_keys: vec![ApiKeyConfig {
+                    key: "test-key-123".to_string(),
+                    name: Some("test-key".to_string()),
+                }],
+                schema_config: None,
+                limits: None,
+            }],
+            ..Default::default()
+        };
+        let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
+
+        async fn test_handler(tenant_ctx: TenantContextExtractor) -> String {
+            format!(
+                "tenant={},dataset={}",
+                tenant_ctx.0.tenant_id, tenant_ctx.0.dataset_id
+            )
+        }
+
+        let auth = authenticator.clone();
+        let app = Router::new()
+            .route("/test", get(test_handler))
+            .layer(middleware::from_fn(move |req, next| {
+                auth_middleware(auth.clone(), req, next)
+            }));
+
+        let cookie = encode_session(&SessionData {
+            api_key: "test-key-123".to_string(),
+            tenant: "acme".to_string(),
+            dataset: None,
+        });
+
+        // Cookie alone authenticates and resolves the default dataset.
+        let request = Request::builder()
+            .uri("/test")
+            .header("cookie", format!("{SESSION_COOKIE}={cookie}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body, "tenant=acme,dataset=production");
+
+        // A wrong key in the cookie still fails authentication.
+        let bad_cookie = encode_session(&SessionData {
+            api_key: "wrong-key".to_string(),
+            tenant: "acme".to_string(),
+            dataset: None,
+        });
+        let request = Request::builder()
+            .uri("/test")
+            .header("cookie", format!("{SESSION_COOKIE}={bad_cookie}"))
+            .body(Body::empty())
+            .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }

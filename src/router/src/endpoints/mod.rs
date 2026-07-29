@@ -5,5 +5,6 @@ mod flight_decode;
 pub mod logql;
 pub mod promql;
 pub mod pyroscope;
+pub mod session;
 pub mod tempo;
 pub mod tenant;

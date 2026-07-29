@@ -60,13 +60,23 @@
   align-items: center;
 }
 
-.tenant-form input {
+.tenant-form input,
+.tenant-form select {
   border: 1px solid var(--border);
   background: var(--surface2);
   border-radius: 5px;
   padding: 3px 8px;
   font-size: 12px;
   width: 130px;
+  color: var(--text);
+}
+
+/* Read-only tenant display when the server reports the session's tenant. */
+.tenant-fixed {
+  font-size: 12px;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  color: var(--dim);
 }
 
 .tenant-form button {
