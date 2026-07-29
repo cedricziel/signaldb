@@ -454,6 +454,8 @@ impl TraceService {
                         datafusion::arrow::datatypes::DataType::Map(_, _)
                     )
             }),
+            // Traces tables carry no derived token column (logs only).
+            attr_tokens: false,
         };
         // Query demand (epic #737, #733): attribute conditions are
         // materialization candidates.
