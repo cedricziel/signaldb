@@ -797,14 +797,14 @@ mod tests {
     async fn logql_endpoints_require_authentication() {
         let app = test_app().await;
 
-        // Missing Authorization header is a 400 (middleware contract),
-        // a wrong key a 401.
+        // Missing credentials and a wrong key are both 401 (middleware
+        // contract; the UI login gate keys on 401).
         let request = Request::builder()
             .uri("/loki/api/v1/labels")
             .body(Body::empty())
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
         let request = Request::builder()
             .uri("/loki/api/v1/labels")

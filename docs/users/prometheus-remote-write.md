@@ -69,11 +69,11 @@ signaldb-cli query sql "SELECT * FROM metrics_gauge LIMIT 5" \
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| `400 Missing Authorization header` / `Missing X-Tenant-ID header` | Auth headers not configured | Add the `authorization` and `headers` blocks shown above |
-| `401` | API key invalid or revoked | Check the key — see [Authentication](authentication.md) |
-| `403` | Key not valid for that tenant/dataset | Use a key issued for the tenant in `X-Tenant-ID` |
-| `400` decode error | Body is not snappy-block-compressed protobuf | Use a standard remote_write client; do not gzip or send framed snappy |
-| `429` | Per-tenant ingest rate limit hit | Prometheus retries automatically; ask your operator about tenant limits |
-| `429` mentioning `quota_exceeded` | Tenant is at or over its storage quota (`max_storage_bytes`) | Retries will not help until data is deleted, retention shortens, or the quota is raised — talk to your operator |
+| Symptom                                                           | Cause                                                        | Fix                                                                                                             |
+| ----------------------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `401 Missing Authorization header` / `Missing X-Tenant-ID header` | Auth headers not configured                                  | Add the `authorization` and `headers` blocks shown above                                                        |
+| `401`                                                             | API key invalid or revoked                                   | Check the key — see [Authentication](authentication.md)                                                         |
+| `403`                                                             | Key not valid for that tenant/dataset                        | Use a key issued for the tenant in `X-Tenant-ID`                                                                |
+| `400` decode error                                                | Body is not snappy-block-compressed protobuf                 | Use a standard remote_write client; do not gzip or send framed snappy                                           |
+| `429`                                                             | Per-tenant ingest rate limit hit                             | Prometheus retries automatically; ask your operator about tenant limits                                         |
+| `429` mentioning `quota_exceeded`                                 | Tenant is at or over its storage quota (`max_storage_bytes`) | Retries will not help until data is deleted, retention shortens, or the quota is raised — talk to your operator |

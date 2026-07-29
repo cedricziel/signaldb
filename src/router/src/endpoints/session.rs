@@ -385,13 +385,14 @@ mod tests {
         let res = app.clone().oneshot(request).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        // Without cookie or headers the same route rejects the request.
+        // Without cookie or headers the same route rejects the request as
+        // unauthenticated (401 — what the UI login gate keys on).
         let request = Request::builder()
             .uri("/tempo/api/echo")
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -453,7 +454,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
