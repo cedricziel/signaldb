@@ -35,12 +35,11 @@ describe("App", () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyMatrix },
       { match: "/labels?", body: emptyLabels },
+      { match: "/tempo/api/search", body: { traces: [], metrics: {} } },
     ]);
     renderWithClient(<App />);
     screen.getByRole("tab", { name: "Traces" }).click();
-    expect(
-      await screen.findByText(/Trace view lands in phase 2/),
-    ).toBeInTheDocument();
+    expect(await screen.findByLabelText("Trace ID")).toBeInTheDocument();
     expect(window.location.search).toContain("signal=traces");
   });
 });

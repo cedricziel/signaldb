@@ -1,5 +1,6 @@
 import { TimeRangePicker } from "../shell/TimeRangePicker";
 import { LogsView } from "../logs/LogsView";
+import { TracesView } from "../traces/TracesView";
 import { useExploreState, type Signal } from "../../lib/urlState";
 import "./explore.css";
 
@@ -45,10 +46,7 @@ export function ExploreView() {
 
       {state.signal === "logs" && <LogsView state={state} update={update} />}
       {state.signal === "traces" && (
-        <div className="view-placeholder">
-          Trace view lands in phase 2.
-          {state.trace && <code> trace={state.trace}</code>}
-        </div>
+        <TracesView state={state} update={update} />
       )}
       {state.signal === "metrics" && (
         <div className="view-placeholder">Metrics view lands in phase 3.</div>
