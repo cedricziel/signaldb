@@ -96,7 +96,16 @@ impl IcebergTableManager {
             }
         }
 
-        let table_create = CreateTableBuilder::default()
+        // Enable a Parquet bloom filter for every materialized label column
+        // so point lookups on promoted attributes can prune row groups. The
+        // pinned iceberg-rust Parquet writer reads these standard Iceberg
+        // properties from the table metadata on every write.
+        let bloom_properties = crate::schema::bloom_filter_properties_for_labels(
+            table_schema.materialized_labels_of(labels),
+        );
+
+        let mut builder = CreateTableBuilder::default();
+        builder
             .with_name(table_name.to_string())
             .with_schema(table_schema.schema_with_labels(labels)?)
             .with_partition_spec(table_schema.partition_spec()?)
@@ -104,7 +113,11 @@ impl IcebergTableManager {
                 tenant_slug,
                 dataset_slug,
                 table_name,
-            ))
+            ));
+        if !bloom_properties.is_empty() {
+            builder.with_properties(bloom_properties.into_iter().collect());
+        }
+        let table_create = builder
             .create()
             .map_err(|e| anyhow::anyhow!("Failed to build CreateTable for {ident}: {e}"))?;
 

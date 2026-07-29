@@ -521,6 +521,27 @@ impl TableSchema {
         }
     }
 
+    /// The materialized-label allowlist that applies to this table from a
+    /// resolved per-tenant config: logs/traces/metrics/profiles map to their
+    /// signal's list, custom tables to none. This is the same routing
+    /// [`Self::schema_with_labels`] uses to inject `label_<key>` columns.
+    pub fn materialized_labels_of<'a>(
+        &self,
+        m: &'a crate::config::MaterializedLabels,
+    ) -> &'a [String] {
+        match self {
+            TableSchema::Traces => &m.traces,
+            TableSchema::Logs => &m.logs,
+            TableSchema::MetricsGauge
+            | TableSchema::MetricsSum
+            | TableSchema::MetricsHistogram
+            | TableSchema::MetricsExponentialHistogram
+            | TableSchema::MetricsSummary => &m.metrics,
+            TableSchema::Profiles => &m.profiles,
+            TableSchema::Custom(_) => &[],
+        }
+    }
+
     pub fn schema(&self) -> Result<Schema> {
         match self {
             TableSchema::Traces => create_traces_schema(),

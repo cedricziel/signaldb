@@ -586,6 +586,128 @@ async fn test_map_attribute_column_end_to_end() -> Result<()> {
     Ok(())
 }
 
+/// Attribute-explorability epic (#731): creating a table with materialized
+/// label columns must also set the per-column bloom-filter table property
+/// for each `label_<key>` column, so the pinned iceberg-rust Parquet writer
+/// emits bloom filters for them on every write.
+#[tokio::test]
+async fn ensure_table_sets_bloom_properties_for_label_columns() -> Result<()> {
+    let mut config = Configuration::default();
+    config.schema.catalog_uri =
+        "sqlite:file:signaldb_bloom_props?mode=memory&cache=shared".to_string();
+    config.schema.materialized_labels.logs =
+        vec!["namespace".to_string(), "http.method".to_string()];
+    let manager = common::CatalogManager::new(config).await?;
+
+    let table = manager.ensure_table("default", "default", "logs").await?;
+    let properties = &table.metadata().properties;
+
+    assert_eq!(
+        properties
+            .get("write.parquet.bloom-filter-enabled.column.label_namespace")
+            .map(String::as_str),
+        Some("true"),
+        "properties: {properties:?}"
+    );
+    assert_eq!(
+        properties
+            .get("write.parquet.bloom-filter-enabled.column.label_http_method")
+            .map(String::as_str),
+        Some("true"),
+    );
+
+    // A table for a signal without configured labels gets no bloom keys.
+    let traces = manager.ensure_table("default", "default", "traces").await?;
+    assert!(
+        traces
+            .metadata()
+            .properties
+            .keys()
+            .all(|k| !k.starts_with("write.parquet.bloom-filter-enabled.column.")),
+    );
+
+    Ok(())
+}
+
+/// End-to-end proof for #731: a logs table created by `ensure_table` with a
+/// materialized label writes Parquet files whose `label_<key>` column chunk
+/// carries a bloom filter, while non-enabled columns do not.
+#[tokio::test]
+async fn label_column_write_produces_parquet_bloom_filter() -> Result<()> {
+    use datafusion::arrow::array::{
+        ArrayRef, Date32Array, Int32Array, TimestampMicrosecondArray, new_null_array,
+    };
+    use datafusion::parquet::file::reader::{FileReader, SerializedFileReader};
+    use futures::stream;
+    use iceberg_rust::arrow::write::write_parquet_partitioned;
+    use iceberg_rust::spec::util::strip_prefix;
+    use object_store::ObjectStoreExt as _;
+
+    let mut config = Configuration::default();
+    config.schema.catalog_uri =
+        "sqlite:file:signaldb_bloom_write?mode=memory&cache=shared".to_string();
+    config.schema.materialized_labels.logs = vec!["namespace".to_string()];
+    let manager = common::CatalogManager::new(config).await?;
+
+    let table = manager.ensure_table("default", "default", "logs").await?;
+
+    // Build a one-row batch in the table's derived Arrow schema: required
+    // columns get real values, `label_namespace` and `body` get strings
+    // (body proves bloom filters stay scoped to enabled columns), the rest
+    // stay null.
+    let arrow_schema: Arc<Schema> =
+        Arc::new(table.current_schema()?.fields().try_into().map_err(
+            |e: iceberg_rust::spec::error::Error| anyhow::anyhow!("schema to arrow: {e}"),
+        )?);
+    let columns: Vec<ArrayRef> = arrow_schema
+        .fields()
+        .iter()
+        .map(|field| -> ArrayRef {
+            match field.name().as_str() {
+                "timestamp" | "observed_timestamp" => {
+                    Arc::new(TimestampMicrosecondArray::from(vec![1_000_000_i64]))
+                }
+                "service_name" => Arc::new(StringArray::from(vec!["api"])),
+                "body" => Arc::new(StringArray::from(vec!["hello bloom"])),
+                "label_namespace" => Arc::new(StringArray::from(vec!["prod"])),
+                "date_day" => Arc::new(Date32Array::from(vec![0])),
+                "hour" => Arc::new(Int32Array::from(vec![0])),
+                _ => new_null_array(field.data_type(), 1),
+            }
+        })
+        .collect();
+    let batch = RecordBatch::try_new(arrow_schema, columns)?;
+
+    let files = write_parquet_partitioned(&table, stream::iter(vec![Ok(batch)]), None).await?;
+    assert_eq!(files.len(), 1, "expected exactly one data file");
+
+    // Read the Parquet footer straight from the table's object store and
+    // check bloom-filter presence per column chunk.
+    let path: object_store::path::Path = strip_prefix(files[0].file_path()).into();
+    let bytes = table.object_store().get(&path).await?.bytes().await?;
+    let reader = SerializedFileReader::new(bytes)?;
+    let row_group = reader.metadata().row_group(0);
+
+    let bloom_offset_of = |column: &str| {
+        row_group
+            .columns()
+            .iter()
+            .find(|c| c.column_path().string() == column)
+            .unwrap_or_else(|| panic!("column {column} not found in Parquet metadata"))
+            .bloom_filter_offset()
+    };
+    assert!(
+        bloom_offset_of("label_namespace").is_some(),
+        "label_namespace should carry a bloom filter"
+    );
+    assert!(
+        bloom_offset_of("body").is_none(),
+        "body has no bloom-filter property and should not carry one"
+    );
+
+    Ok(())
+}
+
 /// Spike for the attribute-explorability epic (#737 / #734): schema
 /// evolution through the low-level catalog commit path — `AddSchema` +
 /// `SetCurrentSchema` via `Catalog::update_table` — followed by a write
