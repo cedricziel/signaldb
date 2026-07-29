@@ -365,7 +365,7 @@ async fn test_write_and_query_with_slugs() -> Result<()> {
     // Step 6: Load the table through the querier catalog and verify schema
     match querier_catalog.clone().load_tabular(&slug_ident).await? {
         iceberg_rust::catalog::tabular::Tabular::Table(table) => {
-            let schema = table.current_schema(None)?;
+            let schema = table.current_schema()?;
             // Verify it has the expected traces fields
             let field_names: Vec<&str> = schema.fields().iter().map(|f| f.name.as_str()).collect();
             assert!(
@@ -490,7 +490,7 @@ async fn test_map_attribute_column_end_to_end() -> Result<()> {
     };
     let arrow_schema: ArrowSchemaRef = Arc::new(
         table
-            .current_schema(None)?
+            .current_schema()?
             .fields()
             .try_into()
             .map_err(|e: iceberg_rust::spec::error::Error| anyhow::anyhow!("to arrow: {e}"))?,
@@ -591,17 +591,11 @@ async fn test_map_attribute_column_end_to_end() -> Result<()> {
 /// `SetCurrentSchema` via `Catalog::update_table` — followed by a write
 /// under the new schema and a read that null-fills the old files.
 ///
-/// IGNORED: blocked on a fork limitation. The metadata-only commit works
-/// (schemas {0,1}, current_schema_id=1), but `TableMetadata::
-/// current_schema(branch)` prefers the *current snapshot's* pinned
-/// schema_id, and the Append/Replace transaction ops both derive their
-/// new snapshot's schema from `current_schema(branch)` — so every new
-/// snapshot re-pins the old schema and the flip never takes effect
-/// (`updated current_schema` stays `["timestamp", "body"]`). Fix belongs
-/// in the fork: stamp new snapshots with `metadata.current_schema_id`
-/// (see the analysis on #734). Un-ignore once the fork is patched.
+/// Requires iceberg-rust rev >= 96f28c18: earlier revisions resolved
+/// `current_schema` through the current snapshot's pinned schema_id, so
+/// every new snapshot re-pinned the old schema and the flip never took
+/// effect (fixed upstream in JanKaul/iceberg-rust#378).
 #[tokio::test]
-#[ignore = "blocked on iceberg-rust fork: new snapshots re-pin the old schema_id (#734)"]
 async fn test_schema_evolution_add_label_column() -> Result<()> {
     use datafusion::prelude::SessionContext;
     use futures::stream;
@@ -723,7 +717,7 @@ async fn test_schema_evolution_add_label_column() -> Result<()> {
     };
     assert!(
         table
-            .current_schema(None)?
+            .current_schema()?
             .fields()
             .iter()
             .any(|f| f.name == "label_env"),
