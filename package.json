@@ -5,7 +5,10 @@
   "scripts": {
     "grafana:dev": "pnpm --filter signaldb-datasource dev",
     "grafana:build": "pnpm --filter signaldb-datasource build",
-    "grafana:test": "pnpm --filter signaldb-datasource test:ci"
+    "grafana:test": "pnpm --filter signaldb-datasource test:ci",
+    "ui:dev": "pnpm --filter signaldb-ui dev",
+    "ui:build": "pnpm --filter signaldb-ui build",
+    "ui:test": "pnpm --filter signaldb-ui test"
   },
   "engines": {
     "node": ">=22"

@@ -336,6 +336,21 @@ fn internal_trace_to_tempo(
                 span_id: span.span_id.clone(),
                 start_time_unix_nano: span.start_time_unix_nano.to_string(),
                 duration_nanos: span.duration_nano.to_string(),
+                name: Some(span.name.clone()),
+                parent_span_id: if span.parent_span_id.is_empty() {
+                    None
+                } else {
+                    Some(span.parent_span_id.clone())
+                },
+                service_name: Some(span.service_name.clone()),
+                status: Some(
+                    match span.status {
+                        common::model::span::SpanStatus::Ok => "ok",
+                        common::model::span::SpanStatus::Error => "error",
+                        common::model::span::SpanStatus::Unspecified => "unset",
+                    }
+                    .to_string(),
+                ),
                 attributes,
             }
         })

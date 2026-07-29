@@ -9,38 +9,64 @@ set -o pipefail
 echo "Running pre-commit hooks..."
 echo "Note: All checks are fatal - any failure will prevent commit"
 
-# Check code formatting first (fastest check, most common failure)
-echo "Checking code formatting..."
-cargo fmt --all -- --check || {
-    echo "❌ FATAL: Code formatting check failed!"
-    echo "Run 'cargo fmt' to fix formatting issues."
-    exit 1
-}
+# Gate each toolchain's checks on what is actually staged: UI-only commits
+# should not pay for a full-workspace clippy pass, and Rust commits should
+# not wait on pnpm.
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
 
-# Run clippy with warnings as errors. Clippy is `cargo check` plus lints with
-# the same flags, so a separate check pass would only duplicate a full
-# workspace compile.
-echo "Running clippy..."
-cargo clippy --workspace --all-targets --all-features -- -D warnings || {
-    echo "❌ FATAL: Clippy found issues!"
-    echo "Fix all clippy warnings before committing."
-    exit 1
-}
+rust_staged=$(echo "$staged" | grep -E '\.rs$|(^|/)Cargo\.(toml|lock)$|^deny\.toml$|^rustfmt\.toml$|^\.cargo-husky/' || true)
+ui_staged=$(echo "$staged" | grep -E '^src/ui/' || true)
 
-# Check for unused dependencies
-echo "Checking for unused dependencies..."
-cargo machete --with-metadata || {
-    echo "❌ FATAL: Found unused dependencies!"
-    echo "Remove unused dependencies or update cargo-machete ignores."
-    exit 1
-}
+if [ -n "$rust_staged" ]; then
+    # Check code formatting first (fastest check, most common failure)
+    echo "Checking code formatting..."
+    cargo fmt --all -- --check || {
+        echo "❌ FATAL: Code formatting check failed!"
+        echo "Run 'cargo fmt' to fix formatting issues."
+        exit 1
+    }
 
-# License and security auditing
-echo "Running security and license auditing..."
-cargo deny check || {
-    echo "❌ FATAL: Security or license audit failed!"
-    echo "Review and fix security/license issues before committing."
-    exit 1
-}
+    # Run clippy with warnings as errors. Clippy is `cargo check` plus lints
+    # with the same flags, so a separate check pass would only duplicate a
+    # full workspace compile.
+    echo "Running clippy..."
+    cargo clippy --workspace --all-targets --all-features -- -D warnings || {
+        echo "❌ FATAL: Clippy found issues!"
+        echo "Fix all clippy warnings before committing."
+        exit 1
+    }
+
+    # Check for unused dependencies
+    echo "Checking for unused dependencies..."
+    cargo machete --with-metadata || {
+        echo "❌ FATAL: Found unused dependencies!"
+        echo "Remove unused dependencies or update cargo-machete ignores."
+        exit 1
+    }
+
+    # License and security auditing
+    echo "Running security and license auditing..."
+    cargo deny check || {
+        echo "❌ FATAL: Security or license audit failed!"
+        echo "Review and fix security/license issues before committing."
+        exit 1
+    }
+else
+    echo "No Rust changes staged - skipping cargo checks."
+fi
+
+if [ -n "$ui_staged" ]; then
+    echo "Checking UI (typecheck + lint)..."
+    pnpm --filter signaldb-ui typecheck || {
+        echo "❌ FATAL: UI typecheck failed!"
+        exit 1
+    }
+    pnpm --filter signaldb-ui lint || {
+        echo "❌ FATAL: UI lint failed!"
+        exit 1
+    }
+else
+    echo "No UI changes staged - skipping UI checks."
+fi
 
 echo "✅ All pre-commit checks passed!"

@@ -194,6 +194,10 @@ flowchart LR
 | **Capability** | `Routing`                                                                           |
 | **APIs**       | Tempo-compatible, Pyroscope-compatible, Loki-compatible (stubs), Admin API, OpenAPI |
 
+The router also serves the explore UI (a static SPA built from `src/ui`)
+under `/ui`, from the directory named by `SIGNALDB_UI_DIR`. See
+[the explore UI guide](../users/explore-ui.md).
+
 **Tempo API Endpoints**:
 
 | Endpoint                                         | Status                                                                                     |

@@ -197,6 +197,26 @@ pub struct Span {
     pub start_time_unix_nano: String,
     #[serde(rename = "durationNanos")]
     pub duration_nanos: String,
+    /// Span name intrinsic (Tempo exposes it as `name` on spanset spans).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Parent span id; empty/absent for root spans. Needed by clients that
+    /// reconstruct the span hierarchy (e.g. waterfall views).
+    #[serde(
+        rename = "parentSpanID",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_span_id: Option<String>,
+    #[serde(
+        rename = "serviceName",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub service_name: Option<String>,
+    /// Span status (`ok`, `error`, `unset`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
     pub attributes: HashMap<String, Attribute>,
 }
 
@@ -278,6 +298,10 @@ mod tests {
                     span_id: "563d623c76514f8e".to_string(),
                     start_time_unix_nano: "1684778327735077898".to_string(),
                     duration_nanos: "446979497".to_string(),
+                    name: None,
+                    parent_span_id: None,
+                    service_name: None,
+                    status: None,
                     attributes: vec![Attribute {
                         key: "status".to_string(),
                         value: Value::StringValue("error".to_string()),
@@ -312,6 +336,10 @@ mod tests {
                     span_id: "563d623c76514f8e".to_string(),
                     start_time_unix_nano: "1684778327735077898".to_string(),
                     duration_nanos: "446979497".to_string(),
+                    name: None,
+                    parent_span_id: None,
+                    service_name: None,
+                    status: None,
                     attributes: vec![Attribute {
                         key: "status".to_string(),
                         value: Value::StringValue("error".to_string()),
@@ -340,6 +368,10 @@ mod tests {
                 span_id: "563d623c76514f8e".to_string(),
                 start_time_unix_nano: "1684778327735077898".to_string(),
                 duration_nanos: "446979497".to_string(),
+                name: None,
+                parent_span_id: None,
+                service_name: None,
+                status: None,
                 attributes: vec![Attribute {
                     key: "status".to_string(),
                     value: Value::StringValue("error".to_string()),
@@ -361,6 +393,10 @@ mod tests {
             span_id: "563d623c76514f8e".to_string(),
             start_time_unix_nano: "1684778327735077898".to_string(),
             duration_nanos: "446979497".to_string(),
+            name: None,
+            parent_span_id: None,
+            service_name: None,
+            status: None,
             attributes: vec![Attribute {
                 key: "status".to_string(),
                 value: Value::StringValue("error".to_string()),

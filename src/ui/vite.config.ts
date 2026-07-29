@@ -1,0 +1,66 @@
+/// <reference types="vitest/config" />
+import react from "@vitejs/plugin-react";
+import { defineConfig, loadEnv, type ProxyOptions } from "vite";
+
+// Paths the SignalDB router serves; the dev server forwards them to a live
+// instance so the browser only ever sees same-origin requests, exactly as in
+// the embedded production build.
+const PROXIED_PATHS = ["/loki", "/tempo", "/prometheus", "/api"];
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, __dirname, "SIGNALDB_");
+  const target = env.SIGNALDB_TARGET || "http://localhost:3000";
+
+  const proxy = Object.fromEntries(
+    PROXIED_PATHS.map((path): [string, ProxyOptions] => [
+      path,
+      {
+        target,
+        changeOrigin: true,
+        // Dev-only proxy: accept self-signed certs on homelab targets.
+        secure: false,
+        configure(proxyServer) {
+          proxyServer.on("proxyReq", (proxyReq, req) => {
+            // The API key never reaches browser code; always injected here.
+            if (env.SIGNALDB_API_KEY) {
+              proxyReq.setHeader(
+                "Authorization",
+                `Bearer ${env.SIGNALDB_API_KEY}`,
+              );
+            }
+            // Tenant context: the UI's selector sends its own headers; the
+            // env values are only defaults for requests without them.
+            if (!req.headers["x-tenant-id"] && env.SIGNALDB_TENANT) {
+              proxyReq.setHeader("X-Tenant-ID", env.SIGNALDB_TENANT);
+            }
+            if (!req.headers["x-dataset-id"] && env.SIGNALDB_DATASET) {
+              proxyReq.setHeader("X-Dataset-ID", env.SIGNALDB_DATASET);
+            }
+          });
+        },
+      },
+    ]),
+  );
+
+  return {
+    plugins: [react()],
+    // Served by the router under /ui/ in production.
+    base: "/ui/",
+    // Surface the dev defaults so the tenant selector can display them.
+    define: {
+      __SIGNALDB_DEFAULT_TENANT__: JSON.stringify(env.SIGNALDB_TENANT ?? ""),
+      __SIGNALDB_DEFAULT_DATASET__: JSON.stringify(env.SIGNALDB_DATASET ?? ""),
+    },
+    server: { port: 5173, proxy },
+    test: {
+      environment: "jsdom",
+      setupFiles: "./src/test/setup.ts",
+      css: false,
+      coverage: {
+        provider: "v8",
+        include: ["src/**/*.{ts,tsx}"],
+        exclude: ["src/main.tsx", "src/test/**", "src/**/*.d.ts"],
+      },
+    },
+  };
+});
