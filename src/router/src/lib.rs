@@ -230,6 +230,9 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
                 .layer(query_rate_layer.clone())
                 .layer(auth_layer.clone()),
         )
+        // UI session login/logout (public; sets/clears the HttpOnly session
+        // cookie the auth middleware accepts in place of auth headers)
+        .merge(endpoints::session::router())
         // Explore UI static assets (public, served from SIGNALDB_UI_DIR)
         .nest_service("/ui", ui::service_from_env())
         // Admin routes with admin authentication
@@ -237,6 +240,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .nest(
             "/api/v1",
             endpoints::tenant::router()
+                .route("/whoami", get(endpoints::session::whoami::<S>))
                 .layer(query_rate_layer)
                 .layer(auth_layer),
         )
