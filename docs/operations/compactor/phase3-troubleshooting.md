@@ -812,7 +812,7 @@ DEBUG compactor::orphan::detector: Skipping recent file (within grace period) pa
 
 **How to stop promotions:** set `[compactor.attr_promotion].dry_run = true` (decisions are still logged, nothing changes) or `enabled = false` (no decision pass at all). Columns already added stay in place; they are nullable and harmless to queries.
 
-**Removing a promoted column:** demotion is decided and logged (`demote` in the decision line) but not yet acted on — dropping columns is follow-up work.
+**Removing a promoted column:** demotion is acted on at rewrite: unpinned promoted columns with no recorded query demand are dropped from the schema at the next compaction cycle (the data remains queryable through the attributes map). To force-keep a column, pin it in `[schema.materialized_labels]`.
 
 ## Additional Resources
 
