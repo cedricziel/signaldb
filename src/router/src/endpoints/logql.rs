@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 
+use super::api_error::ApiError;
 use crate::RouterState;
 use arrow_flight::Ticket;
 use axum::{
@@ -104,20 +105,22 @@ pub struct MetadataParams {
 
 /// Reject requests without a `query` parameter, mirroring Loki's
 /// "empty query" error status.
-fn require_query(query: &Option<String>) -> Result<String, StatusCode> {
+fn require_query(query: &Option<String>) -> Result<String, ApiError> {
     query
         .as_deref()
         .map(str::trim)
         .filter(|q| !q.is_empty())
         .map(str::to_string)
-        .ok_or(StatusCode::BAD_REQUEST)
+        .ok_or_else(|| ApiError::bad_request("missing or empty 'query' parameter"))
 }
 
 /// Validate the `direction` parameter.
-fn validate_direction(direction: &str) -> Result<(), StatusCode> {
+fn validate_direction(direction: &str) -> Result<(), ApiError> {
     match direction {
         "forward" | "backward" => Ok(()),
-        _ => Err(StatusCode::BAD_REQUEST),
+        _ => Err(ApiError::bad_request(
+            "invalid 'direction': expected 'forward' or 'backward'",
+        )),
     }
 }
 
@@ -138,7 +141,7 @@ pub async fn query<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<InstantQueryParams>,
-) -> Result<axum::Json<QueryResponse>, StatusCode> {
+) -> Result<axum::Json<QueryResponse>, ApiError> {
     let logql = require_query(&params.query)?;
     validate_direction(&params.direction)?;
 
@@ -171,7 +174,7 @@ pub async fn query_range<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<RangeQueryParams>,
-) -> Result<axum::Json<QueryResponse>, StatusCode> {
+) -> Result<axum::Json<QueryResponse>, ApiError> {
     let logql = require_query(&params.query)?;
     validate_direction(&params.direction)?;
 
@@ -215,7 +218,7 @@ pub async fn labels<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<MetadataParams>,
-) -> Result<axum::Json<LabelsResponse>, StatusCode> {
+) -> Result<axum::Json<LabelsResponse>, ApiError> {
     let (start, end) = metadata_window(&params);
     let ticket = format!(
         "query_logs_labels:{}:{}:{start}:{end}",
@@ -241,9 +244,9 @@ pub async fn label_values<S: RouterState>(
     tenant_ctx: TenantContextExtractor,
     Path(name): Path<String>,
     Query(params): Query<MetadataParams>,
-) -> Result<axum::Json<LabelsResponse>, StatusCode> {
+) -> Result<axum::Json<LabelsResponse>, ApiError> {
     if name.trim().is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(ApiError::bad_request("label name must not be empty"));
     }
     let (start, end) = metadata_window(&params);
     let ticket = format!(
@@ -268,7 +271,7 @@ pub async fn series<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<MetadataParams>,
-) -> Result<axum::Json<SeriesResponse>, StatusCode> {
+) -> Result<axum::Json<SeriesResponse>, ApiError> {
     let selector = params
         .matcher
         .as_deref()
@@ -318,7 +321,7 @@ pub async fn detected_fields<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<DetectedFieldsParams>,
-) -> Result<axum::Json<DetectedFieldsResponse>, StatusCode> {
+) -> Result<axum::Json<DetectedFieldsResponse>, ApiError> {
     let meta = MetadataParams {
         start: params.start.clone(),
         end: params.end.clone(),
@@ -364,7 +367,7 @@ async fn run_log_query<S: RouterState>(
     end: i64,
     limit: u32,
     direction: &str,
-) -> Result<Vec<Stream>, StatusCode> {
+) -> Result<Vec<Stream>, ApiError> {
     let payload = serde_json::json!({
         "query": logql,
         "start": start,
@@ -395,7 +398,7 @@ async fn run_metric_query<S: RouterState>(
     start: i64,
     end: i64,
     step: i64,
-) -> Result<Vec<loki_api::MetricSeries>, StatusCode> {
+) -> Result<Vec<loki_api::MetricSeries>, ApiError> {
     let payload = serde_json::json!({
         "query": logql,
         "start": start,
@@ -522,14 +525,17 @@ fn default_step_ns(start: i64, end: i64) -> i64 {
 async fn execute_ticket<S: RouterState>(
     state: &S,
     ticket_content: String,
-) -> Result<Vec<RecordBatch>, StatusCode> {
+) -> Result<Vec<RecordBatch>, ApiError> {
     let mut client = state
         .service_registry()
         .get_flight_client_for_capability(ServiceCapability::QueryExecution)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to get Flight client for log query");
-            StatusCode::SERVICE_UNAVAILABLE
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "no querier service available",
+            )
         })?;
 
     let ticket = Ticket::new(ticket_content);
@@ -542,30 +548,15 @@ async fn execute_ticket<S: RouterState>(
     let mut stream = client
         .do_get(flight_request)
         .await
-        .map_err(|e| flight_status_to_http(&e))?
+        .map_err(|e| ApiError::from_flight(&e, "logs"))?
         .into_inner();
 
     let mut data = Vec::new();
     while let Some(flight_data) = stream.next().await {
-        data.push(flight_data.map_err(|e| flight_status_to_http(&e))?);
+        data.push(flight_data.map_err(|e| ApiError::from_flight(&e, "logs"))?);
     }
 
-    super::flight_decode::decode_flight_batches(&data, "logs")
-}
-
-fn flight_status_to_http(status: &tonic::Status) -> StatusCode {
-    match status.code() {
-        tonic::Code::NotFound => StatusCode::NOT_FOUND,
-        tonic::Code::InvalidArgument => StatusCode::BAD_REQUEST,
-        tonic::Code::ResourceExhausted => StatusCode::TOO_MANY_REQUESTS,
-        tonic::Code::DeadlineExceeded => StatusCode::GATEWAY_TIMEOUT,
-        tonic::Code::PermissionDenied => StatusCode::FORBIDDEN,
-        tonic::Code::Unimplemented => StatusCode::NOT_IMPLEMENTED,
-        _ => {
-            tracing::error!(error = %status, "Log Flight query failed");
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
-    }
+    super::flight_decode::decode_flight_batches(&data, "logs").map_err(ApiError::from)
 }
 
 /// Group the projected log rows into Loki streams by their label set,
