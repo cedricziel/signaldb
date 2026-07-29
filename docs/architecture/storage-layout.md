@@ -352,9 +352,11 @@ logs = ["team", "region"]
   where tables are created (`CatalogManager::ensure_table`) and in the
   writer's transforms.
 - **When it applies**: tables are created lazily and carry the columns from
-  their configured set at creation time (the pinned iceberg-rust fork has no
-  supported schema-evolution to add columns to an existing table). A table
-  that predates a label keeps matching it through the JSON substring path;
+  their configured set at creation time; existing tables can gain further
+  `label_<key>` columns post-creation through
+  [schema evolution](#label-columns-can-be-added-to-existing-tables). A table
+  that predates a label (and has not been evolved) keeps matching it through
+  the JSON substring path;
   the writer's schema coercion drops columns a table lacks and null-fills
   nullable columns it has but the current config no longer produces.
 - **Querying**: the querier routes a label to its `label_<key>` column when
@@ -645,9 +647,19 @@ The Writer applies `transform_trace_v1_to_v2()` (`src/writer/src/schema_transfor
 
 The transformation is applied in the Writer's Flight `do_put` handler before data is written to the WAL, ensuring all WAL data is in v2 format.
 
-### No Iceberg-Level Schema Evolution
+### Label columns can be added to existing tables
 
-Currently, there is no Iceberg ALTER TABLE or runtime schema evolution. Tables are created with the current schema version (v2 for traces, v1 for logs/metrics). If a table already exists, it is loaded as-is. Incoming v1 data is always transformed to v2 before writing.
+Existing tables can gain optional string `label_<key>` columns after creation via `add_label_columns()` (`src/common/src/iceberg/evolution.rs`). This is the evolution path used by attribute auto-promotion: the helper appends the columns to the current schema and commits `AddSchema` + `SetCurrentSchema` through `Catalog::update_table` — a metadata-only commit.
+
+- **No data rewrite**: Parquet files written before the flip are never rewritten for it; readers null-fill the new columns for old files. The rewrite-coupled promotion backfills values at the next compaction.
+- **Snapshot-pinned schemas remain reachable**: the previous schema stays in table metadata, so snapshots that pin it keep resolving.
+- **Field ids** continue after the maximum id across the whole schema tree — including nested map key/value and list element ids — so new columns never collide with the attributes map's nested ids.
+- **Idempotent**: keys whose materialized column already exists are skipped; when nothing new remains, no commit is made.
+- **Verified**: the table is reloaded after the commit and the evolved schema checked, because the SQL catalog's compare-and-swap can silently lose a race.
+
+Requires iceberg-rust rev >= 96f28c18; earlier revisions resolved `current_schema` through the current snapshot's pinned schema id, so the flip never took effect (JanKaul/iceberg-rust#378).
+
+Beyond label columns there is no general ALTER TABLE surface: tables are created with the current schema version (v2 for traces, v1 for logs/metrics), an existing table is loaded as-is, and incoming v1 data is always transformed to v2 before writing.
 
 ## Multi-Tenant Storage Isolation
 
@@ -715,6 +727,7 @@ metrics_enabled = true
 | `src/common/src/iceberg/schemas.rs`        | Table schemas, partition specs, `TableSchema` enum             |
 | `src/common/src/iceberg/names.rs`          | Namespace/identifier/location builders                         |
 | `src/common/src/iceberg/table_manager.rs`  | `IcebergTableManager::ensure_table()` -- load-or-create tables |
+| `src/common/src/iceberg/evolution.rs`      | `add_label_columns()` -- add label columns to existing tables  |
 | `src/common/src/schema/schema_parser.rs`   | TOML schema parser with inheritance resolution                 |
 | `src/common/src/schema/iceberg_schemas.rs` | Backward-compatibility re-export of `iceberg/schemas.rs`       |
 | `src/common/src/catalog_manager.rs`        | `CatalogManager` singleton for shared Iceberg catalog          |
