@@ -1,6 +1,9 @@
 use clap::Subcommand;
+use clap_complete::engine::ArgValueCompleter;
 use signaldb_sdk::Client;
 use signaldb_sdk::types::{CreateTenantRequest, UpdateTenantRequest};
+
+use super::completions::tenant_id_completer;
 
 #[derive(Subcommand)]
 pub enum TenantAction {
@@ -20,11 +23,13 @@ pub enum TenantAction {
     /// Get tenant details
     Get {
         /// Tenant ID
+        #[arg(add = ArgValueCompleter::new(tenant_id_completer))]
         id: String,
     },
     /// Update a tenant
     Update {
         /// Tenant ID
+        #[arg(add = ArgValueCompleter::new(tenant_id_completer))]
         id: String,
         /// New tenant name
         #[arg(long)]
@@ -36,6 +41,7 @@ pub enum TenantAction {
     /// Delete a tenant
     Delete {
         /// Tenant ID
+        #[arg(add = ArgValueCompleter::new(tenant_id_completer))]
         id: String,
     },
 }

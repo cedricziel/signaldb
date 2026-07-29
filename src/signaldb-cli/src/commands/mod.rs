@@ -1,4 +1,5 @@
 pub mod api_key;
+pub mod completions;
 pub mod dataset;
 pub mod query;
 pub mod tenant;
@@ -7,6 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use clap_complete::engine::ArgValueCompleter;
 use signaldb_sdk::Client;
 
 /// SignalDB CLI — manage tenants, API keys, and datasets
@@ -51,6 +53,24 @@ enum Commands {
         #[command(subcommand)]
         action: query::QueryAction,
     },
+    /// Generate a shell completion script on stdout
+    ///
+    /// Install it with your shell's completion mechanism, e.g.:
+    ///
+    ///   signaldb-cli completions bash > /etc/bash_completion.d/signaldb-cli
+    ///   signaldb-cli completions zsh > ~/.zfunc/_signaldb-cli
+    ///   signaldb-cli completions fish > ~/.config/fish/completions/signaldb-cli.fish
+    ///
+    /// For dynamic completions that also suggest live tenant IDs (fetched
+    /// from the admin API using SIGNALDB_URL / SIGNALDB_ADMIN_KEY), register
+    /// the COMPLETE hook instead, e.g. for zsh:
+    ///
+    ///   echo 'source <(COMPLETE=zsh signaldb-cli)' >> ~/.zshrc
+    #[command(verbatim_doc_comment)]
+    Completions {
+        /// Shell to generate a completion script for
+        shell: clap_complete::Shell,
+    },
     /// Terminal User Interface for SignalDB
     Tui {
         /// Path to SignalDB configuration file (reads admin_api_key from [auth])
@@ -82,7 +102,11 @@ enum Commands {
         refresh_rate: String,
 
         /// Tenant ID
-        #[arg(long, env = "SIGNALDB_TENANT_ID")]
+        #[arg(
+            long,
+            env = "SIGNALDB_TENANT_ID",
+            add = ArgValueCompleter::new(completions::tenant_id_completer)
+        )]
         tenant_id: Option<String>,
 
         /// Dataset ID
@@ -95,6 +119,10 @@ impl Cli {
     pub async fn run(self) -> anyhow::Result<()> {
         if let Commands::Query { action } = self.command {
             return action.run().await;
+        }
+
+        if let Commands::Completions { shell } = self.command {
+            return completions::generate(shell);
         }
 
         let config_admin_key = self.try_resolve_admin_key();
@@ -147,6 +175,7 @@ impl Cli {
             Commands::ApiKey { action } => action.run(&client).await,
             Commands::Dataset { action } => action.run(&client).await,
             Commands::Query { .. } => unreachable!(),
+            Commands::Completions { .. } => unreachable!(),
             Commands::Tui { .. } => unreachable!(),
         }
     }
