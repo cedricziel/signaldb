@@ -123,6 +123,10 @@ path = "tests/compactor/multi_instance.rs"
 name = "attr_promotion_rewrite"
 path = "tests/compactor/attr_promotion_rewrite.rs"
 
+[[test]]
+name = "attr_demotion_rewrite"
+path = "tests/compactor/attr_demotion_rewrite.rs"
+
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory
 ignored = ["acceptor", "anyhow", "arrow-flight", "compactor", "datafusion", "futures", "iceberg-rust", "log", "opentelemetry-proto", "querier", "router", "tokio", "tokio-stream", "tonic", "writer"]

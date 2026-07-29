@@ -115,9 +115,13 @@ pub async fn add_label_columns(
 
     // Build the evolved schema: current fields plus one optional string
     // field per new key, ids continuing after the true maximum across the
-    // whole schema tree.
+    // whole schema tree AND the metadata's `last_column_id` — a column
+    // dropped by [`remove_label_columns`] no longer appears in the current
+    // schema, but its id must never be reused (old data files still map
+    // it to the old column's values).
+    let metadata = table.metadata();
     let mut fields: Vec<StructField> = current.fields().iter().cloned().collect();
-    let mut next_id = max_field_id(current) + 1;
+    let mut next_id = max_field_id(current).max(metadata.last_column_id) + 1;
     for (key, column) in &new_columns {
         fields.push(StructField {
             id: next_id,
@@ -132,7 +136,6 @@ pub async fn add_label_columns(
     }
     let last_column_id = next_id - 1;
 
-    let metadata = table.metadata();
     let new_schema_id = metadata
         .schemas
         .keys()
@@ -181,6 +184,114 @@ pub async fn add_label_columns(
         schema_id = *verified.schema_id(),
         columns = ?new_columns.iter().map(|(_, c)| c.as_str()).collect::<Vec<_>>(),
         "Added materialized label columns via schema evolution"
+    );
+
+    Ok(verified.clone())
+}
+
+/// Remove the materialized `label_<key>` columns of the given attribute
+/// keys from the table's current schema and make the pruned schema
+/// current (the demotion half of #734).
+///
+/// Idempotent: keys whose materialized column (see
+/// [`materialized_column_name`]) is already absent are skipped, and when
+/// nothing remains to drop the current schema is returned without a
+/// commit. Only `label_<key>` columns can ever be named — the key ->
+/// column encoding always carries the `label_` prefix, so base columns
+/// are unreachable by construction. Field ids of dropped columns are
+/// never reused: the metadata's `last_column_id` is left untouched
+/// (`AddSchema` with `last_column_id: None`) and [`add_label_columns`]
+/// allocates past it.
+///
+/// The change is committed as `AddSchema` + `SetCurrentSchema` through
+/// [`Catalog::update_table`], then the table is reloaded and the pruned
+/// schema verified, mirroring [`add_label_columns`]. The attribute values
+/// themselves stay in the map-typed attributes column — dropping the
+/// label column loses nothing; queries fall back to map matching.
+///
+/// Returns the verified current schema (without the dropped columns).
+pub async fn remove_label_columns(
+    catalog: Arc<dyn Catalog>,
+    identifier: &Identifier,
+    keys: &[String],
+) -> Result<Schema> {
+    let table = load_table(&catalog, identifier).await?;
+    let current = table
+        .current_schema()
+        .map_err(|e| anyhow::anyhow!("Failed to resolve current schema of {identifier}: {e}"))?;
+
+    // Resolve keys to column names, keeping only columns that exist and
+    // collapsing duplicates (two keys can encode to the same column).
+    let mut drop_columns: Vec<String> = Vec::new();
+    for key in keys {
+        let column = materialized_column_name(key);
+        if current.fields().iter().any(|f| f.name == column) && !drop_columns.contains(&column) {
+            drop_columns.push(column);
+        }
+    }
+    if drop_columns.is_empty() {
+        return Ok(current.clone());
+    }
+
+    // Build the pruned schema: current fields minus the dropped columns,
+    // ids untouched, new schema id one past the highest existing one.
+    let fields: Vec<StructField> = current
+        .fields()
+        .iter()
+        .filter(|f| !drop_columns.contains(&f.name))
+        .cloned()
+        .collect();
+    let metadata = table.metadata();
+    let new_schema_id = metadata
+        .schemas
+        .keys()
+        .max()
+        .copied()
+        .unwrap_or(*current.schema_id())
+        + 1;
+    let pruned = Schema::from_struct_type(StructType::new(fields), new_schema_id, None);
+
+    catalog
+        .clone()
+        .update_table(CommitTable {
+            identifier: identifier.clone(),
+            requirements: vec![],
+            updates: vec![
+                TableUpdate::AddSchema {
+                    schema: pruned,
+                    // Keep `last_column_id` as is: dropped ids must never
+                    // be handed out again.
+                    last_column_id: None,
+                },
+                TableUpdate::SetCurrentSchema {
+                    schema_id: new_schema_id,
+                },
+            ],
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to commit schema demotion for {identifier}: {e}"))?;
+
+    // Post-commit verification: reload and confirm the pruned schema is
+    // current and every named column is gone.
+    let reloaded = load_table(&catalog, identifier)
+        .await
+        .context("Failed to reload table for post-demotion verification")?;
+    let verified = reloaded.current_schema().map_err(|e| {
+        anyhow::anyhow!("Failed to resolve current schema after demotion of {identifier}: {e}")
+    })?;
+    for column in &drop_columns {
+        anyhow::ensure!(
+            !verified.fields().iter().any(|f| &f.name == column),
+            "Schema demotion of {identifier} did not take effect: column {column} still present \
+             in current schema; a concurrent commit likely won the race"
+        );
+    }
+
+    tracing::info!(
+        table = %identifier,
+        schema_id = *verified.schema_id(),
+        columns = ?drop_columns,
+        "Removed materialized label columns via schema evolution"
     );
 
     Ok(verified.clone())
@@ -376,6 +487,96 @@ mod tests {
                 .count(),
             1
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn removes_label_columns_and_flips_current_schema() -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let identifier = create_test_table(&catalog, "events").await?;
+
+        add_label_columns(
+            catalog.clone(),
+            &identifier,
+            &["env".to_string(), "pod".to_string()],
+        )
+        .await?;
+        let schema =
+            remove_label_columns(catalog.clone(), &identifier, &["env".to_string()]).await?;
+
+        assert!(field(&schema, "label_env").is_none(), "label_env dropped");
+        assert!(field(&schema, "label_pod").is_some(), "label_pod kept");
+        assert!(field(&schema, "attributes").is_some(), "map column kept");
+
+        // The pruned schema is current in the catalog and the column id
+        // budget did not regress.
+        let table = load_table(&catalog, &identifier).await?;
+        assert_eq!(table.metadata().current_schema_id, 2);
+        assert_eq!(table.metadata().schemas.len(), 3);
+        assert_eq!(table.metadata().last_column_id, 7);
+        assert!(field(table.current_schema()?, "label_env").is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remove_rerun_is_idempotent_and_commits_nothing() -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let identifier = create_test_table(&catalog, "events").await?;
+
+        add_label_columns(catalog.clone(), &identifier, &["env".to_string()]).await?;
+        let first =
+            remove_label_columns(catalog.clone(), &identifier, &["env".to_string()]).await?;
+        let second =
+            remove_label_columns(catalog.clone(), &identifier, &["env".to_string()]).await?;
+        assert_eq!(first, second, "re-run must return the same schema");
+
+        let table = load_table(&catalog, &identifier).await?;
+        assert_eq!(
+            table.metadata().schemas.len(),
+            3,
+            "idempotent re-run must not add another schema"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remove_of_absent_columns_is_a_no_op() -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let identifier = create_test_table(&catalog, "events").await?;
+
+        // No label columns exist yet: nothing to remove, no commit. The
+        // key -> column encoding also means base columns can never be
+        // named for removal ("body" maps to "label_body").
+        let schema = remove_label_columns(
+            catalog.clone(),
+            &identifier,
+            &["env".to_string(), "body".to_string()],
+        )
+        .await?;
+        assert!(field(&schema, "body").is_some());
+
+        let table = load_table(&catalog, &identifier).await?;
+        assert_eq!(table.metadata().schemas.len(), 1, "no commit happened");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn readd_after_remove_assigns_a_fresh_field_id() -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let identifier = create_test_table(&catalog, "events").await?;
+
+        add_label_columns(catalog.clone(), &identifier, &["env".to_string()]).await?;
+        remove_label_columns(catalog.clone(), &identifier, &["env".to_string()]).await?;
+        let schema = add_label_columns(catalog.clone(), &identifier, &["env".to_string()]).await?;
+
+        // Iceberg field ids must never be reused: the re-added column gets
+        // a new id past the previous maximum (6 was the original).
+        let env = field(&schema, "label_env").expect("label_env re-added");
+        assert_eq!(env.id, 7);
         Ok(())
     }
 

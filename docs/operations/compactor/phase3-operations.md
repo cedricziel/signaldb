@@ -711,7 +711,7 @@ A schema-evolution failure is logged as a warning and the compaction continues u
 - `Failed to evolve schema for attribute promotion; continuing compaction without it` (warn) — the flip failed; the rewrite proceeded without new columns.
 - The usual `Rewrote table data into compacted files` line covers the backfilled rewrite — there is no separate backfill log line, and no promotion-specific Prometheus metric yet.
 
-Demotion candidates appear in the decision line but are not acted on (follow-up work). Pinned `[schema.materialized_labels]` entries are never demoted.
+Demotion candidates are dropped at rewrite (schema commit without the column, after the promote half; the rewrite then omits it — attribute data stays in the map tier). Pinned `[schema.materialized_labels]` entries are never demoted. Note: demand counters are cumulative today, so a once-queried key is not demoted until a demand-decay window lands (follow-up).
 
 ## Additional Resources
 
