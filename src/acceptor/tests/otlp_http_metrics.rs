@@ -273,8 +273,8 @@ async fn otlp_http_metrics_missing_auth_headers_is_rejected() {
 
     assert_eq!(
         response.status(),
-        StatusCode::BAD_REQUEST,
-        "Expected 400 Bad Request for a request without auth headers"
+        StatusCode::UNAUTHORIZED,
+        "Expected 401 Unauthorized for a request without auth headers"
     );
     assert_eq!(metrics_wal_entry_count(&wal_manager).await, 0);
 }
