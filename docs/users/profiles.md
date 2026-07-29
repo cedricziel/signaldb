@@ -79,13 +79,13 @@ profiles_enabled = false
 
 The router serves a Pyroscope-compatible surface under `/pyroscope`:
 
-| Endpoint | Purpose |
-|----------|---------|
-| `GET /pyroscope/render` | Flamegraph for a query and time range |
-| `GET /pyroscope/render-diff` | Differential flamegraph between two ranges |
-| `GET /pyroscope/profile-types` | Available profile types |
-| `GET /pyroscope/label-names` | Label discovery (reads JSON-string or map-typed attribute tables) |
-| `GET /pyroscope/label-values?label=…` | Values for one label |
+| Endpoint                              | Purpose                                                           |
+| ------------------------------------- | ----------------------------------------------------------------- |
+| `GET /pyroscope/render`               | Flamegraph for a query and time range                             |
+| `GET /pyroscope/render-diff`          | Differential flamegraph between two ranges                        |
+| `GET /pyroscope/profile-types`        | Available profile types                                           |
+| `GET /pyroscope/label-names`          | Label discovery (reads JSON-string or map-typed attribute tables) |
+| `GET /pyroscope/label-values?label=…` | Values for one label                                              |
 
 Queries use Pyroscope selector syntax; time bounds accept unix seconds,
 unix milliseconds, or `now-1h` style expressions:
@@ -95,7 +95,9 @@ GET /pyroscope/render?query=cpu{service_name="checkout"}&from=now-1h&until=now
 ```
 
 The response is a flamebearer document that Grafana's flamegraph panel
-(and the bundled SignalDB datasource plugin) renders directly.
+(and the bundled SignalDB datasource plugin) renders directly. A window
+with no matching profiles returns an empty flamegraph with HTTP 200, not
+an error.
 
 ### SQL
 
