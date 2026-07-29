@@ -21,6 +21,7 @@ serde.workspace = true
 serde_json.workspace = true
 bincode.workspace = true
 hex.workspace = true
+base64.workspace = true
 opentelemetry.workspace = true
 opentelemetry-proto.workspace = true
 async-trait.workspace = true
