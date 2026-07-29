@@ -114,7 +114,8 @@ pub fn create_traces_schema_with(labels: &[String]) -> Result<Schema> {
 }
 
 /// Create Iceberg schema for logs table using TOML definitions, plus any
-/// configured materialized-label columns.
+/// configured materialized-label columns and the derived `attr_tokens`
+/// column (see [`crate::schema::ATTR_TOKENS_COLUMN`]).
 pub fn create_logs_schema_with(labels: &[String]) -> Result<Schema> {
     // Get the current log schema version from TOML
     let current_version = SCHEMA_DEFINITIONS.metadata.current_log_version.as_str();
@@ -123,7 +124,7 @@ pub fn create_logs_schema_with(labels: &[String]) -> Result<Schema> {
     // Promote configured attribute keys to dedicated columns. The schema is
     // materialized once at table-creation time; the global config is the
     // source of truth for which labels are promoted (empty when unset).
-    resolved_schema.to_iceberg_schema_with_labels(labels)
+    resolved_schema.to_iceberg_schema_with_labels_and_attr_tokens(labels)
 }
 
 /// Global-config variant of [`create_traces_schema_with`].

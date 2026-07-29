@@ -100,9 +100,15 @@ impl IcebergTableManager {
         // so point lookups on promoted attributes can prune row groups. The
         // pinned iceberg-rust Parquet writer reads these standard Iceberg
         // properties from the table metadata on every write.
-        let bloom_properties = crate::schema::bloom_filter_properties_for_labels(
+        let mut bloom_properties = crate::schema::bloom_filter_properties_for_labels(
             table_schema.materialized_labels_of(labels),
         );
+        // Logs tables also carry the derived `attr_tokens` column; enable a
+        // bloom filter over its List leaf so `key=value` containment checks
+        // can prune row groups.
+        if matches!(table_schema, schemas::TableSchema::Logs) {
+            bloom_properties.push(crate::schema::bloom_filter_property_for_attr_tokens());
+        }
 
         let mut builder = CreateTableBuilder::default();
         builder

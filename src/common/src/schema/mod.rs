@@ -33,6 +33,28 @@ pub fn materialized_column_name(label: &str) -> String {
     out
 }
 
+/// The derived `key=value` token column on logs tables. Each row carries
+/// one token per attribute across resource, scope, and record scopes, so a
+/// single bloom-filtered column can answer "does this file contain
+/// `key=value` for *any* attribute" without one column per key.
+pub const ATTR_TOKENS_COLUMN: &str = "attr_tokens";
+
+/// The bloom-filter table property for the derived [`ATTR_TOKENS_COLUMN`].
+///
+/// Parquet addresses the tokens through the List leaf column: arrow-rs
+/// writes a `List<Utf8>` with the 3-level encoding
+/// `attr_tokens (LIST) > list (repeated group) > item`, and the
+/// Iceberg-to-Arrow conversion names the element field `item`, so the leaf
+/// path is `attr_tokens.list.item`. The pinned iceberg-rust writer splits
+/// the property's column suffix on dots into exactly those path parts.
+pub fn bloom_filter_property_for_attr_tokens() -> (String, String) {
+    use iceberg_rust::spec::table_metadata::WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX;
+    (
+        format!("{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{ATTR_TOKENS_COLUMN}.list.item"),
+        "true".to_string(),
+    )
+}
+
 /// Per-column Parquet bloom-filter table properties for a set of
 /// materialized attribute labels.
 ///
@@ -266,6 +288,17 @@ mod tests {
         assert_eq!(
             materialized_column_name("k8s.pod/name"),
             "label_k8s_pod_name"
+        );
+    }
+
+    #[test]
+    fn attr_tokens_bloom_property_targets_the_list_leaf() {
+        assert_eq!(
+            bloom_filter_property_for_attr_tokens(),
+            (
+                "write.parquet.bloom-filter-enabled.column.attr_tokens.list.item".to_string(),
+                "true".to_string()
+            )
         );
     }
 

@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use iceberg_rust::spec::schema::Schema;
-use iceberg_rust::spec::types::{MapType, PrimitiveType, StructField, StructType, Type};
+use iceberg_rust::spec::types::{ListType, MapType, PrimitiveType, StructField, StructType, Type};
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -177,6 +177,22 @@ impl ResolvedSchema {
     /// base-column-colliding labels are skipped, and field IDs continue
     /// after the base columns.
     pub fn to_iceberg_schema_with_labels(&self, labels: &[String]) -> Result<Schema> {
+        self.build_iceberg_schema(labels, false)
+    }
+
+    /// Like [`Self::to_iceberg_schema_with_labels`], but also appends the
+    /// derived optional `attr_tokens` `List<String>` column (see
+    /// [`crate::schema::ATTR_TOKENS_COLUMN`]). Used by the logs schema,
+    /// where the writer materializes `key=value` tokens over all attribute
+    /// scopes for bloom-filtered containment checks.
+    pub fn to_iceberg_schema_with_labels_and_attr_tokens(
+        &self,
+        labels: &[String],
+    ) -> Result<Schema> {
+        self.build_iceberg_schema(labels, true)
+    }
+
+    fn build_iceberg_schema(&self, labels: &[String], attr_tokens: bool) -> Result<Schema> {
         let mut fields = Vec::new();
 
         // Nested (map key/value) field IDs must be unique across the whole
@@ -256,6 +272,31 @@ impl ResolvedSchema {
             next_id += 1;
         }
 
+        // Derived `key=value` token column: an optional List<String> whose
+        // element ID follows every other ID in the schema.
+        if attr_tokens
+            && !fields
+                .iter()
+                .any(|f| f.name == crate::schema::ATTR_TOKENS_COLUMN)
+        {
+            fields.push(StructField {
+                id: next_id,
+                name: crate::schema::ATTR_TOKENS_COLUMN.to_string(),
+                required: false,
+                field_type: Type::List(ListType {
+                    element_id: next_id + 1,
+                    element_required: false,
+                    element: Box::new(Type::Primitive(PrimitiveType::String)),
+                }),
+                doc: Some(
+                    "Derived `key=value` tokens over resource, scope, and record attributes"
+                        .to_string(),
+                ),
+                initial_default: None,
+                write_default: None,
+            });
+        }
+
         Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
     }
 
@@ -321,6 +362,73 @@ mod tests {
             .unwrap();
         assert!(!ns.required);
         assert_eq!(ns.field_type, Type::Primitive(PrimitiveType::String));
+    }
+
+    #[test]
+    fn attr_tokens_variant_appends_optional_list_column() {
+        let base = ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![
+                ResolvedField {
+                    name: "timestamp".to_string(),
+                    field_type: "timestamp_ns".to_string(),
+                    required: true,
+                    computed: None,
+                    field_id: 1,
+                },
+                ResolvedField {
+                    name: "log_attributes".to_string(),
+                    field_type: "map<string,string>".to_string(),
+                    required: false,
+                    computed: None,
+                    field_id: 2,
+                },
+            ],
+            partition_by: vec![],
+        };
+
+        let labels = vec!["namespace".to_string()];
+        let schema = base
+            .to_iceberg_schema_with_labels_and_attr_tokens(&labels)
+            .unwrap();
+
+        let tokens = schema
+            .fields()
+            .iter()
+            .find(|f| f.name == "attr_tokens")
+            .expect("attr_tokens column present");
+        assert!(!tokens.required);
+        let Type::List(list) = &tokens.field_type else {
+            panic!("attr_tokens should be a List, got {:?}", tokens.field_type);
+        };
+        assert_eq!(*list.element, Type::Primitive(PrimitiveType::String));
+        assert!(!list.element_required);
+
+        // IDs stay unique across top-level, nested map, label, and list
+        // element IDs.
+        let label = schema
+            .fields()
+            .iter()
+            .find(|f| f.name == "label_namespace")
+            .unwrap();
+        let mut ids = vec![1, 2, label.id, tokens.id, list.element_id];
+        if let Type::Map(m) = &schema
+            .fields()
+            .iter()
+            .find(|f| f.name == "log_attributes")
+            .unwrap()
+            .field_type
+        {
+            ids.push(m.key_id);
+            ids.push(m.value_id);
+        }
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "duplicate field IDs in {ids:?}");
+
+        // The labels-only variant stays token-free.
+        let plain = base.to_iceberg_schema_with_labels(&labels).unwrap();
+        assert!(!plain.fields().iter().any(|f| f.name == "attr_tokens"));
     }
 
     #[test]
