@@ -11,6 +11,7 @@ use iceberg_sql_catalog::SqlCatalog;
 use std::sync::Arc;
 use url::Url;
 
+pub mod evolution;
 pub mod names;
 pub mod schemas;
 pub mod table_manager;
