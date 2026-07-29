@@ -35,10 +35,11 @@ fn extract_auth_headers(
         .ok_or_else(|| AuthError::bad_request("Authorization header must use Bearer scheme"))?
         .to_string();
 
-    // Extract and validate X-Tenant-ID header
+    // Extract and validate X-Tenant-ID header. Absent credentials are 401
+    // (unauthenticated), not 400 — the embedded UI's login gate keys on 401.
     let tenant_id_raw = headers
         .get("x-tenant-id")
-        .ok_or_else(|| AuthError::bad_request("Missing X-Tenant-ID header"))?
+        .ok_or_else(|| AuthError::unauthorized("Missing X-Tenant-ID header"))?
         .to_str()
         .map_err(|_| AuthError::bad_request("Invalid X-Tenant-ID header"))?;
 
@@ -65,7 +66,7 @@ fn extract_auth_from_session(
     headers: &HeaderMap,
 ) -> Result<(String, String, Option<String>), AuthError> {
     let session = super::session::session_from_headers(headers)
-        .ok_or_else(|| AuthError::bad_request("Missing Authorization header"))?;
+        .ok_or_else(|| AuthError::unauthorized("Missing Authorization header"))?;
 
     let tenant_id_raw = match headers.get("x-tenant-id") {
         Some(value) => value
@@ -311,7 +312,7 @@ mod tests {
         let result = extract_auth_headers(&headers);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert_eq!(err.status_code, 400);
+        assert_eq!(err.status_code, 401);
         assert!(err.message.contains("Authorization"));
     }
 
@@ -326,8 +327,17 @@ mod tests {
         let result = extract_auth_headers(&headers);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert_eq!(err.status_code, 400);
+        assert_eq!(err.status_code, 401);
         assert!(err.message.contains("X-Tenant-ID"));
+    }
+
+    #[test]
+    fn test_extract_auth_headers_no_credentials_at_all_is_unauthorized() {
+        // A fresh browser hitting the API sends neither headers nor a
+        // session cookie; the UI login gate keys on 401.
+        let err = extract_auth_headers(&HeaderMap::new()).unwrap_err();
+        assert_eq!(err.status_code, 401);
+        assert!(err.message.contains("Authorization"));
     }
 
     #[test]
@@ -417,7 +427,7 @@ mod tests {
             .unwrap();
 
         let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
         // Test invalid API key
         let request = Request::builder()
@@ -504,7 +514,7 @@ mod tests {
         );
 
         let err = extract_auth_headers(&headers).unwrap_err();
-        assert_eq!(err.status_code, 400);
+        assert_eq!(err.status_code, 401);
         assert!(err.message.contains("Authorization"));
     }
 

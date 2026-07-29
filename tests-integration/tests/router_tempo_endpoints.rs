@@ -1317,7 +1317,7 @@ async fn test_read_path_authentication_failures() {
     println!("Missing auth header status: {}", response.status());
     assert_eq!(
         response.status(),
-        StatusCode::BAD_REQUEST,
+        StatusCode::UNAUTHORIZED,
         "Should reject missing Authorization header"
     );
 
@@ -1333,7 +1333,7 @@ async fn test_read_path_authentication_failures() {
     println!("Missing tenant header status: {}", response.status());
     assert_eq!(
         response.status(),
-        StatusCode::BAD_REQUEST,
+        StatusCode::UNAUTHORIZED,
         "Should reject missing X-Tenant-ID header"
     );
 

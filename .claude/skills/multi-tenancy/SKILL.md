@@ -46,8 +46,8 @@ both public routes on the router.
 
 ### Error Codes
 
-- **400**: Missing/malformed auth headers
-- **401**: Invalid API key
+- **400**: Malformed auth headers (wrong scheme, invalid tenant/dataset ID)
+- **401**: Missing credentials (no auth header/cookie or tenant ID) or invalid API key
 - **403**: Key valid but wrong tenant/dataset
 
 ## Isolation Layers

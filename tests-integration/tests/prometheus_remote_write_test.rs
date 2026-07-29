@@ -615,8 +615,8 @@ async fn test_prometheus_remote_write_missing_auth() {
 
     let response = app.oneshot(http_request).await.unwrap();
 
-    // Should fail - 400 Bad Request for missing required Authorization header
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    // Should fail - 401 Unauthorized for missing required Authorization header
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

@@ -13,10 +13,11 @@ use tonic::{Request, Status};
 fn extract_grpc_auth_headers(
     metadata: &tonic::metadata::MetadataMap,
 ) -> Result<(String, String, Option<String>), AuthError> {
-    // Extract authorization header (Bearer token)
+    // Extract authorization header (Bearer token). Absent credentials map
+    // to UNAUTHENTICATED (401); malformed ones stay INVALID_ARGUMENT (400).
     let auth_header = metadata
         .get("authorization")
-        .ok_or_else(|| AuthError::bad_request("Missing authorization metadata"))?
+        .ok_or_else(|| AuthError::unauthorized("Missing authorization metadata"))?
         .to_str()
         .map_err(|_| AuthError::bad_request("Invalid authorization metadata"))?;
 
@@ -32,7 +33,7 @@ fn extract_grpc_auth_headers(
     // these IDs end up in WAL paths and Iceberg namespaces)
     let tenant_id_raw = metadata
         .get("x-tenant-id")
-        .ok_or_else(|| AuthError::bad_request("Missing x-tenant-id metadata"))?
+        .ok_or_else(|| AuthError::unauthorized("Missing x-tenant-id metadata"))?
         .to_str()
         .map_err(|_| AuthError::bad_request("Invalid x-tenant-id metadata"))?;
     let tenant_id = validate_tenant_id(tenant_id_raw)?;
@@ -196,7 +197,7 @@ mod tests {
         let result = extract_grpc_auth_headers(&metadata);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert_eq!(err.status_code, 400);
+        assert_eq!(err.status_code, 401);
         assert!(err.message.contains("authorization"));
     }
 
@@ -211,7 +212,7 @@ mod tests {
         let result = extract_grpc_auth_headers(&metadata);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert_eq!(err.status_code, 400);
+        assert_eq!(err.status_code, 401);
         assert!(err.message.contains("x-tenant-id"));
     }
 
@@ -339,7 +340,7 @@ mod tests {
         let result = grpc_auth_interceptor(authenticator, request);
         assert!(result.is_err());
         let status = result.unwrap_err();
-        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(status.code(), tonic::Code::Unauthenticated);
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -18,10 +18,11 @@ use std::sync::Arc;
 fn extract_auth_headers(
     headers: &HeaderMap,
 ) -> Result<(String, String, Option<String>), AuthError> {
-    // Extract Authorization header
+    // Extract Authorization header. Absent credentials are 401
+    // (unauthenticated), not 400; malformed ones stay 400.
     let auth_header = headers
         .get("authorization")
-        .ok_or_else(|| AuthError::bad_request("Missing Authorization header"))?
+        .ok_or_else(|| AuthError::unauthorized("Missing Authorization header"))?
         .to_str()
         .map_err(|_| AuthError::bad_request("Invalid Authorization header"))?;
 
@@ -59,7 +60,7 @@ fn extract_auth_headers(
     // Extract and validate X-Tenant-ID header
     let tenant_id_raw = headers
         .get("x-tenant-id")
-        .ok_or_else(|| AuthError::bad_request("Missing X-Tenant-ID header"))?
+        .ok_or_else(|| AuthError::unauthorized("Missing X-Tenant-ID header"))?
         .to_str()
         .map_err(|_| AuthError::bad_request("Invalid X-Tenant-ID header"))?;
 
@@ -231,7 +232,7 @@ mod tests {
         let result = extract_auth_headers(&headers);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert_eq!(err.status_code, 400);
+        assert_eq!(err.status_code, 401);
         assert!(err.message.contains("Authorization"));
     }
 
@@ -246,7 +247,7 @@ mod tests {
         let result = extract_auth_headers(&headers);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert_eq!(err.status_code, 400);
+        assert_eq!(err.status_code, 401);
         assert!(err.message.contains("X-Tenant-ID"));
     }
 
@@ -448,7 +449,7 @@ mod tests {
             .unwrap();
 
         let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
         // Test invalid API key
         let request = Request::builder()
