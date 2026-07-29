@@ -3,7 +3,7 @@
 //! This module provides the Authenticator which handles API key validation,
 //! tenant resolution, and dataset resolution across config-based and database-based tenants.
 
-use super::{AuthError, TenantContext, TenantSource, hash_session_token};
+use super::{AuthError, TenantContext, TenantSource, UserContext, hash_session_token};
 use crate::catalog::{Catalog, MembershipRole};
 use crate::config::{AuthConfig, TenantConfig};
 use sha2::{Digest, Sha256};
@@ -131,20 +131,56 @@ impl Authenticator {
             .catalog
             .get_tenant_membership(&user.id, tenant_id)
             .await
-            .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?
-            .ok_or_else(|| {
-                AuthError::forbidden(format!("User is not a member of tenant '{tenant_id}'"))
-            })?;
+            .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?;
+        let role = match membership {
+            Some(membership) => membership.role,
+            None if user.is_instance_admin => MembershipRole::Admin,
+            None => {
+                return Err(AuthError::forbidden(format!(
+                    "User is not a member of tenant '{tenant_id}'"
+                )));
+            }
+        };
 
         self.resolve_user_tenant(
             tenant_id,
             dataset_id,
             user.id,
-            membership.role,
+            role,
             user.is_instance_admin,
             session.id,
         )
         .await
+    }
+
+    /// Resolve an instance administrator from an opaque browser session.
+    pub async fn authenticate_instance_admin_session(
+        &self,
+        token: &str,
+    ) -> Result<UserContext, AuthError> {
+        let session = self
+            .catalog
+            .get_valid_session(&hash_session_token(token))
+            .await
+            .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?
+            .ok_or_else(|| AuthError::unauthorized("Invalid or expired session"))?;
+        let user = self
+            .catalog
+            .get_user(&session.user_id)
+            .await
+            .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?
+            .ok_or_else(|| AuthError::unauthorized("Session user not found"))?;
+        if !user.is_instance_admin {
+            return Err(AuthError::forbidden(
+                "Instance administrator privileges required",
+            ));
+        }
+        Ok(UserContext {
+            user_id: user.id,
+            email: user.email,
+            is_instance_admin: true,
+            session_id: session.id,
+        })
     }
 
     async fn resolve_user_tenant(
@@ -157,7 +193,26 @@ impl Authenticator {
         session_id: String,
     ) -> Result<TenantContext, AuthError> {
         if let Some(tenant_config) = self.config_tenants.get(tenant_id) {
-            let resolved_dataset = self.resolve_dataset(tenant_config, dataset_id)?;
+            let resolved_dataset = match self.resolve_dataset(tenant_config, dataset_id) {
+                Ok(dataset) => dataset,
+                Err(error) if dataset_id.is_some() => {
+                    let requested = dataset_id.expect("guarded by is_some");
+                    let catalog_datasets = self
+                        .catalog
+                        .get_datasets(tenant_id)
+                        .await
+                        .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?;
+                    if catalog_datasets
+                        .iter()
+                        .any(|dataset| dataset.name == requested)
+                    {
+                        requested.to_string()
+                    } else {
+                        return Err(error);
+                    }
+                }
+                Err(error) => return Err(error),
+            };
             let dataset_slug = tenant_config
                 .datasets
                 .iter()
@@ -224,11 +279,11 @@ impl Authenticator {
             .await
             .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?;
 
-        let (db_tenant_id, api_key_name) = validation_result
+        let api_key = validation_result
             .ok_or_else(|| AuthError::unauthorized("Invalid or revoked API key"))?;
 
         // Verify tenant ID matches
-        if db_tenant_id != tenant_id {
+        if api_key.tenant_id != tenant_id {
             return Err(AuthError::forbidden(format!(
                 "API key does not belong to tenant '{tenant_id}'"
             )));
@@ -243,7 +298,14 @@ impl Authenticator {
             .ok_or_else(|| AuthError::forbidden(format!("Tenant '{tenant_id}' not found")))?;
 
         // Resolve dataset
-        let resolved_dataset = match dataset_id {
+        if let (Some(bound), Some(requested)) = (&api_key.dataset_id, dataset_id)
+            && bound != requested
+        {
+            return Err(AuthError::forbidden(format!(
+                "API key is restricted to dataset '{bound}'"
+            )));
+        }
+        let resolved_dataset = match dataset_id.or(api_key.dataset_id.as_deref()) {
             Some(id) => id.to_string(),
             None => tenant_record.default_dataset.clone().ok_or_else(|| {
                 AuthError::bad_request(
@@ -271,9 +333,10 @@ impl Authenticator {
             resolved_dataset.clone(),
             tenant_id.to_string(),
             resolved_dataset,
-            api_key_name,
+            api_key.name,
             TenantSource::Database,
-        ))
+        )
+        .with_api_key_restrictions(api_key.scopes, api_key.dataset_id))
     }
 
     /// Resolve dataset from config-based tenant
@@ -519,5 +582,45 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.status_code, 400);
         assert!(err.message.contains("X-Dataset-ID header required"));
+    }
+
+    #[tokio::test]
+    async fn database_api_key_enforces_dataset_and_signal_scopes() {
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "production").await.unwrap();
+        catalog.create_dataset("acme", "staging").await.unwrap();
+        let raw_key = "sdbk_scoped";
+        let scopes = vec!["metrics:write".to_string()];
+        catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &Authenticator::hash_api_key(raw_key),
+                Some("metrics"),
+                Some("production"),
+                Some(&scopes),
+                Some("user-1"),
+            )
+            .await
+            .unwrap();
+        let authenticator = Authenticator::new(AuthConfig::default(), Arc::clone(&catalog));
+
+        let context = authenticator
+            .authenticate(raw_key, "acme", None)
+            .await
+            .unwrap();
+        assert_eq!(context.dataset_id, "production");
+        assert!(context.can_ingest("metrics"));
+        assert!(!context.can_ingest("logs"));
+
+        let error = authenticator
+            .authenticate(raw_key, "acme", Some("staging"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.status_code, 403);
+        assert!(error.message.contains("restricted to dataset"));
     }
 }

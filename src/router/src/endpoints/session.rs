@@ -93,16 +93,22 @@ pub async fn create_session<S: RouterState>(
         return error_response(401, "Invalid email or password".to_string());
     }
 
-    let membership = match state
-        .catalog()
-        .get_tenant_membership(&user.id, &tenant)
-        .await
-    {
-        Ok(Some(membership)) => membership,
-        Ok(None) => return error_response(403, "User is not a member of this tenant".to_string()),
-        Err(error) => {
-            tracing::error!(user_id = %user.id, error = %error, "Membership lookup failed");
-            return error_response(500, "Unable to create session".to_string());
+    let membership_role = if user.is_instance_admin {
+        MembershipRole::Admin
+    } else {
+        match state
+            .catalog()
+            .get_tenant_membership(&user.id, &tenant)
+            .await
+        {
+            Ok(Some(membership)) => membership.role,
+            Ok(None) => {
+                return error_response(403, "User is not a member of this tenant".to_string());
+            }
+            Err(error) => {
+                tracing::error!(user_id = %user.id, error = %error, "Membership lookup failed");
+                return error_response(500, "Unable to create session".to_string());
+            }
         }
     };
 
@@ -131,7 +137,7 @@ pub async fn create_session<S: RouterState>(
                 user_id = %user.id,
                 tenant_id = %ctx.tenant_id,
                 dataset = %ctx.dataset_id,
-                role = %membership.role,
+                role = %membership_role,
                 "UI session created"
             );
             (
@@ -261,17 +267,33 @@ pub async fn whoami<S: RouterState>(
                     return error_response(500, "Failed to resolve user".to_string());
                 }
             };
-            let memberships = match state.catalog().list_memberships_for_user(user_id).await {
-                Ok(memberships) => memberships
-                    .into_iter()
-                    .map(|membership| WhoamiMembership {
-                        tenant_id: membership.tenant_id,
-                        role: membership.role,
-                    })
-                    .collect(),
-                Err(error) => {
-                    tracing::error!(user_id = %user_id, error = %error, "whoami: membership lookup failed");
-                    return error_response(500, "Failed to resolve memberships".to_string());
+            let memberships = if user.is_instance_admin {
+                match state.catalog().list_tenants().await {
+                    Ok(tenants) => tenants
+                        .into_iter()
+                        .map(|tenant| WhoamiMembership {
+                            tenant_id: tenant.id,
+                            role: MembershipRole::Admin,
+                        })
+                        .collect(),
+                    Err(error) => {
+                        tracing::error!(user_id = %user_id, error = %error, "whoami: tenant lookup failed");
+                        return error_response(500, "Failed to resolve tenants".to_string());
+                    }
+                }
+            } else {
+                match state.catalog().list_memberships_for_user(user_id).await {
+                    Ok(memberships) => memberships
+                        .into_iter()
+                        .map(|membership| WhoamiMembership {
+                            tenant_id: membership.tenant_id,
+                            role: membership.role,
+                        })
+                        .collect(),
+                    Err(error) => {
+                        tracing::error!(user_id = %user_id, error = %error, "whoami: membership lookup failed");
+                        return error_response(500, "Failed to resolve memberships".to_string());
+                    }
                 }
             };
             (
@@ -301,6 +323,32 @@ pub async fn whoami<S: RouterState>(
                 .find(|d| d.is_default)
                 .map(|d| d.id.clone())
         });
+        let mut datasets = tc
+            .datasets
+            .iter()
+            .map(|d| WhoamiDataset {
+                id: d.id.clone(),
+                slug: d.slug.clone(),
+                is_default: d.is_default,
+            })
+            .collect::<Vec<_>>();
+        match state.catalog().get_datasets(&ctx.tenant_id).await {
+            Ok(catalog_datasets) => {
+                for dataset in catalog_datasets {
+                    if !datasets.iter().any(|existing| existing.id == dataset.name) {
+                        datasets.push(WhoamiDataset {
+                            id: dataset.name.clone(),
+                            slug: dataset.name,
+                            is_default: false,
+                        });
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::error!(tenant_id = %ctx.tenant_id, error = %error, "whoami: catalog dataset overlay failed");
+                return error_response(500, "Failed to resolve datasets".to_string());
+            }
+        }
         let response = WhoamiResponse {
             user,
             memberships,
@@ -309,15 +357,7 @@ pub async fn whoami<S: RouterState>(
                 slug: tc.slug.clone(),
                 name: tc.name.clone(),
             },
-            datasets: tc
-                .datasets
-                .iter()
-                .map(|d| WhoamiDataset {
-                    id: d.id.clone(),
-                    slug: d.slug.clone(),
-                    is_default: d.is_default,
-                })
-                .collect(),
+            datasets,
             default_dataset,
         };
         return Json(response).into_response();
@@ -428,6 +468,24 @@ mod tests {
             .unwrap();
         catalog
             .upsert_tenant_membership(&user.id, "acme", MembershipRole::Admin)
+            .await
+            .unwrap();
+        let viewer_hash = common::auth::hash_password("viewer password").unwrap();
+        let viewer = catalog
+            .create_user("viewer@example.com", Some("Viewer"), &viewer_hash, false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&viewer.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        let member_hash = common::auth::hash_password("member password").unwrap();
+        let member = catalog
+            .create_user("member@example.com", Some("Member"), &member_hash, false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&member.id, "acme", MembershipRole::Member)
             .await
             .unwrap();
         create_router(InMemoryStateImpl::new(catalog, config))
@@ -598,7 +656,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_cannot_select_tenant_without_membership() {
+    async fn instance_admin_can_select_tenant_without_membership() {
         let app = test_app().await;
         let login = create_session(
             &app,
@@ -617,7 +675,211 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["tenant"]["id"], "globex");
+        assert_eq!(body["memberships"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn instance_admin_can_login_directly_to_tenant_without_membership() {
+        let app = test_app().await;
+        let response = create_session(
+            &app,
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple",
+                "tenant": "globex"
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn management_creates_dataset_and_dataset_scoped_key() {
+        let app = test_app().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/manage/tenants/acme/datasets")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "acme")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"analytics"}"#))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "acme")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"name":"metrics-only","dataset_id":"analytics","scopes":["metrics:write"]}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = json_body(response).await;
+        assert!(body["key"].as_str().unwrap().starts_with("sdbk_"));
+        assert_eq!(body["dataset_id"], "analytics");
+        assert_eq!(body["scopes"][0], "metrics:write");
+    }
+
+    #[tokio::test]
+    async fn instance_admin_creates_and_immediately_accesses_tenant() {
+        let app = test_app().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/manage/tenants")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "acme")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"id":"newco","name":"New Co","default_dataset":"production"}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header(header::COOKIE, cookie)
+            .header("x-tenant-id", "newco")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["tenant"]["id"], "newco");
+        assert_eq!(body["default_dataset"], "production");
+    }
+
+    #[tokio::test]
+    async fn management_rejects_cross_tenant_path() {
+        let app = test_app().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+        let request = Request::builder()
+            .uri("/api/v1/manage/tenants/globex/api-keys")
+            .header(header::COOKIE, cookie)
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn viewer_cannot_use_management_endpoints_or_other_tenants() {
+        let app = test_app().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "viewer@example.com",
+                "password": "viewer password",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+        let request = Request::builder()
+            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header(header::COOKIE, cookie)
+            .header("x-tenant-id", "globex")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn ingestion_api_key_cannot_use_human_management_endpoints() {
+        let app = test_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn member_can_query_but_cannot_administer_tenant() {
+        let app = test_app().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "member@example.com",
+                "password": "member password",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+        let query = Request::builder()
+            .uri("/tempo/api/echo")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(query).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        let management = Request::builder()
+            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .header(header::COOKIE, cookie)
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(management).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[tokio::test]

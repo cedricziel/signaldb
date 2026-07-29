@@ -13,6 +13,14 @@ fn parse_rfc3339(s: &str) -> Result<DateTime<Utc>, sqlx::Error> {
         .map_err(|e| sqlx::Error::Decode(Box::new(e)))
 }
 
+fn parse_api_key_scopes(value: Option<String>) -> Result<Option<Vec<String>>, sqlx::Error> {
+    value
+        .map(|json| {
+            serde_json::from_str(&json).map_err(|error| sqlx::Error::Decode(Box::new(error)))
+        })
+        .transpose()
+}
+
 /// Canonicalize an email address for identity comparison: trim whitespace
 /// and lowercase, so the `users.email` UNIQUE constraint applies to the
 /// canonical form identically on SQLite and PostgreSQL.
@@ -135,12 +143,36 @@ impl Catalog {
                     key_hash TEXT NOT NULL UNIQUE,
                     tenant_id TEXT NOT NULL,
                     name TEXT,
+                    dataset_id TEXT,
+                    scopes TEXT,
+                    created_by_user_id TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     revoked_at TEXT,
                     FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
                     UNIQUE(tenant_id, name)
                 )"#;
                 query(create_api_keys).execute(pool).await?;
+                let api_key_columns = query("PRAGMA table_info(api_keys)").fetch_all(pool).await?;
+                let has_api_key_column = |name: &str| {
+                    api_key_columns
+                        .iter()
+                        .any(|row| row.get::<String, _>("name") == name)
+                };
+                if !has_api_key_column("dataset_id") {
+                    query("ALTER TABLE api_keys ADD COLUMN dataset_id TEXT")
+                        .execute(pool)
+                        .await?;
+                }
+                if !has_api_key_column("scopes") {
+                    query("ALTER TABLE api_keys ADD COLUMN scopes TEXT")
+                        .execute(pool)
+                        .await?;
+                }
+                if !has_api_key_column("created_by_user_id") {
+                    query("ALTER TABLE api_keys ADD COLUMN created_by_user_id TEXT")
+                        .execute(pool)
+                        .await?;
+                }
 
                 let create_datasets = r#"
                 CREATE TABLE IF NOT EXISTS datasets (
@@ -313,11 +345,23 @@ impl Catalog {
                     key_hash TEXT NOT NULL UNIQUE,
                     tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
                     name TEXT,
+                    dataset_id TEXT,
+                    scopes TEXT,
+                    created_by_user_id TEXT,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     revoked_at TIMESTAMPTZ,
                     UNIQUE(tenant_id, name)
                 )"#;
                 query(create_api_keys).execute(pool).await?;
+                query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS dataset_id TEXT")
+                    .execute(pool)
+                    .await?;
+                query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes TEXT")
+                    .execute(pool)
+                    .await?;
+                query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS created_by_user_id TEXT")
+                    .execute(pool)
+                    .await?;
 
                 let create_datasets = r#"
                 CREATE TABLE IF NOT EXISTS datasets (
@@ -999,8 +1043,22 @@ pub struct ApiKeyRecord {
     pub id: String,
     pub tenant_id: String,
     pub name: Option<String>,
+    pub dataset_id: Option<String>,
+    pub scopes: Option<Vec<String>>,
+    pub created_by_user_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+}
+
+/// Authentication attributes for an active API key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiKeyAuthRecord {
+    pub tenant_id: String,
+    pub name: Option<String>,
+    /// A bound dataset, or `None` for any dataset in the tenant.
+    pub dataset_id: Option<String>,
+    /// Explicit scopes, or `None` for a legacy unrestricted key.
+    pub scopes: Option<Vec<String>>,
 }
 
 /// Dataset record from database
@@ -1016,7 +1074,7 @@ pub struct DatasetRecord {
 ///
 /// Stored as lowercase TEXT in the `tenant_memberships` table, matching
 /// the `CHECK(role IN ('admin', 'member', 'viewer'))` constraint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MembershipRole {
     Admin,
@@ -1579,7 +1637,30 @@ impl Catalog {
         key_hash: &str,
         name: Option<&str>,
     ) -> Result<String, sqlx::Error> {
+        self.upsert_scoped_api_key(tenant_id, key_hash, name, None, None, None)
+            .await
+    }
+
+    /// Create or return an API key with optional dataset and scope restrictions.
+    ///
+    /// `scopes = None` preserves legacy unrestricted-key behavior. New
+    /// user-created keys should always pass an explicit, non-empty scope list.
+    pub async fn upsert_scoped_api_key(
+        &self,
+        tenant_id: &str,
+        key_hash: &str,
+        name: Option<&str>,
+        dataset_id: Option<&str>,
+        scopes: Option<&[String]>,
+        created_by_user_id: Option<&str>,
+    ) -> Result<String, sqlx::Error> {
         let key_id = Uuid::new_v4().to_string();
+        let scopes_json = scopes
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| {
+                sqlx::Error::Protocol(format!("failed to serialize API key scopes: {error}"))
+            })?;
 
         match self {
             Catalog::Sqlite(pool) => {
@@ -1599,14 +1680,20 @@ impl Catalog {
 
                 // Insert new key
                 let stmt = r#"
-                INSERT INTO api_keys (id, key_hash, tenant_id, name, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO api_keys (
+                    id, key_hash, tenant_id, name, dataset_id, scopes,
+                    created_by_user_id, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 "#;
                 query(stmt)
                     .bind(&key_id)
                     .bind(key_hash)
                     .bind(tenant_id)
                     .bind(name)
+                    .bind(dataset_id)
+                    .bind(&scopes_json)
+                    .bind(created_by_user_id)
                     .bind(&now)
                     .execute(pool)
                     .await?;
@@ -1624,14 +1711,20 @@ impl Catalog {
                 }
 
                 let stmt = r#"
-                INSERT INTO api_keys (id, key_hash, tenant_id, name)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO api_keys (
+                    id, key_hash, tenant_id, name, dataset_id, scopes,
+                    created_by_user_id
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 "#;
                 query(stmt)
                     .bind(&key_id)
                     .bind(key_hash)
                     .bind(tenant_id)
                     .bind(name)
+                    .bind(dataset_id)
+                    .bind(&scopes_json)
+                    .bind(created_by_user_id)
                     .execute(pool)
                     .await?;
             }
@@ -1640,27 +1733,43 @@ impl Catalog {
         Ok(key_id)
     }
 
-    /// Validate an API key and return tenant_id if valid
+    /// Validate an API key and return its authorization attributes.
     pub async fn validate_api_key(
         &self,
         key_hash: &str,
-    ) -> Result<Option<(String, Option<String>)>, sqlx::Error> {
+    ) -> Result<Option<ApiKeyAuthRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let row = query("SELECT tenant_id, name FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL")
+                let row = query("SELECT tenant_id, name, dataset_id, scopes FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL")
                     .bind(key_hash)
                     .fetch_optional(pool)
                     .await?;
 
-                Ok(row.map(|r| (r.get("tenant_id"), r.get("name"))))
+                row.map(|r| {
+                    Ok(ApiKeyAuthRecord {
+                        tenant_id: r.get("tenant_id"),
+                        name: r.get("name"),
+                        dataset_id: r.get("dataset_id"),
+                        scopes: parse_api_key_scopes(r.get("scopes"))?,
+                    })
+                })
+                .transpose()
             }
             Catalog::Postgres(pool) => {
-                let row = query("SELECT tenant_id, name FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL")
+                let row = query("SELECT tenant_id, name, dataset_id, scopes FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL")
                     .bind(key_hash)
                     .fetch_optional(pool)
                     .await?;
 
-                Ok(row.map(|r| (r.get("tenant_id"), r.get("name"))))
+                row.map(|r| {
+                    Ok(ApiKeyAuthRecord {
+                        tenant_id: r.get("tenant_id"),
+                        name: r.get("name"),
+                        dataset_id: r.get("dataset_id"),
+                        scopes: parse_api_key_scopes(r.get("scopes"))?,
+                    })
+                })
+                .transpose()
             }
         }
     }
@@ -1774,7 +1883,7 @@ impl Catalog {
         match self {
             Catalog::Sqlite(pool) => {
                 let rows = query(
-                    "SELECT id, tenant_id, name, created_at, revoked_at FROM api_keys WHERE tenant_id = ?",
+                    "SELECT id, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = ?",
                 )
                 .bind(tenant_id)
                 .fetch_all(pool)
@@ -1787,6 +1896,9 @@ impl Catalog {
                             id: r.get("id"),
                             tenant_id: r.get("tenant_id"),
                             name: r.get("name"),
+                            dataset_id: r.get("dataset_id"),
+                            scopes: parse_api_key_scopes(r.get("scopes"))?,
+                            created_by_user_id: r.get("created_by_user_id"),
                             created_at: parse_rfc3339(r.get("created_at"))?,
                             revoked_at: revoked_at.map(|s| parse_rfc3339(&s)).transpose()?,
                         })
@@ -1795,22 +1907,26 @@ impl Catalog {
             }
             Catalog::Postgres(pool) => {
                 let rows = query(
-                    "SELECT id, tenant_id, name, created_at, revoked_at FROM api_keys WHERE tenant_id = $1",
+                    "SELECT id, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = $1",
                 )
                 .bind(tenant_id)
                 .fetch_all(pool)
                 .await?;
 
-                Ok(rows
-                    .iter()
-                    .map(|r| ApiKeyRecord {
-                        id: r.get("id"),
-                        tenant_id: r.get("tenant_id"),
-                        name: r.get("name"),
-                        created_at: r.get("created_at"),
-                        revoked_at: r.get("revoked_at"),
+                rows.iter()
+                    .map(|r| {
+                        Ok(ApiKeyRecord {
+                            id: r.get("id"),
+                            tenant_id: r.get("tenant_id"),
+                            name: r.get("name"),
+                            dataset_id: r.get("dataset_id"),
+                            scopes: parse_api_key_scopes(r.get("scopes"))?,
+                            created_by_user_id: r.get("created_by_user_id"),
+                            created_at: r.get("created_at"),
+                            revoked_at: r.get("revoked_at"),
+                        })
                     })
-                    .collect())
+                    .collect()
             }
         }
     }
@@ -1820,7 +1936,7 @@ impl Catalog {
         match self {
             Catalog::Sqlite(pool) => {
                 let row = query(
-                    "SELECT id, tenant_id, name, created_at, revoked_at FROM api_keys WHERE id = ?",
+                    "SELECT id, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE id = ?",
                 )
                 .bind(key_id)
                 .fetch_optional(pool)
@@ -1832,6 +1948,9 @@ impl Catalog {
                         id: r.get("id"),
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
+                        dataset_id: r.get("dataset_id"),
+                        scopes: parse_api_key_scopes(r.get("scopes"))?,
+                        created_by_user_id: r.get("created_by_user_id"),
                         created_at: parse_rfc3339(r.get("created_at"))?,
                         revoked_at: revoked_at.map(|s| parse_rfc3339(&s)).transpose()?,
                     })
@@ -1840,19 +1959,25 @@ impl Catalog {
             }
             Catalog::Postgres(pool) => {
                 let row = query(
-                    "SELECT id, tenant_id, name, created_at, revoked_at FROM api_keys WHERE id = $1",
+                    "SELECT id, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE id = $1",
                 )
                 .bind(key_id)
                 .fetch_optional(pool)
                 .await?;
 
-                Ok(row.map(|r| ApiKeyRecord {
-                    id: r.get("id"),
-                    tenant_id: r.get("tenant_id"),
-                    name: r.get("name"),
-                    created_at: r.get("created_at"),
-                    revoked_at: r.get("revoked_at"),
-                }))
+                row.map(|r| {
+                    Ok(ApiKeyRecord {
+                        id: r.get("id"),
+                        tenant_id: r.get("tenant_id"),
+                        name: r.get("name"),
+                        dataset_id: r.get("dataset_id"),
+                        scopes: parse_api_key_scopes(r.get("scopes"))?,
+                        created_by_user_id: r.get("created_by_user_id"),
+                        created_at: r.get("created_at"),
+                        revoked_at: r.get("revoked_at"),
+                    })
+                })
+                .transpose()
             }
         }
     }
@@ -2856,9 +2981,11 @@ mod multi_tenancy_tests {
         // Validate the API key
         let validation = catalog.validate_api_key(&key_hash).await.unwrap();
         assert!(validation.is_some());
-        let (tenant_id, name) = validation.unwrap();
-        assert_eq!(tenant_id, "acme");
-        assert_eq!(name, Some("test-key".to_string()));
+        let validation = validation.unwrap();
+        assert_eq!(validation.tenant_id, "acme");
+        assert_eq!(validation.name, Some("test-key".to_string()));
+        assert_eq!(validation.dataset_id, None);
+        assert_eq!(validation.scopes, None);
 
         // Try to create the same key again (should return existing ID)
         let duplicate_id = catalog
@@ -2905,11 +3032,44 @@ mod multi_tenancy_tests {
             .unwrap();
 
         // Validate keys return correct tenants
-        let (tenant_id_a, _) = catalog.validate_api_key(&hash_a).await.unwrap().unwrap();
-        assert_eq!(tenant_id_a, "tenant-a");
+        let key_a = catalog.validate_api_key(&hash_a).await.unwrap().unwrap();
+        assert_eq!(key_a.tenant_id, "tenant-a");
 
-        let (tenant_id_b, _) = catalog.validate_api_key(&hash_b).await.unwrap().unwrap();
-        assert_eq!(tenant_id_b, "tenant-b");
+        let key_b = catalog.validate_api_key(&hash_b).await.unwrap().unwrap();
+        assert_eq!(key_b.tenant_id, "tenant-b");
+    }
+
+    #[tokio::test]
+    async fn test_scoped_api_key_attributes_round_trip() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "production").await.unwrap();
+
+        let key_hash = hash_api_key("scoped-secret");
+        let scopes = vec!["metrics:write".to_string()];
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &key_hash,
+                Some("metrics"),
+                Some("production"),
+                Some(&scopes),
+                Some("user-1"),
+            )
+            .await
+            .unwrap();
+
+        let auth = catalog.validate_api_key(&key_hash).await.unwrap().unwrap();
+        assert_eq!(auth.dataset_id.as_deref(), Some("production"));
+        assert_eq!(auth.scopes, Some(scopes.clone()));
+
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_id.as_deref(), Some("production"));
+        assert_eq!(record.scopes, Some(scopes));
+        assert_eq!(record.created_by_user_id.as_deref(), Some("user-1"));
     }
 
     #[tokio::test]

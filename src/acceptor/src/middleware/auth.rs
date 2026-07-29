@@ -118,6 +118,29 @@ pub async fn auth_middleware(
         }
     };
 
+    let required_signal = match request.uri().path() {
+        "/api/v1/write" | "/v1/metrics" => Some("metrics"),
+        "/v1/logs" => Some("logs"),
+        "/v1/traces" => Some("traces"),
+        "/v1development/profiles" => Some("profiles"),
+        _ => None,
+    };
+    if let Some(signal) = required_signal
+        && !tenant_context.can_ingest(signal)
+    {
+        tracing::warn!(
+            tenant_id = %tenant_context.tenant_id,
+            dataset_id = %tenant_context.dataset_id,
+            signal,
+            "API key scope denied ingestion"
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            format!("API key requires scope '{signal}:write'"),
+        )
+            .into_response();
+    }
+
     let is_system = common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id);
 
     // Anti-loop guard: processing the _system tenant's own telemetry must not

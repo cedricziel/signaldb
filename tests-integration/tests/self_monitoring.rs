@@ -185,6 +185,8 @@ fn tenant_context(tenant: &str, dataset: &str) -> TenantContext {
         tenant_slug: tenant.to_string(),
         dataset_slug: dataset.to_string(),
         api_key_name: None,
+        api_key_scopes: None,
+        api_key_dataset_id: None,
         user_id: None,
         role: None,
         is_instance_admin: false,

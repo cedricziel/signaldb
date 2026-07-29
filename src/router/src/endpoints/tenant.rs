@@ -6,6 +6,7 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use common::auth::TenantContextExtractor;
 use common::tenant_api::TenantApi;
 use serde_json::json;
 
@@ -30,9 +31,16 @@ pub fn router<S: RouterState>() -> Router<S> {
 ///
 /// List all configured tenants
 #[tracing::instrument]
-pub async fn list_tenants<S: RouterState>(state: State<S>) -> impl IntoResponse {
+pub async fn list_tenants<S: RouterState>(
+    state: State<S>,
+    TenantContextExtractor(ctx): TenantContextExtractor,
+) -> impl IntoResponse {
     let api = TenantApi::new(state.config().clone());
-    let response = api.list_tenants();
+    let mut response = api.list_tenants();
+    response
+        .tenants
+        .retain(|tenant| tenant.tenant_id == ctx.tenant_id);
+    response.default_tenant = ctx.tenant_id;
     Json(response)
 }
 
@@ -43,7 +51,11 @@ pub async fn list_tenants<S: RouterState>(state: State<S>) -> impl IntoResponse 
 pub async fn get_tenant<S: RouterState>(
     state: State<S>,
     Path(tenant_id): Path<String>,
+    TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> impl IntoResponse {
+    if tenant_id != ctx.tenant_id {
+        return forbidden_tenant().into_response();
+    }
     let api = TenantApi::new(state.config().clone());
 
     match api.get_tenant(&tenant_id) {
@@ -70,7 +82,11 @@ pub async fn get_tenant<S: RouterState>(
 pub async fn list_tenant_tables<S: RouterState>(
     state: State<S>,
     Path(tenant_id): Path<String>,
+    TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> impl IntoResponse {
+    if tenant_id != ctx.tenant_id {
+        return forbidden_tenant().into_response();
+    }
     let mut api = TenantApi::new(state.config().clone());
 
     match api.list_tables(&tenant_id).await {
@@ -97,7 +113,18 @@ pub async fn list_tenant_tables<S: RouterState>(
 pub async fn create_tenant_tables<S: RouterState>(
     state: State<S>,
     Path(tenant_id): Path<String>,
+    TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> impl IntoResponse {
+    if tenant_id != ctx.tenant_id {
+        return forbidden_tenant().into_response();
+    }
+    if !ctx.can_manage_tenant() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "Tenant administrator privileges required"})),
+        )
+            .into_response();
+    }
     let mut api = TenantApi::new(state.config().clone());
 
     match api.create_default_tables(&tenant_id).await {
@@ -127,7 +154,11 @@ pub async fn create_tenant_tables<S: RouterState>(
 pub async fn list_tenant_schemas<S: RouterState>(
     state: State<S>,
     Path(tenant_id): Path<String>,
+    TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> impl IntoResponse {
+    if tenant_id != ctx.tenant_id {
+        return forbidden_tenant().into_response();
+    }
     let api = TenantApi::new(state.config().clone());
 
     match api.list_table_schemas(&tenant_id) {
@@ -145,6 +176,13 @@ pub async fn list_tenant_schemas<S: RouterState>(
         )
             .into_response(),
     }
+}
+
+fn forbidden_tenant() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({"error": "Requested tenant does not match authenticated tenant"})),
+    )
 }
 
 /// GET /schemas/available

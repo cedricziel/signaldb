@@ -69,6 +69,11 @@ impl<H: ProfileHandlerTrait + Send + Sync + 'static> ProfilesService for Profile
     ) -> Result<Response<ExportProfilesServiceResponse>, Status> {
         // Extract tenant context from request extensions (added by auth middleware)
         let tenant_context = get_tenant_context(&request)?;
+        if !tenant_context.can_ingest("profiles") {
+            return Err(Status::permission_denied(
+                "API key requires scope 'profiles:write'",
+            ));
+        }
 
         let request_inner = request.into_inner();
 
@@ -200,6 +205,8 @@ mod tests {
             tenant_slug: "test-tenant".to_string(),
             dataset_slug: "test-dataset".to_string(),
             api_key_name: Some("test-key".to_string()),
+            api_key_scopes: None,
+            api_key_dataset_id: None,
             user_id: None,
             role: None,
             is_instance_admin: false,
@@ -239,6 +246,8 @@ mod tests {
             tenant_slug: "test-tenant".to_string(),
             dataset_slug: "test-dataset".to_string(),
             api_key_name: Some("test-key".to_string()),
+            api_key_scopes: None,
+            api_key_dataset_id: None,
             user_id: None,
             role: None,
             is_instance_admin: false,

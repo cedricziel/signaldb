@@ -94,4 +94,37 @@ describe("TenantSelector with whoami", () => {
     await userEvent.click(screen.getByRole("button", { name: "Apply" }));
     expect(update).toHaveBeenCalledWith({ tenant: "acme", dataset: "prod" });
   });
+
+  it("shows management only to tenant administrators", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI },
+      { match: "/api-keys", body: [] },
+      { match: "/memberships", body: [] },
+    ]);
+    renderWithClient(<TopBar state={DEFAULT_STATE} update={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Manage" }));
+    expect(
+      screen.getByRole("dialog", { name: "Manage tenant" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Ingestion scopes")).toBeInTheDocument();
+  });
+
+  it("hides management from viewers", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/whoami",
+        body: {
+          ...WHOAMI,
+          memberships: [{ tenant_id: "acme", role: "viewer" }],
+        },
+      },
+    ]);
+    renderWithClient(<TopBar state={DEFAULT_STATE} update={vi.fn()} />);
+    await waitFor(() =>
+      expect(
+        screen.getByTitle("Tenant / dataset context for all queries"),
+      ).toHaveTextContent("acme"),
+    );
+    expect(screen.queryByRole("button", { name: "Manage" })).toBeNull();
+  });
 });

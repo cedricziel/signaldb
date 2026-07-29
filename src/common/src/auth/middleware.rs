@@ -3,7 +3,10 @@
 //! This module provides Tower middleware for extracting and validating
 //! authentication headers on HTTP requests.
 
-use super::{AuthError, Authenticator, TenantContext, validate_dataset_id, validate_tenant_id};
+use super::{
+    AuthError, Authenticator, TenantContext, session_token_from_headers, validate_dataset_id,
+    validate_tenant_id,
+};
 use axum::{
     extract::Request,
     http::{HeaderMap, StatusCode},
@@ -194,61 +197,51 @@ pub async fn auth_middleware(
 /// Returns 401 if missing/invalid, 403 if admin key is not configured.
 pub async fn admin_auth_middleware(
     admin_key_hash: Option<String>,
-    request: Request,
+    authenticator: Arc<Authenticator>,
+    mut request: Request,
     next: Next,
 ) -> Response {
-    let Some(expected_hash) = admin_key_hash else {
-        return (
-            StatusCode::FORBIDDEN,
-            "Admin API is not configured".to_string(),
-        )
-            .into_response();
-    };
-
-    // Extract Authorization header
-    let auth_header = match request.headers().get("authorization") {
-        Some(value) => match value.to_str() {
-            Ok(s) => s.to_string(),
-            Err(_) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    "Invalid Authorization header".to_string(),
-                )
-                    .into_response();
-            }
-        },
-        None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                "Missing Authorization header".to_string(),
-            )
-                .into_response();
-        }
-    };
-
-    // Parse Bearer token
-    let token = match auth_header.strip_prefix("Bearer ") {
-        Some(t) => t,
-        None => {
+    if let Some(auth_header) = request.headers().get("authorization") {
+        let Ok(auth_header) = auth_header.to_str() else {
+            return (StatusCode::BAD_REQUEST, "Invalid Authorization header").into_response();
+        };
+        let Some(token) = auth_header.strip_prefix("Bearer ") else {
             return (
                 StatusCode::BAD_REQUEST,
-                "Authorization header must use Bearer scheme".to_string(),
+                "Authorization header must use Bearer scheme",
             )
                 .into_response();
+        };
+        let Some(expected_hash) = admin_key_hash else {
+            return (StatusCode::FORBIDDEN, "Admin API key is not configured").into_response();
+        };
+        if Authenticator::hash_api_key(token) != expected_hash {
+            return (StatusCode::UNAUTHORIZED, "Invalid admin API key").into_response();
         }
-    };
-
-    // Compare hashes
-    let token_hash = Authenticator::hash_api_key(token);
-    if token_hash != expected_hash {
-        return (
-            StatusCode::UNAUTHORIZED,
-            "Invalid admin API key".to_string(),
-        )
-            .into_response();
+        return next.run(request).await;
     }
 
-    next.run(request).await
+    let Some(token) = session_token_from_headers(request.headers()) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            "Missing administrator credentials",
+        )
+            .into_response();
+    };
+    match authenticator
+        .authenticate_instance_admin_session(&token)
+        .await
+    {
+        Ok(user) => {
+            request.extensions_mut().insert(user);
+            next.run(request).await
+        }
+        Err(error) => (
+            StatusCode::from_u16(error.status_code).unwrap_or(StatusCode::UNAUTHORIZED),
+            error.message,
+        )
+            .into_response(),
+    }
 }
 
 /// Axum extractor for TenantContext from request extensions

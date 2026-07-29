@@ -135,8 +135,14 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .admin_api_key
         .as_ref()
         .map(|key| Authenticator::hash_api_key(key));
+    let admin_authenticator = state.authenticator().clone();
     let admin_auth_layer = middleware::from_fn(move |req, next| {
-        admin_auth_middleware(admin_key_hash.clone(), req, next)
+        admin_auth_middleware(
+            admin_key_hash.clone(),
+            admin_authenticator.clone(),
+            req,
+            next,
+        )
     });
 
     // Build admin routes
@@ -240,6 +246,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .nest(
             "/api/v1",
             endpoints::tenant::router()
+                .nest("/manage", endpoints::management::router())
                 .route("/whoami", get(endpoints::session::whoami::<S>))
                 .layer(query_rate_layer)
                 .layer(auth_layer),

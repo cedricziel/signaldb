@@ -30,6 +30,15 @@
   color: var(--faint);
 }
 
+.manage-trigger {
+  margin-left: auto;
+  padding: 4px 10px;
+  color: var(--dim);
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+
 .tenant-chip {
   display: inline-flex;
   align-items: center;

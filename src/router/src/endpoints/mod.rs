@@ -3,6 +3,7 @@ pub mod api_error;
 pub mod flight;
 mod flight_decode;
 pub mod logql;
+pub mod management;
 pub mod promql;
 pub mod pyroscope;
 pub mod session;

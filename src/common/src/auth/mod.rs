@@ -18,6 +18,15 @@ pub use password::{
 pub use session::{SESSION_COOKIE, session_token_from_headers};
 pub use validation::{ValidationError, validate_dataset_id, validate_id, validate_tenant_id};
 
+/// Human principal resolved from a server-side browser session.
+#[derive(Debug, Clone)]
+pub struct UserContext {
+    pub user_id: String,
+    pub email: String,
+    pub is_instance_admin: bool,
+    pub session_id: String,
+}
+
 /// Tenant context extracted from authenticated request
 #[derive(Debug, Clone)]
 pub struct TenantContext {
@@ -31,6 +40,11 @@ pub struct TenantContext {
     pub dataset_slug: String,
     /// Optional API key name for logging/audit
     pub api_key_name: Option<String>,
+    /// Explicit API-key scopes. `None` denotes a legacy unrestricted key or
+    /// a human session; `Some` is always enforced.
+    pub api_key_scopes: Option<Vec<String>>,
+    /// Dataset restriction carried by a database-backed API key.
+    pub api_key_dataset_id: Option<String>,
     /// Human user ID when the request was authenticated with a user session.
     pub user_id: Option<String>,
     /// Tenant role when the request was authenticated with a user session.
@@ -59,12 +73,25 @@ impl TenantContext {
             tenant_slug,
             dataset_slug,
             api_key_name,
+            api_key_scopes: None,
+            api_key_dataset_id: None,
             user_id: None,
             role: None,
             is_instance_admin: false,
             session_id: None,
             source,
         }
+    }
+
+    /// Attach authorization restrictions from a database-backed API key.
+    pub fn with_api_key_restrictions(
+        mut self,
+        scopes: Option<Vec<String>>,
+        dataset_id: Option<String>,
+    ) -> Self {
+        self.api_key_scopes = scopes;
+        self.api_key_dataset_id = dataset_id;
+        self
     }
 
     /// Attach the human principal that produced this tenant context.
@@ -80,6 +107,36 @@ impl TenantContext {
         self.is_instance_admin = is_instance_admin;
         self.session_id = Some(session_id);
         self
+    }
+
+    /// Whether the principal may administer this tenant.
+    pub fn can_manage_tenant(&self) -> bool {
+        self.is_instance_admin
+            || self.role == Some(crate::catalog::MembershipRole::Admin)
+            || self.user_id.is_none()
+    }
+
+    /// Whether the principal may write data in this tenant.
+    pub fn can_write(&self) -> bool {
+        self.user_id.is_none()
+            || self.is_instance_admin
+            || matches!(
+                self.role,
+                Some(
+                    crate::catalog::MembershipRole::Admin | crate::catalog::MembershipRole::Member
+                )
+            )
+    }
+
+    /// Whether this principal may ingest a particular telemetry signal.
+    pub fn can_ingest(&self, signal: &str) -> bool {
+        if !self.can_write() {
+            return false;
+        }
+        let required = format!("{signal}:write");
+        self.api_key_scopes
+            .as_ref()
+            .is_none_or(|scopes| scopes.iter().any(|scope| scope == &required))
     }
 }
 
@@ -98,6 +155,57 @@ impl std::fmt::Display for TenantSource {
             TenantSource::Config => write!(f, "config"),
             TenantSource::Database => write!(f, "database"),
         }
+    }
+}
+
+#[cfg(test)]
+mod scoped_authorization_tests {
+    use super::*;
+
+    fn context(scopes: Option<Vec<String>>) -> TenantContext {
+        TenantContext::new(
+            "acme".into(),
+            "production".into(),
+            "acme".into(),
+            "production".into(),
+            Some("collector".into()),
+            TenantSource::Database,
+        )
+        .with_api_key_restrictions(scopes, Some("production".into()))
+    }
+
+    #[test]
+    fn every_ingestion_signal_requires_its_matching_write_scope() {
+        for signal in ["metrics", "logs", "traces", "profiles"] {
+            let allowed = context(Some(vec![format!("{signal}:write")]));
+            assert!(allowed.can_ingest(signal));
+            for other in ["metrics", "logs", "traces", "profiles"] {
+                if other != signal {
+                    assert!(!allowed.can_ingest(other));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_unscoped_keys_remain_unrestricted() {
+        let legacy = context(None);
+        for signal in ["metrics", "logs", "traces", "profiles"] {
+            assert!(legacy.can_ingest(signal));
+        }
+    }
+
+    #[test]
+    fn viewer_sessions_are_read_only() {
+        let viewer = context(None).with_user(
+            "user-1".into(),
+            crate::catalog::MembershipRole::Viewer,
+            false,
+            "session-1".into(),
+        );
+        assert!(!viewer.can_write());
+        assert!(!viewer.can_ingest("metrics"));
+        assert!(!viewer.can_manage_tenant());
     }
 }
 
