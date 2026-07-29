@@ -6,6 +6,13 @@ import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { TopBar } from "./TopBar";
 
 const WHOAMI = {
+  user: {
+    id: "user-1",
+    email: "alice@example.com",
+    display_name: "Alice",
+    is_instance_admin: false,
+  },
+  memberships: [{ tenant_id: "acme", role: "admin" }],
   tenant: { id: "acme", slug: "acme", name: "Acme Corp" },
   datasets: [
     { id: "production", slug: "production", is_default: true },

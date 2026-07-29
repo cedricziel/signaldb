@@ -45,7 +45,7 @@ function TenantSelector({ state, update }: Props) {
   // server without the endpoint, unauthenticated) the free-text form
   // remains as the fallback.
   const { data: who } = useQuery({
-    queryKey: ["whoami"],
+    queryKey: ["whoami", state.tenant, state.dataset],
     queryFn: whoami,
     staleTime: 60_000,
     retry: false,
@@ -84,9 +84,27 @@ function TenantSelector({ state, update }: Props) {
           setEditing(false);
         }}
       >
-        <span className="tenant-fixed" title={who.tenant.name}>
-          {who.tenant.id}
-        </span>
+        {who.memberships.length > 1 ? (
+          <select
+            name="tenant"
+            aria-label="Tenant"
+            defaultValue={who.tenant.id}
+            onChange={(event) => {
+              update({ tenant: event.target.value, dataset: "" });
+              setEditing(false);
+            }}
+          >
+            {who.memberships.map((membership) => (
+              <option key={membership.tenant_id} value={membership.tenant_id}>
+                {membership.tenant_id} ({membership.role})
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="tenant-fixed" title={who.tenant.name}>
+            {who.tenant.id}
+          </span>
+        )}
         <select
           name="dataset"
           aria-label="Dataset"

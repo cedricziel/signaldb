@@ -5,9 +5,15 @@
 import { ApiError, tenantHeaders } from "./http";
 
 export interface SessionCredentials {
-  apiKey: string;
+  email: string;
+  password: string;
   tenant: string;
   dataset?: string;
+}
+
+export interface SessionResult {
+  tenant: string;
+  dataset: string;
 }
 
 export interface WhoamiDataset {
@@ -17,6 +23,16 @@ export interface WhoamiDataset {
 }
 
 export interface WhoamiResponse {
+  user?: {
+    id: string;
+    email: string;
+    display_name: string | null;
+    is_instance_admin: boolean;
+  };
+  memberships: Array<{
+    tenant_id: string;
+    role: "admin" | "member" | "viewer";
+  }>;
   tenant: { id: string; slug: string; name: string };
   datasets: WhoamiDataset[];
   default_dataset: string | null;
@@ -25,12 +41,15 @@ export interface WhoamiResponse {
 /** Create a session: the server validates the credentials and sets the
  * HttpOnly session cookie. Throws `ApiError` with the server's message on
  * invalid credentials. */
-export async function createSession(creds: SessionCredentials): Promise<void> {
+export async function createSession(
+  creds: SessionCredentials,
+): Promise<SessionResult> {
   const res = await fetch("/ui/session", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      api_key: creds.apiKey,
+      email: creds.email,
+      password: creds.password,
       tenant: creds.tenant,
       ...(creds.dataset ? { dataset: creds.dataset } : {}),
     }),
@@ -44,6 +63,7 @@ export async function createSession(creds: SessionCredentials): Promise<void> {
       res.status,
     );
   }
+  return (await res.json()) as SessionResult;
 }
 
 /** Log out: the server clears the session cookie. */

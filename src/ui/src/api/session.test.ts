@@ -20,45 +20,60 @@ afterEach(() => {
 });
 
 describe("createSession", () => {
-  it("POSTs the credentials as JSON and resolves on 204", async () => {
-    const fn = mockFetchOnce(null, 204);
-    await createSession({ apiKey: "sk-1", tenant: "acme", dataset: "prod" });
+  it("POSTs user credentials and returns the resolved context", async () => {
+    const fn = mockFetchOnce({ tenant: "acme", dataset: "prod" });
+    await expect(
+      createSession({
+        email: "alice@example.com",
+        password: "secret",
+        tenant: "acme",
+        dataset: "prod",
+      }),
+    ).resolves.toEqual({ tenant: "acme", dataset: "prod" });
     expect(String(fn.mock.calls[0]?.[0])).toBe("/ui/session");
     const init = fn.mock.calls[0]?.[1] as RequestInit;
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({
-      api_key: "sk-1",
+      email: "alice@example.com",
+      password: "secret",
       tenant: "acme",
       dataset: "prod",
     });
   });
 
   it("omits the dataset field when not provided", async () => {
-    const fn = mockFetchOnce(null, 204);
-    await createSession({ apiKey: "sk-1", tenant: "acme" });
+    const fn = mockFetchOnce({ tenant: "acme", dataset: "default" });
+    await createSession({
+      email: "alice@example.com",
+      password: "secret",
+      tenant: "acme",
+    });
     const init = fn.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(String(init.body))).toEqual({
-      api_key: "sk-1",
+      email: "alice@example.com",
+      password: "secret",
       tenant: "acme",
     });
   });
 
   it("throws the server's error message with the status on failure", async () => {
-    mockFetchOnce({ error: "Invalid or revoked API key" }, 401);
-    const err = await createSession({ apiKey: "bad", tenant: "acme" }).catch(
-      (e: unknown) => e,
-    );
+    mockFetchOnce({ error: "Invalid email or password" }, 401);
+    const err = await createSession({
+      email: "alice@example.com",
+      password: "bad",
+      tenant: "acme",
+    }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).status).toBe(401);
-    expect((err as ApiError).message).toBe("Invalid or revoked API key");
+    expect((err as ApiError).message).toBe("Invalid email or password");
   });
 
   it("falls back to a generic message on non-JSON error bodies", async () => {
     const fn = vi.fn().mockResolvedValue(new Response("boom", { status: 500 }));
     vi.stubGlobal("fetch", fn);
-    await expect(createSession({ apiKey: "k", tenant: "t" })).rejects.toThrow(
-      /Login failed \(500\)/,
-    );
+    await expect(
+      createSession({ email: "a@b.test", password: "x", tenant: "t" }),
+    ).rejects.toThrow(/Login failed \(500\)/);
   });
 });
 
@@ -78,6 +93,13 @@ describe("deleteSession", () => {
 
 describe("whoami", () => {
   const BODY = {
+    user: {
+      id: "user-1",
+      email: "alice@example.com",
+      display_name: "Alice",
+      is_instance_admin: false,
+    },
+    memberships: [{ tenant_id: "acme", role: "admin" }],
     tenant: { id: "acme", slug: "acme", name: "Acme Corp" },
     datasets: [
       { id: "production", slug: "production", is_default: true },

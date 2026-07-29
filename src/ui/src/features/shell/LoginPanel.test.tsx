@@ -12,11 +12,17 @@ afterEach(() => {
 
 describe("LoginPanel", () => {
   it("POSTs the entered credentials and reports success", async () => {
-    const fetchFn = stubFetchRoutes([{ match: "/ui/session", body: null }]);
+    const fetchFn = stubFetchRoutes([
+      {
+        match: "/ui/session",
+        body: { tenant: "acme", dataset: "prod" },
+      },
+    ]);
     const onSuccess = vi.fn();
     renderWithClient(<LoginPanel tenant="acme" onSuccess={onSuccess} />);
 
-    await userEvent.type(screen.getByLabelText("API key"), "sk-secret");
+    await userEvent.type(screen.getByLabelText("Email"), "alice@example.com");
+    await userEvent.type(screen.getByLabelText("Password"), "secret");
     await userEvent.type(screen.getByLabelText("Login dataset"), "prod");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
@@ -28,7 +34,8 @@ describe("LoginPanel", () => {
     const init = call?.[1] as RequestInit;
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({
-      api_key: "sk-secret",
+      email: "alice@example.com",
+      password: "secret",
       tenant: "acme",
       dataset: "prod",
     });
@@ -38,18 +45,19 @@ describe("LoginPanel", () => {
     stubFetchRoutes([
       {
         match: "/ui/session",
-        body: { error: "Invalid or revoked API key" },
+        body: { error: "Invalid email or password" },
         status: 401,
       },
     ]);
     const onSuccess = vi.fn();
     renderWithClient(<LoginPanel tenant="acme" onSuccess={onSuccess} />);
 
-    await userEvent.type(screen.getByLabelText("API key"), "bad-key");
+    await userEvent.type(screen.getByLabelText("Email"), "alice@example.com");
+    await userEvent.type(screen.getByLabelText("Password"), "bad-password");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Invalid or revoked API key",
+      "Invalid email or password",
     );
     expect(onSuccess).not.toHaveBeenCalled();
   });
@@ -62,7 +70,12 @@ describe("LoginGate", () => {
   }
 
   it("appears on a 401 query failure and retries after login", async () => {
-    stubFetchRoutes([{ match: "/ui/session", body: null }]);
+    stubFetchRoutes([
+      {
+        match: "/ui/session",
+        body: { tenant: "acme", dataset: "production" },
+      },
+    ]);
     // First query fails as unauthenticated; after login it succeeds.
     let calls = 0;
     const queryFn = vi.fn().mockImplementation(() => {
@@ -83,7 +96,8 @@ describe("LoginGate", () => {
     const dialog = await screen.findByRole("dialog", { name: "Sign in" });
     expect(dialog).toBeInTheDocument();
 
-    await userEvent.type(screen.getByLabelText("API key"), "sk-secret");
+    await userEvent.type(screen.getByLabelText("Email"), "alice@example.com");
+    await userEvent.type(screen.getByLabelText("Password"), "secret");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
     // Login hides the dialog and invalidation retries the query.

@@ -74,16 +74,15 @@ export function LoginPanel({ tenant, dataset, onSuccess }: PanelProps) {
           e.preventDefault();
           const data = new FormData(e.currentTarget);
           const creds = {
-            apiKey: String(data.get("api_key") ?? ""),
+            email: String(data.get("email") ?? "").trim(),
+            password: String(data.get("password") ?? ""),
             tenant: String(data.get("tenant") ?? "").trim(),
             dataset: String(data.get("dataset") ?? "").trim() || undefined,
           };
           setBusy(true);
           setError(null);
           createSession(creds)
-            .then(() =>
-              onSuccess({ tenant: creds.tenant, dataset: creds.dataset ?? "" }),
-            )
+            .then((result) => onSuccess(result))
             .catch((err: unknown) => {
               setError(err instanceof Error ? err.message : String(err));
             })
@@ -92,18 +91,28 @@ export function LoginPanel({ tenant, dataset, onSuccess }: PanelProps) {
       >
         <h2>Sign in to SignalDB</h2>
         <p className="login-hint">
-          Queries were rejected as unauthenticated. Enter a tenant API key to
-          start a browser session.
+          Queries were rejected as unauthenticated. Sign in with your user
+          account and choose a tenant.
         </p>
         <label>
-          API key
+          Email
           <input
-            name="api_key"
-            type="password"
-            aria-label="API key"
-            autoComplete="off"
+            name="email"
+            type="email"
+            aria-label="Email"
+            autoComplete="username"
             required
             autoFocus
+          />
+        </label>
+        <label>
+          Password
+          <input
+            name="password"
+            type="password"
+            aria-label="Password"
+            autoComplete="current-password"
+            required
           />
         </label>
         <label>
