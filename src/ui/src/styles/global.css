@@ -1,0 +1,158 @@
+/* SignalDB UI design tokens. Light is the base; dark overrides arrive via
+   prefers-color-scheme and can be forced either way with data-theme. */
+:root {
+  --bg: #f2f3f6;
+  --surface: #ffffff;
+  --surface2: #e9ecf1;
+  --surface3: #dfe3ea;
+  --border: #d3d8e0;
+  --text: #1c222b;
+  --dim: #5d6675;
+  --faint: #8b93a2;
+  --accent: #c25a0a;
+  --accent-soft: rgba(194, 90, 10, 0.12);
+  --err: #c43a42;
+  --warn: #96760c;
+  --info: #2f66c9;
+  --debug: #7a8494;
+  --err-bar: #d8555c;
+  --warn-bar: #d9b83e;
+  --info-bar: #6f95dd;
+  --debug-bar: #aab2bf;
+  --ok: #2c9070;
+  --svc-a: #2f66c9;
+  --svc-b: #2c9070;
+  --svc-c: #8a56c9;
+  --svc-d: #b08a10;
+  --svc-e: #c04f8a;
+  --mono:
+    ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas,
+    monospace;
+  --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1014;
+    --surface: #14181e;
+    --surface2: #1a202a;
+    --surface3: #222a36;
+    --border: #29303c;
+    --text: #e4e8ef;
+    --dim: #8b94a3;
+    --faint: #626b7a;
+    --accent: #f58a3c;
+    --accent-soft: rgba(245, 138, 60, 0.14);
+    --err: #f2555a;
+    --warn: #e4c452;
+    --info: #6f9cf0;
+    --debug: #78818f;
+    --err-bar: #d84a50;
+    --warn-bar: #cfa93a;
+    --info-bar: #4a72c2;
+    --debug-bar: #414b5a;
+    --ok: #46b58a;
+    --svc-a: #6f9cf0;
+    --svc-b: #46b58a;
+    --svc-c: #b183e6;
+    --svc-d: #e4c452;
+    --svc-e: #e070a8;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0d1014;
+  --surface: #14181e;
+  --surface2: #1a202a;
+  --surface3: #222a36;
+  --border: #29303c;
+  --text: #e4e8ef;
+  --dim: #8b94a3;
+  --faint: #626b7a;
+  --accent: #f58a3c;
+  --accent-soft: rgba(245, 138, 60, 0.14);
+  --err: #f2555a;
+  --warn: #e4c452;
+  --info: #6f9cf0;
+  --debug: #78818f;
+  --err-bar: #d84a50;
+  --warn-bar: #cfa93a;
+  --info-bar: #4a72c2;
+  --debug-bar: #414b5a;
+  --ok: #46b58a;
+  --svc-a: #6f9cf0;
+  --svc-b: #46b58a;
+  --svc-c: #b183e6;
+  --svc-d: #e4c452;
+  --svc-e: #e070a8;
+}
+
+:root[data-theme="light"] {
+  --bg: #f2f3f6;
+  --surface: #ffffff;
+  --surface2: #e9ecf1;
+  --surface3: #dfe3ea;
+  --border: #d3d8e0;
+  --text: #1c222b;
+  --dim: #5d6675;
+  --faint: #8b93a2;
+  --accent: #c25a0a;
+  --accent-soft: rgba(194, 90, 10, 0.12);
+  --err: #c43a42;
+  --warn: #96760c;
+  --info: #2f66c9;
+  --debug: #7a8494;
+  --err-bar: #d8555c;
+  --warn-bar: #d9b83e;
+  --info-bar: #6f95dd;
+  --debug-bar: #aab2bf;
+  --ok: #2c9070;
+  --svc-a: #2f66c9;
+  --svc-b: #2c9070;
+  --svc-c: #8a56c9;
+  --svc-d: #b08a10;
+  --svc-e: #c04f8a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--ui);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 3px;
+}

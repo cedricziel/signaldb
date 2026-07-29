@@ -55,3 +55,7 @@ node_modules/
 
 # Staged binaries for prebuilt Docker images (CI)
 /dist/
+
+# SignalDB UI
+src/ui/dist/
+.env.local
