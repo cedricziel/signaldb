@@ -56,13 +56,13 @@ git push dokku main
 
 ## Ports
 
-| Port | Protocol | Service |
-|------|----------|---------|
-| 4317 | gRPC | OTLP gRPC ingestion |
-| 4318 | HTTP | OTLP HTTP ingestion |
-| 50051 | gRPC | Writer Flight |
-| 50053 | gRPC | Router Flight |
-| 3000 | HTTP | Tempo-compatible HTTP API |
+| Port  | Protocol | Service                                          |
+| ----- | -------- | ------------------------------------------------ |
+| 4317  | gRPC     | OTLP gRPC ingestion                              |
+| 4318  | HTTP     | OTLP HTTP ingestion                              |
+| 50051 | gRPC     | Writer Flight                                    |
+| 50053 | gRPC     | Router Flight                                    |
+| 3000  | HTTP     | Tempo-compatible HTTP API and explore UI (`/ui`) |
 
 ## Health checks
 
