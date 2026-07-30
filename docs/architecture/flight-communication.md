@@ -23,6 +23,7 @@ This document outlines the design for Apache Arrow Flight as the primary communi
 ### 2.1 Current Architecture
 
 SignalDB currently uses:
+
 - **Apache Arrow Flight** as the primary inter-service communication mechanism ✅ **Implemented**
 - OTLP data received via gRPC and HTTP at the Acceptor
 - Direct Flight communication between Acceptor and Writer
@@ -47,6 +48,7 @@ External Clients
 ```
 
 **What's Working (✅ Complete):**
+
 1. OTLP clients send telemetry data to the Acceptor
 2. Acceptor writes data to WAL for durability, then converts OTLP to Arrow format
 3. Acceptor forwards data to Writer via Flight (with Storage capability routing)
@@ -61,6 +63,7 @@ External Clients
 Apache Arrow Flight is a high-performance client-server framework designed for efficient transfer of large datasets over network interfaces.
 
 Key benefits include:
+
 - Native Arrow format transfer (no serialization/deserialization overhead)
 - High throughput, low latency data transfer
 - Streaming capabilities
@@ -111,6 +114,7 @@ Each component implements a Flight service:
 ### 4.3 External Flight Interface
 
 The Router exposes Flight capabilities via HTTP endpoints, providing:
+
 - Query execution via Tempo-compatible API
 - Trace retrieval and search functionality
 - Administrative operations
@@ -119,17 +123,17 @@ The Router exposes Flight capabilities via HTTP endpoints, providing:
 
 The following table shows the Flight RPC methods supported by each service:
 
-| Method | Router | Querier | Writer | Compactor | Description |
-|--------|--------|---------|--------|-----------|-------------|
-| `Handshake` | ✅ | ✅ | ✅ | ❌ | Protocol version exchange |
-| `ListFlights` | ✅ | ✅ | Empty stream | ❌ | List available query types |
-| `GetFlightInfo` | ✅ | ❌ | ❌ | ❌ | Get metadata for a query |
-| `GetSchema` | ✅ | ✅ | ❌ | ❌ | Get schema for a query type |
-| `DoGet` | ✅ | ✅ | ❌ | ❌ | Execute query and stream results |
-| `DoPut` | ❌ | ❌ | ✅ | ❌ | Write data to storage |
-| `DoExchange` | ❌ | ❌ | ❌ | ❌ | Not implemented |
-| `DoAction` | ❌ | ❌ | ❌ | ✅ | Admin commands (compactor only) |
-| `ListActions` | Empty stream | Empty stream | Empty stream | ✅ | List admin commands |
+| Method          | Router       | Querier      | Writer       | Compactor | Description                      |
+| --------------- | ------------ | ------------ | ------------ | --------- | -------------------------------- |
+| `Handshake`     | ✅           | ✅           | ✅           | ❌        | Protocol version exchange        |
+| `ListFlights`   | ✅           | ✅           | Empty stream | ❌        | List available query types       |
+| `GetFlightInfo` | ✅           | ❌           | ❌           | ❌        | Get metadata for a query         |
+| `GetSchema`     | ✅           | ✅           | ❌           | ❌        | Get schema for a query type      |
+| `DoGet`         | ✅           | ✅           | ❌           | ❌        | Execute query and stream results |
+| `DoPut`         | ❌           | ❌           | ✅           | ❌        | Write data to storage            |
+| `DoExchange`    | ❌           | ❌           | ❌           | ❌        | Not implemented                  |
+| `DoAction`      | ❌           | ❌           | ❌           | ✅        | Admin commands (compactor only)  |
+| `ListActions`   | Empty stream | Empty stream | Empty stream | ✅        | List admin commands              |
 
 Legend: ✅ implemented, ❌ returns `unimplemented`, "Empty stream" succeeds but yields nothing (a no-op, not an error).
 
@@ -141,29 +145,29 @@ There are two layers with different grammars -- the Router's descriptor commands
 
 **Router** (`src/router/src/endpoints/flight.rs`) -- `get_flight_info`, `get_schema`, and `list_flights` recognize these `FlightDescriptor` `cmd` values:
 
-| Command | Description | Notes |
-|---------|-------------|-------|
-| `traces` | Trace/span schema and metadata | `do_get` currently returns an **empty stream** (placeholder) |
+| Command               | Description                      | Notes                                                        |
+| --------------------- | -------------------------------- | ------------------------------------------------------------ |
+| `traces`              | Trace/span schema and metadata   | `do_get` currently returns an **empty stream** (placeholder) |
 | `trace_by_id?id={id}` | Single-trace schema and metadata | `do_get` currently returns an **empty stream** (placeholder) |
-| `logs` | Log schema and metadata | `do_get` currently returns an **empty stream** (placeholder) |
-| `metrics` | Metric schema and metadata | `do_get` currently returns an **empty stream** (placeholder) |
+| `logs`                | Log schema and metadata          | `do_get` currently returns an **empty stream** (placeholder) |
+| `metrics`             | Metric schema and metadata       | `do_get` currently returns an **empty stream** (placeholder) |
 
 Any other `do_get` ticket (including `find_trace:...`, `search_traces:...`, and raw SQL) is proxied verbatim to a Querier discovered via the `QueryExecution` capability, with request metadata forwarded.
 
 **Querier** (`parse_ticket` in `src/querier/src/flight.rs`) -- `do_get` tickets use this grammar:
 
-| Ticket | Description |
-|--------|-------------|
-| `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}[:{start}:{end}]` | Single trace lookup; the optional trailing segments are unix-second time hints (either may be empty) that prune the scanned range. Routers only append them when a hint is present, so the 3-part form remains valid. A missing trace yields a Flight `not_found` status, not an empty stream |
-| `search_traces:{tenant_slug}:{dataset_slug}:{params_json}` | Trace search (`SearchQueryParams` as JSON; unknown fields are ignored on deserialization) |
-| `query_logs:{tenant_slug}:{dataset_slug}:{params_json}` | LogQL log query (`LogQueryParams` as JSON: LogQL string, nanosecond start/end, limit, direction). Returns the projected log columns ordered by timestamp |
-| `query_logs_labels:{tenant_slug}:{dataset_slug}:{start}:{end}` | Log label names in the nanosecond window |
-| `query_logs_label_values:{tenant_slug}:{dataset_slug}:{label}:{start}:{end}` | Distinct values of one log label in the window |
-| `query_logs_series:{tenant_slug}:{dataset_slug}:{params_json}` | Series (label sets) matching a stream selector (`LogSeriesParams` as JSON) |
-| `query_logs_detected_fields:{tenant_slug}:{dataset_slug}:{params_json}` | Attribute-field discovery: sampled keys with inferred type and approximate cardinality (`DetectedFieldsParams` as JSON) |
-| `query_metric:{tenant_slug}:{dataset_slug}:{params_json}` | LogQL metric query (`MetricQueryParams` as JSON: LogQL string, nanosecond start/end, step). Returns a matrix bucketed by `date_bin(step)` |
-| `query_promql:{tenant_slug}:{dataset_slug}:{params_json}` | PromQL query (`PromQlQueryParams` as JSON: PromQL string, nanosecond start/end, step). Returns a matrix over the metrics tables |
-| anything else | Treated as a raw SQL query executed via DataFusion |
+| Ticket                                                                       | Description                                                                                                                                                                                                                                                                                   |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}[:{start}:{end}]`         | Single trace lookup; the optional trailing segments are unix-second time hints (either may be empty) that prune the scanned range. Routers only append them when a hint is present, so the 3-part form remains valid. A missing trace yields a Flight `not_found` status, not an empty stream |
+| `search_traces:{tenant_slug}:{dataset_slug}:{params_json}`                   | Trace search (`SearchQueryParams` as JSON; unknown fields are ignored on deserialization)                                                                                                                                                                                                     |
+| `query_logs:{tenant_slug}:{dataset_slug}:{params_json}`                      | LogQL log query (`LogQueryParams` as JSON: LogQL string, nanosecond start/end, limit, direction). Returns the projected log columns ordered by timestamp                                                                                                                                      |
+| `query_logs_labels:{tenant_slug}:{dataset_slug}:{start}:{end}`               | Log label names in the nanosecond window                                                                                                                                                                                                                                                      |
+| `query_logs_label_values:{tenant_slug}:{dataset_slug}:{label}:{start}:{end}` | Distinct values of one log label in the window                                                                                                                                                                                                                                                |
+| `query_logs_series:{tenant_slug}:{dataset_slug}:{params_json}`               | Series (label sets) matching a stream selector (`LogSeriesParams` as JSON)                                                                                                                                                                                                                    |
+| `query_logs_detected_fields:{tenant_slug}:{dataset_slug}:{params_json}`      | Attribute-field discovery: sampled keys with inferred type and approximate cardinality (`DetectedFieldsParams` as JSON)                                                                                                                                                                       |
+| `query_metric:{tenant_slug}:{dataset_slug}:{params_json}`                    | LogQL metric query (`MetricQueryParams` as JSON: LogQL string, nanosecond start/end, step). Returns a matrix bucketed by `date_bin(step)`                                                                                                                                                     |
+| `query_promql:{tenant_slug}:{dataset_slug}:{params_json}`                    | PromQL query (`PromQlQueryParams` as JSON: PromQL string, nanosecond start/end, step). Returns a matrix over the metrics tables                                                                                                                                                               |
+| anything else                                                                | Treated as a raw SQL query executed via DataFusion                                                                                                                                                                                                                                            |
 
 The standalone querier binary additionally serves Tempo's `tempopb.Querier`
 gRPC protocol on the same port as Flight (see the
@@ -185,6 +189,41 @@ the Querier's `do_get` resolves the tenant — authenticated caller, the
 SQL — before creating its processing span. The suppression marker is a tokio
 task-local: it crosses neither the Flight hop between services nor
 `tokio::spawn`, which is why each handler carries its own call site.
+
+#### Trace Context Propagation
+
+W3C trace context (`traceparent`/`tracestate`) is propagated across SignalDB
+service boundaries by `src/common/src/flight/trace_context.rs`, so a single
+distributed trace can span the acceptor, writer, router, and querier. Every
+function routes through the global OpenTelemetry text-map propagator, which is
+a **no-op unless self-monitoring is enabled**. A parent must be adopted before
+its span is first entered; span links, by contrast, may be added at any time.
+
+Four carriers move the context, matching how each path already exchanges
+metadata:
+
+| Carrier                                               | Path                                    | Direction             |
+| ----------------------------------------------------- | --------------------------------------- | --------------------- |
+| JSON `app_metadata` on the first `FlightData` message | Acceptor → Writer `do_put`              | inject / extract      |
+| gRPC request metadata headers                         | Router → Querier `do_get`               | inject / extract      |
+| HTTP request headers                                  | external caller → Router query APIs     | extract (server side) |
+| Span links                                            | WAL batch fan-in (background processor) | link                  |
+
+**Write path.** At `do_put` the Writer records the active span's context into
+the WAL entry metadata alongside the routing fields. Because the background
+`WalProcessor` commits a batch that fans in entries from many independent
+ingest requests, its span cannot adopt a single parent — it reads each entry's
+stored context and adds one **span link** per distinct ingest trace, keeping
+every source trace reachable from the batch span instead of leaving it a
+detached root.
+
+**Read path.** An `http_trace_context_middleware` at the Router's HTTP boundary
+roots each request in a server span whose parent is the caller-supplied
+`traceparent`, so an external client that propagates trace context sees
+SignalDB's query trace join theirs. Downstream `#[instrument]` handler spans and
+the Router → Querier Flight calls they make become children of that span. The
+middleware mirrors the anti-loop guard above: `_system` tenant requests bypass
+the span so self-monitoring queries are not re-instrumented and re-ingested.
 
 ## 5. Implementation Details
 
@@ -243,6 +282,7 @@ sequenceDiagram
 ### 5.2 Schema Design ✅ **Implemented**
 
 Flight schemas are defined in `src/common/src/flight/schema.rs` with conversions for:
+
 - OTLP traces → Arrow schema
 - OTLP metrics → Arrow schema
 - OTLP logs → Arrow schema
@@ -250,6 +290,7 @@ Flight schemas are defined in `src/common/src/flight/schema.rs` with conversions
 ### 5.3 Service Discovery Integration ✅ **Implemented**
 
 Components discover each other via:
+
 - **Catalog-based service registry** with PostgreSQL/SQLite backend
 - **ServiceBootstrap pattern** for automatic registration on startup
 - **Capability-based routing** (TraceIngestion, Storage, QueryExecution, Routing)
@@ -267,6 +308,7 @@ Write-Ahead Log provides durability and crash recovery capabilities:
 ```
 
 #### Implemented WAL Features:
+
 1. ✅ **Durability**: Write incoming data to WAL before acknowledgment
 2. ✅ **Recovery**: Automatic replay of unprocessed entries on restart
 3. ✅ **Batching**: Efficient batch processing with configurable flush policies
@@ -274,6 +316,7 @@ Write-Ahead Log provides durability and crash recovery capabilities:
 5. ✅ **Configurable Storage**: Persistent WAL directories with segment rotation
 
 #### Future WAL Enhancements:
+
 1. **Compression**: WAL segment compression for storage efficiency
 2. **Replication**: WAL replication for high availability
 3. **Retention Policies**: Automatic cleanup of old WAL segments
@@ -281,6 +324,7 @@ Write-Ahead Log provides durability and crash recovery capabilities:
 ### 6.2 Enhanced Buffering
 
 For handling backpressure and improving performance:
+
 - In-memory buffering in Writer before Parquet persistence
 - Configurable flush policies (size, time, or count-based)
 - Real-time query support for buffered data
@@ -288,6 +332,7 @@ For handling backpressure and improving performance:
 ### 6.3 Multi-Writer Replication
 
 For high availability:
+
 - Hash-based data distribution across multiple Writers
 - Replication factor configuration
 - Automatic failover handling
@@ -295,6 +340,7 @@ For high availability:
 ## 7. Monolithic Binary Implementation ✅ **Current**
 
 The current monolithic binary (`cargo run --bin signaldb`) starts all services in a single process:
+
 - Services communicate via Flight using localhost endpoints
 - Automatic service discovery via catalog
 - Single configuration file for all components
@@ -302,6 +348,7 @@ The current monolithic binary (`cargo run --bin signaldb`) starts all services i
 ## 8. Client SDK Integration
 
 Flight communication enables:
+
 - High-performance data transfer
 - Streaming query results
 - Native Arrow format support
@@ -310,6 +357,7 @@ Flight communication enables:
 ## 9. Performance Benefits ✅ **Achieved**
 
 Current implementation provides:
+
 - **Zero-copy data transfer**: Arrow format maintained throughout pipeline
 - **Streaming capabilities**: Large query results can be streamed
 - **Protocol efficiency**: gRPC transport with minimal overhead
@@ -318,11 +366,13 @@ Current implementation provides:
 ## 10. Deployment Modes
 
 ### 10.1 Monolithic Mode ✅ **Current**
+
 - All services in single process
 - Flight communication via localhost
 - Simplified deployment and configuration
 
 ### 10.2 Microservices Mode ✅ **Supported**
+
 - Services deployed independently
 - Flight communication via network
 - Service discovery via the shared catalog database
@@ -333,6 +383,7 @@ Current implementation provides:
 ✅ **Phase 2 Complete**: SignalDB's Arrow Flight implementation with WAL integration is production-ready, providing:
 
 **Achieved Goals:**
+
 - High-performance Flight-based inter-service communication
 - WAL-based durability with crash recovery
 - Catalog-based service discovery with capability routing
@@ -341,12 +392,14 @@ Current implementation provides:
 - Integration test coverage in `tests-integration/`
 
 **Performance Benefits:**
+
 - Zero-copy data transfer via Arrow Flight
 - Efficient service discovery with connection pooling
 - Durability guarantees through WAL persistence
 - Streaming query capabilities with DataFusion
 
 **Production Readiness:**
+
 - Robust error handling and retry logic
 - Automatic service registration and health monitoring
 - Configurable WAL and storage options
