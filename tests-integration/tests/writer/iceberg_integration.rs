@@ -616,14 +616,28 @@ async fn ensure_table_sets_bloom_properties_for_label_columns() -> Result<()> {
         Some("true"),
     );
 
-    // A table for a signal without configured labels gets no bloom keys.
+    // A traces table carries the built-in trace_id/span_id point-lookup blooms
+    // but, with no configured labels, no `label_<key>` bloom keys.
     let traces = manager.ensure_table("default", "default", "traces").await?;
+    let trace_props = &traces.metadata().properties;
+    assert_eq!(
+        trace_props
+            .get("write.parquet.bloom-filter-enabled.column.trace_id")
+            .map(String::as_str),
+        Some("true"),
+        "properties: {trace_props:?}"
+    );
+    assert_eq!(
+        trace_props
+            .get("write.parquet.bloom-filter-enabled.column.span_id")
+            .map(String::as_str),
+        Some("true"),
+    );
     assert!(
-        traces
-            .metadata()
-            .properties
+        trace_props
             .keys()
-            .all(|k| !k.starts_with("write.parquet.bloom-filter-enabled.column.")),
+            .all(|k| !k.starts_with("write.parquet.bloom-filter-enabled.column.label_")),
+        "no label blooms without configured labels: {trace_props:?}"
     );
 
     Ok(())
