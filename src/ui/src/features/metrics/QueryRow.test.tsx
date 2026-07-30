@@ -28,6 +28,26 @@ function stubMetadata() {
     { match: /label\/__name__\/values/, body: metaBody(["http_reqs", "up"]) },
     { match: /\/labels\?/, body: metaBody(["service", "host"]) },
     { match: /label\/service\/values/, body: metaBody(["checkout"]) },
+    {
+      match: /label_stats/,
+      body: {
+        status: "success",
+        data: [
+          {
+            name: "service",
+            distinct_estimate: 12,
+            presence: 1,
+            capped: false,
+          },
+          {
+            name: "k8s.pod",
+            distinct_estimate: 10000,
+            presence: 0.9,
+            capped: true,
+          },
+        ],
+      },
+    },
   ]);
 }
 
@@ -82,5 +102,27 @@ describe("QueryRow", () => {
         document.querySelector('datalist option[value="http_reqs"]'),
       ).not.toBeNull(),
     );
+  });
+
+  it("warns when grouping by a high-cardinality label", async () => {
+    stubMetadata();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText("Metric"), "http_reqs");
+    await user.selectOptions(screen.getByLabelText("Aggregation"), "sum");
+
+    // A normal dimension: no warning.
+    await user.type(screen.getByLabelText("Group by"), "service");
+    expect(
+      screen.queryByLabelText("Cardinality warning"),
+    ).not.toBeInTheDocument();
+
+    // A high-cardinality (capped) label: warning appears with the count.
+    await user.clear(screen.getByLabelText("Group by"));
+    await user.type(screen.getByLabelText("Group by"), "k8s.pod");
+    const warn = await screen.findByLabelText("Cardinality warning");
+    expect(warn).toHaveTextContent("k8s.pod");
+    expect(warn).toHaveTextContent("≥10000 values");
   });
 });

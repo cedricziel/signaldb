@@ -170,6 +170,12 @@
   font-family: var(--mono);
 }
 
+.qrow-warn {
+  font-size: 11px;
+  color: var(--warn, #b8860b);
+  white-space: nowrap;
+}
+
 .builder-run {
   display: flex;
   align-items: center;
