@@ -6,12 +6,16 @@
 #              docker compose and local builds
 #   prebuilt - copy static musl binaries staged in dist/ by CI, skipping
 #              the in-container compile entirely
+# The Explore UI has the same two paths, selected independently via
+# --build-arg UI_BUILDER=<source|prebuilt> (prebuilt copies a dist built by
+# CI and staged in ui-dist/, so one UI build serves every image).
 ARG BUILDER=source
+ARG UI_BUILDER=source
 
-# Explore UI builder - always built in-container (fast), consumed by the
-# router and monolithic runtime stages. A failing UI build fails the image
-# build; images never ship silently without their UI.
-FROM node:22-alpine AS ui-builder
+# Explore UI builder (source path) - consumed by the router and monolithic
+# runtime stages. A failing UI build fails the image build; images never
+# ship silently without their UI.
+FROM node:22-alpine AS ui-builder-source
 
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack enable
@@ -24,6 +28,14 @@ RUN pnpm install --frozen-lockfile --filter signaldb-ui
 
 COPY src/ui/ src/ui/
 RUN pnpm --filter signaldb-ui build
+
+# Explore UI builder (prebuilt path) - copy a dist/ staged in ui-dist/ by CI
+FROM alpine:3.24 AS ui-builder-prebuilt
+
+COPY ui-dist/ /build/src/ui/dist/
+
+# Selected UI builder; downstream stages copy from this alias
+FROM ui-builder-${UI_BUILDER} AS ui-builder
 
 # Builder stage - compile all services with musl for Alpine compatibility
 FROM rust:1.97-alpine AS builder-source
