@@ -12,7 +12,8 @@ sources:
 
 ## FDAP Stack
 
-SignalDB is built on Flight, DataFusion, Arrow, Parquet:
+SignalDB is built on Flight, DataFusion, Arrow, Parquet (explained with
+external references in `docs/architecture/fdap.md`):
 
 - **Flight**: Apache Arrow Flight for zero-copy inter-service gRPC communication
 - **DataFusion**: SQL query processing engine (used by Querier)
