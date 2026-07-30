@@ -1,6 +1,10 @@
 /// <reference types="vitest/config" />
+import { createRequire } from "node:module";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type ProxyOptions } from "vite";
+
+const require = createRequire(import.meta.url);
+const pkg = require("./package.json") as { version: string };
 
 // Paths the SignalDB router serves; the dev server forwards them to a live
 // instance so the browser only ever sees same-origin requests, exactly as in
@@ -47,10 +51,18 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     // Served by the router under /ui/ in production.
     base: "/ui/",
-    // Surface the dev defaults so the tenant selector can display them.
+    // Surface the dev defaults so the tenant selector can display them, plus
+    // the telemetry config baked in at build time (see src/telemetry).
     define: {
       __SIGNALDB_DEFAULT_TENANT__: JSON.stringify(env.SIGNALDB_TENANT ?? ""),
       __SIGNALDB_DEFAULT_DATASET__: JSON.stringify(env.SIGNALDB_DATASET ?? ""),
+      __SIGNALDB_OTLP_ENDPOINT__: JSON.stringify(
+        env.SIGNALDB_OTLP_ENDPOINT ?? "",
+      ),
+      __SIGNALDB_TELEMETRY_SERVICE_NAME__: JSON.stringify(
+        env.SIGNALDB_TELEMETRY_SERVICE_NAME ?? "signaldb-ui",
+      ),
+      __SIGNALDB_UI_VERSION__: JSON.stringify(pkg.version),
     },
     server: { port: 5173, proxy },
     test: {
