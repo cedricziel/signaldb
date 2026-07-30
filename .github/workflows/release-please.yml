@@ -214,6 +214,31 @@ jobs:
           path: dist/
           retention-days: 7
 
+      # The same static binaries double as Linux release archives; kept out
+      # of dist/ so the docker jobs' COPY doesn't pick up the tarballs.
+      - name: Package release archives
+        run: |
+          target=x86_64-unknown-linux-musl
+          mkdir -p archives/signaldb-monolithic-${target} \
+                   archives/signaldb-microservices-${target} \
+                   archives/signaldb-cli-${target}
+          cp dist/signaldb archives/signaldb-monolithic-${target}/
+          cp dist/signaldb-acceptor dist/signaldb-router dist/signaldb-writer \
+             dist/signaldb-querier dist/signaldb-compactor \
+             archives/signaldb-microservices-${target}/
+          cp dist/signaldb-cli archives/signaldb-cli-${target}/
+          cd archives
+          tar czf signaldb-monolithic-${target}.tar.gz signaldb-monolithic-${target}
+          tar czf signaldb-microservices-${target}.tar.gz signaldb-microservices-${target}
+          tar czf signaldb-cli-${target}.tar.gz signaldb-cli-${target}
+
+      - name: Upload release archives
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-archives-musl-amd64
+          path: archives/*.tar.gz
+          retention-days: 7
+
   build-musl-arm64:
     name: Build musl Binaries (arm64)
     runs-on: ubuntu-24.04-arm
@@ -275,6 +300,30 @@ jobs:
         with:
           name: release-musl-binaries-arm64
           path: dist/
+          retention-days: 7
+
+      # See the amd64 job; these provide the only Linux arm64 archives.
+      - name: Package release archives
+        run: |
+          target=aarch64-unknown-linux-musl
+          mkdir -p archives/signaldb-monolithic-${target} \
+                   archives/signaldb-microservices-${target} \
+                   archives/signaldb-cli-${target}
+          cp dist/signaldb archives/signaldb-monolithic-${target}/
+          cp dist/signaldb-acceptor dist/signaldb-router dist/signaldb-writer \
+             dist/signaldb-querier dist/signaldb-compactor \
+             archives/signaldb-microservices-${target}/
+          cp dist/signaldb-cli archives/signaldb-cli-${target}/
+          cd archives
+          tar czf signaldb-monolithic-${target}.tar.gz signaldb-monolithic-${target}
+          tar czf signaldb-microservices-${target}.tar.gz signaldb-microservices-${target}
+          tar czf signaldb-cli-${target}.tar.gz signaldb-cli-${target}
+
+      - name: Upload release archives
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-archives-musl-arm64
+          path: archives/*.tar.gz
           retention-days: 7
 
   docker-build-amd64:
@@ -456,7 +505,7 @@ jobs:
     # Deliberately not gated on the docker jobs: binary assets and image
     # publishing are independent, and a transient registry failure must
     # not block the tarballs from reaching the release.
-    needs: [release-please, build-release]
+    needs: [release-please, build-release, build-musl-amd64, build-musl-arm64]
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
 
     steps:
