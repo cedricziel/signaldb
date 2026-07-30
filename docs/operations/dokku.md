@@ -43,7 +43,7 @@ dokku git:from-image signaldb ghcr.io/cedricziel/signaldb:<version>
 
 ## From source (git push)
 
-Dokku will build using the production `Dockerfile` with the `monolithic` target. The Dockerfile's default `BUILDER=source` path compiles everything inside the container (the `BUILDER=prebuilt` variant is only used by CI, which supplies pre-compiled musl binaries), so no extra build arguments are needed:
+Dokku will build using the production `Dockerfile` with the `monolithic` target. The Dockerfile's default `BUILDER=source` and `UI_BUILDER=source` paths compile the services and the Explore UI inside the container (the `prebuilt` variants of both are only used by CI, which supplies pre-compiled musl binaries and a pre-built UI dist), so no extra build arguments are needed:
 
 ```bash
 dokku apps:create signaldb
