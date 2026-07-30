@@ -786,6 +786,18 @@ pub struct SelfMonitoringConfig {
     /// `OTEL_TRACES_SAMPLER_ARG` when set.
     #[serde(default = "default_trace_sample_ratio")]
     pub trace_sample_ratio: f64,
+    /// Profile this process's CPU and export OTLP profiles to `endpoint`
+    /// under the self-monitoring tenant/dataset. Mutually exclusive with
+    /// `[profiling]` (both use the SIGPROF-based sampler): when both are
+    /// enabled the external `[profiling]` agent wins and this is skipped.
+    #[serde(default)]
+    pub profiles_enabled: bool,
+    /// CPU sampling frequency for self-profiling, in Hz.
+    #[serde(default = "default_profile_sample_rate_hz")]
+    pub profile_sample_rate_hz: u32,
+    /// How often a profile window is exported.
+    #[serde(default = "default_profile_interval", with = "humantime_serde")]
+    pub profile_interval: Duration,
 }
 
 impl Default for SelfMonitoringConfig {
@@ -797,8 +809,21 @@ impl Default for SelfMonitoringConfig {
             tenant_id: default_self_monitoring_tenant(),
             dataset_id: default_self_monitoring_dataset(),
             trace_sample_ratio: default_trace_sample_ratio(),
+            profiles_enabled: false,
+            profile_sample_rate_hz: default_profile_sample_rate_hz(),
+            profile_interval: default_profile_interval(),
         }
     }
+}
+
+/// 99 Hz rather than a round 100 so sampling does not run in lockstep with
+/// periodic work and systematically over- or under-represent it.
+fn default_profile_sample_rate_hz() -> u32 {
+    99
+}
+
+fn default_profile_interval() -> Duration {
+    Duration::from_secs(60)
 }
 
 fn default_pyroscope_url() -> String {
@@ -1085,7 +1110,9 @@ impl Configuration {
     /// Without an admin API key the tenant cannot be provisioned; a warning is
     /// logged and the config is left untouched.
     pub fn ensure_self_monitoring_tenant(&mut self) {
-        if !self.self_monitoring.enabled {
+        // Self-profiling exports into the same tenant, so either switch
+        // needs the tenant provisioned.
+        if !self.self_monitoring.enabled && !self.self_monitoring.profiles_enabled {
             return;
         }
         let tenant_id = self.self_monitoring.tenant_id.clone();
@@ -1722,6 +1749,26 @@ mod tests {
         assert_eq!(tenant.datasets.len(), 1);
         assert!(tenant.datasets[0].is_default);
         assert_eq!(tenant.api_keys[0].key, "admin-key");
+    }
+
+    #[test]
+    fn self_monitoring_tenant_provisioned_for_profiles_only_mode() {
+        let mut config = Configuration::default();
+        config.self_monitoring.profiles_enabled = true;
+        config.auth.admin_api_key = Some("admin-key".to_string());
+        assert!(!config.self_monitoring.enabled);
+
+        config.ensure_self_monitoring_tenant();
+
+        assert!(config.auth.tenants.iter().any(|t| t.id == "_system"));
+    }
+
+    #[test]
+    fn self_profiling_config_defaults() {
+        let sm = SelfMonitoringConfig::default();
+        assert!(!sm.profiles_enabled);
+        assert_eq!(sm.profile_sample_rate_hz, 99);
+        assert_eq!(sm.profile_interval, Duration::from_secs(60));
     }
 
     #[test]

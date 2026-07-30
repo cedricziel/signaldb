@@ -10,7 +10,14 @@ const pkg = require("./package.json") as { version: string };
 // instance so the browser only ever sees same-origin requests, exactly as in
 // the embedded production build. /ui/session is the router's session login
 // endpoint — everything else under /ui stays with the dev server itself.
-const PROXIED_PATHS = ["/loki", "/tempo", "/prometheus", "/api", "/ui/session"];
+const PROXIED_PATHS = [
+  "/loki",
+  "/tempo",
+  "/prometheus",
+  "/pyroscope",
+  "/api",
+  "/ui/session",
+];
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, __dirname, "SIGNALDB_");

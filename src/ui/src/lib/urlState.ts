@@ -11,7 +11,7 @@ import {
   type TimeRange,
 } from "./time";
 
-export type Signal = "logs" | "traces" | "metrics";
+export type Signal = "logs" | "traces" | "metrics" | "profiles";
 
 export interface ExploreState {
   signal: Signal;
@@ -29,6 +29,10 @@ export interface ExploreState {
   groupBy: string;
   /** PromQL expression for the metrics view. */
   promql: string;
+  /** Profile type id (e.g. `cpu:nanoseconds`) — "" auto-picks the first. */
+  profileType: string;
+  /** Service filter for the profiles view — "" means all services. */
+  profileService: string;
   /**
    * Explicit tenant/dataset context. Empty means "ambient default": the dev
    * proxy (or a future session) supplies it and no header is sent.
@@ -49,11 +53,13 @@ export const DEFAULT_STATE: ExploreState = {
   group: "",
   groupBy: DEFAULT_GROUP_BY,
   promql: "",
+  profileType: "",
+  profileService: "",
   tenant: "",
   dataset: "",
 };
 
-const SIGNALS: Signal[] = ["logs", "traces", "metrics"];
+const SIGNALS: Signal[] = ["logs", "traces", "metrics", "profiles"];
 
 export function parseExploreState(search: string): ExploreState {
   const p = new URLSearchParams(search);
@@ -77,6 +83,8 @@ export function parseExploreState(search: string): ExploreState {
     group: p.get("group") ?? "",
     groupBy: p.get("groupBy") || DEFAULT_GROUP_BY,
     promql: p.get("promql") ?? "",
+    profileType: p.get("ptype") ?? "",
+    profileService: p.get("psvc") ?? "",
     tenant: p.get("tenant") ?? "",
     dataset: p.get("dataset") ?? "",
   };
@@ -96,6 +104,8 @@ export function buildSearch(state: ExploreState): string {
   if (state.group) p.set("group", state.group);
   if (state.groupBy !== DEFAULT_GROUP_BY) p.set("groupBy", state.groupBy);
   if (state.promql) p.set("promql", state.promql);
+  if (state.profileType) p.set("ptype", state.profileType);
+  if (state.profileService) p.set("psvc", state.profileService);
   if (state.tenant) p.set("tenant", state.tenant);
   if (state.dataset) p.set("dataset", state.dataset);
   const s = p.toString();

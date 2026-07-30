@@ -33,6 +33,12 @@ visible in the UI is equally queryable from Grafana.
   aggregation, and range functions, all populated from label metadata) with
   multi-query formulas for ratios, plus a "PromQL" tab as the raw escape
   hatch. See [Building metric queries](#building-metric-queries).
+- **Profiles** — a flame graph of stored profiles, filtered by service and
+  profile type. Click a frame to zoom into its subtree (its ancestors stay
+  as full-width bars above; "reset zoom" or clicking the root returns), and
+  type in the highlight box to light up matching frames — e.g. a crate
+  prefix like `common::` — while everything else dims, with a matched-share
+  readout for finding your code in a library-heavy profile.
 - **Correlation** — log rows with a `trace_id` open the trace waterfall;
   the span panel links back to logs filtered by that trace.
 - Every view is a URL: time range, filters, and selection live in query
@@ -41,6 +47,8 @@ visible in the UI is equally queryable from Grafana.
 ![Explore UI trace waterfall with span details and a link to correlated logs](../assets/screenshots/explore-traces.png)
 
 ![Explore UI metrics view charting a PromQL range query across two services](../assets/screenshots/explore-metrics.png)
+
+![Explore UI profiles flame graph with the highlight box narrowing a CPU profile to SignalDB's own frames](../assets/screenshots/explore-profiles.png)
 
 ## Building metric queries
 

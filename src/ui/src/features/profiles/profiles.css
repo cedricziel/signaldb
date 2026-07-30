@@ -1,0 +1,155 @@
+.profilesview {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+}
+
+.profiles-controls {
+  display: flex;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.profiles-field {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.profiles-field select {
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.profiles-note {
+  color: var(--faint);
+  padding: 14px 16px;
+  font-size: 12px;
+}
+
+.profiles-note code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* ---------- flame graph ---------- */
+
+.flamegraph {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 16px 12px;
+  gap: 6px;
+}
+
+.flame-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 24px;
+}
+
+.flame-search {
+  flex: 0 1 320px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--text);
+}
+
+.flame-matched {
+  font-size: 11px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.flame-reset {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.flame-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.flame-row {
+  position: relative;
+  height: 20px;
+}
+
+.flame-frame {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 0 4px;
+  overflow: hidden;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text);
+  min-width: 2px;
+  opacity: 0.92;
+}
+
+.flame-frame:hover {
+  opacity: 1;
+  filter: brightness(1.08);
+}
+
+/* When a highlight is active, non-matching frames recede so matches pop. */
+.flame-frame.dim {
+  opacity: 0.28;
+  filter: grayscale(0.6);
+}
+
+.flame-frame.dim:hover {
+  opacity: 0.6;
+}
+
+.flame-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 18px;
+}
+
+.flame-detail {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 2px 0;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+}
+
+.flame-detail-name {
+  font-family: var(--mono);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flame-detail-meta {
+  color: var(--dim);
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}

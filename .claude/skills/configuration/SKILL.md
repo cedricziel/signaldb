@@ -243,9 +243,20 @@ interval = "60s"
 tenant_id = "_system"
 dataset_id = "_monitoring"
 trace_sample_ratio = 0.1              # 0.0-1.0; OTEL_TRACES_SAMPLER env vars win
+profiles_enabled = false             # CPU self-profiling -> OTLP profiles into this tenant
+profile_sample_rate_hz = 99          # sampling frequency
+profile_interval = "60s"             # one profile window per interval
 ```
 
+`profiles_enabled` works even when `enabled` is false (it needs only the
+endpoint/tenant/credentials, not the OTel SDK) and requires
+`auth.admin_api_key`. It is mutually exclusive with `[profiling]` below —
+both drive the one SIGPROF sampler, so if both are set the external
+`[profiling]` agent wins. Unsupported on Windows.
+
 ### Profiling (Continuous Profiling)
+
+External Pyroscope push, distinct from the self-monitoring OTLP path above.
 
 ```toml
 [profiling]

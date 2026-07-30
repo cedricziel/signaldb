@@ -56,6 +56,8 @@ describe("buildSearch", () => {
       group: "POST /checkout",
       groupBy: "resource.host.name",
       promql: "rate(x[5m])",
+      profileType: "cpu:nanoseconds",
+      profileService: "signaldb-router",
       tenant: "acme",
       dataset: "production",
     };
@@ -67,6 +69,20 @@ describe("buildSearch", () => {
       "groupBy",
     );
     expect(parseExploreState("").groupBy).toBe("span.name");
+  });
+
+  it("round-trips the profiles signal and its selectors", () => {
+    const state = {
+      ...DEFAULT_STATE,
+      signal: "profiles" as const,
+      profileType: "cpu:nanoseconds",
+      profileService: "signaldb-querier",
+    };
+    const search = buildSearch(state);
+    expect(search).toContain("signal=profiles");
+    expect(search).toContain("ptype=cpu");
+    expect(search).toContain("psvc=signaldb-querier");
+    expect(parseExploreState(search)).toEqual(state);
   });
 
   it("omits tenant params for the ambient default context", () => {

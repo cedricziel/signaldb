@@ -55,6 +55,39 @@ Many Requests`. An error mentioning `quota_exceeded` means the tenant is
 at or over its storage quota (`max_storage_bytes`); retrying will not
 help until data is deleted, retention shortens, or the quota is raised.
 
+## Profiling SignalDB itself
+
+SignalDB can continuously profile its own CPU and store the result as
+regular profile signals under the self-monitoring tenant — the same
+dogfooding pipeline that self-monitoring uses for traces, logs, and
+metrics:
+
+```toml
+[self_monitoring]
+profiles_enabled = true
+# profile_sample_rate_hz = 99   # sampling frequency (default 99 Hz)
+# profile_interval = "60s"      # one profile per window (default 60s)
+```
+
+Each window is exported as an OTLP profile (`cpu` / `nanoseconds`, one
+sample value per stack = observed samples × sampling period) with
+`service.name` set to the emitting service and
+`deployment.environment = "self-monitoring"`. Query it like any other
+profile data, scoped to the `_system` tenant:
+
+```bash
+curl -s "http://localhost:3000/pyroscope/render?query=cpu&from=now-15m&until=now" \
+  -H "Authorization: Bearer <admin-api-key>" \
+  -H "X-Tenant-ID: _system" -H "X-Dataset-ID: _monitoring"
+```
+
+Self-profiling requires `auth.admin_api_key` (the export authenticates
+with it) and works even when the rest of `[self_monitoring]` is
+disabled. It is mutually exclusive with the external-Pyroscope
+`[profiling]` section — both drive the same in-process sampler; if both
+are enabled, `[profiling]` wins and self-profiling is skipped with a
+warning.
+
 ## How profiles are stored
 
 The OTLP profiles wire format shares one dictionary (strings, functions,
