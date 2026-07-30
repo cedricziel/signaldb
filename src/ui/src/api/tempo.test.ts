@@ -157,8 +157,39 @@ describe("tempoSearch", () => {
         startNs: "5000",
         durationMs: 88,
         rootAttributes: {},
+        rootError: false,
       },
     ]);
+  });
+
+  it("flags traces whose root span errored", async () => {
+    mockFetchOnce({
+      traces: [
+        {
+          traceID: "t1",
+          rootServiceName: "checkout",
+          rootTraceName: "GET /cart",
+          startTimeUnixNano: "5000",
+          durationMs: 88,
+          spanSets: [
+            {
+              matched: 1,
+              spans: [
+                {
+                  spanID: "root",
+                  startTimeUnixNano: "5000",
+                  durationNanos: "10",
+                  status: "error",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      metrics: {},
+    });
+    const out = await tempoSearch(RANGE, 25);
+    expect(out[0]?.rootError).toBe(true);
   });
 
   it("extracts the root span's attributes from spanSets", async () => {

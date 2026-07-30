@@ -16,6 +16,7 @@ function searchTrace(
   startNs: string,
   durationMs: number,
   env: string,
+  status = "ok",
 ) {
   return {
     traceID,
@@ -33,6 +34,7 @@ function searchTrace(
             durationNanos: String(durationMs * 1e6),
             name,
             serviceName: service,
+            status,
             attributes: {
               "resource.env": {
                 key: "resource.env",
@@ -55,6 +57,7 @@ const SEARCH_BODY = {
       "1700000000000000000",
       412,
       "prod",
+      "error",
     ),
     searchTrace(
       "t2feed",
@@ -138,6 +141,48 @@ describe("TracesView group list", () => {
     expect(rows[2]).toHaveTextContent("GET /login");
   });
 
+  it("shows rate, error rate, and latency percentiles per group", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+    renderView();
+    const rows = await screen.findAllByRole("row");
+    expect(rows[0]).toHaveTextContent("Rate");
+    expect(rows[0]).toHaveTextContent("Errors");
+    expect(rows[0]).toHaveTextContent("P50");
+    // Default range is 1h; 2 checkout traces, one of them errored.
+    expect(rows[1]).toHaveTextContent("2/h");
+    expect(rows[1]).toHaveTextContent("50%");
+    expect(rows[2]).toHaveTextContent("1/h");
+  });
+
+  it("adds a secondary dimension via the then-by picker", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+    const update = renderView();
+    await screen.findByRole("button", { name: "POST /api/checkout" });
+    await userEvent.selectOptions(
+      screen.getByLabelText("Then by"),
+      "service.name",
+    );
+    expect(update).toHaveBeenCalledWith({
+      groupBy: "span.name,service.name",
+      group: "",
+    });
+  });
+
+  it("renders one column per dimension and drills in with a composite key", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+    const update = renderView({ groupBy: "span.name,service.name" });
+    const rows = await screen.findAllByRole("row");
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toHaveTextContent("POST /api/checkout");
+    expect(rows[1]).toHaveTextContent("gateway");
+    await userEvent.click(
+      screen.getByRole("button", { name: "POST /api/checkout" }),
+    );
+    expect(update).toHaveBeenCalledWith({
+      group: "POST /api/checkout\u001fgateway",
+    });
+  });
+
   it("dives into a group on click", async () => {
     stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
     const update = renderView();
@@ -208,6 +253,23 @@ describe("TracesView group detail", () => {
     expect(screen.getByText("t1cafe")).toBeInTheDocument();
     expect(screen.getByText("t3beef")).toBeInTheDocument();
     expect(screen.queryByText("t2feed")).not.toBeInTheDocument();
+  });
+
+  it("filters by every dimension of a composite group", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+    renderView({
+      groupBy: "span.name,service.name",
+      group: "POST /api/checkout\u001fgateway",
+    });
+    // Title shows the values joined for humans.
+    expect(
+      await screen.findByRole("heading", {
+        name: "POST /api/checkout · gateway",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("t1cafe")).toBeInTheDocument();
+    expect(screen.getByText("t2feed")).toBeInTheDocument();
+    expect(screen.queryByText("t3beef")).not.toBeInTheDocument();
   });
 
   it("opens a trace on click", async () => {

@@ -20,6 +20,12 @@
   flex: 1;
 }
 
+.group-pickers {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
 .group-by {
   display: flex;
   align-items: center;
@@ -27,6 +33,11 @@
   font-size: 11px;
   color: var(--dim);
   white-space: nowrap;
+}
+
+.err-rate {
+  color: var(--err);
+  font-weight: 600;
 }
 
 .group-by select {

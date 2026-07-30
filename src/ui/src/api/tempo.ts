@@ -28,6 +28,8 @@ export interface TraceSummary {
    * grouping dimensions for the traces landing screen.
    */
   rootAttributes: Record<string, AttrValue>;
+  /** True when the root span's status is "error". */
+  rootError: boolean;
 }
 
 export interface TempoTrace extends TraceSummary {
@@ -88,14 +90,14 @@ function toSpan(w: WireSpan): TempoSpan {
   };
 }
 
-/** The root span's attributes: no parent wins, else the earliest span. */
-function rootAttributes(spans: TempoSpan[]): Record<string, AttrValue> {
-  const root =
+/** The root span: no parent wins, else the earliest span. */
+function rootSpan(spans: TempoSpan[]): TempoSpan | undefined {
+  return (
     spans.find((s) => s.parentSpanId === null) ??
     [...spans].sort((a, b) =>
       BigInt(a.startNs) < BigInt(b.startNs) ? -1 : 1,
-    )[0];
-  return root?.attributes ?? {};
+    )[0]
+  );
 }
 
 async function tempoFetch<T>(
@@ -130,13 +132,15 @@ export async function tempoGetTrace(
     params,
   );
   const spans = (wire.spanSets ?? []).flatMap((s) => s.spans.map(toSpan));
+  const root = rootSpan(spans);
   return {
     traceId: wire.traceID,
     rootServiceName: wire.rootServiceName,
     rootTraceName: wire.rootTraceName,
     startNs: wire.startTimeUnixNano,
     durationMs: wire.durationMs,
-    rootAttributes: rootAttributes(spans),
+    rootAttributes: root?.attributes ?? {},
+    rootError: root?.status === "error",
     spans,
   };
 }
@@ -151,14 +155,18 @@ export async function tempoSearch(
     limit: String(limit),
   });
   const wire = await tempoFetch<{ traces?: WireTrace[] }>("search", params);
-  return (wire.traces ?? []).map((t) => ({
-    traceId: t.traceID,
-    rootServiceName: t.rootServiceName,
-    rootTraceName: t.rootTraceName,
-    startNs: t.startTimeUnixNano,
-    durationMs: t.durationMs,
-    rootAttributes: rootAttributes(
+  return (wire.traces ?? []).map((t) => {
+    const root = rootSpan(
       (t.spanSets ?? []).flatMap((s) => s.spans.map(toSpan)),
-    ),
-  }));
+    );
+    return {
+      traceId: t.traceID,
+      rootServiceName: t.rootServiceName,
+      rootTraceName: t.rootTraceName,
+      startNs: t.startTimeUnixNano,
+      durationMs: t.durationMs,
+      rootAttributes: root?.attributes ?? {},
+      rootError: root?.status === "error",
+    };
+  });
 }

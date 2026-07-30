@@ -13,9 +13,12 @@ import {
   resolveRange,
 } from "../../lib/time";
 import {
+  formatRate,
   groupDimensions,
+  groupKey,
+  groupLabel,
   groupTraces,
-  groupValue,
+  parseGroupBy,
   type TraceGroup,
 } from "../../lib/traceGroups";
 import type { ExploreState } from "../../lib/urlState";
@@ -67,22 +70,11 @@ function TraceSearch({ state, update }: Props) {
           <button type="submit">Open</button>
         </form>
         {state.group === "" && (
-          <label className="group-by">
-            Group by
-            <select
-              aria-label="Group by"
-              value={state.groupBy}
-              onChange={(e) =>
-                update({ groupBy: e.currentTarget.value, group: "" })
-              }
-            >
-              {dimensionOptions(search.data ?? [], state.groupBy).map((d) => (
-                <option key={d} value={d}>
-                  {d}
-                </option>
-              ))}
-            </select>
-          </label>
+          <DimensionPickers
+            traces={search.data ?? []}
+            groupBy={state.groupBy}
+            update={update}
+          />
         )}
       </div>
 
@@ -96,7 +88,8 @@ function TraceSearch({ state, update }: Props) {
         (state.group === "" ? (
           <GroupList
             traces={search.data}
-            groupBy={state.groupBy}
+            dims={parseGroupBy(state.groupBy)}
+            rangeSeconds={rangeSeconds(state)}
             update={update}
           />
         ) : (
@@ -106,13 +99,12 @@ function TraceSearch({ state, update }: Props) {
   );
 }
 
-/** The picked dimension stays selectable even if absent from this range. */
-function dimensionOptions(traces: TraceSummary[], groupBy: string): string[] {
-  const dims = groupDimensions(traces);
-  return dims.includes(groupBy) ? dims : [...dims, groupBy].sort();
+function rangeSeconds(state: ExploreState): number {
+  const r = resolveRange(state.range, Date.now());
+  return Math.max(1, (r.toMs - r.fromMs) / 1000);
 }
 
-function GroupList({
+function DimensionPickers({
   traces,
   groupBy,
   update,
@@ -121,17 +113,86 @@ function GroupList({
   groupBy: string;
   update: (patch: Partial<ExploreState>) => void;
 }) {
+  const dims = parseGroupBy(groupBy);
+  const primary = dims[0] ?? "";
+  const secondary = dims[1] ?? "";
+  const setDims = (next: string[]) =>
+    update({ groupBy: next.filter((d) => d !== "").join(","), group: "" });
+  return (
+    <div className="group-pickers">
+      <label className="group-by">
+        Group by
+        <select
+          aria-label="Group by"
+          value={primary}
+          onChange={(e) => {
+            const v = e.currentTarget.value;
+            setDims([v, secondary === v ? "" : secondary]);
+          }}
+        >
+          {dimensionOptions(traces, primary).map((d) => (
+            <option key={d} value={d}>
+              {d}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="group-by">
+        Then by
+        <select
+          aria-label="Then by"
+          value={secondary}
+          onChange={(e) => setDims([primary, e.currentTarget.value])}
+        >
+          <option value="">—</option>
+          {dimensionOptions(traces, secondary)
+            .filter((d) => d !== primary && d !== "")
+            .map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+        </select>
+      </label>
+    </div>
+  );
+}
+
+/** The picked dimension stays selectable even if absent from this range. */
+function dimensionOptions(traces: TraceSummary[], picked: string): string[] {
+  const dims = groupDimensions(traces);
+  return picked === "" || dims.includes(picked)
+    ? dims
+    : [...dims, picked].sort();
+}
+
+function GroupList({
+  traces,
+  dims,
+  rangeSeconds,
+  update,
+}: {
+  traces: TraceSummary[];
+  dims: string[];
+  rangeSeconds: number;
+  update: (patch: Partial<ExploreState>) => void;
+}) {
   if (traces.length === 0) {
     return <div className="traces-note">No traces in this time range.</div>;
   }
-  const groups = groupTraces(traces, groupBy);
+  const groups = groupTraces(traces, dims);
+  const showServices = !dims.includes("service.name");
   return (
     <table className="trace-table">
       <thead>
         <tr>
-          <th>{groupBy}</th>
-          <th>Services</th>
+          {dims.map((d) => (
+            <th key={d}>{d}</th>
+          ))}
+          {showServices && <th>Services</th>}
           <th className="num">Traces</th>
+          <th className="num">Rate</th>
+          <th className="num">Errors</th>
           <th className="num">P50</th>
           <th className="num">P95</th>
           <th>Last seen</th>
@@ -139,12 +200,21 @@ function GroupList({
       </thead>
       <tbody>
         {groups.map((g) => (
-          <tr key={g.value} onClick={() => update({ group: g.value })}>
+          <tr key={g.key} onClick={() => update({ group: g.key })}>
             <td>
-              <button className="trace-open">{g.value}</button>
+              <button className="trace-open">{g.values[0]}</button>
             </td>
-            <td>{formatServices(g)}</td>
+            {g.values.slice(1).map((v, i) => (
+              <td key={dims[i + 1]}>{v}</td>
+            ))}
+            {showServices && <td>{formatServices(g)}</td>}
             <td className="num">{g.traces.length}</td>
+            <td className="num">{formatRate(g.traces.length, rangeSeconds)}</td>
+            <td className={`num${g.errorCount > 0 ? " err-rate" : ""}`}>
+              {g.errorCount > 0
+                ? `${Math.round((100 * g.errorCount) / g.traces.length)}%`
+                : "–"}
+            </td>
             <td className="num">{formatDurationMs(g.p50Ms)}</td>
             <td className="num">{formatDurationMs(g.p95Ms)}</td>
             <td>{formatTimestamp(nanosToMs(g.lastStartNs))}</td>
@@ -170,8 +240,9 @@ function GroupDetail({
   traces: TraceSummary[];
   update: (patch: Partial<ExploreState>) => void;
 }) {
+  const dims = parseGroupBy(state.groupBy);
   const members = traces
-    .filter((t) => groupValue(t, state.groupBy) === state.group)
+    .filter((t) => groupKey(t, dims) === state.group)
     .sort((a, b) => (BigInt(a.startNs) < BigInt(b.startNs) ? 1 : -1));
   return (
     <>
@@ -179,9 +250,9 @@ function GroupDetail({
         <button className="backbtn" onClick={() => update({ group: "" })}>
           ← groups
         </button>
-        <h3>{state.group}</h3>
+        <h3>{groupLabel(state.group)}</h3>
         <span className="tmeta">
-          {state.groupBy} · {plural(members.length, "trace")}
+          {dims.join(", ")} · {plural(members.length, "trace")}
         </span>
       </div>
       {members.length === 0 ? (
