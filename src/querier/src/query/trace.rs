@@ -5,9 +5,13 @@ use common::model::{
     span::{Span, SpanKind, SpanStatus},
 };
 use datafusion::{
-    arrow::array::{Array, BooleanArray, Int64Array, StringArray},
-    logical_expr::{col, lit},
+    arrow::{
+        array::{Array, BooleanArray, Int64Array, StringArray},
+        datatypes::{DataType, TimeUnit},
+    },
+    logical_expr::{Expr, col, lit},
     prelude::SessionContext,
+    scalar::ScalarValue,
 };
 
 use super::{
@@ -104,9 +108,22 @@ impl TraceService {
         // expected to pass a window bracketing the whole trace (Grafana's
         // Tempo datasource pads it by 30 minutes on each side), so this
         // prunes the scanned time range without truncating traces.
+        //
+        // Each hint is applied twice: a precise `start_time_unix_nano` row
+        // filter, plus an equivalent (widened) predicate on the `timestamp`
+        // partition column so that Iceberg can prune whole hour partitions
+        // (the partition transform is `Hour(timestamp)`, so a filter on
+        // `start_time_unix_nano` alone never engages partition pruning).
+        let timestamp_type = df
+            .schema()
+            .fields()
+            .iter()
+            .find(|f| f.name() == "timestamp")
+            .map(|f| f.data_type().clone());
         if let Some(start) = params.start {
+            let start_nanos = start.saturating_mul(1_000_000_000);
             df = df
-                .filter(col("start_time_unix_nano").gt_eq(lit(start.saturating_mul(1_000_000_000))))
+                .filter(col("start_time_unix_nano").gt_eq(lit(start_nanos)))
                 .map_err(|e| {
                     log::error!(
                         "Failed to apply start hint for trace_id={}: {e}",
@@ -114,10 +131,22 @@ impl TraceService {
                     );
                     QuerierError::QueryFailed(e)
                 })?;
+            if let Some(ts_type) = &timestamp_type {
+                df = df
+                    .filter(timestamp_bound_expr(start_nanos, ts_type, false)?)
+                    .map_err(|e| {
+                        log::error!(
+                            "Failed to apply start partition bound for trace_id={}: {e}",
+                            params.trace_id
+                        );
+                        QuerierError::QueryFailed(e)
+                    })?;
+            }
         }
         if let Some(end) = params.end {
+            let end_nanos = end.saturating_mul(1_000_000_000);
             df = df
-                .filter(col("start_time_unix_nano").lt_eq(lit(end.saturating_mul(1_000_000_000))))
+                .filter(col("start_time_unix_nano").lt_eq(lit(end_nanos)))
                 .map_err(|e| {
                     log::error!(
                         "Failed to apply end hint for trace_id={}: {e}",
@@ -125,7 +154,29 @@ impl TraceService {
                     );
                     QuerierError::QueryFailed(e)
                 })?;
+            if let Some(ts_type) = &timestamp_type {
+                df = df
+                    .filter(timestamp_bound_expr(end_nanos, ts_type, true)?)
+                    .map_err(|e| {
+                        log::error!(
+                            "Failed to apply end partition bound for trace_id={}: {e}",
+                            params.trace_id
+                        );
+                        QuerierError::QueryFailed(e)
+                    })?;
+            }
         }
+
+        // Projection pushdown: only read the columns needed to reconstruct the
+        // trace, so the scan skips the fat `events` / `links` / `scope_*`
+        // columns entirely.
+        df = df.select_columns(&TRACE_LOOKUP_COLUMNS).map_err(|e| {
+            log::error!(
+                "Failed to project trace lookup columns for trace_id={}: {e}",
+                params.trace_id
+            );
+            QuerierError::QueryFailed(e)
+        })?;
 
         let results = df.collect().await.map_err(|e| {
             log::error!(
@@ -719,6 +770,87 @@ impl TraceService {
     }
 }
 
+/// Columns required to reconstruct a trace in [`TraceService::find_by_id_with_tenant`].
+/// Restricting the scan to these via projection pushdown avoids materializing the
+/// large `events` / `links` list columns and the `scope_*` maps, which are never
+/// consumed on the single-trace path.
+const TRACE_LOOKUP_COLUMNS: [&str; 12] = [
+    "trace_id",
+    "span_id",
+    "parent_span_id",
+    "span_attributes",
+    "resource_attributes",
+    "status_code",
+    "is_root",
+    "span_name",
+    "service_name",
+    "span_kind",
+    "start_time_unix_nano",
+    "duration_nanos",
+];
+
+/// Build a literal matching the on-disk `timestamp` partition column so a
+/// time-range filter engages Iceberg hour-partition pruning (the partition
+/// transform is `Hour(timestamp)`, whereas the precise row filter targets
+/// `start_time_unix_nano`).
+///
+/// `nanos` is a unix-epoch nanosecond value. `col_type` is the Arrow type of
+/// the `timestamp` column as reported by the table schema (Iceberg timestamps
+/// commonly materialize as microseconds, but we adapt to whatever unit the
+/// catalog reports). When the column unit is coarser than nanoseconds we widen
+/// the bound — floor for a lower bound, ceil for an upper bound — so this
+/// pruning predicate never excludes a row the precise `start_time_unix_nano`
+/// filter would keep.
+fn timestamp_bound_scalar(
+    nanos: i64,
+    col_type: &DataType,
+    round_up: bool,
+) -> Result<ScalarValue, QuerierError> {
+    // `nanos` is a unix-epoch value (non-negative in practice); floor for a
+    // lower bound, ceil for an upper bound, using positive-safe arithmetic
+    // (signed `i64::div_ceil` is still unstable).
+    let scale = |divisor: i64| {
+        if round_up {
+            (nanos + divisor - 1).div_euclid(divisor)
+        } else {
+            nanos.div_euclid(divisor)
+        }
+    };
+    Ok(match col_type {
+        DataType::Timestamp(TimeUnit::Nanosecond, tz) => {
+            ScalarValue::TimestampNanosecond(Some(nanos), tz.clone())
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, tz) => {
+            ScalarValue::TimestampMicrosecond(Some(scale(1_000)), tz.clone())
+        }
+        DataType::Timestamp(TimeUnit::Millisecond, tz) => {
+            ScalarValue::TimestampMillisecond(Some(scale(1_000_000)), tz.clone())
+        }
+        DataType::Timestamp(TimeUnit::Second, tz) => {
+            ScalarValue::TimestampSecond(Some(scale(1_000_000_000)), tz.clone())
+        }
+        other => {
+            return Err(QuerierError::InvalidInput(format!(
+                "`timestamp` column has unexpected type {other:?}; cannot build partition-pruning bound"
+            )));
+        }
+    })
+}
+
+/// Wrap [`timestamp_bound_scalar`] into a `col("timestamp") >=/<= <literal>` expression.
+fn timestamp_bound_expr(
+    nanos: i64,
+    col_type: &DataType,
+    round_up: bool,
+) -> Result<Expr, QuerierError> {
+    let bound = lit(timestamp_bound_scalar(nanos, col_type, round_up)?);
+    Ok(if round_up {
+        col("timestamp").lt_eq(bound)
+    } else {
+        col("timestamp").gt_eq(bound)
+    })
+}
+
 /// Each trace typically contains many spans, so search fetches more spans
 /// than the requested trace count to avoid truncating traces.
 const SPANS_PER_TRACE_ESTIMATE: usize = 50;
@@ -780,6 +912,60 @@ mod tests {
     #[test]
     fn span_limit_rejects_negative_limit() {
         assert!(clamped_limits(Some(-1), 1000).is_err());
+    }
+
+    #[test]
+    fn timestamp_bound_nanosecond_is_exact() {
+        let nanos = 1_700_000_000_123_456_789i64;
+        let lower = timestamp_bound_scalar(
+            nanos,
+            &DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        )
+        .unwrap();
+        assert_eq!(lower, ScalarValue::TimestampNanosecond(Some(nanos), None));
+    }
+
+    #[test]
+    fn timestamp_bound_microsecond_widens_outward() {
+        let nanos = 1_700_000_000_123_456_789i64; // not micro-aligned
+        let ty = DataType::Timestamp(TimeUnit::Microsecond, None);
+        let lower = timestamp_bound_scalar(nanos, &ty, false).unwrap();
+        let upper = timestamp_bound_scalar(nanos, &ty, true).unwrap();
+        // Lower bound floors, upper bound ceils, so the [lower, upper] micro
+        // window always contains the exact nanosecond instant.
+        assert_eq!(
+            lower,
+            ScalarValue::TimestampMicrosecond(Some(1_700_000_000_123_456), None)
+        );
+        assert_eq!(
+            upper,
+            ScalarValue::TimestampMicrosecond(Some(1_700_000_000_123_457), None)
+        );
+    }
+
+    #[test]
+    fn timestamp_bound_preserves_timezone() {
+        let ty = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+        let bound = timestamp_bound_scalar(1_700_000_000_000_000_000, &ty, false).unwrap();
+        assert_eq!(
+            bound,
+            ScalarValue::TimestampMicrosecond(Some(1_700_000_000_000_000), Some("UTC".into()))
+        );
+    }
+
+    #[test]
+    fn timestamp_bound_rejects_non_timestamp() {
+        assert!(timestamp_bound_scalar(0, &DataType::Int64, false).is_err());
+    }
+
+    #[test]
+    fn timestamp_bound_expr_direction() {
+        let ty = DataType::Timestamp(TimeUnit::Nanosecond, None);
+        // Just ensure both directions build without error and differ.
+        let lower = timestamp_bound_expr(1_000, &ty, false).unwrap();
+        let upper = timestamp_bound_expr(1_000, &ty, true).unwrap();
+        assert_ne!(format!("{lower:?}"), format!("{upper:?}"));
     }
 
     #[tokio::test]
