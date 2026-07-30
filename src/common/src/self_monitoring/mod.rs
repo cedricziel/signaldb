@@ -8,7 +8,10 @@ pub mod metrics;
 pub mod profiling;
 pub mod suppress;
 
-pub use app_metrics::{AppMetrics, app_metrics, http_metrics_middleware, should_count_tenant};
+pub use app_metrics::{
+    AppMetrics, app_metrics, http_metrics_middleware, http_trace_context_middleware,
+    should_count_tenant,
+};
 pub use profiling::{ProfilingHandle, init_profiling};
 pub use suppress::{
     OtelExportFilter, SELF_MONITORING_DATASET, SELF_MONITORING_TENANT,

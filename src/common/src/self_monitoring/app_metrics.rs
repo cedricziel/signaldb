@@ -279,6 +279,42 @@ pub async fn http_metrics_middleware(
     response
 }
 
+/// Root each inbound HTTP request in a server span whose parent is the
+/// caller-supplied W3C trace context (`traceparent`), so an external client
+/// that propagates context sees SignalDB's query trace join theirs instead of
+/// starting a detached root. Downstream `#[instrument]` handler spans and the
+/// Flight calls they make become children of this span.
+///
+/// Mirrors [`http_metrics_middleware`]'s anti-loop guard: `_system` tenant
+/// requests bypass the span so self-monitoring queries are not re-instrumented
+/// and re-ingested. No-op when self-monitoring is disabled (the parent
+/// adoption goes through the global propagator, which is then a no-op).
+pub async fn http_trace_context_middleware(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use tracing::Instrument;
+
+    let is_system_request = request
+        .headers()
+        .get("x-tenant-id")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(is_self_monitoring_tenant);
+    if is_system_request {
+        return next.run(request).await;
+    }
+
+    let span = tracing::info_span!(
+        "http.request",
+        http.request.method = %request.method(),
+        url.path = %request.uri().path(),
+    );
+    // Parent must be adopted before the span is first entered.
+    crate::flight::trace_context::set_parent_from_http_headers(&span, request.headers());
+
+    next.run(request).instrument(span).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +350,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn http_trace_context_middleware_passes_through_with_and_without_traceparent() {
+        use axum::{Router, body::Body, http::Request, routing::get};
+        use tower::ServiceExt;
+
+        let app = Router::new()
+            .route("/ping", get(|| async { "pong" }))
+            .layer(axum::middleware::from_fn(http_trace_context_middleware));
+
+        // With a caller-supplied traceparent (adoption is a no-op without an
+        // OTel layer, but must not panic and must pass the response through).
+        let with_tp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/ping")
+                    .header(
+                        "traceparent",
+                        "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(with_tp.status(), axum::http::StatusCode::OK);
+
+        // Without any trace headers.
+        let without = app
+            .oneshot(Request::builder().uri("/ping").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(without.status(), axum::http::StatusCode::OK);
     }
 }
