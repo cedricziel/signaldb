@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { LabelFilter } from "../../lib/filters";
 import {
+  buildFormula,
   buildPromQL,
   buildSelector,
   emptyQuery,
+  nextRef,
   type MetricQuery,
 } from "./buildPromQL";
 
@@ -108,5 +110,45 @@ describe("buildPromQL", () => {
     expect(
       buildPromQL(q({ agg: { op: "max", by: ["service", "bad.tag"] } })),
     ).toBe("max by (service)(http_server_duration)");
+  });
+});
+
+describe("nextRef", () => {
+  it("assigns letters in order and skips used ones", () => {
+    expect(nextRef([])).toBe("a");
+    expect(nextRef([emptyQuery("a")])).toBe("b");
+    expect(nextRef([emptyQuery("a"), emptyQuery("c")])).toBe("b");
+  });
+});
+
+describe("buildFormula", () => {
+  const qa = q({ ref: "a", metric: "http_server_duration" });
+  const qb = q({ ref: "b", metric: "http_server_errors" });
+
+  it("charts only the first query when there is no formula", () => {
+    expect(buildFormula([qa, qb], "")).toBe("http_server_duration");
+  });
+
+  it("returns empty when there are no queries", () => {
+    expect(buildFormula([], "")).toBe("");
+  });
+
+  it("substitutes each ref with its parenthesized compilation", () => {
+    expect(buildFormula([qa, qb], "(a / b) * 100")).toBe(
+      "((http_server_duration) / (http_server_errors)) * 100",
+    );
+  });
+
+  it("leaves PromQL function names untouched (multi-char, not refs)", () => {
+    const ra = q({
+      ref: "a",
+      metric: "http_server_duration",
+      range: { fn: "rate", window: "1m" },
+    });
+    expect(buildFormula([ra], "a")).toBe("(rate(http_server_duration[1m]))");
+  });
+
+  it("is not runnable while a referenced query is still empty", () => {
+    expect(buildFormula([qa, emptyQuery("b")], "a / b")).toBe("");
   });
 });

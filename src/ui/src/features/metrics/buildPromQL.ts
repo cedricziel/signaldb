@@ -97,3 +97,45 @@ export function buildPromQL(q: MetricQuery): string {
 
   return expr;
 }
+
+/** The reference letters a query can take, in assignment order. */
+export const QUERY_REFS = "abcdefghij".split("");
+
+/** Next unused ref letter for a set of queries (falls back to "a"). */
+export function nextRef(queries: MetricQuery[]): string {
+  const used = new Set(queries.map((q) => q.ref));
+  return QUERY_REFS.find((r) => !used.has(r)) ?? "a";
+}
+
+/**
+ * Compile a set of queries plus an optional formula into a single PromQL
+ * expression. Each single-letter reference in the formula (a, b, …) is
+ * replaced by the parenthesized compilation of that query, so a formula like
+ * `(a / b) * 100` becomes a ratio expression. PromQL function names (rate,
+ * sum, time, …) are multi-character and are left untouched.
+ *
+ * With no formula, only the first query charts. Returns "" when nothing is
+ * runnable yet (empty first query, or a formula referencing empty queries).
+ */
+export function buildFormula(queries: MetricQuery[], formula: string): string {
+  const trimmed = formula.trim();
+  if (trimmed === "") {
+    const first = queries[0];
+    return first ? buildPromQL(first) : "";
+  }
+
+  let referencedEmpty = false;
+  const substituted = trimmed.replace(/\b([a-j])\b/g, (match, ref: string) => {
+    const q = queries.find((qq) => qq.ref === ref);
+    if (!q) return match;
+    const compiled = buildPromQL(q);
+    if (compiled === "") {
+      referencedEmpty = true;
+      return match;
+    }
+    return `(${compiled})`;
+  });
+
+  // A formula that still names an empty query isn't runnable.
+  return referencedEmpty ? "" : substituted;
+}
