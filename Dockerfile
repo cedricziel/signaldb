@@ -15,7 +15,7 @@ ARG UI_BUILDER=source
 # Explore UI builder (source path) - consumed by the router and monolithic
 # runtime stages. A failing UI build fails the image build; images never
 # ship silently without their UI.
-FROM node:22-alpine AS ui-builder-source
+FROM node:26-alpine AS ui-builder-source
 
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack enable
