@@ -248,6 +248,7 @@ jobs:
             cargo build --release -p router --bin signaldb-router
             cargo build --release -p writer --bin signaldb-writer
             cargo build --release -p querier --bin signaldb-querier
+            cargo build --release -p compactor --bin signaldb-compactor
           fi
 
       - name: Test binary execution
@@ -266,6 +267,8 @@ jobs:
             ./target/release/signaldb-writer --version
             ./target/release/signaldb-querier --help
             ./target/release/signaldb-querier --version
+            ./target/release/signaldb-compactor --help
+            ./target/release/signaldb-compactor --version
           fi
 
       - name: Upload binaries

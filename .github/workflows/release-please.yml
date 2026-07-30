@@ -122,6 +122,8 @@ jobs:
           cp signaldb-acceptor${{ matrix.binary_suffix }} signaldb-microservices-${{ matrix.target }}/
           cp signaldb-router${{ matrix.binary_suffix }} signaldb-microservices-${{ matrix.target }}/
           cp signaldb-writer${{ matrix.binary_suffix }} signaldb-microservices-${{ matrix.target }}/
+          cp signaldb-querier${{ matrix.binary_suffix }} signaldb-microservices-${{ matrix.target }}/
+          cp signaldb-compactor${{ matrix.binary_suffix }} signaldb-microservices-${{ matrix.target }}/
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
             7z a signaldb-microservices-${{ matrix.target }}.zip signaldb-microservices-${{ matrix.target }}/
           else
