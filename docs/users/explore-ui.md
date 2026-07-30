@@ -31,10 +31,13 @@ visible in the UI is equally queryable from Grafana.
 ## Signing in
 
 On an embedded deployment (the UI served by the router at `/ui`), the
-first query that fails as unauthenticated opens a sign-in form. Enter a
-user email, password, tenant ID, and optionally a dataset (defaults to the
-tenant's default dataset). The user must be a member of the selected tenant;
-see [the authentication reference](authentication.md).
+first query that fails as unauthenticated opens a sign-in form asking only
+for a user email and password. Accounts that belong to a single tenant land
+directly in it (on its default dataset); accounts spanning several tenants
+pick one from a selector listing each membership by name and role. See
+[the authentication reference](authentication.md).
+
+![The post-login tenant selector listing each membership with its name and role](../assets/screenshots/login-tenant-selector.png)
 
 Signing in calls `POST /ui/session`, which validates the credentials and
 sets an `HttpOnly`, `Secure`, `SameSite=Strict` cookie containing an opaque

@@ -15,7 +15,7 @@ export function TopBar({ state, update }: Props) {
   const [managing, setManaging] = useState(false);
   const { data: who } = useQuery({
     queryKey: ["whoami", state.tenant, state.dataset],
-    queryFn: whoami,
+    queryFn: () => whoami(),
     staleTime: 60_000,
     retry: false,
   });
@@ -75,7 +75,7 @@ function TenantSelector({ state, update }: Props) {
   // remains as the fallback.
   const { data: who } = useQuery({
     queryKey: ["whoami", state.tenant, state.dataset],
-    queryFn: whoami,
+    queryFn: () => whoami(),
     staleTime: 60_000,
     retry: false,
   });

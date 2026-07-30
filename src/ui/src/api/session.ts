@@ -7,13 +7,23 @@ import { ApiError, tenantHeaders } from "./http";
 export interface SessionCredentials {
   email: string;
   password: string;
-  tenant: string;
+  /** Optional: when omitted the server auto-selects a sole membership or
+   * returns the membership list for the UI's tenant picker. */
+  tenant?: string;
   dataset?: string;
 }
 
+export interface SessionMembership {
+  tenant_id: string;
+  name: string;
+  role: "admin" | "member" | "viewer";
+}
+
 export interface SessionResult {
-  tenant: string;
-  dataset: string;
+  /** Null when the user must still pick a tenant from `memberships`. */
+  tenant: string | null;
+  dataset: string | null;
+  memberships: SessionMembership[];
 }
 
 export interface WhoamiDataset {
@@ -50,7 +60,7 @@ export async function createSession(
     body: JSON.stringify({
       email: creds.email,
       password: creds.password,
-      tenant: creds.tenant,
+      ...(creds.tenant ? { tenant: creds.tenant } : {}),
       ...(creds.dataset ? { dataset: creds.dataset } : {}),
     }),
   });
@@ -75,10 +85,14 @@ export async function deleteSession(): Promise<void> {
 }
 
 /** Fetch the authenticated tenant and its datasets. Throws `ApiError`
- * (404 on servers without the endpoint, 401 when unauthenticated) — the
- * UI falls back to free-text tenant entry on any failure. */
-export async function whoami(): Promise<WhoamiResponse> {
-  const res = await fetch("/api/v1/whoami", { headers: tenantHeaders() });
+ * (404 on servers without the endpoint, 401 when unauthenticated). Pass
+ * `tenant` to scope the lookup to a specific tenant (e.g. right after
+ * picking one at login) instead of the current tenant context. */
+export async function whoami(tenant?: string): Promise<WhoamiResponse> {
+  const headers = tenant
+    ? { Accept: "application/json", "X-Tenant-ID": tenant }
+    : tenantHeaders();
+  const res = await fetch("/api/v1/whoami", { headers });
   if (!res.ok) {
     throw new ApiError(`whoami failed (${res.status})`, res.status);
   }

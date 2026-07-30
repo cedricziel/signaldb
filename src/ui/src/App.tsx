@@ -16,8 +16,6 @@ export function App() {
         <ExploreView state={state} update={update} />
       </main>
       <LoginGate
-        tenant={state.tenant}
-        dataset={state.dataset}
         onLoggedIn={({ tenant, dataset }) => update({ tenant, dataset })}
       />
     </div>
