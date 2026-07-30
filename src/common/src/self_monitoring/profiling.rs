@@ -9,128 +9,174 @@
 //!
 //! Both are opt-in at runtime via the `[profiling]` config section and add
 //! nothing when disabled.
+//!
+//! The Pyroscope agent's backends bind to pthreads and pprof-rs and only
+//! support Linux/macOS, so on Windows this module compiles to a no-op stub
+//! (see [`init_profiling`]) and the `pyroscope` dependency is dropped
+//! entirely — see `src/common/Cargo.toml`.
 
-use anyhow::{Context, Result};
-use pyroscope::PyroscopeAgent;
-use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
-use pyroscope::pyroscope::{PyroscopeAgentBuilder, PyroscopeAgentRunning};
+#[cfg(not(target_os = "windows"))]
+pub use platform::{ProfilingHandle, init_profiling};
 
-use crate::config::Configuration;
+#[cfg(target_os = "windows")]
+pub use stub::{ProfilingHandle, init_profiling};
 
-/// Spy name reported to the Pyroscope server.
-const SPY_NAME: &str = "pyroscope-rs";
+#[cfg(not(target_os = "windows"))]
+mod platform {
+    use anyhow::{Context, Result};
+    use pyroscope::PyroscopeAgent;
+    use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
+    use pyroscope::pyroscope::{PyroscopeAgentBuilder, PyroscopeAgentRunning};
 
-/// Handle to running profiling agents; stop via [`ProfilingHandle::shutdown`].
-pub struct ProfilingHandle {
-    agents: Vec<PyroscopeAgent<PyroscopeAgentRunning>>,
-}
+    use crate::config::Configuration;
 
-impl ProfilingHandle {
-    /// Stop the profiling agent(s), flushing any pending profile data.
-    pub fn shutdown(self) {
-        for agent in self.agents {
-            match agent.stop() {
-                Ok(stopped) => stopped.shutdown(),
-                Err(e) => tracing::warn!(error = %e, "Failed to stop Pyroscope agent"),
+    /// Spy name reported to the Pyroscope server.
+    const SPY_NAME: &str = "pyroscope-rs";
+
+    /// Handle to running profiling agents; stop via [`ProfilingHandle::shutdown`].
+    pub struct ProfilingHandle {
+        agents: Vec<PyroscopeAgent<PyroscopeAgentRunning>>,
+    }
+
+    impl ProfilingHandle {
+        /// Stop the profiling agent(s), flushing any pending profile data.
+        pub fn shutdown(self) {
+            for agent in self.agents {
+                match agent.stop() {
+                    Ok(stopped) => stopped.shutdown(),
+                    Err(e) => tracing::warn!(error = %e, "Failed to stop Pyroscope agent"),
+                }
             }
         }
     }
-}
 
-/// Start continuous profiling when `[profiling] enabled = true`.
-///
-/// Returns `Ok(None)` when disabled. CPU profiling starts unconditionally
-/// when enabled; memory profiling additionally requires
-/// `memory_profiling = true` **and** the `jemalloc-profiling` build feature
-/// (a warning is logged when configured without the feature).
-pub fn init_profiling(
-    config: &Configuration,
-    service_name: &str,
-) -> Result<Option<ProfilingHandle>> {
-    if !config.profiling.enabled {
-        return Ok(None);
-    }
+    /// Start continuous profiling when `[profiling] enabled = true`.
+    ///
+    /// Returns `Ok(None)` when disabled. CPU profiling starts unconditionally
+    /// when enabled; memory profiling additionally requires
+    /// `memory_profiling = true` **and** the `jemalloc-profiling` build feature
+    /// (a warning is logged when configured without the feature).
+    pub fn init_profiling(
+        config: &Configuration,
+        service_name: &str,
+    ) -> Result<Option<ProfilingHandle>> {
+        if !config.profiling.enabled {
+            return Ok(None);
+        }
 
-    let profiling = &config.profiling;
-    let mut agents = Vec::new();
+        let profiling = &config.profiling;
+        let mut agents = Vec::new();
 
-    let cpu_agent = PyroscopeAgentBuilder::new(
-        profiling.pyroscope_url.as_str(),
-        service_name,
-        profiling.cpu_sample_rate,
-        SPY_NAME,
-        env!("CARGO_PKG_VERSION"),
-        pprof_backend(
-            PprofConfig {
-                sample_rate: profiling.cpu_sample_rate,
-            },
-            BackendConfig::default(),
-        ),
-    )
-    .tags(vec![
-        ("service.name", service_name),
-        ("deployment.environment", "self-monitoring"),
-    ])
-    .build()
-    .context("Failed to build Pyroscope CPU agent")?
-    .start()
-    .context("Failed to start Pyroscope CPU agent")?;
-    agents.push(cpu_agent);
-
-    tracing::info!(
-        pyroscope_url = %profiling.pyroscope_url,
-        sample_rate = profiling.cpu_sample_rate,
-        "Continuous CPU profiling started"
-    );
-
-    #[cfg(feature = "jemalloc-profiling")]
-    if profiling.memory_profiling {
-        let app_name = format!("{service_name}.memory");
-        let memory_agent_result = PyroscopeAgentBuilder::new(
+        let cpu_agent = PyroscopeAgentBuilder::new(
             profiling.pyroscope_url.as_str(),
-            app_name.as_str(),
+            service_name,
             profiling.cpu_sample_rate,
             SPY_NAME,
             env!("CARGO_PKG_VERSION"),
-            pyroscope::backend::jemalloc::jemalloc_backend(),
+            pprof_backend(
+                PprofConfig {
+                    sample_rate: profiling.cpu_sample_rate,
+                },
+                BackendConfig::default(),
+            ),
         )
         .tags(vec![
             ("service.name", service_name),
             ("deployment.environment", "self-monitoring"),
         ])
         .build()
-        .context("Failed to build Pyroscope jemalloc agent")
-        .and_then(|agent| {
-            agent
-                .start()
-                .context("Failed to start Pyroscope jemalloc agent")
-        });
-        match memory_agent_result {
-            Ok(memory_agent) => {
-                agents.push(memory_agent);
-                tracing::info!("Continuous heap profiling started (jemalloc)");
-            }
-            Err(e) => {
-                // Cleanly stop the already-running CPU agent before bailing.
-                ProfilingHandle { agents }.shutdown();
-                return Err(e);
+        .context("Failed to build Pyroscope CPU agent")?
+        .start()
+        .context("Failed to start Pyroscope CPU agent")?;
+        agents.push(cpu_agent);
+
+        tracing::info!(
+            pyroscope_url = %profiling.pyroscope_url,
+            sample_rate = profiling.cpu_sample_rate,
+            "Continuous CPU profiling started"
+        );
+
+        #[cfg(feature = "jemalloc-profiling")]
+        if profiling.memory_profiling {
+            let app_name = format!("{service_name}.memory");
+            let memory_agent_result = PyroscopeAgentBuilder::new(
+                profiling.pyroscope_url.as_str(),
+                app_name.as_str(),
+                profiling.cpu_sample_rate,
+                SPY_NAME,
+                env!("CARGO_PKG_VERSION"),
+                pyroscope::backend::jemalloc::jemalloc_backend(),
+            )
+            .tags(vec![
+                ("service.name", service_name),
+                ("deployment.environment", "self-monitoring"),
+            ])
+            .build()
+            .context("Failed to build Pyroscope jemalloc agent")
+            .and_then(|agent| {
+                agent
+                    .start()
+                    .context("Failed to start Pyroscope jemalloc agent")
+            });
+            match memory_agent_result {
+                Ok(memory_agent) => {
+                    agents.push(memory_agent);
+                    tracing::info!("Continuous heap profiling started (jemalloc)");
+                }
+                Err(e) => {
+                    // Cleanly stop the already-running CPU agent before bailing.
+                    ProfilingHandle { agents }.shutdown();
+                    return Err(e);
+                }
             }
         }
+        #[cfg(not(feature = "jemalloc-profiling"))]
+        if profiling.memory_profiling {
+            tracing::warn!(
+                "memory_profiling is enabled but this binary was built without the \
+                 jemalloc-profiling feature; heap profiling is unavailable"
+            );
+        }
+
+        Ok(Some(ProfilingHandle { agents }))
     }
-    #[cfg(not(feature = "jemalloc-profiling"))]
-    if profiling.memory_profiling {
-        tracing::warn!(
-            "memory_profiling is enabled but this binary was built without the \
-             jemalloc-profiling feature; heap profiling is unavailable"
-        );
+}
+
+#[cfg(target_os = "windows")]
+mod stub {
+    use anyhow::Result;
+
+    use crate::config::Configuration;
+
+    /// No-op profiling handle on platforms without Pyroscope agent support.
+    pub struct ProfilingHandle;
+
+    impl ProfilingHandle {
+        /// No-op: profiling is never started on this platform.
+        pub fn shutdown(self) {}
     }
 
-    Ok(Some(ProfilingHandle { agents }))
+    /// Continuous profiling is unsupported on Windows (the Pyroscope agent's
+    /// backends require pthreads/pprof-rs), so this always returns `Ok(None)`.
+    /// A warning is logged if `[profiling] enabled = true`.
+    pub fn init_profiling(
+        config: &Configuration,
+        _service_name: &str,
+    ) -> Result<Option<ProfilingHandle>> {
+        if config.profiling.enabled {
+            tracing::warn!(
+                "Continuous profiling is not supported on Windows; the [profiling] \
+                 section is ignored"
+            );
+        }
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::init_profiling;
+    use crate::config::Configuration;
 
     #[test]
     fn disabled_returns_none() {

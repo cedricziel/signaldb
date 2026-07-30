@@ -35,7 +35,6 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tracing-opentelemetry.workspace = true
 opentelemetry-appender-tracing.workspace = true
-pyroscope.workspace = true
 once_cell.workspace = true
 tokio.workspace = true
 
@@ -70,6 +69,13 @@ sysinfo.workspace = true
 # Prometheus remote write support
 snap.workspace = true
 prost.workspace = true
+
+# Continuous profiling: the Pyroscope agent's pprof-rs/jemalloc backends are
+# only supported on Linux/macOS (they bind to pthreads and pprof-rs), so the
+# dependency is excluded on Windows. `profiling::init_profiling` compiles to a
+# no-op stub there — see src/common/src/self_monitoring/profiling.rs.
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+pyroscope.workspace = true
 
 [dev-dependencies]
 testcontainers-modules.workspace = true
