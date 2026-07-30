@@ -18,6 +18,30 @@ const MAX_ENTRIES_PER_COMMIT: usize = 1024;
 /// marked processed so it stops blocking ingestion.
 const MAX_ENTRY_FAILURES: u32 = 10;
 
+/// A WAL entry's W3C trace context (`traceparent`, `tracestate`) as carried
+/// from the originating ingest request.
+type EntryTraceContext = (Option<String>, Option<String>);
+
+/// Entries grouped for one table's batch write: the `(id, batch)` payloads to
+/// commit, paired with the trace context each entry arrived with.
+type TableBatch = (Vec<(Uuid, RecordBatch)>, Vec<EntryTraceContext>);
+
+/// Extract the W3C trace context (`traceparent`/`tracestate`) that the ingest
+/// request stored in a WAL entry's metadata. Lets the asynchronous processor
+/// link its batch span back to the originating ingest trace instead of
+/// appearing as a detached root. Returns `(None, None)` when the metadata is
+/// absent, not JSON, or carries no trace context.
+fn trace_context_from_metadata(metadata: &Option<String>) -> (Option<String>, Option<String>) {
+    let Some(raw) = metadata else {
+        return (None, None);
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return (None, None);
+    };
+    let get = |key: &str| json.get(key).and_then(|v| v.as_str()).map(str::to_string);
+    (get("traceparent"), get("tracestate"))
+}
+
 /// WAL processor that reads entries and writes them to Iceberg tables
 /// Replaces the direct Parquet writing approach with transaction-based Iceberg writes
 pub struct WalProcessor {
@@ -79,9 +103,11 @@ impl WalProcessor {
             "Processing pending WAL entries"
         );
 
-        // Group entries by tenant, dataset, and table for batch processing
-        let mut grouped_entries: HashMap<(String, String, String), Vec<(Uuid, RecordBatch)>> =
-            HashMap::new();
+        // Group entries by tenant, dataset, and table for batch processing.
+        // Alongside each group's (id, batch) payloads we keep the per-entry
+        // trace context so the batch span can link back to every ingest trace
+        // it commits (fan-in).
+        let mut grouped_entries: HashMap<(String, String, String), TableBatch> = HashMap::new();
 
         for entry in pending_entries {
             // Skip flush operations
@@ -122,16 +148,18 @@ impl WalProcessor {
                 }
             };
 
-            grouped_entries
+            let trace_ctx = trace_context_from_metadata(&entry.metadata);
+            let group = grouped_entries
                 .entry((tenant_id, dataset_id, table_name))
-                .or_default()
-                .push((entry.id, batch));
+                .or_default();
+            group.0.push((entry.id, batch));
+            group.1.push(trace_ctx);
         }
 
         // Process each group using batch writes. Marking happens inside
         // process_batch_for_table, interleaved with commits to preserve
         // the idempotency-marker invariant.
-        for ((tenant_id, dataset_id, table_name), entries) in grouped_entries {
+        for ((tenant_id, dataset_id, table_name), (entries, trace_contexts)) in grouped_entries {
             let group_ids: Vec<Uuid> = entries.iter().map(|(id, _)| *id).collect();
             // Anti-loop guard (#760): suppression is per group because the
             // loop interleaves tenants — only the _system tenant's batches
@@ -139,7 +167,13 @@ impl WalProcessor {
             let suppress = common::self_monitoring::is_self_monitoring_tenant(&tenant_id);
             common::self_monitoring::maybe_suppress_self_telemetry(suppress, async {
                 match self
-                    .process_batch_for_table(&tenant_id, &dataset_id, &table_name, entries)
+                    .process_batch_for_table(
+                        &tenant_id,
+                        &dataset_id,
+                        &table_name,
+                        entries,
+                        trace_contexts,
+                    )
                     .await
                 {
                     Ok(processed_ids) => {
@@ -183,7 +217,26 @@ impl WalProcessor {
         dataset_id: &str,
         table_name: &str,
         entries: Vec<(Uuid, RecordBatch)>,
+        trace_contexts: Vec<EntryTraceContext>,
     ) -> Result<Vec<Uuid>> {
+        // Link this batch span back to every distinct ingest trace whose
+        // entries it commits. The processor fans work in from many ingest
+        // requests, so a single parent can't represent them all — links keep
+        // each source trace reachable. No-op when self-monitoring is disabled.
+        let span = tracing::Span::current();
+        let mut linked = std::collections::HashSet::new();
+        for (traceparent, tracestate) in &trace_contexts {
+            if let Some(traceparent) = traceparent
+                && linked.insert(traceparent.clone())
+            {
+                common::flight::trace_context::add_link_from_fields(
+                    &span,
+                    Some(traceparent),
+                    tracestate.as_deref(),
+                );
+            }
+        }
+
         let writer_key = format!("{tenant_id}:{dataset_id}:{table_name}");
 
         // Get or create table writer
@@ -392,6 +445,7 @@ impl WalProcessor {
                     &dataset_id,
                     &table_name,
                     vec![(entry_id, batch)],
+                    vec![trace_context_from_metadata(&entry.metadata)],
                 )
                 .await
             {
@@ -443,6 +497,40 @@ mod tests {
     use common::wal::{Wal, WalConfig, WalOperation};
     use object_store::memory::InMemory;
     use tempfile::tempdir;
+
+    #[test]
+    fn trace_context_from_metadata_reads_w3c_fields() {
+        let meta = Some(
+            r#"{"schema_version":"v1","traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01","tracestate":"vendor=abc"}"#
+                .to_string(),
+        );
+        let (traceparent, tracestate) = trace_context_from_metadata(&meta);
+        assert_eq!(
+            traceparent.as_deref(),
+            Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
+        );
+        assert_eq!(tracestate.as_deref(), Some("vendor=abc"));
+    }
+
+    #[test]
+    fn trace_context_from_metadata_tolerates_missing_absent_and_garbage() {
+        // No metadata at all.
+        assert_eq!(trace_context_from_metadata(&None), (None, None));
+        // Valid JSON without a trace context (e.g. routing-only metadata).
+        assert_eq!(
+            trace_context_from_metadata(&Some(r#"{"schema_version":"v1"}"#.to_string())),
+            (None, None)
+        );
+        // Not JSON.
+        assert_eq!(
+            trace_context_from_metadata(&Some("not json".to_string())),
+            (None, None)
+        );
+        // traceparent absent but tracestate present — traceparent gates linking.
+        let (traceparent, _) =
+            trace_context_from_metadata(&Some(r#"{"tracestate":"vendor=abc"}"#.to_string()));
+        assert!(traceparent.is_none());
+    }
 
     #[tokio::test]
     async fn test_processor_creation() {
