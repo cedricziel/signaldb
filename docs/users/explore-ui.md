@@ -15,6 +15,8 @@ by the router at `http://<router>:3000/ui/`. It consumes the same
 Loki-, Tempo-, and Prometheus-compatible APIs that Grafana uses, so anything
 visible in the UI is equally queryable from Grafana.
 
+![Explore UI logs view: virtualized log list with level colors, volume histogram, and fields sidebar](../assets/screenshots/explore-logs.png)
+
 ## What it does
 
 - **Logs** — filter chips compiled to LogQL (with an "edit as text" escape
@@ -27,6 +29,10 @@ visible in the UI is equally queryable from Grafana.
   the span panel links back to logs filtered by that trace.
 - Every view is a URL: time range, filters, and selection live in query
   parameters, so views can be bookmarked and shared.
+
+![Explore UI trace waterfall with span details and a link to correlated logs](../assets/screenshots/explore-traces.png)
+
+![Explore UI metrics view charting a PromQL range query across two services](../assets/screenshots/explore-metrics.png)
 
 ## Signing in
 
@@ -66,6 +72,6 @@ misconfigured deployment should not silently ship without its UI.
 
 ## Developing the UI
 
-See [src/ui/README.md](../../src/ui/README.md): `pnpm ui:dev` runs a Vite
+See [src/ui/README.md](https://github.com/cedricziel/signaldb/blob/main/src/ui/README.md): `pnpm ui:dev` runs a Vite
 dev server with hot reload that proxies API calls to any live SignalDB
 instance (local or remote) with credentials injected from `.env.local`.
