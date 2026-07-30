@@ -7,8 +7,10 @@
 //! jemalloc backend (requires `MALLOC_CONF=prof:true,prof_active:true` or the
 //! `_RJEM_MALLOC_CONF` equivalent at runtime).
 //!
-//! Both are opt-in at runtime via the `[profiling]` config section and add
-//! nothing when disabled.
+//! Separately, `[self_monitoring] profiles_enabled` captures CPU profiles
+//! and exports them as OTLP profiles into SignalDB itself (see
+//! [`super::self_profiling`]); `init_profiling` orchestrates both. All are
+//! opt-in at runtime and add nothing when disabled.
 //!
 //! The Pyroscope agent's backends bind to pthreads and pprof-rs and only
 //! support Linux/macOS, so on Windows this module compiles to a no-op stub
@@ -29,6 +31,7 @@ mod platform {
     use pyroscope::pyroscope::{PyroscopeAgentBuilder, PyroscopeAgentRunning};
 
     use crate::config::Configuration;
+    use crate::self_monitoring::self_profiling::{self, SelfProfilingHandle};
 
     /// Spy name reported to the Pyroscope server.
     const SPY_NAME: &str = "pyroscope-rs";
@@ -36,6 +39,7 @@ mod platform {
     /// Handle to running profiling agents; stop via [`ProfilingHandle::shutdown`].
     pub struct ProfilingHandle {
         agents: Vec<PyroscopeAgent<PyroscopeAgentRunning>>,
+        self_profiler: Option<SelfProfilingHandle>,
     }
 
     impl ProfilingHandle {
@@ -47,21 +51,41 @@ mod platform {
                     Err(e) => tracing::warn!(error = %e, "Failed to stop Pyroscope agent"),
                 }
             }
+            if let Some(self_profiler) = self.self_profiler {
+                self_profiler.shutdown();
+            }
         }
     }
 
-    /// Start continuous profiling when `[profiling] enabled = true`.
+    /// Start continuous profiling when `[profiling] enabled = true` and/or CPU
+    /// self-profiling when `[self_monitoring] profiles_enabled = true`.
     ///
-    /// Returns `Ok(None)` when disabled. CPU profiling starts unconditionally
-    /// when enabled; memory profiling additionally requires
-    /// `memory_profiling = true` **and** the `jemalloc-profiling` build feature
-    /// (a warning is logged when configured without the feature).
+    /// Returns `Ok(None)` when both are disabled. The two are mutually
+    /// exclusive (both drive the same SIGPROF-based sampler): when both are
+    /// enabled, the explicitly configured external `[profiling]` agent wins
+    /// and self-profiling is skipped with a warning.
+    ///
+    /// For the external agent, CPU profiling starts unconditionally when
+    /// enabled; memory profiling additionally requires `memory_profiling =
+    /// true` **and** the `jemalloc-profiling` build feature (a warning is
+    /// logged when configured without the feature).
     pub fn init_profiling(
         config: &Configuration,
         service_name: &str,
     ) -> Result<Option<ProfilingHandle>> {
         if !config.profiling.enabled {
-            return Ok(None);
+            let self_profiler = self_profiling::init_self_profiling(config, service_name)?;
+            return Ok(self_profiler.map(|handle| ProfilingHandle {
+                agents: Vec::new(),
+                self_profiler: Some(handle),
+            }));
+        }
+        if config.self_monitoring.profiles_enabled {
+            tracing::warn!(
+                "[profiling] and [self_monitoring].profiles_enabled are both set; they share \
+                 one CPU sampler, so self-profiling is skipped in favor of the external \
+                 Pyroscope agent"
+            );
         }
 
         let profiling = &config.profiling;
@@ -125,7 +149,11 @@ mod platform {
                 }
                 Err(e) => {
                     // Cleanly stop the already-running CPU agent before bailing.
-                    ProfilingHandle { agents }.shutdown();
+                    ProfilingHandle {
+                        agents,
+                        self_profiler: None,
+                    }
+                    .shutdown();
                     return Err(e);
                 }
             }
@@ -138,7 +166,10 @@ mod platform {
             );
         }
 
-        Ok(Some(ProfilingHandle { agents }))
+        Ok(Some(ProfilingHandle {
+            agents,
+            self_profiler: None,
+        }))
     }
 }
 
@@ -158,15 +189,16 @@ mod stub {
 
     /// Continuous profiling is unsupported on Windows (the Pyroscope agent's
     /// backends require pthreads/pprof-rs), so this always returns `Ok(None)`.
-    /// A warning is logged if `[profiling] enabled = true`.
+    /// A warning is logged if `[profiling] enabled = true` or
+    /// `[self_monitoring] profiles_enabled = true`.
     pub fn init_profiling(
         config: &Configuration,
         _service_name: &str,
     ) -> Result<Option<ProfilingHandle>> {
-        if config.profiling.enabled {
+        if config.profiling.enabled || config.self_monitoring.profiles_enabled {
             tracing::warn!(
                 "Continuous profiling is not supported on Windows; the [profiling] \
-                 section is ignored"
+                 section and [self_monitoring].profiles_enabled are ignored"
             );
         }
         Ok(None)

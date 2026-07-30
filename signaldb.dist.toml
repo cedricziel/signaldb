@@ -400,6 +400,16 @@ rate_limit_delay_ms = 0               # Delay between batches in milliseconds (d
 # (or always_on / always_off / parentbased_traceidratio) and
 # OTEL_TRACES_SAMPLER_ARG=<ratio>.
 # trace_sample_ratio = 0.1
+# Profile this process's CPU and store the profiles in SignalDB itself
+# (OTLP profiles to `endpoint` under the tenant/dataset above). Works even
+# when `enabled` is false. Mutually exclusive with [profiling] below —
+# both drive the same SIGPROF sampler; when both are set, [profiling] wins.
+# profiles_enabled = true
+# CPU sampling frequency in Hz (default: 99 — off-round to avoid sampling
+# in lockstep with periodic work)
+# profile_sample_rate_hz = 99
+# How often a profile window is exported (default: 60s)
+# profile_interval = "60s"
 
 # Continuous profiling: CPU flame graphs (and optionally heap profiles)
 # pushed to a Grafana Pyroscope server (docker compose includes one at

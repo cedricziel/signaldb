@@ -6,10 +6,16 @@
 pub mod app_metrics;
 pub mod metrics;
 pub mod profiling;
+// Self-profiling samples CPU via pyroscope's pprof-rs backend, which (like
+// the external agent in `profiling`) is unavailable on Windows.
+#[cfg(not(target_os = "windows"))]
+pub mod self_profiling;
 pub mod suppress;
 
 pub use app_metrics::{AppMetrics, app_metrics, http_metrics_middleware, should_count_tenant};
 pub use profiling::{ProfilingHandle, init_profiling};
+#[cfg(not(target_os = "windows"))]
+pub use self_profiling::SelfProfilingHandle;
 pub use suppress::{
     OtelExportFilter, SELF_MONITORING_DATASET, SELF_MONITORING_TENANT,
     SelfTelemetrySuppressionFilter, is_self_monitoring_tenant, maybe_suppress_self_telemetry,
@@ -76,7 +82,7 @@ impl Telemetry {
     }
 }
 
-fn build_metadata(config: &Configuration) -> MetadataMap {
+pub(crate) fn build_metadata(config: &Configuration) -> MetadataMap {
     let mut map = MetadataMap::new();
     map.insert(
         "x-tenant-id",
