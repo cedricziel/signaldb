@@ -167,7 +167,8 @@ jobs:
             --bin signaldb-writer \
             --bin signaldb-querier \
             --bin signaldb-compactor \
-            --bin signaldb
+            --bin signaldb \
+            --bin signaldb-cli
 
       - name: Stage binaries
         run: |
@@ -178,6 +179,7 @@ jobs:
              target/x86_64-unknown-linux-musl/release/signaldb-writer \
              target/x86_64-unknown-linux-musl/release/signaldb-querier \
              target/x86_64-unknown-linux-musl/release/signaldb-compactor \
+             target/x86_64-unknown-linux-musl/release/signaldb-cli \
              dist/
 
       - name: Upload musl binaries
@@ -228,7 +230,8 @@ jobs:
             --bin signaldb-writer \
             --bin signaldb-querier \
             --bin signaldb-compactor \
-            --bin signaldb
+            --bin signaldb \
+            --bin signaldb-cli
 
       - name: Stage binaries
         run: |
@@ -239,6 +242,7 @@ jobs:
              target/aarch64-unknown-linux-musl/release/signaldb-writer \
              target/aarch64-unknown-linux-musl/release/signaldb-querier \
              target/aarch64-unknown-linux-musl/release/signaldb-compactor \
+             target/aarch64-unknown-linux-musl/release/signaldb-cli \
              dist/
 
       - name: Upload musl binaries

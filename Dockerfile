@@ -94,7 +94,8 @@ RUN cargo build --release \
     --bin signaldb-writer \
     --bin signaldb-querier \
     --bin signaldb-compactor \
-    --bin signaldb
+    --bin signaldb \
+    --bin signaldb-cli
 
 # Remove dummy files and build artifacts (keep cached dependencies)
 RUN rm -rf src/*/src src/*/benches && \
@@ -113,7 +114,8 @@ RUN cargo build --release \
     --bin signaldb-writer \
     --bin signaldb-querier \
     --bin signaldb-compactor \
-    --bin signaldb
+    --bin signaldb \
+    --bin signaldb-cli
 
 # Strip debug symbols to reduce binary size
 RUN strip target/release/signaldb-acceptor && \
@@ -121,7 +123,8 @@ RUN strip target/release/signaldb-acceptor && \
     strip target/release/signaldb-writer && \
     strip target/release/signaldb-querier && \
     strip target/release/signaldb-compactor && \
-    strip target/release/signaldb
+    strip target/release/signaldb && \
+    strip target/release/signaldb-cli
 
 # Prebuilt-binary path - CI builds static musl binaries on the host runner
 # (where sccache/rust-cache make rebuilds incremental) and stages them in
@@ -195,10 +198,12 @@ COPY --from=builder /build/target/release/signaldb-compactor /usr/local/bin/sign
 USER signaldb
 ENTRYPOINT ["/usr/local/bin/signaldb-compactor"]
 
-# Monolithic service - all services in one binary
+# Monolithic service - all services in one binary; also ships the CLI so
+# operators can bootstrap users against the catalog from inside the container
 FROM runtime-base AS monolithic
 
 COPY --from=builder /build/target/release/signaldb /usr/local/bin/signaldb
+COPY --from=builder /build/target/release/signaldb-cli /usr/local/bin/signaldb-cli
 COPY --from=ui-builder /build/src/ui/dist /usr/share/signaldb/ui
 ENV SIGNALDB_UI_DIR=/usr/share/signaldb/ui
 
