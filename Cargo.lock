@@ -6799,10 +6799,10 @@ dependencies = [
 name = "signal-producer"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "clap",
  "opentelemetry",
  "opentelemetry-otlp",
- "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
  "rand 0.10.2",
  "tokio",
