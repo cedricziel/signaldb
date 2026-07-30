@@ -60,3 +60,4 @@ node_modules/
 # SignalDB UI
 src/ui/dist/
 .env.local
+site/

@@ -717,6 +717,6 @@ Demotion candidates are dropped at rewrite (schema commit without the column, af
 
 - [Phase 3 Configuration Reference](phase3-configuration.md)
 - [Phase 3 Troubleshooting Guide](phase3-troubleshooting.md)
-- [Compactor README](../../../src/compactor/README.md)
+- [Compactor README](https://github.com/cedricziel/signaldb/blob/main/src/compactor/README.md)
 
 > Note: every compaction rewrite also runs a read-only attribute-statistics pass that logs per-key presence, approximate cardinality, and advisory materialization candidates (`Attribute-stats analyzer` log line), and persists the per-key statistics to the service catalog's `attribute_stats` table (joined there with query-demand counters flushed by the querier). This statistics pass requires no configuration and changes no table data; the promotion pass built on it is covered in [Attribute Promotion](#attribute-promotion).

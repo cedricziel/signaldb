@@ -1,0 +1,86 @@
+site_name: SignalDB
+site_description: >-
+  Single-binary observability for homelabs and beyond — traces, logs,
+  metrics, and profiles with OTLP ingest and Grafana-compatible APIs.
+site_url: https://cedricziel.github.io/signaldb/
+repo_url: https://github.com/cedricziel/signaldb
+repo_name: cedricziel/signaldb
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Home: index.md
+  - Using SignalDB:
+      - users/sending-otlp.md
+      - users/explore-ui.md
+      - users/grafana-datasource.md
+      - users/querying-promql.md
+      - users/promql-functions.md
+      - users/logql-reference.md
+      - users/querying-sql.md
+      - users/prometheus-remote-write.md
+      - users/profiles.md
+      - users/tempo-api-reference.md
+      - users/authentication.md
+  - Operating SignalDB:
+      - operations/wal-persistence.md
+      - operations/dokku.md
+      - Compactor:
+          - operations/compactor/phase3-configuration.md
+          - operations/compactor/phase3-operations.md
+          - operations/compactor/phase3-troubleshooting.md
+  - Architecture:
+      - architecture/overview.md
+      - architecture/storage-layout.md
+      - architecture/service-discovery.md
+      - architecture/flight-communication.md
+      - Decisions:
+          - architecture/decisions/03-ingest-layer.md
+          - architecture/decisions/04-router-advertisement.md
+          - architecture/decisions/attribute-explorability.md
+          - architecture/decisions/compactor-phase3-orphan-cleanup.md
+          - architecture/decisions/users-tenant-membership.md
+  - Contributing:
+      - contributing/rust.md

@@ -818,8 +818,8 @@ DEBUG compactor::orphan::detector: Skipping recent file (within grace period) pa
 
 - [Phase 3 Operations Guide](phase3-operations.md)
 - [Phase 3 Configuration Reference](phase3-configuration.md)
-- [Compactor README](../../../src/compactor/README.md)
-- [Integration Test Examples](../../../tests-integration/tests/compactor/)
+- [Compactor README](https://github.com/cedricziel/signaldb/blob/main/src/compactor/README.md)
+- [Integration Test Examples](https://github.com/cedricziel/signaldb/tree/main/tests-integration/tests/compactor)
 
 ## Getting Help
 
