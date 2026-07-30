@@ -99,7 +99,7 @@ Then open <http://localhost:3000/ui/> and sign in. Full guides:
 
 ## What works today
 
-SignalDB is under active development. An honest snapshot:
+SignalDB is under active development.
 
 | Signal   | Ingest                          | Query                                                      | Maturity                                                                                           |
 | -------- | ------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
@@ -108,10 +108,8 @@ SignalDB is under active development. An honest snapshot:
 | Metrics  | OTLP, Prometheus `remote_write` | PromQL (growing function coverage), SQL                    | Usable; full PromQL parity is tracked in [#336](https://github.com/cedricziel/signaldb/issues/336) |
 | Profiles | OTLP (`v1development`)          | Pyroscope-compatible API, Grafana flame graphs             | Experimental                                                                                       |
 
-No published benchmarks yet — resource-footprint and throughput numbers
-will come from measurements, not marketing. Remaining gaps live in the
-[issue tracker](https://github.com/cedricziel/signaldb/issues), not in
-fine print.
+There are no published benchmarks yet. Remaining gaps are tracked in the
+[issue tracker](https://github.com/cedricziel/signaldb/issues).
 
 ## When you outgrow one box
 

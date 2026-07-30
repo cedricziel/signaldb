@@ -55,6 +55,6 @@ for how the pieces fit together.
 
 SignalDB is under active development. Trace storage and the Tempo-compatible API
 are the most mature surface; LogQL and PromQL support cover most of
-each language with remaining gaps tracked openly on
+each language with remaining gaps tracked on
 [GitHub](https://github.com/cedricziel/signaldb/issues). Interfaces
 and storage layout may still change between releases.
