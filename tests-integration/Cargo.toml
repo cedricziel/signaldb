@@ -127,6 +127,10 @@ path = "tests/compactor/attr_promotion_rewrite.rs"
 name = "attr_demotion_rewrite"
 path = "tests/compactor/attr_demotion_rewrite.rs"
 
+[[test]]
+name = "trace_bloom_pruning"
+path = "tests/querier/trace_bloom_pruning.rs"
+
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory
 ignored = ["acceptor", "anyhow", "arrow-flight", "compactor", "datafusion", "futures", "iceberg-rust", "log", "opentelemetry-proto", "querier", "router", "tokio", "tokio-stream", "tonic", "writer"]

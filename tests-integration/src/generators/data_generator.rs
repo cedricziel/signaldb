@@ -52,6 +52,31 @@ pub async fn generate_traces(
     Ok(partitions)
 }
 
+/// Writes one traces data file per entry in `files`, each carrying exactly
+/// the supplied `trace_id`s (one span per id). Every span is stamped at the
+/// same instant (`base_timestamp`, epoch millis) so all rows land in a single
+/// hour partition — one write becomes exactly one Parquet file, keeping file
+/// (and therefore row-group) counts deterministic regardless of wall clock.
+///
+/// This lets a test place a target id in exactly one file while every file's
+/// `trace_id` min/max still brackets the target (include shared low/high
+/// sentinel ids) — the setup where only a bloom filter, not min/max
+/// statistics, can prune the other files' row groups.
+pub async fn generate_trace_files_with_ids(
+    writer: &mut IcebergTableWriter,
+    files: &[Vec<String>],
+    base_timestamp: i64,
+) -> Result<()> {
+    for ids in files {
+        // start == end → all spans share `base_timestamp`, single partition.
+        let batch = create_trace_batch_with_ids(base_timestamp, base_timestamp, ids)?;
+        writer
+            .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
+            .await?;
+    }
+    Ok(())
+}
+
 /// Generates time-partitioned log data
 pub async fn generate_logs(
     writer: &mut IcebergTableWriter,
@@ -175,7 +200,13 @@ pub async fn generate_profiles(
     Ok(partitions)
 }
 
-/// Creates a trace batch with specified parameters (v1 schema format)
+/// Creates a trace batch with specified parameters (v1 schema format).
+///
+/// Trace ids follow the deterministic `trace-p{partition}-f{file}-{row}`
+/// pattern. For tests that need to control exactly which id lands in which
+/// file (e.g. bloom-filter pruning where those ordered ids would let min/max
+/// statistics prune instead), use [`create_trace_batch_with_ids`] via
+/// [`generate_trace_files_with_ids`].
 fn create_trace_batch(
     start_ts: i64,
     end_ts: i64,
@@ -183,8 +214,26 @@ fn create_trace_batch(
     partition_idx: usize,
     file_idx: usize,
 ) -> Result<RecordBatch> {
+    let base_trace_id = format!("trace-p{partition_idx}-f{file_idx}");
+    let trace_ids: Vec<String> = (0..num_rows)
+        .map(|i| format!("{base_trace_id}-{i}"))
+        .collect();
+    create_trace_batch_with_ids(start_ts, end_ts, &trace_ids)
+}
+
+/// Creates a trace batch (v1 schema) whose `trace_id` column is exactly the
+/// caller-supplied ids, one span per id. Every other column is synthesized
+/// per row index as in [`create_trace_batch`]. The span timestamps are spread
+/// evenly across `[start_ts, end_ts]`.
+fn create_trace_batch_with_ids(
+    start_ts: i64,
+    end_ts: i64,
+    trace_id_values: &[String],
+) -> Result<RecordBatch> {
     use datafusion::arrow::array::{BooleanArray, ListArray, StructArray, UInt64Array};
     use datafusion::arrow::buffer::OffsetBuffer;
+
+    let num_rows = trace_id_values.len();
 
     // Create v1 schema matching what the acceptor produces
     // Based on schemas.toml traces.v1
@@ -241,7 +290,6 @@ fn create_trace_batch(
     } else {
         (end_ts - start_ts) / num_rows as i64
     };
-    let base_trace_id = format!("trace-p{}-f{}", partition_idx, file_idx);
 
     let mut trace_ids: Vec<Option<String>> = Vec::with_capacity(num_rows);
     let mut span_ids: Vec<Option<String>> = Vec::with_capacity(num_rows);
@@ -264,12 +312,12 @@ fn create_trace_batch(
     let mut scope_schema_urls: Vec<Option<String>> = Vec::with_capacity(num_rows);
     let mut scope_attributes: Vec<Option<String>> = Vec::with_capacity(num_rows);
 
-    for i in 0..num_rows {
+    for (i, trace_id) in trace_id_values.iter().enumerate() {
         let ts_millis = start_ts + (i as i64 * time_step);
         let ts_nanos = (ts_millis * 1_000_000) as u64; // Convert milliseconds to nanoseconds
         let duration_ns = 1_000_000u64 + (i as u64 * 100);
 
-        trace_ids.push(Some(format!("{}-{}", base_trace_id, i)));
+        trace_ids.push(Some(trace_id.clone()));
         span_ids.push(Some(format!("span-{}", i)));
         parent_span_ids.push(if i > 0 {
             Some(format!("span-{}", i - 1))

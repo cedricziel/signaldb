@@ -55,6 +55,40 @@ pub fn bloom_filter_property_for_attr_tokens() -> (String, String) {
     )
 }
 
+/// The built-in traces columns that carry a Parquet bloom filter.
+///
+/// Both are flat top-level `Utf8` columns (`schemas.toml` traces.v1/v2), so
+/// the property's column suffix is the bare column name — no `.list.item`
+/// leaf path like [`bloom_filter_property_for_attr_tokens`]. `trace_id` is
+/// the high-cardinality column single-trace lookups
+/// (`GET /api/traces/{traceID}`) filter on, for which manifest / row-group
+/// min/max statistics never prune (every time-ordered file spans the full
+/// random id range); a bloom filter is the only structure that can skip row
+/// groups for such a point lookup. `span_id` gets the same treatment for
+/// span-level point lookups.
+pub const BLOOM_FILTER_TRACE_COLUMNS: [&str; 2] = ["trace_id", "span_id"];
+
+/// Per-column Parquet bloom-filter table properties for the built-in traces
+/// point-lookup columns ([`BLOOM_FILTER_TRACE_COLUMNS`]).
+///
+/// Emits `write.parquet.bloom-filter-enabled.column.<col> = "true"` for each,
+/// the standard Iceberg property the pinned iceberg-rust Parquet writer
+/// honors per column. Set at table creation for [`schemas::TableSchema::Traces`]
+/// so every new file (ingest and compaction output) carries the filters.
+pub fn bloom_filter_properties_for_trace_columns() -> Vec<(String, String)> {
+    use iceberg_rust::spec::table_metadata::WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX;
+
+    BLOOM_FILTER_TRACE_COLUMNS
+        .iter()
+        .map(|column| {
+            (
+                format!("{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{column}"),
+                "true".to_string(),
+            )
+        })
+        .collect()
+}
+
 /// Per-column Parquet bloom-filter table properties for a set of
 /// materialized attribute labels.
 ///
@@ -299,6 +333,23 @@ mod tests {
                 "write.parquet.bloom-filter-enabled.column.attr_tokens.list.item".to_string(),
                 "true".to_string()
             )
+        );
+    }
+
+    #[test]
+    fn trace_column_bloom_properties_target_flat_id_columns() {
+        assert_eq!(
+            bloom_filter_properties_for_trace_columns(),
+            vec![
+                (
+                    "write.parquet.bloom-filter-enabled.column.trace_id".to_string(),
+                    "true".to_string()
+                ),
+                (
+                    "write.parquet.bloom-filter-enabled.column.span_id".to_string(),
+                    "true".to_string()
+                ),
+            ]
         );
     }
 

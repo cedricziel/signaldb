@@ -109,6 +109,14 @@ impl IcebergTableManager {
         if matches!(table_schema, schemas::TableSchema::Logs) {
             bloom_properties.push(crate::schema::bloom_filter_property_for_attr_tokens());
         }
+        // Traces tables carry the high-cardinality `trace_id`/`span_id`
+        // columns that single-trace and single-span point lookups filter on.
+        // Min/max statistics never prune those (files span the full random id
+        // range), so a bloom filter is the only structure that can skip row
+        // groups for the lookup.
+        if matches!(table_schema, schemas::TableSchema::Traces) {
+            bloom_properties.extend(crate::schema::bloom_filter_properties_for_trace_columns());
+        }
 
         let mut builder = CreateTableBuilder::default();
         builder

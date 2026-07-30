@@ -142,7 +142,7 @@ flowchart LR
 2. **Authentication**: Router validates API key and resolves tenant/dataset context.
 3. **Service Discovery**: Router discovers available Querier services via `QueryExecution` capability from the service catalog.
 4. **Flight Query**: Router forwards the query as a Flight `do_get` ticket to the Querier (port 50054). Tickets encode the query type and tenant context, e.g., `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}`.
-5. **DataFusion Execution**: Querier resolves the tenant catalog and dataset schema, builds a DataFusion query against the Iceberg table, and executes it against Parquet files in the object store.
+5. **DataFusion Execution**: Querier resolves the tenant catalog and dataset schema, builds a DataFusion query against the Iceberg table, and executes it against Parquet files in the object store. Single-trace lookups (`find_trace`) prune Parquet row groups via the `trace_id` bloom filter — the only structure that helps a high-cardinality point lookup, since min/max statistics never do (see [Storage Layout](storage-layout.md#parquet-bloom-filters)).
 6. **Result Streaming**: Results streamed back as Arrow RecordBatches via Flight to the Router.
 7. **Client Response**: Router formats the response as JSON (Tempo API format) and returns it to the client.
 
