@@ -63,3 +63,56 @@ export function seriesName(labels: Record<string, string>): string {
   if (pairs.length === 0) return name ?? "value";
   return `${name ?? ""}{${pairs.join(", ")}}`;
 }
+
+// ---- metadata (feeds the visual builder's metric/label/value pickers) ----
+
+interface PromMetadataResponse {
+  status: string;
+  data?: string[];
+  error?: string;
+}
+
+async function promMetadata(
+  path: string,
+  range: ResolvedRange,
+  extra?: Record<string, string>,
+): Promise<string[]> {
+  const params = new URLSearchParams({
+    start: String(range.fromMs / 1000),
+    end: String(range.toMs / 1000),
+    ...extra,
+  });
+  const res = await fetch(`/prometheus/api/v1/${path}?${params}`, {
+    headers: tenantHeaders(),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ApiError(
+      `Prometheus ${path} failed (${res.status}): ${body.slice(0, 300)}`,
+      res.status,
+    );
+  }
+  const json = (await res.json()) as PromMetadataResponse;
+  if (json.status !== "success") {
+    throw new Error(`Prometheus ${path} failed: ${json.error ?? json.status}`);
+  }
+  return json.data ?? [];
+}
+
+/** Label names available for filtering/grouping in the current window. */
+export function promLabelNames(range: ResolvedRange): Promise<string[]> {
+  return promMetadata("labels", range);
+}
+
+/** Distinct values of a single label. */
+export function promLabelValues(
+  label: string,
+  range: ResolvedRange,
+): Promise<string[]> {
+  return promMetadata(`label/${encodeURIComponent(label)}/values`, range);
+}
+
+/** Metric names — the distinct values of the reserved `__name__` label. */
+export function promMetricNames(range: ResolvedRange): Promise<string[]> {
+  return promLabelValues("__name__", range);
+}
