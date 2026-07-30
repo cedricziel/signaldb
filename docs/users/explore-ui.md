@@ -22,8 +22,13 @@ visible in the UI is equally queryable from Grafana.
 - **Logs** — filter chips compiled to LogQL (with an "edit as text" escape
   hatch), a per-level volume histogram, a virtualized log list with
   per-attribute filter/exclude actions, a fields sidebar, and live tail.
-- **Traces** — recent-trace search and open-by-ID, a waterfall with span
-  details, and error highlighting.
+- **Traces** — a group-first view: recent traces arrive grouped by root
+  span name (or by service, any observed root-span/resource attribute, or
+  two dimensions combined via "Then by"), with per-group trace count,
+  request rate, error rate, p50/p95 latency, and last-seen columns —
+  all sortable. Selecting a group lists just its traces; selecting a trace
+  opens a waterfall with span details and error highlighting. Open-by-ID
+  works from any level.
 - **Metrics** — a PromQL box charting range queries.
 - **Correlation** — log rows with a `trace_id` open the trace waterfall;
   the span panel links back to logs filtered by that trace.
