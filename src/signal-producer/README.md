@@ -1,298 +1,149 @@
 # SignalDB Signal Producer
 
-The signal producer is a development and testing utility that generates synthetic observability signals for SignalDB. It creates realistic trace data using OpenTelemetry and sends it to SignalDB via OTLP, making it invaluable for development, testing, and demonstration purposes.
+A development and demo utility that generates **realistic, correlatable**
+OpenTelemetry traces, logs and metrics for two synthetic microservice estates
+and ships them to SignalDB over OTLP/gRPC. It is meant to make a fresh SignalDB
+deployment look like a real production backend within seconds.
 
-## Purpose & Overview
+## What it generates
 
-The signal producer serves as a test data generator for SignalDB:
-- Generates realistic distributed trace data
-- Sends signals via OTLP protocol to acceptor services
-- Provides consistent test data for development and testing
-- Demonstrates proper OpenTelemetry instrumentation patterns
-- Supports load testing and performance evaluation
+Two independent estates, each modeled as a full microservice deployment on AWS
+EKS with its own `service.namespace`, cloud region and Kubernetes cluster:
 
-## Architecture
+### `rideshare` (us-east-1)
 
-The signal producer is a simple command-line utility that:
+A ride-hailing platform. Rider and driver **mobile apps** call an **edge
+gateway** that fans out over gRPC to trip, matching, pricing, location, payment
+and notification services, backed by **Redis** (geo/surge), **PostgreSQL** and
+**Kafka**.
 
-### Signal Generation
-- **OpenTelemetry Integration**: Uses official OpenTelemetry Rust SDK
-- **Realistic Traces**: Creates hierarchical spans with attributes
-- **Service Simulation**: Simulates distributed service interactions
-- **Timing Simulation**: Includes realistic timing and duration patterns
+| Service                | Platform         | Role                        |
+| ---------------------- | ---------------- | --------------------------- |
+| `rider-app`            | iOS (mobile)     | Rider handset client        |
+| `driver-app`           | Android (mobile) | Driver handset client       |
+| `edge-gateway`         | Go pod           | Public API edge             |
+| `trip-service`         | Java pod         | Trip orchestration          |
+| `matching-service`     | Go pod           | Driver matching (Redis geo) |
+| `location-service`     | Go pod           | Geo resolution (PostgreSQL) |
+| `pricing-service`      | Rust pod         | Surge pricing (Redis cache) |
+| `payment-service`      | Java pod         | Fare capture                |
+| `notification-service` | Node.js pod      | Kafka consumer → FCM push   |
 
-### OTLP Export
-- **gRPC Transport**: Sends data via OTLP/gRPC protocol
-- **Batch Export**: Efficiently batches spans for transmission
-- **Resource Attributes**: Includes proper service identification
-- **Protocol Compliance**: Follows OpenTelemetry protocol standards
+### `shop` (eu-west-1)
 
-## API Reference
+An online storefront. A **web SPA** and a **mobile app** call an edge gateway
+fronting catalog, cart, checkout, inventory, payment, shipping, search and
+recommendation services, backed by **Redis**, **PostgreSQL**, **Elasticsearch**
+and **Kafka**, plus an external **Stripe-like** payment gateway.
 
-The signal producer is implemented as a single main function that demonstrates:
+| Service                  | Platform         | Role                           |
+| ------------------------ | ---------------- | ------------------------------ |
+| `web-storefront`         | Browser          | Web SPA client                 |
+| `shop-mobile`            | Android (mobile) | Mobile client                  |
+| `edge-gateway`           | Go pod           | Public API edge                |
+| `checkout-service`       | Java pod         | Checkout orchestration         |
+| `cart-service`           | Go pod           | Cart (Redis)                   |
+| `inventory-service`      | Go pod           | Stock reservation (PostgreSQL) |
+| `payment-service`        | Java pod         | External gateway charge        |
+| `shipping-service`       | Rust pod         | Kafka consumer → shipment      |
+| `search-service`         | Java pod         | Product search (Elasticsearch) |
+| `catalog-service`        | Java pod         | Product hydration (Redis)      |
+| `recommendation-service` | Python pod       | Related products               |
 
-### Core Components
-- **TracerProvider**: OpenTelemetry tracer provider configuration
-- **SpanExporter**: OTLP gRPC span exporter
-- **Resource**: Service resource identification
-- **Tracer**: Span creation and management
+## Correlatability
 
-### Generated Signals
-The producer creates several types of spans:
-- Root spans with service context
-- Child spans representing internal operations
-- HTTP request spans with semantic attributes
-- Nested operation spans
+The data is built so all three signals join up the way they would in a real
+backend:
 
-## Usage Examples
+- **Distributed traces cross services.** Each estate emits full traces (e.g.
+  rider handset → gateway → trip → matching → location → PostgreSQL, with a
+  Kafka `trip.requested` event consumed by the notification service). Every span
+  in a trace shares a `trace_id` even though it belongs to a different OTLP
+  resource — because child spans are created from the parent's context, exactly
+  as real cross-service propagation works.
+- **Logs join to traces.** Log records are emitted inside the active span, so
+  the backend can correlate them by `trace_id`/`span_id`.
+- **Metrics carry trace exemplars.** RED and dependency latency histograms are
+  recorded inside the span context, so histogram points reference the span that
+  produced them.
+- **Infra metrics share resources with spans.** Host and Kubernetes metrics
+  (`system.cpu.utilization`, `system.memory.usage`, `k8s.pod.cpu.usage`, …) are
+  emitted from each service's meter, so they carry the same `service.*`,
+  `k8s.*`, `host.*` and `cloud.*` attributes as that service's traces and logs.
 
-### Basic Usage
+Roughly one trace in eight fails, injecting error spans, exception events,
+`error`-severity logs and `error.type` metric dimensions (no drivers available,
+Redis timeout, out of stock, card declined).
+
+## OpenTelemetry semantic conventions
+
+Everything follows the OTel semantic conventions: HTTP (`http.request.method`,
+`http.route`, `http.response.status_code`), RPC (`rpc.system=grpc`,
+`rpc.service`, `rpc.method`), database (`db.system`, `db.operation.name`,
+`db.collection.name`), messaging (`messaging.system=kafka`,
+`messaging.destination.name`, `messaging.operation.type`), plus resource-level
+`service.*`, `cloud.*`, `k8s.*`, `container.*`, `host.*`, `device.*` and
+`browser.*` attributes.
+
+## Usage
+
 ```bash
-# Run signal producer
+# Both estates to a local acceptor (OTLP/gRPC on :4317)
 cargo run --bin signal-producer
 
-# The producer will:
-# 1. Create a tracer provider
-# 2. Generate sample traces
-# 3. Send them to localhost:4317 (OTLP/gRPC)
-# 4. Shutdown gracefully
+# Only the rideshare estate, faster ticks
+cargo run --bin signal-producer -- --estate rideshare --interval 2
+
+# A fixed number of ticks (useful for tests/CI), more traces per tick
+cargo run --bin signal-producer -- --count 10 --traces-per-tick 8
+
+# Point at a remote SignalDB acceptor
+cargo run --bin signal-producer -- --endpoint http://my-signaldb:4317
 ```
 
-### With Custom OTLP Endpoint
+### Flags
+
+| Flag                | Default                 | Description                                 |
+| ------------------- | ----------------------- | ------------------------------------------- |
+| `--endpoint`        | `http://localhost:4317` | OTLP/gRPC endpoint to export to             |
+| `--estate`          | `all`                   | `rideshare`, `shop`, or `all`               |
+| `--interval`        | `5`                     | Seconds between generation ticks            |
+| `--count`           | `0`                     | Number of ticks to run (`0` = until Ctrl+C) |
+| `--traces-per-tick` | `4`                     | Distributed traces per estate per tick      |
+
+Each tick emits `traces_per_tick` traces per estate plus one infrastructure
+metric sample per backend service.
+
+## Verifying ingestion
+
 ```bash
-# Set custom OTLP endpoint
-OTEL_EXPORTER_OTLP_ENDPOINT=http://my-signaldb:4317 \
-cargo run --bin signal-producer
-```
+# Start the SignalDB stack (or a single acceptor)
+cargo run --bin signaldb
 
-### Integration with SignalDB
-```bash
-# Start SignalDB acceptor
-cargo run --bin signaldb-acceptor
+# In another terminal, generate signals
+cargo run --bin signal-producer -- --count 5
 
-# In another terminal, run signal producer
-cargo run --bin signal-producer
-
-# Verify traces are ingested
-curl http://localhost:3000/api/search
-```
-
-### As a Library
-```rust
-use opentelemetry::{global, trace::Tracer, KeyValue};
-use opentelemetry_otlp::SpanExporter;
-use opentelemetry_sdk::{trace::SdkTracerProvider, Resource};
-
-// Create a tracer provider
-let resource = Resource::builder()
-    .with_attributes(vec![KeyValue::new("service.name", "my-service")])
-    .build();
-
-let exporter = SpanExporter::builder()
-    .with_tonic()
-    .build()
-    .expect("Failed to create span exporter");
-
-let provider = SdkTracerProvider::builder()
-    .with_resource(resource)
-    .with_batch_exporter(exporter)
-    .build();
-
-global::set_tracer_provider(provider.clone());
-
-// Create traces
-let tracer = global::tracer("my-tracer");
-tracer.in_span("operation", |cx| {
-    let span = cx.span();
-    span.set_attribute(KeyValue::new("operation.type", "compute"));
-    // Perform work...
-});
-
-// Shutdown
-provider.shutdown().expect("Failed to shutdown exporter");
-```
-
-## Configuration
-
-### Environment Variables
-- `OTEL_EXPORTER_OTLP_ENDPOINT`: OTLP endpoint URL (default: "http://localhost:4317")
-- `OTEL_EXPORTER_OTLP_HEADERS`: Custom headers for OTLP requests
-- `OTEL_RESOURCE_ATTRIBUTES`: Additional resource attributes
-- `RUST_LOG`: Logging level configuration
-
-### OpenTelemetry Configuration
-The signal producer uses standard OpenTelemetry configuration:
-- Service name: "signal-producer"
-- Batch span processor for efficient export
-- OTLP/gRPC exporter with tonic transport
-
-## Dependencies
-
-### Core Dependencies
-- **opentelemetry**: Core OpenTelemetry API and SDK
-- **opentelemetry-otlp**: OTLP exporter implementation
-- **opentelemetry-sdk**: OpenTelemetry SDK for Rust
-- **opentelemetry-semantic-conventions**: Standard semantic conventions
-- **tokio**: Async runtime for the main function
-
-### Protocol Dependencies
-- **tonic**: gRPC client for OTLP transport
-- **prost**: Protocol buffer support
-
-## Testing
-
-### Manual Testing
-```bash
-# Test signal generation
-cargo run --bin signal-producer
-
-# Check logs for successful export
-RUST_LOG=debug cargo run --bin signal-producer
-
-# Test with custom endpoint
-OTEL_EXPORTER_OTLP_ENDPOINT=http://test-endpoint:4317 \
-cargo run --bin signal-producer
-```
-
-### Integration Testing
-```bash
-# Start SignalDB stack
-docker compose up -d
-
-# Wait for services to be ready
-sleep 10
-
-# Generate test signals
-cargo run --bin signal-producer
-
-# Verify data in Grafana
-# Open http://localhost:3000 and check Tempo datasource
-```
-
-### Load Testing
-```bash
-# Generate multiple signal batches
-for i in {1..10}; do
-  cargo run --bin signal-producer &
-done
-wait
-
-# Check SignalDB metrics and performance
-```
-
-## Integration
-
-### Development Workflow
-1. Start SignalDB services (acceptor, router, writer, querier)
-2. Run signal producer to generate test data
-3. Use router APIs to query generated traces
-4. Verify data persistence and querying capabilities
-
-### CI/CD Integration
-```yaml
-# Example GitHub Actions step
-- name: Generate test signals
-  run: |
-    cargo run --bin signaldb-acceptor &
-    sleep 5
-    cargo run --bin signal-producer
-    
-- name: Verify trace ingestion
-  run: |
-    curl -f http://localhost:3000/api/search
-```
-
-### Docker Integration
-```dockerfile
-# Multi-stage build for signal producer
-FROM rust:1.86 as builder
-WORKDIR /app
-COPY . .
-RUN cargo build --release --bin signal-producer
-
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates
-COPY --from=builder /app/target/release/signal-producer /usr/local/bin/
-ENTRYPOINT ["signal-producer"]
-```
-
-## Generated Trace Structure
-
-### Trace Hierarchy
-```
-signal-producer (service)
-├── doing_work (root span)
-│   ├── doing_work_inside (child span)
-│   └── attributes: question="what is the answer?"
-└── GET /products/{id} (HTTP span)
-    ├── internal work (child span)
-    │   └── attributes: my.domain.attr=42
-    └── attributes: http.request.method=GET, url.full=https://www.rust-lang.org/
-```
-
-### Span Attributes
-- **Service attributes**: service.name, service.version
-- **HTTP attributes**: http.request.method, url.full
-- **Custom attributes**: Custom business logic attributes
-- **Semantic conventions**: Standard OpenTelemetry semantic conventions
-
-### Timing Characteristics
-- Root spans: Variable duration
-- HTTP spans: Realistic request timing
-- Internal operations: Simulated processing time
-- Nested operations: Hierarchical timing relationships
-
-## Future Enhancements
-
-### Signal Variety
-- Multiple service simulation
-- Different trace patterns (errors, retries, timeouts)
-- Metric generation support
-- Log generation support
-
-### Load Testing Features
-- Configurable signal rate
-- Multiple concurrent producers
-- Realistic workload patterns
-- Performance metrics collection
-
-### Advanced Scenarios
-- Multi-service distributed traces
-- Error injection and simulation
-- Complex dependency chains
-- Real-world timing patterns
-
-### Configuration Options
-- YAML configuration files
-- Command-line parameter support
-- Environment-specific presets
-- Custom attribute injection
-
-## Troubleshooting
-
-### Common Issues
-- **Connection refused**: Ensure SignalDB acceptor is running on port 4317
-- **Timeout errors**: Check network connectivity to OTLP endpoint
-- **Export failures**: Verify OTLP endpoint configuration
-- **No traces visible**: Check acceptor logs for ingestion errors
-
-### Debug Logging
-```bash
-# Enable detailed logging
-RUST_LOG=trace cargo run --bin signal-producer
-
-# Enable OpenTelemetry debug logging
-OTEL_LOG_LEVEL=debug cargo run --bin signal-producer
-```
-
-### Verification Commands
-```bash
-# Check if acceptor is listening
-nc -zv localhost 4317
-
-# Verify OTLP endpoint connectivity
-grpcurl -plaintext localhost:4317 list
-
-# Check SignalDB router for traces
+# Query traces via the Tempo-compatible API
 curl "http://localhost:3000/api/search?limit=10"
 ```
+
+## Code layout
+
+| Module         | Responsibility                                                 |
+| -------------- | -------------------------------------------------------------- |
+| `topology.rs`  | Estates, services and their OTLP resource attributes           |
+| `fleet.rs`     | One tracer/logger/meter SDK pipeline + instruments per service |
+| `emit.rs`      | Span/log/metric helpers (simulated timing, trace-correlated)   |
+| `scenarios.rs` | The distributed-trace traffic patterns per estate              |
+| `infra.rs`     | Per-tick host/Kubernetes metric sampling                       |
+| `main.rs`      | CLI, generation loop, flush/shutdown                           |
+
+## Design notes
+
+- **One SDK pipeline per service.** Each service is a distinct OTLP resource, so
+  a single trace legitimately spans many resources — as it would in production.
+- **Simulated timing.** Spans are laid out on a scenario-local timeline with
+  realistic latencies and a per-trace jitter factor, so latency histograms have
+  spread without the generator ever sleeping.
+- **Best-effort shutdown.** On exit every pipeline is flushed and shut down;
+  failures are logged but never strand the remaining pipelines.

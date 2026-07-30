@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 tokio.workspace = true
 
+anyhow.workspace = true
 clap.workspace = true
 rand.workspace = true
 tracing-subscriber.workspace = true
@@ -14,4 +15,3 @@ tracing-subscriber.workspace = true
 opentelemetry = { workspace = true, features = ["trace", "metrics", "logs"] }
 opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "logs"] }
 opentelemetry-otlp = { workspace = true, features = ["grpc-tonic", "trace", "metrics", "logs"] }
-opentelemetry-semantic-conventions.workspace = true
