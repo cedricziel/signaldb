@@ -1,14 +1,21 @@
-//! # CPU self-profiling as OTLP profiles
+//! # CPU and heap self-profiling as OTLP profiles
 //!
-//! Samples this process's CPU with pyroscope's pprof-rs backend (agent-free
-//! API — no Pyroscope server involved) and exports each window as an OTLP
+//! Samples this process and exports each window as an OTLP
 //! `profiles/v1development` request to SignalDB's own acceptor, under the
-//! self-monitoring tenant/dataset. This makes SignalDB's fourth signal
-//! self-hosting the same way traces/logs/metrics already are.
+//! self-monitoring tenant/dataset — self-hosting profiles the same way
+//! traces/logs/metrics already are.
 //!
-//! Mutually exclusive with the external `[profiling]` Pyroscope agent: both
-//! drive the same SIGPROF-based global sampler, so [`profiling::init_profiling`]
-//! starts at most one of them.
+//! - **CPU** (`profiles_enabled`): pyroscope's pprof-rs backend (agent-free,
+//!   no Pyroscope server), `cpu`/`nanoseconds`. Mutually exclusive with the
+//!   external `[profiling]` agent (both use the SIGPROF sampler), so
+//!   [`profiling::init_profiling`] starts at most one.
+//! - **Heap** (`heap_profiles_enabled`, requires the `jemalloc-profiling`
+//!   build feature): jemalloc live-heap dumps via `jemalloc_pprof`,
+//!   symbolized in-process with `backtrace`, `inuse_space`/`bytes`. Uses no
+//!   SIGPROF, so it runs alongside CPU or the external agent.
+//!
+//! Both feed one [`ProfileDict`] builder, which emits the OTLP dictionary
+//! shape the ingest side (`otlp_profiles_to_model`) resolves.
 //!
 //! [`profiling::init_profiling`]: super::profiling::init_profiling
 
@@ -56,32 +63,50 @@ pub(crate) struct ProfileWindow {
     pub duration_nanos: u64,
 }
 
-/// Start CPU self-profiling when `[self_monitoring] profiles_enabled = true`.
+/// Start self-profiling, exporting OTLP profiles into SignalDB itself.
 ///
-/// Returns `Ok(None)` when disabled. Must be called inside a Tokio runtime.
-/// Deliberately gated on `profiles_enabled` alone (not
-/// `self_monitoring.enabled`): the profiler needs none of the OTel SDK
-/// machinery, only the endpoint and credentials from the same section.
+/// `start_cpu` runs the CPU sampler (`[self_monitoring] profiles_enabled`,
+/// unless the external `[profiling]` agent has claimed the SIGPROF sampler);
+/// `heap_profiles_enabled` additionally exports a jemalloc heap profile each
+/// window (requires the `jemalloc-profiling` build feature and jemalloc
+/// profiling active at runtime). Returns `Ok(None)` when neither runs. Must
+/// be called inside a Tokio runtime; needs no OTel SDK machinery, only the
+/// endpoint and credentials from `[self_monitoring]`.
 pub fn init_self_profiling(
     config: &Configuration,
     service_name: &str,
+    start_cpu: bool,
 ) -> Result<Option<SelfProfilingHandle>> {
     let sm = &config.self_monitoring;
-    if !sm.profiles_enabled {
+
+    let heap_requested = sm.heap_profiles_enabled;
+    let heap_active = heap_requested && cfg!(feature = "jemalloc-profiling");
+    if heap_requested && !heap_active {
+        tracing::warn!(
+            "[self_monitoring].heap_profiles_enabled is set but this binary was built \
+             without the jemalloc-profiling feature; heap self-profiling is unavailable"
+        );
+    }
+    if !start_cpu && !heap_active {
         return Ok(None);
     }
 
-    let backend = pprof_backend(
-        PprofConfig {
-            sample_rate: sm.profile_sample_rate_hz,
-        },
-        BackendConfig::default(),
-    )
-    .initialize()
-    .map_err(|e| anyhow!("Failed to initialize CPU sampler: {e}"))?;
-    // The loop only needs report()/shutdown(), both reachable through the
-    // backend's shared inner handle, which moves into the task below.
-    let sampler = backend.backend.clone();
+    // CPU sampler is optional: heap can run on its own.
+    let cpu_sampler = if start_cpu {
+        let backend = pprof_backend(
+            PprofConfig {
+                sample_rate: sm.profile_sample_rate_hz,
+            },
+            BackendConfig::default(),
+        )
+        .initialize()
+        .map_err(|e| anyhow!("Failed to initialize CPU sampler: {e}"))?;
+        // The loop only needs report()/shutdown(), reachable through the
+        // backend's shared inner handle.
+        Some(backend.backend.clone())
+    } else {
+        None
+    };
 
     let channel = Channel::from_shared(sm.endpoint.clone())
         .context("Invalid self-monitoring endpoint")?
@@ -103,6 +128,14 @@ pub fn init_self_profiling(
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
 
     tokio::spawn(async move {
+        #[cfg(feature = "jemalloc-profiling")]
+        if heap_active {
+            // Turn on jemalloc's sampling profiler (a no-op if MALLOC_CONF
+            // already set prof_active); PROF_CTL is None when the binary's
+            // jemalloc lacks profiling support.
+            jemalloc_pprof::activate_jemalloc_profiling().await;
+        }
+
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // interval() fires immediately once; consume that so the first
@@ -130,47 +163,52 @@ pub fn init_self_profiling(
             window_started_sys = SystemTime::now();
             window_started = Instant::now();
 
-            // Symbolication in report() is milliseconds-scale; keep it off
-            // the async worker threads.
-            let collector = sampler.clone();
-            let batch = tokio::task::spawn_blocking(move || {
-                let mut guard = collector
-                    .lock()
-                    .map_err(|e| anyhow!("Sampler lock poisoned: {e}"))?;
-                guard
-                    .as_mut()
-                    .ok_or_else(|| anyhow!("Sampler already shut down"))?
-                    .report()
-                    .map_err(|e| anyhow!("Failed to collect CPU profile: {e}"))
-            })
-            .await;
+            if let Some(sampler) = &cpu_sampler {
+                // Symbolication in report() is milliseconds-scale; keep it
+                // off the async worker threads.
+                let collector = sampler.clone();
+                let batch = tokio::task::spawn_blocking(move || {
+                    let mut guard = collector
+                        .lock()
+                        .map_err(|e| anyhow!("Sampler lock poisoned: {e}"))?;
+                    guard
+                        .as_mut()
+                        .ok_or_else(|| anyhow!("Sampler already shut down"))?
+                        .report()
+                        .map_err(|e| anyhow!("Failed to collect CPU profile: {e}"))
+                })
+                .await;
 
-            match batch {
-                Ok(Ok(batch)) => {
-                    let reports = match batch.data {
-                        ReportData::Reports(reports) => reports,
-                        // The pprof backend always yields structured
-                        // reports; raw pprof comes only from jemalloc.
-                        ReportData::RawPprof(_) => Vec::new(),
-                    };
-                    if reports.iter().any(|r| !r.data.is_empty()) {
-                        let request = reports_to_otlp(&reports, &window);
-                        let export =
-                            suppress_self_telemetry(async { client.export(request).await }).await;
-                        if let Err(status) = export {
-                            tracing::warn!(
-                                error = %status,
-                                "Self-profile export failed; retrying next window"
-                            );
+                match batch {
+                    Ok(Ok(batch)) => {
+                        let reports = match batch.data {
+                            ReportData::Reports(reports) => reports,
+                            // The pprof backend always yields structured
+                            // reports; raw pprof comes only from jemalloc.
+                            ReportData::RawPprof(_) => Vec::new(),
+                        };
+                        if reports.iter().any(|r| !r.data.is_empty()) {
+                            let request = reports_to_otlp(&reports, &window);
+                            export_profile(&mut client, request, "cpu").await;
                         }
                     }
+                    Ok(Err(e)) => tracing::warn!(error = %e, "CPU self-profile collection failed"),
+                    Err(e) => tracing::warn!(error = %e, "CPU self-profile task failed"),
                 }
-                Ok(Err(e)) => tracing::warn!(error = %e, "Self-profile collection failed"),
-                Err(e) => tracing::warn!(error = %e, "Self-profile collection task failed"),
+            }
+
+            #[cfg(feature = "jemalloc-profiling")]
+            if heap_active {
+                match collect_heap_profile(&window).await {
+                    Ok(Some(request)) => export_profile(&mut client, request, "heap").await,
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!(error = %e, "Heap self-profile collection failed"),
+                }
             }
 
             if shutting_down {
-                if let Ok(mut guard) = sampler.lock()
+                if let Some(sampler) = &cpu_sampler
+                    && let Ok(mut guard) = sampler.lock()
                     && let Some(backend) = guard.take()
                     && let Err(e) = { backend }.shutdown()
                 {
@@ -182,186 +220,350 @@ pub fn init_self_profiling(
     });
 
     tracing::info!(
+        cpu = start_cpu,
+        heap = heap_active,
         sample_rate_hz,
         interval = ?interval,
-        "CPU self-profiling started (OTLP profiles to self-monitoring)"
+        "Self-profiling started (OTLP profiles to self-monitoring)"
     );
     Ok(Some(SelfProfilingHandle { shutdown_tx }))
 }
 
-/// Intern `value` into the dictionary string table, returning its index.
-fn intern_string(strings: &mut Vec<String>, index: &mut HashMap<String, i32>, value: &str) -> i32 {
-    if let Some(i) = index.get(value) {
-        return *i;
+/// Export one profile request, suppressing self-telemetry so the export's own
+/// spans/logs are not re-ingested.
+async fn export_profile(
+    client: &mut ProfilesServiceClient<
+        tonic::service::interceptor::InterceptedService<
+            Channel,
+            impl FnMut(tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status>,
+        >,
+    >,
+    request: ExportProfilesServiceRequest,
+    kind: &str,
+) {
+    let export = suppress_self_telemetry(async { client.export(request).await }).await;
+    if let Err(status) = export {
+        tracing::warn!(
+            error = %status,
+            kind,
+            "Self-profile export failed; retrying next window"
+        );
     }
-    let i = strings.len() as i32;
-    strings.push(value.to_string());
-    index.insert(value.to_string(), i);
-    i
 }
 
-/// Convert sampled stack reports into an OTLP profiles export request.
-///
-/// Emits exactly the dictionary shape the ingest side
-/// (`otlp_profiles_to_model`) resolves: `string_table[0]` is the empty
-/// string, every other table carries a zero-value entry at index 0 (the
-/// null-entry convention), stacks reference locations leaf-first (matching
-/// pyroscope's frame order), and each sample's single value is
-/// `count × period` nanoseconds of CPU time.
-pub(crate) fn reports_to_otlp(
-    reports: &[Report],
+/// Dump a jemalloc heap snapshot and convert it to an OTLP profile. Returns
+/// `Ok(None)` when jemalloc profiling is unavailable (PROF_CTL absent) or the
+/// snapshot has no samples.
+#[cfg(feature = "jemalloc-profiling")]
+async fn collect_heap_profile(
+    window: &ProfileWindow,
+) -> Result<Option<ExportProfilesServiceRequest>> {
+    let Some(ctl) = jemalloc_pprof::PROF_CTL.as_ref() else {
+        return Ok(None);
+    };
+    let profile = {
+        let mut guard = ctl.lock().await;
+        if !guard.activated() {
+            return Ok(None);
+        }
+        // dump_profile writes a temp heap dump and parses it — fast enough to
+        // hold the lock inline on this once-per-interval task.
+        guard
+            .dump_profile()
+            .map_err(|e| anyhow!("jemalloc dump_profile failed: {e}"))?
+    };
+    if profile.stacks.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(stackprofile_to_otlp(&profile, window)))
+}
+
+/// Convert a jemalloc `StackProfile` (raw addresses + weights) into an OTLP
+/// `inuse_space`/bytes profile, symbolizing each address in-process. Frames
+/// are leaf-first, matching the stack order the ingest side expects; each
+/// sample's value is its live-bytes weight.
+#[cfg(feature = "jemalloc-profiling")]
+pub(crate) fn stackprofile_to_otlp(
+    profile: &jemalloc_pprof::StackProfile,
     window: &ProfileWindow,
 ) -> ExportProfilesServiceRequest {
-    let mut strings: Vec<String> = vec![String::new()];
-    let mut string_index: HashMap<String, i32> = HashMap::from([(String::new(), 0)]);
-    let mut functions: Vec<Function> = vec![Function::default()];
-    let mut function_index: HashMap<(i32, i32), i32> = HashMap::new();
-    let mut locations: Vec<Location> = vec![Location::default()];
-    let mut location_index: HashMap<(i32, i64), i32> = HashMap::new();
-    let mut stacks: Vec<Stack> = vec![Stack::default()];
-    let mut stack_index_map: HashMap<Vec<i32>, i32> = HashMap::new();
-    let mut attributes: Vec<KeyValueAndUnit> = vec![KeyValueAndUnit::default()];
-    let mut attribute_index: HashMap<String, i32> = HashMap::new();
+    use std::ffi::c_void;
 
-    let period = 1_000_000_000_i64 / i64::from(window.sample_rate_hz.max(1));
+    let mut dict = ProfileDict::new();
+    for (stack, _annotation) in &profile.stacks {
+        // Resolve each instruction address to symbol frames (backtrace
+        // handles ASLR for the current process); expand inlined frames.
+        let mut resolved: Vec<(String, String, i64)> = Vec::new();
+        for &addr in &stack.addrs {
+            let before = resolved.len();
+            backtrace::resolve(addr as *mut c_void, |sym| {
+                let name = sym.name().map(|n| n.to_string()).unwrap_or_default();
+                let filename = sym
+                    .filename()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let line = sym.lineno().map(i64::from).unwrap_or(0);
+                resolved.push((name, filename, line));
+            });
+            if resolved.len() == before {
+                // No debug info for this address; keep the raw address.
+                resolved.push((format!("0x{addr:x}"), String::new(), 0));
+            }
+        }
+        let frames: Vec<FrameInput<'_>> = resolved
+            .iter()
+            .map(|(name, filename, line)| FrameInput {
+                name: if name.is_empty() { "unknown" } else { name },
+                filename,
+                line: *line,
+            })
+            .collect();
+        dict.add_sample(&frames, stack.weight as i64, None);
+    }
+    dict.finish("inuse_space", "bytes", 0, window)
+}
 
-    let mut samples = Vec::new();
-    for report in reports {
-        for (stack_trace, count) in report.iter() {
-            let mut location_indices = Vec::with_capacity(stack_trace.frames.len());
-            for frame in &stack_trace.frames {
-                let name = frame.name.as_deref().unwrap_or("unknown");
-                let filename = frame
-                    .filename
-                    .as_deref()
-                    .or(frame.relative_path.as_deref())
-                    .unwrap_or("");
-                let line = i64::from(frame.line.unwrap_or(0));
+/// One resolved stack frame, leaf-first, feeding the dictionary builder.
+pub(crate) struct FrameInput<'a> {
+    pub name: &'a str,
+    pub filename: &'a str,
+    pub line: i64,
+}
 
-                let name_strindex = intern_string(&mut strings, &mut string_index, name);
-                let filename_strindex = intern_string(&mut strings, &mut string_index, filename);
-                let func_key = (name_strindex, filename_strindex);
-                let function_idx = *function_index.entry(func_key).or_insert_with(|| {
-                    functions.push(Function {
+/// Builds the OTLP `ProfilesDictionary` + samples shared by the CPU and heap
+/// producers, interning strings/functions/locations/stacks and emitting
+/// exactly the shape the ingest side (`otlp_profiles_to_model`) resolves:
+/// `string_table[0]` is the empty string, every other table carries a
+/// zero-value entry at index 0 (the null-entry convention), and stacks
+/// reference locations leaf-first.
+struct ProfileDict {
+    strings: Vec<String>,
+    string_index: HashMap<String, i32>,
+    functions: Vec<Function>,
+    function_index: HashMap<(i32, i32), i32>,
+    locations: Vec<Location>,
+    location_index: HashMap<(i32, i64), i32>,
+    stacks: Vec<Stack>,
+    stack_index_map: HashMap<Vec<i32>, i32>,
+    attributes: Vec<KeyValueAndUnit>,
+    attribute_index: HashMap<String, i32>,
+    samples: Vec<Sample>,
+}
+
+impl ProfileDict {
+    fn new() -> Self {
+        Self {
+            strings: vec![String::new()],
+            string_index: HashMap::from([(String::new(), 0)]),
+            functions: vec![Function::default()],
+            function_index: HashMap::new(),
+            locations: vec![Location::default()],
+            location_index: HashMap::new(),
+            stacks: vec![Stack::default()],
+            stack_index_map: HashMap::new(),
+            attributes: vec![KeyValueAndUnit::default()],
+            attribute_index: HashMap::new(),
+            samples: Vec::new(),
+        }
+    }
+
+    fn intern_string(&mut self, value: &str) -> i32 {
+        if let Some(i) = self.string_index.get(value) {
+            return *i;
+        }
+        let i = self.strings.len() as i32;
+        self.strings.push(value.to_string());
+        self.string_index.insert(value.to_string(), i);
+        i
+    }
+
+    fn intern_stack(&mut self, frames: &[FrameInput<'_>]) -> i32 {
+        let mut location_indices = Vec::with_capacity(frames.len());
+        for frame in frames {
+            let name_strindex = self.intern_string(frame.name);
+            let filename_strindex = self.intern_string(frame.filename);
+            let function_idx = match self.function_index.get(&(name_strindex, filename_strindex)) {
+                Some(i) => *i,
+                None => {
+                    self.functions.push(Function {
                         name_strindex,
                         system_name_strindex: name_strindex,
                         filename_strindex,
                         start_line: 0,
                     });
-                    (functions.len() - 1) as i32
-                });
-
-                let loc_key = (function_idx, line);
-                let location_idx = *location_index.entry(loc_key).or_insert_with(|| {
-                    locations.push(Location {
+                    let i = (self.functions.len() - 1) as i32;
+                    self.function_index
+                        .insert((name_strindex, filename_strindex), i);
+                    i
+                }
+            };
+            let loc_key = (function_idx, frame.line);
+            let location_idx = match self.location_index.get(&loc_key) {
+                Some(i) => *i,
+                None => {
+                    self.locations.push(Location {
                         mapping_index: 0,
                         address: 0,
                         lines: vec![Line {
                             function_index: function_idx,
-                            line,
+                            line: frame.line,
                             column: 0,
                         }],
                         attribute_indices: Vec::new(),
                     });
-                    (locations.len() - 1) as i32
-                });
-                location_indices.push(location_idx);
-            }
-
-            let stack_idx = *stack_index_map
-                .entry(location_indices.clone())
-                .or_insert_with(|| {
-                    stacks.push(Stack { location_indices });
-                    (stacks.len() - 1) as i32
-                });
-
-            let attribute_indices = match &stack_trace.thread_name {
-                Some(thread_name) if !thread_name.is_empty() => {
-                    let attr_idx =
-                        *attribute_index
-                            .entry(thread_name.clone())
-                            .or_insert_with(|| {
-                                let key_strindex =
-                                    intern_string(&mut strings, &mut string_index, "thread.name");
-                                attributes.push(KeyValueAndUnit {
-                                    key_strindex,
-                                    value: Some(AnyValue {
-                                        value: Some(any_value::Value::StringValue(
-                                            thread_name.clone(),
-                                        )),
-                                    }),
-                                    unit_strindex: 0,
-                                });
-                                (attributes.len() - 1) as i32
-                            });
-                    vec![attr_idx]
+                    let i = (self.locations.len() - 1) as i32;
+                    self.location_index.insert(loc_key, i);
+                    i
                 }
-                _ => Vec::new(),
             };
-
-            samples.push(Sample {
-                stack_index: stack_idx,
-                attribute_indices,
-                link_index: 0,
-                values: vec![*count as i64 * period],
-                timestamps_unix_nano: Vec::new(),
-            });
+            location_indices.push(location_idx);
+        }
+        match self.stack_index_map.get(&location_indices) {
+            Some(i) => *i,
+            None => {
+                self.stacks.push(Stack {
+                    location_indices: location_indices.clone(),
+                });
+                let i = (self.stacks.len() - 1) as i32;
+                self.stack_index_map.insert(location_indices, i);
+                i
+            }
         }
     }
-    // Report iteration order is a HashMap's; sort for a deterministic wire
-    // payload (helps tests and dedup-friendly storage).
-    samples.sort_by_key(|s| s.stack_index);
 
-    let cpu_strindex = intern_string(&mut strings, &mut string_index, "cpu");
-    let nanos_strindex = intern_string(&mut strings, &mut string_index, "nanoseconds");
-    let value_type = ValueType {
-        type_strindex: cpu_strindex,
-        unit_strindex: nanos_strindex,
-    };
+    /// Intern a `thread.name` string attribute, returning its indices vector.
+    fn thread_attribute(&mut self, thread_name: Option<&str>) -> Vec<i32> {
+        match thread_name {
+            Some(name) if !name.is_empty() => {
+                if let Some(i) = self.attribute_index.get(name) {
+                    return vec![*i];
+                }
+                let key_strindex = self.intern_string("thread.name");
+                self.attributes.push(KeyValueAndUnit {
+                    key_strindex,
+                    value: Some(AnyValue {
+                        value: Some(any_value::Value::StringValue(name.to_string())),
+                    }),
+                    unit_strindex: 0,
+                });
+                let i = (self.attributes.len() - 1) as i32;
+                self.attribute_index.insert(name.to_string(), i);
+                vec![i]
+            }
+            _ => Vec::new(),
+        }
+    }
 
-    let profile = Profile {
-        sample_type: Some(value_type),
-        samples,
-        time_unix_nano: window.start_unix_nanos,
-        duration_nano: window.duration_nanos,
-        period_type: Some(value_type),
-        period,
-        profile_id: uuid::Uuid::new_v4().into_bytes().to_vec(),
-        ..Default::default()
-    };
+    /// Add one sample: its leaf-first frames, a single value, and an optional
+    /// thread name.
+    fn add_sample(&mut self, frames: &[FrameInput<'_>], value: i64, thread_name: Option<&str>) {
+        let stack_index = self.intern_stack(frames);
+        let attribute_indices = self.thread_attribute(thread_name);
+        self.samples.push(Sample {
+            stack_index,
+            attribute_indices,
+            link_index: 0,
+            values: vec![value],
+            timestamps_unix_nano: Vec::new(),
+        });
+    }
 
-    let dictionary = ProfilesDictionary {
-        location_table: locations,
-        function_table: functions,
-        string_table: strings,
-        attribute_table: attributes,
-        stack_table: stacks,
-        ..Default::default()
-    };
+    /// Finalize into an export request for one profile of the given type.
+    fn finish(
+        mut self,
+        sample_type: &str,
+        sample_unit: &str,
+        period: i64,
+        window: &ProfileWindow,
+    ) -> ExportProfilesServiceRequest {
+        // Sample map order is a HashMap's; sort for a deterministic payload.
+        self.samples.sort_by_key(|s| s.stack_index);
+        let type_strindex = self.intern_string(sample_type);
+        let unit_strindex = self.intern_string(sample_unit);
+        let value_type = ValueType {
+            type_strindex,
+            unit_strindex,
+        };
 
-    ExportProfilesServiceRequest {
-        resource_profiles: vec![ResourceProfiles {
-            resource: Some(Resource {
-                attributes: vec![
-                    string_attr("service.name", &window.service_name),
-                    string_attr("service.version", env!("CARGO_PKG_VERSION")),
-                    string_attr("deployment.environment", "self-monitoring"),
-                ],
-                ..Default::default()
-            }),
-            scope_profiles: vec![ScopeProfiles {
-                scope: Some(InstrumentationScope {
-                    name: "signaldb-self-profiler".to_string(),
-                    version: env!("CARGO_PKG_VERSION").to_string(),
+        let profile = Profile {
+            sample_type: Some(value_type),
+            samples: self.samples,
+            time_unix_nano: window.start_unix_nanos,
+            duration_nano: window.duration_nanos,
+            period_type: Some(value_type),
+            period,
+            profile_id: uuid::Uuid::new_v4().into_bytes().to_vec(),
+            ..Default::default()
+        };
+
+        let dictionary = ProfilesDictionary {
+            location_table: self.locations,
+            function_table: self.functions,
+            string_table: self.strings,
+            attribute_table: self.attributes,
+            stack_table: self.stacks,
+            ..Default::default()
+        };
+
+        ExportProfilesServiceRequest {
+            resource_profiles: vec![ResourceProfiles {
+                resource: Some(Resource {
+                    attributes: vec![
+                        string_attr("service.name", &window.service_name),
+                        string_attr("service.version", env!("CARGO_PKG_VERSION")),
+                        string_attr("deployment.environment", "self-monitoring"),
+                    ],
                     ..Default::default()
                 }),
-                profiles: vec![profile],
+                scope_profiles: vec![ScopeProfiles {
+                    scope: Some(InstrumentationScope {
+                        name: "signaldb-self-profiler".to_string(),
+                        version: env!("CARGO_PKG_VERSION").to_string(),
+                        ..Default::default()
+                    }),
+                    profiles: vec![profile],
+                    schema_url: String::new(),
+                }],
                 schema_url: String::new(),
             }],
-            schema_url: String::new(),
-        }],
-        dictionary: Some(dictionary),
+            dictionary: Some(dictionary),
+        }
     }
+}
+
+/// Convert sampled CPU stack reports into an OTLP profiles export request.
+///
+/// Each sample's value is `count × period` nanoseconds of CPU time
+/// (`cpu`/`nanoseconds`); frames are leaf-first, matching pyroscope's order.
+pub(crate) fn reports_to_otlp(
+    reports: &[Report],
+    window: &ProfileWindow,
+) -> ExportProfilesServiceRequest {
+    let period = 1_000_000_000_i64 / i64::from(window.sample_rate_hz.max(1));
+    let mut dict = ProfileDict::new();
+    for report in reports {
+        for (stack_trace, count) in report.iter() {
+            let frames: Vec<FrameInput<'_>> = stack_trace
+                .frames
+                .iter()
+                .map(|frame| FrameInput {
+                    name: frame.name.as_deref().unwrap_or("unknown"),
+                    filename: frame
+                        .filename
+                        .as_deref()
+                        .or(frame.relative_path.as_deref())
+                        .unwrap_or(""),
+                    line: i64::from(frame.line.unwrap_or(0)),
+                })
+                .collect();
+            dict.add_sample(
+                &frames,
+                *count as i64 * period,
+                stack_trace.thread_name.as_deref(),
+            );
+        }
+    }
+    dict.finish("cpu", "nanoseconds", period, window)
 }
 
 fn string_attr(key: &str, value: &str) -> KeyValue {
@@ -530,7 +732,61 @@ mod tests {
     async fn disabled_returns_none() {
         let config = Configuration::default();
         assert!(!config.self_monitoring.profiles_enabled);
-        let result = init_self_profiling(&config, "test-service").unwrap();
+        assert!(!config.self_monitoring.heap_profiles_enabled);
+        // Neither CPU nor heap requested → nothing starts.
+        let result = init_self_profiling(&config, "test-service", false).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn heap_conversion_produces_inuse_space_profile() {
+        // A synthetic StackProfile-like input exercised through the shared
+        // builder: two samples, weights become the single sample value, and
+        // the sample type is inuse_space/bytes.
+        let window = test_window();
+        let mut dict = ProfileDict::new();
+        dict.add_sample(
+            &[
+                FrameInput {
+                    name: "alloc_hot",
+                    filename: "a.rs",
+                    line: 3,
+                },
+                FrameInput {
+                    name: "main",
+                    filename: "main.rs",
+                    line: 1,
+                },
+            ],
+            4096,
+            None,
+        );
+        dict.add_sample(
+            &[
+                FrameInput {
+                    name: "alloc_cold",
+                    filename: "b.rs",
+                    line: 9,
+                },
+                FrameInput {
+                    name: "main",
+                    filename: "main.rs",
+                    line: 1,
+                },
+            ],
+            1024,
+            None,
+        );
+        let request = dict.finish("inuse_space", "bytes", 0, &window);
+
+        let profiles = otlp_profiles_to_model(&request);
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].sample_type.type_, "inuse_space");
+        assert_eq!(profiles[0].sample_type.unit, "bytes");
+        // Shared `main` frame interned once across both stacks.
+        let dict = request.dictionary.as_ref().unwrap();
+        assert_eq!(dict.function_table.len(), 1 + 3);
+        let flamegraph = aggregate_profiles_to_flamegraph(&profiles);
+        assert_eq!(flamegraph.total, 4096 + 1024);
     }
 }

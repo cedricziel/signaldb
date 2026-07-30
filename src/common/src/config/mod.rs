@@ -798,6 +798,14 @@ pub struct SelfMonitoringConfig {
     /// How often a profile window is exported.
     #[serde(default = "default_profile_interval", with = "humantime_serde")]
     pub profile_interval: Duration,
+    /// Also export a heap (`inuse_space`/bytes) profile each window. Requires
+    /// the `jemalloc-profiling` build feature and jemalloc profiling active at
+    /// runtime (`MALLOC_CONF=prof:true`); logs a warning and does nothing
+    /// otherwise. Independent of CPU profiling (jemalloc does not use SIGPROF),
+    /// so it can run alongside `profiles_enabled` or the external `[profiling]`
+    /// agent. Uses the same `profile_interval`.
+    #[serde(default)]
+    pub heap_profiles_enabled: bool,
 }
 
 impl Default for SelfMonitoringConfig {
@@ -812,6 +820,7 @@ impl Default for SelfMonitoringConfig {
             profiles_enabled: false,
             profile_sample_rate_hz: default_profile_sample_rate_hz(),
             profile_interval: default_profile_interval(),
+            heap_profiles_enabled: false,
         }
     }
 }
@@ -1110,9 +1119,12 @@ impl Configuration {
     /// Without an admin API key the tenant cannot be provisioned; a warning is
     /// logged and the config is left untouched.
     pub fn ensure_self_monitoring_tenant(&mut self) {
-        // Self-profiling exports into the same tenant, so either switch
-        // needs the tenant provisioned.
-        if !self.self_monitoring.enabled && !self.self_monitoring.profiles_enabled {
+        // Self-profiling (CPU or heap) exports into the same tenant, so any
+        // of these switches needs the tenant provisioned.
+        if !self.self_monitoring.enabled
+            && !self.self_monitoring.profiles_enabled
+            && !self.self_monitoring.heap_profiles_enabled
+        {
             return;
         }
         let tenant_id = self.self_monitoring.tenant_id.clone();

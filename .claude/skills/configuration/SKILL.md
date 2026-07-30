@@ -246,13 +246,17 @@ trace_sample_ratio = 0.1              # 0.0-1.0; OTEL_TRACES_SAMPLER env vars wi
 profiles_enabled = false             # CPU self-profiling -> OTLP profiles into this tenant
 profile_sample_rate_hz = 99          # sampling frequency
 profile_interval = "60s"             # one profile window per interval
+heap_profiles_enabled = false        # also export a jemalloc heap (inuse_space/bytes) profile
 ```
 
 `profiles_enabled` works even when `enabled` is false (it needs only the
 endpoint/tenant/credentials, not the OTel SDK) and requires
 `auth.admin_api_key`. It is mutually exclusive with `[profiling]` below —
 both drive the one SIGPROF sampler, so if both are set the external
-`[profiling]` agent wins. Unsupported on Windows.
+`[profiling]` agent wins. `heap_profiles_enabled` requires the
+`jemalloc-profiling` build feature + `MALLOC_CONF=prof:true` at runtime;
+it uses jemalloc (no SIGPROF) so it runs alongside CPU profiling or
+`[profiling]`. Both share `profile_interval`. Unsupported on Windows.
 
 ### Profiling (Continuous Profiling)
 

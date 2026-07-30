@@ -57,13 +57,16 @@ mod platform {
         }
     }
 
-    /// Start continuous profiling when `[profiling] enabled = true` and/or CPU
-    /// self-profiling when `[self_monitoring] profiles_enabled = true`.
+    /// Start continuous profiling when `[profiling] enabled = true` and/or
+    /// self-profiling when `[self_monitoring] profiles_enabled` /
+    /// `heap_profiles_enabled` is set.
     ///
-    /// Returns `Ok(None)` when both are disabled. The two are mutually
-    /// exclusive (both drive the same SIGPROF-based sampler): when both are
-    /// enabled, the explicitly configured external `[profiling]` agent wins
-    /// and self-profiling is skipped with a warning.
+    /// Returns `Ok(None)` when nothing is enabled. CPU self-profiling and the
+    /// external `[profiling]` agent both drive the one SIGPROF sampler, so
+    /// they are mutually exclusive: when both are set the external agent wins
+    /// and CPU self-profiling is skipped with a warning. Heap self-profiling
+    /// uses jemalloc (no SIGPROF), so it runs regardless of the external
+    /// agent.
     ///
     /// For the external agent, CPU profiling starts unconditionally when
     /// enabled; memory profiling additionally requires `memory_profiling =
@@ -73,19 +76,25 @@ mod platform {
         config: &Configuration,
         service_name: &str,
     ) -> Result<Option<ProfilingHandle>> {
-        if !config.profiling.enabled {
-            let self_profiler = self_profiling::init_self_profiling(config, service_name)?;
+        let external_enabled = config.profiling.enabled;
+        // The external agent claims the SIGPROF sampler, so CPU self-profiling
+        // stands down; heap self-profiling is unaffected and still starts.
+        let start_cpu_self = config.self_monitoring.profiles_enabled && !external_enabled;
+        if config.self_monitoring.profiles_enabled && external_enabled {
+            tracing::warn!(
+                "[profiling] and [self_monitoring].profiles_enabled are both set; they share \
+                 one CPU sampler, so CPU self-profiling is skipped in favor of the external \
+                 Pyroscope agent (heap self-profiling, if enabled, still runs)"
+            );
+        }
+        let self_profiler =
+            self_profiling::init_self_profiling(config, service_name, start_cpu_self)?;
+
+        if !external_enabled {
             return Ok(self_profiler.map(|handle| ProfilingHandle {
                 agents: Vec::new(),
                 self_profiler: Some(handle),
             }));
-        }
-        if config.self_monitoring.profiles_enabled {
-            tracing::warn!(
-                "[profiling] and [self_monitoring].profiles_enabled are both set; they share \
-                 one CPU sampler, so self-profiling is skipped in favor of the external \
-                 Pyroscope agent"
-            );
         }
 
         let profiling = &config.profiling;
@@ -148,10 +157,11 @@ mod platform {
                     tracing::info!("Continuous heap profiling started (jemalloc)");
                 }
                 Err(e) => {
-                    // Cleanly stop the already-running CPU agent before bailing.
+                    // Cleanly stop the already-running agents and any
+                    // self-profiler before bailing.
                     ProfilingHandle {
                         agents,
-                        self_profiler: None,
+                        self_profiler,
                     }
                     .shutdown();
                     return Err(e);
@@ -168,7 +178,7 @@ mod platform {
 
         Ok(Some(ProfilingHandle {
             agents,
-            self_profiler: None,
+            self_profiler,
         }))
     }
 }
@@ -195,10 +205,14 @@ mod stub {
         config: &Configuration,
         _service_name: &str,
     ) -> Result<Option<ProfilingHandle>> {
-        if config.profiling.enabled || config.self_monitoring.profiles_enabled {
+        if config.profiling.enabled
+            || config.self_monitoring.profiles_enabled
+            || config.self_monitoring.heap_profiles_enabled
+        {
             tracing::warn!(
                 "Continuous profiling is not supported on Windows; the [profiling] \
-                 section and [self_monitoring].profiles_enabled are ignored"
+                 section and [self_monitoring] profiles_enabled/heap_profiles_enabled \
+                 are ignored"
             );
         }
         Ok(None)

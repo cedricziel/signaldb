@@ -8,8 +8,13 @@ license.workspace = true
 default = []
 testing = []
 # Heap profiling via jemalloc: binaries built with this feature install
-# jemalloc as global allocator and enable Pyroscope's jemalloc backend
-jemalloc-profiling = ["pyroscope/backend-jemalloc"]
+# jemalloc as global allocator, enable Pyroscope's jemalloc backend, and
+# unlock heap self-profiling (jemalloc_pprof dumps + in-process symbolization).
+jemalloc-profiling = [
+    "pyroscope/backend-jemalloc",
+    "dep:jemalloc_pprof",
+    "dep:backtrace",
+]
 
 [dependencies]
 log.workspace = true
@@ -76,6 +81,11 @@ prost.workspace = true
 # no-op stub there — see src/common/src/self_monitoring/profiling.rs.
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 pyroscope.workspace = true
+# Heap self-profiling (jemalloc-profiling feature): structured jemalloc heap
+# dumps + in-process address symbolization. Already in the tree transitively
+# via pyroscope's jemalloc backend.
+jemalloc_pprof = { version = "0.9", optional = true }
+backtrace = { version = "0.3", optional = true }
 
 [dev-dependencies]
 testcontainers-modules.workspace = true
