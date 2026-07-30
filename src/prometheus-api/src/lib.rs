@@ -173,6 +173,39 @@ impl LabelsResponse {
     }
 }
 
+/// Cardinality statistics for one label, from the compactor's advisory
+/// attribute-stats analysis. Powers the metrics explorer's high-cardinality
+/// warnings so a user doesn't group by a label with thousands of values.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LabelStat {
+    /// Label name (the OTel attribute key, matching `/api/v1/labels`).
+    pub name: String,
+    /// Approximate distinct value count. When `capped` is true this is a
+    /// floor (the analyzer stopped counting at its cap).
+    pub distinct_estimate: i64,
+    /// Fraction of scanned rows that carried this label, in `[0, 1]`.
+    pub presence: f64,
+    /// True when `distinct_estimate` hit the analyzer's cardinality cap.
+    pub capped: bool,
+}
+
+/// Response of `/api/v1/label_stats`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LabelStatsResponse {
+    pub status: String,
+    #[serde(default)]
+    pub data: Vec<LabelStat>,
+}
+
+impl LabelStatsResponse {
+    pub fn success(data: Vec<LabelStat>) -> Self {
+        Self {
+            status: "success".to_string(),
+            data,
+        }
+    }
+}
+
 /// Response of `/api/v1/series`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SeriesResponse {

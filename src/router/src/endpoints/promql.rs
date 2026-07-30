@@ -22,13 +22,15 @@ use axum::{
     routing::get,
 };
 use common::auth::TenantContextExtractor;
+use common::catalog::{AttributeStatsRecord, Catalog};
 use common::flight::transport::ServiceCapability;
 use datafusion::arrow::array::{
     Array, Float64Array, RecordBatch, StringArray, TimestampNanosecondArray,
 };
 use futures::StreamExt;
 use prometheus_api::{
-    InstantVector, LabelsResponse, QueryResponse, QueryResult, RangeVector, Sample, SeriesResponse,
+    InstantVector, LabelStat, LabelStatsResponse, LabelsResponse, QueryResponse, QueryResult,
+    RangeVector, Sample, SeriesResponse,
 };
 use serde::Deserialize;
 
@@ -41,6 +43,7 @@ pub fn router<S: RouterState>() -> Router<S> {
         )
         .route("/api/v1/labels", get(labels::<S>))
         .route("/api/v1/label/{name}/values", get(label_values::<S>))
+        .route("/api/v1/label_stats", get(label_stats::<S>))
         .route("/api/v1/series", get(series::<S>))
 }
 
@@ -197,6 +200,58 @@ pub async fn series<S: RouterState>(
     Ok(axum::Json(SeriesResponse::success(series_from_batches(
         &batches,
     ))))
+}
+
+/// The signal attribute stats for metric labels are recorded under.
+const METRICS_SIGNAL: &str = "metrics";
+
+/// GET /prometheus/api/v1/label_stats — per-label cardinality stats.
+///
+/// Reads the compactor's advisory attribute statistics straight from the
+/// catalog (no querier round-trip), so the metrics explorer can warn before a
+/// user groups by a high-cardinality label. Names match `/api/v1/labels`.
+pub async fn label_stats<S: RouterState>(
+    State(state): State<S>,
+    tenant_ctx: TenantContextExtractor,
+) -> Result<axum::Json<LabelStatsResponse>, StatusCode> {
+    let stats = fetch_label_stats(
+        state.catalog(),
+        &tenant_ctx.0.tenant_slug,
+        &tenant_ctx.0.dataset_slug,
+    )
+    .await
+    .map_err(|error| {
+        tracing::error!(?error, "failed to read attribute stats");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(axum::Json(LabelStatsResponse::success(stats)))
+}
+
+/// Read and shape the metric-signal attribute stats for a tenant/dataset.
+async fn fetch_label_stats(
+    catalog: &Catalog,
+    tenant_slug: &str,
+    dataset_slug: &str,
+) -> anyhow::Result<Vec<LabelStat>> {
+    let records = catalog
+        .get_attribute_stats(tenant_slug, dataset_slug, METRICS_SIGNAL)
+        .await?;
+    Ok(records.into_iter().map(label_stat_from_record).collect())
+}
+
+/// Shape one catalog record into the API's `LabelStat`, deriving presence.
+fn label_stat_from_record(record: AttributeStatsRecord) -> LabelStat {
+    let presence = if record.total_rows > 0 {
+        record.present_rows as f64 / record.total_rows as f64
+    } else {
+        0.0
+    };
+    LabelStat {
+        name: record.attr_key,
+        distinct_estimate: record.distinct_estimate,
+        presence,
+        capped: record.capped,
+    }
 }
 
 // ---- execution + conversion ----
@@ -556,5 +611,92 @@ mod tests {
             Some(1_700_000_000_000_000_000)
         );
         assert_eq!(parse_timestamp_ns(None), None);
+    }
+
+    #[test]
+    fn label_stat_derives_presence_and_passes_through() {
+        let stat = label_stat_from_record(AttributeStatsRecord {
+            tenant_id: "acme".into(),
+            dataset_id: "prod".into(),
+            signal: "metrics".into(),
+            attr_key: "http.route".into(),
+            present_rows: 3,
+            total_rows: 4,
+            distinct_estimate: 86,
+            capped: false,
+            query_hits: 0,
+            promote_streak: 0,
+        });
+        assert_eq!(stat.name, "http.route");
+        assert_eq!(stat.distinct_estimate, 86);
+        assert_eq!(stat.presence, 0.75);
+        assert!(!stat.capped);
+    }
+
+    #[test]
+    fn label_stat_presence_is_zero_when_no_rows_scanned() {
+        let stat = label_stat_from_record(AttributeStatsRecord {
+            tenant_id: "acme".into(),
+            dataset_id: "prod".into(),
+            signal: "metrics".into(),
+            attr_key: "k8s.pod".into(),
+            present_rows: 0,
+            total_rows: 0,
+            distinct_estimate: 0,
+            capped: false,
+            query_hits: 0,
+            promote_streak: 0,
+        });
+        assert_eq!(stat.presence, 0.0);
+    }
+
+    #[tokio::test]
+    async fn fetch_label_stats_returns_only_the_metrics_signal() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        // Two metrics keys — one a high-cardinality, capped label.
+        catalog
+            .upsert_attribute_scan_stats("acme", "prod", "metrics", "service", 100, 100, 12, false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_attribute_scan_stats(
+                "acme", "prod", "metrics", "k8s.pod", 90, 100, 10_000, true,
+            )
+            .await
+            .unwrap();
+        // A logs key and another dataset must be excluded.
+        catalog
+            .upsert_attribute_scan_stats("acme", "prod", "logs", "trace.id", 100, 100, 9000, true)
+            .await
+            .unwrap();
+        catalog
+            .upsert_attribute_scan_stats("acme", "staging", "metrics", "region", 10, 10, 3, false)
+            .await
+            .unwrap();
+
+        let stats = fetch_label_stats(&catalog, "acme", "prod").await.unwrap();
+
+        // Ordered by attr_key (catalog ORDER BY): k8s.pod, service.
+        let names: Vec<_> = stats.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["k8s.pod", "service"]);
+
+        let pod = &stats[0];
+        assert_eq!(pod.distinct_estimate, 10_000);
+        assert!(pod.capped);
+        assert_eq!(pod.presence, 0.9);
+
+        let service = &stats[1];
+        assert_eq!(service.distinct_estimate, 12);
+        assert!(!service.capped);
+        assert_eq!(service.presence, 1.0);
+    }
+
+    #[tokio::test]
+    async fn fetch_label_stats_is_empty_for_unknown_dataset() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let stats = fetch_label_stats(&catalog, "nobody", "nowhere")
+            .await
+            .unwrap();
+        assert!(stats.is_empty());
     }
 }

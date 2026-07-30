@@ -105,6 +105,29 @@ Prometheus labels map onto SignalDB columns: `__name__` is the metric name,
 match (and group) on their dedicated columns. Any other label is matched
 against the metric's JSON attributes.
 
+### Label cardinality
+
+`/api/v1/label_stats` is a SignalDB extension (not part of the Prometheus API)
+that returns per-label cardinality so a client can warn before grouping by a
+high-cardinality label:
+
+```bash
+curl -sG http://localhost:3000/prometheus/api/v1/label_stats ...
+# { "status": "success", "data": [
+#   { "name": "service", "distinct_estimate": 12, "presence": 1.0, "capped": false },
+#   { "name": "k8s.pod", "distinct_estimate": 10000, "presence": 0.9, "capped": true }
+# ] }
+```
+
+Each entry carries the label `name` (matching `/api/v1/labels`), a
+`distinct_estimate` (a floor when `capped` is true — the analyzer stopped at
+its cardinality cap), and `presence`, the fraction of scanned rows carrying
+the label. The numbers come from the compactor's advisory attribute-stats
+analysis, so a label appears here only after its data has been compacted at
+least once; freshly ingested labels may be missing until then. The metrics
+explorer in the [Explore UI](explore-ui.md) uses this to flag risky group-by
+choices.
+
 ## Verify
 
 A successful response is `{"status":"success","data":{...}}`. An empty
@@ -125,4 +148,4 @@ HTTP 200, not an error.
 
 Point a Grafana **Prometheus** data source at
 `http://<router-host>:3000/prometheus` and add the `Authorization` and
-`X-Tenant-ID` headers under *Custom HTTP Headers*.
+`X-Tenant-ID` headers under _Custom HTTP Headers_.
