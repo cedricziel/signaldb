@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/cedricziel/signaldb/compare/writer-v0.2.0...writer-v0.2.1) (2026-07-30)
+
+
+### Features
+
+* **writer:** propagate trace context through the WAL write path ([#836](https://github.com/cedricziel/signaldb/issues/836)) ([455c58f](https://github.com/cedricziel/signaldb/commit/455c58f79a3329449a66d9e5004f22203ad30c2c))
+
 ## [0.2.0](https://github.com/cedricziel/signaldb/compare/writer-v0.1.0...writer-v0.2.0) (2026-07-30)
 
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.1](https://github.com/cedricziel/signaldb/compare/common-v0.2.0...common-v0.2.1) (2026-07-30)
+
+
+### Features
+
+* CPU self-profiling + Profiles tab in the Explore UI ([#835](https://github.com/cedricziel/signaldb/issues/835)) ([9434734](https://github.com/cedricziel/signaldb/commit/94347345da14db950c760db21ad8516f9fcbac92))
+* **router:** join external callers' traces at the HTTP query boundary ([#838](https://github.com/cedricziel/signaldb/issues/838)) ([2818eb2](https://github.com/cedricziel/signaldb/commit/2818eb246ed7bdd5764bcf0294542b35d5473c8d))
+* **writer:** propagate trace context through the WAL write path ([#836](https://github.com/cedricziel/signaldb/issues/836)) ([455c58f](https://github.com/cedricziel/signaldb/commit/455c58f79a3329449a66d9e5004f22203ad30c2c))
+
+
+### Bug Fixes
+
+* **common:** exclude pyroscope on Windows to unblock release build ([#823](https://github.com/cedricziel/signaldb/issues/823)) ([a5647de](https://github.com/cedricziel/signaldb/commit/a5647de9738160104f5efcb6213a49c8fd62c624))
+* **traces:** read stored attributes and correct OTLP status mapping ([#829](https://github.com/cedricziel/signaldb/issues/829)) ([31fb70e](https://github.com/cedricziel/signaldb/commit/31fb70ed291b884ce36ae2a7b180ec6127c1bfc7))
+
+
+### Performance Improvements
+
+* **traces:** enable trace_id/span_id Parquet bloom filters ([#832](https://github.com/cedricziel/signaldb/issues/832)) ([19dc400](https://github.com/cedricziel/signaldb/commit/19dc4005215f882ac1d0fe7776cd00c2fd1a67e3))
+
 ## [0.2.0](https://github.com/cedricziel/signaldb/compare/common-v0.1.0...common-v0.2.0) (2026-07-30)
 
 

@@ -1,6 +1,6 @@
 [package]
 name = "prometheus-api"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "Prometheus HTTP API types for SignalDB"
 license = "AGPL-3.0"

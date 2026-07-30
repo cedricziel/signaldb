@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.1.3](https://github.com/cedricziel/signaldb/compare/signaldb-cli-v0.1.2...signaldb-cli-v0.1.3) (2026-07-30)
+
 ## [0.1.2](https://github.com/cedricziel/signaldb/compare/signaldb-cli-v0.1.1...signaldb-cli-v0.1.2) (2026-07-30)
 
 
