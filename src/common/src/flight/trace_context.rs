@@ -1,15 +1,20 @@
-//! W3C Trace Context propagation across Apache Arrow Flight calls.
+//! W3C Trace Context propagation across SignalDB service boundaries.
 //!
-//! Lets distributed traces span SignalDB services: the Flight client side
-//! injects the current span's context (`traceparent`/`tracestate`), the
-//! server side extracts it and re-parents its processing span.
+//! Lets distributed traces span SignalDB services: the sending side injects
+//! the current span's context (`traceparent`/`tracestate`), the receiving
+//! side extracts it and re-parents (or links) its processing span.
 //!
-//! Two carriers are supported, matching how SignalDB's Flight paths already
-//! exchange metadata:
+//! Four carriers are supported, matching how SignalDB's paths already exchange
+//! metadata:
 //! - **JSON `app_metadata`** on the first `FlightData` message (used by the
-//!   Acceptor → Writer `do_put` path)
+//!   Acceptor → Writer `do_put` path, and persisted into the WAL entry so the
+//!   asynchronous processor can rejoin the ingest trace)
 //! - **gRPC request metadata** headers (used by the Router → Querier `do_get`
 //!   path)
+//! - **HTTP request headers** (used at the Router's inbound HTTP boundary so a
+//!   caller-supplied `traceparent` roots the query trace)
+//! - **span links**, for the fan-in case where one processing span serves
+//!   entries from several ingest traces (WAL batch processing)
 //!
 //! All functions go through the global OTel text-map propagator, which is a
 //! no-op unless self-monitoring is enabled (it is installed by
@@ -19,6 +24,7 @@
 use std::collections::HashMap;
 
 use opentelemetry::propagation::{Extractor, Injector};
+use opentelemetry::trace::TraceContextExt;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 /// W3C `traceparent` header/field name.
@@ -136,6 +142,67 @@ pub fn set_parent_from_fields(
     }
 }
 
+/// Link `span` to a trace context carried in W3C header fields, without
+/// changing its parent.
+///
+/// Used when one span serves work fanned in from several distinct traces —
+/// e.g. the WAL background processor committing a batch whose entries came
+/// from different ingest requests. Unlike a parent, a span may carry many
+/// links, so each source ingest trace stays reachable from the batch span.
+///
+/// No-op when `traceparent` is absent, invalid, or self-monitoring is
+/// disabled. Safe to call after the span has been entered (links, unlike the
+/// parent, can be added at any time).
+pub fn add_link_from_fields(
+    span: &tracing::Span,
+    traceparent: Option<&str>,
+    tracestate: Option<&str>,
+) {
+    let Some(traceparent) = traceparent else {
+        return;
+    };
+    let mut carrier: HashMap<String, String> = HashMap::new();
+    carrier.insert(TRACEPARENT.to_string(), traceparent.to_string());
+    if let Some(tracestate) = tracestate {
+        carrier.insert(TRACESTATE.to_string(), tracestate.to_string());
+    }
+    let cx =
+        opentelemetry::global::get_text_map_propagator(|propagator| propagator.extract(&carrier));
+    let span_context = cx.span().span_context().clone();
+    if span_context.is_valid() {
+        span.add_link(span_context);
+    }
+}
+
+struct HeaderMapExtractor<'a>(&'a axum::http::HeaderMap);
+
+impl Extractor for HeaderMapExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|v| v.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(|k| k.as_str()).collect()
+    }
+}
+
+/// Extract the remote trace context from inbound HTTP request headers and set
+/// it as `span`'s parent (server side, e.g. the Router's HTTP query APIs).
+///
+/// Lets an external caller that propagates W3C trace context (`traceparent`)
+/// have SignalDB's query trace join it. No-op when the header is absent,
+/// invalid, or self-monitoring is disabled. Like [`set_parent_from_metadata`],
+/// must be called before `span` is first entered.
+pub fn set_parent_from_http_headers(span: &tracing::Span, headers: &axum::http::HeaderMap) {
+    let cx = opentelemetry::global::get_text_map_propagator(|propagator| {
+        propagator.extract(&HeaderMapExtractor(headers))
+    });
+    if let Err(err) = span.set_parent(cx) {
+        // Benign when no OTel layer is attached (self-monitoring disabled).
+        tracing::debug!(error = %err, "Failed to adopt remote trace context from HTTP headers");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +253,35 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .expect("traceparent injected");
         assert_eq!(value, SAMPLE_TRACEPARENT);
+    }
+
+    #[test]
+    fn http_header_extractor_reads_traceparent() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            TRACEPARENT,
+            SAMPLE_TRACEPARENT.parse().expect("valid header value"),
+        );
+
+        let propagator = TraceContextPropagator::new();
+        let cx = propagator.extract(&HeaderMapExtractor(&headers));
+        use opentelemetry::trace::TraceContextExt;
+        let span_context = cx.span().span_context().clone();
+        assert!(span_context.is_valid());
+        assert_eq!(
+            span_context.trace_id().to_string(),
+            "0af7651916cd43dd8448eb211c80319c"
+        );
+        assert!(span_context.is_remote());
+    }
+
+    #[test]
+    fn add_link_and_http_parent_ignore_missing_or_garbage() {
+        // Must not panic on a disabled span / without a global propagator.
+        let span = tracing::Span::none();
+        add_link_from_fields(&span, None, None);
+        add_link_from_fields(&span, Some("garbage"), None);
+        set_parent_from_http_headers(&span, &axum::http::HeaderMap::new());
     }
 
     #[test]
