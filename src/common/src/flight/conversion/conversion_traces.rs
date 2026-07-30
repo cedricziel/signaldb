@@ -250,10 +250,11 @@ pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> RecordBatch 
 fn extract_status(span: &OtelSpan) -> (String, String) {
     match &span.status {
         Some(status) => {
+            // OTLP StatusCode: 0 = Unset, 1 = Ok, 2 = Error.
             let code = match status.code {
                 0 => "Unspecified",
-                1 => "Error",
-                2 => "Ok",
+                1 => "Ok",
+                2 => "Error",
                 _ => "Unspecified",
             };
             (code.to_string(), status.message.clone())
@@ -731,11 +732,12 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
             _ => 0,
         };
 
-        // Convert status code string to enum
+        // Convert status code string to OTLP StatusCode (0 = Unset, 1 = Ok,
+        // 2 = Error).
         let status_code = match status_code_str {
             "Unspecified" => 0,
-            "Error" => 1,
-            "Ok" => 2,
+            "Ok" => 1,
+            "Error" => 2,
             _ => 0,
         };
 
@@ -870,6 +872,27 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn extract_status_maps_otlp_codes_to_spec_strings() {
+        // OTLP StatusCode: 0 = Unset, 1 = Ok, 2 = Error.
+        let status = |code: i32| Status {
+            code,
+            message: String::new(),
+        };
+        let stored = |code: i32| {
+            extract_status(&Span {
+                status: Some(status(code)),
+                ..Default::default()
+            })
+            .0
+        };
+        assert_eq!(stored(0), "Unspecified");
+        assert_eq!(stored(1), "Ok");
+        assert_eq!(stored(2), "Error");
+        // A missing status is unspecified, not an error.
+        assert_eq!(extract_status(&Span::default()).0, "Unspecified");
+    }
+
+    #[test]
     fn test_otlp_traces_to_arrow() {
         // Create a simple OTLP trace
         let trace_id_bytes = hex::decode("0123456789abcdef0123456789abcdef").unwrap();
@@ -945,7 +968,7 @@ mod tests {
             links,
             dropped_links_count: 0,
             status: Some(Status {
-                code: 2, // Ok
+                code: 1, // OTLP StatusCode Ok
                 message: "Success".to_string(),
             }),
             flags: 0,
@@ -1231,7 +1254,7 @@ mod tests {
         // Verify status
         assert!(span.status.is_some());
         let status = span.status.as_ref().unwrap();
-        assert_eq!(status.code, 2); // Ok
+        assert_eq!(status.code, 1); // OTLP StatusCode Ok
         assert_eq!(status.message, "Success");
 
         // Verify attributes
@@ -1332,7 +1355,7 @@ mod tests {
             links,
             dropped_links_count: 0,
             status: Some(Status {
-                code: 2, // Ok
+                code: 2, // OTLP StatusCode Error
                 message: "Success".to_string(),
             }),
             flags: 0,
@@ -1440,7 +1463,7 @@ mod tests {
         // Verify status
         assert!(span.status.is_some());
         let status = span.status.as_ref().unwrap();
-        assert_eq!(status.code, 2); // Ok
+        assert_eq!(status.code, 2); // OTLP StatusCode Error
         assert_eq!(status.message, "Success");
 
         // Verify attributes (should have both attributes)
