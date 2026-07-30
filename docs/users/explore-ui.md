@@ -62,6 +62,11 @@ PromQL. A query row reads left to right as a sentence:
 - **function** — an optional range function (`rate`, `irate`, `increase`, or
   an `*_over_time` rollup) with a lookback window (default `5m`).
 
+Labels are annotated with their approximate value count (from
+[`/label_stats`](querying-promql.md#label-cardinality)), and grouping by a
+high-cardinality label — one that would explode into thousands of series, like
+a pod or trace id — shows a `⚠` warning before you run it.
+
 A live preview shows the compiled PromQL beneath the row; **Run** charts it.
 
 ### Formulas across multiple queries

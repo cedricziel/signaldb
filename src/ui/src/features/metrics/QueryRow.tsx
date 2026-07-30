@@ -7,11 +7,18 @@ import { useId } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   promLabelNames,
+  promLabelStats,
   promLabelValues,
   promMetricNames,
 } from "../../api/prom";
 import { FILTER_OPS, type LabelFilter } from "../../lib/filters";
 import type { ResolvedRange } from "../../lib/time";
+import {
+  cardinalityLabel,
+  indexLabelStats,
+  isHighCardinality,
+  optionLabel,
+} from "./cardinality";
 import {
   RANGE_FNS,
   SPACE_AGGS,
@@ -42,8 +49,19 @@ export function QueryRow({ query, range, onChange }: Props) {
     queryFn: () => promLabelNames(range),
     staleTime: 60_000,
   });
+  const labelStats = useQuery({
+    queryKey: ["prom-label-stats", rangeKey(range)],
+    queryFn: () => promLabelStats(range),
+    staleTime: 60_000,
+  });
+  const statByName = indexLabelStats(labelStats.data ?? []);
 
   const patch = (p: Partial<MetricQuery>) => onChange({ ...query, ...p });
+
+  // Selected group-by labels whose cardinality makes grouping risky.
+  const riskyGroupBy = (query.agg?.by ?? []).filter((l) =>
+    isHighCardinality(statByName.get(l)),
+  );
 
   const setFilter = (i: number, f: LabelFilter) =>
     patch({ filters: query.filters.map((old, j) => (j === i ? f : old)) });
@@ -61,7 +79,7 @@ export function QueryRow({ query, range, onChange }: Props) {
       </datalist>
       <datalist id={labelList}>
         {(labelNames.data ?? []).map((l) => (
-          <option key={l} value={l} />
+          <option key={l} value={l} label={optionLabel(statByName.get(l))} />
         ))}
       </datalist>
 
@@ -120,24 +138,38 @@ export function QueryRow({ query, range, onChange }: Props) {
         ))}
       </select>
       {query.agg && (
-        <input
-          className="qrow-groupby"
-          aria-label="Group by"
-          list={labelList}
-          placeholder="group by (comma-separated)"
-          value={query.agg.by.join(", ")}
-          onChange={(e) =>
-            patch({
-              agg: {
-                op: query.agg?.op ?? "sum",
-                by: e.target.value
-                  .split(",")
-                  .map((s) => s.trim())
-                  .filter((s) => s !== ""),
-              },
-            })
-          }
-        />
+        <>
+          <input
+            className="qrow-groupby"
+            aria-label="Group by"
+            list={labelList}
+            placeholder="group by (comma-separated)"
+            value={query.agg.by.join(", ")}
+            onChange={(e) =>
+              patch({
+                agg: {
+                  op: query.agg?.op ?? "sum",
+                  by: e.target.value
+                    .split(",")
+                    .map((s) => s.trim())
+                    .filter((s) => s !== ""),
+                },
+              })
+            }
+          />
+          {riskyGroupBy.length > 0 && (
+            <span
+              className="qrow-warn"
+              role="status"
+              aria-label="Cardinality warning"
+            >
+              ⚠ high cardinality:{" "}
+              {riskyGroupBy
+                .map((l) => `${l} (${cardinalityLabel(statByName.get(l))})`)
+                .join(", ")}
+            </span>
+          )}
+        </>
       )}
 
       <select
