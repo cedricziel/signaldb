@@ -47,14 +47,31 @@ function renderView(state: Partial<ExploreState> = {}) {
 
 describe("MetricsView", () => {
   it("prompts for a query when none is set", () => {
+    stubFetchRoutes([{ match: "query_range", body: MATRIX }]);
     renderView();
-    expect(screen.getByText(/Enter a PromQL expression/)).toBeInTheDocument();
+    expect(screen.getByText(/Build a query above/)).toBeInTheDocument();
   });
 
-  it("submits the drafted query via update", async () => {
+  it("submits a raw query from the PromQL escape hatch", async () => {
     stubFetchRoutes([{ match: "query_range", body: MATRIX }]);
     const update = renderView();
+    await userEvent.click(screen.getByRole("tab", { name: "PromQL" }));
     await userEvent.type(screen.getByLabelText("PromQL query"), "up ");
+    await userEvent.click(screen.getByRole("button", { name: "Run" }));
+    expect(update).toHaveBeenCalledWith({ promql: "up" });
+  });
+
+  it("runs the compiled query built in the visual builder", async () => {
+    stubFetchRoutes([
+      {
+        match: /label\/__name__\/values/,
+        body: { status: "success", data: [] },
+      },
+      { match: /\/labels\?/, body: { status: "success", data: [] } },
+      { match: "query_range", body: MATRIX },
+    ]);
+    const update = renderView();
+    await userEvent.type(screen.getByLabelText("Metric"), "up");
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
     expect(update).toHaveBeenCalledWith({ promql: "up" });
   });
