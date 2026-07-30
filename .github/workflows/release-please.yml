@@ -37,6 +37,8 @@ jobs:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     strategy:
+      # One target's failure must not cancel the other release archives.
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -70,9 +72,11 @@ jobs:
 
       - name: Install system dependencies (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
+        # mold + clang: .cargo/config.toml links x86_64-unknown-linux-gnu
+        # with clang and -fuse-ld=mold
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y protobuf-compiler mold clang
 
       - name: Install system dependencies (macOS)
         if: matrix.os == 'macos-latest'
@@ -674,6 +678,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Install mold linker (Linux AMD64)
+        # The repo-level .cargo/config.toml links x86_64-unknown-linux-gnu
+        # with clang and -fuse-ld=mold, and it applies to the backend
+        # workspace too; the plugin's own CI installs mold the same way.
+        if: matrix.target.os == 'linux' && matrix.target.arch == 'amd64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mold clang
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
