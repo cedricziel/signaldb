@@ -380,6 +380,36 @@ Each signal's writer transform extracts the label from that signal's
 attribute JSON (metrics per exploded data point); the querier routes to the
 column when the queried table has it, else the JSON substring match.
 
+### Parquet bloom filters
+
+For **point lookups on high-cardinality columns**, Parquet row-group min/max
+statistics are useless: every time-ordered data file spans the full random
+value range, so `min ≤ target ≤ max` always holds and no file can be skipped.
+The only structure that prunes a random point lookup is a per-column **bloom
+filter**.
+
+SignalDB enables them by writing the standard Iceberg table property
+`write.parquet.bloom-filter-enabled.column.<col> = "true"` at table creation;
+the pinned iceberg-rust Parquet writer honors it on every write, so both
+ingest and compaction output carry the filters. Enabled columns:
+
+- **traces** — `trace_id` and `span_id` (single-trace / single-span lookups).
+  Set via `common::schema::bloom_filter_properties_for_trace_columns`.
+- **logs** — the derived `attr_tokens` list leaf (`key=value` containment) and
+  every materialized `label_<key>` column.
+- **all signals** — every materialized `label_<key>` column.
+
+The properties are metadata set at **creation time**: a table created before a
+column was added to the enabled set does not gain the filter retroactively
+(compaction rewrites inherit whatever the table metadata currently declares).
+
+On the read path the filters are consulted automatically. `datafusion_iceberg`
+reports `Inexact` filter pushdown and builds its scan without a predicate, but
+DataFusion's physical filter-pushdown injects the query predicate into the
+`DataSourceExec`, and with `datafusion.execution.parquet.bloom_filter_on_read`
+defaulting on, a bloom-filtered file skips row groups that cannot contain the
+target. See `tests-integration/tests/querier/trace_bloom_pruning.rs`.
+
 #### Metrics Gauge Table (v1 -- current)
 
 Defined in `src/common/src/iceberg/schemas.rs`.
