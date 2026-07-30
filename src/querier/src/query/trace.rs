@@ -883,14 +883,12 @@ fn attribute_map(
         return out;
     }
 
-    if let Some(arr) = column.as_any().downcast_ref::<StringArray>() {
-        if !arr.is_null(row) {
-            if let Ok(serde_json::Value::Object(map)) =
-                serde_json::from_str::<serde_json::Value>(arr.value(row))
-            {
-                return map.into_iter().collect();
-            }
-        }
+    if let Some(arr) = column.as_any().downcast_ref::<StringArray>()
+        && !arr.is_null(row)
+        && let Ok(serde_json::Value::Object(map)) =
+            serde_json::from_str::<serde_json::Value>(arr.value(row))
+    {
+        return map.into_iter().collect();
     }
 
     HashMap::new()
