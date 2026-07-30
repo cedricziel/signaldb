@@ -242,6 +242,7 @@ jobs:
           export RUSTC_WRAPPER=sccache
           if [ "${{ matrix.deployment }}" = "monolithic" ]; then
             cargo build --release -p signaldb-bin --bin signaldb
+            cargo build --release -p signaldb-cli --bin signaldb-cli
           else
             cargo build --release -p acceptor --bin signaldb-acceptor
             cargo build --release -p router --bin signaldb-router
@@ -254,6 +255,8 @@ jobs:
           if [ "${{ matrix.deployment }}" = "monolithic" ]; then
             ./target/release/signaldb --help
             ./target/release/signaldb --version
+            ./target/release/signaldb-cli --help
+            ./target/release/signaldb-cli --version
           else
             ./target/release/signaldb-acceptor --help
             ./target/release/signaldb-acceptor --version
