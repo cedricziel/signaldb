@@ -53,8 +53,7 @@ for how the pieces fit together.
 
 ## Project status
 
-SignalDB is under active development and is dogfooded on the
-maintainer's own homelab. Trace storage and the Tempo-compatible API
+SignalDB is under active development. Trace storage and the Tempo-compatible API
 are the most mature surface; LogQL and PromQL support cover most of
 each language with remaining gaps tracked openly on
 [GitHub](https://github.com/cedricziel/signaldb/issues). Interfaces

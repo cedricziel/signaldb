@@ -99,8 +99,7 @@ Then open <http://localhost:3000/ui/> and sign in. Full guides:
 
 ## What works today
 
-SignalDB is under active development and dogfooded on the maintainer's own
-homelab. An honest snapshot:
+SignalDB is under active development. An honest snapshot:
 
 | Signal   | Ingest                          | Query                                                      | Maturity                                                                                           |
 | -------- | ------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
