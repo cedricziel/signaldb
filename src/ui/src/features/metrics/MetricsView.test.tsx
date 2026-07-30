@@ -76,6 +76,31 @@ describe("MetricsView", () => {
     expect(update).toHaveBeenCalledWith({ promql: "up" });
   });
 
+  it("runs a two-query formula as a single composed expression", async () => {
+    stubFetchRoutes([
+      {
+        match: /label\/__name__\/values/,
+        body: { status: "success", data: [] },
+      },
+      { match: /\/labels\?/, body: { status: "success", data: [] } },
+      { match: "query_range", body: MATRIX },
+    ]);
+    const update = renderView();
+
+    const metricA = screen.getByLabelText("Metric");
+    await userEvent.type(metricA, "http_errors");
+    await userEvent.click(screen.getByRole("button", { name: "+ query" }));
+
+    const metricB = screen.getAllByLabelText("Metric")[1]!;
+    await userEvent.type(metricB, "http_total");
+    await userEvent.type(screen.getByLabelText("Formula"), "(a / b) * 100");
+
+    await userEvent.click(screen.getByRole("button", { name: "Run" }));
+    expect(update).toHaveBeenCalledWith({
+      promql: "((http_errors) / (http_total)) * 100",
+    });
+  });
+
   it("renders the chart and a legend entry per series", async () => {
     stubFetchRoutes([{ match: "query_range", body: MATRIX }]);
     renderView({ promql: "up" });

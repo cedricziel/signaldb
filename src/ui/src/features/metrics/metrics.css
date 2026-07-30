@@ -126,6 +126,50 @@
   font-size: 11px;
 }
 
+.builder-query {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.builder-query + .builder-query {
+  border-top: 1px dashed var(--border);
+}
+
+.query-remove {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--faint);
+  padding: 3px 8px;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.builder-formula {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.formula-ref {
+  font-family: var(--mono);
+  color: var(--faint);
+  font-style: italic;
+}
+
+.formula-input {
+  flex: 1;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+
 .builder-run {
   display: flex;
   align-items: center;

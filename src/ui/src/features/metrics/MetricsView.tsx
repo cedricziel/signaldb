@@ -9,7 +9,12 @@ import {
 } from "../../lib/time";
 import type { ExploreState } from "../../lib/urlState";
 import { seriesColorVar } from "../../lib/promSeries";
-import { buildPromQL, emptyQuery, type MetricQuery } from "./buildPromQL";
+import {
+  buildFormula,
+  emptyQuery,
+  nextRef,
+  type MetricQuery,
+} from "./buildPromQL";
 import { MetricsChart } from "./MetricsChart";
 import { QueryRow } from "./QueryRow";
 import "./metrics.css";
@@ -23,7 +28,10 @@ type Mode = "builder" | "promql";
 
 export function MetricsView({ state, update }: Props) {
   const [mode, setMode] = useState<Mode>("builder");
-  const [query, setQuery] = useState<MetricQuery>(() => emptyQuery("a"));
+  const [queries, setQueries] = useState<MetricQuery[]>(() => [
+    emptyQuery("a"),
+  ]);
+  const [formula, setFormula] = useState("");
   const [draft, setDraft] = useState(state.promql);
 
   const rangeParam = rangeToParam(state.range);
@@ -37,8 +45,14 @@ export function MetricsView({ state, update }: Props) {
     [rangeKey],
   );
 
-  const compiled = buildPromQL(query);
+  const compiled = buildFormula(queries, formula);
   const promql = state.promql;
+
+  const setQuery = (i: number, next: MetricQuery) =>
+    setQueries((qs) => qs.map((old, j) => (j === i ? next : old)));
+  const addQuery = () => setQueries((qs) => [...qs, emptyQuery(nextRef(qs))]);
+  const removeQuery = (i: number) =>
+    setQueries((qs) => (qs.length > 1 ? qs.filter((_, j) => j !== i) : qs));
 
   const chart = useQuery({
     queryKey: ["prom-range", promql, rangeKey],
@@ -87,7 +101,42 @@ export function MetricsView({ state, update }: Props) {
 
       {mode === "builder" ? (
         <div className="metrics-builder">
-          <QueryRow query={query} range={metaRange} onChange={setQuery} />
+          {queries.map((q, i) => (
+            <div className="builder-query" key={q.ref}>
+              <QueryRow
+                query={q}
+                range={metaRange}
+                onChange={(next) => setQuery(i, next)}
+              />
+              {queries.length > 1 && (
+                <button
+                  type="button"
+                  className="query-remove"
+                  aria-label={`Remove query ${q.ref}`}
+                  onClick={() => removeQuery(i)}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          ))}
+
+          <div className="builder-formula">
+            <button type="button" className="qrow-add" onClick={addQuery}>
+              + query
+            </button>
+            <span className="formula-ref" aria-hidden>
+              ƒ
+            </span>
+            <input
+              className="formula-input"
+              aria-label="Formula"
+              placeholder="formula, e.g. (a / b) * 100 — optional"
+              value={formula}
+              onChange={(e) => setFormula(e.target.value)}
+            />
+          </div>
+
           <div className="builder-run">
             <code className="builder-preview">
               {compiled || "pick a metric to start"}
