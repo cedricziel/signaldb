@@ -116,3 +116,51 @@ export function promLabelValues(
 export function promMetricNames(range: ResolvedRange): Promise<string[]> {
   return promLabelValues("__name__", range);
 }
+
+/** Per-label cardinality, from `/api/v1/label_stats` (a SignalDB extension). */
+export interface LabelStat {
+  name: string;
+  /** Approximate distinct value count (a floor when `capped`). */
+  distinct_estimate: number;
+  /** Fraction of scanned rows carrying the label, in `[0, 1]`. */
+  presence: number;
+  /** True when `distinct_estimate` hit the analyzer's cardinality cap. */
+  capped: boolean;
+}
+
+interface LabelStatsResponse {
+  status: string;
+  data?: LabelStat[];
+  error?: string;
+}
+
+/**
+ * Cardinality statistics for each label in the window. Only labels whose data
+ * has been compacted at least once appear; the builder treats missing labels
+ * as "unknown cardinality".
+ */
+export async function promLabelStats(
+  range: ResolvedRange,
+): Promise<LabelStat[]> {
+  const params = new URLSearchParams({
+    start: String(range.fromMs / 1000),
+    end: String(range.toMs / 1000),
+  });
+  const res = await fetch(`/prometheus/api/v1/label_stats?${params}`, {
+    headers: tenantHeaders(),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ApiError(
+      `Prometheus label_stats failed (${res.status}): ${body.slice(0, 300)}`,
+      res.status,
+    );
+  }
+  const json = (await res.json()) as LabelStatsResponse;
+  if (json.status !== "success") {
+    throw new Error(
+      `Prometheus label_stats failed: ${json.error ?? json.status}`,
+    );
+  }
+  return json.data ?? [];
+}

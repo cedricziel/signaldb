@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   promLabelNames,
+  promLabelStats,
   promLabelValues,
   promMetricNames,
   promQueryRange,
@@ -133,5 +134,38 @@ describe("metadata pickers", () => {
   it("throws on HTTP failure", async () => {
     mockFetchOnce("nope", 503);
     await expect(promLabelNames(RANGE)).rejects.toThrow(/\(503\)/);
+  });
+});
+
+describe("promLabelStats", () => {
+  it("returns the stats array and hits the label_stats endpoint", async () => {
+    const fn = mockFetchOnce({
+      status: "success",
+      data: [
+        { name: "service", distinct_estimate: 12, presence: 1, capped: false },
+        {
+          name: "k8s.pod",
+          distinct_estimate: 10000,
+          presence: 0.9,
+          capped: true,
+        },
+      ],
+    });
+    const stats = await promLabelStats(RANGE);
+    expect(stats).toHaveLength(2);
+    expect(stats[1]).toMatchObject({ name: "k8s.pod", capped: true });
+    const url = String(fn.mock.calls[0]?.[0]);
+    expect(url).toContain("/prometheus/api/v1/label_stats?");
+    expect(url).toContain("start=1000");
+  });
+
+  it("defaults to an empty list when data is absent", async () => {
+    mockFetchOnce({ status: "success" });
+    await expect(promLabelStats(RANGE)).resolves.toEqual([]);
+  });
+
+  it("throws on HTTP failure", async () => {
+    mockFetchOnce("nope", 500);
+    await expect(promLabelStats(RANGE)).rejects.toThrow(/\(500\)/);
   });
 });
