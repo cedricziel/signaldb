@@ -73,6 +73,7 @@ nav:
           - operations/compactor/phase3-troubleshooting.md
   - Architecture:
       - architecture/overview.md
+      - architecture/fdap.md
       - architecture/storage-layout.md
       - architecture/service-discovery.md
       - architecture/flight-communication.md

@@ -126,9 +126,10 @@ Flight:
 - **WAL-based durability** on the ingest path, so acknowledged data
   survives crashes
 
-Under the hood SignalDB is built on the FDAP stack — Apache Arrow
-**F**light, **D**ataFusion, **A**rrow, and **P**arquet — with Apache
-Iceberg as the table format. See the
+Under the hood SignalDB is built on the
+[FDAP stack](docs/architecture/fdap.md) — Apache Arrow **F**light,
+**D**ataFusion, **A**rrow, and **P**arquet — with Apache Iceberg as the
+table format. See the
 [architecture overview](docs/architecture/overview.md).
 
 ## Documentation
