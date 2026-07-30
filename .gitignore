@@ -52,6 +52,7 @@ ENV/
 *.swp
 
 node_modules/
+.pnpm-store/
 
 # Staged binaries for prebuilt Docker images (CI)
 /dist/
