@@ -29,7 +29,10 @@ visible in the UI is equally queryable from Grafana.
   all sortable. Selecting a group lists just its traces; selecting a trace
   opens a waterfall with span details and error highlighting. Open-by-ID
   works from any level.
-- **Metrics** — a PromQL box charting range queries.
+- **Metrics** — a visual query builder (metric picker, tag filters,
+  aggregation, and range functions, all populated from label metadata) with
+  multi-query formulas for ratios, plus a "PromQL" tab as the raw escape
+  hatch. See [Building metric queries](#building-metric-queries).
 - **Correlation** — log rows with a `trace_id` open the trace waterfall;
   the span panel links back to logs filtered by that trace.
 - Every view is a URL: time range, filters, and selection live in query
@@ -38,6 +41,50 @@ visible in the UI is equally queryable from Grafana.
 ![Explore UI trace waterfall with span details and a link to correlated logs](../assets/screenshots/explore-traces.png)
 
 ![Explore UI metrics view charting a PromQL range query across two services](../assets/screenshots/explore-metrics.png)
+
+## Building metric queries
+
+The metrics view opens on a **visual builder** so you don't have to hand-write
+PromQL. A query row reads left to right as a sentence:
+
+```
+[ a ]  metric ▾   from ⟨ filters ⟩   avg by ⟨ group ⟩   function ▾
+```
+
+- **Metric** — type or pick a metric name; suggestions come from the
+  Prometheus `__name__` label for the current time range.
+- **from** — add tag filters (`+ filter`). Label names and their values are
+  suggested from the metadata endpoints, so you filter on what exists rather
+  than guessing. Each filter has an operator (`=`, `!=`, `=~`, `!~`).
+- **aggregation** — choose a space aggregation (`sum`/`avg`/`min`/`max`/
+  `count`) and an optional comma-separated **group by** to get one series per
+  tag value.
+- **function** — an optional range function (`rate`, `irate`, `increase`, or
+  an `*_over_time` rollup) with a lookback window (default `5m`).
+
+A live preview shows the compiled PromQL beneath the row; **Run** charts it.
+
+### Formulas across multiple queries
+
+Add more rows with **+ query** — each gets a letter (`a`, `b`, …) — and combine
+them in the **formula** box. Single letters are substituted with each query's
+compiled expression, so a ratio like an error rate is:
+
+```
+formula:  (a / b) * 100
+```
+
+with `a` = `sum(rate(http_server_errors[1m]))` and `b` =
+`sum(rate(http_server_requests[1m]))`. PromQL function names are left
+untouched. With no formula, the first row is charted on its own.
+
+### Editing the raw PromQL
+
+The **PromQL** tab is the escape hatch for anything the builder doesn't cover.
+Switching to it seeds the box with the query the builder compiled, so you can
+start visually and finish by hand. (Editing raw PromQL back into the builder
+is not supported yet.) The same PromQL runs unchanged in Grafana or against
+the [`/prometheus/api/v1` endpoints](querying-promql.md).
 
 ## Signing in
 
