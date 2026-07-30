@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/cedricziel/signaldb/compare/router-v0.2.0...router-v0.2.1) (2026-07-30)
+
+
+### Bug Fixes
+
+* **ui:** sign in once — email/password login with a post-login tenant picker ([#794](https://github.com/cedricziel/signaldb/issues/794)) ([1feafbf](https://github.com/cedricziel/signaldb/commit/1feafbfc187069944c34a5903d65552f740c2d3a))
+
 ## [0.2.0](https://github.com/cedricziel/signaldb/compare/router-v0.1.0...router-v0.2.0) (2026-07-30)
 
 
