@@ -78,6 +78,20 @@ Without `SIGNALDB_UI_DIR`, `/ui` serves a placeholder page. Setting the
 variable to a directory without a built UI fails startup on purpose — a
 misconfigured deployment should not silently ship without its UI.
 
+## Telemetry
+
+The UI is instrumented with OpenTelemetry (browser SDK). It injects a W3C
+`traceparent` into every API call so a user action correlates end-to-end with
+the backend traces it triggers, and stamps every span with a RUM `session.id`
+plus the active `tenant.id` / `dataset.id`.
+
+Export is **opt-in**: set `SIGNALDB_OTLP_ENDPOINT` at build time to ship browser
+spans to an OTLP/HTTP endpoint (`/v1/traces` is appended if absent). With it
+unset, propagation still works and dev builds print spans to the console. The
+browser cannot send API keys or tenant headers safely, so point the endpoint at
+an OTLP collector that adds them — not at a public acceptor. Contributor detail
+lives in the `frontend-instrumentation` skill.
+
 ## Developing the UI
 
 See [src/ui/README.md](https://github.com/cedricziel/signaldb/blob/main/src/ui/README.md): `pnpm ui:dev` runs a Vite
