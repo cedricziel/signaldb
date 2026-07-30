@@ -284,6 +284,17 @@ impl FlightService for IcebergWriterFlightService {
         // Write all batches to WAL first for durability
         let mut wal_entry_ids = Vec::new();
 
+        // Persist the active (flight_do_put) trace context alongside the
+        // routing metadata so the asynchronous WAL processor can rejoin this
+        // ingest trace instead of starting a detached root span.
+        // current_trace_context_fields() reads the current span, which here is
+        // `flight_do_put`; it is None when self-monitoring is disabled.
+        let (traceparent, tracestate) =
+            match common::flight::trace_context::current_trace_context_fields() {
+                Some((tp, ts)) => (Some(tp), ts),
+                None => (None, None),
+            };
+
         // Serialize FlightMetadata to JSON for WAL storage (for writer routing)
         let metadata_json = flight_metadata.as_ref().map(|metadata| {
             serde_json::to_string(&serde_json::json!({
@@ -292,6 +303,8 @@ impl FlightService for IcebergWriterFlightService {
                 "target_table": metadata.target_table,
                 "tenant_id": metadata.tenant_id,
                 "dataset_id": metadata.dataset_id,
+                "traceparent": traceparent,
+                "tracestate": tracestate,
             }))
             .unwrap_or_default()
         });
