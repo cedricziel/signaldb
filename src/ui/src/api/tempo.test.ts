@@ -89,6 +89,38 @@ describe("tempoGetTrace", () => {
     });
   });
 
+  it("treats an all-zero parent span id as a root", async () => {
+    mockFetchOnce({
+      traceID: "abc",
+      rootServiceName: "gateway",
+      rootTraceName: "root-op",
+      startTimeUnixNano: "1000",
+      durationMs: 1,
+      spanSets: [
+        {
+          matched: 1,
+          spans: [
+            {
+              spanID: "s1",
+              parentSpanID: "0000000000000000",
+              startTimeUnixNano: "1000",
+              durationNanos: "2000",
+              attributes: {
+                "resource.env": {
+                  key: "resource.env",
+                  value: { stringValue: "prod" },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const trace = await tempoGetTrace("abc");
+    expect(trace.spans[0]?.parentSpanId).toBeNull();
+    expect(trace.rootAttributes).toEqual({ "resource.env": "prod" });
+  });
+
   it("throws a readable error on failure", async () => {
     mockFetchOnce({ error: "trace not found" }, 404);
     await expect(tempoGetTrace("missing")).rejects.toThrow(
@@ -124,8 +156,53 @@ describe("tempoSearch", () => {
         rootTraceName: "GET /cart",
         startNs: "5000",
         durationMs: 88,
+        rootAttributes: {},
       },
     ]);
+  });
+
+  it("extracts the root span's attributes from spanSets", async () => {
+    mockFetchOnce({
+      traces: [
+        {
+          traceID: "t1",
+          rootServiceName: "checkout",
+          rootTraceName: "GET /cart",
+          startTimeUnixNano: "5000",
+          durationMs: 88,
+          spanSets: [
+            {
+              matched: 2,
+              spans: [
+                {
+                  spanID: "child",
+                  parentSpanID: "root",
+                  startTimeUnixNano: "5100",
+                  durationNanos: "10",
+                  attributes: {
+                    ignored: { key: "ignored", value: { stringValue: "x" } },
+                  },
+                },
+                {
+                  spanID: "root",
+                  startTimeUnixNano: "5000",
+                  durationNanos: "88000000",
+                  attributes: {
+                    "resource.host.name": {
+                      key: "resource.host.name",
+                      value: { stringValue: "web-1" },
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      metrics: {},
+    });
+    const out = await tempoSearch(RANGE, 25);
+    expect(out[0]?.rootAttributes).toEqual({ "resource.host.name": "web-1" });
   });
 
   it("tolerates an empty result", async () => {

@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { filterFromParam, filterToParam, type LabelFilter } from "./filters";
+import { DEFAULT_GROUP_BY } from "./traceGroups";
 import {
   DEFAULT_RANGE,
   parseRangeParam,
@@ -22,6 +23,10 @@ export interface ExploreState {
   live: boolean;
   /** Selected trace id — opens the trace view. */
   trace: string;
+  /** Selected trace group value — dives into that group's trace list. */
+  group: string;
+  /** Trace grouping dimension: "span.name", "service.name", or an attribute key. */
+  groupBy: string;
   /** PromQL expression for the metrics view. */
   promql: string;
   /**
@@ -41,6 +46,8 @@ export const DEFAULT_STATE: ExploreState = {
   limit: 500,
   live: false,
   trace: "",
+  group: "",
+  groupBy: DEFAULT_GROUP_BY,
   promql: "",
   tenant: "",
   dataset: "",
@@ -67,6 +74,8 @@ export function parseExploreState(search: string): ExploreState {
     limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 5000) : 500,
     live: p.get("live") === "1",
     trace: p.get("trace") ?? "",
+    group: p.get("group") ?? "",
+    groupBy: p.get("groupBy") || DEFAULT_GROUP_BY,
     promql: p.get("promql") ?? "",
     tenant: p.get("tenant") ?? "",
     dataset: p.get("dataset") ?? "",
@@ -84,6 +93,8 @@ export function buildSearch(state: ExploreState): string {
   if (state.limit !== 500) p.set("limit", String(state.limit));
   if (state.live) p.set("live", "1");
   if (state.trace) p.set("trace", state.trace);
+  if (state.group) p.set("group", state.group);
+  if (state.groupBy !== DEFAULT_GROUP_BY) p.set("groupBy", state.groupBy);
   if (state.promql) p.set("promql", state.promql);
   if (state.tenant) p.set("tenant", state.tenant);
   if (state.dataset) p.set("dataset", state.dataset);

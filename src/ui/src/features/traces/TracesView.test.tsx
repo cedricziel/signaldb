@@ -9,15 +9,69 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+function searchTrace(
+  traceID: string,
+  service: string,
+  name: string,
+  startNs: string,
+  durationMs: number,
+  env: string,
+) {
+  return {
+    traceID,
+    rootServiceName: service,
+    rootTraceName: name,
+    startTimeUnixNano: startNs,
+    durationMs,
+    spanSets: [
+      {
+        matched: 1,
+        spans: [
+          {
+            spanID: `${traceID}-root`,
+            startTimeUnixNano: startNs,
+            durationNanos: String(durationMs * 1e6),
+            name,
+            serviceName: service,
+            attributes: {
+              "resource.env": {
+                key: "resource.env",
+                value: { stringValue: env },
+              },
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
 const SEARCH_BODY = {
   traces: [
-    {
-      traceID: "t1cafe",
-      rootServiceName: "gateway",
-      rootTraceName: "POST /api/checkout",
-      startTimeUnixNano: "1700000000000000000",
-      durationMs: 412,
-    },
+    searchTrace(
+      "t1cafe",
+      "gateway",
+      "POST /api/checkout",
+      "1700000000000000000",
+      412,
+      "prod",
+    ),
+    searchTrace(
+      "t2feed",
+      "gateway",
+      "POST /api/checkout",
+      "1700000060000000000",
+      88,
+      "staging",
+    ),
+    searchTrace(
+      "t3beef",
+      "auth",
+      "GET /login",
+      "1700000030000000000",
+      51,
+      "prod",
+    ),
   ],
   metrics: {},
 };
@@ -72,14 +126,50 @@ function renderView(state: Partial<ExploreState> = {}) {
   return update;
 }
 
-describe("TracesView search", () => {
-  it("lists traces and opens one on click", async () => {
+describe("TracesView group list", () => {
+  it("groups traces by root, largest group first", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+    renderView();
+    const rows = await screen.findAllByRole("row");
+    // Header row + one row per group, not per trace.
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toHaveTextContent("POST /api/checkout");
+    expect(rows[1]).toHaveTextContent("2");
+    expect(rows[2]).toHaveTextContent("GET /login");
+  });
+
+  it("dives into a group on click", async () => {
     stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
     const update = renderView();
     await userEvent.click(
       await screen.findByRole("button", { name: "POST /api/checkout" }),
     );
-    expect(update).toHaveBeenCalledWith({ trace: "t1cafe" });
+    expect(update).toHaveBeenCalledWith({ group: "POST /api/checkout" });
+  });
+
+  it("offers observed attributes as grouping dimensions", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+    const update = renderView();
+    // Attribute options appear once results arrive.
+    await screen.findByRole("button", { name: "POST /api/checkout" });
+    await userEvent.selectOptions(
+      screen.getByLabelText("Group by"),
+      "resource.env",
+    );
+    expect(update).toHaveBeenCalledWith({
+      groupBy: "resource.env",
+      group: "",
+    });
+  });
+
+  it("groups by the selected attribute dimension", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+    renderView({ groupBy: "resource.env" });
+    const rows = await screen.findAllByRole("row");
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toHaveTextContent("prod");
+    expect(rows[1]).toHaveTextContent("2");
+    expect(rows[2]).toHaveTextContent("staging");
   });
 
   it("opens a trace by pasted id", async () => {
@@ -96,6 +186,50 @@ describe("TracesView search", () => {
     ]);
     renderView();
     expect(await screen.findByRole("alert")).toHaveTextContent(/500/);
+  });
+});
+
+describe("TracesView group detail", () => {
+  it("lists only the selected group's traces, newest first", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+    renderView({ group: "POST /api/checkout" });
+    const rows = await screen.findAllByRole("row");
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toHaveTextContent("t2feed");
+    expect(rows[2]).toHaveTextContent("t1cafe");
+    expect(screen.queryByText("t3beef")).not.toBeInTheDocument();
+  });
+
+  it("filters by the active dimension, not just span name", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+    renderView({ groupBy: "resource.env", group: "prod" });
+    const rows = await screen.findAllByRole("row");
+    expect(rows).toHaveLength(3);
+    expect(screen.getByText("t1cafe")).toBeInTheDocument();
+    expect(screen.getByText("t3beef")).toBeInTheDocument();
+    expect(screen.queryByText("t2feed")).not.toBeInTheDocument();
+  });
+
+  it("opens a trace on click", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+    const update = renderView({ group: "POST /api/checkout" });
+    await userEvent.click(await screen.findByText("t1cafe"));
+    expect(update).toHaveBeenCalledWith({ trace: "t1cafe" });
+  });
+
+  it("navigates back to the group list", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+    const update = renderView({ group: "POST /api/checkout" });
+    await userEvent.click(
+      await screen.findByRole("button", { name: "← groups" }),
+    );
+    expect(update).toHaveBeenCalledWith({ group: "" });
+  });
+
+  it("notes when the group has no traces in range", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/search", body: { metrics: {} } }]);
+    renderView({ group: "POST /api/checkout" });
+    expect(await screen.findByText(/no traces/i)).toBeInTheDocument();
   });
 });
 

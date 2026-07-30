@@ -23,6 +23,11 @@ export interface TraceSummary {
   rootTraceName: string;
   startNs: string;
   durationMs: number;
+  /**
+   * Root span attributes (resource attributes prefixed "resource."), the
+   * grouping dimensions for the traces landing screen.
+   */
+  rootAttributes: Record<string, AttrValue>;
 }
 
 export interface TempoTrace extends TraceSummary {
@@ -69,9 +74,11 @@ function toSpan(w: WireSpan): TempoSpan {
   for (const [key, attr] of Object.entries(w.attributes ?? {})) {
     attributes[key] = flattenAttrValue(attr.value);
   }
+  // OTLP encodes "no parent" as an all-zero span id.
+  const parent = w.parentSpanID?.replace(/0/g, "") ? w.parentSpanID : null;
   return {
     spanId: w.spanID,
-    parentSpanId: w.parentSpanID || null,
+    parentSpanId: parent,
     name: w.name ?? "",
     serviceName: w.serviceName ?? "",
     status: w.status ?? "unset",
@@ -79,6 +86,16 @@ function toSpan(w: WireSpan): TempoSpan {
     durNs: w.durationNanos,
     attributes,
   };
+}
+
+/** The root span's attributes: no parent wins, else the earliest span. */
+function rootAttributes(spans: TempoSpan[]): Record<string, AttrValue> {
+  const root =
+    spans.find((s) => s.parentSpanId === null) ??
+    [...spans].sort((a, b) =>
+      BigInt(a.startNs) < BigInt(b.startNs) ? -1 : 1,
+    )[0];
+  return root?.attributes ?? {};
 }
 
 async function tempoFetch<T>(
@@ -112,13 +129,15 @@ export async function tempoGetTrace(
     `traces/${encodeURIComponent(traceId)}`,
     params,
   );
+  const spans = (wire.spanSets ?? []).flatMap((s) => s.spans.map(toSpan));
   return {
     traceId: wire.traceID,
     rootServiceName: wire.rootServiceName,
     rootTraceName: wire.rootTraceName,
     startNs: wire.startTimeUnixNano,
     durationMs: wire.durationMs,
-    spans: (wire.spanSets ?? []).flatMap((s) => s.spans.map(toSpan)),
+    rootAttributes: rootAttributes(spans),
+    spans,
   };
 }
 
@@ -138,5 +157,8 @@ export async function tempoSearch(
     rootTraceName: t.rootTraceName,
     startNs: t.startTimeUnixNano,
     durationMs: t.durationMs,
+    rootAttributes: rootAttributes(
+      (t.spanSets ?? []).flatMap((s) => s.spans.map(toSpan)),
+    ),
   }));
 }

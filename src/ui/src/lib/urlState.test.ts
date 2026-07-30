@@ -53,11 +53,20 @@ describe("buildSearch", () => {
       limit: 1000,
       live: true,
       trace: "deadbeef",
+      group: "POST /checkout",
+      groupBy: "resource.host.name",
       promql: "rate(x[5m])",
       tenant: "acme",
       dataset: "production",
     };
     expect(parseExploreState(buildSearch(state))).toEqual(state);
+  });
+
+  it("omits the groupBy param for the default dimension", () => {
+    expect(buildSearch({ ...DEFAULT_STATE, signal: "traces" })).not.toContain(
+      "groupBy",
+    );
+    expect(parseExploreState("").groupBy).toBe("span.name");
   });
 
   it("omits tenant params for the ambient default context", () => {

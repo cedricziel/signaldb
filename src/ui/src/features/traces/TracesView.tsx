@@ -1,12 +1,23 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { tempoGetTrace, tempoSearch, type TempoSpan } from "../../api/tempo";
+import {
+  tempoGetTrace,
+  tempoSearch,
+  type TempoSpan,
+  type TraceSummary,
+} from "../../api/tempo";
 import {
   formatTimestamp,
   nanosToMs,
   rangeToParam,
   resolveRange,
 } from "../../lib/time";
+import {
+  groupDimensions,
+  groupTraces,
+  groupValue,
+  type TraceGroup,
+} from "../../lib/traceGroups";
 import type { ExploreState } from "../../lib/urlState";
 import { buildWaterfall, formatDurationMs } from "../../lib/waterfall";
 import "./traces.css";
@@ -37,23 +48,43 @@ function TraceSearch({ state, update }: Props) {
 
   return (
     <div className="traces-search">
-      <form
-        className="trace-id-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const id = new FormData(e.currentTarget).get("traceId");
-          if (typeof id === "string" && id.trim() !== "") {
-            update({ trace: id.trim() });
-          }
-        }}
-      >
-        <input
-          name="traceId"
-          aria-label="Trace ID"
-          placeholder="Open trace by ID…"
-        />
-        <button type="submit">Open</button>
-      </form>
+      <div className="traces-toolbar">
+        <form
+          className="trace-id-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const id = new FormData(e.currentTarget).get("traceId");
+            if (typeof id === "string" && id.trim() !== "") {
+              update({ trace: id.trim() });
+            }
+          }}
+        >
+          <input
+            name="traceId"
+            aria-label="Trace ID"
+            placeholder="Open trace by ID…"
+          />
+          <button type="submit">Open</button>
+        </form>
+        {state.group === "" && (
+          <label className="group-by">
+            Group by
+            <select
+              aria-label="Group by"
+              value={state.groupBy}
+              onChange={(e) =>
+                update({ groupBy: e.currentTarget.value, group: "" })
+              }
+            >
+              {dimensionOptions(search.data ?? [], state.groupBy).map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
 
       {search.isError && (
         <div className="query-error" role="alert">
@@ -61,10 +92,103 @@ function TraceSearch({ state, update }: Props) {
         </div>
       )}
       {search.isPending && <div className="traces-note">Loading…</div>}
-      {search.data && search.data.length === 0 && (
-        <div className="traces-note">No traces in this time range.</div>
-      )}
-      {search.data && search.data.length > 0 && (
+      {search.data &&
+        (state.group === "" ? (
+          <GroupList
+            traces={search.data}
+            groupBy={state.groupBy}
+            update={update}
+          />
+        ) : (
+          <GroupDetail state={state} traces={search.data} update={update} />
+        ))}
+    </div>
+  );
+}
+
+/** The picked dimension stays selectable even if absent from this range. */
+function dimensionOptions(traces: TraceSummary[], groupBy: string): string[] {
+  const dims = groupDimensions(traces);
+  return dims.includes(groupBy) ? dims : [...dims, groupBy].sort();
+}
+
+function GroupList({
+  traces,
+  groupBy,
+  update,
+}: {
+  traces: TraceSummary[];
+  groupBy: string;
+  update: (patch: Partial<ExploreState>) => void;
+}) {
+  if (traces.length === 0) {
+    return <div className="traces-note">No traces in this time range.</div>;
+  }
+  const groups = groupTraces(traces, groupBy);
+  return (
+    <table className="trace-table">
+      <thead>
+        <tr>
+          <th>{groupBy}</th>
+          <th>Services</th>
+          <th className="num">Traces</th>
+          <th className="num">P50</th>
+          <th className="num">P95</th>
+          <th>Last seen</th>
+        </tr>
+      </thead>
+      <tbody>
+        {groups.map((g) => (
+          <tr key={g.value} onClick={() => update({ group: g.value })}>
+            <td>
+              <button className="trace-open">{g.value}</button>
+            </td>
+            <td>{formatServices(g)}</td>
+            <td className="num">{g.traces.length}</td>
+            <td className="num">{formatDurationMs(g.p50Ms)}</td>
+            <td className="num">{formatDurationMs(g.p95Ms)}</td>
+            <td>{formatTimestamp(nanosToMs(g.lastStartNs))}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function formatServices(g: TraceGroup): string {
+  return g.services.length > 2
+    ? `${plural(g.services.length, "service")}`
+    : g.services.join(", ");
+}
+
+function GroupDetail({
+  state,
+  traces,
+  update,
+}: {
+  state: ExploreState;
+  traces: TraceSummary[];
+  update: (patch: Partial<ExploreState>) => void;
+}) {
+  const members = traces
+    .filter((t) => groupValue(t, state.groupBy) === state.group)
+    .sort((a, b) => (BigInt(a.startNs) < BigInt(b.startNs) ? 1 : -1));
+  return (
+    <>
+      <div className="trace-head">
+        <button className="backbtn" onClick={() => update({ group: "" })}>
+          ← groups
+        </button>
+        <h3>{state.group}</h3>
+        <span className="tmeta">
+          {state.groupBy} · {plural(members.length, "trace")}
+        </span>
+      </div>
+      {members.length === 0 ? (
+        <div className="traces-note">
+          No traces for this group in this time range.
+        </div>
+      ) : (
         <table className="trace-table">
           <thead>
             <tr>
@@ -76,7 +200,7 @@ function TraceSearch({ state, update }: Props) {
             </tr>
           </thead>
           <tbody>
-            {search.data.map((t) => (
+            {members.map((t) => (
               <tr key={t.traceId} onClick={() => update({ trace: t.traceId })}>
                 <td>
                   <button className="trace-open">{t.rootTraceName}</button>
@@ -90,7 +214,7 @@ function TraceSearch({ state, update }: Props) {
           </tbody>
         </table>
       )}
-    </div>
+    </>
   );
 }
 
