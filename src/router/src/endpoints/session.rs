@@ -38,23 +38,42 @@ pub fn router<S: RouterState>() -> Router<S> {
 pub struct CreateSessionRequest {
     pub email: String,
     pub password: String,
-    pub tenant: String,
+    /// Optional: when omitted, the response lists the user's tenant
+    /// memberships so the UI can offer a picker (auto-selected when the
+    /// user belongs to exactly one tenant).
+    #[serde(default)]
+    pub tenant: Option<String>,
     #[serde(default)]
     pub dataset: Option<String>,
+}
+
+/// A tenant the signed-in user may select, returned by `POST /ui/session`
+/// so the UI can present a picker instead of free-text tenant entry.
+#[derive(Debug, Serialize)]
+pub struct SessionMembership {
+    pub tenant_id: String,
+    pub name: String,
+    pub role: MembershipRole,
 }
 
 /// POST /ui/session
 ///
 /// Validates the credentials and sets the session cookie. 200 on success,
 /// 401/403 with a JSON error body on invalid credentials, 400 on malformed
-/// tenant/dataset IDs.
+/// tenant/dataset IDs. The response always carries the user's memberships;
+/// `tenant`/`dataset` are null when the user must still pick one (the
+/// session itself is tenant-agnostic — every request re-validates the
+/// `X-Tenant-ID` header against the memberships).
 pub async fn create_session<S: RouterState>(
     State(state): State<S>,
     Json(body): Json<CreateSessionRequest>,
 ) -> Response {
-    let tenant = match validate_tenant_id(&body.tenant) {
-        Ok(t) => t,
-        Err(e) => return error_response(400, e.to_string()),
+    let requested_tenant = match body.tenant.as_deref().map(str::trim) {
+        Some("") | None => None,
+        Some(t) => match validate_tenant_id(t) {
+            Ok(t) => Some(t),
+            Err(e) => return error_response(400, e.to_string()),
+        },
     };
     let dataset = match body.dataset.as_deref().map(str::trim) {
         Some("") | None => None,
@@ -93,23 +112,29 @@ pub async fn create_session<S: RouterState>(
         return error_response(401, "Invalid email or password".to_string());
     }
 
-    let membership_role = if user.is_instance_admin {
-        MembershipRole::Admin
-    } else {
-        match state
-            .catalog()
-            .get_tenant_membership(&user.id, &tenant)
-            .await
-        {
-            Ok(Some(membership)) => membership.role,
-            Ok(None) => {
+    let memberships = match list_session_memberships(&state, &user).await {
+        Ok(memberships) => memberships,
+        Err(response) => return response,
+    };
+
+    // Resolve which tenant this login lands in: an explicit request is
+    // validated against membership (instance admins may pick any tenant);
+    // otherwise a sole membership is auto-selected, and multiple
+    // memberships defer the choice to the UI.
+    let tenant = match requested_tenant {
+        Some(tenant) => {
+            if !user.is_instance_admin && !memberships.iter().any(|m| m.tenant_id == tenant) {
                 return error_response(403, "User is not a member of this tenant".to_string());
             }
-            Err(error) => {
-                tracing::error!(user_id = %user.id, error = %error, "Membership lookup failed");
-                return error_response(500, "Unable to create session".to_string());
-            }
+            Some(tenant)
         }
+        None => match memberships.as_slice() {
+            [] => {
+                return error_response(403, "User has no tenant memberships".to_string());
+            }
+            [only] => Some(only.tenant_id.clone()),
+            _ => None,
+        },
     };
 
     let token = generate_session_token();
@@ -127,6 +152,30 @@ pub async fn create_session<S: RouterState>(
         }
     };
 
+    let cookie = format!(
+        "{SESSION_COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=43200"
+    );
+
+    let Some(tenant) = tenant else {
+        // Multiple memberships and no explicit choice: hand the list to
+        // the UI; each subsequent request validates the selected tenant.
+        tracing::info!(
+            user_id = %user.id,
+            memberships = memberships.len(),
+            "UI session created pending tenant selection"
+        );
+        return (
+            StatusCode::OK,
+            [(header::SET_COOKIE, cookie)],
+            Json(json!({
+                "tenant": Option::<String>::None,
+                "dataset": Option::<String>::None,
+                "memberships": memberships,
+            })),
+        )
+            .into_response();
+    };
+
     match state
         .authenticator()
         .authenticate_session(&token, &tenant, dataset.as_deref())
@@ -137,20 +186,15 @@ pub async fn create_session<S: RouterState>(
                 user_id = %user.id,
                 tenant_id = %ctx.tenant_id,
                 dataset = %ctx.dataset_id,
-                role = %membership_role,
                 "UI session created"
             );
             (
                 StatusCode::OK,
-                [(
-                    header::SET_COOKIE,
-                    format!(
-                        "{SESSION_COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=43200"
-                    ),
-                )],
+                [(header::SET_COOKIE, cookie)],
                 Json(json!({
                     "tenant": ctx.tenant_id,
                     "dataset": ctx.dataset_id,
+                    "memberships": memberships,
                 })),
             )
                 .into_response()
@@ -162,6 +206,64 @@ pub async fn create_session<S: RouterState>(
             tracing::warn!(tenant_id = %tenant, "UI session login failed: {}", err.message);
             error_response(err.status_code, err.message)
         }
+    }
+}
+
+/// The tenants a user may act in: instance admins may select any tenant
+/// (as admin); other users get their stored memberships, with display
+/// names resolved config-first to mirror the Authenticator's precedence.
+async fn list_session_memberships<S: RouterState>(
+    state: &S,
+    user: &common::catalog::UserRecord,
+) -> Result<Vec<SessionMembership>, Response> {
+    if user.is_instance_admin {
+        let tenants = state.catalog().list_tenants().await.map_err(|error| {
+            tracing::error!(user_id = %user.id, error = %error, "Session tenant listing failed");
+            error_response(500, "Unable to create session".to_string())
+        })?;
+        return Ok(tenants
+            .into_iter()
+            .map(|tenant| SessionMembership {
+                tenant_id: tenant.id,
+                name: tenant.name,
+                role: MembershipRole::Admin,
+            })
+            .collect());
+    }
+
+    let rows = state
+        .catalog()
+        .list_memberships_for_user(&user.id)
+        .await
+        .map_err(|error| {
+            tracing::error!(user_id = %user.id, error = %error, "Membership lookup failed");
+            error_response(500, "Unable to create session".to_string())
+        })?;
+    let mut memberships = Vec::with_capacity(rows.len());
+    for row in rows {
+        let name = tenant_display_name(state, &row.tenant_id).await;
+        memberships.push(SessionMembership {
+            tenant_id: row.tenant_id,
+            name,
+            role: row.role,
+        });
+    }
+    Ok(memberships)
+}
+
+async fn tenant_display_name<S: RouterState>(state: &S, tenant_id: &str) -> String {
+    if let Some(tc) = state
+        .config()
+        .auth
+        .tenants
+        .iter()
+        .find(|t| t.id == tenant_id)
+    {
+        return tc.name.clone();
+    }
+    match state.catalog().get_tenant(tenant_id).await {
+        Ok(Some(tenant)) => tenant.name,
+        _ => tenant_id.to_string(),
     }
 }
 
@@ -486,6 +588,11 @@ mod tests {
             .unwrap();
         catalog
             .upsert_tenant_membership(&member.id, "acme", MembershipRole::Member)
+            .await
+            .unwrap();
+        let orphan_hash = common::auth::hash_password("orphan password").unwrap();
+        catalog
+            .create_user("orphan@example.com", Some("Orphan"), &orphan_hash, false)
             .await
             .unwrap();
         create_router(InMemoryStateImpl::new(catalog, config))
@@ -991,5 +1098,126 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(request).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn login_without_tenant_auto_selects_single_membership() {
+        let app = test_app().await;
+        let res = create_session(
+            &app,
+            serde_json::json!({
+                "email": "member@example.com",
+                "password": "member password"
+            }),
+        )
+        .await;
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(res.headers().get(header::SET_COOKIE).is_some());
+        let body = json_body(res).await;
+        assert_eq!(body["tenant"], "acme");
+        assert_eq!(body["dataset"], "production");
+        let memberships = body["memberships"].as_array().unwrap();
+        assert_eq!(memberships.len(), 1);
+        assert_eq!(memberships[0]["tenant_id"], "acme");
+        assert_eq!(memberships[0]["name"], "acme Inc");
+        assert_eq!(memberships[0]["role"], "member");
+    }
+
+    #[tokio::test]
+    async fn login_without_tenant_returns_membership_choices() {
+        let app = test_app().await;
+        // Alice is an instance admin, so every tenant is a choice.
+        let res = create_session(
+            &app,
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple"
+            }),
+        )
+        .await;
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(res.headers().get(header::SET_COOKIE).is_some());
+        let body = json_body(res).await;
+        assert_eq!(body["tenant"], Value::Null);
+        assert_eq!(body["dataset"], Value::Null);
+        let memberships = body["memberships"].as_array().unwrap();
+        assert_eq!(memberships.len(), 2);
+        let ids: Vec<&str> = memberships
+            .iter()
+            .map(|m| m["tenant_id"].as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&"acme"));
+        assert!(ids.contains(&"globex"));
+        assert!(
+            memberships
+                .iter()
+                .all(|m| m["role"] == "admin" && m["name"].as_str().is_some())
+        );
+    }
+
+    #[tokio::test]
+    async fn session_from_tenantless_login_authenticates_query_route() {
+        let app = test_app().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple"
+            }),
+        )
+        .await;
+        assert_eq!(login.status(), StatusCode::OK);
+        let cookie = cookie_pair(&login);
+
+        // The tenant is chosen per request via headers, validated against
+        // the user's memberships.
+        let request = Request::builder()
+            .uri("/tempo/api/echo")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "globex")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn login_without_tenant_and_no_memberships_is_403() {
+        let app = test_app().await;
+        let res = create_session(
+            &app,
+            serde_json::json!({
+                "email": "orphan@example.com",
+                "password": "orphan password"
+            }),
+        )
+        .await;
+
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(res.headers().get(header::SET_COOKIE).is_none());
+    }
+
+    #[tokio::test]
+    async fn explicit_tenant_login_still_works_and_lists_memberships() {
+        let app = test_app().await;
+        let res = create_session(
+            &app,
+            serde_json::json!({
+                "email": "viewer@example.com",
+                "password": "viewer password",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["tenant"], "acme");
+        assert_eq!(body["dataset"], "production");
+        let memberships = body["memberships"].as_array().unwrap();
+        assert_eq!(memberships.len(), 1);
+        assert_eq!(memberships[0]["role"], "viewer");
     }
 }

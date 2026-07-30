@@ -37,12 +37,17 @@ Tenant (e.g., "acme", slug: "acme")
 ### Session-Cookie Fallback (Embedded UI)
 
 When a router HTTP request has no `Authorization` header, `auth_middleware`
-falls back to the `signaldb_session` cookie (base64 JSON of
-api_key/tenant/dataset; codec in `src/common/src/auth/session.rs`). The
-cookie supplies the API key; explicit `X-Tenant-ID`/`X-Dataset-ID` headers
-still win over cookie values. The cookie is set by `POST /ui/session` and
-cleared by `DELETE /ui/session` (`src/router/src/endpoints/session.rs`),
-both public routes on the router.
+falls back to the `signaldb_session` cookie (an opaque random token whose
+hash indexes a server-side session; helpers in
+`src/common/src/auth/session.rs`). The session identifies the user; the
+request's `X-Tenant-ID`/`X-Dataset-ID` headers pick the tenant, validated
+against the user's memberships on every request. The cookie is set by
+`POST /ui/session` and cleared by `DELETE /ui/session`
+(`src/router/src/endpoints/session.rs`), both public routes on the router.
+Login `tenant` is optional: the response always lists the user's
+memberships (`SessionMembership { tenant_id, name, role }`); a sole
+membership is auto-selected, several leave `tenant` null so the UI shows a
+picker, none is a 403.
 
 ### Error Codes
 

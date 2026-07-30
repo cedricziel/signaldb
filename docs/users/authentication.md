@@ -48,10 +48,15 @@ The router's HTTP APIs additionally accept a session cookie in place of
 the headers, for browsers using the [embedded explore UI](explore-ui.md):
 
 - `POST /ui/session` (public) takes
-  `{"email", "password", "tenant", "dataset"?}` as JSON. It verifies the
-  password and tenant membership, creates a 12-hour server-side session,
-  and sets an `HttpOnly`, `Secure`, `SameSite=Strict` cookie containing
-  only an opaque random token.
+  `{"email", "password", "tenant"?, "dataset"?}` as JSON. It verifies the
+  password, creates a 12-hour server-side session, and sets an `HttpOnly`,
+  `Secure`, `SameSite=Strict` cookie containing only an opaque random
+  token. The response lists the user's tenant memberships (with display
+  names and roles). `tenant` is optional: a sole membership is
+  auto-selected; with several, the response's `tenant` is null and the
+  client picks one afterwards (the UI shows a selector). An explicitly
+  requested tenant is still validated against membership, and a user with
+  no memberships is rejected with 403.
 - On requests without an `Authorization` header, the router validates the
   opaque session and resolves `X-Tenant-ID` through the user's memberships.
   The optional `X-Dataset-ID` selects a dataset in that tenant.
@@ -63,11 +68,11 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
 
 ## Error codes
 
-| HTTP | gRPC                | Meaning                                                                                    |
-| ---- | ------------------- | ------------------------------------------------------------------------------------------ |
-| 400  | `INVALID_ARGUMENT`  | Header malformed (wrong scheme, invalid tenant/dataset ID)                                 |
+| HTTP | gRPC                | Meaning                                                                                       |
+| ---- | ------------------- | --------------------------------------------------------------------------------------------- |
+| 400  | `INVALID_ARGUMENT`  | Header malformed (wrong scheme, invalid tenant/dataset ID)                                    |
 | 401  | `UNAUTHENTICATED`   | Credentials missing/invalid, or the API key/session is unknown, revoked, expired, or disabled |
-| 403  | `PERMISSION_DENIED` | Principal is not authorized for the named tenant or dataset                                  |
+| 403  | `PERMISSION_DENIED` | Principal is not authorized for the named tenant or dataset                                   |
 
 ## Tenants and datasets
 
