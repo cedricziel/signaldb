@@ -84,7 +84,16 @@ jobs:
         run: |
           choco install protoc
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Build release binaries
+        # The release-${target} rust-cache is only refreshed on release
+        # runs, so it lags main by a whole release cycle; sccache backfills
+        # the compiler-level cache across that gap.
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
         run: |
           cargo build --release --target ${{ matrix.target }}
 
