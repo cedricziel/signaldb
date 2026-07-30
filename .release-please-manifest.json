@@ -11,5 +11,11 @@
   "src/tempo-api": "0.1.0",
   "src/writer": "0.1.0",
   "src/signaldb-cli": "0.1.1",
-  "tests-integration": "0.1.1"
+  "tests-integration": "0.1.1",
+  "src/logql": "0.1.0",
+  "src/loki-api": "0.1.0",
+  "src/prometheus-api": "0.1.0",
+  "src/pyroscope-api": "0.1.0",
+  "src/signaldb-api": "0.1.0",
+  "src/signaldb-sdk": "0.1.0"
 }
