@@ -34,6 +34,83 @@ function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
+/* ---------- column sorting ---------- */
+
+type SortDir = "asc" | "desc";
+interface SortSpec {
+  key: string;
+  dir: SortDir;
+}
+
+function useSort(defaultKey: string, defaultDir: SortDir) {
+  const [sort, setSort] = useState<SortSpec>({
+    key: defaultKey,
+    dir: defaultDir,
+  });
+  const toggle = (key: string, firstDir: SortDir) =>
+    setSort((s) =>
+      s.key === key
+        ? { key, dir: s.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: firstDir },
+    );
+  return [sort, toggle] as const;
+}
+
+type SortValue = string | number | bigint;
+
+function compareValues(a: SortValue, b: SortValue): number {
+  if (typeof a === "string" || typeof b === "string") {
+    return String(a).localeCompare(String(b));
+  }
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function sortRows<T>(
+  rows: T[],
+  sort: SortSpec,
+  value: (row: T, key: string) => SortValue,
+): T[] {
+  const sign = sort.dir === "asc" ? 1 : -1;
+  return [...rows].sort(
+    (a, b) => sign * compareValues(value(a, sort.key), value(b, sort.key)),
+  );
+}
+
+function SortTh({
+  label,
+  sortKey,
+  sort,
+  toggle,
+  numeric = false,
+  firstDir,
+}: {
+  label: string;
+  sortKey: string;
+  sort: SortSpec;
+  toggle: (key: string, firstDir: SortDir) => void;
+  /** Right-aligned metric column; sorts descending on first click. */
+  numeric?: boolean;
+  /** Overrides the first-click direction (e.g. timestamps: newest first). */
+  firstDir?: SortDir;
+}) {
+  const active = sort.key === sortKey;
+  return (
+    <th
+      className={numeric ? "num" : undefined}
+      aria-sort={
+        active ? (sort.dir === "asc" ? "ascending" : "descending") : undefined
+      }
+    >
+      <button
+        className="th-sort"
+        onClick={() => toggle(sortKey, firstDir ?? (numeric ? "desc" : "asc"))}
+      >
+        {label}
+      </button>
+    </th>
+  );
+}
+
 export function TracesView({ state, update }: Props) {
   if (state.trace !== "") {
     return <TraceDetail state={state} update={update} />;
@@ -177,25 +254,75 @@ function GroupList({
   rangeSeconds: number;
   update: (patch: Partial<ExploreState>) => void;
 }) {
+  const [sort, toggle] = useSort("traces", "desc");
   if (traces.length === 0) {
     return <div className="traces-note">No traces in this time range.</div>;
   }
-  const groups = groupTraces(traces, dims);
+  const groups = sortRows(groupTraces(traces, dims), sort, groupSortValue);
   const showServices = !dims.includes("service.name");
   return (
     <table className="trace-table">
       <thead>
         <tr>
-          {dims.map((d) => (
-            <th key={d}>{d}</th>
+          {dims.map((d, i) => (
+            <SortTh
+              key={d}
+              label={d}
+              sortKey={`dim:${i}`}
+              sort={sort}
+              toggle={toggle}
+            />
           ))}
-          {showServices && <th>Services</th>}
-          <th className="num">Traces</th>
-          <th className="num">Rate</th>
-          <th className="num">Errors</th>
-          <th className="num">P50</th>
-          <th className="num">P95</th>
-          <th>Last seen</th>
+          {showServices && (
+            <SortTh
+              label="Services"
+              sortKey="services"
+              sort={sort}
+              toggle={toggle}
+            />
+          )}
+          <SortTh
+            label="Traces"
+            sortKey="traces"
+            sort={sort}
+            toggle={toggle}
+            numeric
+          />
+          <SortTh
+            label="Rate"
+            sortKey="rate"
+            sort={sort}
+            toggle={toggle}
+            numeric
+          />
+          <SortTh
+            label="Errors"
+            sortKey="errors"
+            sort={sort}
+            toggle={toggle}
+            numeric
+          />
+          <SortTh
+            label="P50"
+            sortKey="p50"
+            sort={sort}
+            toggle={toggle}
+            numeric
+          />
+          <SortTh
+            label="P95"
+            sortKey="p95"
+            sort={sort}
+            toggle={toggle}
+            numeric
+          />
+          <SortTh
+            label="Last seen"
+            sortKey="last"
+            sort={sort}
+            toggle={toggle}
+            firstDir="desc"
+          />
         </tr>
       </thead>
       <tbody>
@@ -231,6 +358,39 @@ function formatServices(g: TraceGroup): string {
     : g.services.join(", ");
 }
 
+function groupSortValue(g: TraceGroup, key: string): SortValue {
+  if (key.startsWith("dim:")) return g.values[Number(key.slice(4))] ?? "";
+  switch (key) {
+    case "services":
+      return g.services.join(", ");
+    case "errors":
+      return g.errorCount / g.traces.length;
+    case "p50":
+      return g.p50Ms;
+    case "p95":
+      return g.p95Ms;
+    case "last":
+      return BigInt(g.lastStartNs);
+    default:
+      return g.traces.length;
+  }
+}
+
+function traceSortValue(t: TraceSummary, key: string): SortValue {
+  switch (key) {
+    case "root":
+      return t.rootTraceName;
+    case "service":
+      return t.rootServiceName;
+    case "duration":
+      return t.durationMs;
+    case "id":
+      return t.traceId;
+    default:
+      return BigInt(t.startNs);
+  }
+}
+
 function GroupDetail({
   state,
   traces,
@@ -240,10 +400,13 @@ function GroupDetail({
   traces: TraceSummary[];
   update: (patch: Partial<ExploreState>) => void;
 }) {
+  const [sort, toggle] = useSort("time", "desc");
   const dims = parseGroupBy(state.groupBy);
-  const members = traces
-    .filter((t) => groupKey(t, dims) === state.group)
-    .sort((a, b) => (BigInt(a.startNs) < BigInt(b.startNs) ? 1 : -1));
+  const members = sortRows(
+    traces.filter((t) => groupKey(t, dims) === state.group),
+    sort,
+    traceSortValue,
+  );
   return (
     <>
       <div className="trace-head">
@@ -263,11 +426,33 @@ function GroupDetail({
         <table className="trace-table">
           <thead>
             <tr>
-              <th>Root</th>
-              <th>Service</th>
-              <th>Time</th>
-              <th className="num">Duration</th>
-              <th>Trace ID</th>
+              <SortTh label="Root" sortKey="root" sort={sort} toggle={toggle} />
+              <SortTh
+                label="Service"
+                sortKey="service"
+                sort={sort}
+                toggle={toggle}
+              />
+              <SortTh
+                label="Time"
+                sortKey="time"
+                sort={sort}
+                toggle={toggle}
+                firstDir="desc"
+              />
+              <SortTh
+                label="Duration"
+                sortKey="duration"
+                sort={sort}
+                toggle={toggle}
+                numeric
+              />
+              <SortTh
+                label="Trace ID"
+                sortKey="id"
+                sort={sort}
+                toggle={toggle}
+              />
             </tr>
           </thead>
           <tbody>

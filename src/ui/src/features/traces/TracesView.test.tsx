@@ -217,6 +217,36 @@ describe("TracesView group list", () => {
     expect(rows[2]).toHaveTextContent("staging");
   });
 
+  it("sorts by a clicked column and flips on the second click", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+    renderView();
+    await screen.findByRole("button", { name: "POST /api/checkout" });
+    // String column: first click sorts ascending.
+    await userEvent.click(screen.getByRole("button", { name: "span.name" }));
+    let rows = screen.getAllByRole("row");
+    expect(rows[1]).toHaveTextContent("GET /login");
+    expect(rows[1]?.closest("table")?.querySelector("[aria-sort]")).toBe(
+      rows[0]?.querySelector("th"),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "span.name" }));
+    rows = screen.getAllByRole("row");
+    expect(rows[1]).toHaveTextContent("POST /api/checkout");
+  });
+
+  it("sorts metric columns descending first", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+    renderView();
+    await screen.findByRole("button", { name: "POST /api/checkout" });
+    // checkout has 50% errors, login none: desc keeps checkout on top,
+    // the flip to ascending puts login first.
+    await userEvent.click(screen.getByRole("button", { name: "Errors" }));
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent(
+      "POST /api/checkout",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Errors" }));
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("GET /login");
+  });
+
   it("opens a trace by pasted id", async () => {
     stubFetchRoutes([{ match: "/tempo/api/search", body: { metrics: {} } }]);
     const update = renderView();
@@ -292,6 +322,18 @@ describe("TracesView group detail", () => {
     stubFetchRoutes([{ match: "/tempo/api/search", body: { metrics: {} } }]);
     renderView({ group: "POST /api/checkout" });
     expect(await screen.findByText(/no traces/i)).toBeInTheDocument();
+  });
+
+  it("sorts the trace list by a clicked column", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+    renderView({ group: "POST /api/checkout" });
+    await screen.findByText("t1cafe");
+    // Newest first by default; duration sorts descending first.
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("t2feed");
+    await userEvent.click(screen.getByRole("button", { name: "Duration" }));
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("t1cafe");
+    await userEvent.click(screen.getByRole("button", { name: "Duration" }));
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("t2feed");
   });
 });
 
