@@ -1,6 +1,6 @@
 [package]
 name = "loki-api"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Loki-compatible API types for SignalDB"
 license = "AGPL-3.0"
