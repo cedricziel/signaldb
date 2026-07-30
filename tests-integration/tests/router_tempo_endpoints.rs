@@ -1548,39 +1548,50 @@ async fn test_trace_attributes_round_trip() {
     assert_eq!(trace.trace_id, trace_id);
     assert!(!trace.span_sets.is_empty(), "Trace should have span sets");
 
-    // Verify attributes are present in the returned trace
-    // The Tempo API format has span_sets with spans, each span has attributes as HashMap<String, Attribute>
-    let mut found_http_method = false;
-    let mut found_service_name = false;
-
-    for span_set in &trace.span_sets {
-        for span in &span_set.spans {
-            // Check span attributes (HashMap<String, Attribute>)
-            for (key, attr) in &span.attributes {
-                if key == "http.method" || attr.key == "http.method" {
-                    found_http_method = true;
-                }
-                if key == "service.name" || attr.key == "service.name" {
-                    found_service_name = true;
-                }
-            }
-        }
-    }
-
-    // At minimum, the span attributes should be present if the pipeline works correctly.
-    println!("Found http.method: {found_http_method}");
-    println!("Found service.name: {found_service_name}");
-
-    // The key assertion: attributes should not be empty
+    // The Tempo API format has span_sets with spans; each span carries its
+    // attributes as HashMap<String, Attribute>, and the router surfaces
+    // resource attributes under a "resource." prefix.
     let all_spans: Vec<_> = trace.span_sets.iter().flat_map(|ss| &ss.spans).collect();
     assert!(
         !all_spans.is_empty(),
         "Should have at least one span in results"
     );
 
-    println!(
-        "Trace attributes round-trip test completed. spans={}, found_http_method={found_http_method}, found_service_name={found_service_name}",
-        all_spans.len()
+    let mut found_http_method = false;
+    let mut found_resource_service_name = false;
+    for span in &all_spans {
+        for (key, attr) in &span.attributes {
+            if key == "http.method" || attr.key == "http.method" {
+                found_http_method = true;
+            }
+            if key == "resource.service.name" || attr.key == "resource.service.name" {
+                found_resource_service_name = true;
+            }
+        }
+    }
+
+    // Regression guard for the stored-Map read path: attributes ingested on
+    // the span and on the resource must survive to the Tempo response, not
+    // come back as an empty map.
+    assert!(
+        found_http_method,
+        "span attribute http.method must survive the round trip"
+    );
+    assert!(
+        found_resource_service_name,
+        "resource attribute service.name must survive the round trip"
+    );
+
+    // The span was ingested with OTLP status Ok (code 1); it must not read
+    // back as an error.
+    let root = all_spans
+        .iter()
+        .find(|s| s.span_id == hex::encode(&span_id))
+        .expect("root span present in response");
+    assert_eq!(
+        root.status.as_deref(),
+        Some("ok"),
+        "OTLP status Ok must map to \"ok\", not \"error\""
     );
 }
 

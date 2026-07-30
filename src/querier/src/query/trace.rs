@@ -6,7 +6,7 @@ use common::model::{
 };
 use datafusion::{
     arrow::{
-        array::{Array, BooleanArray, Int64Array, StringArray},
+        array::{Array, BooleanArray, Int64Array, MapArray, RecordBatch, StringArray},
         datatypes::{DataType, TimeUnit},
     },
     logical_expr::{Expr, col, lit},
@@ -256,29 +256,8 @@ impl TraceService {
                     .value(row_index)
                     .to_string();
 
-                let attributes = batch
-                    .column_by_name("span_attributes")
-                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-                    .and_then(|arr| {
-                        if arr.is_null(row_index) {
-                            None
-                        } else {
-                            serde_json::from_str(arr.value(row_index)).ok()
-                        }
-                    })
-                    .unwrap_or_default();
-
-                let resource = batch
-                    .column_by_name("resource_attributes")
-                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-                    .and_then(|arr| {
-                        if arr.is_null(row_index) {
-                            None
-                        } else {
-                            serde_json::from_str(arr.value(row_index)).ok()
-                        }
-                    })
-                    .unwrap_or_default();
+                let attributes = attribute_map(&batch, "span_attributes", row_index);
+                let resource = attribute_map(&batch, "resource_attributes", row_index);
 
                 let span = Span {
                     span_id: span_id.clone(),
@@ -598,29 +577,8 @@ impl TraceService {
                     .value(row_index)
                     .to_string();
 
-                let attributes = batch
-                    .column_by_name("span_attributes")
-                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-                    .and_then(|arr| {
-                        if arr.is_null(row_index) {
-                            None
-                        } else {
-                            serde_json::from_str(arr.value(row_index)).ok()
-                        }
-                    })
-                    .unwrap_or_default();
-
-                let resource = batch
-                    .column_by_name("resource_attributes")
-                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-                    .and_then(|arr| {
-                        if arr.is_null(row_index) {
-                            None
-                        } else {
-                            serde_json::from_str(arr.value(row_index)).ok()
-                        }
-                    })
-                    .unwrap_or_default();
+                let attributes = attribute_map(&batch, "span_attributes", row_index);
+                let resource = attribute_map(&batch, "resource_attributes", row_index);
 
                 let span = Span {
                     span_id: span_id.clone(),
@@ -885,6 +843,59 @@ fn clamped_limits(
     Ok((limit, span_limit))
 }
 
+/// Read one row of a trace attribute column into a `serde_json` map,
+/// handling both storage forms: a typed `Map<Utf8, Utf8>` column (current
+/// tables, written by the writer's schema coercion) and a legacy `Utf8`
+/// column holding a flat JSON object. An absent column, a null row, or
+/// unparseable content yields an empty map.
+///
+/// The map form stores every value as a string, so its values come back as
+/// `Value::String`; the legacy JSON form preserves the original scalar type.
+fn attribute_map(
+    batch: &RecordBatch,
+    name: &str,
+    row: usize,
+) -> HashMap<String, serde_json::Value> {
+    let Some(column) = batch.column_by_name(name) else {
+        return HashMap::new();
+    };
+
+    if let Some(map) = column.as_any().downcast_ref::<MapArray>() {
+        if map.is_null(row) {
+            return HashMap::new();
+        }
+        let entries = map.value(row);
+        let (Some(keys), Some(values)) = (
+            entries.column(0).as_any().downcast_ref::<StringArray>(),
+            entries.column(1).as_any().downcast_ref::<StringArray>(),
+        ) else {
+            return HashMap::new();
+        };
+        let mut out = HashMap::with_capacity(entries.len());
+        for j in 0..entries.len() {
+            if !keys.is_null(j) && !values.is_null(j) {
+                out.insert(
+                    keys.value(j).to_string(),
+                    serde_json::Value::String(values.value(j).to_string()),
+                );
+            }
+        }
+        return out;
+    }
+
+    if let Some(arr) = column.as_any().downcast_ref::<StringArray>() {
+        if !arr.is_null(row) {
+            if let Ok(serde_json::Value::Object(map)) =
+                serde_json::from_str::<serde_json::Value>(arr.value(row))
+            {
+                return map.into_iter().collect();
+            }
+        }
+    }
+
+    HashMap::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -893,6 +904,59 @@ mod tests {
     #[test]
     fn span_limit_uses_default_when_absent() {
         assert_eq!(clamped_limits(None, 1000).unwrap(), (20, 20 * 50));
+    }
+
+    #[test]
+    fn attribute_map_reads_typed_map_columns() {
+        use datafusion::arrow::array::{ArrayRef, MapBuilder, StringBuilder};
+        use datafusion::arrow::record_batch::RecordBatch;
+
+        // Build a Map<Utf8, Utf8> column, the form the writer stores today.
+        let mut builder = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
+        builder.keys().append_value("http.method");
+        builder.values().append_value("POST");
+        builder.keys().append_value("http.status_code");
+        builder.values().append_value("200");
+        builder.append(true).unwrap();
+        let column: ArrayRef = Arc::new(builder.finish());
+        let batch = RecordBatch::try_from_iter([("span_attributes", column)]).unwrap();
+
+        let attrs = attribute_map(&batch, "span_attributes", 0);
+        assert_eq!(
+            attrs.get("http.method"),
+            Some(&serde_json::Value::String("POST".to_string()))
+        );
+        assert_eq!(
+            attrs.get("http.status_code"),
+            Some(&serde_json::Value::String("200".to_string()))
+        );
+    }
+
+    #[test]
+    fn attribute_map_reads_legacy_json_columns() {
+        use datafusion::arrow::record_batch::RecordBatch;
+
+        let column: datafusion::arrow::array::ArrayRef = Arc::new(StringArray::from(vec![Some(
+            r#"{"db.system":"postgresql"}"#,
+        )]));
+        let batch = RecordBatch::try_from_iter([("span_attributes", column)]).unwrap();
+
+        let attrs = attribute_map(&batch, "span_attributes", 0);
+        assert_eq!(
+            attrs.get("db.system"),
+            Some(&serde_json::Value::String("postgresql".to_string()))
+        );
+    }
+
+    #[test]
+    fn attribute_map_is_empty_for_absent_column_or_null_row() {
+        use datafusion::arrow::array::ArrayRef;
+        use datafusion::arrow::record_batch::RecordBatch;
+
+        let column: ArrayRef = Arc::new(StringArray::from(vec![Option::<&str>::None]));
+        let batch = RecordBatch::try_from_iter([("span_attributes", column)]).unwrap();
+        assert!(attribute_map(&batch, "span_attributes", 0).is_empty());
+        assert!(attribute_map(&batch, "resource_attributes", 0).is_empty());
     }
 
     #[test]
