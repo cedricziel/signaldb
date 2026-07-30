@@ -35,7 +35,7 @@ jobs:
       - name: Build
         run: mkdocs build --site-dir _site
 
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
 
   deploy:
     name: Deploy to GitHub Pages
