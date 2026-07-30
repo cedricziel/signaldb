@@ -84,7 +84,16 @@ jobs:
         run: |
           choco install protoc
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Build release binaries
+        # The release-${target} rust-cache is only refreshed on release
+        # runs, so it lags main by a whole release cycle; sccache backfills
+        # the compiler-level cache across that gap.
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
         run: |
           cargo build --release --target ${{ matrix.target }}
 
@@ -122,6 +131,8 @@ jobs:
           cp signaldb-acceptor${{ matrix.binary_suffix }} signaldb-microservices-${{ matrix.target }}/
           cp signaldb-router${{ matrix.binary_suffix }} signaldb-microservices-${{ matrix.target }}/
           cp signaldb-writer${{ matrix.binary_suffix }} signaldb-microservices-${{ matrix.target }}/
+          cp signaldb-querier${{ matrix.binary_suffix }} signaldb-microservices-${{ matrix.target }}/
+          cp signaldb-compactor${{ matrix.binary_suffix }} signaldb-microservices-${{ matrix.target }}/
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
             7z a signaldb-microservices-${{ matrix.target }}.zip signaldb-microservices-${{ matrix.target }}/
           else
@@ -203,6 +214,31 @@ jobs:
           path: dist/
           retention-days: 7
 
+      # The same static binaries double as Linux release archives; kept out
+      # of dist/ so the docker jobs' COPY doesn't pick up the tarballs.
+      - name: Package release archives
+        run: |
+          target=x86_64-unknown-linux-musl
+          mkdir -p archives/signaldb-monolithic-${target} \
+                   archives/signaldb-microservices-${target} \
+                   archives/signaldb-cli-${target}
+          cp dist/signaldb archives/signaldb-monolithic-${target}/
+          cp dist/signaldb-acceptor dist/signaldb-router dist/signaldb-writer \
+             dist/signaldb-querier dist/signaldb-compactor \
+             archives/signaldb-microservices-${target}/
+          cp dist/signaldb-cli archives/signaldb-cli-${target}/
+          cd archives
+          tar czf signaldb-monolithic-${target}.tar.gz signaldb-monolithic-${target}
+          tar czf signaldb-microservices-${target}.tar.gz signaldb-microservices-${target}
+          tar czf signaldb-cli-${target}.tar.gz signaldb-cli-${target}
+
+      - name: Upload release archives
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-archives-musl-amd64
+          path: archives/*.tar.gz
+          retention-days: 7
+
   build-musl-arm64:
     name: Build musl Binaries (arm64)
     runs-on: ubuntu-24.04-arm
@@ -266,11 +302,86 @@ jobs:
           path: dist/
           retention-days: 7
 
-  docker-build-amd64:
-    name: Build Docker Image (amd64)
+      # See the amd64 job; these provide the only Linux arm64 archives.
+      - name: Package release archives
+        run: |
+          target=aarch64-unknown-linux-musl
+          mkdir -p archives/signaldb-monolithic-${target} \
+                   archives/signaldb-microservices-${target} \
+                   archives/signaldb-cli-${target}
+          cp dist/signaldb archives/signaldb-monolithic-${target}/
+          cp dist/signaldb-acceptor dist/signaldb-router dist/signaldb-writer \
+             dist/signaldb-querier dist/signaldb-compactor \
+             archives/signaldb-microservices-${target}/
+          cp dist/signaldb-cli archives/signaldb-cli-${target}/
+          cd archives
+          tar czf signaldb-monolithic-${target}.tar.gz signaldb-monolithic-${target}
+          tar czf signaldb-microservices-${target}.tar.gz signaldb-microservices-${target}
+          tar czf signaldb-cli-${target}.tar.gz signaldb-cli-${target}
+
+      - name: Upload release archives
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-archives-musl-arm64
+          path: archives/*.tar.gz
+          retention-days: 7
+
+  # Explore UI dist, built once per release: the router and monolithic
+  # images copy it in (UI_BUILDER=prebuilt) instead of each compiling it
+  # inside docker, and it ships as a release asset for archive users, who
+  # point SIGNALDB_UI_DIR at the unpacked directory.
+  build-ui:
+    name: Build Explore UI
     runs-on: ubuntu-latest
-    needs: [release-please, build-musl-amd64]
+    needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build UI
+        run: pnpm --filter signaldb-ui build
+
+      - name: Upload UI dist
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-dist
+          path: src/ui/dist
+          retention-days: 7
+
+      - name: Package UI archive
+        run: |
+          mkdir -p archives/signaldb-ui
+          cp -R src/ui/dist/. archives/signaldb-ui/
+          tar czf archives/signaldb-ui.tar.gz -C archives signaldb-ui
+
+      - name: Upload UI archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-archive-ui
+          path: archives/*.tar.gz
+          retention-days: 7
+
+  docker-build-amd64:
+    name: Build Docker Image (${{ matrix.service }}, amd64)
+    runs-on: ubuntu-latest
+    needs: [release-please, build-musl-amd64, build-ui]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [monolithic, acceptor, router, writer, querier, compactor]
     steps:
       - uses: actions/checkout@v7
 
@@ -280,6 +391,12 @@ jobs:
           name: release-musl-binaries-amd64
           path: dist/
 
+      - name: Download UI dist
+        uses: actions/download-artifact@v8
+        with:
+          name: ui-dist
+          path: ui-dist/
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -290,11 +407,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The monolithic image keeps the bare repository name; per-service
+      # images live under ghcr.io/<repo>/<service>.
+      - name: Compute image name
+        id: image
+        run: |
+          if [ "${{ matrix.service }}" = "monolithic" ]; then
+            echo "name=ghcr.io/${{ github.repository }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=ghcr.io/${{ github.repository }}/${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ steps.image.outputs.name }}
           # latest=false: metadata-action's latest=auto default would add a
           # plain (unsuffixed) latest tag here, letting a single-arch image
           # overwrite it; the manifest job owns the multi-arch latest tag.
@@ -303,24 +431,29 @@ jobs:
           tags: |
             type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag_name }},suffix=-amd64
 
-      - name: Build and push monolithic image
+      - name: Build and push image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
-          target: monolithic
+          target: ${{ matrix.service }}
           build-args: |
             BUILDER=prebuilt
+            UI_BUILDER=prebuilt
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
   docker-build-arm64:
-    name: Build Docker Image (arm64)
+    name: Build Docker Image (${{ matrix.service }}, arm64)
     runs-on: ubuntu-24.04-arm
-    needs: [release-please, build-musl-arm64]
+    needs: [release-please, build-musl-arm64, build-ui]
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [monolithic, acceptor, router, writer, querier, compactor]
     steps:
       - uses: actions/checkout@v7
 
@@ -330,6 +463,12 @@ jobs:
           name: release-musl-binaries-arm64
           path: dist/
 
+      - name: Download UI dist
+        uses: actions/download-artifact@v8
+        with:
+          name: ui-dist
+          path: ui-dist/
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -340,35 +479,50 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # See the amd64 job for the image naming scheme.
+      - name: Compute image name
+        id: image
+        run: |
+          if [ "${{ matrix.service }}" = "monolithic" ]; then
+            echo "name=ghcr.io/${{ github.repository }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=ghcr.io/${{ github.repository }}/${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ steps.image.outputs.name }}
           # latest=false: see the amd64 job; the manifest job owns latest.
           flavor: |
             latest=false
           tags: |
             type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag_name }},suffix=-arm64
 
-      - name: Build and push monolithic image
+      - name: Build and push image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
-          target: monolithic
+          target: ${{ matrix.service }}
           build-args: |
             BUILDER=prebuilt
+            UI_BUILDER=prebuilt
           platforms: linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
   docker-manifest:
-    name: Create Multi-Arch Release Manifest
+    name: Create Multi-Arch Release Manifest (${{ matrix.service }})
     runs-on: ubuntu-latest
     needs: [release-please, docker-build-amd64, docker-build-arm64]
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [monolithic, acceptor, router, writer, querier, compactor]
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
@@ -377,11 +531,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # See the docker-build-amd64 job for the image naming scheme.
+      - name: Compute image name
+        id: image
+        run: |
+          if [ "${{ matrix.service }}" = "monolithic" ]; then
+            echo "name=ghcr.io/${{ github.repository }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=ghcr.io/${{ github.repository }}/${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ steps.image.outputs.name }}
           tags: |
             type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag_name }}
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-please.outputs.tag_name }}
@@ -392,14 +556,17 @@ jobs:
           while IFS= read -r tag; do
             [ -z "$tag" ] && continue
             docker buildx imagetools create -t "$tag" \
-              "ghcr.io/${{ github.repository }}:${version}-amd64" \
-              "ghcr.io/${{ github.repository }}:${version}-arm64"
+              "${{ steps.image.outputs.name }}:${version}-amd64" \
+              "${{ steps.image.outputs.name }}:${version}-arm64"
           done <<< "${{ steps.meta.outputs.tags }}"
 
   upload-assets:
     name: Upload Release Assets
     runs-on: ubuntu-latest
-    needs: [release-please, build-release, docker-manifest]
+    # Deliberately not gated on the docker jobs: binary assets and image
+    # publishing are independent, and a transient registry failure must
+    # not block the tarballs from reaching the release.
+    needs: [release-please, build-release, build-musl-amd64, build-musl-arm64, build-ui]
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
 
     steps:
