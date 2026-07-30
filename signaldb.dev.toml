@@ -8,7 +8,6 @@ catalog_type = "sql"
 catalog_uri = "sqlite:///Users/cedricziel/private/code/signaldb/.data/iceberg_catalog.db"
 
 [auth]
-enabled = true
 admin_api_key = "dev-admin-key"
 
 # Development tenant
@@ -25,4 +24,28 @@ name = "Development Key"
 [[auth.tenants.datasets]]
 id = "local"
 slug = "local"
+is_default = true
+
+# Self-monitoring: services export their own telemetry to the acceptor
+[self_monitoring]
+enabled = true
+endpoint = "http://localhost:4317"
+tenant_id = "_system"
+dataset_id = "_monitoring"
+trace_sample_ratio = 0.1
+
+# _system tenant for self-monitoring
+[[auth.tenants]]
+id = "_system"
+slug = "_system"
+name = "System (Self-Monitoring)"
+default_dataset = "_monitoring"
+
+[[auth.tenants.api_keys]]
+key = "dev-admin-key"
+name = "Self-Monitoring Key"
+
+[[auth.tenants.datasets]]
+id = "_monitoring"
+slug = "_monitoring"
 is_default = true
