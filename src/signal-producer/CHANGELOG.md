@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.2.0](https://github.com/cedricziel/signaldb/compare/signal-producer-v0.1.0...signal-producer-v0.2.0) (2026-07-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **heraclitus:** Minimum supported Rust version is now 1.86.0
+* Minimum supported Rust version is now 1.85.0
+
+### Features
+
+* Add schema module with Iceberg integration and DSN-based storage ([#162](https://github.com/cedricziel/signaldb/issues/162)) ([60bbb8d](https://github.com/cedricziel/signaldb/commit/60bbb8d09a5ff63e2114c6383e7650c9dfef0d24))
+* complete all-signal pipeline (traces, logs, metrics) with producer, transforms, and monolithic discovery fix ([#435](https://github.com/cedricziel/signaldb/issues/435)) ([b973458](https://github.com/cedricziel/signaldb/commit/b9734582edd68436c4ccb3891c3767726a37f433))
+* **heraclitus:** add Kafka-compatible server with Apache Arrow/Parquet storage ([#212](https://github.com/cedricziel/signaldb/issues/212)) ([8ad74df](https://github.com/cedricziel/signaldb/commit/8ad74df27ab246816a7871ad55d87d32dfac954b))
+
+
+### Documentation
+
+* add comprehensive per-component README documentation ([#151](https://github.com/cedricziel/signaldb/issues/151)) ([5ea02a2](https://github.com/cedricziel/signaldb/commit/5ea02a2dd660bc03639a3a82c0146f18c147ecfb)), closes [#139](https://github.com/cedricziel/signaldb/issues/139)
+* full staleness sweep — match all docs, skills, and READMEs to current code ([#611](https://github.com/cedricziel/signaldb/issues/611)) ([22247b0](https://github.com/cedricziel/signaldb/commit/22247b027d77820481d493c081e29f0df4efd6ed))
+
+
+### Continuous Integration
+
+* drop MSRV policy and fix security audit ignores ([#521](https://github.com/cedricziel/signaldb/issues/521)) ([7da71e3](https://github.com/cedricziel/signaldb/commit/7da71e3d78f593a4361f403e2d4be1e426fb8807))
+
 ## 0.1.0 (2026-03-02)
 
 
