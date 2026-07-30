@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.1](https://github.com/cedricziel/signaldb/compare/querier-v0.2.0...querier-v0.2.1) (2026-07-30)
+
+
+### Bug Fixes
+
+* **traces:** read stored attributes and correct OTLP status mapping ([#829](https://github.com/cedricziel/signaldb/issues/829)) ([31fb70e](https://github.com/cedricziel/signaldb/commit/31fb70ed291b884ce36ae2a7b180ec6127c1bfc7))
+
+
+### Performance Improvements
+
+* **querier:** prune partitions and project columns on trace-by-id lookup ([#827](https://github.com/cedricziel/signaldb/issues/827)) ([cbe3a3e](https://github.com/cedricziel/signaldb/commit/cbe3a3e1e44c94f479bfcf95d92369103780ac0d))
+
 ## [0.2.0](https://github.com/cedricziel/signaldb/compare/querier-v0.1.0...querier-v0.2.0) (2026-07-30)
 
 

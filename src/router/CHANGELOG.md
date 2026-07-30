@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/cedricziel/signaldb/compare/router-v0.2.1...router-v0.2.2) (2026-07-30)
+
+
+### Features
+
+* **router:** add /api/v1/label_stats cardinality endpoint ([#831](https://github.com/cedricziel/signaldb/issues/831)) ([d64fd80](https://github.com/cedricziel/signaldb/commit/d64fd80603f2a33cf2142a0982d54bc6aa547fed))
+* **router:** join external callers' traces at the HTTP query boundary ([#838](https://github.com/cedricziel/signaldb/issues/838)) ([2818eb2](https://github.com/cedricziel/signaldb/commit/2818eb246ed7bdd5764bcf0294542b35d5473c8d))
+
 ## [0.2.1](https://github.com/cedricziel/signaldb/compare/router-v0.2.0...router-v0.2.1) (2026-07-30)
 
 

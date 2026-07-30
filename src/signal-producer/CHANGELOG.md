@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/cedricziel/signaldb/compare/signal-producer-v0.2.0...signal-producer-v0.2.1) (2026-07-30)
+
+
+### Code Refactoring
+
+* **signal-producer:** model a realistic multi-service fleet ([#833](https://github.com/cedricziel/signaldb/issues/833)) ([cd97144](https://github.com/cedricziel/signaldb/commit/cd97144f53eae9317c60f1b96ca1f8cce38ec19d))
+
 ## [0.2.0](https://github.com/cedricziel/signaldb/compare/signal-producer-v0.1.0...signal-producer-v0.2.0) (2026-07-30)
 
 
