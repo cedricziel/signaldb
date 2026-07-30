@@ -1,6 +1,7 @@
 import { TimeRangePicker } from "../shell/TimeRangePicker";
 import { LogsView } from "../logs/LogsView";
 import { MetricsView } from "../metrics/MetricsView";
+import { ProfilesView } from "../profiles/ProfilesView";
 import { TracesView } from "../traces/TracesView";
 import type { ExploreState, Signal } from "../../lib/urlState";
 import "./explore.css";
@@ -9,6 +10,7 @@ const SIGNAL_TABS: { id: Signal; label: string }[] = [
   { id: "logs", label: "Logs" },
   { id: "traces", label: "Traces" },
   { id: "metrics", label: "Metrics" },
+  { id: "profiles", label: "Profiles" },
 ];
 
 interface Props {
@@ -54,6 +56,9 @@ export function ExploreView({ state, update }: Props) {
       )}
       {state.signal === "metrics" && (
         <MetricsView state={state} update={update} />
+      )}
+      {state.signal === "profiles" && (
+        <ProfilesView state={state} update={update} />
       )}
     </div>
   );
