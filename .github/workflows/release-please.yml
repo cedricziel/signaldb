@@ -453,7 +453,10 @@ jobs:
   upload-assets:
     name: Upload Release Assets
     runs-on: ubuntu-latest
-    needs: [release-please, build-release, docker-manifest]
+    # Deliberately not gated on the docker jobs: binary assets and image
+    # publishing are independent, and a transient registry failure must
+    # not block the tarballs from reaching the release.
+    needs: [release-please, build-release]
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
 
     steps:
