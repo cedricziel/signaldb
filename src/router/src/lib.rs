@@ -256,6 +256,12 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .layer(middleware::from_fn(
             common::self_monitoring::http_metrics_middleware,
         ))
+        // Outermost: root each request in a server span parented to the
+        // caller's W3C trace context, so external callers' traces join
+        // SignalDB's query trace (no-op unless self-monitoring is enabled).
+        .layer(middleware::from_fn(
+            common::self_monitoring::http_trace_context_middleware,
+        ))
         .with_state(state)
 }
 
