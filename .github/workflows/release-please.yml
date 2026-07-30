@@ -88,6 +88,19 @@ jobs:
         run: |
           cargo build --release --target ${{ matrix.target }}
 
+      - name: Package CLI
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+
+          mkdir -p signaldb-cli-${{ matrix.target }}
+          cp signaldb-cli${{ matrix.binary_suffix }} signaldb-cli-${{ matrix.target }}/
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            7z a signaldb-cli-${{ matrix.target }}.zip signaldb-cli-${{ matrix.target }}/
+          else
+            tar czf signaldb-cli-${{ matrix.target }}.tar.gz signaldb-cli-${{ matrix.target }}/
+          fi
+
       - name: Package binaries
         shell: bash
         run: |
@@ -122,6 +135,7 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/signaldb-monolithic-${{ matrix.target }}.*
             target/${{ matrix.target }}/release/signaldb-microservices-${{ matrix.target }}.*
+            target/${{ matrix.target }}/release/signaldb-cli-${{ matrix.target }}.*
 
   # Static musl binaries for the release images, built natively per arch
   # (the previous single docker-build job compiled arm64 under QEMU).
