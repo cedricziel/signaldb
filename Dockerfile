@@ -158,7 +158,14 @@ RUN apk add --no-cache \
     ca-certificates \
     libgcc \
     && addgroup -g 1000 signaldb \
-    && adduser -D -u 1000 -G signaldb signaldb
+    && adduser -D -u 1000 -G signaldb signaldb \
+    && mkdir -p /data \
+    && chown signaldb:signaldb /data
+
+# Default working directory so relative default paths (SQLite catalog, WAL,
+# file storage) land in one mountable location; named volumes inherit the
+# signaldb ownership set above
+WORKDIR /data
 
 # ============================================================================
 # Service-specific stages
