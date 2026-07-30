@@ -17,5 +17,6 @@
   "src/prometheus-api": "0.1.1",
   "src/pyroscope-api": "0.1.1",
   "src/signaldb-api": "0.1.1",
-  "src/signaldb-sdk": "0.1.1"
+  "src/signaldb-sdk": "0.1.1",
+  "src/ui": "0.1.0"
 }
