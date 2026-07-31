@@ -193,6 +193,11 @@ pub fn init_telemetry(config: &Configuration, service_name: &str) -> Result<Opti
 /// Resolve the trace sampler from config and the standard OTel environment
 /// variables (`OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG`), which take
 /// precedence over `self_monitoring.trace_sample_ratio`.
+///
+/// When `OTEL_TRACES_SAMPLER` is unset the sampler is parent-based
+/// (`ParentBased(TraceIdRatioBased(ratio))`) so a caller's sampled decision is
+/// honored end-to-end and only unparented roots are ratio-sampled. Set
+/// `OTEL_TRACES_SAMPLER=traceidratio` to force head-based sampling instead.
 fn resolve_trace_sampler(
     config_ratio: f64,
     sampler_env: Option<String>,
@@ -214,7 +219,15 @@ fn resolve_trace_sampler(
         Some("parentbased_traceidratio") => {
             Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(ratio)))
         }
-        Some("traceidratio") | None => Sampler::TraceIdRatioBased(ratio),
+        // Explicit opt-in to head-based ratio sampling, which ignores the
+        // parent's sampled decision (standard OTel `traceidratio` semantics).
+        Some("traceidratio") => Sampler::TraceIdRatioBased(ratio),
+        // Unset: default to a parent-respecting sampler so an upstream caller's
+        // sampled `traceparent` (and the whole query trace it roots) is always
+        // kept, and only unparented root spans are ratio-sampled. Without this,
+        // a bare ratio sampler drops ~`1 - ratio` of joined external traces and
+        // defeats HTTP trace-context join at the query boundary.
+        None => Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(ratio))),
         Some(other) => {
             tracing::warn!(
                 sampler = %other,
@@ -249,8 +262,22 @@ mod tests {
     }
 
     #[test]
-    fn sampler_defaults_to_config_ratio() {
+    fn sampler_defaults_to_parent_based_config_ratio() {
+        // Unset OTEL_TRACES_SAMPLER must default to a parent-respecting sampler
+        // so an upstream caller's sampled `traceparent` is always kept and the
+        // query trace it roots is never dropped by head sampling.
         let sampler = resolve_trace_sampler(0.1, None, None);
+        assert_eq!(
+            format!("{sampler:?}"),
+            "ParentBased(TraceIdRatioBased(0.1))"
+        );
+    }
+
+    #[test]
+    fn explicit_traceidratio_stays_head_based() {
+        // Setting OTEL_TRACES_SAMPLER=traceidratio is an explicit opt-in to
+        // head-based sampling that ignores the parent decision.
+        let sampler = resolve_trace_sampler(0.1, Some("traceidratio".into()), None);
         assert_eq!(format!("{sampler:?}"), "TraceIdRatioBased(0.1)");
     }
 
@@ -259,9 +286,13 @@ mod tests {
         let sampler = resolve_trace_sampler(0.1, Some("traceidratio".into()), Some("0.2".into()));
         assert_eq!(format!("{sampler:?}"), "TraceIdRatioBased(0.2)");
 
-        // arg applies even when only the arg env is set
+        // arg applies even when only the arg env is set; unset sampler stays
+        // parent-based with the overridden ratio at the root.
         let sampler = resolve_trace_sampler(0.1, None, Some("0.5".into()));
-        assert_eq!(format!("{sampler:?}"), "TraceIdRatioBased(0.5)");
+        assert_eq!(
+            format!("{sampler:?}"),
+            "ParentBased(TraceIdRatioBased(0.5))"
+        );
     }
 
     #[test]
@@ -286,10 +317,12 @@ mod tests {
 
     #[test]
     fn sampler_ratio_is_clamped_and_bad_values_fall_back() {
+        // Unset sampler stays parent-based; only the root ratio is clamped.
         let s = resolve_trace_sampler(5.0, None, None);
-        assert_eq!(format!("{s:?}"), "TraceIdRatioBased(1.0)");
+        assert_eq!(format!("{s:?}"), "ParentBased(TraceIdRatioBased(1.0))");
         let s = resolve_trace_sampler(0.1, None, Some("not-a-number".into()));
-        assert_eq!(format!("{s:?}"), "TraceIdRatioBased(0.1)");
+        assert_eq!(format!("{s:?}"), "ParentBased(TraceIdRatioBased(0.1))");
+        // An explicit but unsupported sampler name falls back to head-based ratio.
         let s = resolve_trace_sampler(0.1, Some("bogus".into()), None);
         assert_eq!(format!("{s:?}"), "TraceIdRatioBased(0.1)");
     }
