@@ -47,19 +47,33 @@ import {
 } from "@opentelemetry/semantic-conventions";
 import { getDefaultSessionManager } from "./session";
 import { SessionSpanProcessor } from "./sessionSpanProcessor";
+import { resolveExportConfig, resolveServiceName } from "./runtimeConfig";
 
-const SERVICE_NAME =
+// Runtime config the router injected via `/ui/runtime-config.js` before the app
+// booted (see runtimeConfig.ts). Absent in tests/SSR and when the script 404s.
+const RUNTIME_CONFIG =
+  typeof window !== "undefined"
+    ? window.__SIGNALDB_RUNTIME_CONFIG__
+    : undefined;
+
+const BUILD_TIME_SERVICE_NAME =
   typeof __SIGNALDB_TELEMETRY_SERVICE_NAME__ !== "undefined" &&
   __SIGNALDB_TELEMETRY_SERVICE_NAME__
     ? __SIGNALDB_TELEMETRY_SERVICE_NAME__
     : "signaldb-ui";
+
+const SERVICE_NAME = resolveServiceName(
+  RUNTIME_CONFIG,
+  BUILD_TIME_SERVICE_NAME,
+);
 
 const SERVICE_VERSION =
   typeof __SIGNALDB_UI_VERSION__ !== "undefined"
     ? __SIGNALDB_UI_VERSION__
     : "0.0.0";
 
-const OTLP_ENDPOINT =
+// Endpoint baked in at build time; the runtime config (above) takes precedence.
+const BUILD_TIME_OTLP_ENDPOINT =
   typeof __SIGNALDB_OTLP_ENDPOINT__ !== "undefined"
     ? __SIGNALDB_OTLP_ENDPOINT__
     : "";
@@ -74,11 +88,16 @@ function tracesUrl(endpoint: string): string {
   return base.endsWith("/v1/traces") ? base : `${base}/v1/traces`;
 }
 
-/** Choose the exporter: OTLP when configured, console in dev for feedback,
- * otherwise none — propagation still works with no exporter. */
+/** Choose the exporter: OTLP when configured (runtime config wins, else the
+ * build-time endpoint), console in dev for feedback, otherwise none —
+ * propagation still works with no exporter. */
 function resolveExporter(): SpanExporter | null {
-  if (OTLP_ENDPOINT)
-    return new OTLPTraceExporter({ url: tracesUrl(OTLP_ENDPOINT) });
+  const cfg = resolveExportConfig(RUNTIME_CONFIG, BUILD_TIME_OTLP_ENDPOINT);
+  if (cfg)
+    return new OTLPTraceExporter({
+      url: tracesUrl(cfg.endpoint),
+      headers: cfg.headers,
+    });
   if (import.meta.env.DEV) return new ConsoleSpanExporter();
   return null;
 }
