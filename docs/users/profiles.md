@@ -83,10 +83,28 @@ curl -s "http://localhost:3000/pyroscope/render?query=cpu&from=now-15m&until=now
 
 Self-profiling requires `auth.admin_api_key` (the export authenticates
 with it) and works even when the rest of `[self_monitoring]` is
-disabled. It is mutually exclusive with the external-Pyroscope
-`[profiling]` section — both drive the same in-process sampler; if both
-are enabled, `[profiling]` wins and self-profiling is skipped with a
-warning.
+disabled. CPU self-profiling is mutually exclusive with the
+external-Pyroscope `[profiling]` section — both drive the same SIGPROF
+sampler; if both are enabled, `[profiling]` wins and CPU self-profiling
+is skipped with a warning.
+
+### Heap profiles
+
+Set `heap_profiles_enabled = true` to also export a jemalloc live-heap
+profile (`inuse_space` / `bytes`) each window. This uses jemalloc rather
+than the SIGPROF sampler, so it runs alongside CPU self-profiling or the
+external `[profiling]` agent. It requires the binary to be **built with
+the `jemalloc-profiling` feature** and started with jemalloc's sampling
+profiler enabled — `MALLOC_CONF=prof:true` on Linux, or the prefixed
+`_RJEM_MALLOC_CONF=prof:true` on platforms where jemalloc keeps its symbol
+prefix (e.g. macOS). Without both the feature and the env var, the setting
+logs a warning and does nothing. Query it by profile type:
+
+```bash
+curl -s "http://localhost:3000/pyroscope/render?query=inuse_space:inuse_space:bytes&from=now-15m&until=now" \
+  -H "Authorization: Bearer <admin-api-key>" \
+  -H "X-Tenant-ID: _system" -H "X-Dataset-ID: _monitoring"
+```
 
 ## How profiles are stored
 

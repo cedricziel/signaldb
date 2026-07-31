@@ -410,6 +410,11 @@ rate_limit_delay_ms = 0               # Delay between batches in milliseconds (d
 # profile_sample_rate_hz = 99
 # How often a profile window is exported (default: 60s)
 # profile_interval = "60s"
+# Also export a heap (inuse_space/bytes) profile each window. Requires the
+# jemalloc-profiling build feature and jemalloc profiling active at runtime
+# (MALLOC_CONF=prof:true). Independent of CPU profiling — jemalloc does not
+# use SIGPROF — so it can run alongside profiles_enabled or [profiling].
+# heap_profiles_enabled = true
 
 # Continuous profiling: CPU flame graphs (and optionally heap profiles)
 # pushed to a Grafana Pyroscope server (docker compose includes one at
