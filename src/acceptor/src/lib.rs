@@ -428,6 +428,39 @@ pub type MetricsHandlerState = OtlpHttpState<MetricsHandler>;
 
 /// Mount a single OTLP/HTTP export route behind the shared auth middleware
 /// and HTTP self-monitoring metrics.
+/// Build the CORS layer that lets the browser export telemetry cross-origin
+/// to the OTLP/HTTP endpoints.
+///
+/// The browser sends `Authorization` + `X-Tenant-ID` / `X-Dataset-ID`, which
+/// make the export a non-simple request; the browser first issues an
+/// unauthenticated `OPTIONS` preflight. This layer sits outermost so it answers
+/// the preflight before the auth middleware can reject it for missing
+/// credentials. An empty origin list allows any origin (trusted-network
+/// homelab default); a non-empty list restricts to those exact origins.
+fn otlp_cors_layer(allowed_origins: &[String]) -> tower_http::cors::CorsLayer {
+    use axum::http::{HeaderName, Method, header};
+    use tower_http::cors::{Any, CorsLayer};
+
+    let cors = CorsLayer::new()
+        .allow_methods([Method::POST, Method::OPTIONS])
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            HeaderName::from_static("x-tenant-id"),
+            HeaderName::from_static("x-dataset-id"),
+        ]);
+
+    if allowed_origins.is_empty() {
+        cors.allow_origin(Any)
+    } else {
+        let origins: Vec<axum::http::HeaderValue> = allowed_origins
+            .iter()
+            .filter_map(|o| o.parse().ok())
+            .collect();
+        cors.allow_origin(origins)
+    }
+}
+
 fn otlp_signal_router<H: Send + Sync + 'static>(
     path: &str,
     method_router: axum::routing::MethodRouter,
@@ -844,6 +877,10 @@ pub struct HttpAcceptorConfig {
     pub authenticator: Arc<Authenticator>,
     pub rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
     pub storage_usage: Arc<common::storage_usage::StorageUsageTracker>,
+    /// Origins the browser may export telemetry from (CORS). `None` disables
+    /// cross-origin access entirely; `Some(empty)` allows any origin. Set from
+    /// `[self_monitoring.frontend]` when browser telemetry export is enabled.
+    pub cors_allowed_origins: Option<Vec<String>>,
 }
 
 pub async fn serve_otlp_http(
@@ -917,6 +954,20 @@ pub async fn serve_otlp_http(
             config.storage_usage.clone(),
         ));
 
+    // Browser telemetry export is cross-origin (UI on the router, ingest on
+    // the acceptor), so add CORS outermost when it is enabled — it must answer
+    // the preflight before auth runs.
+    let app = match &config.cors_allowed_origins {
+        Some(origins) => {
+            tracing::info!(
+                allowed_origins = ?origins,
+                "CORS enabled for browser telemetry export"
+            );
+            app.layer(otlp_cors_layer(origins))
+        }
+        None => app,
+    };
+
     tracing::info!("OTLP traces endpoint enabled at POST /v1/traces");
     tracing::info!("OTLP logs endpoint enabled at POST /v1/logs");
     tracing::info!("OTLP metrics endpoint enabled at POST /v1/metrics");
@@ -940,4 +991,84 @@ pub async fn serve_otlp_http(
         .expect("Unable to send stopped signal for OTLP/HTTP");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod cors_tests {
+    use super::otlp_cors_layer;
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode, header};
+    use axum::routing::post;
+    use axum::{Router, response::IntoResponse};
+    use tower::ServiceExt;
+
+    fn app_with_cors(allowed: &[String]) -> Router {
+        // A stand-in for the auth-gated /v1/traces route: it 401s without
+        // credentials, exactly like the real endpoint, so the test proves the
+        // CORS layer answers the preflight *before* auth would reject it.
+        async fn guarded() -> impl IntoResponse {
+            (StatusCode::UNAUTHORIZED, "missing auth")
+        }
+        Router::new()
+            .route("/v1/traces", post(guarded))
+            .layer(otlp_cors_layer(allowed))
+    }
+
+    fn preflight(origin: &str) -> Request<Body> {
+        Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/v1/traces")
+            .header(header::ORIGIN, origin)
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+            .header(
+                header::ACCESS_CONTROL_REQUEST_HEADERS,
+                "authorization,x-tenant-id",
+            )
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn preflight_allowed_for_any_origin_when_unrestricted() {
+        let app = app_with_cors(&[]);
+        let res = app
+            .oneshot(preflight("http://ui.example:3000"))
+            .await
+            .unwrap();
+        // Preflight is answered by the CORS layer, never reaching the 401 route.
+        assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            res.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .map(|v| v.to_str().unwrap().to_string()),
+            Some("*".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn preflight_echoes_listed_origin_and_omits_others() {
+        let allowed = vec!["http://ui.example:3000".to_string()];
+
+        let res = app_with_cors(&allowed)
+            .oneshot(preflight("http://ui.example:3000"))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .map(|v| v.to_str().unwrap().to_string()),
+            Some("http://ui.example:3000".to_string())
+        );
+
+        let res = app_with_cors(&allowed)
+            .oneshot(preflight("http://evil.example"))
+            .await
+            .unwrap();
+        assert!(
+            res.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none(),
+            "unlisted origin must not be granted CORS access"
+        );
+    }
 }
