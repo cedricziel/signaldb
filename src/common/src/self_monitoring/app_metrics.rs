@@ -279,11 +279,45 @@ pub async fn http_metrics_middleware(
     response
 }
 
-/// Root each inbound HTTP request in a server span whose parent is the
+/// OTel HTTP server span name: `{method} {http.route}` when a low-cardinality
+/// route template is available, else just `{method}`.
+///
+/// Per the OpenTelemetry HTTP semantic conventions, the route template (e.g.
+/// `/tempo/api/traces/{trace_id}`) is what belongs in the span name — never the
+/// raw request path, which carries unbounded ids. When no route matched (there
+/// is no low-cardinality target) the name falls back to the method alone.
+fn http_server_span_name(method: &str, route: Option<&str>) -> String {
+    match route {
+        Some(route) => format!("{method} {route}"),
+        None => method.to_owned(),
+    }
+}
+
+/// Map an HTTP version to the OTel `network.protocol.version` value.
+fn network_protocol_version(version: axum::http::Version) -> &'static str {
+    use axum::http::Version;
+    match version {
+        v if v == Version::HTTP_09 => "0.9",
+        v if v == Version::HTTP_10 => "1.0",
+        v if v == Version::HTTP_11 => "1.1",
+        v if v == Version::HTTP_2 => "2",
+        v if v == Version::HTTP_3 => "3",
+        _ => "unknown",
+    }
+}
+
+/// Root each inbound HTTP request in a SERVER span whose parent is the
 /// caller-supplied W3C trace context (`traceparent`), so an external client
 /// that propagates context sees SignalDB's query trace join theirs instead of
 /// starting a detached root. Downstream `#[instrument]` handler spans and the
 /// Flight calls they make become children of this span.
+///
+/// The span follows the OpenTelemetry HTTP semantic conventions: it is named
+/// `{method} {http.route}` (low-cardinality route template, not the raw path),
+/// tagged `SpanKind::Server`, and carries `http.request.method`, `http.route`,
+/// `url.path`, `url.scheme`, `server.address`, `network.protocol.version`,
+/// `user_agent.original`, and `http.response.status_code`. A 5xx response marks
+/// the span status as error.
 ///
 /// Mirrors [`http_metrics_middleware`]'s anti-loop guard: `_system` tenant
 /// requests bypass the span so self-monitoring queries are not re-instrumented
@@ -304,15 +338,66 @@ pub async fn http_trace_context_middleware(
         return next.run(request).await;
     }
 
+    // The matched route template (`http.route`) is the low-cardinality name
+    // source; `.layer()` runs after routing, so it is already in extensions.
+    let method = request.method().as_str().to_owned();
+    let route = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|m| m.as_str().to_owned());
+    let scheme = request.uri().scheme_str().unwrap_or("http").to_owned();
+    let server_address = request
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let user_agent = request
+        .headers()
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
     let span = tracing::info_span!(
         "http.request",
-        http.request.method = %request.method(),
+        // `otel.*` fields are interpreted by the tracing-opentelemetry bridge:
+        // `otel.name` overrides the span name, `otel.kind` sets the span kind,
+        // `otel.status_code` sets the span status.
+        otel.name = tracing::field::Empty,
+        otel.kind = "server",
+        otel.status_code = tracing::field::Empty,
+        http.request.method = %method,
+        http.route = tracing::field::Empty,
         url.path = %request.uri().path(),
+        url.scheme = %scheme,
+        server.address = tracing::field::Empty,
+        network.protocol.version = network_protocol_version(request.version()),
+        user_agent.original = tracing::field::Empty,
+        http.response.status_code = tracing::field::Empty,
     );
+    span.record(
+        "otel.name",
+        http_server_span_name(&method, route.as_deref()),
+    );
+    if let Some(route) = &route {
+        span.record("http.route", route.as_str());
+    }
+    if let Some(server_address) = &server_address {
+        span.record("server.address", server_address.as_str());
+    }
+    if let Some(user_agent) = &user_agent {
+        span.record("user_agent.original", user_agent.as_str());
+    }
     // Parent must be adopted before the span is first entered.
     crate::flight::trace_context::set_parent_from_http_headers(&span, request.headers());
 
-    next.run(request).instrument(span).await
+    let response = next.run(request).instrument(span.clone()).await;
+
+    let status = response.status();
+    span.record("http.response.status_code", status.as_u16());
+    if status.is_server_error() {
+        span.record("otel.status_code", "ERROR");
+    }
+    response
 }
 
 #[cfg(test)]
@@ -334,6 +419,17 @@ mod tests {
     fn system_tenant_not_counted() {
         assert!(!should_count_tenant("_system"));
         assert!(should_count_tenant("acme"));
+    }
+
+    #[test]
+    fn server_span_name_uses_route_template_else_method() {
+        assert_eq!(
+            http_server_span_name("GET", Some("/tempo/api/traces/{trace_id}")),
+            "GET /tempo/api/traces/{trace_id}"
+        );
+        // No matched route (e.g. an unrouted request): method only, never the
+        // high-cardinality raw path.
+        assert_eq!(http_server_span_name("POST", None), "POST");
     }
 
     #[tokio::test]
