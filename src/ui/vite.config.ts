@@ -9,7 +9,8 @@ const pkg = require("./package.json") as { version: string };
 // Paths the SignalDB router serves; the dev server forwards them to a live
 // instance so the browser only ever sees same-origin requests, exactly as in
 // the embedded production build. /ui/session is the router's session login
-// endpoint — everything else under /ui stays with the dev server itself.
+// endpoint and /ui/runtime-config.js is its runtime telemetry config —
+// everything else under /ui stays with the dev server itself.
 const PROXIED_PATHS = [
   "/loki",
   "/tempo",
@@ -17,6 +18,7 @@ const PROXIED_PATHS = [
   "/pyroscope",
   "/api",
   "/ui/session",
+  "/ui/runtime-config.js",
 ];
 
 export default defineConfig(({ mode }) => {

@@ -239,8 +239,12 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         // UI session login/logout (public; sets/clears the HttpOnly session
         // cookie the auth middleware accepts in place of auth headers)
         .merge(endpoints::session::router())
-        // Explore UI static assets (public, served from SIGNALDB_UI_DIR)
-        .nest_service("/ui", ui::service_from_env())
+        // Explore UI static assets + runtime config (public, served from
+        // SIGNALDB_UI_DIR; runtime-config.js from [self_monitoring.frontend])
+        .nest_service(
+            "/ui",
+            ui::service_from_env(&state.config().self_monitoring.frontend),
+        )
         // Admin routes with admin authentication
         .nest("/api/v1/admin", admin_router)
         .nest(
@@ -347,5 +351,37 @@ mod tests {
         for _ in 0..50 {
             assert_eq!(echo_request(&app).await, StatusCode::OK);
         }
+    }
+
+    #[tokio::test]
+    async fn serves_frontend_runtime_config_from_self_monitoring() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let mut config = test_config(None);
+        config.self_monitoring.frontend = common::config::FrontendMonitoringConfig {
+            enabled: true,
+            endpoint: "http://signaldb.example:4318".to_string(),
+            api_key: Some("sk-ingest".to_string()),
+            ..Default::default()
+        };
+        let app = create_router(InMemoryStateImpl::new(catalog, config));
+
+        // Public route (no auth headers), reached through the /ui nest.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ui/runtime-config.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("window.__SIGNALDB_RUNTIME_CONFIG__"));
+        assert!(body.contains("http://signaldb.example:4318"));
+        assert!(body.contains("sk-ingest"));
     }
 }

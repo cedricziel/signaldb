@@ -63,15 +63,31 @@ start counts as activity and slides the inactivity window. The id persists in
 `localStorage` so it survives reloads and spans across tabs; it falls back to an
 in-memory id when storage is unavailable (private mode, sandboxed iframe).
 
-### Keep secrets out of the browser
+### Anything the browser exporter carries is world-readable
 
-The OTLP exporter URL and any headers ship in the bundle and are world-readable.
-**Never** put an API key or `X-Tenant-ID` on the browser exporter. To send
-browser spans to SignalDB, point `SIGNALDB_OTLP_ENDPOINT` at an **OTLP collector
-you control** that adds auth/tenant headers, scrubs PII, and rate-limits —
-never straight at a public acceptor. Export is opt-in: with no endpoint the SDK
-still runs (so `traceparent` propagation works) and, in dev, prints spans to the
-console.
+The OTLP exporter URL and any headers are visible to anyone who can load the UI
+— whether baked in at build time or served at runtime. Export is opt-in either
+way: with no endpoint the SDK still runs (so `traceparent` propagation works)
+and, in dev, prints spans to the console.
+
+Two ways to configure the export target, in precedence order:
+
+1. **Runtime config (preferred)** — `[self_monitoring.frontend]` in the
+   SignalDB config. The router serves it to the browser via
+   `GET /ui/runtime-config.js` (see `resolveExportConfig` in
+   `telemetry/runtimeConfig.ts`), so one image serves every deployment with no
+   rebuild. When `api_key` is set it is delivered to the browser and sent as
+   `Authorization: Bearer` on cross-origin exports to the acceptor (whose
+   `[self_monitoring.frontend].allowed_origins` drives the CORS layer). This
+   **deliberately** puts an ingest key in the browser — only acceptable on a
+   trusted network, and the key **must be ingest-only**, scoped to
+   `tenant_id`, never an admin key.
+2. **Build-time `SIGNALDB_OTLP_ENDPOINT`** — baked into the bundle, no headers.
+   Used as a fallback for local dev or a collector that needs no auth.
+
+The most defensive option remains an **OTLP collector you control** that adds
+auth/tenant headers, scrubs PII, and rate-limits — point either mechanism at
+it instead of straight at a public acceptor when the UI is internet-facing.
 
 ### `ZoneContextManager` needs `zone.js` as a direct dependency
 
@@ -107,20 +123,39 @@ stay disconnected even though the header is present.
 
 ## Testing
 
-Unit-test the pure logic (`session.ts`, `sessionSpanProcessor.ts`) with injected
-clock/storage/id — see the `.test.ts` files. Do **not** import
-`telemetry/index.ts` from tests: it pulls in `zone.js` and patches globals. The
-SDK wiring is validated by `pnpm --filter signaldb-ui build`.
+Unit-test the pure logic (`session.ts`, `sessionSpanProcessor.ts`,
+`runtimeConfig.ts`) with injected clock/storage/id — see the `.test.ts` files.
+Do **not** import `telemetry/index.ts` from tests: it pulls in `zone.js` and
+patches globals. The SDK wiring is validated by `pnpm --filter signaldb-ui
+build`.
 
 ## Configuration
 
-Build-time env (via `vite.config.ts` `define`; `SIGNALDB_`-prefixed like the
-rest of the UI):
+### Runtime (preferred): `[self_monitoring.frontend]`
+
+Set in the SignalDB config file; the router serves it to the browser at
+`GET /ui/runtime-config.js` (`window.__SIGNALDB_RUNTIME_CONFIG__`), which
+`index.html` loads as a blocking classic script before the app boots.
+
+| Key               | Default       | Meaning                                                                   |
+| ----------------- | ------------- | ------------------------------------------------------------------------- |
+| `enabled`         | `false`       | Export browser spans (propagation works regardless).                      |
+| `endpoint`        | _(empty)_     | OTLP/HTTP base URL the browser posts to. `/v1/traces` appended if absent. |
+| `api_key`         | _(none)_      | Ingest key → `Authorization: Bearer`. World-readable; ingest-only.        |
+| `tenant_id`       | `_system`     | → `X-Tenant-ID` on exports.                                               |
+| `dataset_id`      | `_monitoring` | → `X-Dataset-ID` on exports.                                              |
+| `service_name`    | `signaldb-ui` | `service.name` on exported spans.                                         |
+| `allowed_origins` | _(any)_       | Acceptor CORS allow-list for browser exports; empty allows any origin.    |
+
+### Build-time env (fallback)
+
+Via `vite.config.ts` `define`; `SIGNALDB_`-prefixed. Used only when no runtime
+config is present (local dev, or a collector needing no auth).
 
 | Env                               | Default       | Meaning                                                                                                                    |
 | --------------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `SIGNALDB_OTLP_ENDPOINT`          | _(empty)_     | OTLP/HTTP endpoint for browser spans; empty disables export (propagation still works). `/v1/traces` is appended if absent. |
-| `SIGNALDB_TELEMETRY_SERVICE_NAME` | `signaldb-ui` | `service.name` on exported spans                                                                                           |
+| `SIGNALDB_TELEMETRY_SERVICE_NAME` | `signaldb-ui` | `service.name` on exported spans (runtime `service_name` wins when set)                                                    |
 
 `service.version` is taken from `package.json` at build time.
 

@@ -768,6 +768,71 @@ fn default_trace_sample_ratio() -> f64 {
     0.1
 }
 
+fn default_frontend_service_name() -> String {
+    "signaldb-ui".to_string()
+}
+
+/// Browser (Explore UI) telemetry export.
+///
+/// The UI is always instrumented with OpenTelemetry so same-origin API calls
+/// carry a W3C `traceparent`; this section controls whether the browser also
+/// *exports* its spans, and where. The router serves these values to the
+/// browser at runtime (`GET /ui/runtime-config.js`), so a single container
+/// image can be pointed at any endpoint via config alone — no UI rebuild.
+///
+/// # Security
+///
+/// `api_key` is delivered to the browser and is therefore world-readable to
+/// anyone who can load the UI. Use an **ingest-only** key scoped to
+/// `tenant_id`, never an admin key. The browser posts cross-origin to the
+/// acceptor, so its origin must be listed in `allowed_origins` (or leave that
+/// empty to allow any origin, acceptable on a trusted homelab network).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FrontendMonitoringConfig {
+    /// Export browser spans to `endpoint`. When false the UI still runs its
+    /// instrumentation (so `traceparent` propagation keeps working) but
+    /// exports nothing.
+    #[serde(default)]
+    pub enabled: bool,
+    /// OTLP/HTTP base URL the browser posts spans to. Must be reachable from
+    /// the user's browser (not `localhost`), typically the acceptor's HTTP
+    /// port, e.g. `http://signaldb.example:4318`. `/v1/traces` is appended if
+    /// absent.
+    #[serde(default)]
+    pub endpoint: String,
+    /// Ingest API key sent as `Authorization: Bearer` on browser exports.
+    /// World-readable — use an ingest-only key (see the security note above).
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Tenant the browser telemetry is ingested under.
+    #[serde(default = "default_self_monitoring_tenant")]
+    pub tenant_id: String,
+    /// Dataset the browser telemetry is ingested under.
+    #[serde(default = "default_self_monitoring_dataset")]
+    pub dataset_id: String,
+    /// `service.name` on exported browser spans.
+    #[serde(default = "default_frontend_service_name")]
+    pub service_name: String,
+    /// Origins the acceptor accepts browser exports from (CORS). Empty allows
+    /// any origin.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+}
+
+impl Default for FrontendMonitoringConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: String::new(),
+            api_key: None,
+            tenant_id: default_self_monitoring_tenant(),
+            dataset_id: default_self_monitoring_dataset(),
+            service_name: default_frontend_service_name(),
+            allowed_origins: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SelfMonitoringConfig {
     #[serde(default)]
@@ -806,6 +871,11 @@ pub struct SelfMonitoringConfig {
     /// agent. Uses the same `profile_interval`.
     #[serde(default)]
     pub heap_profiles_enabled: bool,
+    /// Browser (Explore UI) telemetry export. Independent of the service-side
+    /// self-monitoring above: the UI exports over HTTP to a browser-reachable
+    /// endpoint, whereas `endpoint` here is the services' internal collector.
+    #[serde(default)]
+    pub frontend: FrontendMonitoringConfig,
 }
 
 impl Default for SelfMonitoringConfig {
@@ -821,6 +891,7 @@ impl Default for SelfMonitoringConfig {
             profile_sample_rate_hz: default_profile_sample_rate_hz(),
             profile_interval: default_profile_interval(),
             heap_profiles_enabled: false,
+            frontend: FrontendMonitoringConfig::default(),
         }
     }
 }
@@ -1741,6 +1812,40 @@ mod tests {
             assert_eq!(config.self_monitoring.trace_sample_ratio, 0.5);
             Ok(())
         });
+    }
+
+    #[test]
+    fn frontend_monitoring_defaults_when_absent() {
+        let sm: SelfMonitoringConfig = toml::from_str("").expect("parse empty");
+        assert!(!sm.frontend.enabled);
+        assert!(sm.frontend.endpoint.is_empty());
+        assert!(sm.frontend.api_key.is_none());
+        assert_eq!(sm.frontend.tenant_id, "_system");
+        assert_eq!(sm.frontend.dataset_id, "_monitoring");
+        assert_eq!(sm.frontend.service_name, "signaldb-ui");
+        assert!(sm.frontend.allowed_origins.is_empty());
+    }
+
+    #[test]
+    fn frontend_monitoring_parses_from_toml() {
+        let toml = r#"
+            [frontend]
+            enabled = true
+            endpoint = "http://signaldb.example:4318"
+            api_key = "sk-ingest-key"
+            allowed_origins = ["http://signaldb.example:3000"]
+        "#;
+        let sm: SelfMonitoringConfig = toml::from_str(toml).expect("parse");
+        assert!(sm.frontend.enabled);
+        assert_eq!(sm.frontend.endpoint, "http://signaldb.example:4318");
+        assert_eq!(sm.frontend.api_key.as_deref(), Some("sk-ingest-key"));
+        // Unset fields keep their defaults.
+        assert_eq!(sm.frontend.tenant_id, "_system");
+        assert_eq!(sm.frontend.service_name, "signaldb-ui");
+        assert_eq!(
+            sm.frontend.allowed_origins,
+            vec!["http://signaldb.example:3000".to_string()]
+        );
     }
 
     #[test]

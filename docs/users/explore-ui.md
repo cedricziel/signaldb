@@ -145,12 +145,26 @@ The UI is instrumented with OpenTelemetry (browser SDK). It injects a W3C
 the backend traces it triggers, and stamps every span with a RUM `session.id`
 plus the active `tenant.id` / `dataset.id`.
 
-Export is **opt-in**: set `SIGNALDB_OTLP_ENDPOINT` at build time to ship browser
-spans to an OTLP/HTTP endpoint (`/v1/traces` is appended if absent). With it
-unset, propagation still works and dev builds print spans to the console. The
-browser cannot send API keys or tenant headers safely, so point the endpoint at
-an OTLP collector that adds them — not at a public acceptor. Contributor detail
-lives in the `frontend-instrumentation` skill.
+Export is **opt-in**. The preferred way to turn it on is the
+`[self_monitoring.frontend]` config section — the router serves it to the
+browser at runtime, so one image works for every deployment without a rebuild:
+
+```toml
+[self_monitoring.frontend]
+enabled = true
+endpoint = "http://signaldb.example:4318"   # reachable from the browser
+api_key = "sk-ingest-only-key"               # world-readable; ingest-only
+# tenant_id / dataset_id default to _system / _monitoring
+# allowed_origins = ["http://signaldb.example:3000"]  # CORS; empty = any
+```
+
+The `api_key` is delivered to the browser and is visible to anyone who can load
+the UI, so use an **ingest-only** key and only on a trusted network. When the
+UI is internet-facing, point `endpoint` at an OTLP collector that adds
+auth/tenant headers and scrubs PII instead of straight at the acceptor. With
+export unset, propagation still works and dev builds print spans to the
+console. (A build-time `SIGNALDB_OTLP_ENDPOINT` is still honoured as a
+fallback.) Contributor detail lives in the `frontend-instrumentation` skill.
 
 ## Developing the UI
 
