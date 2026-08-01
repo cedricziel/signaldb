@@ -11,6 +11,7 @@ const span = (over: Partial<TempoSpan>): TempoSpan => ({
   startNs: "0",
   durNs: "1000000",
   attributes: {},
+  events: [],
   ...over,
 });
 

@@ -5,6 +5,13 @@ import { ApiError, tenantHeaders } from "./http";
 
 export type AttrValue = string | number | boolean;
 
+/** A span event (annotation or exception) attached to a span. */
+export interface SpanEventView {
+  name: string;
+  timeUnixNano: string;
+  attributes: Record<string, AttrValue>;
+}
+
 export interface TempoSpan {
   spanId: string;
   parentSpanId: string | null;
@@ -15,6 +22,8 @@ export interface TempoSpan {
   startNs: string;
   durNs: string;
   attributes: Record<string, AttrValue>;
+  /** Span events; exceptions are the event named "exception". */
+  events: SpanEventView[];
 }
 
 export interface TraceSummary {
@@ -43,6 +52,12 @@ interface WireValue {
   doubleValue?: number;
 }
 
+interface WireSpanEvent {
+  name: string;
+  timeUnixNano: string;
+  attributes?: Record<string, { key: string; value: WireValue }>;
+}
+
 interface WireSpan {
   spanID: string;
   startTimeUnixNano: string;
@@ -52,6 +67,7 @@ interface WireSpan {
   serviceName?: string;
   status?: string;
   attributes?: Record<string, { key: string; value: WireValue }>;
+  events?: WireSpanEvent[];
 }
 
 interface WireTrace {
@@ -71,11 +87,17 @@ export function flattenAttrValue(v: WireValue): AttrValue {
   return "";
 }
 
-function toSpan(w: WireSpan): TempoSpan {
+function flattenAttrs(
+  wire: Record<string, { key: string; value: WireValue }> | undefined,
+): Record<string, AttrValue> {
   const attributes: Record<string, AttrValue> = {};
-  for (const [key, attr] of Object.entries(w.attributes ?? {})) {
+  for (const [key, attr] of Object.entries(wire ?? {})) {
     attributes[key] = flattenAttrValue(attr.value);
   }
+  return attributes;
+}
+
+function toSpan(w: WireSpan): TempoSpan {
   // OTLP encodes "no parent" as an all-zero span id.
   const parent = w.parentSpanID?.replace(/0/g, "") ? w.parentSpanID : null;
   return {
@@ -86,7 +108,12 @@ function toSpan(w: WireSpan): TempoSpan {
     status: w.status ?? "unset",
     startNs: w.startTimeUnixNano,
     durNs: w.durationNanos,
-    attributes,
+    attributes: flattenAttrs(w.attributes),
+    events: (w.events ?? []).map((e) => ({
+      name: e.name,
+      timeUnixNano: e.timeUnixNano,
+      attributes: flattenAttrs(e.attributes),
+    })),
   };
 }
 
