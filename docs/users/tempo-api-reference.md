@@ -30,12 +30,18 @@ authentication headers described in [Authentication](authentication.md)
 
 ## Span fields beyond Tempo's
 
-Spanset spans in trace and search responses carry four optional fields in
+Spanset spans in trace and search responses carry extra optional fields in
 addition to Tempo's `spanID`/`startTimeUnixNano`/`durationNanos`/
 `attributes`: `name`, `parentSpanID`, `serviceName`, and `status`
 (`ok`/`error`/`unset`). They are omitted when unknown, so Tempo-compatible
 clients are unaffected; SignalDB's own explore UI uses them to rebuild the
 span hierarchy for its waterfall view.
+
+Single-trace responses (`GET /api/traces/{trace_id}`) also include per-span
+`events`: an array of `{ name, timeUnixNano, attributes }` objects, omitted
+when a span has none. Exceptions follow the OpenTelemetry convention — the
+event named `exception`, carrying `exception.message`/`.type`/`.stacktrace`
+in its attributes — so a failure recorded on a span is visible in the trace.
 
 ## Error mapping
 
