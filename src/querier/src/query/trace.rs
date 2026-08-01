@@ -263,6 +263,7 @@ impl TraceService {
                     span_id: span_id.clone(),
                     parent_span_id: parent_span_id.clone(),
                     children: Vec::new(),
+                    events: Vec::new(),
                     trace_id: trace_id.clone(),
                     status: SpanStatus::from_str(
                         batch
@@ -584,6 +585,7 @@ impl TraceService {
                     span_id: span_id.clone(),
                     parent_span_id: parent_span_id.clone(),
                     children: Vec::new(),
+                    events: Vec::new(),
                     trace_id: current_trace_id.clone(),
                     status: SpanStatus::from_str(
                         batch

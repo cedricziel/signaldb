@@ -454,6 +454,7 @@ mod tests {
             attributes: HashMap::new(),
             resource: HashMap::new(),
             children: Vec::new(),
+            events: Vec::new(),
         }
     }
 

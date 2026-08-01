@@ -78,6 +78,47 @@ impl SpanStatus {
     }
 }
 
+/// A single OpenTelemetry span event: a timestamped, named annotation with its
+/// own attributes. An exception is the event named `exception`, carrying
+/// `exception.message`/`exception.type`/`exception.stacktrace` in `attributes`.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct SpanEvent {
+    pub name: String,
+    pub timestamp_unix_nano: u64,
+    pub attributes: HashMap<String, serde_json::Value>,
+}
+
+/// Parse the stored `events` column — a JSON string of
+/// `[{name, timestamp_unix_nano, attributes_json}]` objects (the shape the
+/// writer serializes the events list column to) — into [`SpanEvent`]s.
+///
+/// Tolerant by design: an empty, null, or malformed value yields no events
+/// rather than an error, so a single bad row never fails a trace lookup.
+pub fn parse_span_events(json: &str) -> Vec<SpanEvent> {
+    #[derive(Deserialize)]
+    struct RawEvent {
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        timestamp_unix_nano: u64,
+        #[serde(default)]
+        attributes_json: Option<String>,
+    }
+
+    let raw: Vec<RawEvent> = serde_json::from_str(json).unwrap_or_default();
+    raw.into_iter()
+        .map(|e| SpanEvent {
+            name: e.name,
+            timestamp_unix_nano: e.timestamp_unix_nano,
+            attributes: e
+                .attributes_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default(),
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Span {
     pub trace_id: String,
@@ -99,6 +140,10 @@ pub struct Span {
     pub resource: HashMap<String, serde_json::Value>,
 
     pub children: Vec<Span>,
+
+    /// Span events (annotations, exceptions). Empty when none were recorded or
+    /// when read on a path that does not project the `events` column.
+    pub events: Vec<SpanEvent>,
 }
 
 impl Span {
@@ -354,6 +399,15 @@ impl SpanBatch {
                 })
                 .unwrap_or_default();
 
+            // Span events are stored as a JSON string; absent on paths that
+            // don't project the column, which parse_span_events treats as empty.
+            let events: Vec<SpanEvent> = batch
+                .column_by_name("events")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .filter(|arr| !arr.is_null(i))
+                .map(|arr| parse_span_events(arr.value(i)))
+                .unwrap_or_default();
+
             let span = Span {
                 trace_id: trace_id.value(i).to_string(),
                 span_id: span_id.value(i).to_string(),
@@ -368,6 +422,7 @@ impl SpanBatch {
                 attributes,
                 resource,
                 children: vec![],
+                events,
             };
 
             span_batch.add_span(span);
@@ -409,6 +464,7 @@ mod tests {
             attributes: HashMap::new(),
             resource: HashMap::new(),
             children: vec![],
+            events: vec![],
         };
 
         let record_batch = span.to_record_batch();
@@ -433,6 +489,7 @@ mod tests {
             attributes: HashMap::new(),
             resource: HashMap::new(),
             children: vec![],
+            events: vec![],
         });
 
         let record_batch = span_batch.to_record_batch();
@@ -441,6 +498,85 @@ mod tests {
 
         let span_batch = SpanBatch::from_record_batch(&record_batch);
         assert_eq!(span_batch.spans.len(), 1);
+    }
+
+    #[test]
+    fn parse_span_events_reads_the_stored_exception_shape() {
+        // The on-disk `events` column is a JSON string: an array of
+        // {name, timestamp_unix_nano, attributes_json} objects, where
+        // attributes_json is itself a JSON object of the event's attributes.
+        let json = r#"[{"name":"exception","timestamp_unix_nano":1700000000000000000,"attributes_json":"{\"exception.message\":\"boom\",\"exception.type\":\"std::io::Error\"}"}]"#;
+        let events = parse_span_events(json);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.name, "exception");
+        assert_eq!(event.timestamp_unix_nano, 1_700_000_000_000_000_000);
+        assert_eq!(
+            event
+                .attributes
+                .get("exception.message")
+                .and_then(|v| v.as_str()),
+            Some("boom")
+        );
+        assert_eq!(
+            event
+                .attributes
+                .get("exception.type")
+                .and_then(|v| v.as_str()),
+            Some("std::io::Error")
+        );
+    }
+
+    #[test]
+    fn parse_span_events_tolerates_empty_and_malformed() {
+        assert!(parse_span_events("[]").is_empty());
+        assert!(parse_span_events("").is_empty());
+        assert!(parse_span_events("not json").is_empty());
+    }
+
+    #[test]
+    fn from_record_batch_populates_events_from_json_column() {
+        // A trace-lookup batch: the base 12 columns plus the stored `events`
+        // JSON-string column the query path projects.
+        let mut fields = Span::to_schema().fields().to_vec();
+        fields.push(Arc::new(Field::new("events", DataType::Utf8, true)));
+        let schema = Arc::new(Schema::new(fields));
+
+        let events_json = r#"[{"name":"exception","timestamp_unix_nano":42,"attributes_json":"{\"exception.message\":\"kaboom\"}"}]"#;
+        let base = Span {
+            trace_id: "t".to_string(),
+            span_id: "s".to_string(),
+            parent_span_id: "p".to_string(),
+            status: SpanStatus::Error,
+            is_root: true,
+            name: "n".to_string(),
+            service_name: "svc".to_string(),
+            span_kind: SpanKind::Server,
+            start_time_unix_nano: 0,
+            duration_nano: 0,
+            attributes: HashMap::new(),
+            resource: HashMap::new(),
+            children: vec![],
+            events: vec![],
+        };
+        let base_batch = base.to_record_batch();
+        let mut columns: Vec<ArrayRef> = base_batch.columns().to_vec();
+        columns.push(Arc::new(StringArray::from(vec![events_json])));
+        let batch = RecordBatch::try_new(schema, columns).unwrap();
+
+        let parsed = SpanBatch::from_record_batch(&batch);
+        assert_eq!(parsed.spans.len(), 1);
+        let events = &parsed.spans[0].events;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].name, "exception");
+        assert_eq!(events[0].timestamp_unix_nano, 42);
+        assert_eq!(
+            events[0]
+                .attributes
+                .get("exception.message")
+                .and_then(|v| v.as_str()),
+            Some("kaboom")
+        );
     }
 
     #[test]
@@ -504,6 +640,7 @@ mod tests {
             attributes: HashMap::new(),
             resource: HashMap::new(),
             children: vec![],
+            events: vec![],
         };
 
         let record_batch = span.to_record_batch();
@@ -543,6 +680,7 @@ mod tests {
             attributes: attributes.clone(),
             resource: resource.clone(),
             children: vec![],
+            events: vec![],
         };
 
         let record_batch = span.to_record_batch();
