@@ -10,6 +10,7 @@ pub mod profiling;
 // the external agent in `profiling`) is unavailable on Windows.
 #[cfg(not(target_os = "windows"))]
 pub mod self_profiling;
+pub mod span_error;
 pub mod suppress;
 
 pub use app_metrics::{
@@ -19,6 +20,7 @@ pub use app_metrics::{
 pub use profiling::{ProfilingHandle, init_profiling};
 #[cfg(not(target_os = "windows"))]
 pub use self_profiling::SelfProfilingHandle;
+pub use span_error::record_span_exception;
 pub use suppress::{
     OtelExportFilter, SELF_MONITORING_DATASET, SELF_MONITORING_TENANT,
     SelfTelemetrySuppressionFilter, is_self_monitoring_tenant, maybe_suppress_self_telemetry,

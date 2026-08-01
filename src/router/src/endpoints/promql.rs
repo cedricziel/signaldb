@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 
+use super::api_error::ApiError;
 use crate::RouterState;
 use arrow_flight::Ticket;
 use axum::{
@@ -86,7 +87,7 @@ pub async fn query_range<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<RangeParams>,
-) -> Result<axum::Json<QueryResponse>, StatusCode> {
+) -> Result<axum::Json<QueryResponse>, ApiError> {
     let Some(promql) = non_empty(&params.query) else {
         return Ok(axum::Json(QueryResponse::error(
             "bad_data",
@@ -117,7 +118,7 @@ pub async fn query<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<InstantParams>,
-) -> Result<axum::Json<QueryResponse>, StatusCode> {
+) -> Result<axum::Json<QueryResponse>, ApiError> {
     let Some(promql) = non_empty(&params.query) else {
         return Ok(axum::Json(QueryResponse::error(
             "bad_data",
@@ -145,7 +146,7 @@ pub async fn labels<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<MetadataParams>,
-) -> Result<axum::Json<LabelsResponse>, StatusCode> {
+) -> Result<axum::Json<LabelsResponse>, ApiError> {
     let (start, end) = metadata_window(&params);
     let ticket = format!(
         "query_metric_labels:{}:{}:{start}:{end}",
@@ -163,9 +164,10 @@ pub async fn label_values<S: RouterState>(
     tenant_ctx: TenantContextExtractor,
     Path(name): Path<String>,
     Query(params): Query<MetadataParams>,
-) -> Result<axum::Json<LabelsResponse>, StatusCode> {
-    if name.trim().is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
+) -> Result<axum::Json<LabelsResponse>, ApiError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(ApiError::bad_request("label name must not be empty"));
     }
     let (start, end) = metadata_window(&params);
     let ticket = format!(
@@ -183,13 +185,13 @@ pub async fn series<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<MetadataParams>,
-) -> Result<axum::Json<SeriesResponse>, StatusCode> {
+) -> Result<axum::Json<SeriesResponse>, ApiError> {
     let selector = params
         .matcher
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or(StatusCode::BAD_REQUEST)?;
+        .ok_or_else(|| ApiError::bad_request("missing or empty 'match[]' selector"))?;
     let (start, end) = metadata_window(&params);
     let payload = serde_json::json!({ "selector": selector, "start": start, "end": end });
     let ticket = format!(
@@ -213,7 +215,7 @@ const METRICS_SIGNAL: &str = "metrics";
 pub async fn label_stats<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
-) -> Result<axum::Json<LabelStatsResponse>, StatusCode> {
+) -> Result<axum::Json<LabelStatsResponse>, ApiError> {
     let stats = fetch_label_stats(
         state.catalog(),
         &tenant_ctx.0.tenant_slug,
@@ -222,7 +224,10 @@ pub async fn label_stats<S: RouterState>(
     .await
     .map_err(|error| {
         tracing::error!(?error, "failed to read attribute stats");
-        StatusCode::INTERNAL_SERVER_ERROR
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to read attribute stats: {error}"),
+        )
     })?;
     Ok(axum::Json(LabelStatsResponse::success(stats)))
 }
@@ -264,7 +269,7 @@ async fn run_promql<S: RouterState>(
     start: i64,
     end: i64,
     step: i64,
-) -> Result<Vec<RecordBatch>, StatusCode> {
+) -> Result<Vec<RecordBatch>, ApiError> {
     let payload = serde_json::json!({
         "query": promql,
         "start": start,
@@ -282,14 +287,14 @@ async fn run_promql<S: RouterState>(
 async fn execute_ticket<S: RouterState>(
     state: &S,
     ticket_content: String,
-) -> Result<Vec<RecordBatch>, StatusCode> {
+) -> Result<Vec<RecordBatch>, ApiError> {
     let mut client = state
         .service_registry()
         .get_flight_client_for_capability(ServiceCapability::QueryExecution)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to get Flight client for PromQL query");
-            StatusCode::SERVICE_UNAVAILABLE
+            ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "no querier available")
         })?;
 
     let ticket = Ticket::new(ticket_content);
@@ -302,29 +307,15 @@ async fn execute_ticket<S: RouterState>(
     let mut stream = client
         .do_get(flight_request)
         .await
-        .map_err(|e| flight_status_to_http(&e))?
+        .map_err(|e| ApiError::from_flight(&e, "promql"))?
         .into_inner();
 
     let mut data = Vec::new();
     while let Some(flight_data) = stream.next().await {
-        data.push(flight_data.map_err(|e| flight_status_to_http(&e))?);
+        data.push(flight_data.map_err(|e| ApiError::from_flight(&e, "promql"))?);
     }
 
-    super::flight_decode::decode_flight_batches(&data, "promql")
-}
-
-fn flight_status_to_http(status: &tonic::Status) -> StatusCode {
-    match status.code() {
-        tonic::Code::InvalidArgument => StatusCode::BAD_REQUEST,
-        tonic::Code::ResourceExhausted => StatusCode::TOO_MANY_REQUESTS,
-        tonic::Code::DeadlineExceeded => StatusCode::GATEWAY_TIMEOUT,
-        tonic::Code::PermissionDenied => StatusCode::FORBIDDEN,
-        tonic::Code::Unimplemented => StatusCode::NOT_IMPLEMENTED,
-        _ => {
-            tracing::error!(error = %status, "PromQL Flight query failed");
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
-    }
+    super::flight_decode::decode_flight_batches(&data, "promql").map_err(ApiError::from)
 }
 
 /// Group matrix rows (`bucket`, `metric_name`, label columns, `value`)

@@ -5653,6 +5653,7 @@ dependencies = [
  "logql",
  "object_store",
  "opentelemetry",
+ "opentelemetry_sdk",
  "promql-parser",
  "regex",
  "serde",
@@ -5663,6 +5664,8 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
  "url",
 ]
 
