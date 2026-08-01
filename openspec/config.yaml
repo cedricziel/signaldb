@@ -1,0 +1,43 @@
+schema: spec-driven
+
+# Project context (optional) — injected into every artifact instruction and
+# both operations (50KB hard limit). Deep guidance lives in CLAUDE.md and the
+# bundled skills; keep this orienting and don't restate them.
+context: |
+  SignalDB — distributed observability signal DB (metrics/logs/traces) on the
+  FDAP stack (Flight, DataFusion, Arrow, Parquet), native OTLP ingest + Tempo/
+  LogQL/PromQL query compatibility. Rust 2024, Cargo workspace: acceptor,
+  router, writer, querier, compactor, common, tempo-api, signaldb-bin,
+  grafana-plugin, signal-producer, tests-integration.
+  Write path: Client → Acceptor (OTLP) → WAL → Writer (Flight) → Iceberg/Parquet.
+  Query path: Client → Router (HTTP) → Querier (Flight) → DataFusion → Iceberg.
+  Conventions: semantic commits; TDD; no unwrap/expect in prod paths
+  (thiserror for libs, anyhow for apps); tracing over log; multi-tenant
+  isolation (tenant/dataset). Deep guidance lives in CLAUDE.md and the
+  bundled skills — don't restate it, reference it.
+
+# Per-artifact rules (optional) — additive to each artifact's built-in guidance.
+rules:
+  proposal:
+    - "In Impact, name the affected workspace crates explicitly (e.g. acceptor, querier)."
+    - "Mark BREAKING any change to OTLP ingest, Tempo/LogQL/PromQL surfaces, Flight wire schemas, or on-disk Iceberg/WAL layout."
+  specs:
+    - "Capabilities are user/operator-observable behavior: OTLP ingestion semantics, query-API results, tenant isolation, retention — not internal Rust types."
+    - "Anchor requirements to OTel semantic conventions and Tempo/Loki/Prometheus API compatibility where they apply."
+  design:
+    - "State the FDAP version-alignment constraint: use Arrow/Parquet types re-exported by DataFusion."
+    - "Call out Flight v1 wire vs v2 storage schema transforms, and any WAL/Iceberg migration + rollback."
+  tasks:
+    - "Order TDD-first: a failing test task precedes its implementation task."
+    - "Scope test tasks per crate (cargo test -p <crate>); add integration coverage in tests-integration for cross-service behavior."
+
+# Per-operation advisory guidance (optional) — apply and archive only.
+operations:
+  apply:
+    guidance:
+      - "Practice TDD: make the failing test pass, then refactor."
+      - "Before marking a task done: cargo fmt, cargo clippy --workspace --all-targets --all-features, cargo machete --with-metadata."
+      - "Keep commits atomic and semantic — one logical change per commit."
+  archive:
+    guidance:
+      - "Confirm delta specs are synced into openspec/specs/ before archiving."
