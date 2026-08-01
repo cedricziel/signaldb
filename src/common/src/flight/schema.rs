@@ -196,6 +196,10 @@ pub fn create_span_batch_schema() -> Schema {
         Field::new("duration_nano", DataType::UInt64, false),
         Field::new("span_attributes", DataType::Utf8, true),
         Field::new("resource_attributes", DataType::Utf8, true),
+        // Span events (annotations, exceptions) as a JSON string; carries the
+        // reason for a failure on the single-trace path. Nullable/absent for
+        // spans with no events or older payloads.
+        Field::new("events", DataType::Utf8, true),
     ]))
 }
 
