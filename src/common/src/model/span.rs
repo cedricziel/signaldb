@@ -119,6 +119,25 @@ pub fn parse_span_events(json: &str) -> Vec<SpanEvent> {
         .collect()
 }
 
+/// Serialize [`SpanEvent`]s back to the stored/wire `events` column shape — a
+/// JSON string of `[{name, timestamp_unix_nano, attributes_json}]` objects.
+/// Inverse of [`parse_span_events`]; used to carry events across the
+/// querier→router single-trace wire batch.
+pub fn serialize_span_events(events: &[SpanEvent]) -> String {
+    let raw: Vec<serde_json::Value> = events
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "name": e.name,
+                "timestamp_unix_nano": e.timestamp_unix_nano,
+                "attributes_json": serde_json::to_string(&e.attributes)
+                    .unwrap_or_else(|_| "{}".to_string()),
+            })
+        })
+        .collect();
+    serde_json::to_string(&raw).unwrap_or_else(|_| "[]".to_string())
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Span {
     pub trace_id: String,
@@ -525,6 +544,22 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("std::io::Error")
         );
+    }
+
+    #[test]
+    fn span_events_round_trip_through_serialize_and_parse() {
+        let mut attributes = HashMap::new();
+        attributes.insert(
+            "exception.message".to_string(),
+            serde_json::Value::String("boom".to_string()),
+        );
+        let events = vec![SpanEvent {
+            name: "exception".to_string(),
+            timestamp_unix_nano: 99,
+            attributes,
+        }];
+        let json = serialize_span_events(&events);
+        assert_eq!(parse_span_events(&json), events);
     }
 
     #[test]

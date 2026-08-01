@@ -156,6 +156,9 @@ fn record_batches_to_trace(
         let resource_attrs_col = batch
             .column_by_name("resource_attributes")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let events_col = batch
+            .column_by_name("events")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
 
         for row_index in 0..batch.num_rows() {
             let span_trace_id = trace_id_col.value(row_index).to_string();
@@ -207,7 +210,10 @@ fn record_batches_to_trace(
                 attributes,
                 resource,
                 children: Vec::new(),
-                events: Vec::new(),
+                events: events_col
+                    .filter(|arr| !arr.is_null(row_index))
+                    .map(|arr| common::model::span::parse_span_events(arr.value(row_index)))
+                    .unwrap_or_default(),
             };
 
             span_map.insert(span_id, span);
@@ -221,6 +227,48 @@ fn record_batches_to_trace(
         trace_id: trace_id.to_string(),
         spans: root_spans,
     })
+}
+
+/// Map a JSON attribute value to the Tempo API's typed value.
+fn json_to_tempo_value(value: &serde_json::Value) -> tempo_api::Value {
+    match value {
+        serde_json::Value::String(s) => tempo_api::Value::StringValue(s.clone()),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                tempo_api::Value::IntValue(i)
+            } else if let Some(f) = n.as_f64() {
+                tempo_api::Value::DoubleValue(f)
+            } else {
+                tempo_api::Value::StringValue(n.to_string())
+            }
+        }
+        serde_json::Value::Bool(b) => tempo_api::Value::BoolValue(*b),
+        _ => tempo_api::Value::StringValue(value.to_string()),
+    }
+}
+
+/// Map model span events to the Tempo API span-event shape.
+fn model_events_to_tempo(events: &[common::model::span::SpanEvent]) -> Vec<tempo_api::SpanEvent> {
+    events
+        .iter()
+        .map(|event| tempo_api::SpanEvent {
+            name: event.name.clone(),
+            time_unix_nano: event.timestamp_unix_nano.to_string(),
+            attributes: event
+                .attributes
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        key.clone(),
+                        tempo_api::Attribute {
+                            key: key.clone(),
+                            value: json_to_tempo_value(value),
+                        },
+                    )
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// Convert internal trace model to Tempo API format.
@@ -353,6 +401,7 @@ fn internal_trace_to_tempo(
                     .to_string(),
                 ),
                 attributes,
+                events: model_events_to_tempo(&span.events),
             }
         })
         .collect();
@@ -1047,6 +1096,57 @@ mod tests {
             children: Vec::new(),
             events: Vec::new(),
         }
+    }
+
+    #[test]
+    fn record_batches_to_trace_surfaces_span_events() {
+        use common::model::span::{SpanEvent, serialize_span_events};
+        use datafusion::arrow::array::{BooleanArray, RecordBatch, StringArray, UInt64Array};
+        use std::sync::Arc;
+
+        let events_json = serialize_span_events(&[SpanEvent {
+            name: "exception".to_string(),
+            timestamp_unix_nano: 5,
+            attributes: HashMap::from([(
+                "exception.message".to_string(),
+                serde_json::Value::String("boom".to_string()),
+            )]),
+        }]);
+
+        // A single-span wire batch (create_span_batch_schema order) with the
+        // events column carrying the exception.
+        let batch = RecordBatch::try_new(
+            Arc::new(common::flight::schema::create_span_batch_schema()),
+            vec![
+                Arc::new(StringArray::from(vec!["trace-1"])),
+                Arc::new(StringArray::from(vec!["root"])),
+                Arc::new(StringArray::from(vec![""])),
+                Arc::new(StringArray::from(vec!["Error"])),
+                Arc::new(BooleanArray::from(vec![true])),
+                Arc::new(StringArray::from(vec!["op"])),
+                Arc::new(StringArray::from(vec!["svc"])),
+                Arc::new(StringArray::from(vec!["Server"])),
+                Arc::new(UInt64Array::from(vec![1_000u64])),
+                Arc::new(UInt64Array::from(vec![10u64])),
+                Arc::new(StringArray::from(vec![Some("{}")])),
+                Arc::new(StringArray::from(vec![Some("{}")])),
+                Arc::new(StringArray::from(vec![Some(events_json.as_str())])),
+            ],
+        )
+        .unwrap();
+
+        let trace = record_batches_to_trace(vec![batch], "trace-1").unwrap();
+        let tempo = internal_trace_to_tempo(&trace, None);
+        let span = &tempo.span_sets[0].spans[0];
+        assert_eq!(span.events.len(), 1);
+        assert_eq!(span.events[0].name, "exception");
+        assert_eq!(
+            span.events[0]
+                .attributes
+                .get("exception.message")
+                .map(|a| &a.value),
+            Some(&tempo_api::Value::StringValue("boom".to_string()))
+        );
     }
 
     #[test]

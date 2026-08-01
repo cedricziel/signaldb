@@ -2,7 +2,7 @@ use std::{collections::HashMap, fmt::Debug, str::FromStr, sync::Arc};
 
 use common::model::{
     self,
-    span::{Span, SpanKind, SpanStatus},
+    span::{Span, SpanEvent, SpanKind, SpanStatus, parse_span_events},
 };
 use datafusion::{
     arrow::{
@@ -258,12 +258,13 @@ impl TraceService {
 
                 let attributes = attribute_map(&batch, "span_attributes", row_index);
                 let resource = attribute_map(&batch, "resource_attributes", row_index);
+                let events = span_events(&batch, row_index);
 
                 let span = Span {
                     span_id: span_id.clone(),
                     parent_span_id: parent_span_id.clone(),
                     children: Vec::new(),
-                    events: Vec::new(),
+                    events,
                     trace_id: trace_id.clone(),
                     status: SpanStatus::from_str(
                         batch
@@ -732,9 +733,10 @@ impl TraceService {
 
 /// Columns required to reconstruct a trace in [`TraceService::find_by_id_with_tenant`].
 /// Restricting the scan to these via projection pushdown avoids materializing the
-/// large `events` / `links` list columns and the `scope_*` maps, which are never
-/// consumed on the single-trace path.
-const TRACE_LOOKUP_COLUMNS: [&str; 12] = [
+/// large `links` list column and the `scope_*` maps, which are never consumed on
+/// the single-trace path. `events` is included so span exceptions/annotations
+/// survive to the trace view (it is a JSON string, not the fat list column).
+const TRACE_LOOKUP_COLUMNS: [&str; 13] = [
     "trace_id",
     "span_id",
     "parent_span_id",
@@ -747,6 +749,7 @@ const TRACE_LOOKUP_COLUMNS: [&str; 12] = [
     "span_kind",
     "start_time_unix_nano",
     "duration_nanos",
+    "events",
 ];
 
 /// Build a literal matching the on-disk `timestamp` partition column so a
@@ -894,6 +897,17 @@ fn attribute_map(
     }
 
     HashMap::new()
+}
+
+/// Read the stored `events` JSON-string column for one row into span events.
+/// Absent column or null row yields no events.
+fn span_events(batch: &RecordBatch, row: usize) -> Vec<SpanEvent> {
+    batch
+        .column_by_name("events")
+        .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+        .filter(|arr| !arr.is_null(row))
+        .map(|arr| parse_span_events(arr.value(row)))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

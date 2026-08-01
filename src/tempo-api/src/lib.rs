@@ -218,6 +218,21 @@ pub struct Span {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     pub attributes: HashMap<String, Attribute>,
+    /// Span events (annotations, exceptions). Omitted when empty. Exceptions are
+    /// the event named `exception`, carrying `exception.message`/`.type`/
+    /// `.stacktrace` in their attributes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<SpanEvent>,
+}
+
+/// A span event in the Tempo API span shape.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct SpanEvent {
+    pub name: String,
+    #[serde(rename = "timeUnixNano")]
+    pub time_unix_nano: String,
+    #[serde(default)]
+    pub attributes: HashMap<String, Attribute>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -309,6 +324,7 @@ mod tests {
                     .into_iter()
                     .map(|attr| (attr.key.clone(), attr))
                     .collect(),
+                    events: Vec::new(),
                 }],
                 matched: 1,
             }],
@@ -347,6 +363,7 @@ mod tests {
                     .into_iter()
                     .map(|attr| (attr.key.clone(), attr))
                     .collect(),
+                    events: Vec::new(),
                 }],
                 matched: 1,
             }],
@@ -379,6 +396,7 @@ mod tests {
                 .into_iter()
                 .map(|attr| (attr.key.clone(), attr))
                 .collect(),
+                events: Vec::new(),
             }],
             matched: 1,
         };
@@ -404,6 +422,7 @@ mod tests {
             .into_iter()
             .map(|attr| (attr.key.clone(), attr))
             .collect(),
+            events: Vec::new(),
         };
 
         assert_eq!(span.span_id, "563d623c76514f8e");

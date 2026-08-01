@@ -172,6 +172,16 @@ fn model_trace_to_proto(trace: &common::model::trace::Trace) -> tempo_api::tempo
                         .saturating_add(span.duration_nano),
                     attributes: attrs_to_key_values(&span.attributes),
                     status: Some(span_status_to_proto(&span.status)),
+                    events: span
+                        .events
+                        .iter()
+                        .map(|event| otlp_trace::v1::span::Event {
+                            time_unix_nano: event.timestamp_unix_nano,
+                            name: event.name.clone(),
+                            attributes: attrs_to_key_values(&event.attributes),
+                            dropped_attributes_count: 0,
+                        })
+                        .collect(),
                     ..Default::default()
                 })
                 .collect();
