@@ -207,6 +207,7 @@ fn record_batches_to_trace(
                 attributes,
                 resource,
                 children: Vec::new(),
+                events: Vec::new(),
             };
 
             span_map.insert(span_id, span);
@@ -519,6 +520,7 @@ fn flight_data_to_search_results(
                 attributes,
                 resource,
                 children: Vec::new(),
+                events: Vec::new(),
             };
 
             traces_map.entry(trace_id).or_default().push(span);
@@ -1043,6 +1045,7 @@ mod tests {
             attributes: Default::default(),
             resource: Default::default(),
             children: Vec::new(),
+            events: Vec::new(),
         }
     }
 
