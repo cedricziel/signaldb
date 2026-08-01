@@ -19,6 +19,7 @@ use axum::{
     Router,
     extract::{Path, Query, State},
     http::StatusCode,
+    response::{IntoResponse, Response},
     routing::get,
 };
 use common::auth::TenantContextExtractor;
@@ -86,7 +87,7 @@ pub async fn query_range<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<RangeParams>,
-) -> Result<axum::Json<QueryResponse>, StatusCode> {
+) -> Result<axum::Json<QueryResponse>, PromError> {
     let Some(promql) = non_empty(&params.query) else {
         return Ok(axum::Json(QueryResponse::error(
             "bad_data",
@@ -117,7 +118,7 @@ pub async fn query<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<InstantParams>,
-) -> Result<axum::Json<QueryResponse>, StatusCode> {
+) -> Result<axum::Json<QueryResponse>, PromError> {
     let Some(promql) = non_empty(&params.query) else {
         return Ok(axum::Json(QueryResponse::error(
             "bad_data",
@@ -145,7 +146,7 @@ pub async fn labels<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<MetadataParams>,
-) -> Result<axum::Json<LabelsResponse>, StatusCode> {
+) -> Result<axum::Json<LabelsResponse>, PromError> {
     let (start, end) = metadata_window(&params);
     let ticket = format!(
         "query_metric_labels:{}:{}:{start}:{end}",
@@ -163,9 +164,13 @@ pub async fn label_values<S: RouterState>(
     tenant_ctx: TenantContextExtractor,
     Path(name): Path<String>,
     Query(params): Query<MetadataParams>,
-) -> Result<axum::Json<LabelsResponse>, StatusCode> {
+) -> Result<axum::Json<LabelsResponse>, PromError> {
     if name.trim().is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(PromError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_data",
+            "label name must not be empty",
+        ));
     }
     let (start, end) = metadata_window(&params);
     let ticket = format!(
@@ -183,13 +188,19 @@ pub async fn series<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<MetadataParams>,
-) -> Result<axum::Json<SeriesResponse>, StatusCode> {
+) -> Result<axum::Json<SeriesResponse>, PromError> {
     let selector = params
         .matcher
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or(StatusCode::BAD_REQUEST)?;
+        .ok_or_else(|| {
+            PromError::new(
+                StatusCode::BAD_REQUEST,
+                "bad_data",
+                "missing or empty 'match[]' selector",
+            )
+        })?;
     let (start, end) = metadata_window(&params);
     let payload = serde_json::json!({ "selector": selector, "start": start, "end": end });
     let ticket = format!(
@@ -213,7 +224,7 @@ const METRICS_SIGNAL: &str = "metrics";
 pub async fn label_stats<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
-) -> Result<axum::Json<LabelStatsResponse>, StatusCode> {
+) -> Result<axum::Json<LabelStatsResponse>, PromError> {
     let stats = fetch_label_stats(
         state.catalog(),
         &tenant_ctx.0.tenant_slug,
@@ -222,7 +233,11 @@ pub async fn label_stats<S: RouterState>(
     .await
     .map_err(|error| {
         tracing::error!(?error, "failed to read attribute stats");
-        StatusCode::INTERNAL_SERVER_ERROR
+        PromError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            format!("failed to read attribute stats: {error}"),
+        )
     })?;
     Ok(axum::Json(LabelStatsResponse::success(stats)))
 }
@@ -264,7 +279,7 @@ async fn run_promql<S: RouterState>(
     start: i64,
     end: i64,
     step: i64,
-) -> Result<Vec<RecordBatch>, StatusCode> {
+) -> Result<Vec<RecordBatch>, PromError> {
     let payload = serde_json::json!({
         "query": promql,
         "start": start,
@@ -282,14 +297,18 @@ async fn run_promql<S: RouterState>(
 async fn execute_ticket<S: RouterState>(
     state: &S,
     ticket_content: String,
-) -> Result<Vec<RecordBatch>, StatusCode> {
+) -> Result<Vec<RecordBatch>, PromError> {
     let mut client = state
         .service_registry()
         .get_flight_client_for_capability(ServiceCapability::QueryExecution)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to get Flight client for PromQL query");
-            StatusCode::SERVICE_UNAVAILABLE
+            PromError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "no querier available",
+            )
         })?;
 
     let ticket = Ticket::new(ticket_content);
@@ -302,29 +321,70 @@ async fn execute_ticket<S: RouterState>(
     let mut stream = client
         .do_get(flight_request)
         .await
-        .map_err(|e| flight_status_to_http(&e))?
+        .map_err(|e| flight_status_to_prom_error(&e))?
         .into_inner();
 
     let mut data = Vec::new();
     while let Some(flight_data) = stream.next().await {
-        data.push(flight_data.map_err(|e| flight_status_to_http(&e))?);
+        data.push(flight_data.map_err(|e| flight_status_to_prom_error(&e))?);
     }
 
     super::flight_decode::decode_flight_batches(&data, "promql")
+        .map_err(|status| PromError::new(status, "internal", "failed to decode query results"))
 }
 
-fn flight_status_to_http(status: &tonic::Status) -> StatusCode {
-    match status.code() {
-        tonic::Code::InvalidArgument => StatusCode::BAD_REQUEST,
-        tonic::Code::ResourceExhausted => StatusCode::TOO_MANY_REQUESTS,
-        tonic::Code::DeadlineExceeded => StatusCode::GATEWAY_TIMEOUT,
-        tonic::Code::PermissionDenied => StatusCode::FORBIDDEN,
-        tonic::Code::Unimplemented => StatusCode::NOT_IMPLEMENTED,
-        _ => {
-            tracing::error!(error = %status, "PromQL Flight query failed");
-            StatusCode::INTERNAL_SERVER_ERROR
+/// A Prometheus-API error response: an HTTP status paired with the
+/// `{status:"error", errorType, error}` envelope Grafana parses.
+///
+/// Built from a querier Flight `Status` so the underlying reason reaches the
+/// caller in the body instead of being flattened to a bare HTTP code — the
+/// difference between "metrics explore returns 400" and a message that names
+/// the actual cause.
+pub struct PromError {
+    status: StatusCode,
+    error_type: &'static str,
+    message: String,
+}
+
+impl PromError {
+    fn new(status: StatusCode, error_type: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            error_type,
+            message: message.into(),
         }
     }
+}
+
+impl IntoResponse for PromError {
+    fn into_response(self) -> Response {
+        (
+            self.status,
+            axum::Json(QueryResponse::error(self.error_type, self.message)),
+        )
+            .into_response()
+    }
+}
+
+/// Map a querier Flight `Status` to a Prometheus-API error, carrying the
+/// reason and logging it. The `InvalidArgument`→400 path was previously
+/// silent; every failure now leaves a log line at the severity its class
+/// warrants (client rejections `warn`, server faults `error`).
+fn flight_status_to_prom_error(status: &tonic::Status) -> PromError {
+    let (http, error_type) = match status.code() {
+        tonic::Code::InvalidArgument => (StatusCode::BAD_REQUEST, "bad_data"),
+        tonic::Code::ResourceExhausted => (StatusCode::TOO_MANY_REQUESTS, "throttled"),
+        tonic::Code::DeadlineExceeded => (StatusCode::GATEWAY_TIMEOUT, "timeout"),
+        tonic::Code::PermissionDenied => (StatusCode::FORBIDDEN, "forbidden"),
+        tonic::Code::Unimplemented => (StatusCode::NOT_IMPLEMENTED, "not_implemented"),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+    };
+    if http.is_server_error() {
+        tracing::error!(code = ?status.code(), message = status.message(), "PromQL Flight query failed");
+    } else {
+        tracing::warn!(code = ?status.code(), message = status.message(), "PromQL Flight query rejected");
+    }
+    PromError::new(http, error_type, status.message().to_string())
 }
 
 /// Group matrix rows (`bucket`, `metric_name`, label columns, `value`)
@@ -698,5 +758,35 @@ mod tests {
             .await
             .unwrap();
         assert!(stats.is_empty());
+    }
+
+    #[tokio::test]
+    async fn flight_error_surfaces_reason_in_response_body() {
+        // A querier InvalidArgument used to become a bare 400 with an empty
+        // body; the reason must now reach the caller in the Prometheus error
+        // envelope so the metrics explorer can show what actually failed.
+        let status =
+            tonic::Status::invalid_argument("no metrics tables available for this dataset");
+        let err = flight_status_to_prom_error(&status);
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.error_type, "bad_data");
+
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "error");
+        assert_eq!(json["errorType"], "bad_data");
+        assert_eq!(
+            json["error"],
+            "no metrics tables available for this dataset"
+        );
+
+        // Unmapped codes still fall back to 500 while keeping the reason.
+        let internal = flight_status_to_prom_error(&tonic::Status::internal("boom"));
+        assert_eq!(internal.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(internal.message, "boom");
     }
 }
