@@ -134,6 +134,12 @@ A successful response is `{"status":"success","data":{...}}`. An empty
 result — a window with no matching data — returns an empty `result` array with
 HTTP 200, not an error.
 
+A failed query returns the Prometheus error envelope
+`{"status":"error","errorType":"...","error":"..."}` with a non-2xx status; the
+`error` field carries the reason (e.g. a rejected query is `400` with
+`errorType` `bad_data`), so the message names the actual cause rather than
+leaving you with a bare status code.
+
 ## Troubleshooting
 
 - **Empty `result` when you expect data**: check that `start`/`end` bracket the
@@ -143,6 +149,9 @@ HTTP 200, not an error.
   `query`.
 - **404**: confirm the path is nested under `/prometheus` (e.g.
   `/prometheus/api/v1/query_range`).
+- **400 `bad_data`**: read the `error` field in the response body — it carries
+  the querier's reason (an invalid expression, an unknown label, or a dataset
+  with no metrics tables yet).
 
 ## Configure Grafana
 
