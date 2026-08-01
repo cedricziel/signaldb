@@ -89,6 +89,81 @@ describe("tempoGetTrace", () => {
     });
   });
 
+  it("maps span events, flattening exception attributes", async () => {
+    mockFetchOnce({
+      traceID: "abc",
+      rootServiceName: "gateway",
+      rootTraceName: "root-op",
+      startTimeUnixNano: "1000",
+      durationMs: 1,
+      spanSets: [
+        {
+          matched: 1,
+          spans: [
+            {
+              spanID: "s1",
+              startTimeUnixNano: "1000",
+              durationNanos: "2000",
+              name: "root-op",
+              status: "error",
+              events: [
+                {
+                  name: "exception",
+                  timeUnixNano: "1005",
+                  attributes: {
+                    "exception.message": {
+                      key: "exception.message",
+                      value: { stringValue: "boom" },
+                    },
+                    "exception.type": {
+                      key: "exception.type",
+                      value: { stringValue: "std::io::Error" },
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const trace = await tempoGetTrace("abc");
+    expect(trace.spans[0]?.events).toEqual([
+      {
+        name: "exception",
+        timeUnixNano: "1005",
+        attributes: {
+          "exception.message": "boom",
+          "exception.type": "std::io::Error",
+        },
+      },
+    ]);
+  });
+
+  it("defaults span events to an empty array when absent", async () => {
+    mockFetchOnce({
+      traceID: "abc",
+      rootServiceName: "gateway",
+      rootTraceName: "root-op",
+      startTimeUnixNano: "1000",
+      durationMs: 1,
+      spanSets: [
+        {
+          matched: 1,
+          spans: [
+            {
+              spanID: "s1",
+              startTimeUnixNano: "1000",
+              durationNanos: "2000",
+            },
+          ],
+        },
+      ],
+    });
+    const trace = await tempoGetTrace("abc");
+    expect(trace.spans[0]?.events).toEqual([]);
+  });
+
   it("treats an all-zero parent span id as a root", async () => {
     mockFetchOnce({
       traceID: "abc",

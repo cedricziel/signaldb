@@ -27,8 +27,9 @@ visible in the UI is equally queryable from Grafana.
   two dimensions combined via "Then by"), with per-group trace count,
   request rate, error rate, p50/p95 latency, and last-seen columns —
   all sortable. Selecting a group lists just its traces; selecting a trace
-  opens a waterfall with span details and error highlighting. Open-by-ID
-  works from any level.
+  opens a waterfall with span details and error highlighting. The span
+  panel lists that span's events, giving exceptions an error treatment that
+  surfaces the message, type, and stacktrace. Open-by-ID works from any level.
 - **Metrics** — a visual query builder (metric picker, tag filters,
   aggregation, and range functions, all populated from label metadata) with
   multi-query formulas for ratios, plus a "PromQL" tab as the raw escape

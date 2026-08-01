@@ -3,6 +3,7 @@ import { useState } from "react";
 import {
   tempoGetTrace,
   tempoSearch,
+  type SpanEventView,
   type TempoSpan,
   type TraceSummary,
 } from "../../api/tempo";
@@ -597,6 +598,16 @@ function SpanDetail({
       >
         Logs for this trace →
       </button>
+      {span.events.length > 0 && (
+        <>
+          <div className="span-detail-sec">Events</div>
+          <ul className="span-events">
+            {span.events.map((event, i) => (
+              <SpanEventItem key={i} event={event} />
+            ))}
+          </ul>
+        </>
+      )}
       <div className="span-detail-sec">Attributes</div>
       {attrs.length === 0 && (
         <div className="traces-note">No attributes recorded.</div>
@@ -610,5 +621,59 @@ function SpanDetail({
         ))}
       </dl>
     </aside>
+  );
+}
+
+/** One span event. Exceptions (name === "exception") get an error treatment
+ * with message/type promoted and the stacktrace shown as preformatted text. */
+function SpanEventItem({ event }: { event: SpanEventView }) {
+  const isException = event.name === "exception";
+  if (isException) {
+    const message = event.attributes["exception.message"];
+    const type = event.attributes["exception.type"];
+    const stacktrace = event.attributes["exception.stacktrace"];
+    const shown = new Set([
+      "exception.message",
+      "exception.type",
+      "exception.stacktrace",
+    ]);
+    const rest = Object.entries(event.attributes).filter(
+      ([k]) => !shown.has(k),
+    );
+    return (
+      <li className="span-event span-event-err">
+        <div className="span-event-head">
+          <span className="span-event-name">exception</span>
+          {type !== undefined && (
+            <span className="span-event-type">{String(type)}</span>
+          )}
+        </div>
+        {message !== undefined && (
+          <div className="span-event-msg">{String(message)}</div>
+        )}
+        {stacktrace !== undefined && String(stacktrace) !== "" && (
+          <pre className="span-event-trace">{String(stacktrace)}</pre>
+        )}
+        {rest.map(([k, v]) => (
+          <div className="span-event-attr" key={k}>
+            <span>{k}</span>
+            <span>{String(v)}</span>
+          </div>
+        ))}
+      </li>
+    );
+  }
+  return (
+    <li className="span-event">
+      <div className="span-event-head">
+        <span className="span-event-name">{event.name}</span>
+      </div>
+      {Object.entries(event.attributes).map(([k, v]) => (
+        <div className="span-event-attr" key={k}>
+          <span>{k}</span>
+          <span>{String(v)}</span>
+        </div>
+      ))}
+    </li>
   );
 }
