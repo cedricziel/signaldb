@@ -1817,6 +1817,12 @@ impl FlightService for QuerierFlightService {
                         Ok(batches) => batches,
                         Err(status) => {
                             app_metrics.query_errors.add(1, &query_attrs);
+                            // Attach the reason to the flight_do_get span as an
+                            // OTel `exception` event before it is flattened into
+                            // a transport status the router strips down to a bare
+                            // HTTP code. This is the only place the underlying
+                            // cause survives for after-the-fact diagnosis.
+                            common::self_monitoring::record_span_exception(&status);
                             return Err(status);
                         }
                     };
