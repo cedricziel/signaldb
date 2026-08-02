@@ -16,6 +16,15 @@ use uuid::Uuid;
 // ── Tenant endpoints ────────────────────────────────────────────────────
 
 /// List all tenants
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/tenants",
+    tag = "tenants",
+    security(("bearerAuth" = [])),
+    responses(
+        (status = 200, description = "List of tenants", body = ListTenantsResponse),
+    )
+)]
 pub async fn list_tenants<S: RouterState>(state: State<S>) -> impl IntoResponse {
     match state.catalog().list_tenants().await {
         Ok(tenants) => {
@@ -37,6 +46,18 @@ pub async fn list_tenants<S: RouterState>(state: State<S>) -> impl IntoResponse 
 }
 
 /// Create a new tenant
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/tenants",
+    tag = "tenants",
+    security(("bearerAuth" = [])),
+    request_body = CreateTenantRequest,
+    responses(
+        (status = 201, description = "Tenant created", body = TenantResponse),
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 409, description = "Tenant already exists", body = ApiError),
+    )
+)]
 pub async fn create_tenant<S: RouterState>(
     state: State<S>,
     Json(request): Json<CreateTenantRequest>,
@@ -139,6 +160,17 @@ pub async fn create_tenant<S: RouterState>(
 }
 
 /// Get a tenant by ID
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/tenants/{tenant_id}",
+    tag = "tenants",
+    security(("bearerAuth" = [])),
+    params(("tenant_id" = String, Path, description = "Tenant identifier")),
+    responses(
+        (status = 200, description = "Tenant found", body = TenantResponse),
+        (status = 404, description = "Tenant not found", body = ApiError),
+    )
+)]
 pub async fn get_tenant<S: RouterState>(
     state: State<S>,
     Path(tenant_id): Path<String>,
@@ -169,6 +201,19 @@ pub async fn get_tenant<S: RouterState>(
 }
 
 /// Update a tenant
+#[utoipa::path(
+    put,
+    path = "/api/v1/admin/tenants/{tenant_id}",
+    tag = "tenants",
+    security(("bearerAuth" = [])),
+    params(("tenant_id" = String, Path, description = "Tenant identifier")),
+    request_body = UpdateTenantRequest,
+    responses(
+        (status = 200, description = "Tenant updated", body = TenantResponse),
+        (status = 403, description = "Config-sourced tenants cannot be modified", body = ApiError),
+        (status = 404, description = "Tenant not found", body = ApiError),
+    )
+)]
 pub async fn update_tenant<S: RouterState>(
     state: State<S>,
     Path(tenant_id): Path<String>,
@@ -269,6 +314,18 @@ pub async fn update_tenant<S: RouterState>(
 }
 
 /// Delete a tenant
+#[utoipa::path(
+    delete,
+    path = "/api/v1/admin/tenants/{tenant_id}",
+    tag = "tenants",
+    security(("bearerAuth" = [])),
+    params(("tenant_id" = String, Path, description = "Tenant identifier")),
+    responses(
+        (status = 204, description = "Tenant deleted"),
+        (status = 403, description = "Config-sourced tenants cannot be deleted", body = ApiError),
+        (status = 404, description = "Tenant not found", body = ApiError),
+    )
+)]
 pub async fn delete_tenant<S: RouterState>(
     state: State<S>,
     Path(tenant_id): Path<String>,
@@ -336,6 +393,17 @@ pub async fn delete_tenant<S: RouterState>(
 // ── API Key endpoints ───────────────────────────────────────────────────
 
 /// List API keys for a tenant
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/tenants/{tenant_id}/api-keys",
+    tag = "api-keys",
+    security(("bearerAuth" = [])),
+    params(("tenant_id" = String, Path, description = "Tenant identifier")),
+    responses(
+        (status = 200, description = "List of API keys", body = ListApiKeysResponse),
+        (status = 404, description = "Tenant not found", body = ApiError),
+    )
+)]
 pub async fn list_api_keys<S: RouterState>(
     state: State<S>,
     Path(tenant_id): Path<String>,
@@ -393,6 +461,19 @@ pub async fn list_api_keys<S: RouterState>(
 }
 
 /// Create a new API key for a tenant
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/tenants/{tenant_id}/api-keys",
+    tag = "api-keys",
+    security(("bearerAuth" = [])),
+    params(("tenant_id" = String, Path, description = "Tenant identifier")),
+    request_body = CreateApiKeyRequest,
+    responses(
+        (status = 201, description = "API key created", body = CreateApiKeyResponse),
+        (status = 404, description = "Tenant not found", body = ApiError),
+        (status = 429, description = "Tenant API key quota exceeded", body = ApiError),
+    )
+)]
 pub async fn create_api_key<S: RouterState>(
     state: State<S>,
     Path(tenant_id): Path<String>,
@@ -496,6 +577,20 @@ pub async fn create_api_key<S: RouterState>(
 }
 
 /// Revoke an API key
+#[utoipa::path(
+    delete,
+    path = "/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}",
+    tag = "api-keys",
+    security(("bearerAuth" = [])),
+    params(
+        ("tenant_id" = String, Path, description = "Tenant identifier"),
+        ("key_id" = String, Path, description = "API key identifier"),
+    ),
+    responses(
+        (status = 204, description = "API key revoked"),
+        (status = 404, description = "API key not found", body = ApiError),
+    )
+)]
 pub async fn revoke_api_key<S: RouterState>(
     state: State<S>,
     Path((tenant_id, key_id)): Path<(String, String)>,
@@ -552,6 +647,17 @@ pub async fn revoke_api_key<S: RouterState>(
 // ── Dataset endpoints ───────────────────────────────────────────────────
 
 /// List datasets for a tenant
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/tenants/{tenant_id}/datasets",
+    tag = "datasets",
+    security(("bearerAuth" = [])),
+    params(("tenant_id" = String, Path, description = "Tenant identifier")),
+    responses(
+        (status = 200, description = "List of datasets", body = ListDatasetsResponse),
+        (status = 404, description = "Tenant not found", body = ApiError),
+    )
+)]
 pub async fn list_datasets<S: RouterState>(
     state: State<S>,
     Path(tenant_id): Path<String>,
@@ -609,6 +715,19 @@ pub async fn list_datasets<S: RouterState>(
 }
 
 /// Create a new dataset for a tenant
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/tenants/{tenant_id}/datasets",
+    tag = "datasets",
+    security(("bearerAuth" = [])),
+    params(("tenant_id" = String, Path, description = "Tenant identifier")),
+    request_body = CreateDatasetRequest,
+    responses(
+        (status = 201, description = "Dataset created", body = DatasetResponse),
+        (status = 404, description = "Tenant not found", body = ApiError),
+        (status = 429, description = "Tenant dataset quota exceeded", body = ApiError),
+    )
+)]
 pub async fn create_dataset<S: RouterState>(
     state: State<S>,
     Path(tenant_id): Path<String>,
@@ -716,6 +835,21 @@ pub async fn create_dataset<S: RouterState>(
 }
 
 /// Delete a dataset
+#[utoipa::path(
+    delete,
+    path = "/api/v1/admin/tenants/{tenant_id}/datasets/{dataset_id}",
+    tag = "datasets",
+    security(("bearerAuth" = [])),
+    params(
+        ("tenant_id" = String, Path, description = "Tenant identifier"),
+        ("dataset_id" = String, Path, description = "Dataset identifier"),
+    ),
+    responses(
+        (status = 204, description = "Dataset deleted"),
+        (status = 403, description = "Config-sourced datasets cannot be deleted", body = ApiError),
+        (status = 404, description = "Dataset not found", body = ApiError),
+    )
+)]
 pub async fn delete_dataset<S: RouterState>(
     state: State<S>,
     Path((tenant_id, dataset_id)): Path<(String, String)>,
@@ -761,7 +895,7 @@ fn tenant_record_to_response(record: common::catalog::TenantRecord) -> TenantRes
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::InMemoryStateImpl;
+    use crate::RouterAppState;
     use axum::{
         Router,
         body::Body,
@@ -772,48 +906,45 @@ mod tests {
     use common::config::Configuration;
     use tower::ServiceExt;
 
-    async fn create_admin_test_state() -> InMemoryStateImpl {
+    async fn create_admin_test_state() -> RouterAppState {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let config = Configuration::default();
-        InMemoryStateImpl::new(catalog, config)
+        RouterAppState::new(catalog, config)
     }
 
-    fn admin_router(state: InMemoryStateImpl) -> Router {
+    fn admin_router(state: RouterAppState) -> Router {
         Router::new()
-            .route("/tenants", get(list_tenants::<InMemoryStateImpl>))
-            .route("/tenants", post(create_tenant::<InMemoryStateImpl>))
-            .route("/tenants/{tenant_id}", get(get_tenant::<InMemoryStateImpl>))
+            .route("/tenants", get(list_tenants::<RouterAppState>))
+            .route("/tenants", post(create_tenant::<RouterAppState>))
+            .route("/tenants/{tenant_id}", get(get_tenant::<RouterAppState>))
+            .route("/tenants/{tenant_id}", put(update_tenant::<RouterAppState>))
             .route(
                 "/tenants/{tenant_id}",
-                put(update_tenant::<InMemoryStateImpl>),
-            )
-            .route(
-                "/tenants/{tenant_id}",
-                delete(delete_tenant::<InMemoryStateImpl>),
+                delete(delete_tenant::<RouterAppState>),
             )
             .route(
                 "/tenants/{tenant_id}/api-keys",
-                get(list_api_keys::<InMemoryStateImpl>),
+                get(list_api_keys::<RouterAppState>),
             )
             .route(
                 "/tenants/{tenant_id}/api-keys",
-                post(create_api_key::<InMemoryStateImpl>),
+                post(create_api_key::<RouterAppState>),
             )
             .route(
                 "/tenants/{tenant_id}/api-keys/{key_id}",
-                delete(revoke_api_key::<InMemoryStateImpl>),
+                delete(revoke_api_key::<RouterAppState>),
             )
             .route(
                 "/tenants/{tenant_id}/datasets",
-                get(list_datasets::<InMemoryStateImpl>),
+                get(list_datasets::<RouterAppState>),
             )
             .route(
                 "/tenants/{tenant_id}/datasets",
-                post(create_dataset::<InMemoryStateImpl>),
+                post(create_dataset::<RouterAppState>),
             )
             .route(
                 "/tenants/{tenant_id}/datasets/{dataset_id}",
-                delete(delete_dataset::<InMemoryStateImpl>),
+                delete(delete_dataset::<RouterAppState>),
             )
             .with_state(state)
     }
@@ -936,11 +1067,11 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
-    async fn create_quota_test_state(limits: common::config::TenantLimits) -> InMemoryStateImpl {
+    async fn create_quota_test_state(limits: common::config::TenantLimits) -> RouterAppState {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let mut config = Configuration::default();
         config.auth.default_limits = limits;
-        InMemoryStateImpl::new(catalog, config)
+        RouterAppState::new(catalog, config)
     }
 
     #[tokio::test]

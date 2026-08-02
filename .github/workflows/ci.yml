@@ -100,6 +100,45 @@ jobs:
       - name: Build
         run: pnpm --filter signaldb-ui build
 
+  # Verify the generated clients are in sync with the code-first OpenAPI spec.
+  # `cargo xtask check` regenerates the progenitor Rust SDK and the hey-api
+  # TypeScript UI client from api/signaldb-api.json and fails on any drift, so
+  # it needs both a Rust toolchain (rustfmt) and pnpm (to run openapi-ts). The
+  # spec-vs-code gate itself rides the router golden test in the Test Suite job.
+  codegen:
+    name: Generated code up-to-date
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.core == 'true' || needs.changes.outputs.ui == 'true'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt
+          cache: false # Using Swatinem/rust-cache instead
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "codegen"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify generated clients match the OpenAPI spec
+        run: cargo run -p xtask -- check
+
   # Fast preliminary checks - fail fast strategy
   check:
     name: Check & Lint

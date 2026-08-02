@@ -1,102 +1,131 @@
-import { ApiError, tenantHeaders } from "./http";
+// Tenant management API, layered over the generated OpenAPI SDK. The exported
+// function names and signatures are the stable surface the management UI
+// depends on; internally each call delegates to a generated `manage*`
+// operation and unwraps the result envelope back into the historical
+// contract: the response data on success, an `ApiError` carrying the HTTP
+// status on failure (so `isAuthError` keeps working on 401).
+import "./client";
 
+import {
+  manageCreateApiKey,
+  manageCreateDataset,
+  manageCreateTenant,
+  manageDeleteDataset,
+  manageListApiKeys,
+  manageListMemberships,
+  manageRemoveMembership,
+  manageRevokeApiKey,
+  manageUpsertMembership,
+  type ManageApiKeyResponse,
+  type ManageCreatedApiKey,
+  type ManageCreatedTenant,
+  type ManageDatasetResponse,
+  type MembershipResponse,
+} from "./gen";
+import { ApiError } from "./http";
+
+/** Ingestion scopes an API key may be granted. Narrower than the generated
+ * `string[]`, this drives the scope checkboxes in the management UI. */
 export type IngestScope =
-  | "metrics:write"
-  | "logs:write"
-  | "traces:write"
-  | "profiles:write";
+  "metrics:write" | "logs:write" | "traces:write" | "profiles:write";
 
-export interface ManagedApiKey {
-  id: string;
-  name: string | null;
-  dataset_id: string | null;
-  scopes: IngestScope[] | null;
-  revoked: boolean;
+/** API key as returned by the management API. Structurally the generated
+ * wire type (scopes surface as `string[]`). */
+export type ManagedApiKey = ManageApiKeyResponse;
+
+/** Tenant membership as returned by the management API. */
+export type ManagedMembership = MembershipResponse;
+
+/** Result envelope produced by the generated SDK (`RequestResult` with the
+ * default `fields` response style). */
+interface SdkResult<T> {
+  data?: T;
+  error?: unknown;
+  response?: Response;
 }
 
-export interface ManagedMembership {
-  user_id: string;
-  email: string;
-  role: "admin" | "member" | "viewer";
-}
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      ...tenantHeaders(),
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...init?.headers,
-    },
-  });
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      error?: string;
-    } | null;
-    throw new ApiError(
-      body?.error ?? `Management request failed (${response.status})`,
-      response.status,
-    );
+/** Unwrap a generated SDK result, preserving the error contract callers rely
+ * on. The SDK does not throw by default: it returns `error` set (and
+ * `response` unset on a network/URL error) instead. Re-throw as `ApiError`
+ * with the HTTP status so `isAuthError(401)` keeps working. */
+function unwrap<T>(result: SdkResult<T>): T {
+  const { error, response } = result;
+  if (error !== undefined || !response?.ok) {
+    const status = response?.status ?? 0;
+    const message =
+      (error as { error?: string } | undefined)?.error ??
+      `Management request failed (${status})`;
+    throw new ApiError(message, status);
   }
-  if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+  return result.data as T;
 }
 
-export const listApiKeys = (tenant: string) =>
-  request<ManagedApiKey[]>(`/api/v1/manage/tenants/${tenant}/api-keys`);
+export const listApiKeys = async (tenant: string): Promise<ManagedApiKey[]> =>
+  unwrap(await manageListApiKeys({ path: { tenant_id: tenant } }));
 
-export const createApiKey = (
+export const createApiKey = async (
   tenant: string,
   input: { name?: string; dataset_id?: string; scopes: IngestScope[] },
-) =>
-  request<ManagedApiKey & { key: string }>(
-    `/api/v1/manage/tenants/${tenant}/api-keys`,
-    { method: "POST", body: JSON.stringify(input) },
+): Promise<ManageCreatedApiKey> =>
+  unwrap(
+    await manageCreateApiKey({ path: { tenant_id: tenant }, body: input }),
   );
 
-export const revokeApiKey = (tenant: string, keyId: string) =>
-  request<void>(`/api/v1/manage/tenants/${tenant}/api-keys/${keyId}`, {
-    method: "DELETE",
-  });
+export const revokeApiKey = async (
+  tenant: string,
+  keyId: string,
+): Promise<void> => {
+  unwrap(
+    await manageRevokeApiKey({ path: { tenant_id: tenant, key_id: keyId } }),
+  );
+};
 
-export const createDataset = (tenant: string, name: string) =>
-  request<{ id: string; name: string }>(
-    `/api/v1/manage/tenants/${tenant}/datasets`,
-    { method: "POST", body: JSON.stringify({ name }) },
+export const createDataset = async (
+  tenant: string,
+  name: string,
+): Promise<ManageDatasetResponse> =>
+  unwrap(
+    await manageCreateDataset({ path: { tenant_id: tenant }, body: { name } }),
   );
 
-export const deleteDataset = (tenant: string, name: string) =>
-  request<void>(
-    `/api/v1/manage/tenants/${tenant}/datasets/${encodeURIComponent(name)}`,
-    { method: "DELETE" },
+export const deleteDataset = async (
+  tenant: string,
+  name: string,
+): Promise<void> => {
+  unwrap(
+    await manageDeleteDataset({
+      path: { tenant_id: tenant, dataset_name: name },
+    }),
   );
+};
 
-export const createTenant = (input: {
+export const createTenant = async (input: {
   id: string;
   name: string;
   default_dataset?: string;
-}) =>
-  request<{ id: string }>("/api/v1/manage/tenants", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
+}): Promise<ManageCreatedTenant> =>
+  unwrap(await manageCreateTenant({ body: input }));
 
-export const listMemberships = (tenant: string) =>
-  request<ManagedMembership[]>(
-    `/api/v1/manage/tenants/${tenant}/memberships`,
-  );
+export const listMemberships = async (
+  tenant: string,
+): Promise<ManagedMembership[]> =>
+  unwrap(await manageListMemberships({ path: { tenant_id: tenant } }));
 
-export const upsertMembership = (
+export const upsertMembership = async (
   tenant: string,
   input: { email: string; role: ManagedMembership["role"] },
-) =>
-  request<ManagedMembership>(
-    `/api/v1/manage/tenants/${tenant}/memberships`,
-    { method: "PUT", body: JSON.stringify(input) },
+): Promise<ManagedMembership> =>
+  unwrap(
+    await manageUpsertMembership({ path: { tenant_id: tenant }, body: input }),
   );
 
-export const removeMembership = (tenant: string, userId: string) =>
-  request<void>(
-    `/api/v1/manage/tenants/${tenant}/memberships/${userId}`,
-    { method: "DELETE" },
+export const removeMembership = async (
+  tenant: string,
+  userId: string,
+): Promise<void> => {
+  unwrap(
+    await manageRemoveMembership({
+      path: { tenant_id: tenant, user_id: userId },
+    }),
   );
+};

@@ -75,14 +75,41 @@ fn error(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[schema(as = ManageCreateTenantRequest)]
 pub struct CreateTenantRequest {
     pub id: String,
     pub name: String,
     pub default_dataset: Option<String>,
 }
 
-async fn create_tenant<S: RouterState>(
+/// 201 response body for tenant creation via the management API.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct ManageCreatedTenant {
+    id: String,
+}
+
+/// Error response body for the management API.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct ManageError {
+    error: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/manage/tenants",
+    tag = "tenants",
+    operation_id = "manage_create_tenant",
+    request_body = CreateTenantRequest,
+    responses(
+        (status = 201, description = "Tenant created", body = ManageCreatedTenant),
+        (status = 400, description = "Validation error", body = ManageError),
+        (status = 403, description = "Instance administrator required", body = ManageError),
+        (status = 409, description = "Tenant already exists", body = ManageError),
+        (status = 500, description = "Internal error", body = ManageError),
+    )
+)]
+pub(crate) async fn create_tenant<S: RouterState>(
     State(state): State<S>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Json(request): Json<CreateTenantRequest>,
@@ -159,16 +186,33 @@ async fn create_tenant<S: RouterState>(
         );
     }
     tracing::info!(actor_user_id = ?ctx.user_id, tenant_id, "tenant created via UX");
-    (StatusCode::CREATED, Json(json!({ "id": tenant_id }))).into_response()
+    (
+        StatusCode::CREATED,
+        Json(ManageCreatedTenant { id: tenant_id }),
+    )
+        .into_response()
 }
 
-#[derive(Debug, Serialize)]
-struct DatasetResponse {
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = ManageDatasetResponse)]
+pub(crate) struct DatasetResponse {
     id: String,
     name: String,
 }
 
-async fn list_datasets<S: RouterState>(
+#[utoipa::path(
+    get,
+    path = "/api/v1/manage/tenants/{tenant_id}/datasets",
+    tag = "datasets",
+    operation_id = "manage_list_datasets",
+    params(("tenant_id" = String, Path, description = "Tenant identifier")),
+    responses(
+        (status = 200, description = "List of datasets", body = [DatasetResponse]),
+        (status = 403, description = "Forbidden", body = ManageError),
+        (status = 500, description = "Internal error", body = ManageError),
+    )
+)]
+pub(crate) async fn list_datasets<S: RouterState>(
     State(state): State<S>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path(tenant_id): Path<String>,
@@ -194,12 +238,27 @@ async fn list_datasets<S: RouterState>(
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct CreateDatasetRequest {
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[schema(as = ManageCreateDatasetRequest)]
+pub(crate) struct CreateDatasetRequest {
     name: String,
 }
 
-async fn create_dataset<S: RouterState>(
+#[utoipa::path(
+    post,
+    path = "/api/v1/manage/tenants/{tenant_id}/datasets",
+    tag = "datasets",
+    operation_id = "manage_create_dataset",
+    params(("tenant_id" = String, Path, description = "Tenant identifier")),
+    request_body = CreateDatasetRequest,
+    responses(
+        (status = 201, description = "Dataset created", body = DatasetResponse),
+        (status = 400, description = "Validation error", body = ManageError),
+        (status = 403, description = "Forbidden", body = ManageError),
+        (status = 409, description = "Unable to create dataset", body = ManageError),
+    )
+)]
+pub(crate) async fn create_dataset<S: RouterState>(
     State(state): State<S>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path(tenant_id): Path<String>,
@@ -215,7 +274,7 @@ async fn create_dataset<S: RouterState>(
     match state.catalog().create_dataset(&tenant_id, &name).await {
         Ok(id) => {
             tracing::info!(actor_user_id = ?ctx.user_id, tenant_id, dataset = name, "dataset created via UX");
-            (StatusCode::CREATED, Json(json!({ "id": id, "name": name }))).into_response()
+            (StatusCode::CREATED, Json(DatasetResponse { id, name })).into_response()
         }
         Err(catalog_error) => {
             tracing::warn!(error = %catalog_error, tenant_id, dataset = name, "dataset creation failed");
@@ -224,7 +283,24 @@ async fn create_dataset<S: RouterState>(
     }
 }
 
-async fn delete_dataset<S: RouterState>(
+#[utoipa::path(
+    delete,
+    path = "/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}",
+    tag = "datasets",
+    operation_id = "manage_delete_dataset",
+    params(
+        ("tenant_id" = String, Path, description = "Tenant identifier"),
+        ("dataset_name" = String, Path, description = "Dataset name"),
+    ),
+    responses(
+        (status = 204, description = "Dataset deleted"),
+        (status = 403, description = "Forbidden", body = ManageError),
+        (status = 404, description = "Dataset not found", body = ManageError),
+        (status = 409, description = "Dataset cannot be deleted", body = ManageError),
+        (status = 500, description = "Internal error", body = ManageError),
+    )
+)]
+pub(crate) async fn delete_dataset<S: RouterState>(
     State(state): State<S>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path((tenant_id, dataset_name)): Path<(String, String)>,
@@ -302,15 +378,17 @@ async fn delete_dataset<S: RouterState>(
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct CreateApiKeyRequest {
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[schema(as = ManageCreateApiKeyRequest)]
+pub(crate) struct CreateApiKeyRequest {
     name: Option<String>,
     dataset_id: Option<String>,
     scopes: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
-struct ApiKeyResponse {
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = ManageApiKeyResponse)]
+pub(crate) struct ApiKeyResponse {
     id: String,
     name: Option<String>,
     dataset_id: Option<String>,
@@ -318,7 +396,32 @@ struct ApiKeyResponse {
     revoked: bool,
 }
 
-async fn list_api_keys<S: RouterState>(
+/// 201 response body for API key creation via the management API.
+///
+/// Fields mirror the previous `json!` body exactly (including `null` for
+/// absent `name`/`dataset_id`), preserving the wire format.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct ManageCreatedApiKey {
+    id: String,
+    key: String,
+    name: Option<String>,
+    dataset_id: Option<String>,
+    scopes: Vec<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/manage/tenants/{tenant_id}/api-keys",
+    tag = "api-keys",
+    operation_id = "manage_list_api_keys",
+    params(("tenant_id" = String, Path, description = "Tenant identifier")),
+    responses(
+        (status = 200, description = "List of API keys", body = [ApiKeyResponse]),
+        (status = 403, description = "Forbidden", body = ManageError),
+        (status = 500, description = "Internal error", body = ManageError),
+    )
+)]
+pub(crate) async fn list_api_keys<S: RouterState>(
     State(state): State<S>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path(tenant_id): Path<String>,
@@ -346,7 +449,22 @@ async fn list_api_keys<S: RouterState>(
     }
 }
 
-async fn create_api_key<S: RouterState>(
+#[utoipa::path(
+    post,
+    path = "/api/v1/manage/tenants/{tenant_id}/api-keys",
+    tag = "api-keys",
+    operation_id = "manage_create_api_key",
+    params(("tenant_id" = String, Path, description = "Tenant identifier")),
+    request_body = CreateApiKeyRequest,
+    responses(
+        (status = 201, description = "API key created", body = ManageCreatedApiKey),
+        (status = 400, description = "Validation error", body = ManageError),
+        (status = 403, description = "Forbidden", body = ManageError),
+        (status = 409, description = "Unable to create API key", body = ManageError),
+        (status = 500, description = "Internal error", body = ManageError),
+    )
+)]
+pub(crate) async fn create_api_key<S: RouterState>(
     State(state): State<S>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path(tenant_id): Path<String>,
@@ -399,13 +517,13 @@ async fn create_api_key<S: RouterState>(
             tracing::info!(actor_user_id = ?ctx.user_id, tenant_id, key_id = id, "scoped API key created via UX");
             (
                 StatusCode::CREATED,
-                Json(json!({
-                    "id": id,
-                    "key": secret,
-                    "name": request.name,
-                    "dataset_id": request.dataset_id,
-                    "scopes": request.scopes,
-                })),
+                Json(ManageCreatedApiKey {
+                    id,
+                    key: secret,
+                    name: request.name,
+                    dataset_id: request.dataset_id,
+                    scopes: request.scopes,
+                }),
             )
                 .into_response()
         }
@@ -416,7 +534,23 @@ async fn create_api_key<S: RouterState>(
     }
 }
 
-async fn revoke_api_key<S: RouterState>(
+#[utoipa::path(
+    delete,
+    path = "/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}",
+    tag = "api-keys",
+    operation_id = "manage_revoke_api_key",
+    params(
+        ("tenant_id" = String, Path, description = "Tenant identifier"),
+        ("key_id" = String, Path, description = "API key identifier"),
+    ),
+    responses(
+        (status = 204, description = "API key revoked"),
+        (status = 403, description = "Forbidden", body = ManageError),
+        (status = 404, description = "API key not found", body = ManageError),
+        (status = 500, description = "Internal error", body = ManageError),
+    )
+)]
+pub(crate) async fn revoke_api_key<S: RouterState>(
     State(state): State<S>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path((tenant_id, key_id)): Path<(String, String)>,
@@ -450,14 +584,26 @@ async fn revoke_api_key<S: RouterState>(
     }
 }
 
-#[derive(Debug, Serialize)]
-struct MembershipResponse {
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct MembershipResponse {
     user_id: String,
     email: String,
     role: MembershipRole,
 }
 
-async fn list_memberships<S: RouterState>(
+#[utoipa::path(
+    get,
+    path = "/api/v1/manage/tenants/{tenant_id}/memberships",
+    tag = "memberships",
+    operation_id = "manage_list_memberships",
+    params(("tenant_id" = String, Path, description = "Tenant identifier")),
+    responses(
+        (status = 200, description = "List of memberships", body = [MembershipResponse]),
+        (status = 403, description = "Forbidden", body = ManageError),
+        (status = 500, description = "Internal error", body = ManageError),
+    )
+)]
+pub(crate) async fn list_memberships<S: RouterState>(
     State(state): State<S>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path(tenant_id): Path<String>,
@@ -497,13 +643,28 @@ async fn list_memberships<S: RouterState>(
     Json(response).into_response()
 }
 
-#[derive(Debug, Deserialize)]
-struct UpsertMembershipRequest {
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub(crate) struct UpsertMembershipRequest {
     email: String,
     role: MembershipRole,
 }
 
-async fn upsert_membership<S: RouterState>(
+#[utoipa::path(
+    put,
+    path = "/api/v1/manage/tenants/{tenant_id}/memberships",
+    tag = "memberships",
+    operation_id = "manage_upsert_membership",
+    params(("tenant_id" = String, Path, description = "Tenant identifier")),
+    request_body = UpsertMembershipRequest,
+    responses(
+        (status = 200, description = "Membership updated", body = MembershipResponse),
+        (status = 403, description = "Forbidden", body = ManageError),
+        (status = 404, description = "User not found", body = ManageError),
+        (status = 409, description = "Last administrator cannot be demoted", body = ManageError),
+        (status = 500, description = "Internal error", body = ManageError),
+    )
+)]
+pub(crate) async fn upsert_membership<S: RouterState>(
     State(state): State<S>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path(tenant_id): Path<String>,
@@ -572,7 +733,24 @@ async fn upsert_membership<S: RouterState>(
     }
 }
 
-async fn remove_membership<S: RouterState>(
+#[utoipa::path(
+    delete,
+    path = "/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}",
+    tag = "memberships",
+    operation_id = "manage_remove_membership",
+    params(
+        ("tenant_id" = String, Path, description = "Tenant identifier"),
+        ("user_id" = String, Path, description = "User identifier"),
+    ),
+    responses(
+        (status = 204, description = "Membership removed"),
+        (status = 400, description = "Cannot remove own membership", body = ManageError),
+        (status = 403, description = "Forbidden", body = ManageError),
+        (status = 409, description = "Last administrator cannot be removed", body = ManageError),
+        (status = 500, description = "Internal error", body = ManageError),
+    )
+)]
+pub(crate) async fn remove_membership<S: RouterState>(
     State(state): State<S>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path((tenant_id, user_id)): Path<(String, String)>,

@@ -11,9 +11,11 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "generate:api": "openapi-ts"
   },
   "dependencies": {
+    "@hey-api/client-fetch": "^0.13.1",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/auto-instrumentations-web": "^0.66.0",
     "@opentelemetry/context-zone": "^2.10.0",
@@ -33,6 +35,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
+    "@hey-api/openapi-ts": "^0.99.0",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/jest-dom": "^7.0.0",
     "@testing-library/react": "^16.1.0",

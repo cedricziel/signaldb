@@ -13,8 +13,16 @@ use std::sync::Arc;
 
 pub mod discovery;
 pub mod endpoints;
+pub mod openapi;
 pub mod ui;
 
+/// The shared state that route handlers depend on.
+///
+/// This is the narrow interface every handler needs from the router's state —
+/// the catalog, service registry, configuration, and authenticator. Handlers
+/// are generic over this trait so they can be exercised against any state that
+/// satisfies the contract; [`RouterAppState`] is the concrete implementation
+/// used in production and tests.
 pub trait RouterState: std::fmt::Debug + Clone + Send + Sync + 'static {
     fn catalog(&self) -> &Catalog;
     fn service_registry(&self) -> &discovery::ServiceRegistry;
@@ -22,18 +30,18 @@ pub trait RouterState: std::fmt::Debug + Clone + Send + Sync + 'static {
     fn authenticator(&self) -> &Arc<Authenticator>;
 }
 
-/// RouterState holds any shared state that needs to be accessed by route handlers
+/// Concrete [`RouterState`] holding the router's shared handles.
 #[derive(Clone)]
-pub struct InMemoryStateImpl {
+pub struct RouterAppState {
     catalog: Catalog,
     service_registry: discovery::ServiceRegistry,
     config: Configuration,
     authenticator: Arc<Authenticator>,
 }
 
-impl std::fmt::Debug for InMemoryStateImpl {
+impl std::fmt::Debug for RouterAppState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InMemoryStateImpl")
+        f.debug_struct("RouterAppState")
             .field("catalog", &"Catalog")
             .field("service_registry", &self.service_registry)
             .field("config", &"Configuration")
@@ -42,7 +50,7 @@ impl std::fmt::Debug for InMemoryStateImpl {
     }
 }
 
-impl InMemoryStateImpl {
+impl RouterAppState {
     pub fn new(catalog: Catalog, config: Configuration) -> Self {
         let mut service_registry = discovery::ServiceRegistry::new(catalog.clone());
         if let Some(discovery_config) = &config.discovery {
@@ -85,7 +93,7 @@ impl InMemoryStateImpl {
     }
 }
 
-impl RouterState for InMemoryStateImpl {
+impl RouterState for RouterAppState {
     fn catalog(&self) -> &Catalog {
         &self.catalog
     }
@@ -281,10 +289,13 @@ async fn health_check() -> impl IntoResponse {
     StatusCode::OK
 }
 
-/// Load the OpenAPI specification from the generated JSON file
+/// Serve the code-first OpenAPI document assembled from the handler annotations
+/// (see [`crate::openapi`]). This is the same document checked into
+/// `api/signaldb-api.json` by the golden test, so the served spec can never
+/// drift from the code.
 fn load_openapi_spec() -> serde_json::Value {
-    serde_json::from_str(include_str!("../../../api/admin-api.json"))
-        .expect("api/admin-api.json must be valid JSON")
+    serde_json::to_value(crate::openapi::openapi_document())
+        .expect("OpenAPI document must serialize to JSON")
 }
 
 #[cfg(test)]
@@ -334,7 +345,7 @@ mod tests {
     #[tokio::test]
     async fn query_requests_are_rate_limited_per_tenant() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
-        let state = InMemoryStateImpl::new(catalog, test_config(Some(2)));
+        let state = RouterAppState::new(catalog, test_config(Some(2)));
         let app = create_router(state);
 
         assert_eq!(echo_request(&app).await, StatusCode::OK);
@@ -345,7 +356,7 @@ mod tests {
     #[tokio::test]
     async fn query_requests_unlimited_without_configured_limit() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
-        let state = InMemoryStateImpl::new(catalog, test_config(None));
+        let state = RouterAppState::new(catalog, test_config(None));
         let app = create_router(state);
 
         for _ in 0..50 {
@@ -363,7 +374,7 @@ mod tests {
             api_key: Some("sk-ingest".to_string()),
             ..Default::default()
         };
-        let app = create_router(InMemoryStateImpl::new(catalog, config));
+        let app = create_router(RouterAppState::new(catalog, config));
 
         // Public route (no auth headers), reached through the /ui nest.
         let res = app

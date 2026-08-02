@@ -10,7 +10,7 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_flight::{FlightDescriptor, FlightInfo, SchemaResult};
 use common::catalog::Catalog;
 use common::config::Configuration;
-use router::InMemoryStateImpl;
+use router::RouterAppState;
 use router::endpoints::flight::SignalDBFlightService;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -22,7 +22,7 @@ use tonic::transport::{Channel, Server};
 async fn setup_router_flight_service() -> Channel {
     let catalog = Catalog::new("sqlite::memory:").await.unwrap();
     let config = Configuration::default();
-    let state = InMemoryStateImpl::new(catalog, config);
+    let state = RouterAppState::new(catalog, config);
 
     let flight_service = SignalDBFlightService::new(state);
 

@@ -710,7 +710,7 @@ fn parse_timestamp_ns(value: Option<&str>) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{InMemoryStateImpl, create_router};
+    use crate::{RouterAppState, create_router};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use common::catalog::Catalog;
@@ -740,7 +740,7 @@ mod tests {
 
     async fn test_app() -> axum::Router {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
-        create_router(InMemoryStateImpl::new(catalog, test_config()))
+        create_router(RouterAppState::new(catalog, test_config()))
     }
 
     async fn get_json(app: &axum::Router, uri: &str) -> (StatusCode, Option<serde_json::Value>) {

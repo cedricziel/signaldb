@@ -30,6 +30,9 @@ rules:
   tasks:
     - "Order TDD-first: a failing test task precedes its implementation task."
     - "Scope test tasks per crate (cargo test -p <crate>); add integration coverage in tests-integration for cross-service behavior."
+    - "A user-facing feature needs surface-parity tasks: expose it in the UI, via the CLI, and via the HTTP API — one task per surface, unless the proposal explicitly scopes a surface out."
+    - "An HTTP API change needs tasks to update the OpenAPI spec, regenerate the Rust SDK the CLI consumes (src/signaldb-sdk), and regenerate the TypeScript client the UI consumes (src/ui/src/api/gen). The UI must consume the generated client — never raw fetch/HTTP against endpoints."
+    - "Include a docs task (route via the docs skill) and, when behavior a skill describes changes, a task to update that skill."
 
 # Per-operation advisory guidance (optional) — apply and archive only.
 operations:
@@ -38,6 +41,10 @@ operations:
       - "Practice TDD: make the failing test pass, then refactor."
       - "Before marking a task done: cargo fmt, cargo clippy --workspace --all-targets --all-features, cargo machete --with-metadata."
       - "Keep commits atomic and semantic — one logical change per commit."
+      - "Definition of Done — a user-facing feature is not done until it is reachable in the UI, via the CLI, and via the HTTP API (or the proposal explicitly scoped a surface out)."
+      - "Definition of Done — any HTTP API change is reflected in the OpenAPI spec; if the spec changed, the generated Rust SDK (CLI) and TypeScript client (UI) are regenerated in the same change. The CLI and UI consume only their generated clients, never hand-written HTTP calls."
+      - "Definition of Done — affected docs and skills are updated: docs per the docs skill, and any skill whose described behavior changed."
   archive:
     guidance:
       - "Confirm delta specs are synced into openspec/specs/ before archiving."
+      - "Verify the Definition of Done held: UI + CLI + API parity, OpenAPI spec and both regenerated clients in sync (each consumer on its generated client, not raw HTTP), and docs/skills updated."

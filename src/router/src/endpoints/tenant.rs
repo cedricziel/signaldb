@@ -199,7 +199,7 @@ pub async fn list_available_schemas() -> Json<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::InMemoryStateImpl;
+    use crate::RouterAppState;
     use common::catalog::Catalog;
     use common::config::{
         Configuration, DefaultSchemas, SchemaConfig, TenantSchemaConfig, TenantsConfig,
@@ -207,7 +207,7 @@ mod tests {
     use common::tenant_api::TenantApi;
     use std::collections::HashMap;
 
-    async fn create_test_state() -> InMemoryStateImpl {
+    async fn create_test_state() -> RouterAppState {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
         // Create configuration with test tenant
@@ -232,7 +232,7 @@ mod tests {
             ..Configuration::default()
         };
 
-        InMemoryStateImpl::new(catalog, config)
+        RouterAppState::new(catalog, config)
     }
 
     #[tokio::test]
