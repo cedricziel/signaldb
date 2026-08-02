@@ -23,13 +23,13 @@ sources:
 | **loki-api**          | `src/loki-api/`        | Library          | Loki HTTP API response types (LogQL query surface)                                                                                                                       |
 | **prometheus-api**    | `src/prometheus-api/`  | Library          | Prometheus HTTP API response types (PromQL query surface)                                                                                                                |
 | **signaldb-bin**      | `src/signaldb-bin/`    | Binary           | Monolithic mode runner (all services in one process)                                                                                                                     |
-| **signaldb-api**      | `src/signaldb-api/`    | Library          | OpenAPI-generated admin API types                                                                                                                                        |
-| **signaldb-cli**      | `src/signaldb-cli/`    | Binary           | CLI for tenant, API key, dataset management; shell completions incl. dynamic tenant IDs                                                                                                                              |
-| **signaldb-sdk**      | `src/signaldb-sdk/`    | Library          | Generated SDK client                                                                                                                                                     |
+| **signaldb-api**      | `src/signaldb-api/`    | Library          | Hand-written admin API DTOs (utoipa `ToSchema`); source of truth for the code-first OpenAPI spec                                                                         |
+| **signaldb-cli**      | `src/signaldb-cli/`    | Binary           | CLI for tenant, API key, dataset management; shell completions incl. dynamic tenant IDs                                                                                  |
+| **signaldb-sdk**      | `src/signaldb-sdk/`    | Library          | Generated Rust HTTP client (progenitor) from the OpenAPI spec                                                                                                            |
 | **grafana-plugin**    | `src/grafana-plugin/`  | Plugin           | Grafana datasource (TypeScript frontend + Rust backend); the backend is a standalone cargo workspace, not a root workspace member                                        |
 | **signal-producer**   | `src/signal-producer/` | Binary           | Test data generator (OTLP traces)                                                                                                                                        |
 | **tests-integration** | `tests-integration/`   | Test crate       | End-to-end integration tests                                                                                                                                             |
-| **xtask**             | `xtask/`               | Binary           | Build automation tasks                                                                                                                                                   |
+| **xtask**             | `xtask/`               | Binary           | Code generation (OpenAPI-derived Rust SDK + TypeScript UI client) and build tasks                                                                                        |
 
 ## The `common` Crate (most important)
 
