@@ -23,6 +23,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use common::auth::Authenticator;
+use dashmap::DashMap;
 use reqwest::header::{HeaderMap, HeaderName};
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, tower::StreamableHttpService,
@@ -34,6 +35,13 @@ use server::McpServer;
 /// call, so the request is made as the caller.
 const FORWARDED_HEADERS: [&str; 3] = ["authorization", "x-tenant-id", "x-dataset-id"];
 
+/// The identity a session is pinned to on its first authenticated request.
+#[derive(Clone, PartialEq, Eq)]
+struct SessionBinding {
+    tenant_id: String,
+    key_hash: String,
+}
+
 /// Shared state for the MCP HTTP surface.
 #[derive(Clone)]
 pub struct McpAppState {
@@ -41,6 +49,21 @@ pub struct McpAppState {
     pub authenticator: Arc<Authenticator>,
     /// Base URL of the router HTTP API downstream calls are forwarded to.
     pub router_base_url: String,
+    /// Pins each MCP session (keyed by `mcp-session-id`) to the identity
+    /// resolved on its first authenticated request, so a session cannot be
+    /// reused under a different tenant or credential mid-stream.
+    session_bindings: Arc<DashMap<String, SessionBinding>>,
+}
+
+impl McpAppState {
+    /// Construct the shared state with an empty session-binding table.
+    pub fn new(authenticator: Arc<Authenticator>, router_base_url: String) -> Self {
+        Self {
+            authenticator,
+            router_base_url,
+            session_bindings: Arc::new(DashMap::new()),
+        }
+    }
 }
 
 /// Build the axum router that serves MCP over Streamable HTTP at `/mcp`, gated
@@ -93,6 +116,36 @@ async fn mcp_auth_middleware(
         .await
     {
         Ok(ctx) => {
+            // Pin the session to this identity. A request that carries an
+            // established `mcp-session-id` but resolves to a different tenant or
+            // credential is a session-reuse attempt and is refused.
+            if let Some(session_id) = req
+                .headers()
+                .get("mcp-session-id")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+            {
+                let binding = SessionBinding {
+                    tenant_id: ctx.tenant_id.clone(),
+                    key_hash: Authenticator::hash_api_key(&token),
+                };
+                if let Some(existing) = state.session_bindings.get(&session_id) {
+                    if *existing != binding {
+                        tracing::warn!(
+                            %session_id,
+                            tenant_id = %ctx.tenant_id,
+                            "MCP session identity mismatch — refusing reuse"
+                        );
+                        return (
+                            StatusCode::FORBIDDEN,
+                            "session is bound to a different identity",
+                        )
+                            .into_response();
+                    }
+                } else {
+                    state.session_bindings.insert(session_id, binding);
+                }
+            }
             req.extensions_mut().insert(ctx);
             next.run(req).await
         }
@@ -132,28 +185,35 @@ mod tests {
     use common::config::{ApiKeyConfig, AuthConfig, TenantConfig};
     use tower::ServiceExt;
 
+    fn tenant(id: &str, key: &str) -> TenantConfig {
+        TenantConfig {
+            id: id.to_string(),
+            slug: id.to_string(),
+            name: id.to_string(),
+            default_dataset: Some("default".to_string()),
+            datasets: vec![],
+            api_keys: vec![ApiKeyConfig {
+                key: key.to_string(),
+                name: Some(format!("{id}-key")),
+            }],
+            schema_config: None,
+            limits: None,
+        }
+    }
+
     async fn test_state() -> McpAppState {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let auth = AuthConfig {
-            tenants: vec![TenantConfig {
-                id: "acme".to_string(),
-                slug: "acme".to_string(),
-                name: "Acme".to_string(),
-                default_dataset: Some("default".to_string()),
-                datasets: vec![],
-                api_keys: vec![ApiKeyConfig {
-                    key: "sk-test-key".to_string(),
-                    name: Some("test".to_string()),
-                }],
-                schema_config: None,
-                limits: None,
-            }],
+            tenants: vec![
+                tenant("acme", "sk-test-key"),
+                tenant("other", "sk-other-key"),
+            ],
             ..Default::default()
         };
-        McpAppState {
-            authenticator: Arc::new(Authenticator::new(auth, Arc::new(catalog))),
-            router_base_url: "http://localhost:3000".to_string(),
-        }
+        McpAppState::new(
+            Arc::new(Authenticator::new(auth, Arc::new(catalog))),
+            "http://localhost:3000".to_string(),
+        )
     }
 
     #[tokio::test]
@@ -212,6 +272,48 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn session_bound_to_first_identity() {
+        // A session pinned to tenant `acme` cannot be reused by another valid
+        // credential (tenant `other`) on the same `mcp-session-id`.
+        let app = mcp_http_router(test_state().await);
+
+        let first = app
+            .clone()
+            .oneshot(
+                RequestBuilder::new()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("authorization", "Bearer sk-test-key")
+                    .header("x-tenant-id", "acme")
+                    .header("mcp-session-id", "sess-1")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(first.status(), StatusCode::UNAUTHORIZED);
+
+        let reused = app
+            .oneshot(
+                RequestBuilder::new()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("authorization", "Bearer sk-other-key")
+                    .header("x-tenant-id", "other")
+                    .header("mcp-session-id", "sess-1")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reused.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
