@@ -1281,8 +1281,116 @@ mod tests {
     }
 
     fn make_batch() -> RecordBatch {
+        make_batch_val(1)
+    }
+
+    fn make_batch_val(v: i64) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
-        RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1i64, 2, 3]))]).unwrap()
+        // Vary row count with the value so distinct entries have distinct
+        // encoded lengths — a stronger check that offsets don't cross wires.
+        let rows: Vec<i64> = (0..=(v % 7)).map(|i| v + i).collect();
+        RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(rows))]).unwrap()
+    }
+
+    #[tokio::test]
+    async fn concurrent_appends_round_trip_every_entry_byte_identical() {
+        // Reproduction guard for the hive WAL corruption (issue #865): under
+        // concurrent appends that force segment rotation + interleaved
+        // flushes, every entry must read back byte-identical and still
+        // deserialize. If offset bookkeeping crosses wires, an entry reads
+        // back mismatched or Arrow-undeserializable bytes.
+        let temp_dir = TempDir::new().unwrap();
+        let config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            max_segment_size: 4096, // small: forces frequent rotation
+            max_buffer_entries: 4,  // small: forces frequent flushes
+            flush_interval_secs: 1,
+            tenant_id: "t".to_string(),
+            dataset_id: "d".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+        let wal = Arc::new(Wal::new(config).await.unwrap());
+
+        // Shared map of committed (id -> bytes), populated by writers as each
+        // append returns and sampled by concurrent readers — mirrors the
+        // WalProcessor reading entries while do_put appends and rotates.
+        let committed: Arc<tokio::sync::Mutex<std::collections::HashMap<Uuid, Vec<u8>>>> =
+            Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let mut readers = Vec::new();
+        for _ in 0..3 {
+            let wal = wal.clone();
+            let committed = committed.clone();
+            let stop = stop.clone();
+            readers.push(tokio::spawn(async move {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let entries = wal.get_entries().await.unwrap_or_default();
+                    let want = committed.lock().await;
+                    for entry in &entries {
+                        if let Some(expected) = want.get(&entry.id) {
+                            // A committed entry, if readable, must be exact.
+                            if let Ok(got) = wal.read_entry_data(entry).await {
+                                assert_eq!(
+                                    &got, expected,
+                                    "concurrent read of {} returned corrupted bytes",
+                                    entry.id
+                                );
+                                bytes_to_record_batch(&got)
+                                    .expect("concurrently-read payload must deserialize");
+                            }
+                        }
+                    }
+                    drop(want);
+                    tokio::task::yield_now().await;
+                }
+            }));
+        }
+
+        let mut writers = Vec::new();
+        for w in 0..8u64 {
+            let wal = wal.clone();
+            let committed = committed.clone();
+            writers.push(tokio::spawn(async move {
+                let mut written = Vec::new();
+                for i in 0..50u64 {
+                    let batch = make_batch_val((w * 1000 + i) as i64);
+                    let bytes = record_batch_to_bytes(&batch).unwrap();
+                    let id = wal
+                        .append(WalOperation::WriteTraces, bytes.clone(), None)
+                        .await
+                        .unwrap();
+                    // Publish immediately so readers race the write.
+                    committed.lock().await.insert(id, bytes.clone());
+                    written.push((id, bytes));
+                }
+                written
+            }));
+        }
+
+        let mut expected = Vec::new();
+        for h in writers {
+            expected.extend(h.await.unwrap());
+        }
+        wal.flush().await.unwrap();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for r in readers {
+            r.await.unwrap();
+        }
+
+        let entries = wal.get_entries().await.unwrap();
+        assert_eq!(entries.len(), expected.len(), "entry count mismatch");
+        for (id, want) in &expected {
+            let entry = entries
+                .iter()
+                .find(|e| e.id == *id)
+                .unwrap_or_else(|| panic!("entry {id} missing"));
+            let got = wal.read_entry_data(entry).await.unwrap();
+            assert_eq!(&got, want, "payload for {id} read back corrupted");
+            bytes_to_record_batch(&got).expect("payload must deserialize");
+        }
     }
 
     #[tokio::test]
