@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 pub mod discovery;
 pub mod endpoints;
+pub mod openapi;
 pub mod ui;
 
 /// The shared state that route handlers depend on.

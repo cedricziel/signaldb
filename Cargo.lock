@@ -1311,6 +1311,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
+ "utoipa",
  "uuid",
 ]
 
@@ -6258,6 +6259,7 @@ dependencies = [
  "tower",
  "tower-http 0.7.0",
  "tracing",
+ "utoipa",
  "uuid",
 ]
 

@@ -31,6 +31,7 @@ tower-http = { workspace = true, features = ["fs"] }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+utoipa.workspace = true
 
 [[bin]]
 name = "signaldb-router"
