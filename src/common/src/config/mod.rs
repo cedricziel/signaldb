@@ -1006,6 +1006,50 @@ pub struct Configuration {
     /// Querier resource limits
     #[serde(default)]
     pub querier: QuerierConfig,
+    /// MCP (Model Context Protocol) server configuration
+    #[serde(default)]
+    pub mcp: McpConfig,
+}
+
+/// Configuration for the standalone `signaldb-mcp` server.
+///
+/// The MCP server is a thin, credential-forwarding client: it forwards the
+/// caller's bearer token to the router's HTTP API via `signaldb-sdk` and holds
+/// no privileged credential of its own.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct McpConfig {
+    /// Whether the MCP server runs. Off by default so a plain deployment does
+    /// not open an extra port until explicitly enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Address the Streamable HTTP transport binds to (serves MCP at `/mcp`).
+    /// Defaults to loopback (`127.0.0.1:8228`); a non-loopback bind forwards
+    /// live bearer credentials and must sit behind TLS.
+    #[serde(default = "McpConfig::default_bind")]
+    pub bind_address: String,
+    /// Base URL of the router HTTP API the MCP server forwards to. When unset,
+    /// it is resolved via service discovery like any other downstream call.
+    #[serde(default)]
+    pub router_url: Option<String>,
+}
+
+impl McpConfig {
+    fn default_bind() -> String {
+        // Loopback by default: the server forwards live bearer credentials, so
+        // it must not accept off-host connections in plaintext. Binding a
+        // non-loopback address is an explicit opt-in that should sit behind TLS.
+        "127.0.0.1:8228".to_string()
+    }
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind_address: Self::default_bind(),
+            router_url: None,
+        }
+    }
 }
 
 impl Default for Configuration {
@@ -1028,6 +1072,7 @@ impl Default for Configuration {
             profiling: ProfilingConfig::default(),
             compactor: CompactorConfig::default(),
             querier: QuerierConfig::default(),
+            mcp: McpConfig::default(),
         }
     }
 }

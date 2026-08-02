@@ -306,6 +306,16 @@ else
     echo "  • Flight: http://localhost:50053"
     echo "  • Logs: ${LOG_DIR}/router.log"
 
+    # Start MCP server (forwards to the router's HTTP API)
+    echo -e "${GREEN}Starting MCP server...${NC}"
+    SIGNALDB_MCP_ENABLED=true \
+    SIGNALDB_MCP_BIND_ADDRESS=0.0.0.0:8228 \
+    SIGNALDB_MCP_ROUTER_URL=http://localhost:3001 \
+        cargo run --bin signaldb-mcp -- --config "${DEV_CONFIG}" > "${LOG_DIR}/mcp.log" 2>&1 &
+    PIDS="$PIDS $!"
+    echo "  • MCP (Streamable HTTP): http://localhost:8228/mcp"
+    echo "  • Logs: ${LOG_DIR}/mcp.log"
+
     # Wait for services to be ready
     echo ""
     echo -e "${YELLOW}Waiting for services to start...${NC}"
