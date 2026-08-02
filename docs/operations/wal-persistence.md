@@ -50,11 +50,11 @@ The WAL base directory is set in the `[wal]` TOML section and applies to both se
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ACCEPTOR_WAL_DIR` | `{wal_dir}/acceptor` | Full WAL directory for acceptor service (override) |
-| `WRITER_WAL_DIR` | `{wal_dir}/writer` | Full WAL directory for writer service (override) |
-| `SIGNALDB__WAL__WAL_DIR` | `.data/wal` | Base WAL directory (figment; equivalent to `[wal].wal_dir`) |
+| Variable                 | Default              | Description                                                 |
+| ------------------------ | -------------------- | ----------------------------------------------------------- |
+| `ACCEPTOR_WAL_DIR`       | `{wal_dir}/acceptor` | Full WAL directory for acceptor service (override)          |
+| `WRITER_WAL_DIR`         | `{wal_dir}/writer`   | Full WAL directory for writer service (override)            |
+| `SIGNALDB__WAL__WAL_DIR` | `.data/wal`          | Base WAL directory (figment; equivalent to `[wal].wal_dir`) |
 
 There are no `[wal.acceptor]`/`[wal.writer]` TOML subsections; the per-service overrides are env/CLI only.
 
@@ -125,18 +125,18 @@ spec:
   template:
     spec:
       containers:
-      - name: writer
-        image: signaldb/writer:latest
-        env:
-        - name: WRITER_WAL_DIR
-          value: "/data/wal"
-        volumeMounts:
-        - name: wal-storage
-          mountPath: /data/wal
+        - name: writer
+          image: signaldb/writer:latest
+          env:
+            - name: WRITER_WAL_DIR
+              value: "/data/wal"
+          volumeMounts:
+            - name: wal-storage
+              mountPath: /data/wal
       volumes:
-      - name: wal-storage
-        persistentVolumeClaim:
-          claimName: signaldb-writer-wal
+        - name: wal-storage
+          persistentVolumeClaim:
+            claimName: signaldb-writer-wal
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -170,12 +170,12 @@ spec:
 
 ### Recommended Storage Classes
 
-| Environment | Storage Class | Performance |
-|-------------|---------------|-------------|
-| Development | `standard` | Standard disk |
-| Staging | `fast` | SSD |
-| Production | `fast-ssd` | High-performance SSD |
-| High-volume | `ultra-ssd` | NVMe with high IOPS |
+| Environment | Storage Class | Performance          |
+| ----------- | ------------- | -------------------- |
+| Development | `standard`    | Standard disk        |
+| Staging     | `fast`        | SSD                  |
+| Production  | `fast-ssd`    | High-performance SSD |
+| High-volume | `ultra-ssd`   | NVMe with high IOPS  |
 
 ## WAL Implementation Details
 
@@ -208,9 +208,35 @@ The acceptor keeps one WAL per tenant/dataset/signal combination; the writer kee
 ### Recovery Process
 
 On service restart:
+
 1. **WAL scan**: Identify unprocessed entries
 2. **Automatic replay**: Reprocess unprocessed entries
 3. **Resume normal operation**: Continue with new data
+
+### Corrupt or Unreadable Entries
+
+An entry can become unreadable — a truncated or partial data write, an entry
+whose stored `[data_offset, data_size)` range runs past the data file, or a
+payload that no longer decodes as Arrow IPC (e.g. legacy-format segments). One
+such entry must not wedge the processing loop, so the writer handles it in
+three steps:
+
+1. **Bounds check first**: before reading, the writer validates the entry's
+   byte range against the actual data-file length and rejects an out-of-bounds
+   range with a precise error naming the entry and segment — rather than
+   reading past the file or handing misaligned bytes to the Arrow decoder,
+   which would surface only as an opaque parse error later.
+2. **Attributed diagnostics**: route, deserialize, and dead-letter failures log
+   `tenant_id`, `dataset_id`, `signal`, `data_offset`, and `data_size`, so a
+   burst of failures is attributable to the affected tenant and signal instead
+   of an anonymous flood.
+3. **Dead-letter after retries**: an entry that keeps failing is moved to
+   `<wal_dir>/dead-letter/` with its raw payload preserved, and marked
+   processed so ingestion continues.
+
+A growing dead-letter directory or a spike in these error logs indicates
+corrupt or legacy-format WAL segments; inspect the preserved payloads and,
+if a whole segment is unreadable, remove it so replay stops retrying it.
 
 ## Permissions
 
@@ -240,22 +266,22 @@ spec:
         runAsGroup: 1000
         fsGroup: 1000
       containers:
-      - name: writer
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
+        - name: writer
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
 ```
 
 ## Performance Tuning
 
 Segment size, buffer size, and flush interval are currently built-in per-signal defaults and are not runtime-configurable:
 
-| Service | Signal | Segment size | Buffer entries | Flush interval |
-|---------|--------|--------------|----------------|----------------|
-| Acceptor | Traces | 64MB | 1000 | 30s |
-| Acceptor | Logs | 64MB | 2000 | 15s |
-| Acceptor | Metrics | 128MB | 5000 | 10s |
-| Writer | All | 64MB | 1000 | 30s |
+| Service  | Signal  | Segment size | Buffer entries | Flush interval |
+| -------- | ------- | ------------ | -------------- | -------------- |
+| Acceptor | Traces  | 64MB         | 1000           | 30s            |
+| Acceptor | Logs    | 64MB         | 2000           | 15s            |
+| Acceptor | Metrics | 128MB        | 5000           | 10s            |
+| Writer   | All     | 64MB         | 1000           | 30s            |
 
 Tuning WAL throughput today means tuning the storage underneath it (see Storage Requirements above).
 
@@ -300,14 +326,14 @@ When `[self_monitoring]` is enabled, services also export `signaldb.wal.*` metri
 
 ```yaml
 groups:
-- name: signaldb-wal
-  rules:
-  - alert: WALDiskSpaceHigh
-    expr: (disk_used_bytes{mountpoint="/data/wal"} / disk_size_bytes{mountpoint="/data/wal"}) > 0.85
-    labels:
-      severity: warning
-    annotations:
-      summary: "WAL disk space usage is high"
+  - name: signaldb-wal
+    rules:
+      - alert: WALDiskSpaceHigh
+        expr: (disk_used_bytes{mountpoint="/data/wal"} / disk_size_bytes{mountpoint="/data/wal"}) > 0.85
+        labels:
+          severity: warning
+        annotations:
+          summary: "WAL disk space usage is high"
 ```
 
 (Alert on generic node/disk metrics for the WAL mount; SignalDB does not currently expose WAL metrics in Prometheus format.)
@@ -332,6 +358,7 @@ groups:
 ### Common Issues
 
 #### "WAL directory not writable"
+
 ```bash
 # Check permissions
 ls -la /data/wal/
@@ -340,6 +367,7 @@ sudo chmod 755 /data/wal/
 ```
 
 #### "High WAL disk usage"
+
 ```bash
 # Check segment count
 find /data/wal -name 'wal-*.log' | wc -l
@@ -349,6 +377,7 @@ tail -f /var/log/signaldb/writer.log | grep "WAL"
 ```
 
 #### "WAL segment corruption"
+
 ```bash
 # Service will log corruption and skip bad segments
 tail -f /var/log/signaldb/acceptor.log | grep -i "corrupt"
@@ -378,17 +407,20 @@ watch 'du -sh /data/wal/*'
 #### Disaster Recovery
 
 1. **Stop affected services**:
+
    ```bash
    kubectl scale deployment signaldb-acceptor --replicas=0
    kubectl scale deployment signaldb-writer --replicas=0
    ```
 
 2. **Restore WAL data**:
+
    ```bash
    tar -xzf wal-backup-20240315.tar.gz -C /data/
    ```
 
 3. **Restart services**:
+
    ```bash
    kubectl scale deployment signaldb-acceptor --replicas=2
    kubectl scale deployment signaldb-writer --replicas=2
@@ -436,6 +468,7 @@ watch 'du -sh /data/wal/*'
 **High Volume**: 100GB+ with NVMe storage for optimal performance
 
 **Calculation Formula**:
+
 ```
 WAL Size ≈ Ingestion Rate × Flush Interval × Safety Factor
 
