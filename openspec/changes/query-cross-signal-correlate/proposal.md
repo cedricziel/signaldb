@@ -16,8 +16,10 @@ is worth building.
   DataFusion `Join`. This makes the IR an explicit **DAG** (a `correlate`/`binop`
   node has sub-pipeline children) — the type system from `query-ir-core` is
   extended to type joins and post-join column namespacing.
-- `binop` (series formula) may land here or alongside metrics, since both are
-  DAG nodes over sub-pipelines.
+- `binop` (series formula) is **owned by `query-metrics-model`**, not this
+  change — its hard part is PromQL vector-matching (`on()/ignoring()/group_left`),
+  which is metric-specific. This change only shares the DAG/sub-pipeline typing
+  that `binop` also relies on.
 
 ## Hard problems to solve (from design review — do not skip)
 

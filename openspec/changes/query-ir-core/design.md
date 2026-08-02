@@ -70,7 +70,12 @@ correct iff it evaluates to the denotation below.
 - **Coercion** is defined per target `ValueType`: duration literals accept unit
   suffixes (`"500ms"`, `"2s"`) → `duration_ns`; numeric strings → `int64`/
   `float64`; RFC3339/relative (`now-1h`) → `timestamp_ns`. Coercion is total or
-  the query is rejected at validation — never a silent runtime cast.
+  the query is rejected at validation — never a silent runtime cast. **Relative
+  timestamp anchoring is resolved at execution time** against the request's
+  server-received clock (not at validation), so `now-1h` means one hour before
+  the query runs; only _coercibility_ (well-formed syntax) is checked at
+  validation. The resolved absolute window is echoed in the response for
+  reproducibility.
 
 ### Relation types (what flows between stages)
 
@@ -78,20 +83,30 @@ Every stage consumes and produces a typed **relation**:
 
 ```
    RelationType =
-     | RowSet { source, columns: [{name, ValueType}], grain }   // records
+     | RowSet { source, columns: [{name, ValueType}], grain, aggregated: bool }
      | Series { labels: [name], value: ValueType, step }        // time series
    grain ∈ { event, span, trace }   // what one row denotes
 ```
+
+`aggregated` is the discriminator that makes the two RowSet-terminal envelopes
+distinguishable: a raw scan/filter yields `aggregated=false` → `rows`; a grouped
+`aggregate` (no `step`) yields `aggregated=true` → `table`. Without it the
+validator could not tell `rows` from `table` (both are RowSets), so envelope
+validation would be prose, not a function of the type — this bit is what keeps it
+a function of the type.
 
 Legality and envelope-validation are **functions of RelationType**, not prose:
 
 - A stage declares an input RelationType constraint and an output RelationType.
   `extract` requires `source ∈ {logs}`; `aggregate` maps `RowSet → Series` (with
-  `step`) or `RowSet → RowSet`(grouped, no `step`); `topk` requires an ordered
-  numeric column present in its input.
+  `step`) or `RowSet → RowSet{aggregated=true}` (grouped, no `step`); `topk`
+  requires an ordered numeric column present in its input.
 - The planner **infers the RelationType through the pipeline** and rejects a
-  stage whose input constraint is unmet — this is the single mechanism behind
-  "legal-stage per source" and "envelope matches terminal stage."
+  stage whose input constraint is unmet, and validates the declared envelope
+  against the terminal type — `rows`⇔`RowSet{aggregated=false}`,
+  `table`⇔`RowSet{aggregated=true}`, `series`⇔`Series`. This is the single
+  mechanism behind "legal-stage per source" and "envelope matches terminal
+  stage."
 
 ### Structured operands (no embedded strings)
 
@@ -123,8 +138,15 @@ from commit #1:
   reconciled by validating structure strictly at the stage level and versioning
   at the document level.
 - The **operator/function set is a versioned registry**, not an open enum:
-  adding `regex` or a new agg fn is a registry + version bump, enabling
-  capability negotiation with clients.
+  adding a new agg fn or the deferred `regex` extract parser is a registry +
+  version bump (additive), enabling capability negotiation with clients — so the
+  deferred `regex` parser has a defined home (a later registry entry), not a
+  separate change.
+- **`regex` is a DoS surface wherever it appears.** The predicate `regex` **op**
+  carries the same catastrophic-backtracking risk as the deferred `regex`
+  **extract** parser; both MUST run behind a bounded, timeout-guarded matcher.
+  The predicate `regex` op ships in core with that guard; the `regex` extract
+  parser is deferred behind the same guard.
 
 ## Shared predicate grammar (every `where`)
 
@@ -157,13 +179,15 @@ timeout-guarded UDF (registry-gated) — a validation/DoS surface.
 Declared `result ∈ {rows, series, table}`; validated against the inferred
 terminal RelationType. `rows` returns a **curated projection** (explicit `fields`
 or a registry-driven default) — **never `SELECT *`** (in an all-promoted world a
-bare `*` is thousands of columns). `trace` and `scalar` envelopes arrive with
-their owning sibling changes (`query-structural-traces`, `query-metrics-model`).
+bare `*` is thousands of columns). The remaining envelopes arrive with their
+owning sibling changes and are each owned by exactly one: `trace` →
+`query-structural-traces`; `scalar` → `query-metrics-model`; `metadata` →
+`query-field-discovery`.
 
 ```
-   where (no agg)            → rows
-   aggregate (no step)       → table
-   aggregate (with step)     → series
+   RowSet{aggregated=false}  → rows
+   RowSet{aggregated=true}   → table
+   Series                    → series
 ```
 
 ## Worked lowering — "error-log rate by service, 1m buckets" (logs → series)

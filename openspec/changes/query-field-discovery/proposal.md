@@ -34,8 +34,9 @@ so they share this change.
   sources; queryable fields per source (logical dotted OTel names + canonical
   type, from the registry); value suggestions for a field within a time range;
   cardinality/coverage hints.
-- A **`scalar`/`metadata` result envelope** (deferred from `query-ir-core`) for
-  introspection results.
+- A **`metadata` result envelope** (deferred from `query-ir-core`) for
+  introspection results. (The `scalar` envelope is owned by `query-metrics-model`,
+  not this change.)
 - Time-range- and predicate-scoped discovery ("given these filters so far, what
   can I add next?") rather than a static catalog dump.
 

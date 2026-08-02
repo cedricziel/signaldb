@@ -72,8 +72,9 @@ it can be designed and reviewed on its own risk profile:
 
 - **query-ir-core** (this) — IR type system + versioning + single-signal stages
   - native surface + clients + builder. Ship first.
-- **query-field-discovery** — the introspection surface (signals/fields/values/
-  relationships) the builder needs to make queries easy to _build_.
+- **query-field-discovery** — build-side introspection (signals/fields/values/
+  relationships) the builder needs to make queries easy to _build_, plus
+  delivery-side live tail + pagination for results.
 - **query-cross-signal-correlate** — `correlate` as a DAG join node.
 - **query-structural-traces** — `match`; engine choice prototyped first.
 - **query-metrics-model** — temporality/histogram-aware metric sub-model.
@@ -107,6 +108,12 @@ change _consumes_ — see Impact).
   **consumer of the attribute-registry epic (#811)** — this change adds the
   query-facing resolver _view_, it does not re-implement the registry. Uses
   Arrow/Parquet types re-exported by DataFusion (FDAP alignment).
+  **Production gating:** core is fully buildable and testable against a
+  config/in-memory resolver fallback, but the _canonical field types_ that
+  literal coercion depends on have no production source until #811 lands — so
+  before #811, core is usable for fields whose type is config-declared or
+  registry-known and is otherwise demo/fallback-only. Core does not block on
+  #811 for build or test; it depends on #811 for full production field coverage.
 - **querier** (`src/querier/src/`): IR→`LogicalPlan` planner for the
   single-signal stages, satisfying the denotational spec; new
   `query_ir:{tenant}:{dataset}:{json}` Flight ticket in `flight.rs`. Reuses

@@ -35,8 +35,11 @@ group_right`) — most of real PromQL arithmetic;
 - Reuse the PromQL bucket engine wholesale vs. a metric relation type layered on
   it. What is the minimum sound v1 (likely gauge/sum rate + `histogram_quantile`)
   and what stays on the PromQL dialect until later.
-- Whether `binop` lives here (metric-heavy) or in
-  `query-cross-signal-correlate` (both are DAG nodes over sub-pipelines).
+- `binop` is **owned here** (its hard part — PromQL vector-matching
+  `on()/ignoring()/group_left/group_right` — is metric-specific);
+  `query-cross-signal-correlate` only provides the shared DAG/sub-pipeline typing.
+  Open: exact vector-matching semantics and series alignment (nearest vs
+  interpolate).
 
 ## Capabilities
 

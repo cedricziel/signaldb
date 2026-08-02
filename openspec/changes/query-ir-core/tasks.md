@@ -15,9 +15,18 @@
       with a new optional field still validates (additive tolerance); a stage
       object with an unknown key is rejected (`deny_unknown_fields`
       physical-addressing guard).
-- [ ] 1.5 Implement the IR document types, `ValueType`/`RelationType`, the
-      versioned operator/function registry, coercion, and the validator. Make
-      1.1–1.4 pass.
+- [ ] 1.5 Failing unit test: declared-envelope validation — `rows`⇔
+      `RowSet{aggregated=false}`, `table`⇔`RowSet{aggregated=true}`, `series`⇔
+      `Series`; declaring `series` over a RowSet terminal (or `rows` over a
+      grouped aggregate) is rejected with an envelope-mismatch error.
+- [ ] 1.6 Failing unit test: extensible-source forward-compat — the `from` source
+      is resolved against the source registry; an unregistered source is rejected
+      with a clear unknown-source error (not a parse failure), and a previously
+      valid document still validates unchanged after a new source is registered
+      (document shape is source-independent).
+- [ ] 1.7 Implement the IR document types, `ValueType`/`RelationType` (incl. the
+      `aggregated` discriminator), the versioned operator/function registry,
+      coercion, the source registry, and the validator. Make 1.1–1.6 pass.
 
 ## 2. Predicate grammar + structured operands (`common`)
 
@@ -44,7 +53,7 @@
 ## 4. IR → LogicalPlan planner, single-signal (`querier`)
 
 - [ ] 4.1 Failing unit test (`cargo test -p querier`): `from(logs) + where +
-    aggregate(step)` lowers to TableScan→Filter→Projection(date_bin)→
+aggregate(step)` lowers to TableScan→Filter→Projection(date_bin)→
       Aggregate→Sort, with an unpromoted-field filter emitted as a JSON
       extraction, satisfying the denotational spec on a fixture.
 - [ ] 4.2 Failing unit test: promotion invariance — the same IR lowers to a
@@ -52,9 +61,18 @@
       not, and both execute to the same result over a fixture table.
 - [ ] 4.3 Failing unit test: `from(traces) + where + topk` (single-signal trace
       query) lowers and executes; `extract` on `traces` is rejected (log-only).
-- [ ] 4.4 Implement the single-signal planner (from/where/extract/aggregate/
-      topk/order/limit) → `LogicalPlan`. `extract` v1 = `json` + `logfmt`
-      (`regex` deferred). Make 4.1–4.3 pass.
+- [ ] 4.4 Failing unit test (**execution-level**, `cargo test -p querier`):
+      absent-value semantics hold in the _lowered plan_, not just the type layer —
+      `not(field = x)` over a fixture where some rows lack `field` excludes those
+      rows, proving the result is independent of DataFusion's SQL NULL behaviour
+      (the guarantee task 1.2 asserts at the type level).
+- [ ] 4.5 Failing unit test: curated projection — a `rows` result returns only
+      the curated/explicit field set, never all physical columns (`SELECT *`),
+      including for a source with many promoted columns.
+- [ ] 4.6 Implement the single-signal planner (from/where/extract/aggregate/
+      topk/order/limit) → `LogicalPlan`. `extract` v1 = `json` + `logfmt`;
+      predicate `regex` and the deferred `regex` extract parser run behind a
+      bounded, timeout-guarded matcher. Make 4.1–4.5 pass.
 
 ## 5. Querier Flight ticket (`querier`)
 

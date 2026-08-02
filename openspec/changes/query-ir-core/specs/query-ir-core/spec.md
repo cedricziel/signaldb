@@ -77,6 +77,37 @@ client SHALL NOT express an operand as a mini-expression string.
 - **THEN** the rank stage references the aggregate as a structured operand, and
   a request that supplies an operand as an unparsed expression string is rejected
 
+### Requirement: Supported stage set
+
+This capability SHALL support the single-signal stage set `from`, `where`,
+`extract`, `aggregate`, `topk`/`bottomk`, `order`, and `limit`, and no others; a
+query using a stage outside this set (for example a cross-signal or structural
+stage) SHALL be rejected as unsupported by this capability's version rather than
+silently ignored. The `extract` stage SHALL support the `json` and `logfmt`
+parsers; the `regex` parser is not part of this capability and, together with the
+predicate `regex` operator, SHALL run only behind a bounded, timeout-guarded
+matcher.
+
+#### Scenario: A supported stage executes
+
+- **WHEN** a query uses only stages from the supported set on a logs or traces
+  source
+- **THEN** the query validates and executes
+
+#### Scenario: An out-of-set stage is rejected, not ignored
+
+- **WHEN** a query includes a stage this capability does not support (e.g. a
+  correlate or structural-match stage)
+- **THEN** the request is rejected identifying the unsupported stage, rather than
+  the stage being dropped
+
+#### Scenario: Extract offers json and logfmt
+
+- **WHEN** a logs query uses an `extract` stage with the `json` or `logfmt`
+  parser
+- **THEN** the derived fields are available to subsequent stages; a request for a
+  parser this capability does not provide is rejected
+
 ### Requirement: Shared predicate grammar over logical field names
 
 Filtering SHALL use one predicate grammar — comparison leaves (`{field, op,
