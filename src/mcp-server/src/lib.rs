@@ -70,8 +70,12 @@ impl McpAppState {
 /// by bearer authentication.
 pub fn mcp_http_router(state: McpAppState) -> Router {
     let session_manager = Arc::new(LocalSessionManager::default());
-    let service =
-        StreamableHttpService::new(|| Ok(McpServer::new()), session_manager, Default::default());
+    let base_url = state.router_base_url.clone();
+    let service = StreamableHttpService::new(
+        move || Ok(McpServer::new(base_url.clone())),
+        session_manager,
+        Default::default(),
+    );
 
     Router::new()
         .nest_service("/mcp", service)
@@ -161,14 +165,33 @@ async fn mcp_auth_middleware(
 /// headers copied from the incoming request), so the router enforces tenant
 /// isolation and quotas exactly as for any HTTP caller. The MCP server injects
 /// no credential of its own.
-pub fn sdk_client_for(parts: &Parts, router_base_url: &str) -> signaldb_sdk::Client {
+///
+/// `dataset_override` sets `X-Dataset-ID` for the tools that accept an explicit
+/// dataset argument; when `None`, the caller's incoming `X-Dataset-ID` (or the
+/// session default) is used. The router validates the selected dataset against
+/// the tenant, so an inaccessible dataset comes back as a 403 the tool maps to
+/// an access-denied error.
+pub fn sdk_client_for(
+    parts: &Parts,
+    router_base_url: &str,
+    dataset_override: Option<&str>,
+) -> signaldb_sdk::Client {
     let mut headers = HeaderMap::new();
     for name in FORWARDED_HEADERS {
+        // A dataset override replaces any incoming X-Dataset-ID header.
+        if name == "x-dataset-id" && dataset_override.is_some() {
+            continue;
+        }
         if let Some(value) = parts.headers.get(name)
             && let Ok(header_name) = HeaderName::from_bytes(name.as_bytes())
         {
             headers.insert(header_name, value.clone());
         }
+    }
+    if let Some(dataset) = dataset_override
+        && let Ok(value) = dataset.parse()
+    {
+        headers.insert(HeaderName::from_static("x-dataset-id"), value);
     }
     let http = reqwest::Client::builder()
         .default_headers(headers)
@@ -330,6 +353,8 @@ mod tests {
             .unwrap()
             .into_parts()
             .0;
-        let _client = sdk_client_for(&parts, "http://localhost:3000");
+        let _client = sdk_client_for(&parts, "http://localhost:3000", None);
+        // A dataset override must also build cleanly.
+        let _with_dataset = sdk_client_for(&parts, "http://localhost:3000", Some("prod"));
     }
 }

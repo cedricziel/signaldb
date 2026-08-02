@@ -44,6 +44,7 @@ cargo deny check                                        # License/security audit
 ## Running Services
 
 ### Monolithic Mode
+
 ```bash
 cargo run --bin signaldb                              # All services in one process
 ./scripts/run-dev.sh                                  # With local file storage
@@ -52,12 +53,14 @@ cargo run --bin signaldb                              # All services in one proc
 ```
 
 ### Microservices Mode
+
 ```bash
 cargo run --bin signaldb-acceptor   # OTLP ingestion (:4317/:4318)
 cargo run --bin signaldb-router     # HTTP router (:3000) + Flight (:50053)
 cargo run --bin signaldb-writer     # Data persistence (Flight :50061)
 cargo run --bin signaldb-querier    # Query execution (Flight :50054)
 cargo run --bin signaldb-compactor  # Compaction/retention (Flight :50055, metrics :9091)
+cargo run --bin signaldb-mcp        # MCP server (Streamable HTTP :8228 /mcp; off unless [mcp].enabled)
 ```
 
 ```bash
@@ -65,6 +68,7 @@ cargo run --bin signaldb-compactor  # Compaction/retention (Flight :50055, metri
 ```
 
 ### Storage Locations
+
 - WAL: `.data/wal/`
 - Parquet data: `.data/storage/`
 - SQLite databases: `.data/*.db`
@@ -101,6 +105,7 @@ curl http://localhost:3000/health   # Router
 ## Semantic Commits
 
 Use semantic commit messages:
+
 - `feat:` new feature
 - `fix:` bug fix
 - `refactor:` code restructuring
@@ -117,6 +122,7 @@ cp signaldb.dist.toml signaldb.toml   # Create local config
 ```
 
 Key env vars for S3/MinIO:
+
 ```bash
 AWS_ENDPOINT_URL=http://localhost:9000
 AWS_ACCESS_KEY_ID=minioadmin

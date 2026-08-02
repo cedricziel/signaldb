@@ -233,6 +233,19 @@ max_search_limit = 1000               # Upper bound for client `limit` on /api/s
 max_concurrent_queries_per_tenant = 8 # Unset = unlimited
 ```
 
+### MCP (Model Context Protocol server)
+
+The standalone `signaldb-mcp` server. A thin, credential-forwarding client: it
+validates the caller's bearer and forwards it to the router — it holds no key of
+its own. Off by default. See `docs/users/mcp.md`.
+
+```toml
+[mcp]
+enabled = false                      # Off by default; set true to run the server
+bind_address = "0.0.0.0:8228"        # Streamable HTTP transport; serves MCP at /mcp
+router_url = "http://localhost:3000" # Router HTTP API to forward to
+```
+
 ### Self-Monitoring (Dogfooding)
 
 ```toml
