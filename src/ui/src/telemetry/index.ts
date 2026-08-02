@@ -46,6 +46,7 @@ import {
   ATTR_SERVICE_VERSION,
 } from "@opentelemetry/semantic-conventions";
 import { getDefaultSessionManager } from "./session";
+import { NavigationSpanProcessor } from "./navigationSpanProcessor";
 import { SessionSpanProcessor } from "./sessionSpanProcessor";
 import { resolveExportConfig, resolveServiceName } from "./runtimeConfig";
 
@@ -123,6 +124,10 @@ export function initTelemetry(): void {
   );
 
   const processors: SpanProcessor[] = [
+    // Collapse the auto-instrumentation's `Navigation: <url>` span to a
+    // low-cardinality name (URL moves to url.* attributes) before it is stamped
+    // and exported.
+    new NavigationSpanProcessor(),
     new SessionSpanProcessor(getDefaultSessionManager()),
   ];
   const exporter = resolveExporter();
