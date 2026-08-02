@@ -49,6 +49,22 @@ pub enum WalOperation {
     Flush,
 }
 
+impl WalOperation {
+    /// Stable signal name for telemetry (log fields, metric labels) and the
+    /// acceptor's `signal` dimension. Matches the ingest vocabulary
+    /// (`traces`/`logs`/`metrics`/`profiles`) so WAL diagnostics correlate
+    /// with the pipeline that produced the entry.
+    pub fn signal(&self) -> &'static str {
+        match self {
+            WalOperation::WriteTraces => "traces",
+            WalOperation::WriteLogs => "logs",
+            WalOperation::WriteMetrics => "metrics",
+            WalOperation::WriteProfiles => "profiles",
+            WalOperation::Flush => "flush",
+        }
+    }
+}
+
 /// WAL segment containing multiple entries
 #[derive(Debug)]
 pub struct WalSegment {
@@ -1169,6 +1185,18 @@ mod tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    #[test]
+    fn wal_operation_signal_names_are_stable() {
+        // These strings are used as telemetry attribute values (log fields,
+        // metric labels) and as the acceptor's `signal` dimension, so they
+        // must stay stable and match the ingest vocabulary.
+        assert_eq!(WalOperation::WriteTraces.signal(), "traces");
+        assert_eq!(WalOperation::WriteLogs.signal(), "logs");
+        assert_eq!(WalOperation::WriteMetrics.signal(), "metrics");
+        assert_eq!(WalOperation::WriteProfiles.signal(), "profiles");
+        assert_eq!(WalOperation::Flush.signal(), "flush");
+    }
 
     #[tokio::test]
     async fn dead_letter_preserves_payload_and_marks_processed() {
