@@ -70,19 +70,26 @@ is_default }], default_dataset, enabled }`. Make 1.1–1.3 pass.
       considers a `source="database"` tenant's datasets as compaction candidates.
 - [x] 5.2 Route `CompactionPlanner::plan` (planner.rs) and the retention /
       orphan-cleanup loops (main.rs:468/514/527) through the registry. Make 5.1
-      pass; add a retention test that a database tenant's over-age data is
-      selected under the resolved policy.
+      pass.
+- [ ] 5.3 (Deferred) Add a retention test that a database tenant's over-age
+      data is selected under the resolved policy. Not yet written — the
+      retention loops live in a `select!` cycle in `main.rs`, so this needs a
+      full over-age-data fixture rather than a unit test.
 
 ## 6. Cross-service integration coverage (`tests-integration`)
 
-- [x] 6.1 Write a failing integration test: create a tenant purely via the admin
-      API (no config block), ingest a trace for it, and assert — against the
-      **already-running** querier, with no restart — that the Tempo/LogQL/
-      Prometheus query paths resolve the catalog on demand and return the data
-      instead of `failed to resolve catalog`.
-- [x] 6.2 Add an assertion that read and write namespaces match (the ingested
-      data is the data returned), guarding against slug divergence.
-- [x] 6.3 Make 6.1–6.2 pass end to end.
+- [x] 6.1 Write an integration test (`querier/tests/lazy_tenant_registration.rs`)
+      that creates a tenant purely via the database (no config block) **after**
+      the querier is running and asserts — through the real Flight `do_get`,
+      with no restart — that the logs query resolves the catalog on demand
+      instead of failing with `failed to resolve catalog`.
+- [ ] 6.2 (Deferred) Add an assertion that read and write namespaces match by
+      pushing data through the full acceptor→writer pipeline and reading it
+      back. Not yet written — 6.1 asserts catalog resolution but not a data
+      round-trip; the namespace-parity invariant is covered indirectly by the
+      `common` unit test that maps database datasets by name to the same slug
+      the write path uses.
+- [x] 6.3 Make 6.1 pass end to end.
 
 ## 7. Docs and provisioning guidance
 
