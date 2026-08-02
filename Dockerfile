@@ -72,6 +72,7 @@ COPY src/signaldb-bin/Cargo.toml src/signaldb-bin/
 COPY src/signaldb-api/Cargo.toml src/signaldb-api/
 COPY src/signaldb-sdk/Cargo.toml src/signaldb-sdk/
 COPY src/signaldb-cli/Cargo.toml src/signaldb-cli/
+COPY src/mcp-server/Cargo.toml src/mcp-server/
 COPY src/signal-producer/Cargo.toml src/signal-producer/
 COPY tests-integration/Cargo.toml tests-integration/
 COPY xtask/Cargo.toml xtask/
@@ -95,6 +96,7 @@ RUN mkdir -p src/acceptor/src && echo "fn main() {}" > src/acceptor/src/main.rs 
     mkdir -p src/signaldb-api/src && echo "pub fn dummy() {}" > src/signaldb-api/src/lib.rs && \
     mkdir -p src/signaldb-sdk/src && echo "pub fn dummy() {}" > src/signaldb-sdk/src/lib.rs && \
     mkdir -p src/signaldb-cli/src && echo "fn main() {}" > src/signaldb-cli/src/main.rs && \
+    mkdir -p src/mcp-server/src && echo "pub fn dummy() {}" > src/mcp-server/src/lib.rs && echo "fn main() {}" > src/mcp-server/src/main.rs && \
     mkdir -p src/signal-producer/src && echo "fn main() {}" > src/signal-producer/src/main.rs && \
     mkdir -p tests-integration/src && echo "pub fn dummy() {}" > tests-integration/src/lib.rs && \
     mkdir -p xtask/src && echo "fn main() {}" > xtask/src/main.rs
@@ -107,7 +109,8 @@ RUN cargo build --release \
     --bin signaldb-querier \
     --bin signaldb-compactor \
     --bin signaldb \
-    --bin signaldb-cli
+    --bin signaldb-cli \
+    --bin signaldb-mcp
 
 # Remove dummy files and build artifacts (keep cached dependencies)
 RUN rm -rf src/*/src src/*/benches && \
@@ -127,7 +130,8 @@ RUN cargo build --release \
     --bin signaldb-querier \
     --bin signaldb-compactor \
     --bin signaldb \
-    --bin signaldb-cli
+    --bin signaldb-cli \
+    --bin signaldb-mcp
 
 # Strip debug symbols to reduce binary size
 RUN strip target/release/signaldb-acceptor && \
@@ -136,7 +140,8 @@ RUN strip target/release/signaldb-acceptor && \
     strip target/release/signaldb-querier && \
     strip target/release/signaldb-compactor && \
     strip target/release/signaldb && \
-    strip target/release/signaldb-cli
+    strip target/release/signaldb-cli && \
+    strip target/release/signaldb-mcp
 
 # Prebuilt-binary path - CI builds static musl binaries on the host runner
 # (where sccache/rust-cache make rebuilds incremental) and stages them in
@@ -223,9 +228,12 @@ FROM runtime-base AS monolithic
 
 COPY --from=builder /build/target/release/signaldb /usr/local/bin/signaldb
 COPY --from=builder /build/target/release/signaldb-cli /usr/local/bin/signaldb-cli
+# The MCP server ships in the monolithic image too, so it can run as a sidecar
+# container from the same image via an entrypoint override (signaldb-mcp).
+COPY --from=builder /build/target/release/signaldb-mcp /usr/local/bin/signaldb-mcp
 COPY --from=ui-builder /build/src/ui/dist /usr/share/signaldb/ui
 ENV SIGNALDB_UI_DIR=/usr/share/signaldb/ui
 
 USER signaldb
-EXPOSE 4317 4318 50051 50053 3000
+EXPOSE 4317 4318 50051 50053 3000 8228
 ENTRYPOINT ["/usr/local/bin/signaldb"]
