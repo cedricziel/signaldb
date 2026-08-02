@@ -24,11 +24,12 @@ and is initialised once from `main.tsx`. Two outcomes drive the design:
 
 ## Module map
 
-| File                                | Responsibility                                                                                                                         |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `telemetry/index.ts`                | `initTelemetry()` — provider, context manager, propagators, auto-instrumentations, exporter selection, error capture; exports `tracer` |
-| `telemetry/session.ts`              | `createSessionManager()` — RUM session id with sliding inactivity window + absolute cap, `localStorage`-backed                         |
-| `telemetry/sessionSpanProcessor.ts` | `SpanProcessor` that stamps `session.id` / `tenant.id` / `dataset.id` on every span                                                    |
+| File                                   | Responsibility                                                                                                                                                                |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `telemetry/index.ts`                   | `initTelemetry()` — provider, context manager, propagators, auto-instrumentations, exporter selection, error capture; exports `tracer`                                        |
+| `telemetry/session.ts`                 | `createSessionManager()` — RUM session id with sliding inactivity window + absolute cap, `localStorage`-backed                                                                |
+| `telemetry/sessionSpanProcessor.ts`    | `SpanProcessor` that stamps `session.id` / `tenant.id` / `dataset.id` on every span                                                                                           |
+| `telemetry/navigationSpanProcessor.ts` | `SpanProcessor` that collapses the auto-instrumentation's `Navigation: <url>` span to the static name `Navigation`, moving the URL into `url.full` / `url.path` / `url.query` |
 
 ## Rules
 
@@ -111,7 +112,8 @@ Import `tracer` from `telemetry` for user-meaningful operations that aren't a
 single fetch (multi-step flows, expensive client work). Always `end()` in a
 `finally`, `recordException` + set `ERROR` status on failure, and keep span
 names **low-cardinality** (no ids/timestamps in the name — put those in
-attributes).
+attributes). The web auto-instrumentation's route span otherwise names itself
+after the full URL; `navigationSpanProcessor.ts` rewrites it to enforce this.
 
 ## Backend must continue the trace
 
@@ -124,7 +126,8 @@ stay disconnected even though the header is present.
 ## Testing
 
 Unit-test the pure logic (`session.ts`, `sessionSpanProcessor.ts`,
-`runtimeConfig.ts`) with injected clock/storage/id — see the `.test.ts` files.
+`navigationSpanProcessor.ts`, `runtimeConfig.ts`) with injected
+clock/storage/id — see the `.test.ts` files.
 Do **not** import `telemetry/index.ts` from tests: it pulls in `zone.js` and
 patches globals. The SDK wiring is validated by `pnpm --filter signaldb-ui
 build`.
