@@ -228,12 +228,20 @@ FROM runtime-base AS monolithic
 
 COPY --from=builder /build/target/release/signaldb /usr/local/bin/signaldb
 COPY --from=builder /build/target/release/signaldb-cli /usr/local/bin/signaldb-cli
-# The MCP server ships in the monolithic image too, so it can run as a sidecar
-# container from the same image via an entrypoint override (signaldb-mcp).
-COPY --from=builder /build/target/release/signaldb-mcp /usr/local/bin/signaldb-mcp
 COPY --from=ui-builder /build/src/ui/dist /usr/share/signaldb/ui
 ENV SIGNALDB_UI_DIR=/usr/share/signaldb/ui
 
 USER signaldb
-EXPOSE 4317 4318 50051 50053 3000 8228
+EXPOSE 4317 4318 50051 50053 3000
 ENTRYPOINT ["/usr/local/bin/signaldb"]
+
+# MCP server - standalone sidecar exposing SignalDB over the Model Context
+# Protocol. SDK-only, so this is a tiny image; run it pointing at a router via
+# SIGNALDB__MCP__ROUTER_URL.
+FROM runtime-base AS mcp
+
+COPY --from=builder /build/target/release/signaldb-mcp /usr/local/bin/signaldb-mcp
+
+USER signaldb
+EXPOSE 8228
+ENTRYPOINT ["/usr/local/bin/signaldb-mcp"]

@@ -65,32 +65,30 @@ The same settings are available as environment variables (multi-word fields
 need the double-underscore form): `SIGNALDB__MCP__ENABLED`,
 `SIGNALDB__MCP__BIND_ADDRESS`, `SIGNALDB__MCP__ROUTER_URL`.
 
-## Running as a sidecar (monolithic deployment)
+## Running as a sidecar
 
-`signaldb-mcp` ships in the monolithic image, so alongside a monolithic
-`signaldb` container you can run it as a **sidecar from the same image** with an
-entrypoint override — no separate image. The deployment (not the Dockerfile)
-makes it reachable: bind a non-loopback address, point it at the monolith's
-router by service name, and **publish the port** (`EXPOSE` alone does not
-publish anything).
+`signaldb-mcp` ships as its own small image, `ghcr.io/cedricziel/signaldb/mcp`,
+so it runs as a sidecar next to a `signaldb` router/monolith without pulling the
+full server image. The deployment (not the Dockerfile) makes it reachable: bind
+a non-loopback address, point it at the router by service name, and **publish
+the port** (`EXPOSE` alone does not publish anything).
 
 ```yaml
 services:
-  signaldb: # your monolith, serving the router on :3000
+  signaldb: # your router/monolith, serving the router on :3000
     image: ghcr.io/cedricziel/signaldb:main
     volumes: ["./data:/data"]
     working_dir: /data
 
   signaldb-mcp:
-    image: ghcr.io/cedricziel/signaldb:main # same image
-    entrypoint: ["/usr/local/bin/signaldb-mcp"]
+    image: ghcr.io/cedricziel/signaldb/mcp:main # dedicated MCP image
+    # SDK-only + forward-only: no config file or catalog needed, just the
+    # router URL. It validates nothing itself — the router does.
     environment:
       # 0.0.0.0 so the published port is reachable (loopback is the default)
       SIGNALDB__MCP__BIND_ADDRESS: "0.0.0.0:8228"
-      # the monolith's router, by compose service name
+      # the router, by compose service name
       SIGNALDB__MCP__ROUTER_URL: "http://signaldb:3000"
-    volumes: ["./data:/data"] # same signaldb.toml (auth) + catalog as the monolith
-    working_dir: /data
     ports: ["8228:8228"] # publish it — required for reachability
     depends_on: [signaldb]
     restart: unless-stopped
