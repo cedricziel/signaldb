@@ -296,9 +296,11 @@ pub struct QuerierFlightService {
     /// legacy single-object-store constructor used in tests.
     catalog_manager: Option<Arc<CatalogManager>>,
     /// Slugs whose DataFusion catalog is already registered in `session_ctx`.
-    /// Guards lazy on-demand registration so concurrent first-queries for the
-    /// same tenant register exactly once.
-    registered_tenants: Arc<tokio::sync::Mutex<HashSet<String>>>,
+    registered_tenants: dashmap::DashSet<String>,
+    /// Per-tenant registration locks so concurrent first-queries for the *same*
+    /// tenant register exactly once, while different tenants register
+    /// concurrently (no single global lock on the query path).
+    tenant_reg_locks: dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
 }
 
 /// Build a SessionContext whose RuntimeEnv enforces the configured memory
@@ -336,6 +338,38 @@ fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
             SessionContext::new()
         }
     }
+}
+
+/// Register the object store for a dataset's storage DSN on `session_ctx`.
+///
+/// An unparseable DSN is logged and skipped; a store-construction failure is
+/// propagated. Shared by startup and lazy on-demand registration so both paths
+/// handle storage-DSN failures identically.
+fn register_dataset_object_store(
+    session_ctx: &SessionContext,
+    url_str: &str,
+    tenant_id: &str,
+    dataset_id: &str,
+) -> anyhow::Result<()> {
+    match url::Url::parse(url_str) {
+        Ok(url) => {
+            let store = create_object_store_from_dsn(url_str).with_context(|| {
+                format!("Failed to create object store for dataset DSN: {url_str}")
+            })?;
+            session_ctx.runtime_env().register_object_store(&url, store);
+            tracing::debug!(scheme = %url.scheme(), url = %url_str, "Registered object store");
+        }
+        Err(e) => {
+            tracing::warn!(
+                dsn = %url_str,
+                tenant_id = %tenant_id,
+                dataset_id = %dataset_id,
+                error = %e,
+                "Skipping invalid storage DSN"
+            );
+        }
+    }
+    Ok(())
 }
 
 impl QuerierFlightService {
@@ -389,7 +423,8 @@ impl QuerierFlightService {
             limits,
             query_permits: dashmap::DashMap::new(),
             catalog_manager: None,
-            registered_tenants: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
+            registered_tenants: dashmap::DashSet::new(),
+            tenant_reg_locks: dashmap::DashMap::new(),
         }
     }
 
@@ -416,39 +451,17 @@ impl QuerierFlightService {
             .await
             .context("Failed to enumerate active tenants for catalog registration")?;
 
-        // Register object stores for all configured storage backends
+        // Register object stores for all configured storage backends, each
+        // unique DSN once.
         for tenant in &tenants {
             for dataset in &tenant.datasets {
-                let url_str = &dataset.storage_dsn;
-
-                // Register each unique storage URL with a scheme-appropriate object store
-                if !registered_urls.contains(url_str) {
-                    match url::Url::parse(url_str) {
-                        Ok(url) => {
-                            let store =
-                                create_object_store_from_dsn(url_str).with_context(|| {
-                                    format!(
-                                        "Failed to create object store for dataset DSN: {url_str}"
-                                    )
-                                })?;
-                            session_ctx.runtime_env().register_object_store(&url, store);
-                            registered_urls.insert(url_str.clone());
-                            tracing::info!(
-                                scheme = %url.scheme(),
-                                url = %url_str,
-                                "Registered object store"
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                dsn = %url_str,
-                                tenant_id = %tenant.id,
-                                dataset_id = %dataset.id,
-                                error = %e,
-                                "Skipping invalid storage DSN"
-                            );
-                        }
-                    }
+                if registered_urls.insert(dataset.storage_dsn.clone()) {
+                    register_dataset_object_store(
+                        &session_ctx,
+                        &dataset.storage_dsn,
+                        &tenant.id,
+                        &dataset.id,
+                    )?;
                 }
             }
         }
@@ -459,24 +472,20 @@ impl QuerierFlightService {
 
         let iceberg_catalog = catalog_manager.catalog();
 
-        let registered_tenants: Arc<tokio::sync::Mutex<HashSet<String>>> =
-            Arc::new(tokio::sync::Mutex::new(HashSet::new()));
-        {
-            let mut guard = registered_tenants.lock().await;
-            for tenant in &tenants {
-                let tenant_catalog = TenantCatalog {
-                    tenant_slug: tenant.slug.clone(),
-                    catalog: iceberg_catalog.clone(),
-                };
+        let registered_tenants: dashmap::DashSet<String> = dashmap::DashSet::new();
+        for tenant in &tenants {
+            let tenant_catalog = TenantCatalog {
+                tenant_slug: tenant.slug.clone(),
+                catalog: iceberg_catalog.clone(),
+            };
 
-                session_ctx.register_catalog(&tenant.slug, Arc::new(tenant_catalog));
-                guard.insert(tenant.slug.clone());
-                tracing::info!(
-                    catalog = %tenant.slug,
-                    tenant_id = %tenant.id,
-                    "Registered DataFusion catalog"
-                );
-            }
+            session_ctx.register_catalog(&tenant.slug, Arc::new(tenant_catalog));
+            registered_tenants.insert(tenant.slug.clone());
+            tracing::info!(
+                catalog = %tenant.slug,
+                tenant_id = %tenant.id,
+                "Registered DataFusion catalog"
+            );
         }
 
         // Create trace service for specialized trace queries
@@ -501,6 +510,7 @@ impl QuerierFlightService {
             query_permits: dashmap::DashMap::new(),
             catalog_manager: Some(catalog_manager),
             registered_tenants,
+            tenant_reg_locks: dashmap::DashMap::new(),
         })
     }
 
@@ -521,9 +531,19 @@ impl QuerierFlightService {
             return Ok(());
         };
 
-        // Serialize registration so racing first-queries register once.
-        let mut guard = self.registered_tenants.lock().await;
-        if guard.contains(tenant_slug) || self.session_ctx.catalog(tenant_slug).is_some() {
+        // Serialize only same-tenant first-queries via a per-tenant lock, so
+        // distinct tenants register concurrently. The DashMap ref is dropped
+        // before awaiting the lock (never held across an await point).
+        let lock = self
+            .tenant_reg_locks
+            .entry(tenant_slug.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _guard = lock.lock().await;
+
+        if self.registered_tenants.contains(tenant_slug)
+            || self.session_ctx.catalog(tenant_slug).is_some()
+        {
             return Ok(());
         }
 
@@ -539,26 +559,12 @@ impl QuerierFlightService {
         // Register object stores for the tenant's datasets (deduplicated by the
         // runtime env; re-registering the same URL is harmless).
         for dataset in &tenant.datasets {
-            let url_str = &dataset.storage_dsn;
-            match url::Url::parse(url_str) {
-                Ok(url) => {
-                    let store = create_object_store_from_dsn(url_str).with_context(|| {
-                        format!("Failed to create object store for dataset DSN: {url_str}")
-                    })?;
-                    self.session_ctx
-                        .runtime_env()
-                        .register_object_store(&url, store);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        dsn = %url_str,
-                        tenant_id = %tenant.id,
-                        dataset_id = %dataset.id,
-                        error = %e,
-                        "Skipping invalid storage DSN during lazy registration"
-                    );
-                }
-            }
+            register_dataset_object_store(
+                &self.session_ctx,
+                &dataset.storage_dsn,
+                &tenant.id,
+                &dataset.id,
+            )?;
         }
 
         let iceberg_catalog = match &self.iceberg_catalog {
@@ -571,7 +577,7 @@ impl QuerierFlightService {
         };
         self.session_ctx
             .register_catalog(&tenant.slug, Arc::new(tenant_catalog));
-        guard.insert(tenant.slug.clone());
+        self.registered_tenants.insert(tenant.slug.clone());
         tracing::info!(
             catalog = %tenant.slug,
             tenant_id = %tenant.id,
@@ -1375,9 +1381,19 @@ impl FlightService for QuerierFlightService {
 
                     // Lazily register the tenant's catalog if it was created
                     // after startup (e.g. via the admin API), so it is queryable
-                    // with no restart.
+                    // with no restart. Bound by the query timeout so a stuck
+                    // registration (slow catalog/object-store) cannot hang the
+                    // request unbounded.
                     if let Some(slug) = ticket_tenant_slug.as_deref() {
-                        self.ensure_tenant_registered(slug).await.map_err(|e| {
+                        tokio::time::timeout(
+                            self.limits.query_timeout,
+                            self.ensure_tenant_registered(slug),
+                        )
+                        .await
+                        .map_err(|_| {
+                            Status::deadline_exceeded("tenant catalog registration timed out")
+                        })?
+                        .map_err(|e| {
                             Status::internal(format!("Failed to register tenant catalog: {e}"))
                         })?;
                     }
@@ -2168,10 +2184,12 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn lazy_registration_is_concurrency_safe() {
         let source = Arc::new(common::catalog::Catalog::new_in_memory().await.unwrap());
-        let service = make_catalog_service(source.clone()).await;
+        // Empty at startup, so nothing is registered until the concurrent
+        // first-queries race below.
+        let service = Arc::new(make_catalog_service(source.clone()).await);
         source
             .upsert_tenant("epsilon", "Epsilon", Some("production"), "database")
             .await
@@ -2182,14 +2200,28 @@ mod tests {
             .unwrap();
 
         // Many simultaneous first-queries for the same not-yet-registered
-        // tenant must all succeed and register the catalog exactly once.
-        let results =
-            futures::future::join_all((0..8).map(|_| service.ensure_tenant_registered("epsilon")))
-                .await;
-        for r in results {
-            r.expect("concurrent lazy registration should succeed");
+        // tenant, spawned across worker threads so they genuinely race.
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let s = service.clone();
+                tokio::spawn(async move { s.ensure_tenant_registered("epsilon").await })
+            })
+            .collect();
+        for h in handles {
+            h.await
+                .expect("task did not panic")
+                .expect("concurrent lazy registration should succeed");
         }
+
         assert!(service.session_ctx.catalog("epsilon").is_some());
+        // Registered exactly once despite the race: the only registered slug is
+        // epsilon (startup registered none, since the source was empty then).
+        assert!(service.registered_tenants.contains("epsilon"));
+        assert_eq!(
+            service.registered_tenants.len(),
+            1,
+            "the tenant must be registered exactly once under concurrency"
+        );
     }
 
     #[tokio::test]

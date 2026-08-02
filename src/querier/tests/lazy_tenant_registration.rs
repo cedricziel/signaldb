@@ -90,4 +90,18 @@ async fn database_tenant_is_queryable_without_restart() {
             "database tenant query still failed catalog resolution: {msg}"
         );
     }
+
+    // Negative control: a tenant that was never created must still fail catalog
+    // resolution. This proves the ticket format genuinely exercises catalog
+    // resolution, so the assertion above isn't passing for an unrelated reason.
+    let ghost = Ticket::new("query_logs_labels:ghost-tenant:production:0:100000000000");
+    let ghost_err = match service.do_get(Request::new(ghost)).await {
+        Ok(_) => panic!("an unregistered tenant must fail"),
+        Err(status) => status,
+    };
+    assert!(
+        ghost_err.message().contains("resolve catalog"),
+        "expected catalog-resolution failure for an unknown tenant, got: {}",
+        ghost_err.message()
+    );
 }
