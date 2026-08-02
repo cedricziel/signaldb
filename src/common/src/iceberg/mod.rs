@@ -218,6 +218,14 @@ pub(crate) async fn create_sql_catalog_with_builder(
     } else if catalog_uri.starts_with("sqlite:file:") {
         // Named in-memory or file-URI SQLite (e.g. sqlite:file:mydb?mode=memory&cache=shared).
         // Passed through directly — the caller is responsible for supplying a valid SQLite URI.
+        // On-disk file URIs still need WAL, for the same reason as the sqlite://
+        // branch above. In-memory ones must be left alone: opening a second
+        // connection to a shared-cache in-memory database and closing it could
+        // tear the database down before the pool ever connects.
+        let is_memory = catalog_uri.contains("mode=memory") || catalog_uri.contains(":memory:");
+        if !is_memory {
+            enable_wal_on_sqlite_catalog(catalog_uri).await?;
+        }
         let catalog = SqlCatalog::new(catalog_uri, catalog_name, object_store_builder)
             .await
             .map_err(|e| {
@@ -284,6 +292,31 @@ mod tests {
             .expect("catalog creation should succeed");
 
         // Open an independent connection and confirm the persisted journal mode.
+        let mut conn = SqliteConnectOptions::from_str(&uri)
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        let mode: String = sqlx::query("PRAGMA journal_mode")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(mode.to_lowercase(), "wal");
+    }
+
+    /// The `sqlite:file:` URI form also gets WAL when it points at an on-disk
+    /// file (only in-memory `sqlite:file:...mode=memory` URIs are left alone).
+    #[tokio::test]
+    async fn on_disk_sqlite_file_uri_catalog_uses_wal_journal_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("catalog.db");
+        let uri = format!("sqlite:file:{}", db_path.display());
+
+        let _catalog = create_sql_catalog_with_builder(&uri, "test", ObjectStoreBuilder::memory())
+            .await
+            .expect("catalog creation should succeed");
+
         let mut conn = SqliteConnectOptions::from_str(&uri)
             .unwrap()
             .connect()
