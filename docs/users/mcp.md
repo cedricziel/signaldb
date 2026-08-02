@@ -82,13 +82,13 @@ services:
 
   signaldb-mcp:
     image: ghcr.io/cedricziel/signaldb/mcp:main # dedicated MCP image
+    # SDK-only + forward-only: no config file or catalog needed, just the
+    # router URL. It validates nothing itself — the router does.
     environment:
       # 0.0.0.0 so the published port is reachable (loopback is the default)
       SIGNALDB__MCP__BIND_ADDRESS: "0.0.0.0:8228"
       # the router, by compose service name
       SIGNALDB__MCP__ROUTER_URL: "http://signaldb:3000"
-    volumes: ["./data:/data"] # signaldb.toml (auth config) + catalog
-    working_dir: /data
     ports: ["8228:8228"] # publish it — required for reachability
     depends_on: [signaldb]
     restart: unless-stopped
