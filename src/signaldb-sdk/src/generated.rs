@@ -127,6 +127,36 @@ pub mod types {
             Default::default()
         }
     }
+    ///`Attribute`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "key",
+    ///    "value"
+    ///  ],
+    ///  "properties": {
+    ///    "key": {
+    ///      "type": "string"
+    ///    },
+    ///    "value": {}
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Attribute {
+        pub key: ::std::string::String,
+        pub value: ::serde_json::Value,
+    }
+    impl Attribute {
+        pub fn builder() -> builder::Attribute {
+            Default::default()
+        }
+    }
     ///Request body for creating a new API key.
     ///
     /// <details><summary>JSON schema</summary>
@@ -884,6 +914,371 @@ pub mod types {
             value.parse()
         }
     }
+    /**Summary of a stored profile linked to a trace, without the bulky
+    stack/sample payloads.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Summary of a stored profile linked to a trace, without the bulky\nstack/sample payloads.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "durationNano",
+    ///    "profileID",
+    ///    "sampleType",
+    ///    "sampleUnit",
+    ///    "serviceName",
+    ///    "timeUnixNano"
+    ///  ],
+    ///  "properties": {
+    ///    "durationNano": {
+    ///      "type": "string"
+    ///    },
+    ///    "profileID": {
+    ///      "type": "string"
+    ///    },
+    ///    "sampleType": {
+    ///      "type": "string"
+    ///    },
+    ///    "sampleUnit": {
+    ///      "type": "string"
+    ///    },
+    ///    "serviceName": {
+    ///      "type": "string"
+    ///    },
+    ///    "spanID": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "timeUnixNano": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ProfileSummary {
+        #[serde(rename = "durationNano")]
+        pub duration_nano: ::std::string::String,
+        #[serde(rename = "profileID")]
+        pub profile_id: ::std::string::String,
+        #[serde(rename = "sampleType")]
+        pub sample_type: ::std::string::String,
+        #[serde(rename = "sampleUnit")]
+        pub sample_unit: ::std::string::String,
+        #[serde(rename = "serviceName")]
+        pub service_name: ::std::string::String,
+        #[serde(
+            rename = "spanID",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        pub span_id: ::std::option::Option<::std::string::String>,
+        #[serde(rename = "timeUnixNano")]
+        pub time_unix_nano: ::std::string::String,
+    }
+    impl ProfileSummary {
+        pub fn builder() -> builder::ProfileSummary {
+            Default::default()
+        }
+    }
+    /**Result of GET /api/search
+    See <https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search>*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Result of GET /api/search\nSee <https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search>",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "metrics",
+    ///    "traces"
+    ///  ],
+    ///  "properties": {
+    ///    "metrics": {
+    ///      "type": "object",
+    ///      "additionalProperties": {
+    ///        "type": "integer",
+    ///        "format": "int32",
+    ///        "minimum": 0.0
+    ///      }
+    ///    },
+    ///    "traces": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/Trace"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct SearchResult {
+        pub metrics: ::std::collections::HashMap<::std::string::String, i32>,
+        pub traces: ::std::vec::Vec<Trace>,
+    }
+    impl SearchResult {
+        pub fn builder() -> builder::SearchResult {
+            Default::default()
+        }
+    }
+    ///`Span`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "attributes",
+    ///    "durationNanos",
+    ///    "spanID",
+    ///    "startTimeUnixNano"
+    ///  ],
+    ///  "properties": {
+    ///    "attributes": {
+    ///      "type": "object",
+    ///      "additionalProperties": {
+    ///        "$ref": "#/components/schemas/Attribute"
+    ///      }
+    ///    },
+    ///    "durationNanos": {
+    ///      "type": "string"
+    ///    },
+    ///    "events": {
+    ///      "description": "Span events (annotations, exceptions). Omitted when empty. Exceptions are\nthe event named `exception`, carrying `exception.message`/`.type`/\n`.stacktrace` in their attributes.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/SpanEvent"
+    ///      }
+    ///    },
+    ///    "name": {
+    ///      "description": "Span name intrinsic (Tempo exposes it as `name` on spanset spans).",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "parentSpanID": {
+    ///      "description": "Parent span id; empty/absent for root spans. Needed by clients that\nreconstruct the span hierarchy (e.g. waterfall views).",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "serviceName": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "spanID": {
+    ///      "type": "string"
+    ///    },
+    ///    "startTimeUnixNano": {
+    ///      "type": "string"
+    ///    },
+    ///    "status": {
+    ///      "description": "Span status (`ok`, `error`, `unset`).",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Span {
+        pub attributes: ::std::collections::HashMap<::std::string::String, Attribute>,
+        #[serde(rename = "durationNanos")]
+        pub duration_nanos: ::std::string::String,
+        /**Span events (annotations, exceptions). Omitted when empty. Exceptions are
+        the event named `exception`, carrying `exception.message`/`.type`/
+        `.stacktrace` in their attributes.*/
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub events: ::std::vec::Vec<SpanEvent>,
+        ///Span name intrinsic (Tempo exposes it as `name` on spanset spans).
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub name: ::std::option::Option<::std::string::String>,
+        /**Parent span id; empty/absent for root spans. Needed by clients that
+        reconstruct the span hierarchy (e.g. waterfall views).*/
+        #[serde(
+            rename = "parentSpanID",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        pub parent_span_id: ::std::option::Option<::std::string::String>,
+        #[serde(
+            rename = "serviceName",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        pub service_name: ::std::option::Option<::std::string::String>,
+        #[serde(rename = "spanID")]
+        pub span_id: ::std::string::String,
+        #[serde(rename = "startTimeUnixNano")]
+        pub start_time_unix_nano: ::std::string::String,
+        ///Span status (`ok`, `error`, `unset`).
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub status: ::std::option::Option<::std::string::String>,
+    }
+    impl Span {
+        pub fn builder() -> builder::Span {
+            Default::default()
+        }
+    }
+    ///A span event in the Tempo API span shape.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A span event in the Tempo API span shape.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "name",
+    ///    "timeUnixNano"
+    ///  ],
+    ///  "properties": {
+    ///    "attributes": {
+    ///      "type": "object",
+    ///      "additionalProperties": {
+    ///        "$ref": "#/components/schemas/Attribute"
+    ///      }
+    ///    },
+    ///    "name": {
+    ///      "type": "string"
+    ///    },
+    ///    "timeUnixNano": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct SpanEvent {
+        #[serde(
+            default,
+            skip_serializing_if = ":: std :: collections :: HashMap::is_empty"
+        )]
+        pub attributes: ::std::collections::HashMap<::std::string::String, Attribute>,
+        pub name: ::std::string::String,
+        #[serde(rename = "timeUnixNano")]
+        pub time_unix_nano: ::std::string::String,
+    }
+    impl SpanEvent {
+        pub fn builder() -> builder::SpanEvent {
+            Default::default()
+        }
+    }
+    ///`SpanSet`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "matched",
+    ///    "spans"
+    ///  ],
+    ///  "properties": {
+    ///    "matched": {
+    ///      "type": "integer",
+    ///      "format": "int32",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "spans": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/Span"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct SpanSet {
+        pub matched: i32,
+        pub spans: ::std::vec::Vec<Span>,
+    }
+    impl SpanSet {
+        pub fn builder() -> builder::SpanSet {
+            Default::default()
+        }
+    }
+    ///`TagSearchResponse`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "tagNames"
+    ///  ],
+    ///  "properties": {
+    ///    "tagNames": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct TagSearchResponse {
+        #[serde(rename = "tagNames")]
+        pub tag_names: ::std::vec::Vec<::std::string::String>,
+    }
+    impl TagSearchResponse {
+        pub fn builder() -> builder::TagSearchResponse {
+            Default::default()
+        }
+    }
+    ///`TagValuesResponse`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "tagValues"
+    ///  ],
+    ///  "properties": {
+    ///    "tagValues": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct TagValuesResponse {
+        #[serde(rename = "tagValues")]
+        pub tag_values: ::std::vec::Vec<::std::string::String>,
+    }
+    impl TagValuesResponse {
+        pub fn builder() -> builder::TagValuesResponse {
+            Default::default()
+        }
+    }
     ///Tenant information returned by the API.
     ///
     /// <details><summary>JSON schema</summary>
@@ -949,6 +1344,112 @@ pub mod types {
     }
     impl TenantResponse {
         pub fn builder() -> builder::TenantResponse {
+            Default::default()
+        }
+    }
+    /**A trace is a collection of spans that represent a single request
+
+    Example:
+    {
+      "traceID": "2f3e0cee77ae5dc9c17ade3689eb2e54",
+      "rootServiceName": "shop-backend",
+      "rootTraceName": "update-billing",
+      "startTimeUnixNano": "1684778327699392724",
+      "durationMs": 557,
+      "spanSets": [
+        {
+          "spans": [
+            {
+              "spanID": "563d623c76514f8e",
+              "startTimeUnixNano": "1684778327735077898",
+              "durationNanos": "446979497",
+              "attributes": [
+                {
+                  "key": "status",
+                  "value": {
+                    "stringValue": "error"
+                  }
+                }
+              ]
+            }
+          ],
+          "matched": 1
+        }
+      ]*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A trace is a collection of spans that represent a single request\n\nExample:\n{\n  \"traceID\": \"2f3e0cee77ae5dc9c17ade3689eb2e54\",\n  \"rootServiceName\": \"shop-backend\",\n  \"rootTraceName\": \"update-billing\",\n  \"startTimeUnixNano\": \"1684778327699392724\",\n  \"durationMs\": 557,\n  \"spanSets\": [\n    {\n      \"spans\": [\n        {\n          \"spanID\": \"563d623c76514f8e\",\n          \"startTimeUnixNano\": \"1684778327735077898\",\n          \"durationNanos\": \"446979497\",\n          \"attributes\": [\n            {\n              \"key\": \"status\",\n              \"value\": {\n                \"stringValue\": \"error\"\n              }\n            }\n          ]\n        }\n      ],\n      \"matched\": 1\n    }\n  ]",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "durationMs",
+    ///    "rootServiceName",
+    ///    "rootTraceName",
+    ///    "spanSets",
+    ///    "startTimeUnixNano",
+    ///    "traceID"
+    ///  ],
+    ///  "properties": {
+    ///    "durationMs": {
+    ///      "type": "integer",
+    ///      "format": "int64",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "profiles": {
+    ///      "description": "Summaries of profiles linked to this trace; present only when the\nclient asked for them via `include_profiles`.",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ProfileSummary"
+    ///      }
+    ///    },
+    ///    "rootServiceName": {
+    ///      "type": "string"
+    ///    },
+    ///    "rootTraceName": {
+    ///      "type": "string"
+    ///    },
+    ///    "spanSets": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/SpanSet"
+    ///      }
+    ///    },
+    ///    "startTimeUnixNano": {
+    ///      "type": "string"
+    ///    },
+    ///    "traceID": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Trace {
+        #[serde(rename = "durationMs")]
+        pub duration_ms: i64,
+        /**Summaries of profiles linked to this trace; present only when the
+        client asked for them via `include_profiles`.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub profiles: ::std::option::Option<::std::vec::Vec<ProfileSummary>>,
+        #[serde(rename = "rootServiceName")]
+        pub root_service_name: ::std::string::String,
+        #[serde(rename = "rootTraceName")]
+        pub root_trace_name: ::std::string::String,
+        #[serde(rename = "spanSets")]
+        pub span_sets: ::std::vec::Vec<SpanSet>,
+        #[serde(rename = "startTimeUnixNano")]
+        pub start_time_unix_nano: ::std::string::String,
+        #[serde(rename = "traceID")]
+        pub trace_id: ::std::string::String,
+    }
+    impl Trace {
+        pub fn builder() -> builder::Trace {
             Default::default()
         }
     }
@@ -1174,6 +1675,60 @@ pub mod types {
                     id: Ok(value.id),
                     name: Ok(value.name),
                     revoked_at: Ok(value.revoked_at),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct Attribute {
+            key: ::std::result::Result<::std::string::String, ::std::string::String>,
+            value: ::std::result::Result<::serde_json::Value, ::std::string::String>,
+        }
+        impl ::std::default::Default for Attribute {
+            fn default() -> Self {
+                Self {
+                    key: Err("no value supplied for key".to_string()),
+                    value: Err("no value supplied for value".to_string()),
+                }
+            }
+        }
+        impl Attribute {
+            pub fn key<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.key = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for key: {e}"));
+                self
+            }
+            pub fn value<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::serde_json::Value>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.value = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for value: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<Attribute> for super::Attribute {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: Attribute,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    key: value.key?,
+                    value: value.value?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::Attribute> for Attribute {
+            fn from(value: super::Attribute) -> Self {
+                Self {
+                    key: Ok(value.key),
+                    value: Ok(value.value),
                 }
             }
         }
@@ -2220,6 +2775,573 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct ProfileSummary {
+            duration_nano: ::std::result::Result<::std::string::String, ::std::string::String>,
+            profile_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            sample_type: ::std::result::Result<::std::string::String, ::std::string::String>,
+            sample_unit: ::std::result::Result<::std::string::String, ::std::string::String>,
+            service_name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            span_id: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            time_unix_nano: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ProfileSummary {
+            fn default() -> Self {
+                Self {
+                    duration_nano: Err("no value supplied for duration_nano".to_string()),
+                    profile_id: Err("no value supplied for profile_id".to_string()),
+                    sample_type: Err("no value supplied for sample_type".to_string()),
+                    sample_unit: Err("no value supplied for sample_unit".to_string()),
+                    service_name: Err("no value supplied for service_name".to_string()),
+                    span_id: Ok(Default::default()),
+                    time_unix_nano: Err("no value supplied for time_unix_nano".to_string()),
+                }
+            }
+        }
+        impl ProfileSummary {
+            pub fn duration_nano<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.duration_nano = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for duration_nano: {e}"));
+                self
+            }
+            pub fn profile_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.profile_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for profile_id: {e}"));
+                self
+            }
+            pub fn sample_type<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.sample_type = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for sample_type: {e}"));
+                self
+            }
+            pub fn sample_unit<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.sample_unit = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for sample_unit: {e}"));
+                self
+            }
+            pub fn service_name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.service_name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for service_name: {e}"));
+                self
+            }
+            pub fn span_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.span_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for span_id: {e}"));
+                self
+            }
+            pub fn time_unix_nano<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.time_unix_nano = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for time_unix_nano: {e}")
+                });
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ProfileSummary> for super::ProfileSummary {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ProfileSummary,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    duration_nano: value.duration_nano?,
+                    profile_id: value.profile_id?,
+                    sample_type: value.sample_type?,
+                    sample_unit: value.sample_unit?,
+                    service_name: value.service_name?,
+                    span_id: value.span_id?,
+                    time_unix_nano: value.time_unix_nano?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ProfileSummary> for ProfileSummary {
+            fn from(value: super::ProfileSummary) -> Self {
+                Self {
+                    duration_nano: Ok(value.duration_nano),
+                    profile_id: Ok(value.profile_id),
+                    sample_type: Ok(value.sample_type),
+                    sample_unit: Ok(value.sample_unit),
+                    service_name: Ok(value.service_name),
+                    span_id: Ok(value.span_id),
+                    time_unix_nano: Ok(value.time_unix_nano),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct SearchResult {
+            metrics: ::std::result::Result<
+                ::std::collections::HashMap<::std::string::String, i32>,
+                ::std::string::String,
+            >,
+            traces: ::std::result::Result<::std::vec::Vec<super::Trace>, ::std::string::String>,
+        }
+        impl ::std::default::Default for SearchResult {
+            fn default() -> Self {
+                Self {
+                    metrics: Err("no value supplied for metrics".to_string()),
+                    traces: Err("no value supplied for traces".to_string()),
+                }
+            }
+        }
+        impl SearchResult {
+            pub fn metrics<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::collections::HashMap<::std::string::String, i32>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.metrics = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for metrics: {e}"));
+                self
+            }
+            pub fn traces<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::Trace>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.traces = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for traces: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<SearchResult> for super::SearchResult {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: SearchResult,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    metrics: value.metrics?,
+                    traces: value.traces?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::SearchResult> for SearchResult {
+            fn from(value: super::SearchResult) -> Self {
+                Self {
+                    metrics: Ok(value.metrics),
+                    traces: Ok(value.traces),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct Span {
+            attributes: ::std::result::Result<
+                ::std::collections::HashMap<::std::string::String, super::Attribute>,
+                ::std::string::String,
+            >,
+            duration_nanos: ::std::result::Result<::std::string::String, ::std::string::String>,
+            events: ::std::result::Result<::std::vec::Vec<super::SpanEvent>, ::std::string::String>,
+            name: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            parent_span_id: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            service_name: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            span_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            start_time_unix_nano:
+                ::std::result::Result<::std::string::String, ::std::string::String>,
+            status: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for Span {
+            fn default() -> Self {
+                Self {
+                    attributes: Err("no value supplied for attributes".to_string()),
+                    duration_nanos: Err("no value supplied for duration_nanos".to_string()),
+                    events: Ok(Default::default()),
+                    name: Ok(Default::default()),
+                    parent_span_id: Ok(Default::default()),
+                    service_name: Ok(Default::default()),
+                    span_id: Err("no value supplied for span_id".to_string()),
+                    start_time_unix_nano: Err(
+                        "no value supplied for start_time_unix_nano".to_string()
+                    ),
+                    status: Ok(Default::default()),
+                }
+            }
+        }
+        impl Span {
+            pub fn attributes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::collections::HashMap<::std::string::String, super::Attribute>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.attributes = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for attributes: {e}"));
+                self
+            }
+            pub fn duration_nanos<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.duration_nanos = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for duration_nanos: {e}")
+                });
+                self
+            }
+            pub fn events<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::SpanEvent>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.events = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for events: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn parent_span_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.parent_span_id = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for parent_span_id: {e}")
+                });
+                self
+            }
+            pub fn service_name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.service_name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for service_name: {e}"));
+                self
+            }
+            pub fn span_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.span_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for span_id: {e}"));
+                self
+            }
+            pub fn start_time_unix_nano<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.start_time_unix_nano = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for start_time_unix_nano: {e}")
+                });
+                self
+            }
+            pub fn status<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.status = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for status: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<Span> for super::Span {
+            type Error = super::error::ConversionError;
+            fn try_from(value: Span) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    attributes: value.attributes?,
+                    duration_nanos: value.duration_nanos?,
+                    events: value.events?,
+                    name: value.name?,
+                    parent_span_id: value.parent_span_id?,
+                    service_name: value.service_name?,
+                    span_id: value.span_id?,
+                    start_time_unix_nano: value.start_time_unix_nano?,
+                    status: value.status?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::Span> for Span {
+            fn from(value: super::Span) -> Self {
+                Self {
+                    attributes: Ok(value.attributes),
+                    duration_nanos: Ok(value.duration_nanos),
+                    events: Ok(value.events),
+                    name: Ok(value.name),
+                    parent_span_id: Ok(value.parent_span_id),
+                    service_name: Ok(value.service_name),
+                    span_id: Ok(value.span_id),
+                    start_time_unix_nano: Ok(value.start_time_unix_nano),
+                    status: Ok(value.status),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct SpanEvent {
+            attributes: ::std::result::Result<
+                ::std::collections::HashMap<::std::string::String, super::Attribute>,
+                ::std::string::String,
+            >,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            time_unix_nano: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for SpanEvent {
+            fn default() -> Self {
+                Self {
+                    attributes: Ok(Default::default()),
+                    name: Err("no value supplied for name".to_string()),
+                    time_unix_nano: Err("no value supplied for time_unix_nano".to_string()),
+                }
+            }
+        }
+        impl SpanEvent {
+            pub fn attributes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::collections::HashMap<::std::string::String, super::Attribute>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.attributes = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for attributes: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn time_unix_nano<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.time_unix_nano = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for time_unix_nano: {e}")
+                });
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<SpanEvent> for super::SpanEvent {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: SpanEvent,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    attributes: value.attributes?,
+                    name: value.name?,
+                    time_unix_nano: value.time_unix_nano?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::SpanEvent> for SpanEvent {
+            fn from(value: super::SpanEvent) -> Self {
+                Self {
+                    attributes: Ok(value.attributes),
+                    name: Ok(value.name),
+                    time_unix_nano: Ok(value.time_unix_nano),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct SpanSet {
+            matched: ::std::result::Result<i32, ::std::string::String>,
+            spans: ::std::result::Result<::std::vec::Vec<super::Span>, ::std::string::String>,
+        }
+        impl ::std::default::Default for SpanSet {
+            fn default() -> Self {
+                Self {
+                    matched: Err("no value supplied for matched".to_string()),
+                    spans: Err("no value supplied for spans".to_string()),
+                }
+            }
+        }
+        impl SpanSet {
+            pub fn matched<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i32>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.matched = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for matched: {e}"));
+                self
+            }
+            pub fn spans<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::Span>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.spans = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for spans: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<SpanSet> for super::SpanSet {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: SpanSet,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    matched: value.matched?,
+                    spans: value.spans?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::SpanSet> for SpanSet {
+            fn from(value: super::SpanSet) -> Self {
+                Self {
+                    matched: Ok(value.matched),
+                    spans: Ok(value.spans),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct TagSearchResponse {
+            tag_names: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for TagSearchResponse {
+            fn default() -> Self {
+                Self {
+                    tag_names: Err("no value supplied for tag_names".to_string()),
+                }
+            }
+        }
+        impl TagSearchResponse {
+            pub fn tag_names<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tag_names = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tag_names: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<TagSearchResponse> for super::TagSearchResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: TagSearchResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    tag_names: value.tag_names?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::TagSearchResponse> for TagSearchResponse {
+            fn from(value: super::TagSearchResponse) -> Self {
+                Self {
+                    tag_names: Ok(value.tag_names),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct TagValuesResponse {
+            tag_values: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for TagValuesResponse {
+            fn default() -> Self {
+                Self {
+                    tag_values: Err("no value supplied for tag_values".to_string()),
+                }
+            }
+        }
+        impl TagValuesResponse {
+            pub fn tag_values<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tag_values = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tag_values: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<TagValuesResponse> for super::TagValuesResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: TagValuesResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    tag_values: value.tag_values?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::TagValuesResponse> for TagValuesResponse {
+            fn from(value: super::TagValuesResponse) -> Self {
+                Self {
+                    tag_values: Ok(value.tag_values),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct TenantResponse {
             created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
             default_dataset: ::std::result::Result<
@@ -2329,6 +3451,139 @@ pub mod types {
                     name: Ok(value.name),
                     source: Ok(value.source),
                     updated_at: Ok(value.updated_at),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct Trace {
+            duration_ms: ::std::result::Result<i64, ::std::string::String>,
+            profiles: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<super::ProfileSummary>>,
+                ::std::string::String,
+            >,
+            root_service_name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            root_trace_name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            span_sets:
+                ::std::result::Result<::std::vec::Vec<super::SpanSet>, ::std::string::String>,
+            start_time_unix_nano:
+                ::std::result::Result<::std::string::String, ::std::string::String>,
+            trace_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for Trace {
+            fn default() -> Self {
+                Self {
+                    duration_ms: Err("no value supplied for duration_ms".to_string()),
+                    profiles: Ok(Default::default()),
+                    root_service_name: Err("no value supplied for root_service_name".to_string()),
+                    root_trace_name: Err("no value supplied for root_trace_name".to_string()),
+                    span_sets: Err("no value supplied for span_sets".to_string()),
+                    start_time_unix_nano: Err(
+                        "no value supplied for start_time_unix_nano".to_string()
+                    ),
+                    trace_id: Err("no value supplied for trace_id".to_string()),
+                }
+            }
+        }
+        impl Trace {
+            pub fn duration_ms<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.duration_ms = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for duration_ms: {e}"));
+                self
+            }
+            pub fn profiles<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<super::ProfileSummary>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.profiles = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for profiles: {e}"));
+                self
+            }
+            pub fn root_service_name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.root_service_name = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for root_service_name: {e}")
+                });
+                self
+            }
+            pub fn root_trace_name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.root_trace_name = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for root_trace_name: {e}")
+                });
+                self
+            }
+            pub fn span_sets<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::SpanSet>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.span_sets = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for span_sets: {e}"));
+                self
+            }
+            pub fn start_time_unix_nano<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.start_time_unix_nano = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for start_time_unix_nano: {e}")
+                });
+                self
+            }
+            pub fn trace_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.trace_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for trace_id: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<Trace> for super::Trace {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: Trace,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    duration_ms: value.duration_ms?,
+                    profiles: value.profiles?,
+                    root_service_name: value.root_service_name?,
+                    root_trace_name: value.root_trace_name?,
+                    span_sets: value.span_sets?,
+                    start_time_unix_nano: value.start_time_unix_nano?,
+                    trace_id: value.trace_id?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::Trace> for Trace {
+            fn from(value: super::Trace) -> Self {
+                Self {
+                    duration_ms: Ok(value.duration_ms),
+                    profiles: Ok(value.profiles),
+                    root_service_name: Ok(value.root_service_name),
+                    root_trace_name: Ok(value.root_trace_name),
+                    span_sets: Ok(value.span_sets),
+                    start_time_unix_nano: Ok(value.start_time_unix_nano),
+                    trace_id: Ok(value.trace_id),
                 }
             }
         }
@@ -2451,7 +3706,7 @@ pub mod types {
 #[derive(Clone, Debug)]
 /**Client for SignalDB API
 
-SignalDB admin and tenant-management HTTP API
+SignalDB admin, tenant-management, and query HTTP API
 
 Version: 1.0.0*/
 pub struct Client {
@@ -2814,6 +4069,82 @@ impl Client {
     ```*/
     pub fn manage_remove_membership(&self) -> builder::ManageRemoveMembership<'_> {
         builder::ManageRemoveMembership::new(self)
+    }
+    /**GET https://grafana.com/docs/tempo/latest/api_docs/#search
+
+    Sends a `GET` request to `/tempo/api/search`
+
+    ```ignore
+    let response = client.search()
+        .end(end)
+        .limit(limit)
+        .max_duration(max_duration)
+        .min_duration(min_duration)
+        .q(q)
+        .spss(spss)
+        .start(start)
+        .tags(tags)
+        .send()
+        .await;
+    ```*/
+    pub fn search(&self) -> builder::Search<'_> {
+        builder::Search::new(self)
+    }
+    /**GET /api/search/tag/:tag_name/values
+
+    Backed by real data: distinct values from the tenant's traces table
+    for supported tags, static status values for `status`, and an
+    explicit 501 for tags that are not queryable yet.
+
+    Sends a `GET` request to `/tempo/api/search/tag/{tag_name}/values`
+
+    Arguments:
+    - `tag_name`: Tag name to fetch values for
+    ```ignore
+    let response = client.search_tag_values()
+        .tag_name(tag_name)
+        .send()
+        .await;
+    ```*/
+    pub fn search_tag_values(&self) -> builder::SearchTagValues<'_> {
+        builder::SearchTagValues::new(self)
+    }
+    /**GET /api/search/tags?scope=<resource|span|intrinsic>
+
+    See https://grafana.com/docs/tempo/latest/api_docs/#search-tags
+
+    Sends a `GET` request to `/tempo/api/search/tags`
+
+    ```ignore
+    let response = client.search_tags()
+        .send()
+        .await;
+    ```*/
+    pub fn search_tags(&self) -> builder::SearchTags<'_> {
+        builder::SearchTags::new(self)
+    }
+    /**GET /api/traces/<traceid>?start=<start>&end=<end>
+
+    See https://grafana.com/docs/tempo/latest/api_docs/#query
+
+    Sends a `GET` request to `/tempo/api/traces/{trace_id}`
+
+    Arguments:
+    - `trace_id`: Trace ID to fetch
+    - `end`
+    - `include_profiles`: When true, attach summaries of profiles linked to this trace.
+    - `start`
+    ```ignore
+    let response = client.query_single_trace()
+        .trace_id(trace_id)
+        .end(end)
+        .include_profiles(include_profiles)
+        .start(start)
+        .send()
+        .await;
+    ```*/
+    pub fn query_single_trace(&self) -> builder::QuerySingleTrace<'_> {
+        builder::QuerySingleTrace::new(self)
     }
 }
 /// Types for composing operation parameters.
@@ -4572,6 +5903,398 @@ pub mod builder {
                 500u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::search`]
+
+    [`Client::search`]: super::Client::search*/
+    #[derive(Debug, Clone)]
+    pub struct Search<'a> {
+        client: &'a super::Client,
+        end: Result<Option<i32>, String>,
+        limit: Result<Option<i32>, String>,
+        max_duration: Result<Option<i32>, String>,
+        min_duration: Result<Option<i32>, String>,
+        q: Result<Option<::std::string::String>, String>,
+        spss: Result<Option<i32>, String>,
+        start: Result<Option<i32>, String>,
+        tags: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> Search<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                end: Ok(None),
+                limit: Ok(None),
+                max_duration: Ok(None),
+                min_duration: Ok(None),
+                q: Ok(None),
+                spss: Ok(None),
+                start: Ok(None),
+                tags: Ok(None),
+            }
+        }
+        pub fn end<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<i32>,
+        {
+            self.end = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `i32` for end failed".to_string());
+            self
+        }
+        pub fn limit<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<i32>,
+        {
+            self.limit = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `i32` for limit failed".to_string());
+            self
+        }
+        pub fn max_duration<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<i32>,
+        {
+            self.max_duration = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `i32` for max_duration failed".to_string());
+            self
+        }
+        pub fn min_duration<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<i32>,
+        {
+            self.min_duration = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `i32` for min_duration failed".to_string());
+            self
+        }
+        pub fn q<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.q = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `:: std :: string :: String` for q failed".to_string());
+            self
+        }
+        pub fn spss<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<i32>,
+        {
+            self.spss = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `i32` for spss failed".to_string());
+            self
+        }
+        pub fn start<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<i32>,
+        {
+            self.start = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `i32` for start failed".to_string());
+            self
+        }
+        pub fn tags<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tags = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for tags failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/tempo/api/search`
+        pub async fn send(self) -> Result<ResponseValue<types::SearchResult>, Error<()>> {
+            let Self {
+                client,
+                end,
+                limit,
+                max_duration,
+                min_duration,
+                q,
+                spss,
+                start,
+                tags,
+            } = self;
+            let end = end.map_err(Error::InvalidRequest)?;
+            let limit = limit.map_err(Error::InvalidRequest)?;
+            let max_duration = max_duration.map_err(Error::InvalidRequest)?;
+            let min_duration = min_duration.map_err(Error::InvalidRequest)?;
+            let q = q.map_err(Error::InvalidRequest)?;
+            let spss = spss.map_err(Error::InvalidRequest)?;
+            let start = start.map_err(Error::InvalidRequest)?;
+            let tags = tags.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/tempo/api/search", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("end", &end))
+                .query(&progenitor_client::QueryParam::new("limit", &limit))
+                .query(&progenitor_client::QueryParam::new(
+                    "max_duration",
+                    &max_duration,
+                ))
+                .query(&progenitor_client::QueryParam::new(
+                    "min_duration",
+                    &min_duration,
+                ))
+                .query(&progenitor_client::QueryParam::new("q", &q))
+                .query(&progenitor_client::QueryParam::new("spss", &spss))
+                .query(&progenitor_client::QueryParam::new("start", &start))
+                .query(&progenitor_client::QueryParam::new("tags", &tags))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "search",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::search_tag_values`]
+
+    [`Client::search_tag_values`]: super::Client::search_tag_values*/
+    #[derive(Debug, Clone)]
+    pub struct SearchTagValues<'a> {
+        client: &'a super::Client,
+        tag_name: Result<::std::string::String, String>,
+    }
+    impl<'a> SearchTagValues<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tag_name: Err("tag_name was not initialized".to_string()),
+            }
+        }
+        pub fn tag_name<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tag_name = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tag_name failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/tempo/api/search/tag/{tag_name}/values`
+        pub async fn send(self) -> Result<ResponseValue<types::TagValuesResponse>, Error<()>> {
+            let Self { client, tag_name } = self;
+            let tag_name = tag_name.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/tempo/api/search/tag/{}/values",
+                client.baseurl,
+                encode_path(&tag_name.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "search_tag_values",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                501u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::search_tags`]
+
+    [`Client::search_tags`]: super::Client::search_tags*/
+    #[derive(Debug, Clone)]
+    pub struct SearchTags<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> SearchTags<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `GET` request to `/tempo/api/search/tags`
+        pub async fn send(self) -> Result<ResponseValue<types::TagSearchResponse>, Error<()>> {
+            let Self { client } = self;
+            let url = format!("{}/tempo/api/search/tags", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "search_tags",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::query_single_trace`]
+
+    [`Client::query_single_trace`]: super::Client::query_single_trace*/
+    #[derive(Debug, Clone)]
+    pub struct QuerySingleTrace<'a> {
+        client: &'a super::Client,
+        trace_id: Result<::std::string::String, String>,
+        end: Result<Option<i64>, String>,
+        include_profiles: Result<Option<bool>, String>,
+        start: Result<Option<i64>, String>,
+    }
+    impl<'a> QuerySingleTrace<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                trace_id: Err("trace_id was not initialized".to_string()),
+                end: Ok(None),
+                include_profiles: Ok(None),
+                start: Ok(None),
+            }
+        }
+        pub fn trace_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.trace_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for trace_id failed".to_string()
+            });
+            self
+        }
+        pub fn end<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<i64>,
+        {
+            self.end = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `i64` for end failed".to_string());
+            self
+        }
+        pub fn include_profiles<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<bool>,
+        {
+            self.include_profiles = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `bool` for include_profiles failed".to_string());
+            self
+        }
+        pub fn start<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<i64>,
+        {
+            self.start = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `i64` for start failed".to_string());
+            self
+        }
+        ///Sends a `GET` request to `/tempo/api/traces/{trace_id}`
+        pub async fn send(self) -> Result<ResponseValue<types::Trace>, Error<()>> {
+            let Self {
+                client,
+                trace_id,
+                end,
+                include_profiles,
+                start,
+            } = self;
+            let trace_id = trace_id.map_err(Error::InvalidRequest)?;
+            let end = end.map_err(Error::InvalidRequest)?;
+            let include_profiles = include_profiles.map_err(Error::InvalidRequest)?;
+            let start = start.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/tempo/api/traces/{}",
+                client.baseurl,
+                encode_path(&trace_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("end", &end))
+                .query(&progenitor_client::QueryParam::new(
+                    "include_profiles",
+                    &include_profiles,
+                ))
+                .query(&progenitor_client::QueryParam::new("start", &start))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "query_single_trace",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                404u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }

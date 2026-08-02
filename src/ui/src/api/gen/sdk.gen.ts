@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantsData, ListTenantsResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses } from './types.gen';
+import type { CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantsData, ListTenantsResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsResponses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -206,5 +206,49 @@ export const manageUpsertMembership = <ThrowOnError extends boolean = false>(opt
 export const manageRemoveMembership = <ThrowOnError extends boolean = false>(options: Options<ManageRemoveMembershipData, ThrowOnError>): RequestResult<ManageRemoveMembershipResponses, ManageRemoveMembershipErrors, ThrowOnError> => (options.client ?? client).delete<ManageRemoveMembershipResponses, ManageRemoveMembershipErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}',
+    ...options
+});
+
+/**
+ * GET https://grafana.com/docs/tempo/latest/api_docs/#search
+ */
+export const search = <ThrowOnError extends boolean = false>(options?: Options<SearchData, ThrowOnError>): RequestResult<SearchResponses, SearchErrors, ThrowOnError> => (options?.client ?? client).get<SearchResponses, SearchErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/tempo/api/search',
+    ...options
+});
+
+/**
+ * GET /api/search/tag/:tag_name/values
+ *
+ * Backed by real data: distinct values from the tenant's traces table
+ * for supported tags, static status values for `status`, and an
+ * explicit 501 for tags that are not queryable yet.
+ */
+export const searchTagValues = <ThrowOnError extends boolean = false>(options: Options<SearchTagValuesData, ThrowOnError>): RequestResult<SearchTagValuesResponses, SearchTagValuesErrors, ThrowOnError> => (options.client ?? client).get<SearchTagValuesResponses, SearchTagValuesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/tempo/api/search/tag/{tag_name}/values',
+    ...options
+});
+
+/**
+ * GET /api/search/tags?scope=<resource|span|intrinsic>
+ *
+ * See https://grafana.com/docs/tempo/latest/api_docs/#search-tags
+ */
+export const searchTags = <ThrowOnError extends boolean = false>(options?: Options<SearchTagsData, ThrowOnError>): RequestResult<SearchTagsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<SearchTagsResponses, unknown, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/tempo/api/search/tags',
+    ...options
+});
+
+/**
+ * GET /api/traces/<traceid>?start=<start>&end=<end>
+ *
+ * See https://grafana.com/docs/tempo/latest/api_docs/#query
+ */
+export const querySingleTrace = <ThrowOnError extends boolean = false>(options: Options<QuerySingleTraceData, ThrowOnError>): RequestResult<QuerySingleTraceResponses, QuerySingleTraceErrors, ThrowOnError> => (options.client ?? client).get<QuerySingleTraceResponses, QuerySingleTraceErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/tempo/api/traces/{trace_id}',
     ...options
 });

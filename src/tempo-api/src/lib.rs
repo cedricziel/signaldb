@@ -31,7 +31,8 @@ pub mod v2;
 ///
 /// `start`/`end` are optional unix-second hints bracketing the expected
 /// trace, used to prune the scanned time range.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct TraceQueryParams {
     pub start: Option<i64>,
     pub end: Option<i64>,
@@ -94,7 +95,8 @@ pub struct MetricSeries {
     pub values: Vec<(i64, String)>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct SearchQueryParams {
     pub q: Option<String>,
     pub tags: Option<String>,
@@ -108,7 +110,7 @@ pub struct SearchQueryParams {
 
 /// Result of GET /api/search
 /// See <https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search>
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, utoipa::ToSchema)]
 pub struct SearchResult {
     pub traces: Vec<Trace>,
     pub metrics: HashMap<String, u16>,
@@ -143,7 +145,7 @@ pub struct SearchResult {
 ///       "matched": 1
 ///     }
 ///   ]
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, utoipa::ToSchema)]
 pub struct Trace {
     #[serde(rename = "traceID")]
     pub trace_id: String,
@@ -165,7 +167,7 @@ pub struct Trace {
 
 /// Summary of a stored profile linked to a trace, without the bulky
 /// stack/sample payloads.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
 pub struct ProfileSummary {
     #[serde(rename = "profileID")]
     pub profile_id: String,
@@ -183,13 +185,13 @@ pub struct ProfileSummary {
     pub span_id: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, utoipa::ToSchema)]
 pub struct SpanSet {
     pub spans: Vec<Span>,
     pub matched: u16,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, utoipa::ToSchema)]
 pub struct Span {
     #[serde(rename = "spanID")]
     pub span_id: String,
@@ -226,7 +228,7 @@ pub struct Span {
 }
 
 /// A span event in the Tempo API span shape.
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, utoipa::ToSchema)]
 pub struct SpanEvent {
     pub name: String,
     #[serde(rename = "timeUnixNano")]
@@ -235,13 +237,13 @@ pub struct SpanEvent {
     pub attributes: HashMap<String, Attribute>,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, utoipa::ToSchema)]
 pub struct Attribute {
     pub key: String,
     pub value: Value,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, utoipa::ToSchema)]
 pub enum Value {
     #[serde(rename = "stringValue")]
     StringValue(String),
@@ -284,13 +286,13 @@ impl FromStr for TagScope {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, utoipa::ToSchema)]
 pub struct TagSearchResponse {
     #[serde(rename = "tagNames")]
     pub tag_names: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, utoipa::ToSchema)]
 pub struct TagValuesResponse {
     #[serde(rename = "tagValues")]
     pub tag_values: Vec<String>,
