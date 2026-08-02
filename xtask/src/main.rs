@@ -43,13 +43,16 @@ fn generate(check_only: bool) -> Result<()> {
     let json_value: serde_json::Value =
         serde_json::from_str(&spec_json).context("parsing api/signaldb-api.json")?;
 
-    // --- signaldb-sdk client (progenitor) ---
+    // --- signaldb-sdk client (progenitor, Rust) ---
     let sdk_client = generate_sdk_client(&json_value)?;
     write_or_check(
         &root.join("src/signaldb-sdk/src/generated.rs"),
         &sdk_client,
         check_only,
     )?;
+
+    // --- UI TypeScript client (@hey-api/openapi-ts) ---
+    generate_ts_client(&root, check_only)?;
 
     if check_only {
         eprintln!("All generated files are up-to-date.");
@@ -136,6 +139,88 @@ fn downconvert_nullable_types(value: &mut serde_json::Value) {
         }
         _ => {}
     }
+}
+
+/// Generate (or verify) the UI's TypeScript client from the OpenAPI spec using
+/// `@hey-api/openapi-ts` (config in src/ui/openapi-ts.config.ts). In check mode
+/// the client is regenerated into a temp directory and compared against the
+/// committed output, so a stale client fails CI without mutating the tree.
+fn generate_ts_client(root: &Path, check_only: bool) -> Result<()> {
+    let out_rel = "src/ui/src/api/gen";
+    let committed = root.join(out_rel);
+
+    if check_only {
+        let tmp = std::env::temp_dir().join(format!("signaldb-ts-gen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        run_openapi_ts(root, Some(&tmp))?;
+        let equal = dirs_equal(&tmp, &committed)?;
+        let _ = std::fs::remove_dir_all(&tmp);
+        if !equal {
+            anyhow::bail!(
+                "Generated code is out of date: {out_rel}\nRun `cargo xtask generate` to update."
+            );
+        }
+        eprintln!("  OK  {out_rel}");
+    } else {
+        run_openapi_ts(root, None)?;
+        eprintln!("  GEN {out_rel}");
+    }
+    Ok(())
+}
+
+/// Invoke `@hey-api/openapi-ts` via pnpm in the signaldb-ui package. When
+/// `output` is set it overrides the config's output directory (used for the
+/// check-mode temp comparison).
+fn run_openapi_ts(root: &Path, output: Option<&Path>) -> Result<()> {
+    let mut cmd = std::process::Command::new("pnpm");
+    cmd.current_dir(root)
+        .args(["--filter", "signaldb-ui", "exec", "openapi-ts"]);
+    if let Some(out) = output {
+        cmd.arg("-o").arg(out);
+    }
+    let status = cmd
+        .status()
+        .context("running `pnpm --filter signaldb-ui exec openapi-ts` (is pnpm installed and `pnpm install` run?)")?;
+    if !status.success() {
+        anyhow::bail!("openapi-ts exited with status {status}");
+    }
+    Ok(())
+}
+
+/// Recursively compare two directory trees for identical relative file sets and
+/// byte-identical contents.
+fn dirs_equal(a: &Path, b: &Path) -> Result<bool> {
+    let mut files_a = collect_files(a)?;
+    let mut files_b = collect_files(b)?;
+    files_a.sort();
+    files_b.sort();
+    if files_a != files_b {
+        return Ok(false);
+    }
+    for rel in &files_a {
+        if std::fs::read(a.join(rel))? != std::fs::read(b.join(rel))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Collect file paths under `dir`, relative to it, recursing into subdirectories.
+fn collect_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                walk(base, &path, out)?;
+            } else {
+                out.push(path.strip_prefix(base)?.to_path_buf());
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out)?;
+    Ok(out)
 }
 
 /// Run `rustfmt` on a Rust source string, returning the formatted output.
