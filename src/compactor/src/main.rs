@@ -152,11 +152,14 @@ async fn main() -> Result<()> {
         bootstrap.service_id()
     );
 
-    // Initialize catalog manager
+    // Initialize catalog manager, attaching the SQL catalog as the tenant
+    // source so lifecycle management (compaction, retention, orphan cleanup)
+    // covers admin-API (database) tenants alongside config-defined ones.
     let catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await
-            .context("Failed to initialize catalog manager")?,
+            .context("Failed to initialize catalog manager")?
+            .with_tenant_source(Arc::new(bootstrap.catalog().clone())),
     );
 
     // Create compaction planner
@@ -465,7 +468,14 @@ async fn main() -> Result<()> {
                         if retention_config.enabled {
                             tracing::debug!("Running retention enforcement cycle");
 
-                            for tenant_config in catalog_manager.get_enabled_tenants() {
+                            let active_tenants = match catalog_manager.list_active_tenants().await {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    tracing::error!("Failed to enumerate tenants for retention: {e:#}");
+                                    Vec::new()
+                                }
+                            };
+                            for tenant_config in &active_tenants {
                                 for dataset_config in &tenant_config.datasets {
                                     let tenant_id = &tenant_config.id;
                                     let dataset_id = &dataset_config.id;
@@ -506,12 +516,20 @@ async fn main() -> Result<()> {
                         if orphan_cleanup_config.enabled {
                             tracing::debug!("Running orphan cleanup cycle");
 
+                            let active_tenants = match catalog_manager.list_active_tenants().await {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    tracing::error!("Failed to enumerate tenants for orphan cleanup: {e:#}");
+                                    Vec::new()
+                                }
+                            };
+
                             // Run retention enforcement first to expire old snapshots,
                             // which reduces the live file set size before orphan detection.
                             // This is the ordering fix for issue #475 (P3).
                             if retention_config.enabled {
                                 tracing::debug!("Running pre-orphan retention enforcement to reduce live file set");
-                                for tenant_config in catalog_manager.get_enabled_tenants() {
+                                for tenant_config in &active_tenants {
                                     for dataset_config in &tenant_config.datasets {
                                         let tid = &tenant_config.id;
                                         let did = &dataset_config.id;
@@ -524,7 +542,7 @@ async fn main() -> Result<()> {
                                 }
                             }
 
-                            for tenant_config in catalog_manager.get_enabled_tenants() {
+                            for tenant_config in &active_tenants {
                                 for dataset_config in &tenant_config.datasets {
                                     // List the tables that actually exist in this
                                     // dataset's namespace. The previous hardcoded
