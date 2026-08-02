@@ -471,7 +471,19 @@ default_tenant = "default"
 # traces = "custom_traces_schema_definition"
 # logs = "custom_logs_schema_definition"
 
+# MCP (Model Context Protocol) server — exposes SignalDB to AI agents.
+# The MCP server is a thin, credential-forwarding client: it validates the
+# caller's bearer token and forwards it to the router's HTTP API. It holds no
+# key of its own, so tenant isolation stays enforced by the router.
+# [mcp]
+# enabled = false                       # off by default; set true to run the server
+# bind_address = "0.0.0.0:8228"         # Streamable HTTP transport; serves MCP at /mcp
+# router_url = "http://localhost:3000"  # router HTTP API to forward to
+
 # Environment variable examples:
+# SIGNALDB_MCP_ENABLED=true
+# SIGNALDB_MCP_BIND_ADDRESS=0.0.0.0:8228
+# SIGNALDB_MCP_ROUTER_URL=http://localhost:3000
 # SIGNALDB_DATABASE_DSN=postgres://user:pass@localhost/signaldb
 # SIGNALDB_STORAGE_DSN=file:///data/signaldb
 # SIGNALDB_SCHEMA_CATALOG_TYPE=sql
