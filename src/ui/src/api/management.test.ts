@@ -69,11 +69,15 @@ describe("management API", () => {
   });
 
   it("rejects with an ApiError carrying the HTTP status", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ error: "forbidden" }), {
-        status: 403,
-        headers: { "Content-Type": "application/json" },
-      }),
+    // A Response body can be read only once; this test makes two calls, so
+    // mint a fresh Response per call rather than sharing one instance.
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ error: "forbidden" }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
     );
     vi.stubGlobal("fetch", fetchMock);
 
