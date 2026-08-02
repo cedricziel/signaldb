@@ -6,7 +6,7 @@ Defines the Model Context Protocol surface SignalDB exposes to AI agents: how th
 
 ### Requirement: MCP transport and session initialization
 
-The MCP server SHALL expose the Model Context Protocol over Streamable HTTP at the `/mcp` path as its production transport, and SHALL additionally support a stdio transport for single-user local development. It SHALL respond to the MCP `initialize` handshake advertising `tools` and `resources` capabilities.
+The MCP server SHALL run as a standalone service whose only channel to SignalDB is the router's HTTP API via the generated SDK; it SHALL NOT be mounted as an in-process route on the router, and `/mcp` SHALL always be served on the MCP service's own port (a sidecar), never on the router's port. It SHALL expose the Model Context Protocol over Streamable HTTP at the `/mcp` path as its production transport, and SHALL additionally support a stdio transport for single-user local development. It SHALL respond to the MCP `initialize` handshake advertising `tools` and `resources` capabilities.
 
 Streamable HTTP SHALL carry credentials in the `Authorization` and `X-Tenant-ID` headers on every request, and each request is forwarded as that caller. The stdio transport has no per-request headers; the standalone binary MAY be given a single fixed credential (token + tenant, optional dataset) via CLI flags, environment, or config, which query tools use to reach the router. Started without a configured credential, stdio runs unauthenticated: `initialize`/`tools/list` still work, but a query tool returns a clear "stdio requires a configured credential" error rather than an opaque router auth failure. Stdio is documented as development-only, never for production.
 
@@ -27,22 +27,22 @@ Streamable HTTP SHALL carry credentials in the `Authorization` and `X-Tenant-ID`
 
 ### Requirement: Bearer authentication and credential forwarding
 
-The MCP server SHALL authenticate every Streamable HTTP request against the caller's bearer token using the platform Authenticator before any tool or resource call is served, and SHALL hold no credential of its own. All downstream requests it makes SHALL carry the caller's bearer token and tenant headers, so the router enforces the same tenant isolation and quotas as for any HTTP caller. A session SHALL be bound to the identity resolved on its first authenticated request; a later request on the same session whose credential resolves to a different tenant, or presents a different credential, SHALL be rejected. Because each request is re-authenticated, a revoked credential SHALL be denied on its next request.
+The MCP server SHALL hold no credential of its own and SHALL NOT validate credentials — the router is the sole authority on whether a credential is valid and what it may access. On each Streamable HTTP request it SHALL require the presence of a bearer token and `X-Tenant-ID` header, reject a request that carries neither, and forward the caller's bearer and tenant headers verbatim on every downstream call, so the router enforces the same tenant isolation and quotas as for any HTTP caller. An invalid, expired, or revoked credential is not rejected locally; it is rejected by the router and surfaces as a clean MCP tool error. A session SHALL be bound to the tenant and credential seen on its first request; a later request on the same session declaring a different tenant, or presenting a different credential, SHALL be rejected.
 
-#### Scenario: Missing or invalid token is rejected
+#### Scenario: Missing credential is rejected at the MCP layer
 
-- **WHEN** a client attempts to initialize a session without a bearer token, or with a token that fails authentication
-- **THEN** the server returns an MCP authentication error and establishes no session, exposing no tools
+- **WHEN** a client sends a request to `/mcp` without a bearer token or without `X-Tenant-ID`
+- **THEN** the server returns 401 and the request never reaches the MCP transport
+
+#### Scenario: Invalid credential is rejected by the router
+
+- **WHEN** a session presents a bearer token that the router rejects as invalid or revoked
+- **THEN** the tool call surfaces the router's rejection as a clean MCP error (the MCP server does not pre-validate)
 
 #### Scenario: Session cannot switch identity mid-stream
 
-- **WHEN** a session established for tenant A sends a later request whose bearer resolves to tenant B
-- **THEN** the request is rejected rather than served as either tenant
-
-#### Scenario: Revoked credential is denied on next request
-
-- **WHEN** a credential that established a session is revoked, and the client sends a further request on that session
-- **THEN** re-authentication fails and the request is denied
+- **WHEN** a session established for tenant A sends a later request declaring tenant B, or a different credential
+- **THEN** the request is rejected rather than served as either identity
 
 #### Scenario: Downstream calls are made as the caller
 

@@ -13,8 +13,8 @@
 //! `search_logs` and `query_metrics` follow once the Loki/Prometheus query
 //! endpoints join the SDK (epic #620, Phase A follow-up).
 
+use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
-use common::auth::TenantContext;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::schemars::JsonSchema;
 use rmcp::{
@@ -114,13 +114,21 @@ impl McpServer {
         &self,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let ctx = parts.extensions.get::<TenantContext>();
+        // The caller's identity travels in the request headers, forwarded
+        // verbatim to the router; the MCP server does not resolve or validate it.
+        let header = |name: &str| {
+            parts
+                .headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        };
         let info = serde_json::json!({
             "server": "signaldb-mcp",
             "version": env!("CARGO_PKG_VERSION"),
-            "authenticated": ctx.is_some(),
-            "tenant": ctx.map(|c| c.tenant_id.as_str()),
-            "dataset": ctx.map(|c| c.dataset_id.as_str()),
+            "credential_present": parts.headers.contains_key(AUTHORIZATION),
+            "tenant": header("x-tenant-id"),
+            "dataset": header("x-dataset-id"),
         });
         json_result(&info)
     }

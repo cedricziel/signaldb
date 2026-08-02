@@ -17,10 +17,10 @@ Shipped as three stacked PRs: A → B → C. Each phase is independently mergeab
 - [ ] B1. Streamable HTTP integration tests for `/mcp` (`cargo test -p mcp-server`): unauthenticated request → 401; valid bearer clears the auth layer and reaches the transport; `initialize` then a follow-up request on the same session; bearer + `X-Tenant-ID` extraction and downstream header propagation; session bound to its first identity — a later request resolving to a different tenant is rejected. Keep a separate test for the unauthenticated stdio credential path.
 - [ ] B2. Create `src/mcp-server` workspace member + binary `signaldb-mcp`; add `rmcp`; add to workspace `members`/`default-members`.
 - [ ] B3. Implement Streamable HTTP transport at `/mcp` and stdio transport; complete the `initialize` handshake advertising `tools` + `resources`.
-- [ ] B4. Authenticate every request's bearer via `common::auth::Authenticator::authenticate`; fail closed (401, no session) on missing/invalid token; attach resolved `TenantContext` to the request; bind the session to its first identity and reject later identity changes.
+- [ ] B4. Forward-only auth (SDK-only, no `common`): require a bearer + `X-Tenant-ID` to be present (401 if absent); forward them to the router, which is the sole validator; bind the session to its first identity (tenant + credential hash) and reject later identity changes (403). Do not validate credentials locally.
 - [ ] B5. Build the per-session `signaldb-sdk` client from the caller's bearer + `X-Tenant-ID`/`X-Dataset-ID` default headers; implement `server_info` proving the pipeline. Make B1 pass.
 - [ ] B6. Add `[mcp]` config (enabled flag, bind address, router URL) to `common::config` with precedence tests; **default the bind address to loopback**; register the service via `ServiceBootstrap`.
-- [ ] B7. Embed in monolithic mode (`signaldb-bin`) without port conflicts (no duplicate MCP listener); add to `scripts/run-dev.sh` and docker compose; add commented `[mcp]` to `signaldb.dist.toml`.
+- [ ] B7. Deploy as a **sidecar** (separate process/container pointing at a router) — never an in-process route on the router or monolith. Ship `signaldb-mcp` in the monolithic image so it can run as a sidecar via an entrypoint override; add to `scripts/run-dev.sh` and docker compose.
 - [ ] B8. `cargo fmt`, clippy, machete.
 
 ## Phase C — Read tools + schema resources (PR 3, issues #625 + #626)
