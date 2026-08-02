@@ -9,7 +9,11 @@ AI agents (Claude Code, Claude.ai, IDE assistants, on-call bots) are becoming pr
 - **Read/query tools** (available to every authenticated tenant session, no role gating in v1): `search_traces`, `get_trace`, `search_logs`, `query_metrics`, `discover_attributes`, plus discovery tools `list_datasets` / `list_schemas` / `list_tables`.
 - **MCP resources**: table schemas (traces/logs/metrics column definitions) exposed as readable resources with stable URIs so agents can ground queries without spending tool calls.
 - **Enabling change (Phase A): extend the code-first OpenAPI document + `signaldb-sdk` to cover the query endpoints.** Today the OpenAPI doc — and thus the generated SDK — covers only the admin/management surface; the Tempo/Loki/Prometheus query handlers are unannotated. They gain `#[utoipa::path]` annotations and `ToSchema`/`IntoParams` DTOs so the SDK regenerates with typed query methods. This is annotation/tooling only — **no change to endpoint behavior or responses**.
-- **New `[mcp]` config section** (enabled flag, bind address/port) following existing config precedence; wiring into `signaldb-bin`, `run-dev.sh`, and docker compose.
+- **New `[mcp]` config section** (enabled flag, bind address/port, router URL) following existing config precedence; wiring into `signaldb-bin`, `run-dev.sh`, and docker compose.
+- **Secure-by-default deployment** (established before Phase B):
+  - The MCP listener is **off unless `[mcp].enabled = true`**.
+  - The standalone service **binds loopback (`127.0.0.1`) by default**. Because the server forwards live bearer credentials, any non-loopback bind must sit behind TLS — direct HTTPS or a documented trusted TLS terminator — so credentials are never carried in plaintext over a network.
+  - **No duplicate listeners:** the MCP surface is served by exactly one process. When SignalDB runs monolithically, the embedded MCP listener and a separately-run `signaldb-mcp` must not both bind the same address; the embedded listener defers to an explicitly configured standalone one.
 - **Explicitly deferred to a later phase:** per-API-key role model, `viewer` read-only enforcement, and admin toolsets (tenant/key/dataset CRUD). v1 is read-only-agent-facing and gated by the caller's existing tenant credential.
 
 Not BREAKING: no change to OTLP ingest, the Tempo/LogQL/PromQL result behavior, Flight wire schemas, or on-disk layout. The OpenAPI extension is additive.

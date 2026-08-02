@@ -36,13 +36,21 @@ Rather than hand-code query HTTP in the MCP server, annotate the query handlers 
 
 Progenitor clients wrap a `reqwest::Client`. At session initialize, after `Authenticator::authenticate` succeeds, build a `reqwest::Client` whose default headers include the caller's `Authorization: Bearer` and `X-Tenant-ID` (and `X-Dataset-ID` when supplied), wrap it with `Client::new_with_client(base_url, ...)`, and hold it for the session's lifetime. Every tool call thus executes as the caller. The MCP server never stores or injects a key of its own.
 
-### D4: Authenticate at initialize, fail closed
+### D4: Authenticate every request, bind the session to its credential
 
-The bearer is validated once at session initialize via the shared `Authenticator`. Failure yields an MCP auth error and no session — no tool or resource is ever exposed to an unauthenticated caller. The resolved `TenantContext` (tenant/dataset/slugs) is kept in session state for constructing the SDK client and for tenant-scoped resource URIs.
+The bearer is validated on every Streamable HTTP request via the shared `Authenticator` (an axum layer ahead of the transport), not only at `initialize` — the transport is stateful and re-authenticating each request is cheap and closes the "auth once, then drift" gap. Failure (missing/invalid bearer, or `Authenticator` rejection) yields a 401 before the transport sees the request, so no tool or resource is ever exposed to an unauthenticated caller.
+
+**Session binding.** The first authenticated request on a session (keyed by the `mcp-session-id` the transport assigns) pins the resolved `(tenant_id, credential hash)`. Any later request on that session whose bearer resolves to a different tenant, or whose credential hash differs, is rejected — a session cannot be smuggled from one identity to another mid-stream. Binding lives for the session's lifetime; when the credential is revoked, the next request's `Authenticator::authenticate` fails and the session is denied (revocation takes effect within one request). Sessions carry no independent expiry beyond the transport's own idle timeout.
+
+**Stdio.** The stdio transport (dev only) has no per-request headers, so it cannot carry a bearer; it therefore runs unauthenticated and is documented as development-only. Production deployments use Streamable HTTP.
 
 ### D5: Error mapping
 
-Query API responses map to MCP outcomes: 2xx → tool result (JSON, size-capped); 404 → MCP "not found" tool error; 400/422 → actionable "bad query" error; 429 → retryable "throttled" error; 5xx/transport → generic tool error. This makes agent-visible failures actionable instead of opaque.
+Query API responses map to MCP outcomes: 2xx → tool result (JSON, size-capped per D6); 400/422 → actionable "bad query" error; 404 → MCP "not found" tool error; **401 → session-authentication failure (the forwarded credential expired or was revoked; the client must re-authenticate / re-establish the session); 403 → access-denied tool error (the credential is valid but lacks access to the requested tenant/dataset/resource)**; 429 → retryable "throttled" error; 5xx/transport → generic tool error. Both 401 and 403 paths are covered by tests. This makes agent-visible failures actionable instead of opaque.
+
+### D6: Bounded tool payloads
+
+Each query tool caps its serialized result at a fixed byte budget (default 256 KiB). When a downstream response exceeds the cap, the tool does not stream an unbounded blob: it returns valid structured JSON truncated at a record boundary with a `truncated: true` flag and a `hint` telling the agent to narrow the query (tighter time range or lower `limit`). Callers detect truncation from the flag. This keeps a single tool call from blowing an agent's context window.
 
 ## Risks / Trade-offs
 

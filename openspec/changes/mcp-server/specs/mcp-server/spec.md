@@ -6,26 +6,36 @@ Defines the Model Context Protocol surface SignalDB exposes to AI agents: how th
 
 ### Requirement: MCP transport and session initialization
 
-The MCP server SHALL expose the Model Context Protocol over Streamable HTTP at the `/mcp` path, and SHALL additionally support a stdio transport for local development. It SHALL respond to the MCP `initialize` handshake advertising `tools` and `resources` capabilities.
+The MCP server SHALL expose the Model Context Protocol over Streamable HTTP at the `/mcp` path as its production transport, and SHALL additionally support a stdio transport for local development only. It SHALL respond to the MCP `initialize` handshake advertising `tools` and `resources` capabilities. Streamable HTTP SHALL carry credentials in the `Authorization` and `X-Tenant-ID` headers on every request. The stdio transport has no per-request headers and therefore cannot carry a credential; it SHALL run unauthenticated and SHALL be documented as development-only, never for production.
 
 #### Scenario: Streamable HTTP initialize succeeds
 
 - **WHEN** an MCP client sends an `initialize` request over Streamable HTTP to `/mcp` with a valid tenant bearer token and `X-Tenant-ID` header
 - **THEN** the server completes the handshake and advertises `tools` and `resources` capabilities
 
-#### Scenario: Stdio transport available for development
+#### Scenario: Stdio transport is development-only and unauthenticated
 
 - **WHEN** the server is started in stdio mode
-- **THEN** an MCP client connected over stdio can complete `initialize` and list tools
+- **THEN** an MCP client connected over stdio can complete `initialize` and list tools, the session is reported as unauthenticated, and the mode is documented as development-only
 
 ### Requirement: Bearer authentication and credential forwarding
 
-The MCP server SHALL authenticate every session against the caller's bearer token using the platform Authenticator before any tool or resource call is served, and SHALL hold no credential of its own. All downstream requests it makes SHALL carry the caller's bearer token and tenant headers, so the router enforces the same tenant isolation and quotas as for any HTTP caller.
+The MCP server SHALL authenticate every Streamable HTTP request against the caller's bearer token using the platform Authenticator before any tool or resource call is served, and SHALL hold no credential of its own. All downstream requests it makes SHALL carry the caller's bearer token and tenant headers, so the router enforces the same tenant isolation and quotas as for any HTTP caller. A session SHALL be bound to the identity resolved on its first authenticated request; a later request on the same session whose credential resolves to a different tenant, or presents a different credential, SHALL be rejected. Because each request is re-authenticated, a revoked credential SHALL be denied on its next request.
 
 #### Scenario: Missing or invalid token is rejected
 
 - **WHEN** a client attempts to initialize a session without a bearer token, or with a token that fails authentication
 - **THEN** the server returns an MCP authentication error and establishes no session, exposing no tools
+
+#### Scenario: Session cannot switch identity mid-stream
+
+- **WHEN** a session established for tenant A sends a later request whose bearer resolves to tenant B
+- **THEN** the request is rejected rather than served as either tenant
+
+#### Scenario: Revoked credential is denied on next request
+
+- **WHEN** a credential that established a session is revoked, and the client sends a further request on that session
+- **THEN** re-authentication fails and the request is denied
 
 #### Scenario: Downstream calls are made as the caller
 
@@ -39,12 +49,36 @@ The MCP server SHALL authenticate every session against the caller's bearer toke
 
 ### Requirement: Query and exploration tools
 
-The MCP server SHALL expose read-only tools that wrap the SignalDB query API: trace search (`search_traces`), single-trace retrieval (`get_trace`), log search (`search_logs`), metric query (`query_metrics`), and attribute discovery (`discover_attributes`). Each tool SHALL accept an optional dataset argument, validated server-side, and SHALL return structured JSON derived from the API response with bounded payload size. In v1 these tools SHALL be visible to every authenticated tenant session without role-based filtering.
+The MCP server SHALL expose read-only tools that wrap the SignalDB query API: trace search (`search_traces`), single-trace retrieval (`get_trace`), log search (`search_logs`), metric query (`query_metrics`), and attribute discovery (`discover_attributes`). Each tool SHALL return structured JSON derived from the API response. In v1 these tools SHALL be visible to every authenticated tenant session without role-based filtering.
+
+**Dataset selection.** Each tool SHALL accept an optional `dataset` argument. When omitted, the session's default dataset (from the resolved tenant context) is used. When provided, it SHALL be forwarded as `X-Dataset-ID` and validated server-side against the caller's tenant context; a dataset the caller may not access SHALL be rejected with an access-denied error rather than silently substituting the default.
+
+**Bounded payloads.** Each tool SHALL cap its serialized result at a fixed byte budget. When the downstream response exceeds the cap, the tool SHALL return valid structured JSON truncated at a record boundary, carrying a `truncated: true` flag and a hint to narrow the query; it SHALL NOT return an unbounded or malformed payload. Clients detect truncation via the flag.
 
 #### Scenario: Trace search returns matching traces
 
 - **WHEN** an authenticated session calls `search_traces` with a TraceQL query and time range
 - **THEN** the tool returns the matching traces scoped to the caller's tenant as structured JSON
+
+#### Scenario: Omitted dataset uses the session default
+
+- **WHEN** a session calls a query tool without a `dataset` argument
+- **THEN** the query is forwarded for the session's default dataset
+
+#### Scenario: Explicit accessible dataset is forwarded
+
+- **WHEN** a session calls a query tool with a `dataset` the caller's tenant may access
+- **THEN** the query is forwarded with that dataset as `X-Dataset-ID`
+
+#### Scenario: Inaccessible dataset is rejected
+
+- **WHEN** a session calls a query tool with a `dataset` the caller's tenant may not access
+- **THEN** the tool returns an access-denied error and forwards no query
+
+#### Scenario: Oversized result is truncated with a flag
+
+- **WHEN** a query tool's downstream result exceeds the payload cap
+- **THEN** the tool returns valid JSON marked `truncated: true` with a narrowing hint, not an unbounded blob
 
 #### Scenario: Get trace by id when absent
 
@@ -64,18 +98,34 @@ The MCP server SHALL expose read-only tools that wrap the SignalDB query API: tr
 #### Scenario: Tools are listed for any authenticated tenant session
 
 - **WHEN** any authenticated tenant session issues `tools/list`
-- **THEN** the query and exploration tools are present in the returned list
+- **THEN** every advertised tool — the query/exploration tools and the discovery tools (`list_datasets`, `list_schemas`, `list_tables`) — is present in the returned list
+
+### Requirement: Discovery tools
+
+The MCP server SHALL expose discovery tools scoped to the caller's tenant: `list_datasets` (the datasets the caller may access), `list_schemas` (available signal schemas), and `list_tables` (tables in a dataset). Each SHALL return structured JSON and reflect only the caller's tenant. They take no privileged action and are visible to every authenticated tenant session.
+
+#### Scenario: List datasets returns only the caller's tenant
+
+- **WHEN** an authenticated session for tenant A calls `list_datasets`
+- **THEN** the tool returns tenant A's datasets and no other tenant's
+
+#### Scenario: List tables for a dataset
+
+- **WHEN** an authenticated session calls `list_tables` for one of its datasets
+- **THEN** the tool returns the tables in that dataset as structured JSON
 
 ### Requirement: Schema resources
 
-The MCP server SHALL expose the caller's table schemas (traces, logs, metrics column definitions) as MCP resources with stable URIs, readable via `resources/list` and `resources/read`, so agents can ground queries without issuing tool calls. Resources SHALL reflect only the caller's tenant.
+The MCP server SHALL expose the caller's table schemas (traces, logs, metrics column definitions) as MCP resources readable via `resources/list` and `resources/read`, so agents can ground queries without issuing tool calls.
+
+**URI grammar.** Resource URIs SHALL follow a stable grammar `signaldb://schema/{dataset}/{table}` that identifies the dataset and table but SHALL NOT encode tenant identity — the tenant is taken from the authenticated session, never from the URI. `resources/read` SHALL resolve the schema using the authenticated tenant plus the dataset/table from the URI, and SHALL reject a URI that names an unknown or foreign dataset/table with a not-found error that reveals no schema data. A URI minted for one tenant therefore returns nothing when read by another.
 
 #### Scenario: List and read table schemas
 
-- **WHEN** an authenticated session issues `resources/list` and then `resources/read` for a table-schema resource
+- **WHEN** an authenticated session issues `resources/list` and then `resources/read` for a `signaldb://schema/{dataset}/{table}` URI in its tenant
 - **THEN** the server returns the current column definitions for that table in the caller's tenant
 
-#### Scenario: Resources are tenant-scoped
+#### Scenario: Foreign-tenant URI reveals nothing
 
-- **WHEN** a session authenticated for tenant A reads schema resources
-- **THEN** only tenant A's schemas are returned
+- **WHEN** a session for tenant B issues `resources/read` for a URI whose dataset/table belongs only to tenant A
+- **THEN** the server returns a not-found error and no schema data, because the tenant comes from the session, not the URI
