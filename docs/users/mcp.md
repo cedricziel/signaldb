@@ -109,13 +109,41 @@ same headers as any SignalDB HTTP caller:
 - `X-Tenant-ID: <tenant>`
 - `X-Dataset-ID: <dataset>` (optional)
 
-From Claude Code:
+Use the URL that matches your deployment: `http://localhost:8228/mcp` for a
+loopback dev instance, or your **HTTPS reverse-proxy URL** (e.g.
+`https://mcp.example.org/mcp`) for anything off-host — the server forwards live
+bearer credentials, so a remote endpoint must be TLS-terminated.
+
+### Claude Code (CLI + IDE)
+
+The first-class path — it passes arbitrary headers, which is how the server
+receives the bearer and tenant:
 
 ```bash
+# local dev instance
 claude mcp add --transport http signaldb http://localhost:8228/mcp \
   --header "Authorization: Bearer sk-your-key" \
   --header "X-Tenant-ID: your-tenant"
+
+# deployed behind TLS
+claude mcp add --transport http signaldb https://mcp.example.org/mcp \
+  --header "Authorization: Bearer sk-your-key" \
+  --header "X-Tenant-ID: your-tenant"
 ```
+
+### Claude.ai and Claude Desktop
+
+Add it under **Settings → Connectors → Add custom connector** with the same
+`/mcp` URL. Two constraints:
+
+- The endpoint **must be HTTPS with a valid certificate** — Claude.ai will not
+  connect to a raw LAN port, so the TLS reverse proxy is required here, not
+  optional.
+- Passing the `Authorization`/`X-Tenant-ID` headers depends on the connector
+  supporting custom headers. The fully-managed alternative is an OAuth flow,
+  which SignalDB's MCP server does not implement in v1 (bearer + tenant headers
+  only) — so header-capable clients like Claude Code are the smoothest path
+  today.
 
 A request without a valid bearer token and `X-Tenant-ID` is rejected with `401`
 before any MCP session is established.
