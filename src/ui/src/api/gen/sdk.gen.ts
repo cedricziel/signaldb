@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantsData, ListTenantsResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsResponses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses } from './types.gen';
+import type { CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantsData, ListTenantsResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsResponses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -131,6 +131,19 @@ export const deleteDataset = <ThrowOnError extends boolean = false>(options: Opt
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/admin/tenants/{tenant_id}/datasets/{dataset_id}',
     ...options
+});
+
+/**
+ * Create a human user and grant an initial tenant membership.
+ */
+export const createUser = <ThrowOnError extends boolean = false>(options: Options<CreateUserData, ThrowOnError>): RequestResult<CreateUserResponses, CreateUserErrors, ThrowOnError> => (options.client ?? client).post<CreateUserResponses, CreateUserErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/admin/users',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
 });
 
 export const manageCreateTenant = <ThrowOnError extends boolean = false>(options: Options<ManageCreateTenantData, ThrowOnError>): RequestResult<ManageCreateTenantResponses, ManageCreateTenantErrors, ThrowOnError> => (options.client ?? client).post<ManageCreateTenantResponses, ManageCreateTenantErrors, ThrowOnError>({

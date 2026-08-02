@@ -131,16 +131,6 @@ impl Cli {
             return completions::generate(shell);
         }
 
-        if let Commands::User { action } = self.command {
-            let config_path = self
-                .config
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("user commands require --config"))?;
-            let config = common::config::Configuration::load_from_path(config_path)
-                .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-            return action.run(&config).await;
-        }
-
         let config_admin_key = self.try_resolve_admin_key();
 
         if let Commands::Tui {
@@ -154,10 +144,7 @@ impl Cli {
             dataset_id,
         } = self.command
         {
-            let tui_config_admin_key = tui_config.and_then(|path| {
-                let cfg = common::config::Configuration::load_from_path(&path).ok()?;
-                cfg.auth.admin_api_key
-            });
+            let tui_config_admin_key = tui_config.and_then(|path| admin_key_from_config(&path));
             let effective_admin_key = admin_key.or(tui_config_admin_key).or(config_admin_key);
             let refresh = parse_duration(&refresh_rate)?;
             let mut app = crate::tui::app::App::new(
@@ -190,7 +177,7 @@ impl Cli {
             Commands::Tenant { action } => action.run(&client).await,
             Commands::ApiKey { action } => action.run(&client).await,
             Commands::Dataset { action } => action.run(&client).await,
-            Commands::User { .. } => unreachable!(),
+            Commands::User { action } => action.run(&client).await,
             Commands::Query { .. } => unreachable!(),
             Commands::Completions { .. } => unreachable!(),
             Commands::Tui { .. } => unreachable!(),
@@ -203,9 +190,7 @@ impl Cli {
         }
 
         if let Some(config_path) = &self.config {
-            let config = common::config::Configuration::load_from_path(config_path)
-                .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-            if let Some(key) = config.auth.admin_api_key {
+            if let Some(key) = admin_key_from_config(config_path) {
                 return Ok(key);
             }
             anyhow::bail!("Config file has no admin_api_key under [auth]");
@@ -221,9 +206,25 @@ impl Cli {
             return Some(key.clone());
         }
         let config_path = self.config.as_ref()?;
-        let config = common::config::Configuration::load_from_path(config_path).ok()?;
-        config.auth.admin_api_key
+        admin_key_from_config(config_path)
     }
+}
+
+/// Read only `[auth].admin_api_key` from a SignalDB config file, without
+/// depending on the server's full `Configuration` type — the CLI is a
+/// first-class SDK consumer and does not link SignalDB internals.
+fn admin_key_from_config(path: &std::path::Path) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct MinimalConfig {
+        auth: Option<MinimalAuth>,
+    }
+    #[derive(serde::Deserialize)]
+    struct MinimalAuth {
+        admin_api_key: Option<String>,
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    let cfg: MinimalConfig = toml::from_str(&text).ok()?;
+    cfg.auth?.admin_api_key
 }
 
 /// Parse a human-readable duration string like "5s", "100ms", "2m".

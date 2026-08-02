@@ -326,6 +326,74 @@ pub mod types {
             Default::default()
         }
     }
+    ///Request body for creating a human user with an initial tenant membership.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Request body for creating a human user with an initial tenant membership.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "email",
+    ///    "password",
+    ///    "tenant"
+    ///  ],
+    ///  "properties": {
+    ///    "display_name": {
+    ///      "description": "Optional display name.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "email": {
+    ///      "description": "Login email address.",
+    ///      "type": "string"
+    ///    },
+    ///    "instance_admin": {
+    ///      "description": "Grant instance-administrator status.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "password": {
+    ///      "description": "Password (hashed server-side; must be at least 12 characters).",
+    ///      "type": "string"
+    ///    },
+    ///    "role": {
+    ///      "description": "Initial tenant role: `admin`, `member`, or `viewer`.",
+    ///      "type": "string"
+    ///    },
+    ///    "tenant": {
+    ///      "description": "Tenant to grant the initial membership in.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct CreateUserRequest {
+        ///Optional display name.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub display_name: ::std::option::Option<::std::string::String>,
+        ///Login email address.
+        pub email: ::std::string::String,
+        ///Grant instance-administrator status.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub instance_admin: ::std::option::Option<bool>,
+        ///Password (hashed server-side; must be at least 12 characters).
+        pub password: ::std::string::String,
+        ///Initial tenant role: `admin`, `member`, or `viewer`.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub role: ::std::option::Option<::std::string::String>,
+        ///Tenant to grant the initial membership in.
+        pub tenant: ::std::string::String,
+    }
+    impl CreateUserRequest {
+        pub fn builder() -> builder::CreateUserRequest {
+            Default::default()
+        }
+    }
     ///Dataset information returned by the API.
     ///
     /// <details><summary>JSON schema</summary>
@@ -1534,6 +1602,67 @@ pub mod types {
             Default::default()
         }
     }
+    ///Response returned when a user is created (never includes the password hash).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Response returned when a user is created (never includes the password hash).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "created_at",
+    ///    "email",
+    ///    "id",
+    ///    "instance_admin"
+    ///  ],
+    ///  "properties": {
+    ///    "created_at": {
+    ///      "description": "ISO 8601 creation timestamp.",
+    ///      "type": "string"
+    ///    },
+    ///    "display_name": {
+    ///      "description": "Optional display name.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "email": {
+    ///      "description": "Login email address.",
+    ///      "type": "string"
+    ///    },
+    ///    "id": {
+    ///      "description": "Unique user identifier.",
+    ///      "type": "string"
+    ///    },
+    ///    "instance_admin": {
+    ///      "description": "Whether the user is an instance administrator.",
+    ///      "type": "boolean"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct UserResponse {
+        ///ISO 8601 creation timestamp.
+        pub created_at: ::std::string::String,
+        ///Optional display name.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub display_name: ::std::option::Option<::std::string::String>,
+        ///Login email address.
+        pub email: ::std::string::String,
+        ///Unique user identifier.
+        pub id: ::std::string::String,
+        ///Whether the user is an instance administrator.
+        pub instance_admin: bool,
+    }
+    impl UserResponse {
+        pub fn builder() -> builder::UserResponse {
+            Default::default()
+        }
+    }
     /// Types for composing complex structures.
     pub mod builder {
         #[derive(Clone, Debug)]
@@ -1964,6 +2093,123 @@ pub mod types {
                     default_dataset: Ok(value.default_dataset),
                     id: Ok(value.id),
                     name: Ok(value.name),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct CreateUserRequest {
+            display_name: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            email: ::std::result::Result<::std::string::String, ::std::string::String>,
+            instance_admin:
+                ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+            password: ::std::result::Result<::std::string::String, ::std::string::String>,
+            role: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            tenant: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for CreateUserRequest {
+            fn default() -> Self {
+                Self {
+                    display_name: Ok(Default::default()),
+                    email: Err("no value supplied for email".to_string()),
+                    instance_admin: Ok(Default::default()),
+                    password: Err("no value supplied for password".to_string()),
+                    role: Ok(Default::default()),
+                    tenant: Err("no value supplied for tenant".to_string()),
+                }
+            }
+        }
+        impl CreateUserRequest {
+            pub fn display_name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.display_name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for display_name: {e}"));
+                self
+            }
+            pub fn email<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.email = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for email: {e}"));
+                self
+            }
+            pub fn instance_admin<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.instance_admin = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for instance_admin: {e}")
+                });
+                self
+            }
+            pub fn password<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.password = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for password: {e}"));
+                self
+            }
+            pub fn role<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.role = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for role: {e}"));
+                self
+            }
+            pub fn tenant<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<CreateUserRequest> for super::CreateUserRequest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: CreateUserRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    display_name: value.display_name?,
+                    email: value.email?,
+                    instance_admin: value.instance_admin?,
+                    password: value.password?,
+                    role: value.role?,
+                    tenant: value.tenant?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::CreateUserRequest> for CreateUserRequest {
+            fn from(value: super::CreateUserRequest) -> Self {
+                Self {
+                    display_name: Ok(value.display_name),
+                    email: Ok(value.email),
+                    instance_admin: Ok(value.instance_admin),
+                    password: Ok(value.password),
+                    role: Ok(value.role),
+                    tenant: Ok(value.tenant),
                 }
             }
         }
@@ -3701,6 +3947,105 @@ pub mod types {
                 }
             }
         }
+        #[derive(Clone, Debug)]
+        pub struct UserResponse {
+            created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            display_name: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            email: ::std::result::Result<::std::string::String, ::std::string::String>,
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            instance_admin: ::std::result::Result<bool, ::std::string::String>,
+        }
+        impl ::std::default::Default for UserResponse {
+            fn default() -> Self {
+                Self {
+                    created_at: Err("no value supplied for created_at".to_string()),
+                    display_name: Ok(Default::default()),
+                    email: Err("no value supplied for email".to_string()),
+                    id: Err("no value supplied for id".to_string()),
+                    instance_admin: Err("no value supplied for instance_admin".to_string()),
+                }
+            }
+        }
+        impl UserResponse {
+            pub fn created_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.created_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for created_at: {e}"));
+                self
+            }
+            pub fn display_name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.display_name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for display_name: {e}"));
+                self
+            }
+            pub fn email<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.email = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for email: {e}"));
+                self
+            }
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
+                self
+            }
+            pub fn instance_admin<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.instance_admin = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for instance_admin: {e}")
+                });
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<UserResponse> for super::UserResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: UserResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    created_at: value.created_at?,
+                    display_name: value.display_name?,
+                    email: value.email?,
+                    id: value.id?,
+                    instance_admin: value.instance_admin?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::UserResponse> for UserResponse {
+            fn from(value: super::UserResponse) -> Self {
+                Self {
+                    created_at: Ok(value.created_at),
+                    display_name: Ok(value.display_name),
+                    email: Ok(value.email),
+                    id: Ok(value.id),
+                    instance_admin: Ok(value.instance_admin),
+                }
+            }
+        }
     }
 }
 #[derive(Clone, Debug)]
@@ -3929,6 +4274,19 @@ impl Client {
     ```*/
     pub fn delete_dataset(&self) -> builder::DeleteDataset<'_> {
         builder::DeleteDataset::new(self)
+    }
+    /**Create a human user and grant an initial tenant membership
+
+    Sends a `POST` request to `/api/v1/admin/users`
+
+    ```ignore
+    let response = client.create_user()
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn create_user(&self) -> builder::CreateUser<'_> {
+        builder::CreateUser::new(self)
     }
     /**Sends a `POST` request to `/api/v1/manage/tenants`
 
@@ -5001,6 +5359,88 @@ pub mod builder {
                     ResponseValue::from_response(response).await?,
                 )),
                 404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::create_user`]
+
+    [`Client::create_user`]: super::Client::create_user*/
+    #[derive(Debug, Clone)]
+    pub struct CreateUser<'a> {
+        client: &'a super::Client,
+        body: Result<types::builder::CreateUserRequest, String>,
+    }
+    impl<'a> CreateUser<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::CreateUserRequest>,
+            <V as std::convert::TryInto<types::CreateUserRequest>>::Error: std::fmt::Display,
+        {
+            self.body = value
+                .try_into()
+                .map(From::from)
+                .map_err(|s| format!("conversion to `CreateUserRequest` for body failed: {}", s));
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::CreateUserRequest,
+                ) -> types::builder::CreateUserRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/admin/users`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::UserResponse>, Error<types::ApiError>> {
+            let Self { client, body } = self;
+            let body = body
+                .and_then(|v| types::CreateUserRequest::try_from(v).map_err(|e| e.to_string()))
+                .map_err(Error::InvalidRequest)?;
+            let url = format!("{}/api/v1/admin/users", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "create_user",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 _ => Err(Error::UnexpectedResponse(response)),

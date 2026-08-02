@@ -136,3 +136,43 @@ pub struct ListDatasetsResponse {
     /// List of dataset records.
     pub datasets: Vec<DatasetResponse>,
 }
+
+/// Request body for creating a human user with an initial tenant membership.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CreateUserRequest {
+    /// Login email address.
+    pub email: String,
+    /// Optional display name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Password (hashed server-side; must be at least 12 characters).
+    pub password: String,
+    /// Grant instance-administrator status.
+    #[serde(default)]
+    pub instance_admin: bool,
+    /// Tenant to grant the initial membership in.
+    pub tenant: String,
+    /// Initial tenant role: `admin`, `member`, or `viewer`.
+    #[serde(default = "default_user_role")]
+    pub role: String,
+}
+
+fn default_user_role() -> String {
+    "admin".to_string()
+}
+
+/// Response returned when a user is created (never includes the password hash).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct UserResponse {
+    /// Unique user identifier.
+    pub id: String,
+    /// Login email address.
+    pub email: String,
+    /// Optional display name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Whether the user is an instance administrator.
+    pub instance_admin: bool,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+}
