@@ -64,6 +64,10 @@ struct SearchTracesParams {
     /// Spans-per-spanset cap on returned spans.
     #[serde(default)]
     spss: Option<i32>,
+    /// Dataset to query. Omit to use the session's default dataset. The router
+    /// validates access; an inaccessible dataset returns an access-denied error.
+    #[serde(default)]
+    dataset: Option<String>,
 }
 
 /// Parameters for `get_trace`.
@@ -78,6 +82,9 @@ struct GetTraceParams {
     /// Optional end-of-range hint, unix seconds, to prune the scan.
     #[serde(default)]
     end: Option<i64>,
+    /// Dataset to query. Omit to use the session's default dataset.
+    #[serde(default)]
+    dataset: Option<String>,
 }
 
 /// Parameters for `discover_attributes`.
@@ -88,6 +95,9 @@ struct DiscoverAttributesParams {
     /// the list of queryable tag names.
     #[serde(default)]
     tag: Option<String>,
+    /// Dataset to query. Omit to use the session's default dataset.
+    #[serde(default)]
+    dataset: Option<String>,
 }
 
 #[tool_router]
@@ -123,7 +133,7 @@ impl McpServer {
         Parameters(p): Parameters<SearchTracesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = sdk_client_for(&parts, &self.router_base_url);
+        let client = sdk_client_for(&parts, &self.router_base_url, p.dataset.as_deref());
         let mut req = client.search();
         if let Some(v) = p.query {
             req = req.q(v);
@@ -164,7 +174,7 @@ impl McpServer {
         Parameters(p): Parameters<GetTraceParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = sdk_client_for(&parts, &self.router_base_url);
+        let client = sdk_client_for(&parts, &self.router_base_url, p.dataset.as_deref());
         let mut req = client.query_single_trace().trace_id(p.trace_id);
         if let Some(v) = p.start {
             req = req.start(v);
@@ -184,7 +194,7 @@ impl McpServer {
         Parameters(p): Parameters<DiscoverAttributesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = sdk_client_for(&parts, &self.router_base_url);
+        let client = sdk_client_for(&parts, &self.router_base_url, p.dataset.as_deref());
         match p.tag {
             Some(tag) => {
                 let resp = client
@@ -210,22 +220,48 @@ impl McpServer {
 #[tool_handler]
 impl ServerHandler for McpServer {}
 
-/// Serialize a value into a single-text-block tool result.
+/// Byte budget for a single tool result. A tool call must not blow an agent's
+/// context window, so an oversized downstream result is not streamed verbatim.
+const MAX_TOOL_PAYLOAD_BYTES: usize = 256 * 1024;
+
+/// Serialize a value into a single-text-block tool result, bounded at
+/// [`MAX_TOOL_PAYLOAD_BYTES`]. When the serialized result exceeds the budget,
+/// the tool returns valid JSON marked `truncated` with a narrowing hint instead
+/// of the oversized payload, so clients detect the cap from the flag.
 fn json_result<T: serde::Serialize>(value: &T) -> Result<CallToolResult, ErrorData> {
     let text = serde_json::to_string(value)
         .map_err(|e| ErrorData::internal_error(format!("failed to serialize result: {e}"), None))?;
+    if text.len() > MAX_TOOL_PAYLOAD_BYTES {
+        let notice = serde_json::json!({
+            "truncated": true,
+            "bytes": text.len(),
+            "limit_bytes": MAX_TOOL_PAYLOAD_BYTES,
+            "hint": "Result exceeded the size cap; narrow the time range or lower `limit`, then retry.",
+        });
+        return Ok(CallToolResult::success(vec![ContentBlock::text(
+            notice.to_string(),
+        )]));
+    }
     Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
 }
 
 /// Map a downstream router/SDK error onto an actionable MCP tool error, so
-/// agents see "not found" / "invalid query" / "rate limited" rather than an
-/// opaque transport failure.
+/// agents see "not found" / "invalid query" / "access denied" / "rate limited"
+/// rather than an opaque transport failure.
 fn map_sdk_err(err: signaldb_sdk::Error<()>, what: &str) -> ErrorData {
     match err.status().map(|s| s.as_u16()) {
-        Some(404) => ErrorData::resource_not_found(format!("{what}: not found"), None),
         Some(400) | Some(422) | Some(501) => {
             ErrorData::invalid_params(format!("{what}: invalid request: {err}"), None)
         }
+        Some(401) => ErrorData::invalid_request(
+            format!("{what}: credential expired or was revoked; re-authenticate the session"),
+            None,
+        ),
+        Some(403) => ErrorData::invalid_request(
+            format!("{what}: access denied for the requested tenant/dataset"),
+            None,
+        ),
+        Some(404) => ErrorData::resource_not_found(format!("{what}: not found"), None),
         Some(429) => {
             ErrorData::internal_error(format!("{what}: rate limited, retry shortly"), None)
         }

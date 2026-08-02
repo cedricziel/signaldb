@@ -31,6 +31,12 @@ gating in v1):
 > `search_logs` (LogQL) and `query_metrics` (PromQL) arrive once the Loki and
 > Prometheus query endpoints join the generated SDK — tracked on epic #620.
 
+Each query tool accepts an optional `dataset` argument. Omit it to use your
+session's default dataset; pass one to target another dataset your tenant may
+access (the router validates access and rejects the rest). Large results are
+capped and returned with a `truncated: true` flag telling the agent to narrow
+the query.
+
 ## Running it
 
 The server is off by default. Enable it in `signaldb.toml`:
@@ -38,9 +44,13 @@ The server is off by default. Enable it in `signaldb.toml`:
 ```toml
 [mcp]
 enabled = true
-bind_address = "0.0.0.0:8228"        # serves MCP at /mcp
+bind_address = "127.0.0.1:8228"      # serves MCP at /mcp; loopback by default
 router_url = "http://localhost:3000" # the router HTTP API to forward to
 ```
+
+The server forwards live bearer credentials, so it binds **loopback by
+default**. Exposing it off-host means changing `bind_address` to a routable
+address **and** putting it behind TLS (direct HTTPS or a trusted terminator).
 
 Then run the standalone binary (or use `./scripts/run-dev.sh services`, which
 starts it automatically on `:8228`):

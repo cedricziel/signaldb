@@ -75,13 +75,14 @@ Key details:
 
 ## Service Components
 
-| Service       | Ports                                   | Capability                  | Key Files        |
-| ------------- | --------------------------------------- | --------------------------- | ---------------- |
-| **Acceptor**  | gRPC:4317, HTTP:4318                    | `TraceIngestion`            | `src/acceptor/`  |
-| **Writer**    | Flight:50061 (standalone), 50051 (mono) | `TraceIngestion`, `Storage` | `src/writer/`    |
-| **Router**    | HTTP:3000, Flight:50053                 | `Routing`                   | `src/router/`    |
-| **Querier**   | Flight:50054                            | `QueryExecution`            | `src/querier/`   |
-| **Compactor** | None (background task)                  | `Compaction`                | `src/compactor/` |
+| Service       | Ports                                   | Capability                  | Key Files         |
+| ------------- | --------------------------------------- | --------------------------- | ----------------- |
+| **Acceptor**  | gRPC:4317, HTTP:4318                    | `TraceIngestion`            | `src/acceptor/`   |
+| **Writer**    | Flight:50061 (standalone), 50051 (mono) | `TraceIngestion`, `Storage` | `src/writer/`     |
+| **Router**    | HTTP:3000, Flight:50053                 | `Routing`                   | `src/router/`     |
+| **Querier**   | Flight:50054                            | `QueryExecution`            | `src/querier/`    |
+| **Compactor** | None (background task)                  | `Compaction`                | `src/compactor/`  |
+| **MCP**       | HTTP:8228 (loopback default, `/mcp`)    | none (client of Router)     | `src/mcp-server/` |
 
 ## Deployment Models
 
