@@ -274,8 +274,41 @@ impl WalSegment {
         Ok(entry_id)
     }
 
-    /// Read data for a specific entry
+    /// Read data for a specific entry.
+    ///
+    /// Validates the entry's `[data_offset, data_offset + data_size)` range
+    /// against the actual data-file length before reading. A range that runs
+    /// past the file (truncated/partial write, stale offset bookkeeping, or a
+    /// corrupt index) yields a clear, attributable bounds error here rather
+    /// than an opaque `read_exact` "failed to fill whole buffer" or, worse,
+    /// in-bounds garbage that the Arrow reader later rejects as
+    /// `RangeOutOfBounds`. The caller's dead-letter path then records which
+    /// tenant/dataset/signal was affected.
     pub async fn read_entry_data(&self, entry: &WalEntry) -> Result<Vec<u8>> {
+        let data_len = tokio::fs::metadata(&self.data_path)
+            .await
+            .with_context(|| format!("Failed to stat WAL data file {}", self.data_path.display()))?
+            .len();
+        let end = entry
+            .data_offset
+            .checked_add(entry.data_size)
+            .with_context(|| {
+                format!(
+                    "WAL entry {} data range overflows u64 (offset={}, size={})",
+                    entry.id, entry.data_offset, entry.data_size
+                )
+            })?;
+        if end > data_len {
+            anyhow::bail!(
+                "WAL entry {} data out of bounds: [{}, {}) exceeds data file length {} (segment {})",
+                entry.id,
+                entry.data_offset,
+                end,
+                data_len,
+                self.id
+            );
+        }
+
         let mut data_file = File::open(&self.data_path).await?;
         data_file.seek(SeekFrom::Start(entry.data_offset)).await?;
 
@@ -1196,6 +1229,60 @@ mod tests {
         assert_eq!(WalOperation::WriteMetrics.signal(), "metrics");
         assert_eq!(WalOperation::WriteProfiles.signal(), "profiles");
         assert_eq!(WalOperation::Flush.signal(), "flush");
+    }
+
+    #[tokio::test]
+    async fn read_entry_data_rejects_out_of_bounds_range() {
+        // A WAL entry whose data_offset+data_size exceeds the data file must
+        // fail with a clear, attributable bounds error before any bytes are
+        // handed to the Arrow reader — otherwise the reader surfaces an opaque
+        // "failed to fill whole buffer" / RangeOutOfBounds and the caller
+        // cannot tell corruption from a genuine read fault.
+        let temp_dir = TempDir::new().unwrap();
+        let mut segment = WalSegment::new(temp_dir.path(), 0).await.unwrap();
+
+        let payload = record_batch_to_bytes(&make_batch()).unwrap();
+        let id = Uuid::new_v4();
+        segment
+            .append(id, WalOperation::WriteTraces, &payload, "t", "d", None)
+            .await
+            .unwrap();
+
+        // Craft an entry pointing past the end of the data file.
+        let bogus = WalEntry {
+            id,
+            timestamp: 0,
+            operation: WalOperation::WriteTraces,
+            data_size: payload.len() as u64,
+            data_offset: payload.len() as u64 + 4096,
+            processed: false,
+            tenant_id: "t".to_string(),
+            dataset_id: "d".to_string(),
+            metadata: None,
+        };
+
+        let err = segment
+            .read_entry_data(&bogus)
+            .await
+            .expect_err("out-of-bounds read must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("out of bounds"),
+            "expected a bounds error, got: {msg}"
+        );
+
+        // A valid entry still reads back correctly.
+        let good = WalEntry {
+            data_offset: 0,
+            ..bogus.clone()
+        };
+        let data = segment.read_entry_data(&good).await.unwrap();
+        assert_eq!(data, payload);
+    }
+
+    fn make_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
+        RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1i64, 2, 3]))]).unwrap()
     }
 
     #[tokio::test]
