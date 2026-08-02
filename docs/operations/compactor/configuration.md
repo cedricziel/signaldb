@@ -7,9 +7,9 @@ sources:
   - src/common/src/config/mod.rs
 ---
 
-# Phase 3 Configuration Reference
+# Compactor Configuration Reference
 
-Complete reference for configuring SignalDB Compactor Phase 3: Retention Enforcement and Lifecycle Management.
+Complete reference for configuring SignalDB Compactor retention and lifecycle management (retention enforcement, snapshot expiration, and orphan-file cleanup).
 
 ## Table of Contents
 
@@ -23,7 +23,7 @@ Complete reference for configuring SignalDB Compactor Phase 3: Retention Enforce
 
 ## Configuration Overview
 
-Phase 3 configuration is located in the `[compactor]` section of `signaldb.toml` or via environment variables with the `SIGNALDB__COMPACTOR__` prefix (double underscores separate nesting levels).
+Compactor lifecycle configuration is located in the `[compactor]` section of `signaldb.toml` or via environment variables with the `SIGNALDB__COMPACTOR__` prefix (double underscores separate nesting levels).
 
 **Configuration Precedence:**
 
@@ -396,7 +396,7 @@ max_promotions_per_cycle = 4
 **`dry_run` semantics:**
 
 - `dry_run = true` (default): the pass only logs an `Attribute promotion decision` line per table. No schema or data changes.
-- `dry_run = false`: the compactor **acts** on promote decisions at the next rewrite of each table. It evolves the table schema (adds the promoted columns through a metadata-only commit), backfills the column values from the attributes map while rewriting the files, and commits the rewrite through the normal replace path. See the [operations guide](phase3-operations.md#attribute-promotion) for the observable sequence.
+- `dry_run = false`: the compactor **acts** on promote decisions at the next rewrite of each table. It evolves the table schema (adds the promoted columns through a metadata-only commit), backfills the column values from the attributes map while rewriting the files, and commits the rewrite through the normal replace path. See the [operations guide](operations.md#attribute-promotion) for the observable sequence.
 
 The guardrails live in the decision engine and apply in both modes: machine-generated keys (embedded UUIDs, long hex or digit runs) are never promoted, keys whose distinct-value tracking hit the analyzer cap are rejected, a key must qualify for `promote_streak` consecutive cycles, and the schema-width budget caps the total number of label columns. Pinned `[schema.materialized_labels]` entries are never demoted or otherwise touched. Demotion (dropping unqueried auto-promoted columns) is decided and logged but not yet acted on.
 
@@ -645,8 +645,8 @@ Invalid retention configuration for tenant 'acme': Invalid retention period for 
 
 ## Additional Resources
 
-- [Phase 3 Operations Guide](phase3-operations.md)
-- [Phase 3 Troubleshooting Guide](phase3-troubleshooting.md)
+- [Operations Guide](operations.md)
+- [Troubleshooting Guide](troubleshooting.md)
 - [Compactor README](https://github.com/cedricziel/signaldb/blob/main/src/compactor/README.md)
 
 > Note: every compaction rewrite also runs a read-only attribute-statistics pass that logs per-key presence, approximate cardinality, and advisory materialization candidates (`Attribute-stats analyzer` log line), and persists the per-key statistics to the service catalog's `attribute_stats` table (joined there with query-demand counters flushed by the querier). This statistics pass requires no configuration and changes no table data. The promotion decision pass built on those statistics is configured via [`[compactor.attr_promotion]`](#attribute-promotion-configuration).

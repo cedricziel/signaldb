@@ -6,9 +6,9 @@ sources:
   - src/compactor/src/**
 ---
 
-# Phase 3 Operations Guide
+# Compactor Operations Guide
 
-This guide covers day-to-day operations for SignalDB Compactor Phase 3: Retention Enforcement and Lifecycle Management.
+This guide covers day-to-day operations for SignalDB Compactor retention and lifecycle management (retention enforcement, snapshot expiration, and orphan-file cleanup).
 
 ## Table of Contents
 
@@ -23,7 +23,7 @@ This guide covers day-to-day operations for SignalDB Compactor Phase 3: Retentio
 
 ## Overview
 
-Phase 3 provides automatic data lifecycle management through:
+The compactor provides automatic data lifecycle management through:
 
 1. **Retention Enforcement**: Drops expired partitions based on configurable policies
 2. **Snapshot Expiration**: Maintains bounded metadata by expiring old snapshots
@@ -262,7 +262,7 @@ curl -s localhost:9091/metrics | grep -E "compactor_(orphan_candidates_identifie
 
 ### Key Metrics to Monitor
 
-All Phase 3 counters are exported at `localhost:9091/metrics` (see `src/compactor/src/http.rs` for the authoritative list). Counters are process-global — there are no per-tenant, per-dataset, or per-table labels. The only labelled metric is `compactor_orphan_cleanup_skipped_total{reason="live_files_threshold_exceeded"}`.
+All lifecycle counters are exported at `localhost:9091/metrics` (see `src/compactor/src/http.rs` for the authoritative list). Counters are process-global — there are no per-tenant, per-dataset, or per-table labels. The only labelled metric is `compactor_orphan_cleanup_skipped_total{reason="live_files_threshold_exceeded"}`.
 
 #### Retention Enforcement
 
@@ -522,7 +522,7 @@ du -sh .data/storage/*/*/*
 # Check object store directly (S3 example)
 aws s3 ls s3://signaldb-data/ --recursive --summarize | grep "Total Size"
 
-# Bytes reclaimed by Phase 3 so far
+# Bytes reclaimed by retention and cleanup so far
 curl -s localhost:9091/metrics | grep -E "compactor_bytes_(freed|reclaimed)_total"
 ```
 
@@ -697,7 +697,7 @@ export AWS_S3_USE_ACCELERATE_ENDPOINT=true
 
 ## Attribute Promotion
 
-With [`[compactor.attr_promotion]`](phase3-configuration.md#attribute-promotion-configuration) enabled and `dry_run = false`, the compactor promotes qualifying attribute keys to materialized `label_<key>` columns as part of a normal compaction rewrite. Each acted-on promotion makes two commits per table:
+With [`[compactor.attr_promotion]`](configuration.md#attribute-promotion-configuration) enabled and `dry_run = false`, the compactor promotes qualifying attribute keys to materialized `label_<key>` columns as part of a normal compaction rewrite. Each acted-on promotion makes two commits per table:
 
 1. **Schema flip** (before the rewrite): a metadata-only `AddSchema` + `SetCurrentSchema` commit adds the promoted columns. No data files change; readers null-fill the new columns until the rewrite lands.
 2. **Rewrite/replace** (the normal compaction commit): every live row is rewritten with the label values backfilled from its attributes (resource, then scope, then record attributes). Existing label columns are recomputed too, healing rows the writer left null during the transition window.
@@ -715,8 +715,8 @@ Demotion candidates are dropped at rewrite (schema commit without the column, af
 
 ## Additional Resources
 
-- [Phase 3 Configuration Reference](phase3-configuration.md)
-- [Phase 3 Troubleshooting Guide](phase3-troubleshooting.md)
+- [Configuration Reference](configuration.md)
+- [Troubleshooting Guide](troubleshooting.md)
 - [Compactor README](https://github.com/cedricziel/signaldb/blob/main/src/compactor/README.md)
 
 > Note: every compaction rewrite also runs a read-only attribute-statistics pass that logs per-key presence, approximate cardinality, and advisory materialization candidates (`Attribute-stats analyzer` log line), and persists the per-key statistics to the service catalog's `attribute_stats` table (joined there with query-demand counters flushed by the querier). This statistics pass requires no configuration and changes no table data; the promotion pass built on it is covered in [Attribute Promotion](#attribute-promotion).

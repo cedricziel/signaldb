@@ -6,9 +6,9 @@ sources:
   - src/compactor/src/**
 ---
 
-# Phase 3 Troubleshooting Guide
+# Compactor Troubleshooting Guide
 
-Comprehensive troubleshooting guide for SignalDB Compactor Phase 3: Retention Enforcement and Lifecycle Management.
+Comprehensive troubleshooting guide for SignalDB Compactor retention and lifecycle management (retention enforcement, snapshot expiration, and orphan-file cleanup).
 
 ## Table of Contents
 
@@ -285,7 +285,7 @@ journalctl -u signaldb-compactor | grep -iE "expire.*snapshot"
 curl -s localhost:9091/metrics | grep compactor_snapshots_expired_total
 ```
 
-**Solution:** Verify Phase 3 is fully deployed.
+**Solution:** Verify the compactor is fully deployed.
 
 ## Orphan Cleanup Issues
 
@@ -806,7 +806,7 @@ DEBUG compactor::orphan::detector: Skipping recent file (within grace period) pa
 
 ## Attribute Promotion
 
-**A `label_<key>` column appeared that is not in `[schema.materialized_labels]`:** attribute auto-promotion added it. With `[compactor.attr_promotion].dry_run = false`, the compactor promotes frequently queried attribute keys to columns at rewrite (see the [operations guide](phase3-operations.md#attribute-promotion)).
+**A `label_<key>` column appeared that is not in `[schema.materialized_labels]`:** attribute auto-promotion added it. With `[compactor.attr_promotion].dry_run = false`, the compactor promotes frequently queried attribute keys to columns at rewrite (see the [operations guide](operations.md#attribute-promotion)).
 
 **How to tell a promotion happened:** look for `Added materialized label columns via schema evolution` in the compactor logs (table, schema id, columns), or compare the table's current schema against your pinned config. The preceding `Attribute promotion decision` line shows why the key qualified.
 
@@ -816,8 +816,8 @@ DEBUG compactor::orphan::detector: Skipping recent file (within grace period) pa
 
 ## Additional Resources
 
-- [Phase 3 Operations Guide](phase3-operations.md)
-- [Phase 3 Configuration Reference](phase3-configuration.md)
+- [Operations Guide](operations.md)
+- [Configuration Reference](configuration.md)
 - [Compactor README](https://github.com/cedricziel/signaldb/blob/main/src/compactor/README.md)
 - [Integration Test Examples](https://github.com/cedricziel/signaldb/tree/main/tests-integration/tests/compactor)
 

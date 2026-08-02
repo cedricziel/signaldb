@@ -63,7 +63,7 @@ max_snapshot_age_hours = 720
 max_live_files_threshold = 500000
 ```
 
-Full reference: [docs/operations/compactor/phase3-configuration.md](../../docs/operations/compactor/phase3-configuration.md).
+Full reference: [docs/operations/compactor/configuration.md](../../docs/operations/compactor/configuration.md).
 
 ## Running
 
@@ -121,7 +121,7 @@ curl -s localhost:9091/status | jq .
 ```
 
 Counters are process-global (no per-tenant labels). Monitoring queries and
-alert examples: [docs/operations/compactor/phase3-operations.md](../../docs/operations/compactor/phase3-operations.md).
+alert examples: [docs/operations/compactor/operations.md](../../docs/operations/compactor/operations.md).
 
 ## Testing
 
@@ -141,6 +141,6 @@ cargo test -p tests-integration --test multi_instance
 
 ## Documentation
 
-- Configuration reference: [docs/operations/compactor/phase3-configuration.md](../../docs/operations/compactor/phase3-configuration.md)
-- Operations guide: [docs/operations/compactor/phase3-operations.md](../../docs/operations/compactor/phase3-operations.md)
-- Troubleshooting: [docs/operations/compactor/phase3-troubleshooting.md](../../docs/operations/compactor/phase3-troubleshooting.md)
+- Configuration reference: [docs/operations/compactor/configuration.md](../../docs/operations/compactor/configuration.md)
+- Operations guide: [docs/operations/compactor/operations.md](../../docs/operations/compactor/operations.md)
+- Troubleshooting: [docs/operations/compactor/troubleshooting.md](../../docs/operations/compactor/troubleshooting.md)
