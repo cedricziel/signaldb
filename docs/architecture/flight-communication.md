@@ -225,6 +225,21 @@ the Router → Querier Flight calls they make become children of that span. The
 middleware mirrors the anti-loop guard above: `_system` tenant requests bypass
 the span so self-monitoring queries are not re-instrumented and re-ingested.
 
+#### Error Recording on Query Spans
+
+A failing query is only useful in a trace if the reason survives. By the time a
+`do_get` error reaches the caller it has been flattened into a transport
+`Status` that the Router strips down to a bare HTTP code, so the querier records
+the cause where it still exists: the whole `do_get` body runs inside a single
+error boundary that, on any `Err`, calls
+`common::self_monitoring::record_span_exception` to attach an OpenTelemetry
+`exception` event (`exception.message`) and an error status to the
+`flight_do_get` span. Because the boundary wraps the entire request, every
+failure path — ticket parsing, cross-tenant rejection, query execution, and
+result conversion — is captured, not just execution errors. The helper is a
+no-op when self-monitoring is disabled (`Span::current()` is the disabled span),
+so this costs nothing on the hot path.
+
 ## 5. Implementation Details
 
 ### 5.1 Current Data Flow ✅ **Working**
