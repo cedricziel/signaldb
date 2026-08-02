@@ -180,11 +180,12 @@ catalog_uri = "sqlite::memory:"  # or sqlite:///path/to/catalog.db
 
 ## Compactor Service
 
-The Compactor Service manages complete data lifecycle with three phases:
+The Compactor Service manages the complete data lifecycle. It provides three
+capabilities:
 
-- **Phase 1**: Dry-run compaction planning and validation
-- **Phase 2**: Active Parquet file compaction for storage efficiency
-- **Phase 3**: Retention enforcement and lifecycle management ✨ NEW
+- **Compaction planning**: dry-run planning and validation of compaction candidates
+- **Compaction**: active Parquet file compaction for storage efficiency
+- **Retention & lifecycle**: retention enforcement, snapshot expiration, and orphan-file cleanup
 
 ### Running the Compactor
 
@@ -200,7 +201,7 @@ cargo run --bin signaldb
 RUST_LOG=debug,compactor=trace cargo run --bin signaldb-compactor
 ```
 
-### Phase 3: Retention & Lifecycle Management
+### Retention & Lifecycle Management
 
 **Key Features:**
 
@@ -241,10 +242,10 @@ grace_period_hours = 24
 revalidate_before_delete = true
 ```
 
-**Testing Phase 3:**
+**Testing retention & lifecycle:**
 
 ```bash
-# Integration tests covering Phase 3 features
+# Integration tests covering retention & lifecycle features
 cargo test -p tests-integration --test retention_cutoff
 cargo test -p tests-integration --test partition_drop
 cargo test -p tests-integration --test snapshot_expiration
@@ -261,7 +262,7 @@ cargo test -p tests-integration compactor
 # Check metrics endpoint
 curl -s localhost:9091/metrics | grep compactor
 
-# Key Phase 3 metrics:
+# Key retention & lifecycle metrics:
 # - compactor_partitions_dropped_total
 # - compactor_snapshots_expired_total
 # - compactor_files_deleted_total
@@ -270,9 +271,9 @@ curl -s localhost:9091/metrics | grep compactor
 
 **Documentation:**
 
-- Configuration: `docs/operations/compactor/phase3-configuration.md`
-- Operations: `docs/operations/compactor/phase3-operations.md`
-- Troubleshooting: `docs/operations/compactor/phase3-troubleshooting.md`
+- Configuration: `docs/operations/compactor/configuration.md`
+- Operations: `docs/operations/compactor/operations.md`
+- Troubleshooting: `docs/operations/compactor/troubleshooting.md`
 - README: `src/compactor/README.md`
 
 **Important Notes:**
