@@ -277,13 +277,46 @@ impl CatalogManager {
         }
     }
 
+    /// Merge database-only datasets (those added to a tenant at runtime, e.g.
+    /// via the admin API) into an existing descriptor. Datasets already present
+    /// (from config, keyed by name/id) keep their explicit values; new ones are
+    /// appended with derived slug/storage.
+    fn merge_db_datasets(
+        &self,
+        descriptor: &mut ResolvedTenant,
+        tenant_id: &str,
+        db_datasets: &[crate::catalog::DatasetRecord],
+    ) {
+        let existing: std::collections::HashSet<String> =
+            descriptor.datasets.iter().map(|d| d.id.clone()).collect();
+        for d in db_datasets {
+            if existing.contains(&d.name) {
+                continue;
+            }
+            descriptor.datasets.push(ResolvedDataset {
+                id: d.name.clone(),
+                slug: self.get_dataset_slug(tenant_id, &d.name),
+                storage_dsn: self
+                    .get_dataset_storage_config(tenant_id, &d.name)
+                    .dsn
+                    .clone(),
+                // The config-defined default (if any) already governs; a
+                // runtime-added dataset is not promoted to default here.
+                is_default: false,
+            });
+        }
+    }
+
     /// Enumerate all active tenants and datasets, source-agnostic.
     ///
     /// Returns the union of config-defined tenants (bootstrap seed, with their
     /// explicit slugs/storage overrides preserved) and database-created
-    /// tenants (from the attached tenant source, if any). Config-disabled
-    /// tenants are excluded. When no tenant source is attached, this is
-    /// equivalent to the config-only enumeration.
+    /// tenants (from the attached tenant source, if any). Datasets added to a
+    /// config tenant at runtime are merged into its descriptor. Config-disabled
+    /// tenants are excluded and never resurrected from the database, and a
+    /// database tenant whose id collides with a *different* config tenant's slug
+    /// is excluded to preserve tenant isolation. When no tenant source is
+    /// attached, this is equivalent to the config-only enumeration.
     pub async fn list_active_tenants(&self) -> Result<Vec<ResolvedTenant>> {
         let mut tenants: Vec<ResolvedTenant> = self
             .get_enabled_tenants()
@@ -291,23 +324,66 @@ impl CatalogManager {
             .map(|t| self.config_tenant_descriptor(t))
             .collect();
 
-        if let Some(source) = &self.tenant_source {
-            let known: std::collections::HashSet<String> =
-                tenants.iter().map(|t| t.id.clone()).collect();
-            let records = source
-                .list_tenants()
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to list database tenants: {e}"))?;
-            for record in records {
-                if known.contains(&record.id) {
-                    // Config-defined tenant already covered with its overrides.
-                    continue;
-                }
-                let datasets = source.get_datasets(&record.id).await.map_err(|e| {
+        let Some(source) = &self.tenant_source else {
+            return Ok(tenants);
+        };
+
+        // Index enabled config descriptors by tenant id so runtime datasets can
+        // be merged into the right one.
+        let index_by_id: std::collections::HashMap<String, usize> = tenants
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.id.clone(), i))
+            .collect();
+        // Every config tenant id (including disabled ones) — disabled config
+        // tenants must NOT be re-added from the database copy that
+        // `sync_config_tenants` writes.
+        let config_ids: std::collections::HashSet<&str> = self
+            .config
+            .auth
+            .tenants
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        // Config slug -> id, to detect a database tenant id colliding with a
+        // different config tenant's slug.
+        let config_slug_to_id: std::collections::HashMap<&str, &str> = self
+            .config
+            .auth
+            .tenants
+            .iter()
+            .map(|t| (t.slug.as_str(), t.id.as_str()))
+            .collect();
+
+        let records = source
+            .list_tenants()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list database tenants: {e}"))?;
+        for record in records {
+            if let Some(&idx) = index_by_id.get(&record.id) {
+                // Enabled config tenant: merge any datasets added at runtime.
+                let db_datasets = source.get_datasets(&record.id).await.map_err(|e| {
                     anyhow::anyhow!("Failed to list datasets for tenant '{}': {e}", record.id)
                 })?;
-                tenants.push(self.db_tenant_descriptor(&record, &datasets));
+                self.merge_db_datasets(&mut tenants[idx], &record.id, &db_datasets);
+                continue;
             }
+            if config_ids.contains(record.id.as_str()) {
+                // A config tenant that is disabled via schema_config; skip it.
+                continue;
+            }
+            if let Some(&config_id) = config_slug_to_id.get(record.id.as_str()) {
+                tracing::error!(
+                    db_tenant_id = %record.id,
+                    config_tenant_id = %config_id,
+                    "Database tenant id collides with a config tenant slug; excluding the database tenant to preserve isolation"
+                );
+                continue;
+            }
+            let datasets = source.get_datasets(&record.id).await.map_err(|e| {
+                anyhow::anyhow!("Failed to list datasets for tenant '{}': {e}", record.id)
+            })?;
+            tenants.push(self.db_tenant_descriptor(&record, &datasets));
         }
 
         Ok(tenants)
@@ -315,12 +391,21 @@ impl CatalogManager {
 
     /// Resolve a single active tenant by its slug, source-agnostic.
     ///
-    /// Used for lazy on-demand catalog registration: config-defined tenants
-    /// are matched first, then the database tenant source (where slug == id).
-    /// Returns `None` when no active tenant has that slug.
+    /// Used for lazy on-demand catalog registration: config-defined tenants are
+    /// matched first (config slug wins, preserving isolation), then the database
+    /// tenant source (where slug == id). Datasets added at runtime are merged
+    /// into a config tenant's descriptor. Returns `None` when no active tenant
+    /// has that slug, including for a config-disabled tenant.
     pub async fn resolve_tenant_by_slug(&self, slug: &str) -> Result<Option<ResolvedTenant>> {
         if let Some(tenant) = self.get_enabled_tenants().iter().find(|t| t.slug == slug) {
-            return Ok(Some(self.config_tenant_descriptor(tenant)));
+            let mut descriptor = self.config_tenant_descriptor(tenant);
+            if let Some(source) = &self.tenant_source {
+                let db_datasets = source.get_datasets(&tenant.id).await.map_err(|e| {
+                    anyhow::anyhow!("Failed to list datasets for tenant '{}': {e}", tenant.id)
+                })?;
+                self.merge_db_datasets(&mut descriptor, &tenant.id, &db_datasets);
+            }
+            return Ok(Some(descriptor));
         }
 
         if let Some(source) = &self.tenant_source {
@@ -330,6 +415,12 @@ impl CatalogManager {
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to load database tenant '{slug}': {e}"))?
             {
+                // A record whose id matches a config tenant is either that
+                // config tenant (already handled by the slug match above when
+                // enabled) or a disabled config tenant — do not resolve it here.
+                if self.config.auth.tenants.iter().any(|t| t.id == record.id) {
+                    return Ok(None);
+                }
                 let datasets = source.get_datasets(&record.id).await.map_err(|e| {
                     anyhow::anyhow!("Failed to list datasets for tenant '{}': {e}", record.id)
                 })?;
@@ -555,5 +646,144 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    fn tenant(id: &str, slug: &str, enabled: bool) -> TenantConfig {
+        TenantConfig {
+            id: id.to_string(),
+            slug: slug.to_string(),
+            name: id.to_string(),
+            default_dataset: Some("production".to_string()),
+            datasets: vec![DatasetConfig {
+                id: "production".to_string(),
+                slug: "production".to_string(),
+                is_default: true,
+                storage: None,
+            }],
+            api_keys: vec![],
+            schema_config: (!enabled).then_some(crate::config::TenantSchemaConfig {
+                schema: None,
+                custom_schemas: None,
+                enabled: false,
+            }),
+            limits: None,
+        }
+    }
+
+    async fn manager_with(tenants: Vec<TenantConfig>, source: Arc<Catalog>) -> CatalogManager {
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants,
+                ..Default::default()
+            },
+            storage: StorageConfig {
+                dsn: "memory://".to_string(),
+            },
+            ..Configuration::default()
+        };
+        CatalogManager::new(config)
+            .await
+            .unwrap()
+            .with_tenant_source(source)
+    }
+
+    #[tokio::test]
+    async fn disabled_config_tenant_not_resurrected_from_database() {
+        // `beta` is disabled in config; `sync_config_tenants` still wrote it to
+        // the database with source="config". It must not come back as active.
+        let source = Arc::new(Catalog::new_in_memory().await.unwrap());
+        source
+            .upsert_tenant("beta", "Beta", Some("production"), "config")
+            .await
+            .unwrap();
+        source.create_dataset("beta", "production").await.unwrap();
+        let manager = manager_with(
+            vec![tenant("acme", "acme", true), tenant("beta", "beta", false)],
+            source,
+        )
+        .await;
+
+        let tenants = manager.list_active_tenants().await.unwrap();
+        assert!(tenants.iter().any(|t| t.id == "acme"));
+        assert!(
+            !tenants.iter().any(|t| t.id == "beta"),
+            "disabled config tenant must not be resurrected from the database"
+        );
+        assert!(
+            manager
+                .resolve_tenant_by_slug("beta")
+                .await
+                .unwrap()
+                .is_none(),
+            "disabled config tenant must not resolve by slug"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_dataset_merged_into_config_tenant() {
+        // `acme` is a config tenant with only `production`; a `staging` dataset
+        // is added at runtime via the database.
+        let source = Arc::new(Catalog::new_in_memory().await.unwrap());
+        source
+            .upsert_tenant("acme", "Acme", Some("production"), "config")
+            .await
+            .unwrap();
+        source.create_dataset("acme", "production").await.unwrap();
+        source.create_dataset("acme", "staging").await.unwrap();
+        let manager = manager_with(vec![tenant("acme", "acme", true)], source).await;
+
+        let tenants = manager.list_active_tenants().await.unwrap();
+        let acme = tenants.iter().find(|t| t.id == "acme").unwrap();
+        let ds: std::collections::HashSet<&str> =
+            acme.datasets.iter().map(|d| d.id.as_str()).collect();
+        assert!(ds.contains("production"), "config dataset preserved");
+        assert!(ds.contains("staging"), "runtime dataset merged in");
+
+        // Same via resolve_tenant_by_slug (the lazy path).
+        let resolved = manager
+            .resolve_tenant_by_slug("acme")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(resolved.datasets.iter().any(|d| d.id == "staging"));
+    }
+
+    #[tokio::test]
+    async fn db_tenant_id_colliding_with_config_slug_is_excluded() {
+        // Config tenant `team-a` has slug `shared`. A database-only tenant with
+        // id `shared` would register the same DataFusion catalog slug and break
+        // isolation, so it must be excluded.
+        let source = Arc::new(Catalog::new_in_memory().await.unwrap());
+        source
+            .upsert_tenant("team-a", "Team A", Some("production"), "config")
+            .await
+            .unwrap();
+        source.create_dataset("team-a", "production").await.unwrap();
+        source
+            .upsert_tenant("shared", "Shared", Some("production"), "database")
+            .await
+            .unwrap();
+        source.create_dataset("shared", "production").await.unwrap();
+        let manager = manager_with(vec![tenant("team-a", "shared", true)], source).await;
+
+        let tenants = manager.list_active_tenants().await.unwrap();
+        let with_shared_slug: Vec<&str> = tenants
+            .iter()
+            .filter(|t| t.slug == "shared")
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(
+            with_shared_slug,
+            vec!["team-a"],
+            "only the config tenant may own slug 'shared'; the colliding db tenant is excluded"
+        );
+
+        // The slug resolves to the config tenant, never the database one.
+        let resolved = manager
+            .resolve_tenant_by_slug("shared")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.id, "team-a");
     }
 }
