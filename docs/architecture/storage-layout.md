@@ -160,6 +160,8 @@ catalog_uri = "sqlite::memory:"          # In-memory (default, for dev/testing)
 
 > **Limitation**: Only SQLite is supported for the Iceberg catalog. PostgreSQL URIs are rejected. This is distinct from the service discovery catalog which supports both SQLite and PostgreSQL.
 
+For a file-backed catalog, SignalDB enables **WAL journal mode** on the database before the catalog opens its connection pool (`enable_wal_on_sqlite_catalog` in `src/common/src/iceberg/mod.rs`). WAL lets readers proceed during a write and makes each write cheaper, so concurrent trace/log commits don't serialize behind an exclusive rollback-journal lock and stall first-time table creation. WAL adds `-wal`/`-shm` sidecar files next to `catalog.db`. The `iceberg-sql-catalog` pool exposes no connection options, so its `busy_timeout` stays at sqlx's 5s default; the service discovery catalog (`src/common/src/catalog.rs`), which we open directly, additionally sets a 30s `busy_timeout` and `synchronous = NORMAL`.
+
 ### Namespace Structure
 
 Iceberg namespaces use a two-level hierarchy based on **slugs**:

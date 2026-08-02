@@ -3,7 +3,9 @@ use crate::config::AuthConfig;
 use crate::flight::transport::ServiceCapability;
 use crate::service_bootstrap::ServiceType;
 use chrono::{DateTime, Utc};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{PgPool, Row, SqlitePool, query};
+use std::str::FromStr;
 use uuid::Uuid;
 
 /// Helper to parse RFC3339 datetime strings (SQLite stores timestamps as text)
@@ -68,14 +70,43 @@ impl Catalog {
                 format!("{dsn}?mode=rwc")
             };
 
-            let pool = SqlitePool::connect(&dsn_with_create).await.map_err(|e| {
-                tracing::error!(
-                    dsn = %crate::config::redact_dsn(&dsn_with_create),
-                    error = %e,
-                    "Failed to connect to SQLite database"
-                );
-                e
-            })?;
+            // Enable WAL journaling and a generous busy_timeout on the catalog
+            // connection. The default rollback journal takes an exclusive lock
+            // for every write, so under concurrent commit volume writers
+            // serialize and slow statements pile up (this is what makes the
+            // acceptor->writer do_put time out on first-time metric-table
+            // creation). WAL lets readers proceed during a write and makes each
+            // write cheaper. In-memory databases don't support WAL, so only
+            // tune on-disk files.
+            let is_memory = dsn.contains(":memory:");
+            let mut connect_options = SqliteConnectOptions::from_str(&dsn_with_create)
+                .map_err(|e| {
+                    tracing::error!(
+                        dsn = %crate::config::redact_dsn(&dsn_with_create),
+                        error = %e,
+                        "Failed to parse SQLite connection string"
+                    );
+                    e
+                })?
+                .create_if_missing(true)
+                .busy_timeout(std::time::Duration::from_secs(30));
+            if !is_memory {
+                connect_options = connect_options
+                    .journal_mode(SqliteJournalMode::Wal)
+                    .synchronous(SqliteSynchronous::Normal);
+            }
+
+            let pool = SqlitePoolOptions::new()
+                .connect_with(connect_options)
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        dsn = %crate::config::redact_dsn(&dsn_with_create),
+                        error = %e,
+                        "Failed to connect to SQLite database"
+                    );
+                    e
+                })?;
             Catalog::Sqlite(pool)
         } else {
             let pool = PgPool::connect(dsn).await.map_err(|e| {
@@ -2900,6 +2931,27 @@ mod multi_tenancy_tests {
         let mut hasher = Sha256::new();
         hasher.update(key.as_bytes());
         hex::encode(hasher.finalize())
+    }
+
+    /// An on-disk SQLite catalog must run in WAL journal mode so that concurrent
+    /// writers don't serialize behind an exclusive rollback lock.
+    #[tokio::test]
+    async fn on_disk_sqlite_catalog_uses_wal_journal_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("signaldb.db");
+        let dsn = format!("sqlite://{}", db_path.display());
+
+        let catalog = Catalog::new(&dsn).await.unwrap();
+        let Catalog::Sqlite(pool) = catalog else {
+            panic!("expected a SQLite catalog");
+        };
+
+        let mode: String = sqlx::query("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(mode.to_lowercase(), "wal");
     }
 
     #[tokio::test]

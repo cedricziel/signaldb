@@ -4,10 +4,13 @@
 //! table schema definitions, and naming utilities.
 
 use crate::config::{Configuration, SchemaConfig, StorageConfig};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use iceberg_rust::catalog::Catalog as IcebergCatalog;
 use iceberg_rust::object_store::ObjectStoreBuilder;
 use iceberg_sql_catalog::SqlCatalog;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
+use sqlx::{ConnectOptions, Connection};
+use std::str::FromStr;
 use std::sync::Arc;
 use url::Url;
 
@@ -125,6 +128,54 @@ pub async fn create_sql_catalog(
     create_sql_catalog_with_builder(catalog_uri, catalog_name, object_store_builder).await
 }
 
+/// Enable WAL journaling on an on-disk SQLite Iceberg catalog before the
+/// third-party [`SqlCatalog`] opens its own connection pool.
+///
+/// `iceberg-sql-catalog` connects through sqlx's `Any` pool and does not expose
+/// its `SqliteConnectOptions`, so we cannot set these pragmas on its connections
+/// directly — and sqlx 0.8's SQLite URL parser rejects `journal_mode`/
+/// `busy_timeout` as query parameters, so they can't be carried on the DSN
+/// either. `journal_mode = WAL`, however, is a *persistent* property of the
+/// database file: once set here, every later connection (including the `Any`
+/// pool's) inherits it. Under the site's trace+log commit volume the default
+/// rollback journal serializes writers and blocks readers, which is what makes
+/// first-time metric-table creation time out (see the `iceberg_tables`
+/// slow-statement warnings). WAL lets readers proceed during a write and makes
+/// each write cheaper, so the writer's `do_put` no longer exhausts its deadline.
+///
+/// `synchronous`/`busy_timeout` set here are per-connection and only tune this
+/// one-shot connection; the `Any` pool re-applies its own defaults (a 5s
+/// busy_timeout) but inherits the now-persistent WAL journal.
+async fn enable_wal_on_sqlite_catalog(uri: &str) -> Result<()> {
+    // Reuse sqlx's own URL parsing so the filename resolves identically to the
+    // `Any` pool that SqlCatalog opens against the same `uri`.
+    let options = SqliteConnectOptions::from_str(uri)
+        .with_context(|| {
+            format!(
+                "Failed to parse SQLite catalog URI '{}'",
+                crate::config::redact_dsn(uri)
+            )
+        })?
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal);
+
+    let conn = options.connect().await.with_context(|| {
+        format!(
+            "Failed to open SQLite catalog '{}' to enable WAL mode",
+            crate::config::redact_dsn(uri)
+        )
+    })?;
+    conn.close().await.with_context(|| {
+        format!(
+            "Failed to close SQLite catalog connection '{}'",
+            crate::config::redact_dsn(uri)
+        )
+    })?;
+
+    Ok(())
+}
+
 /// Internal helper to create catalog with ObjectStoreBuilder
 pub(crate) async fn create_sql_catalog_with_builder(
     catalog_uri: &str,
@@ -154,6 +205,11 @@ pub(crate) async fn create_sql_catalog_with_builder(
                 std::fs::create_dir_all(parent).ok();
             }
         }
+
+        // Set WAL journaling on the file before the Any pool connects; WAL is a
+        // persistent property, so the pool inherits it. See the fn docs for why
+        // this must be done out-of-band rather than via the DSN or pool options.
+        enable_wal_on_sqlite_catalog(&uri).await?;
 
         let catalog = SqlCatalog::new(&uri, catalog_name, object_store_builder)
             .await
@@ -207,4 +263,37 @@ pub async fn create_catalog(schema_config: SchemaConfig) -> Result<Arc<dyn Icebe
 /// Uses default schema config and in-memory storage
 pub async fn create_default_catalog() -> Result<Arc<dyn IcebergCatalog>> {
     create_catalog(SchemaConfig::default()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::Row;
+
+    /// An on-disk SQLite Iceberg catalog must end up in WAL journal mode so that
+    /// concurrent trace/log commits don't serialize behind an exclusive rollback
+    /// lock and time out first-time metric-table creation.
+    #[tokio::test]
+    async fn on_disk_sqlite_catalog_uses_wal_journal_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("catalog.db");
+        let uri = format!("sqlite://{}", db_path.display());
+
+        let _catalog = create_sql_catalog_with_builder(&uri, "test", ObjectStoreBuilder::memory())
+            .await
+            .expect("catalog creation should succeed");
+
+        // Open an independent connection and confirm the persisted journal mode.
+        let mut conn = SqliteConnectOptions::from_str(&uri)
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        let mode: String = sqlx::query("PRAGMA journal_mode")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(mode.to_lowercase(), "wal");
+    }
 }
