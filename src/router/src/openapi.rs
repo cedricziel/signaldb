@@ -9,10 +9,13 @@
 
 use utoipa::{
     Modify, OpenApi,
-    openapi::security::{Http, HttpAuthScheme, SecurityScheme},
+    openapi::security::{Http, HttpAuthScheme, SecurityRequirement, SecurityScheme},
 };
 
-/// Registers the `bearerAuth` HTTP bearer security scheme in the components.
+/// Registers the `bearerAuth` HTTP bearer security scheme and requires it
+/// globally, so every operation (admin and management) is documented as
+/// authenticated. Admin handlers also restate it per-path; management handlers
+/// inherit this default.
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
@@ -24,6 +27,10 @@ impl Modify for SecurityAddon {
             "bearerAuth",
             SecurityScheme::Http(Http::new(HttpAuthScheme::Bearer)),
         );
+        openapi.security = Some(vec![SecurityRequirement::new(
+            "bearerAuth",
+            Vec::<String>::new(),
+        )]);
     }
 }
 

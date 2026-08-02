@@ -297,6 +297,7 @@ pub(crate) async fn create_dataset<S: RouterState>(
         (status = 403, description = "Forbidden", body = ManageError),
         (status = 404, description = "Dataset not found", body = ManageError),
         (status = 409, description = "Dataset cannot be deleted", body = ManageError),
+        (status = 500, description = "Internal error", body = ManageError),
     )
 )]
 pub(crate) async fn delete_dataset<S: RouterState>(
@@ -460,6 +461,7 @@ pub(crate) async fn list_api_keys<S: RouterState>(
         (status = 400, description = "Validation error", body = ManageError),
         (status = 403, description = "Forbidden", body = ManageError),
         (status = 409, description = "Unable to create API key", body = ManageError),
+        (status = 500, description = "Internal error", body = ManageError),
     )
 )]
 pub(crate) async fn create_api_key<S: RouterState>(

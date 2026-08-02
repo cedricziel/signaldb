@@ -134,6 +134,7 @@ export const deleteDataset = <ThrowOnError extends boolean = false>(options: Opt
 });
 
 export const manageCreateTenant = <ThrowOnError extends boolean = false>(options: Options<ManageCreateTenantData, ThrowOnError>): RequestResult<ManageCreateTenantResponses, ManageCreateTenantErrors, ThrowOnError> => (options.client ?? client).post<ManageCreateTenantResponses, ManageCreateTenantErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/manage/tenants',
     ...options,
     headers: {
@@ -142,9 +143,14 @@ export const manageCreateTenant = <ThrowOnError extends boolean = false>(options
     }
 });
 
-export const manageListApiKeys = <ThrowOnError extends boolean = false>(options: Options<ManageListApiKeysData, ThrowOnError>): RequestResult<ManageListApiKeysResponses, ManageListApiKeysErrors, ThrowOnError> => (options.client ?? client).get<ManageListApiKeysResponses, ManageListApiKeysErrors, ThrowOnError>({ url: '/api/v1/manage/tenants/{tenant_id}/api-keys', ...options });
+export const manageListApiKeys = <ThrowOnError extends boolean = false>(options: Options<ManageListApiKeysData, ThrowOnError>): RequestResult<ManageListApiKeysResponses, ManageListApiKeysErrors, ThrowOnError> => (options.client ?? client).get<ManageListApiKeysResponses, ManageListApiKeysErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/manage/tenants/{tenant_id}/api-keys',
+    ...options
+});
 
 export const manageCreateApiKey = <ThrowOnError extends boolean = false>(options: Options<ManageCreateApiKeyData, ThrowOnError>): RequestResult<ManageCreateApiKeyResponses, ManageCreateApiKeyErrors, ThrowOnError> => (options.client ?? client).post<ManageCreateApiKeyResponses, ManageCreateApiKeyErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/manage/tenants/{tenant_id}/api-keys',
     ...options,
     headers: {
@@ -153,11 +159,20 @@ export const manageCreateApiKey = <ThrowOnError extends boolean = false>(options
     }
 });
 
-export const manageRevokeApiKey = <ThrowOnError extends boolean = false>(options: Options<ManageRevokeApiKeyData, ThrowOnError>): RequestResult<ManageRevokeApiKeyResponses, ManageRevokeApiKeyErrors, ThrowOnError> => (options.client ?? client).delete<ManageRevokeApiKeyResponses, ManageRevokeApiKeyErrors, ThrowOnError>({ url: '/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}', ...options });
+export const manageRevokeApiKey = <ThrowOnError extends boolean = false>(options: Options<ManageRevokeApiKeyData, ThrowOnError>): RequestResult<ManageRevokeApiKeyResponses, ManageRevokeApiKeyErrors, ThrowOnError> => (options.client ?? client).delete<ManageRevokeApiKeyResponses, ManageRevokeApiKeyErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}',
+    ...options
+});
 
-export const manageListDatasets = <ThrowOnError extends boolean = false>(options: Options<ManageListDatasetsData, ThrowOnError>): RequestResult<ManageListDatasetsResponses, ManageListDatasetsErrors, ThrowOnError> => (options.client ?? client).get<ManageListDatasetsResponses, ManageListDatasetsErrors, ThrowOnError>({ url: '/api/v1/manage/tenants/{tenant_id}/datasets', ...options });
+export const manageListDatasets = <ThrowOnError extends boolean = false>(options: Options<ManageListDatasetsData, ThrowOnError>): RequestResult<ManageListDatasetsResponses, ManageListDatasetsErrors, ThrowOnError> => (options.client ?? client).get<ManageListDatasetsResponses, ManageListDatasetsErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/manage/tenants/{tenant_id}/datasets',
+    ...options
+});
 
 export const manageCreateDataset = <ThrowOnError extends boolean = false>(options: Options<ManageCreateDatasetData, ThrowOnError>): RequestResult<ManageCreateDatasetResponses, ManageCreateDatasetErrors, ThrowOnError> => (options.client ?? client).post<ManageCreateDatasetResponses, ManageCreateDatasetErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/manage/tenants/{tenant_id}/datasets',
     ...options,
     headers: {
@@ -166,11 +181,20 @@ export const manageCreateDataset = <ThrowOnError extends boolean = false>(option
     }
 });
 
-export const manageDeleteDataset = <ThrowOnError extends boolean = false>(options: Options<ManageDeleteDatasetData, ThrowOnError>): RequestResult<ManageDeleteDatasetResponses, ManageDeleteDatasetErrors, ThrowOnError> => (options.client ?? client).delete<ManageDeleteDatasetResponses, ManageDeleteDatasetErrors, ThrowOnError>({ url: '/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}', ...options });
+export const manageDeleteDataset = <ThrowOnError extends boolean = false>(options: Options<ManageDeleteDatasetData, ThrowOnError>): RequestResult<ManageDeleteDatasetResponses, ManageDeleteDatasetErrors, ThrowOnError> => (options.client ?? client).delete<ManageDeleteDatasetResponses, ManageDeleteDatasetErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}',
+    ...options
+});
 
-export const manageListMemberships = <ThrowOnError extends boolean = false>(options: Options<ManageListMembershipsData, ThrowOnError>): RequestResult<ManageListMembershipsResponses, ManageListMembershipsErrors, ThrowOnError> => (options.client ?? client).get<ManageListMembershipsResponses, ManageListMembershipsErrors, ThrowOnError>({ url: '/api/v1/manage/tenants/{tenant_id}/memberships', ...options });
+export const manageListMemberships = <ThrowOnError extends boolean = false>(options: Options<ManageListMembershipsData, ThrowOnError>): RequestResult<ManageListMembershipsResponses, ManageListMembershipsErrors, ThrowOnError> => (options.client ?? client).get<ManageListMembershipsResponses, ManageListMembershipsErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/manage/tenants/{tenant_id}/memberships',
+    ...options
+});
 
 export const manageUpsertMembership = <ThrowOnError extends boolean = false>(options: Options<ManageUpsertMembershipData, ThrowOnError>): RequestResult<ManageUpsertMembershipResponses, ManageUpsertMembershipErrors, ThrowOnError> => (options.client ?? client).put<ManageUpsertMembershipResponses, ManageUpsertMembershipErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/manage/tenants/{tenant_id}/memberships',
     ...options,
     headers: {
@@ -179,4 +203,8 @@ export const manageUpsertMembership = <ThrowOnError extends boolean = false>(opt
     }
 });
 
-export const manageRemoveMembership = <ThrowOnError extends boolean = false>(options: Options<ManageRemoveMembershipData, ThrowOnError>): RequestResult<ManageRemoveMembershipResponses, ManageRemoveMembershipErrors, ThrowOnError> => (options.client ?? client).delete<ManageRemoveMembershipResponses, ManageRemoveMembershipErrors, ThrowOnError>({ url: '/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}', ...options });
+export const manageRemoveMembership = <ThrowOnError extends boolean = false>(options: Options<ManageRemoveMembershipData, ThrowOnError>): RequestResult<ManageRemoveMembershipResponses, ManageRemoveMembershipErrors, ThrowOnError> => (options.client ?? client).delete<ManageRemoveMembershipResponses, ManageRemoveMembershipErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}',
+    ...options
+});

@@ -462,6 +462,10 @@ export type CreateApiKeyErrors = {
      * Tenant not found
      */
     404: ApiError;
+    /**
+     * Tenant API key quota exceeded
+     */
+    429: ApiError;
 };
 
 export type CreateApiKeyError = CreateApiKeyErrors[keyof CreateApiKeyErrors];
@@ -556,6 +560,10 @@ export type CreateDatasetErrors = {
      * Tenant not found
      */
     404: ApiError;
+    /**
+     * Tenant dataset quota exceeded
+     */
+    429: ApiError;
 };
 
 export type CreateDatasetError = CreateDatasetErrors[keyof CreateDatasetErrors];
@@ -703,6 +711,10 @@ export type ManageCreateApiKeyErrors = {
      * Unable to create API key
      */
     409: ManageError;
+    /**
+     * Internal error
+     */
+    500: ManageError;
 };
 
 export type ManageCreateApiKeyError = ManageCreateApiKeyErrors[keyof ManageCreateApiKeyErrors];
@@ -859,6 +871,10 @@ export type ManageDeleteDatasetErrors = {
      * Dataset cannot be deleted
      */
     409: ManageError;
+    /**
+     * Internal error
+     */
+    500: ManageError;
 };
 
 export type ManageDeleteDatasetError = ManageDeleteDatasetErrors[keyof ManageDeleteDatasetErrors];

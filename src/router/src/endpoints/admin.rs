@@ -471,6 +471,7 @@ pub async fn list_api_keys<S: RouterState>(
     responses(
         (status = 201, description = "API key created", body = CreateApiKeyResponse),
         (status = 404, description = "Tenant not found", body = ApiError),
+        (status = 429, description = "Tenant API key quota exceeded", body = ApiError),
     )
 )]
 pub async fn create_api_key<S: RouterState>(
@@ -724,6 +725,7 @@ pub async fn list_datasets<S: RouterState>(
     responses(
         (status = 201, description = "Dataset created", body = DatasetResponse),
         (status = 404, description = "Tenant not found", body = ApiError),
+        (status = 429, description = "Tenant dataset quota exceeded", body = ApiError),
     )
 )]
 pub async fn create_dataset<S: RouterState>(
