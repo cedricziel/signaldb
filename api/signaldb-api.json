@@ -587,6 +587,72 @@
         ]
       }
     },
+    "/api/v1/admin/users": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Create a human user and grant an initial tenant membership.",
+        "operationId": "create_user",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateUserRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "User created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tenant not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "User already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/v1/manage/tenants": {
       "post": {
         "tags": [
@@ -1642,6 +1708,44 @@
           }
         }
       },
+      "CreateUserRequest": {
+        "type": "object",
+        "description": "Request body for creating a human user with an initial tenant membership.",
+        "required": [
+          "email",
+          "password",
+          "tenant"
+        ],
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional display name."
+          },
+          "email": {
+            "type": "string",
+            "description": "Login email address."
+          },
+          "instance_admin": {
+            "type": "boolean",
+            "description": "Grant instance-administrator status."
+          },
+          "password": {
+            "type": "string",
+            "description": "Password (hashed server-side; must be at least 12 characters)."
+          },
+          "role": {
+            "type": "string",
+            "description": "Initial tenant role: `admin`, `member`, or `viewer`."
+          },
+          "tenant": {
+            "type": "string",
+            "description": "Tenant to grant the initial membership in."
+          }
+        }
+      },
       "DatasetResponse": {
         "type": "object",
         "description": "Dataset information returned by the API.",
@@ -2236,6 +2340,41 @@
             "$ref": "#/components/schemas/MembershipRole"
           }
         }
+      },
+      "UserResponse": {
+        "type": "object",
+        "description": "Response returned when a user is created (never includes the password hash).",
+        "required": [
+          "id",
+          "email",
+          "instance_admin",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "description": "ISO 8601 creation timestamp."
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional display name."
+          },
+          "email": {
+            "type": "string",
+            "description": "Login email address."
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique user identifier."
+          },
+          "instance_admin": {
+            "type": "boolean",
+            "description": "Whether the user is an instance administrator."
+          }
+        }
       }
     },
     "securitySchemes": {
@@ -2262,6 +2401,10 @@
     {
       "name": "datasets",
       "description": "Dataset management"
+    },
+    {
+      "name": "users",
+      "description": "Human user management"
     },
     {
       "name": "memberships",

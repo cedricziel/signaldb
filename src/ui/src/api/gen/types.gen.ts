@@ -106,6 +106,36 @@ export type CreateTenantRequest = {
 };
 
 /**
+ * Request body for creating a human user with an initial tenant membership.
+ */
+export type CreateUserRequest = {
+    /**
+     * Optional display name.
+     */
+    display_name?: string | null;
+    /**
+     * Login email address.
+     */
+    email: string;
+    /**
+     * Grant instance-administrator status.
+     */
+    instance_admin?: boolean;
+    /**
+     * Password (hashed server-side; must be at least 12 characters).
+     */
+    password: string;
+    /**
+     * Initial tenant role: `admin`, `member`, or `viewer`.
+     */
+    role?: string;
+    /**
+     * Tenant to grant the initial membership in.
+     */
+    tenant: string;
+};
+
+/**
  * Dataset information returned by the API.
  */
 export type DatasetResponse = {
@@ -398,6 +428,32 @@ export type UpdateTenantRequest = {
 export type UpsertMembershipRequest = {
     email: string;
     role: MembershipRole;
+};
+
+/**
+ * Response returned when a user is created (never includes the password hash).
+ */
+export type UserResponse = {
+    /**
+     * ISO 8601 creation timestamp.
+     */
+    created_at: string;
+    /**
+     * Optional display name.
+     */
+    display_name?: string | null;
+    /**
+     * Login email address.
+     */
+    email: string;
+    /**
+     * Unique user identifier.
+     */
+    id: string;
+    /**
+     * Whether the user is an instance administrator.
+     */
+    instance_admin: boolean;
 };
 
 export type ListTenantsData = {
@@ -742,6 +798,39 @@ export type DeleteDatasetResponses = {
 };
 
 export type DeleteDatasetResponse = DeleteDatasetResponses[keyof DeleteDatasetResponses];
+
+export type CreateUserData = {
+    body: CreateUserRequest;
+    path?: never;
+    query?: never;
+    url: '/api/v1/admin/users';
+};
+
+export type CreateUserErrors = {
+    /**
+     * Validation error
+     */
+    400: ApiError;
+    /**
+     * Tenant not found
+     */
+    404: ApiError;
+    /**
+     * User already exists
+     */
+    409: ApiError;
+};
+
+export type CreateUserError = CreateUserErrors[keyof CreateUserErrors];
+
+export type CreateUserResponses = {
+    /**
+     * User created
+     */
+    201: UserResponse;
+};
+
+export type CreateUserResponse = CreateUserResponses[keyof CreateUserResponses];
 
 export type ManageCreateTenantData = {
     body: ManageCreateTenantRequest;

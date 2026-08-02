@@ -193,6 +193,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
             "/tenants/{tenant_id}/datasets/{dataset_id}",
             delete(endpoints::admin::delete_dataset::<S>),
         )
+        .route("/users", post(endpoints::admin::create_user::<S>))
         .layer(admin_auth_layer);
 
     // Load OpenAPI spec from the generated JSON file

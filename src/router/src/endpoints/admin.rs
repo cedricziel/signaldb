@@ -5,12 +5,14 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use common::auth::Authenticator;
+use common::auth::{Authenticator, hash_password};
+use common::catalog::MembershipRole;
 use signaldb_api::{
     ApiError, ApiKeyResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateDatasetRequest,
-    CreateTenantRequest, DatasetResponse, ListApiKeysResponse, ListDatasetsResponse,
-    ListTenantsResponse, TenantResponse, UpdateTenantRequest,
+    CreateTenantRequest, CreateUserRequest, DatasetResponse, ListApiKeysResponse,
+    ListDatasetsResponse, ListTenantsResponse, TenantResponse, UpdateTenantRequest, UserResponse,
 };
+use std::str::FromStr;
 use uuid::Uuid;
 
 // ── Tenant endpoints ────────────────────────────────────────────────────
@@ -890,6 +892,174 @@ fn tenant_record_to_response(record: common::catalog::TenantRecord) -> TenantRes
         created_at: record.created_at.to_rfc3339(),
         updated_at: record.updated_at.to_rfc3339(),
     }
+}
+
+// ── User endpoints ──────────────────────────────────────────────────────
+
+/// Create a human user and grant an initial tenant membership.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/users",
+    tag = "users",
+    security(("bearerAuth" = [])),
+    request_body = CreateUserRequest,
+    responses(
+        (status = 201, description = "User created", body = UserResponse),
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 404, description = "Tenant not found", body = ApiError),
+        (status = 409, description = "User already exists", body = ApiError),
+    )
+)]
+pub async fn create_user<S: RouterState>(
+    state: State<S>,
+    Json(request): Json<CreateUserRequest>,
+) -> impl IntoResponse {
+    fn bad(code: &str, msg: impl Into<String>) -> (StatusCode, Json<serde_json::Value>) {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::to_value(ApiError::new(code, msg.into())).unwrap()),
+        )
+    }
+
+    if request.email.trim().is_empty() {
+        return bad("validation_error", "email must not be empty").into_response();
+    }
+    if request.password.len() < 12 {
+        return bad(
+            "validation_error",
+            "password must be at least 12 characters",
+        )
+        .into_response();
+    }
+    let role = match MembershipRole::from_str(&request.role) {
+        Ok(role) => role,
+        Err(_) => {
+            return bad(
+                "validation_error",
+                format!(
+                    "invalid role '{}': expected admin, member, or viewer",
+                    request.role
+                ),
+            )
+            .into_response();
+        }
+    };
+
+    // The tenant must exist in the catalog before a membership can be granted.
+    match state.catalog().get_tenant(&request.tenant).await {
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(
+                    serde_json::to_value(ApiError::new(
+                        "not_found",
+                        format!("Tenant '{}' not found", request.tenant),
+                    ))
+                    .unwrap(),
+                ),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::to_value(ApiError::new("internal_error", e.to_string())).unwrap()),
+            )
+                .into_response();
+        }
+        Ok(Some(_)) => {}
+    }
+
+    // Hash the password off the async runtime; the plaintext never touches the
+    // catalog.
+    let password = request.password.clone();
+    let password_hash = match tokio::task::spawn_blocking(move || hash_password(&password)).await {
+        Ok(Ok(hash)) => hash,
+        Ok(Err(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    serde_json::to_value(ApiError::new(
+                        "internal_error",
+                        format!("password hashing failed: {e}"),
+                    ))
+                    .unwrap(),
+                ),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    serde_json::to_value(ApiError::new(
+                        "internal_error",
+                        format!("password hashing task failed: {e}"),
+                    ))
+                    .unwrap(),
+                ),
+            )
+                .into_response();
+        }
+    };
+
+    let user = match state
+        .catalog()
+        .create_user(
+            &request.email,
+            request.display_name.as_deref(),
+            &password_hash,
+            request.instance_admin,
+        )
+        .await
+    {
+        Ok(user) => user,
+        Err(e) => {
+            let msg = e.to_string();
+            // A unique-constraint violation on email is a conflict, not a 500.
+            let (status, code) = if msg.contains("UNIQUE") || msg.contains("duplicate") {
+                (StatusCode::CONFLICT, "conflict")
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+            };
+            return (
+                status,
+                Json(serde_json::to_value(ApiError::new(code, msg)).unwrap()),
+            )
+                .into_response();
+        }
+    };
+
+    if let Err(e) = state
+        .catalog()
+        .upsert_tenant_membership(&user.id, &request.tenant, role)
+        .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(
+                serde_json::to_value(ApiError::new(
+                    "internal_error",
+                    format!("user created but membership grant failed: {e}"),
+                ))
+                .unwrap(),
+            ),
+        )
+            .into_response();
+    }
+
+    let response = UserResponse {
+        id: user.id,
+        email: user.email,
+        display_name: user.display_name,
+        instance_admin: user.is_instance_admin,
+        created_at: user.created_at.to_rfc3339(),
+    };
+    (
+        StatusCode::CREATED,
+        Json(serde_json::to_value(response).unwrap()),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
