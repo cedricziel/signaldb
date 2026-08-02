@@ -5426,7 +5426,7 @@ dependencies = [
  "serde_json",
  "syn 2.0.119",
  "thiserror 2.0.19",
- "typify 0.6.2",
+ "typify",
  "unicode-ident",
 ]
 
@@ -6614,6 +6614,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_norway"
+version = "0.9.42"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e408f29489b5fd500fab51ff1484fc859bb655f32c671f307dcd733b72e8168c"
+dependencies = [
+ "indexmap 2.14.0",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml-norway",
+]
+
+[[package]]
 name = "serde_path_to_error"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6820,6 +6833,7 @@ name = "signaldb-api"
 version = "0.1.1"
 dependencies = [
  "serde",
+ "utoipa",
 ]
 
 [[package]]
@@ -8224,18 +8238,8 @@ version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc0b89f47309feaeb23c4509c15c9a04234f7deccef6f96c3bfe95319819a304"
 dependencies = [
- "typify-impl 0.6.2",
- "typify-macro 0.6.2",
-]
-
-[[package]]
-name = "typify"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8cdc2e612ea322c6e232d46a0b34607c8eb28978fd6060ecfb139f2a50db8d5f"
-dependencies = [
- "typify-impl 0.7.0",
- "typify-macro 0.7.0",
+ "typify-impl",
+ "typify-macro",
 ]
 
 [[package]]
@@ -8243,26 +8247,6 @@ name = "typify-impl"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fa7b026f540b148b81043c720889dbb942b08659aa8a43f624ac4f04dbfc1861"
-dependencies = [
- "heck",
- "log",
- "proc-macro2",
- "quote",
- "regress",
- "schemars 0.8.22",
- "semver",
- "serde",
- "serde_json",
- "syn 2.0.119",
- "thiserror 2.0.19",
- "unicode-ident",
-]
-
-[[package]]
-name = "typify-impl"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "691591f49550c0d371bc441d019c30ce241d4116aee7d68df7a9840d6c70bf8f"
 dependencies = [
  "heck",
  "log",
@@ -8292,24 +8276,7 @@ dependencies = [
  "serde_json",
  "serde_tokenstream",
  "syn 2.0.119",
- "typify-impl 0.6.2",
-]
-
-[[package]]
-name = "typify-macro"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d41aea893c49cf95661389207b8af0c6254ff48b2c3ae1e4f3704777dbdfcf03"
-dependencies = [
- "proc-macro2",
- "quote",
- "schemars 0.8.22",
- "semver",
- "serde",
- "serde_json",
- "serde_tokenstream",
- "syn 2.0.119",
- "typify-impl 0.7.0",
+ "typify-impl",
 ]
 
 [[package]]
@@ -8396,6 +8363,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
+name = "unsafe-libyaml-norway"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b39abd59bf32521c7f2301b52d05a6a2c975b6003521cbd0c6dc1582f0a22104"
+
+[[package]]
 name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8458,6 +8431,31 @@ name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
+
+[[package]]
+name = "utoipa"
+version = "5.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bde15df68e80b16c7d16b9616e80770ad158988daa56a27dccd1e55558b0160"
+dependencies = [
+ "indexmap 2.14.0",
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "utoipa-gen",
+]
+
+[[package]]
+name = "utoipa-gen"
+version = "5.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ba0b99ee52df3028635d93840c797102da61f8a7bb3cf751032455895b52ef8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "uuid"
@@ -9169,11 +9167,9 @@ dependencies = [
  "openapiv3",
  "prettyplease 0.3.0",
  "progenitor",
- "schemars 0.8.22",
  "serde_json",
  "serde_yaml",
  "syn 3.0.3",
- "typify 0.7.0",
 ]
 
 [[package]]
