@@ -14,9 +14,9 @@ sources:
 
 # Code-First OpenAPI & Client Generation
 
-SignalDB's HTTP admin and tenant-management API is **code-first**: the Rust
-handlers and their data types are the single source of truth, and the OpenAPI
-spec plus every client are generated from them. Nothing is hand-authored
+SignalDB's HTTP admin, tenant-management, and trace-query API is **code-first**:
+the Rust handlers and their data types are the single source of truth, and the
+OpenAPI spec plus every client are generated from them. Nothing is hand-authored
 downstream of the code, so the spec cannot drift from what the router actually
 serves.
 
@@ -38,10 +38,12 @@ flowchart LR
   define the JSON wire format; `ToSchema` makes each struct an OpenAPI
   component.
 - **Operations** are declared with `#[utoipa::path(...)]` on the handlers in
-  `endpoints/admin.rs` (`/api/v1/admin/...`) and `endpoints/management.rs`
-  (`/api/v1/manage/...`). Paths are absolute; operationIds on the management
-  handlers are prefixed `manage_*` and their colliding component schemas aliased
-  `Manage*` (via `#[schema(as = ...)]`) so admin and manage names don't clash.
+  `endpoints/admin.rs` (`/api/v1/admin/...`), `endpoints/management.rs`
+  (`/api/v1/manage/...`), and `endpoints/tempo.rs` (the Tempo-compatible trace
+  query endpoints under `/tempo/api/...`, whose DTOs live in `tempo-api`). Paths
+  are absolute; operationIds on the management handlers are prefixed `manage_*`
+  and their colliding component schemas aliased `Manage*` (via
+  `#[schema(as = ...)]`) so admin and manage names don't clash.
 - `src/router/src/openapi.rs` assembles everything into the `ApiDoc`
   (`#[derive(OpenApi)]`) — info, `servers`, the `bearerAuth` security scheme,
   tags, the path list, and the component schemas.
@@ -96,6 +98,13 @@ job, and the `codegen` job runs `cargo xtask check` to gate the clients.
 
 ## Known gaps
 
+- The Tempo-compatible **trace** query endpoints are annotated; the
+  Loki (LogQL) and Prometheus (PromQL) query endpoints are not yet. Their
+  Prometheus-sample responses use `[timestamp, "value"]` tuple shapes that need
+  extra schema handling, tracked as a follow-up (epic #620, Phase A).
+- The polymorphic Tempo attribute `Value` (a serde-tagged union of
+  string/int/bool/double) serializes as an untyped object in the schema, so the
+  generated clients see it as an arbitrary JSON value rather than a typed enum.
 - The Pyroscope-compatible query endpoints (`/pyroscope/...`,
   `/api/profiles/...`) are not yet annotated, so they are absent from the
   code-first spec. Annotating them requires `ToSchema` on the `pyroscope-api`

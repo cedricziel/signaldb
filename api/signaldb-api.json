@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "SignalDB API",
-    "description": "SignalDB admin and tenant-management HTTP API",
+    "description": "SignalDB admin, tenant-management, and query HTTP API",
     "license": {
       "name": "AGPL-3.0",
       "identifier": "AGPL-3.0"
@@ -1254,6 +1254,246 @@
           }
         }
       }
+    },
+    "/tempo/api/search": {
+      "get": {
+        "tags": [
+          "traces"
+        ],
+        "summary": "GET https://grafana.com/docs/tempo/latest/api_docs/#search",
+        "operationId": "search",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_duration",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "max_duration",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "spss",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "TraceQL search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query"
+          },
+          "429": {
+            "description": "Rate limited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/tempo/api/search/tag/{tag_name}/values": {
+      "get": {
+        "tags": [
+          "traces"
+        ],
+        "summary": "GET /api/search/tag/:tag_name/values",
+        "description": "Backed by real data: distinct values from the tenant's traces table\nfor supported tags, static status values for `status`, and an\nexplicit 501 for tags that are not queryable yet.",
+        "operationId": "search_tag_values",
+        "parameters": [
+          {
+            "name": "tag_name",
+            "in": "path",
+            "description": "Tag name to fetch values for",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Values for the tag",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TagValuesResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Tag not queryable yet"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/tempo/api/search/tags": {
+      "get": {
+        "tags": [
+          "traces"
+        ],
+        "summary": "GET /api/search/tags?scope=<resource|span|intrinsic>",
+        "description": "See https://grafana.com/docs/tempo/latest/api_docs/#search-tags",
+        "operationId": "search_tags",
+        "responses": {
+          "200": {
+            "description": "Searchable tag names",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TagSearchResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/tempo/api/traces/{trace_id}": {
+      "get": {
+        "tags": [
+          "traces"
+        ],
+        "summary": "GET /api/traces/<traceid>?start=<start>&end=<end>",
+        "description": "See https://grafana.com/docs/tempo/latest/api_docs/#query",
+        "operationId": "query_single_trace",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "description": "Trace ID to fetch",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "include_profiles",
+            "in": "query",
+            "description": "When true, attach summaries of profiles linked to this trace.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The reconstructed trace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Trace"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Trace not found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -1306,6 +1546,19 @@
             ],
             "description": "ISO 8601 revocation timestamp (if revoked)."
           }
+        }
+      },
+      "Attribute": {
+        "type": "object",
+        "required": [
+          "key",
+          "value"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {}
         }
       },
       "CreateApiKeyRequest": {
@@ -1661,6 +1914,207 @@
           "viewer"
         ]
       },
+      "ProfileSummary": {
+        "type": "object",
+        "description": "Summary of a stored profile linked to a trace, without the bulky\nstack/sample payloads.",
+        "required": [
+          "profileID",
+          "timeUnixNano",
+          "durationNano",
+          "sampleType",
+          "sampleUnit",
+          "serviceName"
+        ],
+        "properties": {
+          "durationNano": {
+            "type": "string"
+          },
+          "profileID": {
+            "type": "string"
+          },
+          "sampleType": {
+            "type": "string"
+          },
+          "sampleUnit": {
+            "type": "string"
+          },
+          "serviceName": {
+            "type": "string"
+          },
+          "spanID": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timeUnixNano": {
+            "type": "string"
+          }
+        }
+      },
+      "SearchResult": {
+        "type": "object",
+        "description": "Result of GET /api/search\nSee <https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search>",
+        "required": [
+          "traces",
+          "metrics"
+        ],
+        "properties": {
+          "metrics": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "traces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Trace"
+            }
+          }
+        }
+      },
+      "Span": {
+        "type": "object",
+        "required": [
+          "spanID",
+          "startTimeUnixNano",
+          "durationNanos",
+          "attributes"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Attribute"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "durationNanos": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SpanEvent"
+            },
+            "description": "Span events (annotations, exceptions). Omitted when empty. Exceptions are\nthe event named `exception`, carrying `exception.message`/`.type`/\n`.stacktrace` in their attributes."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Span name intrinsic (Tempo exposes it as `name` on spanset spans)."
+          },
+          "parentSpanID": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Parent span id; empty/absent for root spans. Needed by clients that\nreconstruct the span hierarchy (e.g. waterfall views)."
+          },
+          "serviceName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spanID": {
+            "type": "string"
+          },
+          "startTimeUnixNano": {
+            "type": "string"
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Span status (`ok`, `error`, `unset`)."
+          }
+        }
+      },
+      "SpanEvent": {
+        "type": "object",
+        "description": "A span event in the Tempo API span shape.",
+        "required": [
+          "name",
+          "timeUnixNano"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Attribute"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "timeUnixNano": {
+            "type": "string"
+          }
+        }
+      },
+      "SpanSet": {
+        "type": "object",
+        "required": [
+          "spans",
+          "matched"
+        ],
+        "properties": {
+          "matched": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "spans": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Span"
+            }
+          }
+        }
+      },
+      "TagSearchResponse": {
+        "type": "object",
+        "required": [
+          "tagNames"
+        ],
+        "properties": {
+          "tagNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "TagValuesResponse": {
+        "type": "object",
+        "required": [
+          "tagValues"
+        ],
+        "properties": {
+          "tagValues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "TenantResponse": {
         "type": "object",
         "description": "Tenant information returned by the API.",
@@ -1698,6 +2152,53 @@
           "updated_at": {
             "type": "string",
             "description": "ISO 8601 last-updated timestamp."
+          }
+        }
+      },
+      "Trace": {
+        "type": "object",
+        "description": "A trace is a collection of spans that represent a single request\n\nExample:\n{\n  \"traceID\": \"2f3e0cee77ae5dc9c17ade3689eb2e54\",\n  \"rootServiceName\": \"shop-backend\",\n  \"rootTraceName\": \"update-billing\",\n  \"startTimeUnixNano\": \"1684778327699392724\",\n  \"durationMs\": 557,\n  \"spanSets\": [\n    {\n      \"spans\": [\n        {\n          \"spanID\": \"563d623c76514f8e\",\n          \"startTimeUnixNano\": \"1684778327735077898\",\n          \"durationNanos\": \"446979497\",\n          \"attributes\": [\n            {\n              \"key\": \"status\",\n              \"value\": {\n                \"stringValue\": \"error\"\n              }\n            }\n          ]\n        }\n      ],\n      \"matched\": 1\n    }\n  ]",
+        "required": [
+          "traceID",
+          "rootServiceName",
+          "rootTraceName",
+          "startTimeUnixNano",
+          "durationMs",
+          "spanSets"
+        ],
+        "properties": {
+          "durationMs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "profiles": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ProfileSummary"
+            },
+            "description": "Summaries of profiles linked to this trace; present only when the\nclient asked for them via `include_profiles`."
+          },
+          "rootServiceName": {
+            "type": "string"
+          },
+          "rootTraceName": {
+            "type": "string"
+          },
+          "spanSets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SpanSet"
+            }
+          },
+          "startTimeUnixNano": {
+            "type": "string"
+          },
+          "traceID": {
+            "type": "string"
           }
         }
       },
@@ -1765,6 +2266,10 @@
     {
       "name": "memberships",
       "description": "Tenant membership management"
+    },
+    {
+      "name": "traces",
+      "description": "Tempo-compatible trace search and retrieval"
     }
   ]
 }

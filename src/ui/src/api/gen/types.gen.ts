@@ -40,6 +40,11 @@ export type ApiKeyResponse = {
     revoked_at?: string | null;
 };
 
+export type Attribute = {
+    key: string;
+    value: unknown;
+};
+
 /**
  * Request body for creating a new API key.
  */
@@ -224,6 +229,84 @@ export type MembershipResponse = {
 export type MembershipRole = 'admin' | 'member' | 'viewer';
 
 /**
+ * Summary of a stored profile linked to a trace, without the bulky
+ * stack/sample payloads.
+ */
+export type ProfileSummary = {
+    durationNano: string;
+    profileID: string;
+    sampleType: string;
+    sampleUnit: string;
+    serviceName: string;
+    spanID?: string | null;
+    timeUnixNano: string;
+};
+
+/**
+ * Result of GET /api/search
+ * See <https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search>
+ */
+export type SearchResult = {
+    metrics: {
+        [key: string]: number;
+    };
+    traces: Array<Trace>;
+};
+
+export type Span = {
+    attributes: {
+        [key: string]: Attribute;
+    };
+    durationNanos: string;
+    /**
+     * Span events (annotations, exceptions). Omitted when empty. Exceptions are
+     * the event named `exception`, carrying `exception.message`/`.type`/
+     * `.stacktrace` in their attributes.
+     */
+    events?: Array<SpanEvent>;
+    /**
+     * Span name intrinsic (Tempo exposes it as `name` on spanset spans).
+     */
+    name?: string | null;
+    /**
+     * Parent span id; empty/absent for root spans. Needed by clients that
+     * reconstruct the span hierarchy (e.g. waterfall views).
+     */
+    parentSpanID?: string | null;
+    serviceName?: string | null;
+    spanID: string;
+    startTimeUnixNano: string;
+    /**
+     * Span status (`ok`, `error`, `unset`).
+     */
+    status?: string | null;
+};
+
+/**
+ * A span event in the Tempo API span shape.
+ */
+export type SpanEvent = {
+    attributes?: {
+        [key: string]: Attribute;
+    };
+    name: string;
+    timeUnixNano: string;
+};
+
+export type SpanSet = {
+    matched: number;
+    spans: Array<Span>;
+};
+
+export type TagSearchResponse = {
+    tagNames: Array<string>;
+};
+
+export type TagValuesResponse = {
+    tagValues: Array<string>;
+};
+
+/**
  * Tenant information returned by the API.
  */
 export type TenantResponse = {
@@ -251,6 +334,51 @@ export type TenantResponse = {
      * ISO 8601 last-updated timestamp.
      */
     updated_at: string;
+};
+
+/**
+ * A trace is a collection of spans that represent a single request
+ *
+ * Example:
+ * {
+ * "traceID": "2f3e0cee77ae5dc9c17ade3689eb2e54",
+ * "rootServiceName": "shop-backend",
+ * "rootTraceName": "update-billing",
+ * "startTimeUnixNano": "1684778327699392724",
+ * "durationMs": 557,
+ * "spanSets": [
+ * {
+ * "spans": [
+ * {
+ * "spanID": "563d623c76514f8e",
+ * "startTimeUnixNano": "1684778327735077898",
+ * "durationNanos": "446979497",
+ * "attributes": [
+ * {
+ * "key": "status",
+ * "value": {
+ * "stringValue": "error"
+ * }
+ * }
+ * ]
+ * }
+ * ],
+ * "matched": 1
+ * }
+ * ]
+ */
+export type Trace = {
+    durationMs: number;
+    /**
+     * Summaries of profiles linked to this trace; present only when the
+     * client asked for them via `include_profiles`.
+     */
+    profiles?: Array<ProfileSummary> | null;
+    rootServiceName: string;
+    rootTraceName: string;
+    spanSets: Array<SpanSet>;
+    startTimeUnixNano: string;
+    traceID: string;
 };
 
 /**
@@ -1009,3 +1137,118 @@ export type ManageRemoveMembershipResponses = {
 };
 
 export type ManageRemoveMembershipResponse = ManageRemoveMembershipResponses[keyof ManageRemoveMembershipResponses];
+
+export type SearchData = {
+    body?: never;
+    path?: never;
+    query?: {
+        q?: string;
+        tags?: string;
+        min_duration?: number;
+        max_duration?: number;
+        limit?: number;
+        start?: number;
+        end?: number;
+        spss?: number;
+    };
+    url: '/tempo/api/search';
+};
+
+export type SearchErrors = {
+    /**
+     * Invalid query
+     */
+    400: unknown;
+    /**
+     * Rate limited
+     */
+    429: unknown;
+};
+
+export type SearchResponses = {
+    /**
+     * TraceQL search results
+     */
+    200: SearchResult;
+};
+
+export type SearchResponse = SearchResponses[keyof SearchResponses];
+
+export type SearchTagValuesData = {
+    body?: never;
+    path: {
+        /**
+         * Tag name to fetch values for
+         */
+        tag_name: string;
+    };
+    query?: never;
+    url: '/tempo/api/search/tag/{tag_name}/values';
+};
+
+export type SearchTagValuesErrors = {
+    /**
+     * Tag not queryable yet
+     */
+    501: unknown;
+};
+
+export type SearchTagValuesResponses = {
+    /**
+     * Values for the tag
+     */
+    200: TagValuesResponse;
+};
+
+export type SearchTagValuesResponse = SearchTagValuesResponses[keyof SearchTagValuesResponses];
+
+export type SearchTagsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/tempo/api/search/tags';
+};
+
+export type SearchTagsResponses = {
+    /**
+     * Searchable tag names
+     */
+    200: TagSearchResponse;
+};
+
+export type SearchTagsResponse = SearchTagsResponses[keyof SearchTagsResponses];
+
+export type QuerySingleTraceData = {
+    body?: never;
+    path: {
+        /**
+         * Trace ID to fetch
+         */
+        trace_id: string;
+    };
+    query?: {
+        start?: number;
+        end?: number;
+        /**
+         * When true, attach summaries of profiles linked to this trace.
+         */
+        include_profiles?: boolean;
+    };
+    url: '/tempo/api/traces/{trace_id}';
+};
+
+export type QuerySingleTraceErrors = {
+    /**
+     * Trace not found
+     */
+    404: unknown;
+};
+
+export type QuerySingleTraceResponses = {
+    /**
+     * The reconstructed trace
+     */
+    200: Trace;
+};
+
+export type QuerySingleTraceResponse = QuerySingleTraceResponses[keyof QuerySingleTraceResponses];

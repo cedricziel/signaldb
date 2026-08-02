@@ -39,7 +39,7 @@ impl Modify for SecurityAddon {
     info(
         title = "SignalDB API",
         version = "1.0.0",
-        description = "SignalDB admin and tenant-management HTTP API"
+        description = "SignalDB admin, tenant-management, and query HTTP API"
     ),
     servers((url = "/")),
     modifiers(&SecurityAddon),
@@ -48,6 +48,7 @@ impl Modify for SecurityAddon {
         (name = "api-keys", description = "API key management"),
         (name = "datasets", description = "Dataset management"),
         (name = "memberships", description = "Tenant membership management"),
+        (name = "traces", description = "Tempo-compatible trace search and retrieval"),
     ),
     paths(
         crate::endpoints::admin::list_tenants,
@@ -71,6 +72,11 @@ impl Modify for SecurityAddon {
         crate::endpoints::management::list_memberships,
         crate::endpoints::management::upsert_membership,
         crate::endpoints::management::remove_membership,
+        // Tempo-compatible trace query endpoints
+        crate::endpoints::tempo::search,
+        crate::endpoints::tempo::query_single_trace,
+        crate::endpoints::tempo::search_tags,
+        crate::endpoints::tempo::search_tag_values,
     ),
     components(schemas(
         // signaldb-api admin DTOs
@@ -99,6 +105,16 @@ impl Modify for SecurityAddon {
         crate::endpoints::management::UpsertMembershipRequest,
         // shared enums
         common::catalog::MembershipRole,
+        // Tempo-compatible trace query DTOs
+        tempo_api::SearchResult,
+        tempo_api::Trace,
+        tempo_api::SpanSet,
+        tempo_api::Span,
+        tempo_api::SpanEvent,
+        tempo_api::Attribute,
+        tempo_api::ProfileSummary,
+        tempo_api::TagSearchResponse,
+        tempo_api::TagValuesResponse,
     )),
 )]
 struct ApiDoc;

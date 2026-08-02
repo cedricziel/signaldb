@@ -6892,6 +6892,7 @@ dependencies = [
  "progenitor-client",
  "reqwest 0.13.4",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -7479,6 +7480,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "utoipa",
 ]
 
 [[package]]

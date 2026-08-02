@@ -599,6 +599,20 @@ pub async fn echo() -> &'static str {
 /// GET /api/traces/<traceid>?start=<start>&end=<end>
 ///
 /// See https://grafana.com/docs/tempo/latest/api_docs/#query
+#[utoipa::path(
+    get,
+    path = "/tempo/api/traces/{trace_id}",
+    tag = "traces",
+    security(("bearerAuth" = [])),
+    params(
+        ("trace_id" = String, Path, description = "Trace ID to fetch"),
+        tempo_api::TraceQueryParams,
+    ),
+    responses(
+        (status = 200, description = "The reconstructed trace", body = tempo_api::Trace),
+        (status = 404, description = "Trace not found"),
+    )
+)]
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(
@@ -755,6 +769,18 @@ fn trace_lookup_status_to_http(trace_id: &str, status: &tonic::Status) -> axum::
 }
 
 /// GET https://grafana.com/docs/tempo/latest/api_docs/#search
+#[utoipa::path(
+    get,
+    path = "/tempo/api/search",
+    tag = "traces",
+    security(("bearerAuth" = [])),
+    params(tempo_api::SearchQueryParams),
+    responses(
+        (status = 200, description = "TraceQL search results", body = tempo_api::SearchResult),
+        (status = 400, description = "Invalid query"),
+        (status = 429, description = "Rate limited"),
+    )
+)]
 #[tracing::instrument(
     skip(state, tenant_ctx, query),
     fields(
@@ -947,6 +973,15 @@ async fn distinct_column_values<S: RouterState>(
 /// GET /api/search/tags?scope=<resource|span|intrinsic>
 ///
 /// See https://grafana.com/docs/tempo/latest/api_docs/#search-tags
+#[utoipa::path(
+    get,
+    path = "/tempo/api/search/tags",
+    tag = "traces",
+    security(("bearerAuth" = [])),
+    responses(
+        (status = 200, description = "Searchable tag names", body = tempo_api::TagSearchResponse),
+    )
+)]
 #[tracing::instrument]
 pub async fn search_tags()
 -> Result<axum::Json<tempo_api::TagSearchResponse>, axum::http::StatusCode> {
@@ -965,6 +1000,17 @@ pub async fn search_tags()
 /// Backed by real data: distinct values from the tenant's traces table
 /// for supported tags, static status values for `status`, and an
 /// explicit 501 for tags that are not queryable yet.
+#[utoipa::path(
+    get,
+    path = "/tempo/api/search/tag/{tag_name}/values",
+    tag = "traces",
+    security(("bearerAuth" = [])),
+    params(("tag_name" = String, Path, description = "Tag name to fetch values for")),
+    responses(
+        (status = 200, description = "Values for the tag", body = tempo_api::TagValuesResponse),
+        (status = 501, description = "Tag not queryable yet"),
+    )
+)]
 #[tracing::instrument(skip(state, tenant_ctx))]
 pub async fn search_tag_values<S: RouterState>(
     state: State<S>,
