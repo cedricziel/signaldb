@@ -12,8 +12,40 @@ use std::sync::Arc;
 use anyhow::Result;
 use iceberg_rust::catalog::Catalog as IcebergCatalog;
 
+use crate::catalog::Catalog;
 use crate::config::{Configuration, StorageConfig};
 use crate::iceberg::{self, create_catalog_with_config};
+
+/// A dataset resolved from the tenant registry, source-agnostic.
+///
+/// Carries everything a consumer needs to register a catalog and locate
+/// storage uniformly, regardless of whether the tenant came from config or
+/// the database.
+#[derive(Debug, Clone)]
+pub struct ResolvedDataset {
+    /// Dataset identifier as used on the read/write path (for database
+    /// datasets this is the dataset *name*, matching the ingest resolver).
+    pub id: String,
+    /// URL-friendly slug used for the Iceberg namespace path.
+    pub slug: String,
+    /// Effective storage DSN (dataset → tenant → global fallback).
+    pub storage_dsn: String,
+    /// Whether this is the tenant's default dataset.
+    pub is_default: bool,
+}
+
+/// A tenant resolved from the tenant registry, source-agnostic.
+#[derive(Debug, Clone)]
+pub struct ResolvedTenant {
+    /// Tenant identifier.
+    pub id: String,
+    /// URL-friendly slug used for the DataFusion catalog / Iceberg namespace.
+    pub slug: String,
+    /// Default dataset identifier, if any.
+    pub default_dataset: Option<String>,
+    /// The tenant's datasets.
+    pub datasets: Vec<ResolvedDataset>,
+}
 
 /// Global catalog manager holding the shared Iceberg catalog instance.
 ///
@@ -25,6 +57,12 @@ pub struct CatalogManager {
     catalog: Arc<dyn IcebergCatalog>,
     config: Configuration,
     table_manager: crate::iceberg::table_manager::IcebergTableManager,
+    /// Optional database catalog used as the additional tenant source. When
+    /// present, [`CatalogManager::list_active_tenants`] and
+    /// [`CatalogManager::resolve_tenant_by_slug`] merge database-created
+    /// tenants with the config-defined ones. When absent (pure in-memory /
+    /// unit contexts), enumeration falls back to config only.
+    tenant_source: Option<Arc<Catalog>>,
 }
 
 impl CatalogManager {
@@ -37,7 +75,19 @@ impl CatalogManager {
             catalog,
             config,
             table_manager,
+            tenant_source: None,
         })
+    }
+
+    /// Attach a database catalog as an additional tenant source.
+    ///
+    /// With a tenant source attached, the registry (`list_active_tenants` /
+    /// `resolve_tenant_by_slug`) returns the union of config-defined and
+    /// database-created tenants, so admin-API tenants are queryable and
+    /// lifecycle-managed without a `[[auth.tenants]]` config block.
+    pub fn with_tenant_source(mut self, tenant_source: Arc<Catalog>) -> Self {
+        self.tenant_source = Some(tenant_source);
+        self
     }
 
     /// Create an in-memory catalog manager for fast tests.
@@ -171,6 +221,124 @@ impl CatalogManager {
             })
             .collect()
     }
+
+    /// Build a source-agnostic descriptor for a config-defined tenant.
+    fn config_tenant_descriptor(&self, tenant: &crate::config::TenantConfig) -> ResolvedTenant {
+        let datasets = tenant
+            .datasets
+            .iter()
+            .map(|d| ResolvedDataset {
+                id: d.id.clone(),
+                slug: d.slug.clone(),
+                storage_dsn: self
+                    .get_dataset_storage_config(&tenant.id, &d.id)
+                    .dsn
+                    .clone(),
+                is_default: d.is_default,
+            })
+            .collect();
+        ResolvedTenant {
+            id: tenant.id.clone(),
+            slug: tenant.slug.clone(),
+            default_dataset: tenant.default_dataset.clone(),
+            datasets,
+        }
+    }
+
+    /// Build a source-agnostic descriptor for a database-created tenant.
+    ///
+    /// Database datasets carry no slug or storage override, so the slug is
+    /// derived via the same functions the read/write path uses (identity for
+    /// database tenants) and storage falls back to the tenant/global default.
+    /// The dataset *name* — not the internal UUID — is the identifier the
+    /// ingest resolver and namespace paths use, so it is used here too.
+    fn db_tenant_descriptor(
+        &self,
+        record: &crate::catalog::TenantRecord,
+        datasets: &[crate::catalog::DatasetRecord],
+    ) -> ResolvedTenant {
+        let resolved = datasets
+            .iter()
+            .map(|d| ResolvedDataset {
+                id: d.name.clone(),
+                slug: self.get_dataset_slug(&record.id, &d.name),
+                storage_dsn: self
+                    .get_dataset_storage_config(&record.id, &d.name)
+                    .dsn
+                    .clone(),
+                is_default: record.default_dataset.as_deref() == Some(d.name.as_str()),
+            })
+            .collect();
+        ResolvedTenant {
+            id: record.id.clone(),
+            slug: self.get_tenant_slug(&record.id),
+            default_dataset: record.default_dataset.clone(),
+            datasets: resolved,
+        }
+    }
+
+    /// Enumerate all active tenants and datasets, source-agnostic.
+    ///
+    /// Returns the union of config-defined tenants (bootstrap seed, with their
+    /// explicit slugs/storage overrides preserved) and database-created
+    /// tenants (from the attached tenant source, if any). Config-disabled
+    /// tenants are excluded. When no tenant source is attached, this is
+    /// equivalent to the config-only enumeration.
+    pub async fn list_active_tenants(&self) -> Result<Vec<ResolvedTenant>> {
+        let mut tenants: Vec<ResolvedTenant> = self
+            .get_enabled_tenants()
+            .iter()
+            .map(|t| self.config_tenant_descriptor(t))
+            .collect();
+
+        if let Some(source) = &self.tenant_source {
+            let known: std::collections::HashSet<String> =
+                tenants.iter().map(|t| t.id.clone()).collect();
+            let records = source
+                .list_tenants()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to list database tenants: {e}"))?;
+            for record in records {
+                if known.contains(&record.id) {
+                    // Config-defined tenant already covered with its overrides.
+                    continue;
+                }
+                let datasets = source.get_datasets(&record.id).await.map_err(|e| {
+                    anyhow::anyhow!("Failed to list datasets for tenant '{}': {e}", record.id)
+                })?;
+                tenants.push(self.db_tenant_descriptor(&record, &datasets));
+            }
+        }
+
+        Ok(tenants)
+    }
+
+    /// Resolve a single active tenant by its slug, source-agnostic.
+    ///
+    /// Used for lazy on-demand catalog registration: config-defined tenants
+    /// are matched first, then the database tenant source (where slug == id).
+    /// Returns `None` when no active tenant has that slug.
+    pub async fn resolve_tenant_by_slug(&self, slug: &str) -> Result<Option<ResolvedTenant>> {
+        if let Some(tenant) = self.get_enabled_tenants().iter().find(|t| t.slug == slug) {
+            return Ok(Some(self.config_tenant_descriptor(tenant)));
+        }
+
+        if let Some(source) = &self.tenant_source {
+            // Database tenants use their id as their slug.
+            if let Some(record) = source
+                .get_tenant(slug)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to load database tenant '{slug}': {e}"))?
+            {
+                let datasets = source.get_datasets(&record.id).await.map_err(|e| {
+                    anyhow::anyhow!("Failed to list datasets for tenant '{}': {e}", record.id)
+                })?;
+                return Ok(Some(self.db_tenant_descriptor(&record, &datasets)));
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
@@ -283,5 +451,109 @@ mod tests {
         assert_eq!(manager.get_dataset_slug("acme", "production"), "prod");
         assert_eq!(manager.get_dataset_slug("acme", "archive"), "archive");
         assert_eq!(manager.get_dataset_slug("acme", "unknown"), "unknown");
+    }
+
+    #[tokio::test]
+    async fn test_list_active_tenants_falls_back_to_config_only() {
+        // No tenant source attached → config-only enumeration.
+        let manager = create_test_catalog_manager().await;
+        let mut ids: Vec<String> = manager
+            .list_active_tenants()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["acme".to_string(), "beta".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_list_active_tenants_merges_config_and_database() {
+        let source = Arc::new(Catalog::new_in_memory().await.unwrap());
+        // A database-only tenant (no config block), created via the admin API.
+        source
+            .upsert_tenant("gamma", "Gamma", Some("production"), "database")
+            .await
+            .unwrap();
+        source.create_dataset("gamma", "production").await.unwrap();
+        let manager = create_test_catalog_manager()
+            .await
+            .with_tenant_source(source);
+
+        let tenants = manager.list_active_tenants().await.unwrap();
+        let gamma = tenants
+            .iter()
+            .find(|t| t.id == "gamma")
+            .expect("database tenant should be present");
+        // Slug is derived (identity) for database tenants.
+        assert_eq!(gamma.slug, "gamma");
+        // Dataset identifier/slug come from the dataset *name*, not the UUID,
+        // and storage falls back to the global default.
+        assert_eq!(gamma.datasets.len(), 1);
+        let ds = &gamma.datasets[0];
+        assert_eq!(ds.id, "production");
+        assert_eq!(ds.slug, "production");
+        assert_eq!(ds.storage_dsn, "memory://");
+        assert!(ds.is_default);
+        // Config tenants are still present.
+        assert!(tenants.iter().any(|t| t.id == "acme"));
+        assert!(tenants.iter().any(|t| t.id == "beta"));
+    }
+
+    #[tokio::test]
+    async fn test_list_active_tenants_config_wins_over_database_dup() {
+        let source = Arc::new(Catalog::new_in_memory().await.unwrap());
+        // A row that shadows the config-defined "acme" tenant (as
+        // sync_config_tenants would create). Config overrides must win.
+        source
+            .upsert_tenant("acme", "Acme", Some("production"), "config")
+            .await
+            .unwrap();
+        source.create_dataset("acme", "production").await.unwrap();
+        let manager = create_test_catalog_manager()
+            .await
+            .with_tenant_source(source);
+
+        let tenants = manager.list_active_tenants().await.unwrap();
+        let acme: Vec<_> = tenants.iter().filter(|t| t.id == "acme").collect();
+        assert_eq!(acme.len(), 1, "acme must not be duplicated");
+        // Config's explicit dataset slug override ("prod") is preserved, not
+        // the derived database identity ("production").
+        assert!(
+            acme[0].datasets.iter().any(|d| d.slug == "prod"),
+            "config slug override should win"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_tenant_by_slug_database() {
+        let source = Arc::new(Catalog::new_in_memory().await.unwrap());
+        source
+            .upsert_tenant("gamma", "Gamma", Some("production"), "database")
+            .await
+            .unwrap();
+        source.create_dataset("gamma", "production").await.unwrap();
+        let manager = create_test_catalog_manager()
+            .await
+            .with_tenant_source(source);
+
+        let resolved = manager.resolve_tenant_by_slug("gamma").await.unwrap();
+        let gamma = resolved.expect("database tenant resolvable by slug");
+        assert_eq!(gamma.id, "gamma");
+        assert_eq!(gamma.datasets[0].id, "production");
+
+        // Config tenant resolvable by its explicit slug.
+        let acme = manager.resolve_tenant_by_slug("acme").await.unwrap();
+        assert_eq!(acme.expect("config tenant resolvable").id, "acme");
+
+        // Unknown slug resolves to None.
+        assert!(
+            manager
+                .resolve_tenant_by_slug("nope")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

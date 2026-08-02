@@ -21,7 +21,7 @@ pub mod wal;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-pub use catalog_manager::CatalogManager;
+pub use catalog_manager::{CatalogManager, ResolvedDataset, ResolvedTenant};
 
 #[cfg(test)]
 mod otlp_profiles_proto_tests {
