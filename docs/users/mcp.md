@@ -145,8 +145,11 @@ Add it under **Settings → Connectors → Add custom connector** with the same
   only) — so header-capable clients like Claude Code are the smoothest path
   today.
 
-A request without a valid bearer token and `X-Tenant-ID` is rejected with `401`
-before any MCP session is established.
+A request that carries no bearer token or no `X-Tenant-ID` is rejected with
+`401` at the MCP server before it reaches the transport. The MCP server does
+not validate the credential itself — it forwards it, and the **router** decides
+whether it is valid; an invalid or revoked key is rejected downstream and comes
+back as a clean MCP tool error.
 
 ## Example flow
 
