@@ -61,8 +61,44 @@ cargo run --bin signaldb-mcp
 cargo run --bin signaldb-mcp -- --stdio
 ```
 
-The same settings are available as environment variables:
-`SIGNALDB_MCP_ENABLED`, `SIGNALDB_MCP_BIND_ADDRESS`, `SIGNALDB_MCP_ROUTER_URL`.
+The same settings are available as environment variables (multi-word fields
+need the double-underscore form): `SIGNALDB__MCP__ENABLED`,
+`SIGNALDB__MCP__BIND_ADDRESS`, `SIGNALDB__MCP__ROUTER_URL`.
+
+## Running as a sidecar (monolithic deployment)
+
+`signaldb-mcp` ships in the monolithic image, so alongside a monolithic
+`signaldb` container you can run it as a **sidecar from the same image** with an
+entrypoint override — no separate image. The deployment (not the Dockerfile)
+makes it reachable: bind a non-loopback address, point it at the monolith's
+router by service name, and **publish the port** (`EXPOSE` alone does not
+publish anything).
+
+```yaml
+services:
+  signaldb: # your monolith, serving the router on :3000
+    image: ghcr.io/cedricziel/signaldb:main
+    volumes: ["./data:/data"]
+    working_dir: /data
+
+  signaldb-mcp:
+    image: ghcr.io/cedricziel/signaldb:main # same image
+    entrypoint: ["/usr/local/bin/signaldb-mcp"]
+    environment:
+      # 0.0.0.0 so the published port is reachable (loopback is the default)
+      SIGNALDB__MCP__BIND_ADDRESS: "0.0.0.0:8228"
+      # the monolith's router, by compose service name
+      SIGNALDB__MCP__ROUTER_URL: "http://signaldb:3000"
+    volumes: ["./data:/data"] # same signaldb.toml (auth) + catalog as the monolith
+    working_dir: /data
+    ports: ["8228:8228"] # publish it — required for reachability
+    depends_on: [signaldb]
+    restart: unless-stopped
+```
+
+Because it forwards live bearer credentials, a non-loopback bind should sit
+behind TLS — front it with your reverse proxy rather than publishing the raw
+port to an untrusted network.
 
 ## Connecting an agent
 
