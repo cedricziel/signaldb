@@ -135,6 +135,7 @@ the services resolve their WAL directory from the TOML-level `[wal] wal_dir`
 - Namespace: `[tenant_slug, dataset_slug]`
 - Tables created lazily on first write
 - Config: `[schema] catalog_type = "sql"`, `catalog_uri = "sqlite::memory:"`
+- File-backed catalogs get **WAL journal mode** set out-of-band (`enable_wal_on_sqlite_catalog` in `iceberg/mod.rs`) before the pool opens, so concurrent trace/log commits don't serialize behind a rollback lock and stall first-time table creation; the `iceberg-sql-catalog` pool exposes no options, so `busy_timeout` stays at sqlx's 5s default
 
 ## Table Types (up to 7 per tenant-dataset)
 
