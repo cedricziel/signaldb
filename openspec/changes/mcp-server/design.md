@@ -52,6 +52,27 @@ Query API responses map to MCP outcomes: 2xx → tool result (JSON, size-capped 
 
 Each query tool caps its serialized result at a fixed byte budget (default 256 KiB). When a downstream response exceeds the cap, the tool does not stream an unbounded blob: it returns valid structured JSON truncated at a record boundary with a `truncated: true` flag and a `hint` telling the agent to narrow the query (tighter time range or lower `limit`). Callers detect truncation from the flag. This keeps a single tool call from blowing an agent's context window.
 
+### D7: Loki/Prometheus query in the SDK — type the envelope, keep the result payload permissive
+
+`search_logs` (LogQL) and `query_metrics` (PromQL) follow the same rule as every other tool: **wrap the generated `signaldb-sdk` method — no hand-rolled HTTP.** That requires the Loki (`/loki/api/v1/query`, `/query_range`) and Prometheus (`/prometheus/api/v1/query`, `/query_range`) handlers to join the code-first OpenAPI document so the SDK regenerates with typed methods.
+
+The obstacle is shape: these responses model Prometheus/Loki result payloads with custom `serde` — `resultType`-tagged `QueryResult` enums (`streams`/`matrix`/`vector`) and heterogeneous sample tuples (`Sample`, `LogEntry` serialize as `[timestamp, value]` arrays via `SerializeSeq`). utoipa cannot derive `ToSchema` for those, and forcing a full tuple/`oneOf` model is disproportionate — an agent just needs the JSON.
+
+**Decision:** type the _envelope_ precisely (`status`, error fields, `resultType` discriminator) and represent the polymorphic result payload as a permissive schema (open object / `serde_json::Value`), via a small manual `ToSchema` on `QueryResult` (and `Sample`/`LogEntry` if referenced) or a `#[schema(value_type = …)]` override on the dynamic field. Progenitor then generates a typed `QueryResponse` whose result is a `serde_json::Value` — exactly the treatment Tempo's polymorphic `Attribute.value` already gets (#861). This satisfies "only SDK/OpenAPI, enhance where necessary": the enhancement is the annotations + envelope typing, nothing is hand-modeled beyond what adds value, and no custom client call is introduced.
+
+Alternatives rejected: (a) hand-rolled reqwest for Loki/Prom — violates the no-custom-calls constraint and splits the client story; (b) fully typed matrix/vector/sample schemas — high effort, low agent value, brittle against Prometheus's integer-vs-float timestamp quirk.
+
+### D8: Credential source per transport — HTTP headers vs. a configured stdio credential
+
+The query tools forward the caller's credential by reading it from the HTTP request `Parts`. Streamable HTTP carries per-request `Authorization` + `X-Tenant-ID`, so each caller acts as itself and the router enforces isolation. **Stdio has no per-request headers**, so a tool invoked over stdio has no credential to forward — the current server_info tool degrades to "unauthenticated," but a _query_ tool cannot reach the router at all.
+
+**Decision:** the standalone `signaldb-mcp` binary supports both transports with distinct credential sources:
+
+- **HTTP** (production, multi-tenant): unchanged — the per-request bearer + tenant headers are forwarded; no server-held credential.
+- **Stdio** (single-user dev): the binary accepts a fixed credential via CLI flags / env / config (`--token`/`--tenant`/`--dataset`, or `SIGNALDB_MCP_TOKEN`/`_TENANT`/`_DATASET`). In stdio mode the handler holds this static credential and builds the per-call SDK client from it when no HTTP `Parts` are present. If stdio is started without a configured credential, query tools return a clear "stdio requires a configured credential" error rather than a confusing auth failure at the router.
+
+This makes `signaldb-mcp --stdio` genuinely usable for a developer pointing an MCP client at a running dev router, while keeping the HTTP path credential-free on the server. The SDK-client builder gains one branch (prefer `Parts` headers; else the configured stdio credential; else error); the forwarding principle is unchanged.
+
 ## Risks / Trade-offs
 
 - **rmcp Streamable-HTTP wiring is the one unproven detail** → spike the transport (header access, session lifecycle, SSE) in Phase B behind a `server_info`/`ping` tool before wiring any domain tool; architecture above does not depend on how headers surface because auth is done at the MCP boundary and the SDK client is built there.

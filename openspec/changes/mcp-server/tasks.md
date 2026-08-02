@@ -32,3 +32,23 @@ Shipped as three stacked PRs: A → B → C. Each phase is independently mergeab
 - [ ] C5. Integration tests through the MCP path in `tests-integration`: tenant isolation (tenant A key, tenant B data → denied); `tools/list` availability snapshot (query + discovery tools present); discovery tools return structured tenant-scoped results; `resources/list`/`resources/read` round trip; a tenant-A resource URI read by a tenant-B session returns not-found; payload-cap truncation.
 - [ ] C6. Docs (route via the docs skill): `docs/users/mcp.md` — connecting Claude Code/Claude.ai/generic clients, bearer setup, example flows; `[mcp]` config reference; add the MCP server to the README architecture/service list.
 - [ ] C7. `cargo fmt`, clippy, machete.
+
+## Phase E — Loki/Prometheus query in the SDK + stdio credentials (follow-up)
+
+Delivered as two stacked PRs, mirroring the Tempo slice (A → C).
+
+### E-A. Extend OpenAPI + `signaldb-sdk` to Loki/Prom query (PR 1)
+
+- [ ] EA1. Add `utoipa` to `loki-api` and `prometheus-api`; derive `ToSchema` on the typed envelope structs (`QueryResponse`, `QueryData`, `LabelsResponse`, …) and `IntoParams` on the query-param structs (`InstantQueryParams`/`RangeQueryParams`, `InstantParams`/`RangeParams`).
+- [ ] EA2. Represent the polymorphic result payload permissively (D7): a small manual `ToSchema` on the `resultType`-tagged `QueryResult` enum and the `[timestamp,value]` tuple types (`Sample`, `LogEntry`), or a `#[schema(value_type = …)]` override on the dynamic field, so progenitor generates `serde_json::Value` for the result while the envelope stays typed. No custom HTTP.
+- [ ] EA3. Annotate `logql::query`/`query_range` and `promql::query`/`query_range` with `#[utoipa::path]`; register paths + schemas in `router/src/openapi.rs`; update the `info` description.
+- [ ] EA4. Regenerate `api/signaldb-api.json` (golden test) and the SDK/TS client; assert the new client methods (`logql_query_range`, `promql_query`, …) exist and forward `X-Tenant-ID`.
+- [ ] EA5. Regression: existing `router` tests unchanged (annotation only). `cargo fmt`, clippy, machete.
+
+### E-B. `search_logs` / `query_metrics` tools + stdio credential (PR 2)
+
+- [ ] EB1. Failing tests: `search_logs` (LogQL) and `query_metrics` (PromQL) return structured results via the SDK; malformed query → bad-query; 429 → retryable; oversized → truncated; optional `dataset` argument honored.
+- [ ] EB2. Implement both tools as thin wrappers over the extended SDK (no custom calls), reusing the shared credential-forwarding client, dataset selection, payload cap, and error mapping. Make EB1 pass.
+- [ ] EB3. Stdio credential (D8): add `--token`/`--tenant`/`--dataset` (and `SIGNALDB_MCP_TOKEN`/`_TENANT`/`_DATASET`) to the standalone binary; in stdio mode construct the handler with the fixed credential; the SDK-client builder prefers HTTP `Parts` headers, else the configured stdio credential, else returns a "stdio requires a configured credential" error. HTTP path unchanged.
+- [ ] EB4. Tests: stdio without a credential → query tool errors clearly; stdio with a configured credential → tool reaches the router as that tenant (against a test router). HTTP path still forwards per-request headers.
+- [ ] EB5. Docs: `docs/users/mcp.md` — the two new tools and the `--stdio` credential flags for local dev. `cargo fmt`, clippy, machete.

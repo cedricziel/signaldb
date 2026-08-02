@@ -6,17 +6,24 @@ Defines the Model Context Protocol surface SignalDB exposes to AI agents: how th
 
 ### Requirement: MCP transport and session initialization
 
-The MCP server SHALL expose the Model Context Protocol over Streamable HTTP at the `/mcp` path as its production transport, and SHALL additionally support a stdio transport for local development only. It SHALL respond to the MCP `initialize` handshake advertising `tools` and `resources` capabilities. Streamable HTTP SHALL carry credentials in the `Authorization` and `X-Tenant-ID` headers on every request. The stdio transport has no per-request headers and therefore cannot carry a credential; it SHALL run unauthenticated and SHALL be documented as development-only, never for production.
+The MCP server SHALL expose the Model Context Protocol over Streamable HTTP at the `/mcp` path as its production transport, and SHALL additionally support a stdio transport for single-user local development. It SHALL respond to the MCP `initialize` handshake advertising `tools` and `resources` capabilities.
+
+Streamable HTTP SHALL carry credentials in the `Authorization` and `X-Tenant-ID` headers on every request, and each request is forwarded as that caller. The stdio transport has no per-request headers; the standalone binary MAY be given a single fixed credential (token + tenant, optional dataset) via CLI flags, environment, or config, which query tools use to reach the router. Started without a configured credential, stdio runs unauthenticated: `initialize`/`tools/list` still work, but a query tool returns a clear "stdio requires a configured credential" error rather than an opaque router auth failure. Stdio is documented as development-only, never for production.
 
 #### Scenario: Streamable HTTP initialize succeeds
 
 - **WHEN** an MCP client sends an `initialize` request over Streamable HTTP to `/mcp` with a valid tenant bearer token and `X-Tenant-ID` header
 - **THEN** the server completes the handshake and advertises `tools` and `resources` capabilities
 
-#### Scenario: Stdio transport is development-only and unauthenticated
+#### Scenario: Stdio without a configured credential
 
-- **WHEN** the server is started in stdio mode
-- **THEN** an MCP client connected over stdio can complete `initialize` and list tools, the session is reported as unauthenticated, and the mode is documented as development-only
+- **WHEN** the server is started in stdio mode with no configured credential
+- **THEN** an MCP client can `initialize` and list tools, but invoking a query tool returns a "stdio requires a configured credential" error
+
+#### Scenario: Stdio with a configured credential
+
+- **WHEN** the standalone binary is started in stdio mode with a token + tenant configured, and a query tool is invoked
+- **THEN** the tool reaches the router as that configured credential and returns results scoped to that tenant
 
 ### Requirement: Bearer authentication and credential forwarding
 
