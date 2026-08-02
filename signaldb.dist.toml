@@ -483,9 +483,9 @@ default_tenant = "default"
 # router_url = "http://localhost:3000"  # router HTTP API to forward to
 
 # Environment variable examples:
-# SIGNALDB_MCP_ENABLED=true
-# SIGNALDB_MCP_BIND_ADDRESS=0.0.0.0:8228
-# SIGNALDB_MCP_ROUTER_URL=http://localhost:3000
+# SIGNALDB__MCP__ENABLED=true
+# SIGNALDB__MCP__BIND_ADDRESS=0.0.0.0:8228
+# SIGNALDB__MCP__ROUTER_URL=http://localhost:3000
 # SIGNALDB_DATABASE_DSN=postgres://user:pass@localhost/signaldb
 # SIGNALDB_STORAGE_DSN=file:///data/signaldb
 # SIGNALDB_SCHEMA_CATALOG_TYPE=sql

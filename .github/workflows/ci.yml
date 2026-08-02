@@ -362,7 +362,8 @@ jobs:
             --bin signaldb-querier \
             --bin signaldb-compactor \
             --bin signaldb \
-            --bin signaldb-cli
+            --bin signaldb-cli \
+            --bin signaldb-mcp
 
       - name: Stage binaries
         run: |
@@ -374,6 +375,7 @@ jobs:
              target/x86_64-unknown-linux-musl/release/signaldb-querier \
              target/x86_64-unknown-linux-musl/release/signaldb-compactor \
              target/x86_64-unknown-linux-musl/release/signaldb-cli \
+             target/x86_64-unknown-linux-musl/release/signaldb-mcp \
              dist/
 
       - name: Upload musl binaries
@@ -425,7 +427,8 @@ jobs:
             --bin signaldb-querier \
             --bin signaldb-compactor \
             --bin signaldb \
-            --bin signaldb-cli
+            --bin signaldb-cli \
+            --bin signaldb-mcp
 
       - name: Stage binaries
         run: |
@@ -437,6 +440,7 @@ jobs:
              target/aarch64-unknown-linux-musl/release/signaldb-querier \
              target/aarch64-unknown-linux-musl/release/signaldb-compactor \
              target/aarch64-unknown-linux-musl/release/signaldb-cli \
+             target/aarch64-unknown-linux-musl/release/signaldb-mcp \
              dist/
 
       - name: Upload musl binaries
