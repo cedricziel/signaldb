@@ -477,7 +477,9 @@ default_tenant = "default"
 # key of its own, so tenant isolation stays enforced by the router.
 # [mcp]
 # enabled = false                       # off by default; set true to run the server
-# bind_address = "0.0.0.0:8228"         # Streamable HTTP transport; serves MCP at /mcp
+# bind_address = "127.0.0.1:8228"       # Streamable HTTP at /mcp; loopback default.
+#                                       # A non-loopback bind forwards live bearer
+#                                       # credentials and must sit behind TLS.
 # router_url = "http://localhost:3000"  # router HTTP API to forward to
 
 # Environment variable examples:

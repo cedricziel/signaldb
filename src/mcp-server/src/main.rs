@@ -55,10 +55,7 @@ async fn main() -> Result<()> {
         .router_url
         .clone()
         .unwrap_or_else(|| "http://localhost:3000".to_string());
-    let state = McpAppState {
-        authenticator,
-        router_base_url,
-    };
+    let state = McpAppState::new(authenticator, router_base_url);
 
     let addr: std::net::SocketAddr = config
         .mcp

@@ -4287,6 +4287,7 @@ dependencies = [
  "axum",
  "clap",
  "common",
+ "dashmap",
  "http",
  "reqwest 0.13.4",
  "rmcp",
