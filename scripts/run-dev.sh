@@ -308,9 +308,9 @@ else
 
     # Start MCP server (forwards to the router's HTTP API)
     echo -e "${GREEN}Starting MCP server...${NC}"
-    SIGNALDB_MCP_ENABLED=true \
-    SIGNALDB_MCP_BIND_ADDRESS=0.0.0.0:8228 \
-    SIGNALDB_MCP_ROUTER_URL=http://localhost:3001 \
+    SIGNALDB__MCP__ENABLED=true \
+    SIGNALDB__MCP__BIND_ADDRESS=0.0.0.0:8228 \
+    SIGNALDB__MCP__ROUTER_URL=http://localhost:3001 \
         cargo run --bin signaldb-mcp -- --config "${DEV_CONFIG}" > "${LOG_DIR}/mcp.log" 2>&1 &
     PIDS="$PIDS $!"
     echo "  • MCP (Streamable HTTP): http://localhost:8228/mcp"
