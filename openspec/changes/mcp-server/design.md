@@ -26,7 +26,9 @@ FDAP version alignment is not a concern here: `rmcp` and `utoipa` are outside th
 
 ### D1: Standalone service over SDK, not in-process on the router
 
-The MCP server runs as its own binary/service and talks to the router over HTTP via `signaldb-sdk`. Alternative considered: mount `/mcp` inside the router and call handler functions in-process on shared `RouterState`. Rejected because in-process access hands the MCP layer the catalog/authenticator directly, dissolving the "thin client with no privilege" property that makes a compromised MCP server harmless. Forwarding tokens through the existing HTTP API keeps isolation and quotas enforced in one place. The service is still embeddable in monolithic mode like every other SignalDB service.
+The MCP server runs as its own binary/service and talks to the router **only** over HTTP via `signaldb-sdk`. It depends on no SignalDB internal crate (not `common`, not `router`) — only the generated SDK. Alternative considered: mount `/mcp` inside the router and call handler functions in-process on shared `RouterState`. Rejected because in-process access hands the MCP layer the catalog/authenticator directly, dissolving the "thin client with no privilege" property that makes a compromised MCP server harmless.
+
+**Consequence — always a sidecar, never `/mcp` on the router.** Because its only channel to SignalDB is the router's HTTP API, the MCP server cannot be an in-process route on the router (that would be the router HTTP-calling itself) and it cannot be embedded in the monolith process as an in-process handler. `/mcp` is therefore always served on the MCP service's own port, deployed as a separate process/container (a sidecar) pointing at a router. "Runs in monolithic mode" means running the sidecar alongside the monolith, not mounting a route on it.
 
 ### D2: Extend the code-first OpenAPI to query, regenerate the SDK (Phase A)
 
@@ -36,13 +38,13 @@ Rather than hand-code query HTTP in the MCP server, annotate the query handlers 
 
 Progenitor clients wrap a `reqwest::Client`. At session initialize, after `Authenticator::authenticate` succeeds, build a `reqwest::Client` whose default headers include the caller's `Authorization: Bearer` and `X-Tenant-ID` (and `X-Dataset-ID` when supplied), wrap it with `Client::new_with_client(base_url, ...)`, and hold it for the session's lifetime. Every tool call thus executes as the caller. The MCP server never stores or injects a key of its own.
 
-### D4: Authenticate every request, bind the session to its credential
+### D4: Forward-only auth — the router is the sole validator
 
-The bearer is validated on every Streamable HTTP request via the shared `Authenticator` (an axum layer ahead of the transport), not only at `initialize` — the transport is stateful and re-authenticating each request is cheap and closes the "auth once, then drift" gap. Failure (missing/invalid bearer, or `Authenticator` rejection) yields a 401 before the transport sees the request, so no tool or resource is ever exposed to an unauthenticated caller.
+The SDK-only design (D1) means the MCP server has no auth config and no `Authenticator`. It does not validate credentials; it only enforces credential **presence** and forwards. An axum layer ahead of the transport requires a bearer token and `X-Tenant-ID` on each request — a request carrying neither gets 401 before the transport sees it. Everything else is forwarded to the router, which is the single authority: an invalid, expired, or revoked credential is rejected downstream and surfaces as a clean MCP tool error, not a local pre-emption. This supersedes the earlier "validate at initialize via the platform Authenticator" idea — pre-validating would require the auth config + catalog (privileged state), contradicting the thin-client principle.
 
-**Session binding.** The first authenticated request on a session (keyed by the `mcp-session-id` the transport assigns) pins the resolved `(tenant_id, credential hash)`. Any later request on that session whose bearer resolves to a different tenant, or whose credential hash differs, is rejected — a session cannot be smuggled from one identity to another mid-stream. Binding lives for the session's lifetime; when the credential is revoked, the next request's `Authenticator::authenticate` fails and the session is denied (revocation takes effect within one request). Sessions carry no independent expiry beyond the transport's own idle timeout.
+**Session binding.** The first request on a session (keyed by the `mcp-session-id` the transport assigns) pins `(tenant_id, token hash)` — a non-cryptographic hash of the credential, never the raw token. A later request on that session declaring a different tenant, or presenting a different credential, is rejected (403) — a session cannot be smuggled from one identity to another mid-stream.
 
-**Stdio.** The stdio transport (dev only) has no per-request headers, so it cannot carry a bearer; it therefore runs unauthenticated and is documented as development-only. Production deployments use Streamable HTTP.
+**Stdio.** The stdio transport (dev only) has no per-request headers, so downstream calls carry no credential and the router rejects tool calls that need one; `initialize`/`tools/list`/`server_info` still work. Production deployments use Streamable HTTP. (A configured stdio credential for working dev query tools is the Phase E follow-up.)
 
 ### D5: Error mapping
 

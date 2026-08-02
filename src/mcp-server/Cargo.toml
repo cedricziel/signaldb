@@ -5,7 +5,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-common.workspace = true
 signaldb-sdk.workspace = true
 rmcp.workspace = true
 
@@ -16,6 +15,7 @@ reqwest.workspace = true
 
 anyhow.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
