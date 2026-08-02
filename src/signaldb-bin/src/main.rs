@@ -128,11 +128,14 @@ async fn main() -> Result<()> {
     let (querier_flight_shutdown_tx, querier_flight_shutdown_rx) = oneshot::channel::<()>();
     let (http_router_shutdown_tx, http_router_shutdown_rx) = oneshot::channel::<()>();
 
-    // Create shared catalog manager for consistent metadata across services
+    // Create shared catalog manager for consistent metadata across services.
+    // Attach the SQL catalog as the tenant source so admin-API (database)
+    // tenants are registered for querying alongside config-defined ones.
     let catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await
-            .context("Failed to create catalog manager")?,
+            .context("Failed to create catalog manager")?
+            .with_tenant_source(Arc::new(router_bootstrap.catalog().clone())),
     );
     log::info!("Created shared catalog manager");
 

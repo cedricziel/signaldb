@@ -1,0 +1,109 @@
+## 1. Registry type and source-agnostic descriptors (`common`)
+
+- [x] 1.1 Write a failing unit test (`cargo test -p common`) asserting that,
+      given a `Catalog` seeded with one `source="config"` tenant and one
+      `source="database"` tenant, the registry enumeration returns **both**,
+      each with a resolved tenant slug, dataset slugs, default dataset, and an
+      effective storage DSN.
+- [x] 1.2 Write a failing unit test asserting slug/storage resolution parity:
+      a database-sourced dataset with no override resolves to the same
+      tenant/dataset slug (via the existing `get_tenant_slug`/`get_dataset_slug`)
+      and the same global-default storage DSN that the write path would use.
+- [x] 1.3 Write a failing unit test asserting config overlay precedence: a
+      config tenant with an explicit slug / per-dataset `storage` override and a
+      `schema_config.enabled = false` flag is resolved with its explicit values
+      and excluded when disabled.
+- [x] 1.4 Introduce the registry (a `TenantRegistry { catalog: Arc<Catalog>,
+config: Configuration }` in `common`, or an equivalent method on
+      `CatalogManager`) returning source-agnostic descriptors
+      `{ tenant_id, tenant_slug, datasets: [{ id, slug, storage_dsn,
+is_default }], default_dataset, enabled }`. Make 1.1–1.3 pass.
+- [x] 1.5 Provide a config-only fallback path for contexts with no DB `Catalog`
+      (in-memory/unit), preserving today's behavior; add a test that the
+      fallback matches the current `get_enabled_tenants()` output for a
+      config-only deployment.
+
+## 2. Wire the DB catalog into the enumeration (`common`)
+
+- [x] 2.1 Give `CatalogManager` (or the registry) access to `Arc<Catalog>`;
+      thread the existing auth-side `Catalog` handle through construction in
+      `common` and update `CatalogManager::new`/`new_in_memory` call sites.
+- [x] 2.2 Deprecate/replace `get_enabled_tenants()` with the registry query;
+      keep a thin shim only if needed for the fallback, and update its doc
+      comment to state the registry is the source of truth.
+
+## 3. Querier registration through the registry (`querier`)
+
+- [x] 3.1 Write a failing test (`cargo test -p querier`) that builds
+      `QuerierFlightService::new_with_catalog_manager` against a registry
+      containing a `source="database"` tenant and asserts a DataFusion catalog
+      **and** object store are registered for that tenant/dataset (today only
+      config tenants are).
+- [x] 3.2 Change `new_with_catalog_manager` (flight.rs) to iterate registry
+      descriptors instead of `get_enabled_tenants()` for both object-store
+      registration and per-slug catalog registration; keep the `registered_urls`
+      dedup. Make 3.1 pass.
+- [x] 3.3 Ensure the querier bootstrap (standalone binary + monolithic) supplies
+      the DB `Catalog` to the registry, failing fast with `anyhow::Context` if
+      it is required but unavailable.
+
+## 4. Lazy on-demand catalog registration in the querier (`querier`)
+
+- [x] 4.1 Write a failing test (`cargo test -p querier`) that constructs a
+      querier with an **empty** startup registry, then adds a `source="database"`
+      tenant to the registry after construction, and asserts an authenticated
+      query for that tenant resolves the catalog (registered on demand) instead
+      of failing with `failed to resolve catalog` — with no rebuild/restart of
+      the service.
+- [x] 4.2 Write a failing concurrency test asserting that N simultaneous
+      first-queries for the same not-yet-registered tenant register its catalog
+      exactly once (no duplicate/object-store re-register panic).
+- [x] 4.3 Add an on-demand registration step on the querier's authenticated
+      query path: when the resolved tenant/dataset has no registered DataFusion
+      catalog/object store in the `SessionContext`, resolve it from the registry
+      and register it idempotently (guarded check-then-insert) before executing.
+      Make 4.1–4.2 pass.
+
+## 5. Compactor lifecycle through the registry (`compactor`)
+
+- [x] 5.1 Write a failing test (`cargo test -p compactor`) asserting the planner
+      considers a `source="database"` tenant's datasets as compaction candidates.
+- [x] 5.2 Route `CompactionPlanner::plan` (planner.rs) and the retention /
+      orphan-cleanup loops (main.rs:468/514/527) through the registry. Make 5.1
+      pass.
+- [ ] 5.3 (Deferred) Add a retention test that a database tenant's over-age
+      data is selected under the resolved policy. Not yet written — the
+      retention loops live in a `select!` cycle in `main.rs`, so this needs a
+      full over-age-data fixture rather than a unit test.
+
+## 6. Cross-service integration coverage (`tests-integration`)
+
+- [x] 6.1 Write an integration test (`querier/tests/lazy_tenant_registration.rs`)
+      that creates a tenant purely via the database (no config block) **after**
+      the querier is running and asserts — through the real Flight `do_get`,
+      with no restart — that the logs query resolves the catalog on demand
+      instead of failing with `failed to resolve catalog`.
+- [ ] 6.2 (Deferred) Add an assertion that read and write namespaces match by
+      pushing data through the full acceptor→writer pipeline and reading it
+      back. Not yet written — 6.1 asserts catalog resolution but not a data
+      round-trip; the namespace-parity invariant is covered indirectly by the
+      `common` unit test that maps database datasets by name to the same slug
+      the write path uses.
+- [x] 6.3 Make 6.1 pass end to end.
+
+## 7. Docs and provisioning guidance
+
+- [x] 7.1 Update the multi-tenancy / admin docs to state that admin-API tenants
+      are usable for ingest and query immediately on creation — no
+      `signaldb.toml` edit and no restart — and remove the "add a
+      `[[auth.tenants]]` block or queries 500" requirement (keep it noted only as
+      the historical pre-fix workaround).
+- [x] 7.2 Update the `signaldb-observe` skill's Step 2 gotcha and troubleshooting
+      row (`failed to resolve catalog`) to reflect the fixed behavior.
+
+## 8. Pre-commit gates
+
+- [x] 8.1 `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`,
+      `cargo machete --with-metadata`; run `openspec validate
+unified-tenant-catalog-registry --strict` and the affected `cargo test -p`
+      suites green.

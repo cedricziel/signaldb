@@ -105,12 +105,13 @@ impl CompactionPlanner {
 
         let mut candidates = vec![];
 
-        // Get enabled tenants from configuration
-        let tenants = self.catalog_manager.get_enabled_tenants();
+        // Enumerate active tenants through the registry so database-created
+        // (admin-API) tenants are compacted alongside config-defined ones.
+        let tenants = self.catalog_manager.list_active_tenants().await?;
 
-        tracing::debug!("Found {} enabled tenants to analyze", tenants.len());
+        tracing::debug!("Found {} active tenants to analyze", tenants.len());
 
-        for tenant_config in tenants {
+        for tenant_config in &tenants {
             let tenant_id = &tenant_config.id;
             tracing::debug!("Analyzing tenant: {tenant_id}");
 
@@ -542,5 +543,52 @@ mod tests {
         assert_eq!(config.file_count_threshold, 10);
         assert_eq!(config.min_input_file_size_kb, 1024); // 1MB
         assert_eq!(config.max_files_per_job, 50);
+    }
+
+    #[tokio::test]
+    async fn plan_enumerates_database_tenants() {
+        let config = PlannerConfig {
+            file_count_threshold: 10,
+            min_input_file_size_bytes: 1024 * 1024,
+            max_files_per_job: 50,
+            target_file_size_bytes: 128 * 1024 * 1024,
+        };
+
+        // A tenant that exists only in the database (admin-API created), with
+        // no config block.
+        let source = Arc::new(common::catalog::Catalog::new_in_memory().await.unwrap());
+        source
+            .upsert_tenant("gamma", "Gamma", Some("production"), "database")
+            .await
+            .unwrap();
+        source.create_dataset("gamma", "production").await.unwrap();
+
+        let catalog_manager = Arc::new(
+            CatalogManager::new_in_memory()
+                .await
+                .unwrap()
+                .with_tenant_source(source),
+        );
+        // Materialize a table in the database tenant's namespace so the
+        // planner has something to analyze there.
+        catalog_manager
+            .ensure_table("gamma", "production", "traces")
+            .await
+            .unwrap();
+
+        // The planner enumerates the database tenant (would be skipped if it
+        // still read config-only tenants).
+        let tenants = catalog_manager.list_active_tenants().await.unwrap();
+        assert!(
+            tenants.iter().any(|t| t.id == "gamma"),
+            "database tenant must be enumerated for planning"
+        );
+
+        // A full planning cycle completes over the database tenant.
+        let planner = CompactionPlanner::new(catalog_manager, config);
+        planner
+            .plan()
+            .await
+            .expect("planning over a database tenant should succeed");
     }
 }

@@ -130,11 +130,14 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(service_id = %service_id, "Querier Flight service registered");
 
-    // Create shared catalog manager
+    // Create shared catalog manager, attaching the SQL catalog as the tenant
+    // source so admin-API (database) tenants are registered for querying
+    // alongside config-defined ones.
     let catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await
-            .context("Failed to create catalog manager")?,
+            .context("Failed to create catalog manager")?
+            .with_tenant_source(sql_catalog.clone()),
     );
 
     // Create Flight query service with CatalogManager for per-tenant catalog support

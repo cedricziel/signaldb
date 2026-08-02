@@ -45,6 +45,13 @@ Phase 3 configuration is located in the `[compactor]` section of `signaldb.toml`
 
 Controls automatic retention enforcement and partition lifecycle management.
 
+> **Tenant scope:** retention (and compaction and orphan cleanup) applies to
+> **all active tenants** — both config-defined tenants and those created via
+> the admin API — because the compactor enumerates the source-agnostic tenant
+> registry. An admin-API tenant with no `[[auth.tenants]]` block is still
+> subject to the default 30-day retention; set overrides or disable retention
+> if that is not intended.
+
 #### Basic Settings
 
 | Field                      | Type            | Default | Description                                  |

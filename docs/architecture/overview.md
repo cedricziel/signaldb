@@ -339,6 +339,25 @@ Tenant (e.g., "acme")
 | **DataFusion**        | Per-tenant catalog registration in SessionContext                            |
 | **Storage Backend**   | Per-dataset storage override (different datasets can use different backends) |
 
+### Tenant Registry (source-agnostic enumeration)
+
+Config-file tenants are only the **bootstrap** seed. The active set of tenants
+and datasets is a source-agnostic registry — the union of config-defined and
+database-created (admin-API) tenants — that every query- and lifecycle-side
+subsystem resolves through, mirroring the merged auth resolver above:
+
+- `CatalogManager::list_active_tenants` / `resolve_tenant_by_slug` return the
+  union of config tenants (with their explicit slug/storage overrides) and
+  database tenants (slug/storage derived via `get_tenant_slug` /
+  `get_dataset_slug` / global-storage fallback, datasets keyed by name).
+- The **querier** registers a DataFusion catalog for every registry tenant at
+  startup and lazily registers a tenant's catalog on its first query, so an
+  admin-API tenant is queryable the moment it is created — no restart and no
+  `[[auth.tenants]]` block required.
+- The **compactor** enumerates the registry for planning, retention, and
+  orphan cleanup, so database tenants receive the same lifecycle management as
+  config tenants.
+
 ### Configuration
 
 ```toml
