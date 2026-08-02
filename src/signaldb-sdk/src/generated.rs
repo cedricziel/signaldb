@@ -33,13 +33,13 @@ pub mod types {
             }
         }
     }
-    ///Standard API error response
+    ///Standard API error response.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Standard API error response",
+    ///  "description": "Standard API error response.",
     ///  "type": "object",
     ///  "required": [
     ///    "error",
@@ -47,11 +47,11 @@ pub mod types {
     ///  ],
     ///  "properties": {
     ///    "error": {
-    ///      "description": "Error category",
+    ///      "description": "Error category.",
     ///      "type": "string"
     ///    },
     ///    "message": {
-    ///      "description": "Human-readable error description",
+    ///      "description": "Human-readable error description.",
     ///      "type": "string"
     ///    }
     ///  }
@@ -60,9 +60,9 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ApiError {
-        ///Error category
+        ///Error category.
         pub error: ::std::string::String,
-        ///Human-readable error description
+        ///Human-readable error description.
         pub message: ::std::string::String,
     }
     impl ApiError {
@@ -70,13 +70,13 @@ pub mod types {
             Default::default()
         }
     }
-    ///API key information (without the raw key)
+    ///API key information (without the raw key).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "API key information (without the raw key)",
+    ///  "description": "API key information (without the raw key).",
     ///  "type": "object",
     ///  "required": [
     ///    "created_at",
@@ -84,20 +84,26 @@ pub mod types {
     ///  ],
     ///  "properties": {
     ///    "created_at": {
-    ///      "description": "ISO 8601 creation timestamp",
+    ///      "description": "ISO 8601 creation timestamp.",
     ///      "type": "string"
     ///    },
     ///    "id": {
-    ///      "description": "Unique key identifier",
+    ///      "description": "Unique key identifier.",
     ///      "type": "string"
     ///    },
     ///    "name": {
-    ///      "description": "Optional human-readable name",
-    ///      "type": "string"
+    ///      "description": "Optional human-readable name.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
     ///    },
     ///    "revoked_at": {
-    ///      "description": "ISO 8601 revocation timestamp (if revoked)",
-    ///      "type": "string"
+    ///      "description": "ISO 8601 revocation timestamp (if revoked).",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
     ///    }
     ///  }
     ///}
@@ -105,14 +111,14 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ApiKeyResponse {
-        ///ISO 8601 creation timestamp
+        ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
-        ///Unique key identifier
+        ///Unique key identifier.
         pub id: ::std::string::String,
-        ///Optional human-readable name
+        ///Optional human-readable name.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
-        ///ISO 8601 revocation timestamp (if revoked)
+        ///ISO 8601 revocation timestamp (if revoked).
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub revoked_at: ::std::option::Option<::std::string::String>,
     }
@@ -121,18 +127,21 @@ pub mod types {
             Default::default()
         }
     }
-    ///Request body for creating a new API key
+    ///Request body for creating a new API key.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Request body for creating a new API key",
+    ///  "description": "Request body for creating a new API key.",
     ///  "type": "object",
     ///  "properties": {
     ///    "name": {
-    ///      "description": "Optional human-readable name for the key",
-    ///      "type": "string"
+    ///      "description": "Optional human-readable name for the key.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
     ///    }
     ///  }
     ///}
@@ -140,7 +149,7 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateApiKeyRequest {
-        ///Optional human-readable name for the key
+        ///Optional human-readable name for the key.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
     }
@@ -156,13 +165,13 @@ pub mod types {
             Default::default()
         }
     }
-    ///Response returned when a new API key is created (includes the raw key)
+    ///Response returned when a new API key is created (includes the raw key).
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Response returned when a new API key is created (includes the raw key)",
+    ///  "description": "Response returned when a new API key is created (includes the raw key).",
     ///  "type": "object",
     ///  "required": [
     ///    "created_at",
@@ -171,20 +180,23 @@ pub mod types {
     ///  ],
     ///  "properties": {
     ///    "created_at": {
-    ///      "description": "ISO 8601 creation timestamp",
+    ///      "description": "ISO 8601 creation timestamp.",
     ///      "type": "string"
     ///    },
     ///    "id": {
-    ///      "description": "Unique key identifier",
+    ///      "description": "Unique key identifier.",
     ///      "type": "string"
     ///    },
     ///    "key": {
-    ///      "description": "The raw API key (only shown once at creation time)",
+    ///      "description": "The raw API key (only shown once at creation time).",
     ///      "type": "string"
     ///    },
     ///    "name": {
-    ///      "description": "Optional human-readable name",
-    ///      "type": "string"
+    ///      "description": "Optional human-readable name.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
     ///    }
     ///  }
     ///}
@@ -192,13 +204,13 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateApiKeyResponse {
-        ///ISO 8601 creation timestamp
+        ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
-        ///Unique key identifier
+        ///Unique key identifier.
         pub id: ::std::string::String,
-        ///The raw API key (only shown once at creation time)
+        ///The raw API key (only shown once at creation time).
         pub key: ::std::string::String,
-        ///Optional human-readable name
+        ///Optional human-readable name.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
     }
@@ -207,20 +219,20 @@ pub mod types {
             Default::default()
         }
     }
-    ///Request body for creating a new dataset
+    ///Request body for creating a new dataset.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Request body for creating a new dataset",
+    ///  "description": "Request body for creating a new dataset.",
     ///  "type": "object",
     ///  "required": [
     ///    "name"
     ///  ],
     ///  "properties": {
     ///    "name": {
-    ///      "description": "Dataset name",
+    ///      "description": "Dataset name.",
     ///      "type": "string"
     ///    }
     ///  }
@@ -229,7 +241,7 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateDatasetRequest {
-        ///Dataset name
+        ///Dataset name.
         pub name: ::std::string::String,
     }
     impl CreateDatasetRequest {
@@ -237,13 +249,13 @@ pub mod types {
             Default::default()
         }
     }
-    ///Request body for creating a new tenant
+    ///Request body for creating a new tenant.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Request body for creating a new tenant",
+    ///  "description": "Request body for creating a new tenant.",
     ///  "type": "object",
     ///  "required": [
     ///    "id",
@@ -251,15 +263,18 @@ pub mod types {
     ///  ],
     ///  "properties": {
     ///    "default_dataset": {
-    ///      "description": "Default dataset name",
-    ///      "type": "string"
+    ///      "description": "Default dataset name.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
     ///    },
     ///    "id": {
-    ///      "description": "Unique tenant identifier",
+    ///      "description": "Unique tenant identifier.",
     ///      "type": "string"
     ///    },
     ///    "name": {
-    ///      "description": "Human-readable tenant name",
+    ///      "description": "Human-readable tenant name.",
     ///      "type": "string"
     ///    }
     ///  }
@@ -268,12 +283,12 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateTenantRequest {
-        ///Default dataset name
+        ///Default dataset name.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub default_dataset: ::std::option::Option<::std::string::String>,
-        ///Unique tenant identifier
+        ///Unique tenant identifier.
         pub id: ::std::string::String,
-        ///Human-readable tenant name
+        ///Human-readable tenant name.
         pub name: ::std::string::String,
     }
     impl CreateTenantRequest {
@@ -281,13 +296,13 @@ pub mod types {
             Default::default()
         }
     }
-    ///Dataset information returned by the API
+    ///Dataset information returned by the API.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Dataset information returned by the API",
+    ///  "description": "Dataset information returned by the API.",
     ///  "type": "object",
     ///  "required": [
     ///    "created_at",
@@ -297,19 +312,19 @@ pub mod types {
     ///  ],
     ///  "properties": {
     ///    "created_at": {
-    ///      "description": "ISO 8601 creation timestamp",
+    ///      "description": "ISO 8601 creation timestamp.",
     ///      "type": "string"
     ///    },
     ///    "id": {
-    ///      "description": "Unique dataset identifier",
+    ///      "description": "Unique dataset identifier.",
     ///      "type": "string"
     ///    },
     ///    "name": {
-    ///      "description": "Dataset name",
+    ///      "description": "Dataset name.",
     ///      "type": "string"
     ///    },
     ///    "tenant_id": {
-    ///      "description": "Tenant that owns this dataset",
+    ///      "description": "Tenant that owns this dataset.",
     ///      "type": "string"
     ///    }
     ///  }
@@ -318,13 +333,13 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct DatasetResponse {
-        ///ISO 8601 creation timestamp
+        ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
-        ///Unique dataset identifier
+        ///Unique dataset identifier.
         pub id: ::std::string::String,
-        ///Dataset name
+        ///Dataset name.
         pub name: ::std::string::String,
-        ///Tenant that owns this dataset
+        ///Tenant that owns this dataset.
         pub tenant_id: ::std::string::String,
     }
     impl DatasetResponse {
@@ -332,20 +347,20 @@ pub mod types {
             Default::default()
         }
     }
-    ///Response containing a list of API keys
+    ///Response containing a list of API keys.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Response containing a list of API keys",
+    ///  "description": "Response containing a list of API keys.",
     ///  "type": "object",
     ///  "required": [
     ///    "api_keys"
     ///  ],
     ///  "properties": {
     ///    "api_keys": {
-    ///      "description": "List of API key records (without raw keys)",
+    ///      "description": "List of API key records (without raw keys).",
     ///      "type": "array",
     ///      "items": {
     ///        "$ref": "#/components/schemas/ApiKeyResponse"
@@ -357,7 +372,7 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ListApiKeysResponse {
-        ///List of API key records (without raw keys)
+        ///List of API key records (without raw keys).
         pub api_keys: ::std::vec::Vec<ApiKeyResponse>,
     }
     impl ListApiKeysResponse {
@@ -365,20 +380,20 @@ pub mod types {
             Default::default()
         }
     }
-    ///Response containing a list of datasets
+    ///Response containing a list of datasets.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Response containing a list of datasets",
+    ///  "description": "Response containing a list of datasets.",
     ///  "type": "object",
     ///  "required": [
     ///    "datasets"
     ///  ],
     ///  "properties": {
     ///    "datasets": {
-    ///      "description": "List of dataset records",
+    ///      "description": "List of dataset records.",
     ///      "type": "array",
     ///      "items": {
     ///        "$ref": "#/components/schemas/DatasetResponse"
@@ -390,7 +405,7 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ListDatasetsResponse {
-        ///List of dataset records
+        ///List of dataset records.
         pub datasets: ::std::vec::Vec<DatasetResponse>,
     }
     impl ListDatasetsResponse {
@@ -398,20 +413,20 @@ pub mod types {
             Default::default()
         }
     }
-    ///Response containing a list of tenants
+    ///Response containing a list of tenants.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Response containing a list of tenants",
+    ///  "description": "Response containing a list of tenants.",
     ///  "type": "object",
     ///  "required": [
     ///    "tenants"
     ///  ],
     ///  "properties": {
     ///    "tenants": {
-    ///      "description": "List of tenant records",
+    ///      "description": "List of tenant records.",
     ///      "type": "array",
     ///      "items": {
     ///        "$ref": "#/components/schemas/TenantResponse"
@@ -423,7 +438,7 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ListTenantsResponse {
-        ///List of tenant records
+        ///List of tenant records.
         pub tenants: ::std::vec::Vec<TenantResponse>,
     }
     impl ListTenantsResponse {
@@ -431,105 +446,123 @@ pub mod types {
             Default::default()
         }
     }
-    ///Flamegraph payload in flamebearer encoding
+    ///`ManageApiKeyResponse`
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Flamegraph payload in flamebearer encoding",
     ///  "type": "object",
     ///  "required": [
-    ///    "levels",
-    ///    "maxSelf",
-    ///    "names",
-    ///    "numTicks"
+    ///    "id",
+    ///    "revoked"
     ///  ],
     ///  "properties": {
-    ///    "levels": {
-    ///      "description": "One flat array per depth level; single format uses [offset_delta, total, self, name_index] quadruples, double format uses septuples carrying baseline and comparison values",
-    ///      "type": "array",
+    ///    "dataset_id": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "id": {
+    ///      "type": "string"
+    ///    },
+    ///    "name": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "revoked": {
+    ///      "type": "boolean"
+    ///    },
+    ///    "scopes": {
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
     ///      "items": {
-    ///        "type": "array",
-    ///        "items": {
-    ///          "type": "integer",
-    ///          "format": "int64"
-    ///        }
+    ///        "type": "string"
     ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ManageApiKeyResponse {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_id: ::std::option::Option<::std::string::String>,
+        pub id: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub name: ::std::option::Option<::std::string::String>,
+        pub revoked: bool,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub scopes: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+    }
+    impl ManageApiKeyResponse {
+        pub fn builder() -> builder::ManageApiKeyResponse {
+            Default::default()
+        }
+    }
+    ///`ManageCreateApiKeyRequest`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "scopes"
+    ///  ],
+    ///  "properties": {
+    ///    "dataset_id": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
     ///    },
-    ///    "maxSelf": {
-    ///      "description": "Largest self value of any block",
-    ///      "type": "integer",
-    ///      "format": "int64"
+    ///    "name": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
     ///    },
-    ///    "names": {
-    ///      "description": "Function name table referenced by block name indices",
+    ///    "scopes": {
     ///      "type": "array",
     ///      "items": {
     ///        "type": "string"
     ///      }
-    ///    },
-    ///    "numTicks": {
-    ///      "description": "Total number of ticks (root width)",
-    ///      "type": "integer",
-    ///      "format": "int64"
     ///    }
     ///  }
     ///}
     /// ```
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct PyroscopeFlamebearer {
-        ///One flat array per depth level; single format uses [offset_delta, total, self, name_index] quadruples, double format uses septuples carrying baseline and comparison values
-        pub levels: ::std::vec::Vec<::std::vec::Vec<i64>>,
-        ///Largest self value of any block
-        #[serde(rename = "maxSelf")]
-        pub max_self: i64,
-        ///Function name table referenced by block name indices
-        pub names: ::std::vec::Vec<::std::string::String>,
-        ///Total number of ticks (root width)
-        #[serde(rename = "numTicks")]
-        pub num_ticks: i64,
+    pub struct ManageCreateApiKeyRequest {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_id: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub name: ::std::option::Option<::std::string::String>,
+        pub scopes: ::std::vec::Vec<::std::string::String>,
     }
-    impl PyroscopeFlamebearer {
-        pub fn builder() -> builder::PyroscopeFlamebearer {
+    impl ManageCreateApiKeyRequest {
+        pub fn builder() -> builder::ManageCreateApiKeyRequest {
             Default::default()
         }
     }
-    ///How to interpret flamebearer values
+    ///`ManageCreateDatasetRequest`
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "How to interpret flamebearer values",
     ///  "type": "object",
     ///  "required": [
-    ///    "format",
-    ///    "name",
-    ///    "sampleRate",
-    ///    "units"
+    ///    "name"
     ///  ],
     ///  "properties": {
-    ///    "format": {
-    ///      "description": "single for one profile set, double for a diff",
-    ///      "type": "string"
-    ///    },
     ///    "name": {
-    ///      "description": "Display name of the rendered query",
-    ///      "type": "string"
-    ///    },
-    ///    "sampleRate": {
-    ///      "description": "Sample rate in Hz",
-    ///      "type": "integer",
-    ///      "format": "int32"
-    ///    },
-    ///    "spyName": {
-    ///      "description": "Profiler that produced the data",
-    ///      "type": "string"
-    ///    },
-    ///    "units": {
-    ///      "description": "Value units (samples, objects, bytes)",
     ///      "type": "string"
     ///    }
     ///  }
@@ -537,245 +570,327 @@ pub mod types {
     /// ```
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct PyroscopeFlamebearerMetadata {
-        ///single for one profile set, double for a diff
-        pub format: ::std::string::String,
-        ///Display name of the rendered query
+    pub struct ManageCreateDatasetRequest {
         pub name: ::std::string::String,
-        ///Sample rate in Hz
-        #[serde(rename = "sampleRate")]
-        pub sample_rate: i32,
-        ///Profiler that produced the data
-        #[serde(
-            rename = "spyName",
-            default,
-            skip_serializing_if = "::std::option::Option::is_none"
-        )]
-        pub spy_name: ::std::option::Option<::std::string::String>,
-        ///Value units (samples, objects, bytes)
-        pub units: ::std::string::String,
     }
-    impl PyroscopeFlamebearerMetadata {
-        pub fn builder() -> builder::PyroscopeFlamebearerMetadata {
+    impl ManageCreateDatasetRequest {
+        pub fn builder() -> builder::ManageCreateDatasetRequest {
             Default::default()
         }
     }
-    ///Label names or values
+    ///`ManageCreateTenantRequest`
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Label names or values",
     ///  "type": "object",
     ///  "required": [
-    ///    "names"
+    ///    "id",
+    ///    "name"
     ///  ],
     ///  "properties": {
-    ///    "names": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct PyroscopeLabelsResponse {
-        pub names: ::std::vec::Vec<::std::string::String>,
-    }
-    impl PyroscopeLabelsResponse {
-        pub fn builder() -> builder::PyroscopeLabelsResponse {
-            Default::default()
-        }
-    }
-    ///An available profile type
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "An available profile type",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "ID",
-    ///    "name",
-    ///    "sampleType",
-    ///    "sampleUnit"
-    ///  ],
-    ///  "properties": {
-    ///    "ID": {
-    ///      "description": "Canonical profile type ID",
+    ///    "default_dataset": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "id": {
     ///      "type": "string"
     ///    },
     ///    "name": {
     ///      "type": "string"
-    ///    },
-    ///    "periodType": {
-    ///      "type": "string"
-    ///    },
-    ///    "periodUnit": {
-    ///      "type": "string"
-    ///    },
-    ///    "sampleType": {
-    ///      "type": "string"
-    ///    },
-    ///    "sampleUnit": {
-    ///      "type": "string"
     ///    }
     ///  }
     ///}
     /// ```
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct PyroscopeProfileType {
-        ///Canonical profile type ID
-        #[serde(rename = "ID")]
+    pub struct ManageCreateTenantRequest {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub default_dataset: ::std::option::Option<::std::string::String>,
         pub id: ::std::string::String,
         pub name: ::std::string::String,
-        #[serde(
-            rename = "periodType",
-            default,
-            skip_serializing_if = "::std::option::Option::is_none"
-        )]
-        pub period_type: ::std::option::Option<::std::string::String>,
-        #[serde(
-            rename = "periodUnit",
-            default,
-            skip_serializing_if = "::std::option::Option::is_none"
-        )]
-        pub period_unit: ::std::option::Option<::std::string::String>,
-        #[serde(rename = "sampleType")]
-        pub sample_type: ::std::string::String,
-        #[serde(rename = "sampleUnit")]
-        pub sample_unit: ::std::string::String,
     }
-    impl PyroscopeProfileType {
-        pub fn builder() -> builder::PyroscopeProfileType {
+    impl ManageCreateTenantRequest {
+        pub fn builder() -> builder::ManageCreateTenantRequest {
             Default::default()
         }
     }
-    ///Response of the render and render-diff endpoints
+    /**201 response body for API key creation via the management API.
+
+    Fields mirror the previous `json!` body exactly (including `null` for
+    absent `name`/`dataset_id`), preserving the wire format.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Response of the render and render-diff endpoints",
+    ///  "description": "201 response body for API key creation via the management API.\n\nFields mirror the previous `json!` body exactly (including `null` for\nabsent `name`/`dataset_id`), preserving the wire format.",
     ///  "type": "object",
     ///  "required": [
-    ///    "flamebearer",
-    ///    "metadata"
+    ///    "id",
+    ///    "key",
+    ///    "scopes"
     ///  ],
     ///  "properties": {
-    ///    "flamebearer": {
-    ///      "$ref": "#/components/schemas/PyroscopeFlamebearer"
+    ///    "dataset_id": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
     ///    },
-    ///    "leftTicks": {
-    ///      "description": "Total baseline ticks (double format only)",
-    ///      "type": "integer",
-    ///      "format": "int64"
+    ///    "id": {
+    ///      "type": "string"
     ///    },
-    ///    "metadata": {
-    ///      "$ref": "#/components/schemas/PyroscopeFlamebearerMetadata"
+    ///    "key": {
+    ///      "type": "string"
     ///    },
-    ///    "rightTicks": {
-    ///      "description": "Total comparison ticks (double format only)",
-    ///      "type": "integer",
-    ///      "format": "int64"
+    ///    "name": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
     ///    },
-    ///    "timeline": {
-    ///      "$ref": "#/components/schemas/PyroscopeTimeline"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct PyroscopeRenderResponse {
-        pub flamebearer: PyroscopeFlamebearer,
-        ///Total baseline ticks (double format only)
-        #[serde(
-            rename = "leftTicks",
-            default,
-            skip_serializing_if = "::std::option::Option::is_none"
-        )]
-        pub left_ticks: ::std::option::Option<i64>,
-        pub metadata: PyroscopeFlamebearerMetadata,
-        ///Total comparison ticks (double format only)
-        #[serde(
-            rename = "rightTicks",
-            default,
-            skip_serializing_if = "::std::option::Option::is_none"
-        )]
-        pub right_ticks: ::std::option::Option<i64>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub timeline: ::std::option::Option<PyroscopeTimeline>,
-    }
-    impl PyroscopeRenderResponse {
-        pub fn builder() -> builder::PyroscopeRenderResponse {
-            Default::default()
-        }
-    }
-    ///Per-interval sample counts for the render timeline
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Per-interval sample counts for the render timeline",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "durationDelta",
-    ///    "samples",
-    ///    "startTime"
-    ///  ],
-    ///  "properties": {
-    ///    "durationDelta": {
-    ///      "description": "Interval width in seconds",
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    },
-    ///    "samples": {
+    ///    "scopes": {
     ///      "type": "array",
     ///      "items": {
-    ///        "type": "integer",
-    ///        "format": "int64"
+    ///        "type": "string"
     ///      }
-    ///    },
-    ///    "startTime": {
-    ///      "description": "Start of the timeline, unix seconds",
-    ///      "type": "integer",
-    ///      "format": "int64"
     ///    }
     ///  }
     ///}
     /// ```
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct PyroscopeTimeline {
-        ///Interval width in seconds
-        #[serde(rename = "durationDelta")]
-        pub duration_delta: i64,
-        pub samples: ::std::vec::Vec<i64>,
-        ///Start of the timeline, unix seconds
-        #[serde(rename = "startTime")]
-        pub start_time: i64,
+    pub struct ManageCreatedApiKey {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_id: ::std::option::Option<::std::string::String>,
+        pub id: ::std::string::String,
+        pub key: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub name: ::std::option::Option<::std::string::String>,
+        pub scopes: ::std::vec::Vec<::std::string::String>,
     }
-    impl PyroscopeTimeline {
-        pub fn builder() -> builder::PyroscopeTimeline {
+    impl ManageCreatedApiKey {
+        pub fn builder() -> builder::ManageCreatedApiKey {
             Default::default()
         }
     }
-    ///Tenant information returned by the API
+    ///201 response body for tenant creation via the management API.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Tenant information returned by the API",
+    ///  "description": "201 response body for tenant creation via the management API.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "id"
+    ///  ],
+    ///  "properties": {
+    ///    "id": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ManageCreatedTenant {
+        pub id: ::std::string::String,
+    }
+    impl ManageCreatedTenant {
+        pub fn builder() -> builder::ManageCreatedTenant {
+            Default::default()
+        }
+    }
+    ///`ManageDatasetResponse`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "id",
+    ///    "name"
+    ///  ],
+    ///  "properties": {
+    ///    "id": {
+    ///      "type": "string"
+    ///    },
+    ///    "name": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ManageDatasetResponse {
+        pub id: ::std::string::String,
+        pub name: ::std::string::String,
+    }
+    impl ManageDatasetResponse {
+        pub fn builder() -> builder::ManageDatasetResponse {
+            Default::default()
+        }
+    }
+    ///Error response body for the management API.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Error response body for the management API.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "error"
+    ///  ],
+    ///  "properties": {
+    ///    "error": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ManageError {
+        pub error: ::std::string::String,
+    }
+    impl ManageError {
+        pub fn builder() -> builder::ManageError {
+            Default::default()
+        }
+    }
+    ///`MembershipResponse`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "email",
+    ///    "role",
+    ///    "user_id"
+    ///  ],
+    ///  "properties": {
+    ///    "email": {
+    ///      "type": "string"
+    ///    },
+    ///    "role": {
+    ///      "$ref": "#/components/schemas/MembershipRole"
+    ///    },
+    ///    "user_id": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct MembershipResponse {
+        pub email: ::std::string::String,
+        pub role: MembershipRole,
+        pub user_id: ::std::string::String,
+    }
+    impl MembershipResponse {
+        pub fn builder() -> builder::MembershipResponse {
+            Default::default()
+        }
+    }
+    /**Role a user holds within a tenant.
+
+    Stored as lowercase TEXT in the `tenant_memberships` table, matching
+    the `CHECK(role IN ('admin', 'member', 'viewer'))` constraint.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Role a user holds within a tenant.\n\nStored as lowercase TEXT in the `tenant_memberships` table, matching\nthe `CHECK(role IN ('admin', 'member', 'viewer'))` constraint.",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "admin",
+    ///    "member",
+    ///    "viewer"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum MembershipRole {
+        #[serde(rename = "admin")]
+        Admin,
+        #[serde(rename = "member")]
+        Member,
+        #[serde(rename = "viewer")]
+        Viewer,
+    }
+    impl ::std::fmt::Display for MembershipRole {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Admin => f.write_str("admin"),
+                Self::Member => f.write_str("member"),
+                Self::Viewer => f.write_str("viewer"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for MembershipRole {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "admin" => Ok(Self::Admin),
+                "member" => Ok(Self::Member),
+                "viewer" => Ok(Self::Viewer),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for MembershipRole {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for MembershipRole {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for MembershipRole {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///Tenant information returned by the API.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Tenant information returned by the API.",
     ///  "type": "object",
     ///  "required": [
     ///    "created_at",
@@ -786,27 +901,30 @@ pub mod types {
     ///  ],
     ///  "properties": {
     ///    "created_at": {
-    ///      "description": "ISO 8601 creation timestamp",
+    ///      "description": "ISO 8601 creation timestamp.",
     ///      "type": "string"
     ///    },
     ///    "default_dataset": {
-    ///      "description": "Default dataset name",
-    ///      "type": "string"
+    ///      "description": "Default dataset name.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
     ///    },
     ///    "id": {
-    ///      "description": "Unique tenant identifier",
+    ///      "description": "Unique tenant identifier.",
     ///      "type": "string"
     ///    },
     ///    "name": {
-    ///      "description": "Human-readable tenant name",
+    ///      "description": "Human-readable tenant name.",
     ///      "type": "string"
     ///    },
     ///    "source": {
-    ///      "description": "Source of the tenant record (config or database)",
+    ///      "description": "Source of the tenant record (config or database).",
     ///      "type": "string"
     ///    },
     ///    "updated_at": {
-    ///      "description": "ISO 8601 last-updated timestamp",
+    ///      "description": "ISO 8601 last-updated timestamp.",
     ///      "type": "string"
     ///    }
     ///  }
@@ -815,18 +933,18 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TenantResponse {
-        ///ISO 8601 creation timestamp
+        ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
-        ///Default dataset name
+        ///Default dataset name.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub default_dataset: ::std::option::Option<::std::string::String>,
-        ///Unique tenant identifier
+        ///Unique tenant identifier.
         pub id: ::std::string::String,
-        ///Human-readable tenant name
+        ///Human-readable tenant name.
         pub name: ::std::string::String,
-        ///Source of the tenant record (config or database)
+        ///Source of the tenant record (config or database).
         pub source: ::std::string::String,
-        ///ISO 8601 last-updated timestamp
+        ///ISO 8601 last-updated timestamp.
         pub updated_at: ::std::string::String,
     }
     impl TenantResponse {
@@ -834,98 +952,28 @@ pub mod types {
             Default::default()
         }
     }
-    ///Summary of a stored profile linked to a trace
+    ///Request body for updating an existing tenant.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Summary of a stored profile linked to a trace",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "durationNano",
-    ///    "profileID",
-    ///    "sampleType",
-    ///    "sampleUnit",
-    ///    "serviceName",
-    ///    "timeUnixNano"
-    ///  ],
-    ///  "properties": {
-    ///    "durationNano": {
-    ///      "description": "Profile duration in nanoseconds as string",
-    ///      "type": "string"
-    ///    },
-    ///    "profileID": {
-    ///      "description": "Hex-encoded profile ID",
-    ///      "type": "string"
-    ///    },
-    ///    "sampleType": {
-    ///      "type": "string"
-    ///    },
-    ///    "sampleUnit": {
-    ///      "type": "string"
-    ///    },
-    ///    "serviceName": {
-    ///      "type": "string"
-    ///    },
-    ///    "spanID": {
-    ///      "description": "Hex-encoded span ID when the link names a span",
-    ///      "type": "string"
-    ///    },
-    ///    "timeUnixNano": {
-    ///      "description": "Collection time, unix nanoseconds as string",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct TraceProfileSummary {
-        ///Profile duration in nanoseconds as string
-        #[serde(rename = "durationNano")]
-        pub duration_nano: ::std::string::String,
-        ///Hex-encoded profile ID
-        #[serde(rename = "profileID")]
-        pub profile_id: ::std::string::String,
-        #[serde(rename = "sampleType")]
-        pub sample_type: ::std::string::String,
-        #[serde(rename = "sampleUnit")]
-        pub sample_unit: ::std::string::String,
-        #[serde(rename = "serviceName")]
-        pub service_name: ::std::string::String,
-        ///Hex-encoded span ID when the link names a span
-        #[serde(
-            rename = "spanID",
-            default,
-            skip_serializing_if = "::std::option::Option::is_none"
-        )]
-        pub span_id: ::std::option::Option<::std::string::String>,
-        ///Collection time, unix nanoseconds as string
-        #[serde(rename = "timeUnixNano")]
-        pub time_unix_nano: ::std::string::String,
-    }
-    impl TraceProfileSummary {
-        pub fn builder() -> builder::TraceProfileSummary {
-            Default::default()
-        }
-    }
-    ///Request body for updating an existing tenant
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Request body for updating an existing tenant",
+    ///  "description": "Request body for updating an existing tenant.",
     ///  "type": "object",
     ///  "properties": {
     ///    "default_dataset": {
-    ///      "description": "Updated default dataset",
-    ///      "type": "string"
+    ///      "description": "Updated default dataset.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
     ///    },
     ///    "name": {
-    ///      "description": "Updated tenant name",
-    ///      "type": "string"
+    ///      "description": "Updated tenant name.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
     ///    }
     ///  }
     ///}
@@ -933,10 +981,10 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct UpdateTenantRequest {
-        ///Updated default dataset
+        ///Updated default dataset.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub default_dataset: ::std::option::Option<::std::string::String>,
-        ///Updated tenant name
+        ///Updated tenant name.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
     }
@@ -950,6 +998,38 @@ pub mod types {
     }
     impl UpdateTenantRequest {
         pub fn builder() -> builder::UpdateTenantRequest {
+            Default::default()
+        }
+    }
+    ///`UpsertMembershipRequest`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "email",
+    ///    "role"
+    ///  ],
+    ///  "properties": {
+    ///    "email": {
+    ///      "type": "string"
+    ///    },
+    ///    "role": {
+    ///      "$ref": "#/components/schemas/MembershipRole"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct UpsertMembershipRequest {
+        pub email: ::std::string::String,
+        pub role: MembershipRole,
+    }
+    impl UpsertMembershipRequest {
+        pub fn builder() -> builder::UpsertMembershipRequest {
             Default::default()
         }
     }
@@ -1544,124 +1624,201 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
-        pub struct PyroscopeFlamebearer {
-            levels:
-                ::std::result::Result<::std::vec::Vec<::std::vec::Vec<i64>>, ::std::string::String>,
-            max_self: ::std::result::Result<i64, ::std::string::String>,
-            names: ::std::result::Result<
-                ::std::vec::Vec<::std::string::String>,
-                ::std::string::String,
-            >,
-            num_ticks: ::std::result::Result<i64, ::std::string::String>,
-        }
-        impl ::std::default::Default for PyroscopeFlamebearer {
-            fn default() -> Self {
-                Self {
-                    levels: Err("no value supplied for levels".to_string()),
-                    max_self: Err("no value supplied for max_self".to_string()),
-                    names: Err("no value supplied for names".to_string()),
-                    num_ticks: Err("no value supplied for num_ticks".to_string()),
-                }
-            }
-        }
-        impl PyroscopeFlamebearer {
-            pub fn levels<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::vec::Vec<::std::vec::Vec<i64>>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.levels = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for levels: {e}"));
-                self
-            }
-            pub fn max_self<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<i64>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.max_self = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for max_self: {e}"));
-                self
-            }
-            pub fn names<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.names = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for names: {e}"));
-                self
-            }
-            pub fn num_ticks<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<i64>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.num_ticks = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for num_ticks: {e}"));
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<PyroscopeFlamebearer> for super::PyroscopeFlamebearer {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: PyroscopeFlamebearer,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self {
-                    levels: value.levels?,
-                    max_self: value.max_self?,
-                    names: value.names?,
-                    num_ticks: value.num_ticks?,
-                })
-            }
-        }
-        impl ::std::convert::From<super::PyroscopeFlamebearer> for PyroscopeFlamebearer {
-            fn from(value: super::PyroscopeFlamebearer) -> Self {
-                Self {
-                    levels: Ok(value.levels),
-                    max_self: Ok(value.max_self),
-                    names: Ok(value.names),
-                    num_ticks: Ok(value.num_ticks),
-                }
-            }
-        }
-        #[derive(Clone, Debug)]
-        pub struct PyroscopeFlamebearerMetadata {
-            format: ::std::result::Result<::std::string::String, ::std::string::String>,
-            name: ::std::result::Result<::std::string::String, ::std::string::String>,
-            sample_rate: ::std::result::Result<i32, ::std::string::String>,
-            spy_name: ::std::result::Result<
+        pub struct ManageApiKeyResponse {
+            dataset_id: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
                 ::std::string::String,
             >,
-            units: ::std::result::Result<::std::string::String, ::std::string::String>,
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            revoked: ::std::result::Result<bool, ::std::string::String>,
+            scopes: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
         }
-        impl ::std::default::Default for PyroscopeFlamebearerMetadata {
+        impl ::std::default::Default for ManageApiKeyResponse {
             fn default() -> Self {
                 Self {
-                    format: Err("no value supplied for format".to_string()),
-                    name: Err("no value supplied for name".to_string()),
-                    sample_rate: Err("no value supplied for sample_rate".to_string()),
-                    spy_name: Ok(Default::default()),
-                    units: Err("no value supplied for units".to_string()),
+                    dataset_id: Ok(Default::default()),
+                    id: Err("no value supplied for id".to_string()),
+                    name: Ok(Default::default()),
+                    revoked: Err("no value supplied for revoked".to_string()),
+                    scopes: Ok(Default::default()),
                 }
             }
         }
-        impl PyroscopeFlamebearerMetadata {
-            pub fn format<T>(mut self, value: T) -> Self
+        impl ManageApiKeyResponse {
+            pub fn dataset_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                self
+            }
+            pub fn id<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::string::String>,
                 T::Error: ::std::fmt::Display,
             {
-                self.format = value
+                self.id = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for format: {e}"));
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
                 self
             }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn revoked<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.revoked = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for revoked: {e}"));
+                self
+            }
+            pub fn scopes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.scopes = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for scopes: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ManageApiKeyResponse> for super::ManageApiKeyResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ManageApiKeyResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dataset_id: value.dataset_id?,
+                    id: value.id?,
+                    name: value.name?,
+                    revoked: value.revoked?,
+                    scopes: value.scopes?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ManageApiKeyResponse> for ManageApiKeyResponse {
+            fn from(value: super::ManageApiKeyResponse) -> Self {
+                Self {
+                    dataset_id: Ok(value.dataset_id),
+                    id: Ok(value.id),
+                    name: Ok(value.name),
+                    revoked: Ok(value.revoked),
+                    scopes: Ok(value.scopes),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ManageCreateApiKeyRequest {
+            dataset_id: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            name: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            scopes: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for ManageCreateApiKeyRequest {
+            fn default() -> Self {
+                Self {
+                    dataset_id: Ok(Default::default()),
+                    name: Ok(Default::default()),
+                    scopes: Err("no value supplied for scopes".to_string()),
+                }
+            }
+        }
+        impl ManageCreateApiKeyRequest {
+            pub fn dataset_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn scopes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.scopes = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for scopes: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ManageCreateApiKeyRequest> for super::ManageCreateApiKeyRequest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ManageCreateApiKeyRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dataset_id: value.dataset_id?,
+                    name: value.name?,
+                    scopes: value.scopes?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ManageCreateApiKeyRequest> for ManageCreateApiKeyRequest {
+            fn from(value: super::ManageCreateApiKeyRequest) -> Self {
+                Self {
+                    dataset_id: Ok(value.dataset_id),
+                    name: Ok(value.name),
+                    scopes: Ok(value.scopes),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ManageCreateDatasetRequest {
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ManageCreateDatasetRequest {
+            fn default() -> Self {
+                Self {
+                    name: Err("no value supplied for name".to_string()),
+                }
+            }
+        }
+        impl ManageCreateDatasetRequest {
             pub fn name<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::string::String>,
@@ -1672,133 +1829,51 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for name: {e}"));
                 self
             }
-            pub fn sample_rate<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<i32>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.sample_rate = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for sample_rate: {e}"));
-                self
+        }
+        impl ::std::convert::TryFrom<ManageCreateDatasetRequest> for super::ManageCreateDatasetRequest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ManageCreateDatasetRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self { name: value.name? })
             }
-            pub fn spy_name<T>(mut self, value: T) -> Self
+        }
+        impl ::std::convert::From<super::ManageCreateDatasetRequest> for ManageCreateDatasetRequest {
+            fn from(value: super::ManageCreateDatasetRequest) -> Self {
+                Self {
+                    name: Ok(value.name),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ManageCreateTenantRequest {
+            default_dataset: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ManageCreateTenantRequest {
+            fn default() -> Self {
+                Self {
+                    default_dataset: Ok(Default::default()),
+                    id: Err("no value supplied for id".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                }
+            }
+        }
+        impl ManageCreateTenantRequest {
+            pub fn default_dataset<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
                 T::Error: ::std::fmt::Display,
             {
-                self.spy_name = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for spy_name: {e}"));
+                self.default_dataset = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for default_dataset: {e}")
+                });
                 self
             }
-            pub fn units<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.units = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for units: {e}"));
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<PyroscopeFlamebearerMetadata> for super::PyroscopeFlamebearerMetadata {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: PyroscopeFlamebearerMetadata,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self {
-                    format: value.format?,
-                    name: value.name?,
-                    sample_rate: value.sample_rate?,
-                    spy_name: value.spy_name?,
-                    units: value.units?,
-                })
-            }
-        }
-        impl ::std::convert::From<super::PyroscopeFlamebearerMetadata> for PyroscopeFlamebearerMetadata {
-            fn from(value: super::PyroscopeFlamebearerMetadata) -> Self {
-                Self {
-                    format: Ok(value.format),
-                    name: Ok(value.name),
-                    sample_rate: Ok(value.sample_rate),
-                    spy_name: Ok(value.spy_name),
-                    units: Ok(value.units),
-                }
-            }
-        }
-        #[derive(Clone, Debug)]
-        pub struct PyroscopeLabelsResponse {
-            names: ::std::result::Result<
-                ::std::vec::Vec<::std::string::String>,
-                ::std::string::String,
-            >,
-        }
-        impl ::std::default::Default for PyroscopeLabelsResponse {
-            fn default() -> Self {
-                Self {
-                    names: Err("no value supplied for names".to_string()),
-                }
-            }
-        }
-        impl PyroscopeLabelsResponse {
-            pub fn names<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.names = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for names: {e}"));
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<PyroscopeLabelsResponse> for super::PyroscopeLabelsResponse {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: PyroscopeLabelsResponse,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self {
-                    names: value.names?,
-                })
-            }
-        }
-        impl ::std::convert::From<super::PyroscopeLabelsResponse> for PyroscopeLabelsResponse {
-            fn from(value: super::PyroscopeLabelsResponse) -> Self {
-                Self {
-                    names: Ok(value.names),
-                }
-            }
-        }
-        #[derive(Clone, Debug)]
-        pub struct PyroscopeProfileType {
-            id: ::std::result::Result<::std::string::String, ::std::string::String>,
-            name: ::std::result::Result<::std::string::String, ::std::string::String>,
-            period_type: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
-                ::std::string::String,
-            >,
-            period_unit: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
-                ::std::string::String,
-            >,
-            sample_type: ::std::result::Result<::std::string::String, ::std::string::String>,
-            sample_unit: ::std::result::Result<::std::string::String, ::std::string::String>,
-        }
-        impl ::std::default::Default for PyroscopeProfileType {
-            fn default() -> Self {
-                Self {
-                    id: Err("no value supplied for id".to_string()),
-                    name: Err("no value supplied for name".to_string()),
-                    period_type: Ok(Default::default()),
-                    period_unit: Ok(Default::default()),
-                    sample_type: Err("no value supplied for sample_type".to_string()),
-                    sample_unit: Err("no value supplied for sample_unit".to_string()),
-                }
-            }
-        }
-        impl PyroscopeProfileType {
             pub fn id<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::string::String>,
@@ -1819,239 +1894,328 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for name: {e}"));
                 self
             }
-            pub fn period_type<T>(mut self, value: T) -> Self
+        }
+        impl ::std::convert::TryFrom<ManageCreateTenantRequest> for super::ManageCreateTenantRequest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ManageCreateTenantRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    default_dataset: value.default_dataset?,
+                    id: value.id?,
+                    name: value.name?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ManageCreateTenantRequest> for ManageCreateTenantRequest {
+            fn from(value: super::ManageCreateTenantRequest) -> Self {
+                Self {
+                    default_dataset: Ok(value.default_dataset),
+                    id: Ok(value.id),
+                    name: Ok(value.name),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ManageCreatedApiKey {
+            dataset_id: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            key: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            scopes: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for ManageCreatedApiKey {
+            fn default() -> Self {
+                Self {
+                    dataset_id: Ok(Default::default()),
+                    id: Err("no value supplied for id".to_string()),
+                    key: Err("no value supplied for key".to_string()),
+                    name: Ok(Default::default()),
+                    scopes: Err("no value supplied for scopes".to_string()),
+                }
+            }
+        }
+        impl ManageCreatedApiKey {
+            pub fn dataset_id<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
                 T::Error: ::std::fmt::Display,
             {
-                self.period_type = value
+                self.dataset_id = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for period_type: {e}"));
+                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
                 self
             }
-            pub fn period_unit<T>(mut self, value: T) -> Self
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
+                self
+            }
+            pub fn key<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.key = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for key: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
                 T::Error: ::std::fmt::Display,
             {
-                self.period_unit = value
+                self.name = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for period_unit: {e}"));
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
                 self
             }
-            pub fn sample_type<T>(mut self, value: T) -> Self
+            pub fn scopes<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::string::String>,
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
                 T::Error: ::std::fmt::Display,
             {
-                self.sample_type = value
+                self.scopes = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for sample_type: {e}"));
-                self
-            }
-            pub fn sample_unit<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.sample_unit = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for sample_unit: {e}"));
+                    .map_err(|e| format!("error converting supplied value for scopes: {e}"));
                 self
             }
         }
-        impl ::std::convert::TryFrom<PyroscopeProfileType> for super::PyroscopeProfileType {
+        impl ::std::convert::TryFrom<ManageCreatedApiKey> for super::ManageCreatedApiKey {
             type Error = super::error::ConversionError;
             fn try_from(
-                value: PyroscopeProfileType,
+                value: ManageCreatedApiKey,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dataset_id: value.dataset_id?,
+                    id: value.id?,
+                    key: value.key?,
+                    name: value.name?,
+                    scopes: value.scopes?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ManageCreatedApiKey> for ManageCreatedApiKey {
+            fn from(value: super::ManageCreatedApiKey) -> Self {
+                Self {
+                    dataset_id: Ok(value.dataset_id),
+                    id: Ok(value.id),
+                    key: Ok(value.key),
+                    name: Ok(value.name),
+                    scopes: Ok(value.scopes),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ManageCreatedTenant {
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ManageCreatedTenant {
+            fn default() -> Self {
+                Self {
+                    id: Err("no value supplied for id".to_string()),
+                }
+            }
+        }
+        impl ManageCreatedTenant {
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ManageCreatedTenant> for super::ManageCreatedTenant {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ManageCreatedTenant,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self { id: value.id? })
+            }
+        }
+        impl ::std::convert::From<super::ManageCreatedTenant> for ManageCreatedTenant {
+            fn from(value: super::ManageCreatedTenant) -> Self {
+                Self { id: Ok(value.id) }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ManageDatasetResponse {
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ManageDatasetResponse {
+            fn default() -> Self {
+                Self {
+                    id: Err("no value supplied for id".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                }
+            }
+        }
+        impl ManageDatasetResponse {
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ManageDatasetResponse> for super::ManageDatasetResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ManageDatasetResponse,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     id: value.id?,
                     name: value.name?,
-                    period_type: value.period_type?,
-                    period_unit: value.period_unit?,
-                    sample_type: value.sample_type?,
-                    sample_unit: value.sample_unit?,
                 })
             }
         }
-        impl ::std::convert::From<super::PyroscopeProfileType> for PyroscopeProfileType {
-            fn from(value: super::PyroscopeProfileType) -> Self {
+        impl ::std::convert::From<super::ManageDatasetResponse> for ManageDatasetResponse {
+            fn from(value: super::ManageDatasetResponse) -> Self {
                 Self {
                     id: Ok(value.id),
                     name: Ok(value.name),
-                    period_type: Ok(value.period_type),
-                    period_unit: Ok(value.period_unit),
-                    sample_type: Ok(value.sample_type),
-                    sample_unit: Ok(value.sample_unit),
                 }
             }
         }
         #[derive(Clone, Debug)]
-        pub struct PyroscopeRenderResponse {
-            flamebearer: ::std::result::Result<super::PyroscopeFlamebearer, ::std::string::String>,
-            left_ticks: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
-            metadata:
-                ::std::result::Result<super::PyroscopeFlamebearerMetadata, ::std::string::String>,
-            right_ticks: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
-            timeline: ::std::result::Result<
-                ::std::option::Option<super::PyroscopeTimeline>,
-                ::std::string::String,
-            >,
+        pub struct ManageError {
+            error: ::std::result::Result<::std::string::String, ::std::string::String>,
         }
-        impl ::std::default::Default for PyroscopeRenderResponse {
+        impl ::std::default::Default for ManageError {
             fn default() -> Self {
                 Self {
-                    flamebearer: Err("no value supplied for flamebearer".to_string()),
-                    left_ticks: Ok(Default::default()),
-                    metadata: Err("no value supplied for metadata".to_string()),
-                    right_ticks: Ok(Default::default()),
-                    timeline: Ok(Default::default()),
+                    error: Err("no value supplied for error".to_string()),
                 }
             }
         }
-        impl PyroscopeRenderResponse {
-            pub fn flamebearer<T>(mut self, value: T) -> Self
+        impl ManageError {
+            pub fn error<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<super::PyroscopeFlamebearer>,
+                T: ::std::convert::TryInto<::std::string::String>,
                 T::Error: ::std::fmt::Display,
             {
-                self.flamebearer = value
+                self.error = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for flamebearer: {e}"));
-                self
-            }
-            pub fn left_ticks<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::option::Option<i64>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.left_ticks = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for left_ticks: {e}"));
-                self
-            }
-            pub fn metadata<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<super::PyroscopeFlamebearerMetadata>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.metadata = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for metadata: {e}"));
-                self
-            }
-            pub fn right_ticks<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::option::Option<i64>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.right_ticks = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for right_ticks: {e}"));
-                self
-            }
-            pub fn timeline<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::option::Option<super::PyroscopeTimeline>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.timeline = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for timeline: {e}"));
+                    .map_err(|e| format!("error converting supplied value for error: {e}"));
                 self
             }
         }
-        impl ::std::convert::TryFrom<PyroscopeRenderResponse> for super::PyroscopeRenderResponse {
+        impl ::std::convert::TryFrom<ManageError> for super::ManageError {
             type Error = super::error::ConversionError;
             fn try_from(
-                value: PyroscopeRenderResponse,
+                value: ManageError,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
-                    flamebearer: value.flamebearer?,
-                    left_ticks: value.left_ticks?,
-                    metadata: value.metadata?,
-                    right_ticks: value.right_ticks?,
-                    timeline: value.timeline?,
+                    error: value.error?,
                 })
             }
         }
-        impl ::std::convert::From<super::PyroscopeRenderResponse> for PyroscopeRenderResponse {
-            fn from(value: super::PyroscopeRenderResponse) -> Self {
+        impl ::std::convert::From<super::ManageError> for ManageError {
+            fn from(value: super::ManageError) -> Self {
                 Self {
-                    flamebearer: Ok(value.flamebearer),
-                    left_ticks: Ok(value.left_ticks),
-                    metadata: Ok(value.metadata),
-                    right_ticks: Ok(value.right_ticks),
-                    timeline: Ok(value.timeline),
+                    error: Ok(value.error),
                 }
             }
         }
         #[derive(Clone, Debug)]
-        pub struct PyroscopeTimeline {
-            duration_delta: ::std::result::Result<i64, ::std::string::String>,
-            samples: ::std::result::Result<::std::vec::Vec<i64>, ::std::string::String>,
-            start_time: ::std::result::Result<i64, ::std::string::String>,
+        pub struct MembershipResponse {
+            email: ::std::result::Result<::std::string::String, ::std::string::String>,
+            role: ::std::result::Result<super::MembershipRole, ::std::string::String>,
+            user_id: ::std::result::Result<::std::string::String, ::std::string::String>,
         }
-        impl ::std::default::Default for PyroscopeTimeline {
+        impl ::std::default::Default for MembershipResponse {
             fn default() -> Self {
                 Self {
-                    duration_delta: Err("no value supplied for duration_delta".to_string()),
-                    samples: Err("no value supplied for samples".to_string()),
-                    start_time: Err("no value supplied for start_time".to_string()),
+                    email: Err("no value supplied for email".to_string()),
+                    role: Err("no value supplied for role".to_string()),
+                    user_id: Err("no value supplied for user_id".to_string()),
                 }
             }
         }
-        impl PyroscopeTimeline {
-            pub fn duration_delta<T>(mut self, value: T) -> Self
+        impl MembershipResponse {
+            pub fn email<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<i64>,
+                T: ::std::convert::TryInto<::std::string::String>,
                 T::Error: ::std::fmt::Display,
             {
-                self.duration_delta = value.try_into().map_err(|e| {
-                    format!("error converting supplied value for duration_delta: {e}")
-                });
+                self.email = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for email: {e}"));
                 self
             }
-            pub fn samples<T>(mut self, value: T) -> Self
+            pub fn role<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::vec::Vec<i64>>,
+                T: ::std::convert::TryInto<super::MembershipRole>,
                 T::Error: ::std::fmt::Display,
             {
-                self.samples = value
+                self.role = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for samples: {e}"));
+                    .map_err(|e| format!("error converting supplied value for role: {e}"));
                 self
             }
-            pub fn start_time<T>(mut self, value: T) -> Self
+            pub fn user_id<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<i64>,
+                T: ::std::convert::TryInto<::std::string::String>,
                 T::Error: ::std::fmt::Display,
             {
-                self.start_time = value
+                self.user_id = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for start_time: {e}"));
+                    .map_err(|e| format!("error converting supplied value for user_id: {e}"));
                 self
             }
         }
-        impl ::std::convert::TryFrom<PyroscopeTimeline> for super::PyroscopeTimeline {
+        impl ::std::convert::TryFrom<MembershipResponse> for super::MembershipResponse {
             type Error = super::error::ConversionError;
             fn try_from(
-                value: PyroscopeTimeline,
+                value: MembershipResponse,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
-                    duration_delta: value.duration_delta?,
-                    samples: value.samples?,
-                    start_time: value.start_time?,
+                    email: value.email?,
+                    role: value.role?,
+                    user_id: value.user_id?,
                 })
             }
         }
-        impl ::std::convert::From<super::PyroscopeTimeline> for PyroscopeTimeline {
-            fn from(value: super::PyroscopeTimeline) -> Self {
+        impl ::std::convert::From<super::MembershipResponse> for MembershipResponse {
+            fn from(value: super::MembershipResponse) -> Self {
                 Self {
-                    duration_delta: Ok(value.duration_delta),
-                    samples: Ok(value.samples),
-                    start_time: Ok(value.start_time),
+                    email: Ok(value.email),
+                    role: Ok(value.role),
+                    user_id: Ok(value.user_id),
                 }
             }
         }
@@ -2169,133 +2333,6 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
-        pub struct TraceProfileSummary {
-            duration_nano: ::std::result::Result<::std::string::String, ::std::string::String>,
-            profile_id: ::std::result::Result<::std::string::String, ::std::string::String>,
-            sample_type: ::std::result::Result<::std::string::String, ::std::string::String>,
-            sample_unit: ::std::result::Result<::std::string::String, ::std::string::String>,
-            service_name: ::std::result::Result<::std::string::String, ::std::string::String>,
-            span_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
-                ::std::string::String,
-            >,
-            time_unix_nano: ::std::result::Result<::std::string::String, ::std::string::String>,
-        }
-        impl ::std::default::Default for TraceProfileSummary {
-            fn default() -> Self {
-                Self {
-                    duration_nano: Err("no value supplied for duration_nano".to_string()),
-                    profile_id: Err("no value supplied for profile_id".to_string()),
-                    sample_type: Err("no value supplied for sample_type".to_string()),
-                    sample_unit: Err("no value supplied for sample_unit".to_string()),
-                    service_name: Err("no value supplied for service_name".to_string()),
-                    span_id: Ok(Default::default()),
-                    time_unix_nano: Err("no value supplied for time_unix_nano".to_string()),
-                }
-            }
-        }
-        impl TraceProfileSummary {
-            pub fn duration_nano<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.duration_nano = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for duration_nano: {e}"));
-                self
-            }
-            pub fn profile_id<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.profile_id = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for profile_id: {e}"));
-                self
-            }
-            pub fn sample_type<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.sample_type = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for sample_type: {e}"));
-                self
-            }
-            pub fn sample_unit<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.sample_unit = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for sample_unit: {e}"));
-                self
-            }
-            pub fn service_name<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.service_name = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for service_name: {e}"));
-                self
-            }
-            pub fn span_id<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.span_id = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for span_id: {e}"));
-                self
-            }
-            pub fn time_unix_nano<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.time_unix_nano = value.try_into().map_err(|e| {
-                    format!("error converting supplied value for time_unix_nano: {e}")
-                });
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<TraceProfileSummary> for super::TraceProfileSummary {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: TraceProfileSummary,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self {
-                    duration_nano: value.duration_nano?,
-                    profile_id: value.profile_id?,
-                    sample_type: value.sample_type?,
-                    sample_unit: value.sample_unit?,
-                    service_name: value.service_name?,
-                    span_id: value.span_id?,
-                    time_unix_nano: value.time_unix_nano?,
-                })
-            }
-        }
-        impl ::std::convert::From<super::TraceProfileSummary> for TraceProfileSummary {
-            fn from(value: super::TraceProfileSummary) -> Self {
-                Self {
-                    duration_nano: Ok(value.duration_nano),
-                    profile_id: Ok(value.profile_id),
-                    sample_type: Ok(value.sample_type),
-                    sample_unit: Ok(value.sample_unit),
-                    service_name: Ok(value.service_name),
-                    span_id: Ok(value.span_id),
-                    time_unix_nano: Ok(value.time_unix_nano),
-                }
-            }
-        }
-        #[derive(Clone, Debug)]
         pub struct UpdateTenantRequest {
             default_dataset: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
@@ -2355,12 +2392,66 @@ pub mod types {
                 }
             }
         }
+        #[derive(Clone, Debug)]
+        pub struct UpsertMembershipRequest {
+            email: ::std::result::Result<::std::string::String, ::std::string::String>,
+            role: ::std::result::Result<super::MembershipRole, ::std::string::String>,
+        }
+        impl ::std::default::Default for UpsertMembershipRequest {
+            fn default() -> Self {
+                Self {
+                    email: Err("no value supplied for email".to_string()),
+                    role: Err("no value supplied for role".to_string()),
+                }
+            }
+        }
+        impl UpsertMembershipRequest {
+            pub fn email<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.email = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for email: {e}"));
+                self
+            }
+            pub fn role<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::MembershipRole>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.role = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for role: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<UpsertMembershipRequest> for super::UpsertMembershipRequest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: UpsertMembershipRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    email: value.email?,
+                    role: value.role?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::UpsertMembershipRequest> for UpsertMembershipRequest {
+            fn from(value: super::UpsertMembershipRequest) -> Self {
+                Self {
+                    email: Ok(value.email),
+                    role: Ok(value.role),
+                }
+            }
+        }
     }
 }
 #[derive(Clone, Debug)]
-/**Client for SignalDB Admin API
+/**Client for SignalDB API
 
-Tenant management API for SignalDB
+SignalDB admin and tenant-management HTTP API
 
 Version: 1.0.0*/
 pub struct Client {
@@ -2414,109 +2505,9 @@ impl ClientInfo<()> for Client {
 }
 impl ClientHooks<()> for &Client {}
 impl Client {
-    /**List summaries of profiles linked to a trace
-
-    Sends a `GET` request to `/api/profiles/trace/{trace_id}`
-
-    Arguments:
-    - `trace_id`: Hex-encoded trace ID
-    ```ignore
-    let response = client.list_profiles_for_trace()
-        .trace_id(trace_id)
-        .send()
-        .await;
-    ```*/
-    pub fn list_profiles_for_trace(&self) -> builder::ListProfilesForTrace<'_> {
-        builder::ListProfilesForTrace::new(self)
-    }
-    /**List label names present on stored profiles
-
-    Sends a `GET` request to `/pyroscope/label-names`
-
-    ```ignore
-    let response = client.list_profile_label_names()
-        .from(from)
-        .until(until)
-        .send()
-        .await;
-    ```*/
-    pub fn list_profile_label_names(&self) -> builder::ListProfileLabelNames<'_> {
-        builder::ListProfileLabelNames::new(self)
-    }
-    /**List values for a profile label
-
-    Sends a `GET` request to `/pyroscope/label-values`
-
-    ```ignore
-    let response = client.list_profile_label_values()
-        .from(from)
-        .label(label)
-        .until(until)
-        .send()
-        .await;
-    ```*/
-    pub fn list_profile_label_values(&self) -> builder::ListProfileLabelValues<'_> {
-        builder::ListProfileLabelValues::new(self)
-    }
-    /**List available profile types
-
-    Sends a `GET` request to `/pyroscope/profile-types`
-
-    ```ignore
-    let response = client.list_profile_types()
-        .from(from)
-        .until(until)
-        .send()
-        .await;
-    ```*/
-    pub fn list_profile_types(&self) -> builder::ListProfileTypes<'_> {
-        builder::ListProfileTypes::new(self)
-    }
-    /**Render a flamegraph for a profile query and time range
-
-    Sends a `GET` request to `/pyroscope/render`
-
-    Arguments:
-    - `from`: Range start (unix seconds, unix milliseconds, or now-<N><s|m|h|d>)
-    - `query`: Pyroscope query, e.g. process_cpu:cpu:nanoseconds{service_name="checkout"}
-    - `until`: Range end (same formats as from)
-    ```ignore
-    let response = client.render_profile_flamegraph()
-        .from(from)
-        .query(query)
-        .until(until)
-        .send()
-        .await;
-    ```*/
-    pub fn render_profile_flamegraph(&self) -> builder::RenderProfileFlamegraph<'_> {
-        builder::RenderProfileFlamegraph::new(self)
-    }
-    /**Render a differential flamegraph between two time ranges
-
-    Sends a `GET` request to `/pyroscope/render-diff`
-
-    Arguments:
-    - `left_from`: Baseline range start
-    - `left_until`: Baseline range end
-    - `query`
-    - `right_from`: Comparison range start
-    - `right_until`: Comparison range end
-    ```ignore
-    let response = client.render_profile_diff()
-        .left_from(left_from)
-        .left_until(left_until)
-        .query(query)
-        .right_from(right_from)
-        .right_until(right_until)
-        .send()
-        .await;
-    ```*/
-    pub fn render_profile_diff(&self) -> builder::RenderProfileDiff<'_> {
-        builder::RenderProfileDiff::new(self)
-    }
     /**List all tenants
 
-    Sends a `GET` request to `/tenants`
+    Sends a `GET` request to `/api/v1/admin/tenants`
 
     ```ignore
     let response = client.list_tenants()
@@ -2528,7 +2519,7 @@ impl Client {
     }
     /**Create a new tenant
 
-    Sends a `POST` request to `/tenants`
+    Sends a `POST` request to `/api/v1/admin/tenants`
 
     ```ignore
     let response = client.create_tenant()
@@ -2541,7 +2532,7 @@ impl Client {
     }
     /**Get a tenant by ID
 
-    Sends a `GET` request to `/tenants/{tenant_id}`
+    Sends a `GET` request to `/api/v1/admin/tenants/{tenant_id}`
 
     Arguments:
     - `tenant_id`: Tenant identifier
@@ -2556,7 +2547,7 @@ impl Client {
     }
     /**Update a tenant
 
-    Sends a `PUT` request to `/tenants/{tenant_id}`
+    Sends a `PUT` request to `/api/v1/admin/tenants/{tenant_id}`
 
     Arguments:
     - `tenant_id`: Tenant identifier
@@ -2573,7 +2564,7 @@ impl Client {
     }
     /**Delete a tenant
 
-    Sends a `DELETE` request to `/tenants/{tenant_id}`
+    Sends a `DELETE` request to `/api/v1/admin/tenants/{tenant_id}`
 
     Arguments:
     - `tenant_id`: Tenant identifier
@@ -2588,7 +2579,7 @@ impl Client {
     }
     /**List API keys for a tenant
 
-    Sends a `GET` request to `/tenants/{tenant_id}/api-keys`
+    Sends a `GET` request to `/api/v1/admin/tenants/{tenant_id}/api-keys`
 
     Arguments:
     - `tenant_id`: Tenant identifier
@@ -2603,7 +2594,7 @@ impl Client {
     }
     /**Create a new API key for a tenant
 
-    Sends a `POST` request to `/tenants/{tenant_id}/api-keys`
+    Sends a `POST` request to `/api/v1/admin/tenants/{tenant_id}/api-keys`
 
     Arguments:
     - `tenant_id`: Tenant identifier
@@ -2620,7 +2611,7 @@ impl Client {
     }
     /**Revoke an API key
 
-    Sends a `DELETE` request to `/tenants/{tenant_id}/api-keys/{key_id}`
+    Sends a `DELETE` request to `/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}`
 
     Arguments:
     - `tenant_id`: Tenant identifier
@@ -2637,7 +2628,7 @@ impl Client {
     }
     /**List datasets for a tenant
 
-    Sends a `GET` request to `/tenants/{tenant_id}/datasets`
+    Sends a `GET` request to `/api/v1/admin/tenants/{tenant_id}/datasets`
 
     Arguments:
     - `tenant_id`: Tenant identifier
@@ -2652,7 +2643,7 @@ impl Client {
     }
     /**Create a new dataset for a tenant
 
-    Sends a `POST` request to `/tenants/{tenant_id}/datasets`
+    Sends a `POST` request to `/api/v1/admin/tenants/{tenant_id}/datasets`
 
     Arguments:
     - `tenant_id`: Tenant identifier
@@ -2669,7 +2660,7 @@ impl Client {
     }
     /**Delete a dataset
 
-    Sends a `DELETE` request to `/tenants/{tenant_id}/datasets/{dataset_id}`
+    Sends a `DELETE` request to `/api/v1/admin/tenants/{tenant_id}/datasets/{dataset_id}`
 
     Arguments:
     - `tenant_id`: Tenant identifier
@@ -2684,6 +2675,146 @@ impl Client {
     pub fn delete_dataset(&self) -> builder::DeleteDataset<'_> {
         builder::DeleteDataset::new(self)
     }
+    /**Sends a `POST` request to `/api/v1/manage/tenants`
+
+    ```ignore
+    let response = client.manage_create_tenant()
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn manage_create_tenant(&self) -> builder::ManageCreateTenant<'_> {
+        builder::ManageCreateTenant::new(self)
+    }
+    /**Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/api-keys`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    ```ignore
+    let response = client.manage_list_api_keys()
+        .tenant_id(tenant_id)
+        .send()
+        .await;
+    ```*/
+    pub fn manage_list_api_keys(&self) -> builder::ManageListApiKeys<'_> {
+        builder::ManageListApiKeys::new(self)
+    }
+    /**Sends a `POST` request to `/api/v1/manage/tenants/{tenant_id}/api-keys`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `body`
+    ```ignore
+    let response = client.manage_create_api_key()
+        .tenant_id(tenant_id)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn manage_create_api_key(&self) -> builder::ManageCreateApiKey<'_> {
+        builder::ManageCreateApiKey::new(self)
+    }
+    /**Sends a `DELETE` request to `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `key_id`: API key identifier
+    ```ignore
+    let response = client.manage_revoke_api_key()
+        .tenant_id(tenant_id)
+        .key_id(key_id)
+        .send()
+        .await;
+    ```*/
+    pub fn manage_revoke_api_key(&self) -> builder::ManageRevokeApiKey<'_> {
+        builder::ManageRevokeApiKey::new(self)
+    }
+    /**Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/datasets`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    ```ignore
+    let response = client.manage_list_datasets()
+        .tenant_id(tenant_id)
+        .send()
+        .await;
+    ```*/
+    pub fn manage_list_datasets(&self) -> builder::ManageListDatasets<'_> {
+        builder::ManageListDatasets::new(self)
+    }
+    /**Sends a `POST` request to `/api/v1/manage/tenants/{tenant_id}/datasets`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `body`
+    ```ignore
+    let response = client.manage_create_dataset()
+        .tenant_id(tenant_id)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn manage_create_dataset(&self) -> builder::ManageCreateDataset<'_> {
+        builder::ManageCreateDataset::new(self)
+    }
+    /**Sends a `DELETE` request to `/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `dataset_name`: Dataset name
+    ```ignore
+    let response = client.manage_delete_dataset()
+        .tenant_id(tenant_id)
+        .dataset_name(dataset_name)
+        .send()
+        .await;
+    ```*/
+    pub fn manage_delete_dataset(&self) -> builder::ManageDeleteDataset<'_> {
+        builder::ManageDeleteDataset::new(self)
+    }
+    /**Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/memberships`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    ```ignore
+    let response = client.manage_list_memberships()
+        .tenant_id(tenant_id)
+        .send()
+        .await;
+    ```*/
+    pub fn manage_list_memberships(&self) -> builder::ManageListMemberships<'_> {
+        builder::ManageListMemberships::new(self)
+    }
+    /**Sends a `PUT` request to `/api/v1/manage/tenants/{tenant_id}/memberships`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `body`
+    ```ignore
+    let response = client.manage_upsert_membership()
+        .tenant_id(tenant_id)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn manage_upsert_membership(&self) -> builder::ManageUpsertMembership<'_> {
+        builder::ManageUpsertMembership::new(self)
+    }
+    /**Sends a `DELETE` request to `/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `user_id`: User identifier
+    ```ignore
+    let response = client.manage_remove_membership()
+        .tenant_id(tenant_id)
+        .user_id(user_id)
+        .send()
+        .await;
+    ```*/
+    pub fn manage_remove_membership(&self) -> builder::ManageRemoveMembership<'_> {
+        builder::ManageRemoveMembership::new(self)
+    }
 }
 /// Types for composing operation parameters.
 #[allow(clippy::all)]
@@ -2694,543 +2825,6 @@ pub mod builder {
         ByteStream, ClientHooks, ClientInfo, Error, OperationInfo, RequestBuilderExt,
         ResponseValue, encode_path,
     };
-    /**Builder for [`Client::list_profiles_for_trace`]
-
-    [`Client::list_profiles_for_trace`]: super::Client::list_profiles_for_trace*/
-    #[derive(Debug, Clone)]
-    pub struct ListProfilesForTrace<'a> {
-        client: &'a super::Client,
-        trace_id: Result<::std::string::String, String>,
-    }
-    impl<'a> ListProfilesForTrace<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                trace_id: Err("trace_id was not initialized".to_string()),
-            }
-        }
-        pub fn trace_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.trace_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for trace_id failed".to_string()
-            });
-            self
-        }
-        ///Sends a `GET` request to `/api/profiles/trace/{trace_id}`
-        pub async fn send(
-            self,
-        ) -> Result<
-            ResponseValue<::std::vec::Vec<types::TraceProfileSummary>>,
-            Error<types::ApiError>,
-        > {
-            let Self { client, trace_id } = self;
-            let trace_id = trace_id.map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/profiles/trace/{}",
-                client.baseurl,
-                encode_path(&trace_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .get(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "list_profiles_for_trace",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                400u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::list_profile_label_names`]
-
-    [`Client::list_profile_label_names`]: super::Client::list_profile_label_names*/
-    #[derive(Debug, Clone)]
-    pub struct ListProfileLabelNames<'a> {
-        client: &'a super::Client,
-        from: Result<Option<::std::string::String>, String>,
-        until: Result<Option<::std::string::String>, String>,
-    }
-    impl<'a> ListProfileLabelNames<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                from: Ok(None),
-                until: Ok(None),
-            }
-        }
-        pub fn from<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.from = value.try_into().map(Some).map_err(|_| {
-                "conversion to `:: std :: string :: String` for from failed".to_string()
-            });
-            self
-        }
-        pub fn until<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.until = value.try_into().map(Some).map_err(|_| {
-                "conversion to `:: std :: string :: String` for until failed".to_string()
-            });
-            self
-        }
-        ///Sends a `GET` request to `/pyroscope/label-names`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::PyroscopeLabelsResponse>, Error<()>> {
-            let Self {
-                client,
-                from,
-                until,
-            } = self;
-            let from = from.map_err(Error::InvalidRequest)?;
-            let until = until.map_err(Error::InvalidRequest)?;
-            let url = format!("{}/pyroscope/label-names", client.baseurl,);
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .get(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .query(&progenitor_client::QueryParam::new("from", &from))
-                .query(&progenitor_client::QueryParam::new("until", &until))
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "list_profile_label_names",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::list_profile_label_values`]
-
-    [`Client::list_profile_label_values`]: super::Client::list_profile_label_values*/
-    #[derive(Debug, Clone)]
-    pub struct ListProfileLabelValues<'a> {
-        client: &'a super::Client,
-        from: Result<Option<::std::string::String>, String>,
-        label: Result<::std::string::String, String>,
-        until: Result<Option<::std::string::String>, String>,
-    }
-    impl<'a> ListProfileLabelValues<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                from: Ok(None),
-                label: Err("label was not initialized".to_string()),
-                until: Ok(None),
-            }
-        }
-        pub fn from<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.from = value.try_into().map(Some).map_err(|_| {
-                "conversion to `:: std :: string :: String` for from failed".to_string()
-            });
-            self
-        }
-        pub fn label<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.label = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for label failed".to_string()
-            });
-            self
-        }
-        pub fn until<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.until = value.try_into().map(Some).map_err(|_| {
-                "conversion to `:: std :: string :: String` for until failed".to_string()
-            });
-            self
-        }
-        ///Sends a `GET` request to `/pyroscope/label-values`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::PyroscopeLabelsResponse>, Error<types::ApiError>> {
-            let Self {
-                client,
-                from,
-                label,
-                until,
-            } = self;
-            let from = from.map_err(Error::InvalidRequest)?;
-            let label = label.map_err(Error::InvalidRequest)?;
-            let until = until.map_err(Error::InvalidRequest)?;
-            let url = format!("{}/pyroscope/label-values", client.baseurl,);
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .get(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .query(&progenitor_client::QueryParam::new("from", &from))
-                .query(&progenitor_client::QueryParam::new("label", &label))
-                .query(&progenitor_client::QueryParam::new("until", &until))
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "list_profile_label_values",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                400u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::list_profile_types`]
-
-    [`Client::list_profile_types`]: super::Client::list_profile_types*/
-    #[derive(Debug, Clone)]
-    pub struct ListProfileTypes<'a> {
-        client: &'a super::Client,
-        from: Result<Option<::std::string::String>, String>,
-        until: Result<Option<::std::string::String>, String>,
-    }
-    impl<'a> ListProfileTypes<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                from: Ok(None),
-                until: Ok(None),
-            }
-        }
-        pub fn from<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.from = value.try_into().map(Some).map_err(|_| {
-                "conversion to `:: std :: string :: String` for from failed".to_string()
-            });
-            self
-        }
-        pub fn until<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.until = value.try_into().map(Some).map_err(|_| {
-                "conversion to `:: std :: string :: String` for until failed".to_string()
-            });
-            self
-        }
-        ///Sends a `GET` request to `/pyroscope/profile-types`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<::std::vec::Vec<types::PyroscopeProfileType>>, Error<()>>
-        {
-            let Self {
-                client,
-                from,
-                until,
-            } = self;
-            let from = from.map_err(Error::InvalidRequest)?;
-            let until = until.map_err(Error::InvalidRequest)?;
-            let url = format!("{}/pyroscope/profile-types", client.baseurl,);
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .get(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .query(&progenitor_client::QueryParam::new("from", &from))
-                .query(&progenitor_client::QueryParam::new("until", &until))
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "list_profile_types",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::render_profile_flamegraph`]
-
-    [`Client::render_profile_flamegraph`]: super::Client::render_profile_flamegraph*/
-    #[derive(Debug, Clone)]
-    pub struct RenderProfileFlamegraph<'a> {
-        client: &'a super::Client,
-        from: Result<Option<::std::string::String>, String>,
-        query: Result<Option<::std::string::String>, String>,
-        until: Result<Option<::std::string::String>, String>,
-    }
-    impl<'a> RenderProfileFlamegraph<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                from: Ok(None),
-                query: Ok(None),
-                until: Ok(None),
-            }
-        }
-        pub fn from<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.from = value.try_into().map(Some).map_err(|_| {
-                "conversion to `:: std :: string :: String` for from failed".to_string()
-            });
-            self
-        }
-        pub fn query<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.query = value.try_into().map(Some).map_err(|_| {
-                "conversion to `:: std :: string :: String` for query failed".to_string()
-            });
-            self
-        }
-        pub fn until<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.until = value.try_into().map(Some).map_err(|_| {
-                "conversion to `:: std :: string :: String` for until failed".to_string()
-            });
-            self
-        }
-        ///Sends a `GET` request to `/pyroscope/render`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::PyroscopeRenderResponse>, Error<()>> {
-            let Self {
-                client,
-                from,
-                query,
-                until,
-            } = self;
-            let from = from.map_err(Error::InvalidRequest)?;
-            let query = query.map_err(Error::InvalidRequest)?;
-            let until = until.map_err(Error::InvalidRequest)?;
-            let url = format!("{}/pyroscope/render", client.baseurl,);
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .get(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .query(&progenitor_client::QueryParam::new("from", &from))
-                .query(&progenitor_client::QueryParam::new("query", &query))
-                .query(&progenitor_client::QueryParam::new("until", &until))
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "render_profile_flamegraph",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::render_profile_diff`]
-
-    [`Client::render_profile_diff`]: super::Client::render_profile_diff*/
-    #[derive(Debug, Clone)]
-    pub struct RenderProfileDiff<'a> {
-        client: &'a super::Client,
-        left_from: Result<Option<::std::string::String>, String>,
-        left_until: Result<Option<::std::string::String>, String>,
-        query: Result<Option<::std::string::String>, String>,
-        right_from: Result<Option<::std::string::String>, String>,
-        right_until: Result<Option<::std::string::String>, String>,
-    }
-    impl<'a> RenderProfileDiff<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                left_from: Ok(None),
-                left_until: Ok(None),
-                query: Ok(None),
-                right_from: Ok(None),
-                right_until: Ok(None),
-            }
-        }
-        pub fn left_from<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.left_from = value.try_into().map(Some).map_err(|_| {
-                "conversion to `:: std :: string :: String` for left_from failed".to_string()
-            });
-            self
-        }
-        pub fn left_until<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.left_until = value.try_into().map(Some).map_err(|_| {
-                "conversion to `:: std :: string :: String` for left_until failed".to_string()
-            });
-            self
-        }
-        pub fn query<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.query = value.try_into().map(Some).map_err(|_| {
-                "conversion to `:: std :: string :: String` for query failed".to_string()
-            });
-            self
-        }
-        pub fn right_from<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.right_from = value.try_into().map(Some).map_err(|_| {
-                "conversion to `:: std :: string :: String` for right_from failed".to_string()
-            });
-            self
-        }
-        pub fn right_until<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.right_until = value.try_into().map(Some).map_err(|_| {
-                "conversion to `:: std :: string :: String` for right_until failed".to_string()
-            });
-            self
-        }
-        ///Sends a `GET` request to `/pyroscope/render-diff`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::PyroscopeRenderResponse>, Error<()>> {
-            let Self {
-                client,
-                left_from,
-                left_until,
-                query,
-                right_from,
-                right_until,
-            } = self;
-            let left_from = left_from.map_err(Error::InvalidRequest)?;
-            let left_until = left_until.map_err(Error::InvalidRequest)?;
-            let query = query.map_err(Error::InvalidRequest)?;
-            let right_from = right_from.map_err(Error::InvalidRequest)?;
-            let right_until = right_until.map_err(Error::InvalidRequest)?;
-            let url = format!("{}/pyroscope/render-diff", client.baseurl,);
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .get(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .query(&progenitor_client::QueryParam::new("leftFrom", &left_from))
-                .query(&progenitor_client::QueryParam::new(
-                    "leftUntil",
-                    &left_until,
-                ))
-                .query(&progenitor_client::QueryParam::new("query", &query))
-                .query(&progenitor_client::QueryParam::new(
-                    "rightFrom",
-                    &right_from,
-                ))
-                .query(&progenitor_client::QueryParam::new(
-                    "rightUntil",
-                    &right_until,
-                ))
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "render_profile_diff",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
     /**Builder for [`Client::list_tenants`]
 
     [`Client::list_tenants`]: super::Client::list_tenants*/
@@ -3242,10 +2836,10 @@ pub mod builder {
         pub fn new(client: &'a super::Client) -> Self {
             Self { client: client }
         }
-        ///Sends a `GET` request to `/tenants`
+        ///Sends a `GET` request to `/api/v1/admin/tenants`
         pub async fn send(self) -> Result<ResponseValue<types::ListTenantsResponse>, Error<()>> {
             let Self { client } = self;
-            let url = format!("{}/tenants", client.baseurl,);
+            let url = format!("{}/api/v1/admin/tenants", client.baseurl,);
             let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
             header_map.append(
                 ::reqwest::header::HeaderName::from_static("api-version"),
@@ -3309,7 +2903,7 @@ pub mod builder {
             self.body = self.body.map(f);
             self
         }
-        ///Sends a `POST` request to `/tenants`
+        ///Sends a `POST` request to `/api/v1/admin/tenants`
         pub async fn send(
             self,
         ) -> Result<ResponseValue<types::TenantResponse>, Error<types::ApiError>> {
@@ -3317,7 +2911,7 @@ pub mod builder {
             let body = body
                 .and_then(|v| types::CreateTenantRequest::try_from(v).map_err(|e| e.to_string()))
                 .map_err(Error::InvalidRequest)?;
-            let url = format!("{}/tenants", client.baseurl,);
+            let url = format!("{}/api/v1/admin/tenants", client.baseurl,);
             let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
             header_map.append(
                 ::reqwest::header::HeaderName::from_static("api-version"),
@@ -3377,14 +2971,14 @@ pub mod builder {
             });
             self
         }
-        ///Sends a `GET` request to `/tenants/{tenant_id}`
+        ///Sends a `GET` request to `/api/v1/admin/tenants/{tenant_id}`
         pub async fn send(
             self,
         ) -> Result<ResponseValue<types::TenantResponse>, Error<types::ApiError>> {
             let Self { client, tenant_id } = self;
             let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
             let url = format!(
-                "{}/tenants/{}",
+                "{}/api/v1/admin/tenants/{}",
                 client.baseurl,
                 encode_path(&tenant_id.to_string()),
             );
@@ -3465,7 +3059,7 @@ pub mod builder {
             self.body = self.body.map(f);
             self
         }
-        ///Sends a `PUT` request to `/tenants/{tenant_id}`
+        ///Sends a `PUT` request to `/api/v1/admin/tenants/{tenant_id}`
         pub async fn send(
             self,
         ) -> Result<ResponseValue<types::TenantResponse>, Error<types::ApiError>> {
@@ -3479,7 +3073,7 @@ pub mod builder {
                 .and_then(|v| types::UpdateTenantRequest::try_from(v).map_err(|e| e.to_string()))
                 .map_err(Error::InvalidRequest)?;
             let url = format!(
-                "{}/tenants/{}",
+                "{}/api/v1/admin/tenants/{}",
                 client.baseurl,
                 encode_path(&tenant_id.to_string()),
             );
@@ -3542,12 +3136,12 @@ pub mod builder {
             });
             self
         }
-        ///Sends a `DELETE` request to `/tenants/{tenant_id}`
+        ///Sends a `DELETE` request to `/api/v1/admin/tenants/{tenant_id}`
         pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ApiError>> {
             let Self { client, tenant_id } = self;
             let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
             let url = format!(
-                "{}/tenants/{}",
+                "{}/api/v1/admin/tenants/{}",
                 client.baseurl,
                 encode_path(&tenant_id.to_string()),
             );
@@ -3609,14 +3203,14 @@ pub mod builder {
             });
             self
         }
-        ///Sends a `GET` request to `/tenants/{tenant_id}/api-keys`
+        ///Sends a `GET` request to `/api/v1/admin/tenants/{tenant_id}/api-keys`
         pub async fn send(
             self,
         ) -> Result<ResponseValue<types::ListApiKeysResponse>, Error<types::ApiError>> {
             let Self { client, tenant_id } = self;
             let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
             let url = format!(
-                "{}/tenants/{}/api-keys",
+                "{}/api/v1/admin/tenants/{}/api-keys",
                 client.baseurl,
                 encode_path(&tenant_id.to_string()),
             );
@@ -3697,7 +3291,7 @@ pub mod builder {
             self.body = self.body.map(f);
             self
         }
-        ///Sends a `POST` request to `/tenants/{tenant_id}/api-keys`
+        ///Sends a `POST` request to `/api/v1/admin/tenants/{tenant_id}/api-keys`
         pub async fn send(
             self,
         ) -> Result<ResponseValue<types::CreateApiKeyResponse>, Error<types::ApiError>> {
@@ -3711,7 +3305,7 @@ pub mod builder {
                 .and_then(|v| types::CreateApiKeyRequest::try_from(v).map_err(|e| e.to_string()))
                 .map_err(Error::InvalidRequest)?;
             let url = format!(
-                "{}/tenants/{}/api-keys",
+                "{}/api/v1/admin/tenants/{}/api-keys",
                 client.baseurl,
                 encode_path(&tenant_id.to_string()),
             );
@@ -3782,7 +3376,7 @@ pub mod builder {
             });
             self
         }
-        ///Sends a `DELETE` request to `/tenants/{tenant_id}/api-keys/{key_id}`
+        ///Sends a `DELETE` request to `/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}`
         pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ApiError>> {
             let Self {
                 client,
@@ -3792,7 +3386,7 @@ pub mod builder {
             let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
             let key_id = key_id.map_err(Error::InvalidRequest)?;
             let url = format!(
-                "{}/tenants/{}/api-keys/{}",
+                "{}/api/v1/admin/tenants/{}/api-keys/{}",
                 client.baseurl,
                 encode_path(&tenant_id.to_string()),
                 encode_path(&key_id.to_string()),
@@ -3852,14 +3446,14 @@ pub mod builder {
             });
             self
         }
-        ///Sends a `GET` request to `/tenants/{tenant_id}/datasets`
+        ///Sends a `GET` request to `/api/v1/admin/tenants/{tenant_id}/datasets`
         pub async fn send(
             self,
         ) -> Result<ResponseValue<types::ListDatasetsResponse>, Error<types::ApiError>> {
             let Self { client, tenant_id } = self;
             let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
             let url = format!(
-                "{}/tenants/{}/datasets",
+                "{}/api/v1/admin/tenants/{}/datasets",
                 client.baseurl,
                 encode_path(&tenant_id.to_string()),
             );
@@ -3942,7 +3536,7 @@ pub mod builder {
             self.body = self.body.map(f);
             self
         }
-        ///Sends a `POST` request to `/tenants/{tenant_id}/datasets`
+        ///Sends a `POST` request to `/api/v1/admin/tenants/{tenant_id}/datasets`
         pub async fn send(
             self,
         ) -> Result<ResponseValue<types::DatasetResponse>, Error<types::ApiError>> {
@@ -3956,7 +3550,7 @@ pub mod builder {
                 .and_then(|v| types::CreateDatasetRequest::try_from(v).map_err(|e| e.to_string()))
                 .map_err(Error::InvalidRequest)?;
             let url = format!(
-                "{}/tenants/{}/datasets",
+                "{}/api/v1/admin/tenants/{}/datasets",
                 client.baseurl,
                 encode_path(&tenant_id.to_string()),
             );
@@ -4027,7 +3621,7 @@ pub mod builder {
             });
             self
         }
-        ///Sends a `DELETE` request to `/tenants/{tenant_id}/datasets/{dataset_id}`
+        ///Sends a `DELETE` request to `/api/v1/admin/tenants/{tenant_id}/datasets/{dataset_id}`
         pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ApiError>> {
             let Self {
                 client,
@@ -4037,7 +3631,7 @@ pub mod builder {
             let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
             let dataset_id = dataset_id.map_err(Error::InvalidRequest)?;
             let url = format!(
-                "{}/tenants/{}/datasets/{}",
+                "{}/api/v1/admin/tenants/{}/datasets/{}",
                 client.baseurl,
                 encode_path(&tenant_id.to_string()),
                 encode_path(&dataset_id.to_string()),
@@ -4066,7 +3660,904 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 204u16 => Ok(ResponseValue::empty(response)),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::manage_create_tenant`]
+
+    [`Client::manage_create_tenant`]: super::Client::manage_create_tenant*/
+    #[derive(Debug, Clone)]
+    pub struct ManageCreateTenant<'a> {
+        client: &'a super::Client,
+        body: Result<types::builder::ManageCreateTenantRequest, String>,
+    }
+    impl<'a> ManageCreateTenant<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::ManageCreateTenantRequest>,
+            <V as std::convert::TryInto<types::ManageCreateTenantRequest>>::Error:
+                std::fmt::Display,
+        {
+            self.body = value.try_into().map(From::from).map_err(|s| {
+                format!(
+                    "conversion to `ManageCreateTenantRequest` for body failed: {}",
+                    s
+                )
+            });
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::ManageCreateTenantRequest,
+                ) -> types::builder::ManageCreateTenantRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/manage/tenants`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ManageCreatedTenant>, Error<types::ManageError>> {
+            let Self { client, body } = self;
+            let body = body
+                .and_then(|v| {
+                    types::ManageCreateTenantRequest::try_from(v).map_err(|e| e.to_string())
+                })
+                .map_err(Error::InvalidRequest)?;
+            let url = format!("{}/api/v1/manage/tenants", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "manage_create_tenant",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::manage_list_api_keys`]
+
+    [`Client::manage_list_api_keys`]: super::Client::manage_list_api_keys*/
+    #[derive(Debug, Clone)]
+    pub struct ManageListApiKeys<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+    }
+    impl<'a> ManageListApiKeys<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/api-keys`
+        pub async fn send(
+            self,
+        ) -> Result<
+            ResponseValue<::std::vec::Vec<types::ManageApiKeyResponse>>,
+            Error<types::ManageError>,
+        > {
+            let Self { client, tenant_id } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/manage/tenants/{}/api-keys",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "manage_list_api_keys",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::manage_create_api_key`]
+
+    [`Client::manage_create_api_key`]: super::Client::manage_create_api_key*/
+    #[derive(Debug, Clone)]
+    pub struct ManageCreateApiKey<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        body: Result<types::builder::ManageCreateApiKeyRequest, String>,
+    }
+    impl<'a> ManageCreateApiKey<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::ManageCreateApiKeyRequest>,
+            <V as std::convert::TryInto<types::ManageCreateApiKeyRequest>>::Error:
+                std::fmt::Display,
+        {
+            self.body = value.try_into().map(From::from).map_err(|s| {
+                format!(
+                    "conversion to `ManageCreateApiKeyRequest` for body failed: {}",
+                    s
+                )
+            });
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::ManageCreateApiKeyRequest,
+                ) -> types::builder::ManageCreateApiKeyRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/manage/tenants/{tenant_id}/api-keys`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ManageCreatedApiKey>, Error<types::ManageError>> {
+            let Self {
+                client,
+                tenant_id,
+                body,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| {
+                    types::ManageCreateApiKeyRequest::try_from(v).map_err(|e| e.to_string())
+                })
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/manage/tenants/{}/api-keys",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "manage_create_api_key",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::manage_revoke_api_key`]
+
+    [`Client::manage_revoke_api_key`]: super::Client::manage_revoke_api_key*/
+    #[derive(Debug, Clone)]
+    pub struct ManageRevokeApiKey<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        key_id: Result<::std::string::String, String>,
+    }
+    impl<'a> ManageRevokeApiKey<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                key_id: Err("key_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn key_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.key_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for key_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `DELETE` request to `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`
+        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ManageError>> {
+            let Self {
+                client,
+                tenant_id,
+                key_id,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let key_id = key_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/manage/tenants/{}/api-keys/{}",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+                encode_path(&key_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .delete(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "manage_revoke_api_key",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                204u16 => Ok(ResponseValue::empty(response)),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::manage_list_datasets`]
+
+    [`Client::manage_list_datasets`]: super::Client::manage_list_datasets*/
+    #[derive(Debug, Clone)]
+    pub struct ManageListDatasets<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+    }
+    impl<'a> ManageListDatasets<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/datasets`
+        pub async fn send(
+            self,
+        ) -> Result<
+            ResponseValue<::std::vec::Vec<types::ManageDatasetResponse>>,
+            Error<types::ManageError>,
+        > {
+            let Self { client, tenant_id } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/manage/tenants/{}/datasets",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "manage_list_datasets",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::manage_create_dataset`]
+
+    [`Client::manage_create_dataset`]: super::Client::manage_create_dataset*/
+    #[derive(Debug, Clone)]
+    pub struct ManageCreateDataset<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        body: Result<types::builder::ManageCreateDatasetRequest, String>,
+    }
+    impl<'a> ManageCreateDataset<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::ManageCreateDatasetRequest>,
+            <V as std::convert::TryInto<types::ManageCreateDatasetRequest>>::Error:
+                std::fmt::Display,
+        {
+            self.body = value.try_into().map(From::from).map_err(|s| {
+                format!(
+                    "conversion to `ManageCreateDatasetRequest` for body failed: {}",
+                    s
+                )
+            });
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::ManageCreateDatasetRequest,
+                ) -> types::builder::ManageCreateDatasetRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/manage/tenants/{tenant_id}/datasets`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ManageDatasetResponse>, Error<types::ManageError>>
+        {
+            let Self {
+                client,
+                tenant_id,
+                body,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| {
+                    types::ManageCreateDatasetRequest::try_from(v).map_err(|e| e.to_string())
+                })
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/manage/tenants/{}/datasets",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "manage_create_dataset",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::manage_delete_dataset`]
+
+    [`Client::manage_delete_dataset`]: super::Client::manage_delete_dataset*/
+    #[derive(Debug, Clone)]
+    pub struct ManageDeleteDataset<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        dataset_name: Result<::std::string::String, String>,
+    }
+    impl<'a> ManageDeleteDataset<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                dataset_name: Err("dataset_name was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn dataset_name<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.dataset_name = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for dataset_name failed".to_string()
+            });
+            self
+        }
+        ///Sends a `DELETE` request to `/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}`
+        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ManageError>> {
+            let Self {
+                client,
+                tenant_id,
+                dataset_name,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let dataset_name = dataset_name.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/manage/tenants/{}/datasets/{}",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+                encode_path(&dataset_name.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .delete(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "manage_delete_dataset",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                204u16 => Ok(ResponseValue::empty(response)),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::manage_list_memberships`]
+
+    [`Client::manage_list_memberships`]: super::Client::manage_list_memberships*/
+    #[derive(Debug, Clone)]
+    pub struct ManageListMemberships<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+    }
+    impl<'a> ManageListMemberships<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/memberships`
+        pub async fn send(
+            self,
+        ) -> Result<
+            ResponseValue<::std::vec::Vec<types::MembershipResponse>>,
+            Error<types::ManageError>,
+        > {
+            let Self { client, tenant_id } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/manage/tenants/{}/memberships",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "manage_list_memberships",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::manage_upsert_membership`]
+
+    [`Client::manage_upsert_membership`]: super::Client::manage_upsert_membership*/
+    #[derive(Debug, Clone)]
+    pub struct ManageUpsertMembership<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        body: Result<types::builder::UpsertMembershipRequest, String>,
+    }
+    impl<'a> ManageUpsertMembership<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::UpsertMembershipRequest>,
+            <V as std::convert::TryInto<types::UpsertMembershipRequest>>::Error: std::fmt::Display,
+        {
+            self.body = value.try_into().map(From::from).map_err(|s| {
+                format!(
+                    "conversion to `UpsertMembershipRequest` for body failed: {}",
+                    s
+                )
+            });
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::UpsertMembershipRequest,
+                ) -> types::builder::UpsertMembershipRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `PUT` request to `/api/v1/manage/tenants/{tenant_id}/memberships`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::MembershipResponse>, Error<types::ManageError>> {
+            let Self {
+                client,
+                tenant_id,
+                body,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| {
+                    types::UpsertMembershipRequest::try_from(v).map_err(|e| e.to_string())
+                })
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/manage/tenants/{}/memberships",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .put(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "manage_upsert_membership",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::manage_remove_membership`]
+
+    [`Client::manage_remove_membership`]: super::Client::manage_remove_membership*/
+    #[derive(Debug, Clone)]
+    pub struct ManageRemoveMembership<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        user_id: Result<::std::string::String, String>,
+    }
+    impl<'a> ManageRemoveMembership<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                user_id: Err("user_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn user_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.user_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for user_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `DELETE` request to `/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}`
+        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ManageError>> {
+            let Self {
+                client,
+                tenant_id,
+                user_id,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let user_id = user_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/manage/tenants/{}/memberships/{}",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+                encode_path(&user_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .delete(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "manage_remove_membership",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                204u16 => Ok(ResponseValue::empty(response)),
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 _ => Err(Error::UnexpectedResponse(response)),

@@ -37,7 +37,9 @@ impl AdminClient {
     /// # Returns
     /// Result with AdminClient or error
     pub fn new(base_url: &str, admin_key: &str) -> Result<Self, AdminClientError> {
-        let base_url = format!("{}/api/v1/admin", base_url.trim_end_matches('/'));
+        // The generated SDK's operation URLs are absolute (e.g.
+        // /api/v1/admin/tenants), so the client base is the router root.
+        let base_url = base_url.trim_end_matches('/').to_string();
 
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(

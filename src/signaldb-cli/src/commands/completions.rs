@@ -72,7 +72,8 @@ fn fetch_tenants(url: &str, admin_key: Option<&str>, timeout: Duration) -> Vec<(
 
     runtime.block_on(async {
         let fetch = async {
-            let base_url = format!("{}/api/v1/admin", url.trim_end_matches('/'));
+            // Generated SDK URLs are absolute; base is the router root.
+            let base_url = url.trim_end_matches('/').to_string();
             let mut headers = reqwest::header::HeaderMap::new();
             if let Some(key) = admin_key {
                 let value =

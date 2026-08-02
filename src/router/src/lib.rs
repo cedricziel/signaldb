@@ -289,10 +289,13 @@ async fn health_check() -> impl IntoResponse {
     StatusCode::OK
 }
 
-/// Load the OpenAPI specification from the generated JSON file
+/// Serve the code-first OpenAPI document assembled from the handler annotations
+/// (see [`crate::openapi`]). This is the same document checked into
+/// `api/signaldb-api.json` by the golden test, so the served spec can never
+/// drift from the code.
 fn load_openapi_spec() -> serde_json::Value {
-    serde_json::from_str(include_str!("../../../api/admin-api.json"))
-        .expect("api/admin-api.json must be valid JSON")
+    serde_json::to_value(crate::openapi::openapi_document())
+        .expect("OpenAPI document must serialize to JSON")
 }
 
 #[cfg(test)]

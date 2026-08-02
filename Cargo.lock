@@ -9170,7 +9170,6 @@ dependencies = [
  "prettyplease 0.3.0",
  "progenitor",
  "serde_json",
- "serde_yaml",
  "syn 3.0.3",
 ]
 

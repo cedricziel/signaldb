@@ -8,7 +8,6 @@ license.workspace = true
 progenitor = "0.14.0"
 openapiv3 = "2.2.0"
 serde_json.workspace = true
-serde_yaml = "0.9"
 prettyplease = "0.3"
 syn = "3"
 anyhow.workspace = true
