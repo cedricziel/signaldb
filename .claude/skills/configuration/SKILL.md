@@ -242,9 +242,13 @@ its own. Off by default. See `docs/users/mcp.md`.
 ```toml
 [mcp]
 enabled = false                      # Off by default; set true to run the server
-bind_address = "0.0.0.0:8228"        # Streamable HTTP transport; serves MCP at /mcp
+bind_address = "127.0.0.1:8228"      # Streamable HTTP at /mcp; loopback default.
+                                     # Non-loopback bind forwards live bearer
+                                     # credentials and must sit behind TLS.
 router_url = "http://localhost:3000" # Router HTTP API to forward to
 ```
+
+Env (multi-word fields need the double-underscore form): `SIGNALDB__MCP__ENABLED`, `SIGNALDB__MCP__BIND_ADDRESS`, `SIGNALDB__MCP__ROUTER_URL`. The MCP server ships in the monolithic image, so it can run as a sidecar container from the same image via `entrypoint: [signaldb-mcp]`.
 
 ### Self-Monitoring (Dogfooding)
 
