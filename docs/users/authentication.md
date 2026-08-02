@@ -102,6 +102,13 @@ Example (operator-side):
 signaldb-cli --admin-key <admin-key> api-key create acme --name "Production Key"
 ```
 
+Tenants and datasets created through the Admin API or CLI are usable for
+both ingest and query the moment they are created — no service restart and
+no matching `[[auth.tenants]]` block in `signaldb.toml` are required. The
+querier resolves a tenant's catalog on demand from the tenant registry, so
+the first query after creation succeeds. (Config-file tenants remain the
+bootstrap seed and are equally first-class.)
+
 Bootstrap the first human user directly into the service catalog using the
 same configuration file as SignalDB:
 
