@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use common::cli::{CommonArgs, CommonCommands, utils};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use router::{InMemoryStateImpl, RouterState, create_flight_service, create_router};
+use router::{RouterAppState, RouterState, create_flight_service, create_router};
 use std::net::SocketAddr;
 use tokio::sync::oneshot;
 use tonic::transport::Server;
@@ -116,7 +116,7 @@ async fn main() -> Result<()> {
     );
 
     // Create router state with catalog access and configuration
-    let state = InMemoryStateImpl::new(router_bootstrap.catalog().clone(), config.clone());
+    let state = RouterAppState::new(router_bootstrap.catalog().clone(), config.clone());
 
     // Start background service discovery polling
     if let Some(discovery) = &config.discovery {

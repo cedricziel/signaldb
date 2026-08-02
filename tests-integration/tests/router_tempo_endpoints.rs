@@ -22,7 +22,7 @@ use opentelemetry_proto::tonic::{
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
 };
 use querier::flight::QuerierFlightService;
-use router::{InMemoryStateImpl, RouterState, discovery::ServiceRegistry, endpoints::tempo};
+use router::{RouterAppState, RouterState, discovery::ServiceRegistry, endpoints::tempo};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -458,7 +458,7 @@ async fn test_tempo_echo_endpoint() {
         .await
         .unwrap();
     let config = Configuration::default();
-    let state = InMemoryStateImpl::new(catalog, config);
+    let state = RouterAppState::new(catalog, config);
 
     let app: Router = tempo::router().with_state(state);
 
@@ -671,7 +671,7 @@ async fn test_tempo_tag_endpoints() {
         .await
         .unwrap();
     let config = Configuration::default();
-    let state = InMemoryStateImpl::new(catalog, config);
+    let state = RouterAppState::new(catalog, config);
     let app: Router = tempo::router().with_state(state);
 
     // Test tags endpoint
@@ -710,7 +710,7 @@ async fn test_tempo_metrics_endpoints() {
         .await
         .unwrap();
     let config = Configuration::default();
-    let state = InMemoryStateImpl::new(catalog, config);
+    let state = RouterAppState::new(catalog, config);
     let app: Router = tempo::router().with_state(state);
 
     // Test instant metrics query: TraceQL metrics are not implemented,
@@ -769,7 +769,7 @@ async fn test_tempo_v2_trace_endpoint() {
         default_limits: Default::default(),
         storage_usage_refresh_interval: std::time::Duration::from_secs(60),
     };
-    let state = InMemoryStateImpl::new(catalog, config);
+    let state = RouterAppState::new(catalog, config);
 
     let authenticator = state.authenticator().clone();
     let app: Router = tempo::router()

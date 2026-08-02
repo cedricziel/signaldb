@@ -13,7 +13,7 @@ use opentelemetry_proto::tonic::{
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
 };
 use querier::flight::QuerierFlightService;
-use router::InMemoryStateImpl;
+use router::RouterAppState;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -344,7 +344,7 @@ async fn test_router_tempo_integration() {
         catalog.clone(),
         (*flight_transport).clone(),
     );
-    let _router_state = InMemoryStateImpl::new(catalog, Configuration::default());
+    let _router_state = RouterAppState::new(catalog, Configuration::default());
 
     // Set up a mock querier service
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());

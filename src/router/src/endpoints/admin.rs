@@ -761,7 +761,7 @@ fn tenant_record_to_response(record: common::catalog::TenantRecord) -> TenantRes
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::InMemoryStateImpl;
+    use crate::RouterAppState;
     use axum::{
         Router,
         body::Body,
@@ -772,48 +772,45 @@ mod tests {
     use common::config::Configuration;
     use tower::ServiceExt;
 
-    async fn create_admin_test_state() -> InMemoryStateImpl {
+    async fn create_admin_test_state() -> RouterAppState {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let config = Configuration::default();
-        InMemoryStateImpl::new(catalog, config)
+        RouterAppState::new(catalog, config)
     }
 
-    fn admin_router(state: InMemoryStateImpl) -> Router {
+    fn admin_router(state: RouterAppState) -> Router {
         Router::new()
-            .route("/tenants", get(list_tenants::<InMemoryStateImpl>))
-            .route("/tenants", post(create_tenant::<InMemoryStateImpl>))
-            .route("/tenants/{tenant_id}", get(get_tenant::<InMemoryStateImpl>))
+            .route("/tenants", get(list_tenants::<RouterAppState>))
+            .route("/tenants", post(create_tenant::<RouterAppState>))
+            .route("/tenants/{tenant_id}", get(get_tenant::<RouterAppState>))
+            .route("/tenants/{tenant_id}", put(update_tenant::<RouterAppState>))
             .route(
                 "/tenants/{tenant_id}",
-                put(update_tenant::<InMemoryStateImpl>),
-            )
-            .route(
-                "/tenants/{tenant_id}",
-                delete(delete_tenant::<InMemoryStateImpl>),
+                delete(delete_tenant::<RouterAppState>),
             )
             .route(
                 "/tenants/{tenant_id}/api-keys",
-                get(list_api_keys::<InMemoryStateImpl>),
+                get(list_api_keys::<RouterAppState>),
             )
             .route(
                 "/tenants/{tenant_id}/api-keys",
-                post(create_api_key::<InMemoryStateImpl>),
+                post(create_api_key::<RouterAppState>),
             )
             .route(
                 "/tenants/{tenant_id}/api-keys/{key_id}",
-                delete(revoke_api_key::<InMemoryStateImpl>),
+                delete(revoke_api_key::<RouterAppState>),
             )
             .route(
                 "/tenants/{tenant_id}/datasets",
-                get(list_datasets::<InMemoryStateImpl>),
+                get(list_datasets::<RouterAppState>),
             )
             .route(
                 "/tenants/{tenant_id}/datasets",
-                post(create_dataset::<InMemoryStateImpl>),
+                post(create_dataset::<RouterAppState>),
             )
             .route(
                 "/tenants/{tenant_id}/datasets/{dataset_id}",
-                delete(delete_dataset::<InMemoryStateImpl>),
+                delete(delete_dataset::<RouterAppState>),
             )
             .with_state(state)
     }
@@ -936,11 +933,11 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
-    async fn create_quota_test_state(limits: common::config::TenantLimits) -> InMemoryStateImpl {
+    async fn create_quota_test_state(limits: common::config::TenantLimits) -> RouterAppState {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let mut config = Configuration::default();
         config.auth.default_limits = limits;
-        InMemoryStateImpl::new(catalog, config)
+        RouterAppState::new(catalog, config)
     }
 
     #[tokio::test]

@@ -443,15 +443,15 @@ impl<S: RouterState> FlightService for SignalDBFlightService<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::InMemoryStateImpl;
+    use crate::RouterAppState;
     use arrow_flight::{Criteria, Ticket};
     use common::catalog::Catalog;
     use tokio;
     use tonic::Request;
 
-    async fn create_test_state() -> InMemoryStateImpl {
+    async fn create_test_state() -> RouterAppState {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
-        InMemoryStateImpl::new(catalog, common::config::Configuration::default())
+        RouterAppState::new(catalog, common::config::Configuration::default())
     }
 
     #[tokio::test]

@@ -11,7 +11,7 @@ use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::{Wal, WalConfig};
 use compactor::planner::{CompactionPlanner, PlannerConfig};
 use querier::QuerierFlightService;
-use router::{InMemoryStateImpl, RouterState, create_flight_service, create_router};
+use router::{RouterAppState, RouterState, create_flight_service, create_router};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -214,7 +214,7 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to register querier Flight service: {e}"))?;
     log::info!("Querier Flight service registered with ID: {querier_service_id}");
 
-    let state = InMemoryStateImpl::new_with_flight_transport(
+    let state = RouterAppState::new_with_flight_transport(
         router_bootstrap.catalog().clone(),
         config.clone(),
         (*querier_flight_transport).clone(),

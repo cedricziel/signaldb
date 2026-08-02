@@ -1176,8 +1176,7 @@ mod tests {
 
         // Create a mock state
         let catalog = create_test_catalog().await;
-        let state =
-            crate::InMemoryStateImpl::new(catalog, common::config::Configuration::default());
+        let state = crate::RouterAppState::new(catalog, common::config::Configuration::default());
 
         let query = tempo_api::SearchQueryParams {
             start: None,

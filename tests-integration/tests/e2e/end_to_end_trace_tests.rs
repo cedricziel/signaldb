@@ -14,7 +14,7 @@ use opentelemetry_proto::tonic::{
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
 };
 use querier::flight::QuerierFlightService;
-use router::{InMemoryStateImpl, discovery::ServiceRegistry};
+use router::{RouterAppState, discovery::ServiceRegistry};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -788,7 +788,7 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
         catalog.clone(),
         (*services.flight_transport).clone(),
     );
-    let _router_state = InMemoryStateImpl::new(catalog, services.config.clone());
+    let _router_state = RouterAppState::new(catalog, services.config.clone());
 
     println!("✅ Router state initialized");
 

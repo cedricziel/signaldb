@@ -508,7 +508,7 @@ pub async fn whoami<S: RouterState>(
 
 #[cfg(test)]
 mod tests {
-    use crate::{InMemoryStateImpl, create_router};
+    use crate::{RouterAppState, create_router};
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
     use common::catalog::{Catalog, MembershipRole};
@@ -595,7 +595,7 @@ mod tests {
             .create_user("orphan@example.com", Some("Orphan"), &orphan_hash, false)
             .await
             .unwrap();
-        create_router(InMemoryStateImpl::new(catalog, config))
+        create_router(RouterAppState::new(catalog, config))
     }
 
     async fn create_session(app: &axum::Router, body: Value) -> axum::response::Response {
