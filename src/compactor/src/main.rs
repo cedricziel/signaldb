@@ -34,6 +34,22 @@ struct Args {
     config: String,
 }
 
+/// Enumerate the active tenants through the source-agnostic registry, logging
+/// and returning empty on failure so a lifecycle cycle degrades rather than
+/// aborting. `purpose` names the cycle in the error log.
+async fn active_tenants_or_empty(
+    catalog_manager: &CatalogManager,
+    purpose: &str,
+) -> Vec<common::catalog_manager::ResolvedTenant> {
+    match catalog_manager.list_active_tenants().await {
+        Ok(tenants) => tenants,
+        Err(e) => {
+            tracing::error!("Failed to enumerate tenants for {purpose}: {e:#}");
+            Vec::new()
+        }
+    }
+}
+
 /// List the signal tables that actually exist in a dataset's namespace,
 /// so lifecycle jobs neither chase phantom tables nor skip real ones.
 async fn list_signal_tables(
@@ -468,13 +484,8 @@ async fn main() -> Result<()> {
                         if retention_config.enabled {
                             tracing::debug!("Running retention enforcement cycle");
 
-                            let active_tenants = match catalog_manager.list_active_tenants().await {
-                                Ok(t) => t,
-                                Err(e) => {
-                                    tracing::error!("Failed to enumerate tenants for retention: {e:#}");
-                                    Vec::new()
-                                }
-                            };
+                            let active_tenants =
+                                active_tenants_or_empty(&catalog_manager, "retention").await;
                             for tenant_config in &active_tenants {
                                 for dataset_config in &tenant_config.datasets {
                                     let tenant_id = &tenant_config.id;
@@ -516,13 +527,8 @@ async fn main() -> Result<()> {
                         if orphan_cleanup_config.enabled {
                             tracing::debug!("Running orphan cleanup cycle");
 
-                            let active_tenants = match catalog_manager.list_active_tenants().await {
-                                Ok(t) => t,
-                                Err(e) => {
-                                    tracing::error!("Failed to enumerate tenants for orphan cleanup: {e:#}");
-                                    Vec::new()
-                                }
-                            };
+                            let active_tenants =
+                                active_tenants_or_empty(&catalog_manager, "orphan cleanup").await;
 
                             // Run retention enforcement first to expire old snapshots,
                             // which reduces the live file set size before orphan detection.
