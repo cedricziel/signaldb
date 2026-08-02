@@ -4,9 +4,12 @@
       duration suffixes (`"500ms"`), numeric strings, RFC3339/relative timestamps
       coerce to the registry canonical type; an un-coercible literal is rejected
       at validation, never silently cast.
-- [ ] 1.2 Failing unit test: absent-value semantics — `exists` is the only op
-      true on an absent field; `not(field = x)` does not match absent rows;
-      results are independent of engine null behaviour.
+- [ ] 1.2 Failing unit test: absent-value semantics — comparisons on an absent
+      field evaluate to `absent` (third truth value), `not(absent)=absent`, and
+      the `and`/`or` truth tables propagate it; a `where` emits a row only on
+      `true`, so both `field = x` and `not(field = x)` exclude absent rows, while
+      `exists`/`not(exists)` observe absence. Independent of engine null
+      behaviour.
 - [ ] 1.3 Failing unit test: relation-type inference — a pipeline's relation type
       (RowSet/Series, source, grain, columns) is inferred stage-by-stage, and a
       stage whose input constraint is unmet fails validation naming the stage.
@@ -34,10 +37,17 @@
       a leaf naming a physical column or `attributes_json` is rejected
       (logical-namespace guard).
 - [ ] 2.2 Failing unit test: structured operands — `aggregate`/`order`/`topk`
-      operands are structured values; an operand supplied as an expression string
-      is rejected.
-- [ ] 2.3 Implement the `Predicate` enum and structured `Agg`/`Order`/`topk`
-      operands. Make 2.1–2.2 pass.
+      operands are structured values (an operand supplied as an expression string
+      is rejected); every `Agg` has a unique `as` name, a duplicate name or an
+      `AggRef`/`order` reference to an unknown name is rejected, and `topk`/
+      `bottomk` `n` must be an integer `> 0`.
+- [ ] 2.3 Failing unit test: extract field resolution — an `extract` derives
+      typed query-local fields usable by later stages with the declared type for
+      coercion; a derived name colliding with a registry field or an earlier
+      extract is rejected (no silent shadowing).
+- [ ] 2.4 Implement the `Predicate` enum and structured `Agg` (with `as`)/
+      `Order`/`topk`/`bottomk` operands and extract field-scope resolution. Make
+      2.1–2.3 pass.
 
 ## 3. Attribute-registry resolver interface (`common`)
 
@@ -67,12 +77,21 @@ aggregate(step)` lowers to TableScan→Filter→Projection(date_bin)→
       rows, proving the result is independent of DataFusion's SQL NULL behaviour
       (the guarantee task 1.2 asserts at the type level).
 - [ ] 4.5 Failing unit test: curated projection — a `rows` result returns only
-      the curated/explicit field set, never all physical columns (`SELECT *`),
-      including for a source with many promoted columns.
-- [ ] 4.6 Implement the single-signal planner (from/where/extract/aggregate/
-      topk/order/limit) → `LogicalPlan`. `extract` v1 = `json` + `logfmt`;
-      predicate `regex` and the deferred `regex` extract parser run behind a
-      bounded, timeout-guarded matcher. Make 4.1–4.5 pass.
+      the `fields` set (or the bounded default), never all physical columns
+      (`SELECT *`), including for a source with many promoted columns; a `fields`
+      entry absent from the terminal relation is rejected.
+- [ ] 4.6 Failing test: relative-time determinism — with a fixed injected clock,
+      a `now-1h` query resolves one absolute `[t0,t1]` at the ticket boundary,
+      every stage sees identical bounds, the resolved window is echoed in the
+      response, and replaying the echoed absolute window reproduces the result.
+- [ ] 4.7 Failing test: `regex` safety — a normal pattern matches; an adversarial
+      catastrophic-backtracking pattern is bounded by the timeout guard and
+      returns an error rather than hanging (predicate `regex` op).
+- [ ] 4.8 Implement the single-signal planner (from/where/extract/aggregate/
+      topk/order/limit) → `LogicalPlan`, carrying resolved absolute time bounds
+      through the ticket/plan. `extract` v1 = `json` + `logfmt`; predicate `regex`
+      and the deferred `regex` extract parser run behind a bounded, timeout-
+      guarded matcher. Make 4.1–4.7 pass.
 
 ## 5. Querier Flight ticket (`querier`)
 
@@ -144,6 +163,12 @@ aggregate(step)` lowers to TableScan→Filter→Projection(date_bin)→
 
 - [ ] 12.1 Surface parity confirmed: reachable in the UI, via the CLI, and via
       `POST /api/v1/query`.
+- [ ] 12.1a Field-registry gating honoured: a query referencing a field with no
+      canonical registry type returns a **defined, tested rejection** (not a
+      silent success or an engine error). Full production field coverage is
+      explicitly gated on the attribute-registry epic (#811); marking surface
+      parity "done" does not imply #811-complete coverage — the rejection path is
+      the contract until #811 lands.
 - [ ] 12.2 OpenAPI spec updated and both clients (Rust SDK, TS) regenerated from
       it; each consumer uses its generated client, not raw HTTP.
 - [ ] 12.3 `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`,

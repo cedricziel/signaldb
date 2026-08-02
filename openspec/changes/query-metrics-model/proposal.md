@@ -22,10 +22,14 @@ scalar at all. This change designs a **metric-native sub-model** for the IR.
   - **temporality-aware** rate/increase (cumulative with known
     `start_time_unix_nano` resets vs delta sums — not Prometheus scrape-inferred
     resets);
-  - **histogram/exponential-histogram** functions (`histogram_quantile` across
-    `le` buckets spanning series);
+  - **histogram/exponential-histogram** functions (`histogram_quantile`) computed
+    over **OTLP** bucket structure (explicit bucket bounds/counts and
+    exponential positive/negative + zero buckets — _not_ Prometheus `le` buckets;
+    the bucket model itself is an open question below);
   - `binop` with **vector-matching modifiers** (`on()/ignoring()/group_left/
-group_right`) — most of real PromQL arithmetic;
+group_right`) — most of real PromQL arithmetic. (Candidate for this change's v1;
+    its matching/many-to-many/label-output semantics are unspecified pending
+    design — not a committed v1 contract yet.)
   - staleness, `@`, `offset`, subqueries `[5m:1m]` — decide v1 coverage.
 - A `scalar` result envelope (deferred from core) and reuse of the existing
   raw-sample bucket engine where it is actually sound.

@@ -74,8 +74,21 @@ client SHALL NOT express an operand as a mini-expression string.
 #### Scenario: Rank references a structured aggregate
 
 - **WHEN** a query ranks results by an aggregated value
-- **THEN** the rank stage references the aggregate as a structured operand, and
-  a request that supplies an operand as an unparsed expression string is rejected
+- **THEN** the rank stage references the aggregate by its declared output name as
+  a structured operand, and a request that supplies an operand as an unparsed
+  expression string is rejected
+
+#### Scenario: Aggregate outputs are uniquely named and referenced by name
+
+- **WHEN** a query declares one or more aggregates, each with an output name, and
+  a later stage (rank or order) references one of those names
+- **THEN** the reference resolves to exactly that aggregate; a query with two
+  outputs sharing a name, or a reference to a name no stage produced, is rejected
+
+#### Scenario: Rank size must be a positive integer
+
+- **WHEN** a `topk`/`bottomk` stage declares a non-positive or non-integer size
+- **THEN** the query is rejected at validation
 
 ### Requirement: Supported stage set
 
@@ -108,6 +121,15 @@ matcher.
 - **THEN** the derived fields are available to subsequent stages; a request for a
   parser this capability does not provide is rejected
 
+#### Scenario: Extracted fields are typed, resolvable, and non-shadowing
+
+- **WHEN** an `extract` stage declares derived fields with names and value types,
+  and a later `where`/`aggregate`/`order` references one
+- **THEN** the reference resolves to the derived field with its declared type
+  (used for literal coercion just like a registry field), and a derived name that
+  collides with a registry-owned logical field or an earlier extracted field is
+  rejected rather than silently shadowing it
+
 ### Requirement: Shared predicate grammar over logical field names
 
 Filtering SHALL use one predicate grammar — comparison leaves (`{field, op,
@@ -115,7 +137,10 @@ value}`) composed with `and`/`or`/`not` — where `field` is a logical, dotted
 OTel-native attribute name. A client SHALL NOT reference a physical column name,
 the attribute-JSON blob, or any storage detail; such a query SHALL be rejected.
 Supported operators SHALL include equality, ordered comparison, membership,
-range, substring match, and existence.
+range, substring match, existence, and regular-expression match (`regex`), each
+a member of the versioned operator registry. The `regex` operator takes a string
+pattern operand and SHALL be evaluated only behind a bounded, timeout-guarded
+matcher so a pathological pattern cannot exhaust resources.
 
 #### Scenario: Predicate filters on an OTel attribute
 
@@ -178,9 +203,14 @@ offending stage.
 
 A query SHALL declare its result envelope (`rows`, `series`, or `table` in this
 capability), and the system SHALL validate the declared envelope against the
-inferred terminal relation type, rejecting a mismatch before execution. The
-`rows` envelope SHALL return a curated projection of fields and SHALL NOT return
-all physical columns implicitly.
+inferred terminal relation type, rejecting a mismatch before execution. Each
+envelope SHALL have a single canonical response payload shape and value encoding,
+described by the OpenAPI schema so the generated clients decode one contract. The
+columns of a `rows`/`table` result SHALL be a curated projection: taken from an
+explicit document-level `fields` list of logical names when present, otherwise a
+bounded server default — never all physical columns implicitly. A `fields` entry
+absent from the terminal relation, or a `fields` list on a `series` result, SHALL
+be rejected.
 
 #### Scenario: Envelope mismatch is rejected
 
@@ -191,9 +221,17 @@ all physical columns implicitly.
 
 #### Scenario: Row results are a curated projection
 
-- **WHEN** a query returns the `rows` envelope
-- **THEN** the response contains an explicit, bounded set of fields rather than
-  every physical column of the underlying table
+- **WHEN** a query returns the `rows` envelope, with or without an explicit
+  `fields` list
+- **THEN** the response contains an explicit, bounded set of named/typed fields
+  (the `fields` list, or the bounded server default) rather than every physical
+  column of the underlying table
+
+#### Scenario: Invalid projection is rejected
+
+- **WHEN** a query's `fields` list names something the terminal relation does not
+  carry, or a `series` query declares `fields`
+- **THEN** the query is rejected at validation time
 
 ### Requirement: Native query surface
 

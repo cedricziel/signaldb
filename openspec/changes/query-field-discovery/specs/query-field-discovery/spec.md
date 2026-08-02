@@ -24,6 +24,14 @@ are valid.
 - **THEN** each returned field is a logical name with a canonical type that can be
   used directly in an IR predicate, with no physical/storage reference
 
+#### Scenario: Discovery is tenant-scoped
+
+- **WHEN** an authenticated client requests discovery
+- **THEN** results cover only the authenticated tenant's data, using the same
+  tenant-scoped request context as the native query surface, and a request
+  targeting a different tenant is rejected — discovery never crosses tenant
+  boundaries
+
 ### Requirement: Scoped value suggestions
 
 SignalDB SHALL provide value suggestions for a field, scoped to a time range and

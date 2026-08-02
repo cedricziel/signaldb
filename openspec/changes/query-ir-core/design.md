@@ -7,8 +7,13 @@ See proposal.md — Why. Current-state facts, verified against the tree:
   single relational IR viable — we unify three query front-ends over one engine,
   not three storage models.
 - **Queries reach the querier as JSON Flight tickets** (`src/querier/src/query/mod.rs`:
-  `LogQueryParams`, …), each **single-table**. Adding the IR adds one ticket
-  prefix (`query_ir:`) whose planner builds a full `LogicalPlan`.
+  `LogQueryParams`, …), each **single-table** and prefixed with
+  `tenant_slug:dataset_slug`. Adding the IR adds one ticket prefix
+  (`query_ir:{tenant}:{dataset}:{json}`) whose planner builds a full
+  `LogicalPlan`. **Scoping invariant:** the router supplies the tenant/dataset
+  from the authenticated request context (never from client-controlled document
+  body), and the querier rejects any ticket whose tenant/dataset it cannot
+  resolve for that context — identical to the existing routed tickets.
 - **Attributes are JSON blobs, not columns** (`src/common/src/flight/schema.rs`):
   traces/logs carry `attributes_json` / `resource_json`; only a fixed set are
   physical columns (traces: `trace_id`, `span_id`, `parent_span_id`, `name`,
@@ -62,20 +67,38 @@ correct iff it evaluates to the denotation below.
 
 - Each **logical field** has exactly one canonical `ValueType`, owned by the
   attribute registry (never inferred from an incidental physical column).
-- **Null / absent** is a distinct value. A missing attribute compares as absent:
-  `exists` is the only operator that is true on absent; every other comparison on
-  an absent field is **false** (not null-propagating), so `not(field = x)` does
-  **not** match rows where the field is absent. This three-value collapse is
-  specified so results do not depend on DataFusion's SQL null behaviour.
+- **Absent is a third truth value, and it propagates.** A comparison against an
+  absent field evaluates to `absent` (not `true`, not `false`); `exists` is the
+  only operator that maps an absent field to `true` (and its negation to
+  `false`). `absent` propagates through the connectives — Kleene-style, treating
+  `absent` like SQL's `unknown` but defined **here** so the result never depends
+  on DataFusion's own NULL handling:
+
+  ```
+   not(absent) = absent
+   absent AND false = false     absent AND true = absent     absent AND absent = absent
+   absent OR  true  = true      absent OR  false = absent     absent OR  absent = absent
+  ```
+
+  A row is emitted by a `where` only when the top-level predicate evaluates to
+  `true`; `absent` (like `false`) does **not** match. Consequently _both_
+  `field = x` and `not(field = x)` exclude rows where `field` is absent — the
+  earlier draft's claim that these were both "`false`" was inconsistent (ordinary
+  negation would flip it); the fix is that they are both `absent`, which the
+  emission rule treats as non-matching. To match-or-exclude on absence
+  explicitly, use `exists` / `not(exists)`, the only operators that observe it.
+
 - **Coercion** is defined per target `ValueType`: duration literals accept unit
   suffixes (`"500ms"`, `"2s"`) → `duration_ns`; numeric strings → `int64`/
   `float64`; RFC3339/relative (`now-1h`) → `timestamp_ns`. Coercion is total or
   the query is rejected at validation — never a silent runtime cast. **Relative
-  timestamp anchoring is resolved at execution time** against the request's
-  server-received clock (not at validation), so `now-1h` means one hour before
-  the query runs; only _coercibility_ (well-formed syntax) is checked at
-  validation. The resolved absolute window is echoed in the response for
-  reproducibility.
+  timestamp anchoring is resolved once, at a single execution-time boundary** (the
+  router stamps the request's server-received clock when it builds the Flight
+  ticket), so `now-1h` means one hour before that stamp; only _coercibility_
+  (well-formed syntax) is checked at validation. The **resolved absolute bounds
+  are carried through the ticket and the plan** — every stage sees identical
+  `[t0,t1]` values, not a re-evaluated `now` — and the resolved window is echoed
+  in the response for reproducibility and replay.
 
 ### Relation types (what flows between stages)
 
@@ -97,29 +120,72 @@ a function of the type.
 
 Legality and envelope-validation are **functions of RelationType**, not prose:
 
-- A stage declares an input RelationType constraint and an output RelationType.
-  `extract` requires `source ∈ {logs}`; `aggregate` maps `RowSet → Series` (with
-  `step`) or `RowSet → RowSet{aggregated=true}` (grouped, no `step`); `topk`
-  requires an ordered numeric column present in its input.
-- The planner **infers the RelationType through the pipeline** and rejects a
-  stage whose input constraint is unmet, and validates the declared envelope
-  against the terminal type — `rows`⇔`RowSet{aggregated=false}`,
-  `table`⇔`RowSet{aggregated=true}`, `series`⇔`Series`. This is the single
-  mechanism behind "legal-stage per source" and "envelope matches terminal
-  stage."
+- A stage declares an input RelationType constraint and an output RelationType,
+  **including the output columns and grain** so downstream stages can validate
+  their references against an inferred schema:
+  - `aggregate{ by, aggs }` **no `step`** → `RowSet{ columns = by-fields ∪
+aggregate outputs, grain = group, aggregated = true }`. Each aggregate output
+    is a named column (see `Agg.as` below); the group fields keep their canonical
+    types.
+  - `aggregate{ by, aggs, step }` → `Series{ labels = by-fields, value = the
+single aggregate output's type, step }`. A `step` aggregate requires exactly
+    one aggregate output (the series value); multiple outputs without a `step`
+    stay a `table`.
+  - `extract` requires `source ∈ {logs}` and adds columns (see _extract field
+    resolution_ below).
+  - `topk`/`order` require every referenced column/`AggRef` to be present in the
+    inferred input schema; a reference to a name the schema does not carry is a
+    validation error. After an aggregate has dropped a column, a later stage
+    referencing it fails validation (this is also what makes "the join key
+    survived the aggregate" checkable in the correlate sibling).
+- The planner **infers the RelationType (columns + grain + aggregated) through
+  the pipeline**, rejects a stage whose input constraint or column references are
+  unmet, and validates the declared envelope against the terminal type —
+  `rows`⇔`RowSet{aggregated=false}`, `table`⇔`RowSet{aggregated=true}`,
+  `series`⇔`Series`. This is the single mechanism behind "legal-stage per
+  source" and "envelope matches terminal stage."
 
 ### Structured operands (no embedded strings)
 
 Operand expressions are structured values, never parsed substrings:
 
 ```
-   Agg   = { fn: "count"|"sum"|"avg"|"min"|"max"|"quantile", of?: FieldRef, arg?: number }
+   Agg   = { fn: "count"|"sum"|"avg"|"min"|"max"|"quantile",
+             of?: FieldRef, arg?: number, as: Name }   // `as` names the output column
    Order = { of: FieldRef | AggRef, dir: "asc"|"desc" }
-   topk  = { n: int, of: AggRef | FieldRef }        // AggRef names a prior aggregate output
+   topk    = { n: int>0, of: AggRef | FieldRef }
+   bottomk = { n: int>0, of: AggRef | FieldRef }
+   AggRef  = a Name introduced by a prior aggregate's `as`
 ```
 
-`topk:{of:"max(duration)"}` from the pre-restructure draft is **removed**; `of`
-references a named aggregate result structurally.
+- Every `Agg` carries a required **`as`** name; that name is the output column and
+  the only thing `AggRef`, `Order`, and `topk`/`bottomk` may reference. So
+  `topk:{of:"max(duration)"}` from the pre-restructure draft is **removed** — the
+  aggregate would be `{ fn:"max", of:"duration", as:"max_dur" }` and the rank
+  `topk:{ n:10, of:"max_dur" }`.
+- **Names are unique within a pipeline.** Two aggregates (or an aggregate and a
+  source column) sharing a name is a validation error — no implicit shadowing, so
+  every `AggRef` resolves to exactly one column.
+- `n` on `topk`/`bottomk` MUST be an integer `> 0`; `0` or negative is rejected at
+  validation.
+
+### Extract field resolution (logs)
+
+`extract` introduces **query-local** fields, which coexist with registry-owned
+logical fields under one rule:
+
+- An `extract` declares each derived field with a name and a `ValueType` (`extract{
+parser, as: [{name, type}] }`); those types come from the extract declaration,
+  not the registry (the registry owns _stored_ attributes, not per-query
+  derivations).
+- **Precedence and collisions:** a derived name that collides with a
+  registry-owned logical field, or with an earlier `extract`, is a validation
+  error — extract may not silently shadow a registry field. Downstream `where`/
+  `aggregate`/`order` resolve a reference to the registry field if one exists,
+  else to the in-scope derived field; ambiguity (both) is the rejected collision
+  above.
+- Coercion of literals compared against a derived field uses the field's
+  **declared** `ValueType`, exactly as registry fields use their canonical type.
 
 ## Versioning & evolution (a persisted format)
 
@@ -160,11 +226,20 @@ field = dotted OTel-native name; resolved by the registry to column | json-path.
 A leaf naming a physical column, `attributes_json`, or any storage detail is
 **rejected** (logical-namespace guard).
 
-## Core stage set (single-signal)
+## Document shape and core stage set (single-signal)
 
-| stage            | role                 | input → output (RelationType)                 | lowers to               |
+`from` is **not a pipeline stage** — it is a **document-level field** that selects
+the source and seeds the initial `RowSet{source}`; the `pipeline` is the ordered
+list of _transform_ stages that follow. (An earlier draft listed `from` in the
+stage table while the worked example put it at the document root — the document
+root is canonical; the stage table below is transforms only.)
+
+```
+   Document = { irVersion, from: Source, range, result, fields?, pipeline: [Stage] }
+```
+
+| stage (pipeline) | role                 | input → output (RelationType)                 | lowers to               |
 | ---------------- | -------------------- | --------------------------------------------- | ----------------------- |
-| `from`           | source               | `· → RowSet{source}`                          | `TableScan`             |
 | `where`          | filter               | `RowSet → RowSet`                             | `Filter`                |
 | `extract`        | derive fields (logs) | `RowSet{logs} → RowSet{+cols}`                | `Projection`(+UDF)      |
 | `aggregate`      | group-reduce         | `RowSet → Series` (step) \| `RowSet → RowSet` | `Aggregate`             |
@@ -177,12 +252,31 @@ timeout-guarded UDF (registry-gated) — a validation/DoS surface.
 ## Result envelope — declared and validated
 
 Declared `result ∈ {rows, series, table}`; validated against the inferred
-terminal RelationType. `rows` returns a **curated projection** (explicit `fields`
-or a registry-driven default) — **never `SELECT *`** (in an all-promoted world a
-bare `*` is thousands of columns). The remaining envelopes arrive with their
-owning sibling changes and are each owned by exactly one: `trace` →
-`query-structural-traces`; `scalar` → `query-metrics-model`; `metadata` →
-`query-field-discovery`.
+terminal RelationType.
+
+**Curated projection is an explicit document field, not an implicit rule.** The
+`rows` envelope draws its columns from a document-level **`fields: [FieldRef]`**
+(logical names, resolved by the registry like any other reference). If `fields`
+is omitted, the server applies a bounded, registry-driven default set — **never
+`SELECT *`** (in an all-promoted world a bare `*` is thousands of columns). A
+`fields` entry that isn't present in the terminal RowSet is a validation error.
+`fields` is meaningful only for `rows`/`table`; declaring it with `series` is
+rejected.
+
+The **result payloads** each have one canonical wire shape (defined once in the
+OpenAPI schema, so the SDK/TS clients decode a single contract):
+
+```
+   rows   : { fields: [{name, ValueType}], rows: [[value…]] }        // aggregated=false
+   table  : { columns: [{name, ValueType}], rows: [[value…]] }       // aggregated=true
+   series : { series: [{ labels:{…}, points:[[t_ns, value]…] }], step }
+```
+
+Value encoding follows `ValueType`: `timestamp_ns`/`duration_ns` as integer
+nanoseconds, `bytes` as base64, others as their JSON-native form. The remaining
+envelopes arrive with their owning sibling changes, each owned by exactly one:
+`trace` → `query-structural-traces`; `scalar` → `query-metrics-model`;
+`metadata` → `query-field-discovery`.
 
 ```
    RowSet{aggregated=false}  → rows
@@ -190,7 +284,12 @@ owning sibling changes and are each owned by exactly one: `trace` →
    Series                    → series
 ```
 
-## Worked lowering — "error-log rate by service, 1m buckets" (logs → series)
+## Worked lowering — "error-log volume by service, 1m buckets" (logs → series)
+
+> Named "volume" deliberately: this pipeline computes `count` per 1-minute
+> bucket, i.e. events-per-bucket, not a `rate()` (which would divide by the
+> window and is a `query-metrics-model` concern). The example is a counting
+> series, and the title matches.
 
 ```json
 {
@@ -207,7 +306,14 @@ owning sibling changes and are each owned by exactly one: `trace` →
         ]
       }
     },
-    { "aggregate": { "fn": "count", "by": ["service.name"], "step": "1m" } }
+    {
+      "aggregate": {
+        "fn": "count",
+        "by": ["service.name"],
+        "step": "1m",
+        "as": "n"
+      }
+    }
   ]
 }
 ```
