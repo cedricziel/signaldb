@@ -33,8 +33,14 @@ async fn main() -> Result<()> {
     let config = utils::load_config(cli.common.config.as_ref())?;
     utils::init_logging(&cli.common, None);
 
+    let router_base_url = config
+        .mcp
+        .router_url
+        .clone()
+        .unwrap_or_else(|| "http://localhost:3000".to_string());
+
     if cli.stdio {
-        return serve_stdio().await;
+        return serve_stdio(router_base_url).await;
     }
 
     // Catalog is needed to resolve database-backed API keys; config-file keys
@@ -50,11 +56,6 @@ async fn main() -> Result<()> {
         .context("Failed to open catalog for MCP authentication")?;
     let authenticator = Arc::new(Authenticator::new(config.auth.clone(), Arc::new(catalog)));
 
-    let router_base_url = config
-        .mcp
-        .router_url
-        .clone()
-        .unwrap_or_else(|| "http://localhost:3000".to_string());
     let state = McpAppState::new(authenticator, router_base_url);
 
     let addr: std::net::SocketAddr = config
@@ -81,11 +82,11 @@ async fn main() -> Result<()> {
 }
 
 /// Serve the MCP handler over stdio for local development.
-async fn serve_stdio() -> Result<()> {
+async fn serve_stdio(router_base_url: String) -> Result<()> {
     use rmcp::ServiceExt;
 
     tracing::info!("SignalDB MCP server starting on stdio (development, unauthenticated)");
-    let service = McpServer::new()
+    let service = McpServer::new(router_base_url)
         .serve(rmcp::transport::stdio())
         .await
         .context("Failed to start MCP stdio transport")?;

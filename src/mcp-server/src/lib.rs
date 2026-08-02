@@ -70,8 +70,12 @@ impl McpAppState {
 /// by bearer authentication.
 pub fn mcp_http_router(state: McpAppState) -> Router {
     let session_manager = Arc::new(LocalSessionManager::default());
-    let service =
-        StreamableHttpService::new(|| Ok(McpServer::new()), session_manager, Default::default());
+    let base_url = state.router_base_url.clone();
+    let service = StreamableHttpService::new(
+        move || Ok(McpServer::new(base_url.clone())),
+        session_manager,
+        Default::default(),
+    );
 
     Router::new()
         .nest_service("/mcp", service)

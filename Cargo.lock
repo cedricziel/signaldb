@@ -4291,6 +4291,7 @@ dependencies = [
  "http",
  "reqwest 0.13.4",
  "rmcp",
+ "serde",
  "serde_json",
  "signaldb-sdk",
  "tokio",
