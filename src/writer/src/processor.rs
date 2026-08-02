@@ -121,8 +121,23 @@ impl WalProcessor {
             let routed = match self.determine_target_table(&entry) {
                 Ok(routed) => routed,
                 Err(e) => {
-                    tracing::warn!(entry_id = %entry.id, error = %e, "Failed to route WAL entry");
-                    self.record_entry_failure(entry.id).await;
+                    tracing::warn!(
+                        entry_id = %entry.id,
+                        tenant_id = %entry.tenant_id,
+                        dataset_id = %entry.dataset_id,
+                        signal = entry.operation.signal(),
+                        data_offset = entry.data_offset,
+                        data_size = entry.data_size,
+                        error = %e,
+                        "Failed to route WAL entry"
+                    );
+                    self.record_entry_failure(
+                        entry.id,
+                        &entry.tenant_id,
+                        &entry.dataset_id,
+                        entry.operation.signal(),
+                    )
+                    .await;
                     continue;
                 }
             };
@@ -140,8 +155,23 @@ impl WalProcessor {
                 Ok(batch) => batch,
                 Err(e) => {
                     common::self_monitoring::maybe_suppress_self_telemetry(suppress, async {
-                        tracing::warn!(entry_id = %entry.id, error = %e, "Failed to deserialize WAL entry");
-                        self.record_entry_failure(entry.id).await;
+                        tracing::warn!(
+                            entry_id = %entry.id,
+                            tenant_id = %entry.tenant_id,
+                            dataset_id = %entry.dataset_id,
+                            signal = entry.operation.signal(),
+                            data_offset = entry.data_offset,
+                            data_size = entry.data_size,
+                            error = %e,
+                            "Failed to deserialize WAL entry"
+                        );
+                        self.record_entry_failure(
+                            entry.id,
+                            &entry.tenant_id,
+                            &entry.dataset_id,
+                            entry.operation.signal(),
+                        )
+                        .await;
                     })
                     .await;
                     continue;
@@ -190,7 +220,13 @@ impl WalProcessor {
                     Err(e) => {
                         tracing::error!(tenant_id = %tenant_id, table_name = %table_name, error = %e, "Failed to process batch for table");
                         for entry_id in group_ids {
-                            self.record_entry_failure(entry_id).await;
+                            self.record_entry_failure(
+                                entry_id,
+                                &tenant_id,
+                                &dataset_id,
+                                &table_name,
+                            )
+                            .await;
                         }
                     }
                 }
@@ -313,7 +349,13 @@ impl WalProcessor {
 
     /// Record a processing failure for an entry, dead-lettering it once
     /// it exhausts its attempts.
-    async fn record_entry_failure(&mut self, entry_id: Uuid) {
+    async fn record_entry_failure(
+        &mut self,
+        entry_id: Uuid,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+    ) {
         let failures = self.entry_failures.entry(entry_id).or_insert(0);
         *failures += 1;
         if *failures < MAX_ENTRY_FAILURES {
@@ -323,15 +365,21 @@ impl WalProcessor {
             Ok(path) => {
                 tracing::error!(
                     entry_id = %entry_id,
+                    tenant_id = %tenant_id,
+                    dataset_id = %dataset_id,
+                    signal = %signal,
                     failures = *failures,
                     path = %path.display(),
-                    "WAL entry exhausted its retries; payload preserved in the                      dead-letter directory and entry marked processed"
+                    "WAL entry exhausted its retries; payload preserved in the dead-letter directory and entry marked processed"
                 );
                 self.entry_failures.remove(&entry_id);
             }
             Err(e) => {
                 tracing::error!(
                     entry_id = %entry_id,
+                    tenant_id = %tenant_id,
+                    dataset_id = %dataset_id,
+                    signal = %signal,
                     error = %e,
                     "Failed to dead-letter WAL entry; it will be retried"
                 );
