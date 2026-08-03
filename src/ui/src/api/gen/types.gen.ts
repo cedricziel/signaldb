@@ -1323,6 +1323,69 @@ export type ManageRemoveMembershipResponses = {
 
 export type ManageRemoveMembershipResponse = ManageRemoveMembershipResponses[keyof ManageRemoveMembershipResponses];
 
+export type OpsCompactData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/ops/compact';
+};
+
+export type OpsCompactErrors = {
+    /**
+     * No compactor service is reachable
+     */
+    503: unknown;
+};
+
+export type OpsCompactResponses = {
+    /**
+     * Compaction run summary
+     */
+    200: unknown;
+};
+
+export type OpsCompactDryRunData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/ops/compact/dry-run';
+};
+
+export type OpsCompactDryRunErrors = {
+    /**
+     * No compactor service is reachable
+     */
+    503: unknown;
+};
+
+export type OpsCompactDryRunResponses = {
+    /**
+     * Compaction candidates
+     */
+    200: unknown;
+};
+
+export type OpsCompactStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/ops/compact/status';
+};
+
+export type OpsCompactStatusErrors = {
+    /**
+     * No compactor service is reachable
+     */
+    503: unknown;
+};
+
+export type OpsCompactStatusResponses = {
+    /**
+     * Compaction status snapshot
+     */
+    200: unknown;
+};
+
 export type QueryIrData = {
     body: QueryIrRequest;
     path?: never;
