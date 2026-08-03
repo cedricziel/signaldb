@@ -18,6 +18,7 @@ querier = { path = "../src/querier" }
 router = { path = "../src/router" }
 writer = { path = "../src/writer" }
 tempo-api = { path = "../src/tempo-api" }
+signaldb-sdk = { path = "../src/signaldb-sdk" }
 
 # External dependencies
 anyhow.workspace = true
@@ -38,6 +39,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "registry"] }
 tracing-opentelemetry.workspace = true
 axum.workspace = true
 tower.workspace = true
+reqwest.workspace = true
 serde_json.workspace = true
 hex.workspace = true
 prost.workspace = true
