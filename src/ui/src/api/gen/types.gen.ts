@@ -1332,9 +1332,17 @@ export type OpsCompactData = {
 
 export type OpsCompactErrors = {
     /**
+     * The compactor returned an unusable response
+     */
+    502: unknown;
+    /**
      * No compactor service is reachable
      */
     503: unknown;
+    /**
+     * The compactor did not respond in time
+     */
+    504: unknown;
 };
 
 export type OpsCompactResponses = {
@@ -1353,9 +1361,17 @@ export type OpsCompactDryRunData = {
 
 export type OpsCompactDryRunErrors = {
     /**
+     * The compactor returned an unusable response
+     */
+    502: unknown;
+    /**
      * No compactor service is reachable
      */
     503: unknown;
+    /**
+     * The compactor did not respond in time
+     */
+    504: unknown;
 };
 
 export type OpsCompactDryRunResponses = {
@@ -1374,9 +1390,17 @@ export type OpsCompactStatusData = {
 
 export type OpsCompactStatusErrors = {
     /**
+     * The compactor returned an unusable response
+     */
+    502: unknown;
+    /**
      * No compactor service is reachable
      */
     503: unknown;
+    /**
+     * The compactor did not respond in time
+     */
+    504: unknown;
 };
 
 export type OpsCompactStatusResponses = {

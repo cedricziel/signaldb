@@ -1337,8 +1337,14 @@
               }
             }
           },
+          "502": {
+            "description": "The compactor returned an unusable response"
+          },
           "503": {
             "description": "No compactor service is reachable"
+          },
+          "504": {
+            "description": "The compactor did not respond in time"
           }
         },
         "security": [
@@ -1364,8 +1370,14 @@
               }
             }
           },
+          "502": {
+            "description": "The compactor returned an unusable response"
+          },
           "503": {
             "description": "No compactor service is reachable"
+          },
+          "504": {
+            "description": "The compactor did not respond in time"
           }
         },
         "security": [
@@ -1391,8 +1403,14 @@
               }
             }
           },
+          "502": {
+            "description": "The compactor returned an unusable response"
+          },
           "503": {
             "description": "No compactor service is reachable"
+          },
+          "504": {
+            "description": "The compactor did not respond in time"
           }
         },
         "security": [

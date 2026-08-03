@@ -7300,7 +7300,9 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                502u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                504u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -7344,7 +7346,9 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                502u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                504u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -7388,7 +7392,9 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                502u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                504u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }

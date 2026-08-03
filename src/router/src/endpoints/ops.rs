@@ -23,6 +23,10 @@ use tonic::Request;
 
 use super::api_error::ApiError;
 use crate::RouterState;
+use std::time::Duration;
+
+/// Upper bound on a single compactor round-trip.
+const OPS_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The `/api/v1/ops/*` routes. Mounted behind the admin-auth layer.
 pub fn router<S: RouterState>() -> Router<S> {
@@ -41,7 +45,9 @@ pub fn router<S: RouterState>() -> Router<S> {
     security(("bearerAuth" = [])),
     responses(
         (status = 200, description = "Compaction run summary", body = serde_json::Value),
+        (status = 502, description = "The compactor returned an unusable response"),
         (status = 503, description = "No compactor service is reachable"),
+        (status = 504, description = "The compactor did not respond in time"),
     )
 )]
 pub async fn compact<S: RouterState>(State(state): State<S>) -> Result<Json<Value>, ApiError> {
@@ -57,7 +63,9 @@ pub async fn compact<S: RouterState>(State(state): State<S>) -> Result<Json<Valu
     security(("bearerAuth" = [])),
     responses(
         (status = 200, description = "Compaction status snapshot", body = serde_json::Value),
+        (status = 502, description = "The compactor returned an unusable response"),
         (status = 503, description = "No compactor service is reachable"),
+        (status = 504, description = "The compactor did not respond in time"),
     )
 )]
 pub async fn compact_status<S: RouterState>(
@@ -76,7 +84,9 @@ pub async fn compact_status<S: RouterState>(
     security(("bearerAuth" = [])),
     responses(
         (status = 200, description = "Compaction candidates", body = serde_json::Value),
+        (status = 502, description = "The compactor returned an unusable response"),
         (status = 503, description = "No compactor service is reachable"),
+        (status = 504, description = "The compactor did not respond in time"),
     )
 )]
 pub async fn compact_dry_run<S: RouterState>(
@@ -106,17 +116,30 @@ async fn do_compactor_action<S: RouterState>(
         r#type: action_type.to_string(),
         body: Bytes::new(),
     };
-    let mut stream = client
-        .do_action(Request::new(action))
-        .await
-        .map_err(|s| ApiError::from_flight(&s, action_type))?
-        .into_inner();
 
-    let result = stream
-        .next()
-        .await
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_GATEWAY, "compactor returned no result"))?
-        .map_err(|s| ApiError::from_flight(&s, action_type))?;
+    // Bound the round-trip so a hung compactor can't hang the request.
+    let result = tokio::time::timeout(OPS_TIMEOUT, async {
+        let mut stream = client
+            .do_action(Request::new(action))
+            .await
+            .map_err(|s| ApiError::from_flight(&s, action_type))?
+            .into_inner();
+        stream
+            .next()
+            .await
+            .ok_or_else(|| ApiError::new(StatusCode::BAD_GATEWAY, "compactor returned no result"))?
+            .map_err(|s| ApiError::from_flight(&s, action_type))
+    })
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            StatusCode::GATEWAY_TIMEOUT,
+            format!(
+                "compactor did not respond within {}s",
+                OPS_TIMEOUT.as_secs()
+            ),
+        )
+    })??;
 
     serde_json::from_slice(&result.body).map_err(|e| {
         ApiError::new(
