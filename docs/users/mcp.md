@@ -21,15 +21,18 @@ already allowed to see — tenant isolation stays enforced by the router.
 Tools (available to every authenticated tenant session — there is no role
 gating in v1):
 
-| Tool                  | Purpose                                                            |
-| --------------------- | ------------------------------------------------------------------ |
-| `server_info`         | Confirm connectivity and which tenant your credential resolves to. |
-| `search_traces`       | TraceQL search over your tenant's traces.                          |
-| `get_trace`           | Fetch a single trace by ID.                                        |
-| `discover_attributes` | List queryable tag names, or the values for a tag.                 |
-
-> `search_logs` (LogQL) and `query_metrics` (PromQL) arrive once the Loki and
-> Prometheus query endpoints join the generated SDK — tracked on epic #620.
+| Tool                  | Purpose                                                             |
+| --------------------- | ------------------------------------------------------------------- |
+| `server_info`         | Confirm connectivity and which tenant your credential resolves to.  |
+| `search_traces`       | TraceQL search over your tenant's traces.                           |
+| `get_trace`           | Fetch a single trace by ID.                                         |
+| `discover_attributes` | List queryable tag names, or the values for a tag.                  |
+| `query_metrics`       | PromQL query over your tenant's metrics (native Prometheus result). |
+| `search_logs`         | LogQL query over your tenant's logs (native Loki result).           |
+| `query_ir`            | Native Query IR document (the structured, versioned query surface). |
+| `compact_run`         | Trigger a compaction pass now (admin-authenticated).                |
+| `compact_status`      | Active compaction leases and metrics (admin-authenticated).         |
+| `compact_dry_run`     | Plan compaction candidates without executing (admin-authenticated). |
 
 Each query tool accepts an optional `dataset` argument. Omit it to use your
 session's default dataset; pass one to target another dataset your tenant may

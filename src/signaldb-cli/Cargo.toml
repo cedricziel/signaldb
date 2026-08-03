@@ -15,14 +15,16 @@ serde_json.workspace = true
 toml.workspace = true
 anyhow.workspace = true
 arrow.workspace = true
-arrow-flight.workspace = true
-tonic.workspace = true
 futures.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 tui-tree-widget.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
+
+[lib]
+name = "signaldb_cli"
+path = "src/lib.rs"
 
 [[bin]]
 name = "signaldb-cli"

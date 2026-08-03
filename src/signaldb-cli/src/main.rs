@@ -1,8 +1,5 @@
-mod commands;
-mod tui;
-
 use clap::{CommandFactory, Parser};
-use commands::Cli;
+use signaldb_cli::commands::Cli;
 
 fn main() {
     // Handle dynamic shell completion requests (COMPLETE=<shell> signaldb-cli ...)

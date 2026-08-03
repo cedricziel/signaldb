@@ -563,13 +563,20 @@ curl http://localhost:3000/health   # Router
 
 ## CLI Tool
 
-`signaldb-cli` provides command-line management for tenants, API keys, and datasets, plus an interactive terminal UI (ratatui-based):
+`signaldb-cli` provides command-line management (under `admin`) for tenants, API keys, and datasets, a `query` command for every query language, plus an interactive terminal UI (ratatui-based). It is a pure `signaldb-sdk` consumer:
 
 ```bash
-signaldb-cli tenant list
-signaldb-cli tenant create acme --name "Acme Corp"
-signaldb-cli api-key create acme --name "Production Key"
-signaldb-cli dataset create acme --name production
+signaldb-cli admin tenant list
+signaldb-cli admin tenant create acme --name "Acme Corp"
+signaldb-cli admin api-key create acme --name "Production Key"
+signaldb-cli admin dataset create acme --name production
+
+# Query in any language (exactly one flag):
+signaldb-cli query --sql "SELECT * FROM traces LIMIT 10"
+signaldb-cli query --promql "rate(http_requests_total[5m])"
+signaldb-cli query --logql '{service_name="api"} |= "error"'
+signaldb-cli query --traceql '{ .service.name = "api" }'
+signaldb-cli query --ir '{"irVersion":1,"from":"logs","result":"rows"}'
 ```
 
 ## Testing

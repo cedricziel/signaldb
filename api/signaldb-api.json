@@ -1321,6 +1321,105 @@
         }
       }
     },
+    "/api/v1/ops/compact": {
+      "post": {
+        "tags": [
+          "ops"
+        ],
+        "summary": "POST /api/v1/ops/compact — trigger a compaction pass now.",
+        "operationId": "ops_compact",
+        "responses": {
+          "200": {
+            "description": "Compaction run summary",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "502": {
+            "description": "The compactor returned an unusable response"
+          },
+          "503": {
+            "description": "No compactor service is reachable"
+          },
+          "504": {
+            "description": "The compactor did not respond in time"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/ops/compact/dry-run": {
+      "post": {
+        "tags": [
+          "ops"
+        ],
+        "summary": "POST /api/v1/ops/compact/dry-run — plan compaction candidates without\nexecuting (the read-only preview of what `compact` would do).",
+        "operationId": "ops_compact_dry_run",
+        "responses": {
+          "200": {
+            "description": "Compaction candidates",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "502": {
+            "description": "The compactor returned an unusable response"
+          },
+          "503": {
+            "description": "No compactor service is reachable"
+          },
+          "504": {
+            "description": "The compactor did not respond in time"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/ops/compact/status": {
+      "get": {
+        "tags": [
+          "ops"
+        ],
+        "summary": "GET /api/v1/ops/compact/status — active leases and compaction metrics.",
+        "operationId": "ops_compact_status",
+        "responses": {
+          "200": {
+            "description": "Compaction status snapshot",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "502": {
+            "description": "The compactor returned an unusable response"
+          },
+          "503": {
+            "description": "No compactor service is reachable"
+          },
+          "504": {
+            "description": "The compactor did not respond in time"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/v1/query": {
       "post": {
         "tags": [
@@ -2895,6 +2994,10 @@
     {
       "name": "logs",
       "description": "Loki-compatible log query (LogQL)"
+    },
+    {
+      "name": "ops",
+      "description": "Operational control (compaction)"
     }
   ]
 }

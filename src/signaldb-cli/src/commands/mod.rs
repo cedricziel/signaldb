@@ -1,6 +1,7 @@
 pub mod api_key;
 pub mod completions;
 pub mod dataset;
+pub mod ops;
 pub mod query;
 pub mod tenant;
 pub mod user;
@@ -34,25 +35,18 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Manage tenants
-    Tenant {
+    /// Query SignalDB in one language (exactly one of
+    /// --sql/--promql/--logql/--traceql/--ir)
+    Query(query::QueryArgs),
+    /// Administrative operations (tenants, API keys, datasets)
+    Admin {
         #[command(subcommand)]
-        action: tenant::TenantAction,
+        action: AdminAction,
     },
-    /// Manage API keys
-    ApiKey {
+    /// Operational control (compaction)
+    Ops {
         #[command(subcommand)]
-        action: api_key::ApiKeyAction,
-    },
-    /// Manage datasets
-    Dataset {
-        #[command(subcommand)]
-        action: dataset::DatasetAction,
-    },
-    /// Query SignalDB via SQL
-    Query {
-        #[command(subcommand)]
-        action: query::QueryAction,
+        action: ops::OpsAction,
     },
     /// Bootstrap human users directly in the service catalog
     User {
@@ -121,10 +115,30 @@ enum Commands {
     },
 }
 
+/// Administrative subcommands, all reached through the admin API via the SDK.
+#[derive(Subcommand)]
+enum AdminAction {
+    /// Manage tenants
+    Tenant {
+        #[command(subcommand)]
+        action: tenant::TenantAction,
+    },
+    /// Manage API keys
+    ApiKey {
+        #[command(subcommand)]
+        action: api_key::ApiKeyAction,
+    },
+    /// Manage datasets
+    Dataset {
+        #[command(subcommand)]
+        action: dataset::DatasetAction,
+    },
+}
+
 impl Cli {
     pub async fn run(self) -> anyhow::Result<()> {
-        if let Commands::Query { action } = self.command {
-            return action.run().await;
+        if let Commands::Query(args) = self.command {
+            return args.run().await;
         }
 
         if let Commands::Completions { shell } = self.command {
@@ -159,8 +173,31 @@ impl Cli {
             return app.run().await;
         }
 
+        // Ops uses admin authentication, but its endpoints have absolute paths
+        // (`/api/v1/ops/...`), so the SDK client base is the router root — not
+        // the `/api/v1/admin` prefix the admin dispatch uses below.
+        if matches!(self.command, Commands::Ops { .. }) {
+            let admin_key = self.resolve_admin_key()?;
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {admin_key}"))?,
+            );
+            let http = reqwest::Client::builder()
+                .default_headers(headers)
+                .build()?;
+            let client = Client::new_with_client(self.url.trim_end_matches('/'), http);
+            let Commands::Ops { action } = self.command else {
+                unreachable!()
+            };
+            return action.run(&client).await;
+        }
+
         let admin_key = self.resolve_admin_key()?;
-        let base_url = format!("{}/api/v1/admin", self.url.trim_end_matches('/'));
+        // The generated admin methods carry absolute paths (e.g.
+        // `/api/v1/admin/tenants`), so the SDK client base URL is the router
+        // root — not `{url}/api/v1/admin`, which would double-prefix.
+        let base_url = self.url.trim_end_matches('/').to_string();
 
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
@@ -174,11 +211,14 @@ impl Cli {
         let client = Client::new_with_client(&base_url, http);
 
         match self.command {
-            Commands::Tenant { action } => action.run(&client).await,
-            Commands::ApiKey { action } => action.run(&client).await,
-            Commands::Dataset { action } => action.run(&client).await,
+            Commands::Admin { action } => match action {
+                AdminAction::Tenant { action } => action.run(&client).await,
+                AdminAction::ApiKey { action } => action.run(&client).await,
+                AdminAction::Dataset { action } => action.run(&client).await,
+            },
             Commands::User { action } => action.run(&client).await,
-            Commands::Query { .. } => unreachable!(),
+            Commands::Ops { .. } => unreachable!(),
+            Commands::Query(_) => unreachable!(),
             Commands::Completions { .. } => unreachable!(),
             Commands::Tui { .. } => unreachable!(),
         }
@@ -249,4 +289,87 @@ fn parse_duration(s: &str) -> anyhow::Result<Duration> {
         return Ok(Duration::from_secs(val * 60));
     }
     anyhow::bail!("unsupported duration format: {s} (expected e.g. '5s', '100ms', '2m')")
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(args)
+    }
+
+    #[test]
+    fn query_requires_a_language_flag() {
+        // No flag: clap rejects (exit code 2 at runtime).
+        assert!(parse(&["signaldb-cli", "query", "SELECT 1"]).is_err());
+    }
+
+    #[test]
+    fn query_accepts_exactly_one_language() {
+        assert!(parse(&["signaldb-cli", "query", "--sql", "SELECT 1"]).is_ok());
+        assert!(parse(&["signaldb-cli", "query", "--promql", "up"]).is_ok());
+        assert!(parse(&["signaldb-cli", "query", "--logql", "{x=\"y\"}"]).is_ok());
+        assert!(parse(&["signaldb-cli", "query", "--traceql", "{}"]).is_ok());
+    }
+
+    #[test]
+    fn query_rejects_multiple_languages() {
+        assert!(parse(&["signaldb-cli", "query", "--sql", "--promql", "x"]).is_err());
+        assert!(parse(&["signaldb-cli", "query", "--sql", "--ir", "x"]).is_err());
+    }
+
+    #[test]
+    fn ir_needs_no_positional() {
+        // --ir reads from --file or stdin, so the positional is optional.
+        assert!(parse(&["signaldb-cli", "query", "--ir", "--file", "q.json"]).is_ok());
+        assert!(parse(&["signaldb-cli", "query", "--ir"]).is_ok());
+    }
+
+    #[test]
+    fn management_lives_under_admin() {
+        assert!(parse(&["signaldb-cli", "admin", "tenant", "list"]).is_ok());
+        assert!(parse(&["signaldb-cli", "admin", "api-key", "list", "acme"]).is_ok());
+        assert!(parse(&["signaldb-cli", "admin", "dataset", "list", "acme"]).is_ok());
+    }
+
+    #[test]
+    fn ops_compact_subcommands_parse() {
+        assert!(parse(&["signaldb-cli", "ops", "compact", "run"]).is_ok());
+        assert!(parse(&["signaldb-cli", "ops", "compact", "status"]).is_ok());
+        assert!(parse(&["signaldb-cli", "ops", "compact", "dry-run"]).is_ok());
+        // `ops` requires a subcommand.
+        assert!(parse(&["signaldb-cli", "ops"]).is_err());
+    }
+
+    #[test]
+    fn old_top_level_management_commands_are_gone() {
+        // BREAKING (post-1.0): tenant/api-key/dataset moved under `admin`.
+        assert!(parse(&["signaldb-cli", "tenant", "list"]).is_err());
+        assert!(parse(&["signaldb-cli", "api-key", "list", "acme"]).is_err());
+        assert!(parse(&["signaldb-cli", "dataset", "list", "acme"]).is_err());
+    }
+
+    // Regression: the admin client base URL is the router root, so the generated
+    // methods' absolute paths hit `/api/v1/admin/...` — not a double-prefixed
+    // `/api/v1/admin/api/v1/admin/...`.
+    #[tokio::test]
+    async fn admin_client_uses_root_base_and_absolute_paths() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/v1/admin/tenants")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"tenants":[]}"#)
+            .create_async()
+            .await;
+
+        let http = reqwest::Client::new();
+        // The admin dispatch configures the client with the router root.
+        let client = Client::new_with_client(server.url().trim_end_matches('/'), http);
+        // The request must reach `/api/v1/admin/tenants`; a double-prefixed URL
+        // would miss the mock and fail the assertion below.
+        let _ = client.list_tenants().send().await;
+        mock.assert_async().await;
+    }
 }

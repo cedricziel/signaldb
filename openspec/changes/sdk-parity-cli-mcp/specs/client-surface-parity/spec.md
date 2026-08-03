@@ -15,7 +15,7 @@ other direct transport to a SignalDB service.
 
 #### Scenario: CLI issues a query
 
-- **WHEN** the CLI executes any query (SQL, TraceQL, LogQL, or PromQL)
+- **WHEN** the CLI executes any query (SQL, TraceQL, LogQL, PromQL, or Query IR)
 - **THEN** the request is dispatched through a `signaldb-sdk` client method
 - **AND** the CLI crate contains no direct `FlightServiceClient` or raw HTTP
   construction against a SignalDB service
@@ -40,24 +40,32 @@ defect.
   method
 - **THEN** the parity check fails and identifies the uncovered operation
 
-### Requirement: Three-way parity is enforced
+### Requirement: Query-surface parity is enforced
 
-An automated check SHALL enumerate the public capability surface of
-`signaldb-sdk` and assert that each capability is reachable through both a CLI
-verb and an MCP tool. The check SHALL fail when a surface under-exposes a
-capability the SDK provides.
+An automated check SHALL assert query-capability parity against a manifest of the
+query languages SignalDB supports (SQL, TraceQL, LogQL, PromQL, and Query IR).
+Every language SHALL be reachable through a CLI `query` flag. Every language
+served over the router's **HTTP** surface (TraceQL, LogQL, PromQL, Query IR)
+SHALL additionally be reachable through an MCP tool. **SQL** is served over Arrow
+Flight (gRPC); because the MCP server is an HTTP forwarder that holds no Flight
+client, SQL is intentionally CLI-only, and this boundary SHALL be asserted
+explicitly so it cannot erode silently. The check SHALL fail when a surface
+under-exposes a language its transport requires.
 
-#### Scenario: SDK gains a capability the CLI does not surface
+#### Scenario: An HTTP query language is missing from the CLI or MCP
 
-- **WHEN** a capability exists in the SDK but no CLI verb reaches it
-- **THEN** the parity check fails and names the missing CLI verb
+- **WHEN** a TraceQL/LogQL/PromQL/Query-IR capability lacks either a CLI `query`
+  flag or an MCP tool
+- **THEN** the parity check fails and names the missing surface
 
-#### Scenario: SDK gains a capability the MCP server does not surface
+#### Scenario: SQL is CLI-only by design
 
-- **WHEN** a capability exists in the SDK but no MCP tool reaches it
-- **THEN** the parity check fails and names the missing MCP tool
+- **WHEN** the parity check evaluates SQL
+- **THEN** it requires a CLI `--sql` flag and requires that no MCP tool claims
+  SQL, matching the HTTP-forwarder boundary
 
 #### Scenario: All surfaces are aligned
 
-- **WHEN** every SDK capability has both a CLI verb and an MCP tool
+- **WHEN** every query language has its required CLI flag, every HTTP language
+  has an MCP tool, and SQL remains CLI-only
 - **THEN** the parity check passes

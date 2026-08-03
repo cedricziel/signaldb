@@ -1323,6 +1323,93 @@ export type ManageRemoveMembershipResponses = {
 
 export type ManageRemoveMembershipResponse = ManageRemoveMembershipResponses[keyof ManageRemoveMembershipResponses];
 
+export type OpsCompactData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/ops/compact';
+};
+
+export type OpsCompactErrors = {
+    /**
+     * The compactor returned an unusable response
+     */
+    502: unknown;
+    /**
+     * No compactor service is reachable
+     */
+    503: unknown;
+    /**
+     * The compactor did not respond in time
+     */
+    504: unknown;
+};
+
+export type OpsCompactResponses = {
+    /**
+     * Compaction run summary
+     */
+    200: unknown;
+};
+
+export type OpsCompactDryRunData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/ops/compact/dry-run';
+};
+
+export type OpsCompactDryRunErrors = {
+    /**
+     * The compactor returned an unusable response
+     */
+    502: unknown;
+    /**
+     * No compactor service is reachable
+     */
+    503: unknown;
+    /**
+     * The compactor did not respond in time
+     */
+    504: unknown;
+};
+
+export type OpsCompactDryRunResponses = {
+    /**
+     * Compaction candidates
+     */
+    200: unknown;
+};
+
+export type OpsCompactStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/ops/compact/status';
+};
+
+export type OpsCompactStatusErrors = {
+    /**
+     * The compactor returned an unusable response
+     */
+    502: unknown;
+    /**
+     * No compactor service is reachable
+     */
+    503: unknown;
+    /**
+     * The compactor did not respond in time
+     */
+    504: unknown;
+};
+
+export type OpsCompactStatusResponses = {
+    /**
+     * Compaction status snapshot
+     */
+    200: unknown;
+};
+
 export type QueryIrData = {
     body: QueryIrRequest;
     path?: never;

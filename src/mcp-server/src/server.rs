@@ -4,14 +4,20 @@
 //! are thin wrappers over the generated [`signaldb_sdk`] query methods,
 //! forwarding the caller's credential (the handler holds no key of its own).
 //!
-//! v1 tools (Tempo-backed; every authenticated tenant session, no role gating):
+//! Tools (every authenticated tenant session, no role gating):
 //! - `server_info` — connectivity + resolved tenant
 //! - `search_traces` — TraceQL search
 //! - `get_trace` — single trace by ID
 //! - `discover_attributes` — queryable tag names / values
+//! - `query_metrics` — PromQL query (native Prometheus result)
+//! - `search_logs` — LogQL query (native Loki result)
+//! - `query_ir` — native Query IR document (structured query surface)
+//! - `compact_run` / `compact_status` / `compact_dry_run` — operational
+//!   compaction control (admin-authenticated)
 //!
-//! `search_logs` and `query_metrics` follow once the Loki/Prometheus query
-//! endpoints join the SDK (epic #620, Phase A follow-up).
+//! Raw SQL is served over Arrow Flight (gRPC) rather than the router HTTP API;
+//! this server is an HTTP forwarder and holds no Flight client, so SQL stays a
+//! CLI-only capability (see the `client-surface-parity` spec).
 
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
@@ -95,6 +101,48 @@ struct DiscoverAttributesParams {
     /// the list of queryable tag names.
     #[serde(default)]
     tag: Option<String>,
+    /// Dataset to query. Omit to use the session's default dataset.
+    #[serde(default)]
+    dataset: Option<String>,
+}
+
+/// Parameters for `query_metrics`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct QueryMetricsParams {
+    /// PromQL expression, e.g. `rate(http_requests_total[5m])`.
+    query: String,
+    /// Evaluation timestamp, unix seconds or RFC3339. Omit to evaluate at "now".
+    #[serde(default)]
+    time: Option<String>,
+    /// Dataset to query. Omit to use the session's default dataset.
+    #[serde(default)]
+    dataset: Option<String>,
+}
+
+/// Parameters for `search_logs`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct SearchLogsParams {
+    /// LogQL query, e.g. `{service_name="api"} |= "error"`.
+    query: String,
+    /// Maximum number of log entries to return.
+    #[serde(default)]
+    limit: Option<i64>,
+    /// Log ordering: `forward` or `backward`.
+    #[serde(default)]
+    direction: Option<String>,
+    /// Dataset to query. Omit to use the session's default dataset.
+    #[serde(default)]
+    dataset: Option<String>,
+}
+
+/// Parameters for `query_ir`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct QueryIrParams {
+    /// The native Query IR document (the structured, versioned query surface).
+    query: serde_json::Value,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -223,6 +271,125 @@ impl McpServer {
             }
         }
     }
+
+    #[tool(
+        description = "Query metrics with PromQL. Provide `query` as a PromQL expression (e.g. `rate(http_requests_total[5m])`) and optionally `time` (unix seconds or RFC3339). Returns the native Prometheus result scoped to your tenant."
+    )]
+    async fn query_metrics(
+        &self,
+        Parameters(p): Parameters<QueryMetricsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = sdk_client_for(&parts, &self.router_base_url, p.dataset.as_deref());
+        let mut req = client.promql_query().query(p.query);
+        if let Some(v) = p.time {
+            req = req.time(v);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "query_metrics"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Search logs with LogQL. Provide `query` as a LogQL expression (e.g. `{service_name=\"api\"} |= \"error\"`) and optionally `limit` and `direction` (`forward`/`backward`). Returns the native Loki result scoped to your tenant."
+    )]
+    async fn search_logs(
+        &self,
+        Parameters(p): Parameters<SearchLogsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = sdk_client_for(&parts, &self.router_base_url, p.dataset.as_deref());
+        let mut req = client.logql_query().query(p.query);
+        if let Some(v) = p.limit {
+            req = req.limit(v);
+        }
+        if let Some(v) = p.direction {
+            req = req.direction(v);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "search_logs"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant."
+    )]
+    async fn query_ir(
+        &self,
+        Parameters(p): Parameters<QueryIrParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(p.query)
+            .map_err(|e| ErrorData::invalid_params(format!("invalid IR document: {e}"), None))?;
+        let client = sdk_client_for(&parts, &self.router_base_url, p.dataset.as_deref());
+        let resp = client
+            .query_ir()
+            .body(request)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "query_ir"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Trigger a compaction pass now (operational control). Requires administrative credentials. Returns the run summary."
+    )]
+    async fn compact_run(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = sdk_client_for(&parts, &self.router_base_url, None);
+        let resp = client
+            .ops_compact()
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "compact_run"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Show active compaction leases and metrics (operational control). Requires administrative credentials."
+    )]
+    async fn compact_status(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = sdk_client_for(&parts, &self.router_base_url, None);
+        let resp = client
+            .ops_compact_status()
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "compact_status"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Plan compaction candidates without executing (read-only preview; operational control). Requires administrative credentials."
+    )]
+    async fn compact_dry_run(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = sdk_client_for(&parts, &self.router_base_url, None);
+        let resp = client
+            .ops_compact_dry_run()
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "compact_dry_run"))?;
+        json_result(&resp.into_inner())
+    }
+}
+
+impl McpServer {
+    /// Whether a tool named `name` is registered. Exposed for cross-surface
+    /// parity checks (see the `client-surface-parity` spec).
+    pub fn has_tool(name: &str) -> bool {
+        Self::tool_router().has_route(name)
+    }
 }
 
 #[tool_handler]
@@ -289,6 +456,12 @@ mod tests {
             "search_traces",
             "get_trace",
             "discover_attributes",
+            "query_metrics",
+            "search_logs",
+            "query_ir",
+            "compact_run",
+            "compact_status",
+            "compact_dry_run",
         ] {
             assert!(router.has_route(name), "tool `{name}` must be registered");
         }
