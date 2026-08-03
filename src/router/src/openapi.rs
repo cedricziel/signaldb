@@ -53,6 +53,7 @@ impl Modify for SecurityAddon {
         (name = "query", description = "Native structured Query IR"),
         (name = "metrics", description = "Prometheus-compatible metrics query (PromQL)"),
         (name = "logs", description = "Loki-compatible log query (LogQL)"),
+        (name = "ops", description = "Operational control (compaction)"),
     ),
     paths(
         crate::endpoints::admin::list_tenants,
@@ -90,6 +91,10 @@ impl Modify for SecurityAddon {
         // Loki-compatible log query endpoints (LogQL)
         crate::endpoints::logql::query,
         crate::endpoints::logql::query_range,
+        // Operational control (compaction) endpoints
+        crate::endpoints::ops::compact,
+        crate::endpoints::ops::compact_status,
+        crate::endpoints::ops::compact_dry_run,
     ),
     components(schemas(
         // signaldb-api admin DTOs

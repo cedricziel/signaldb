@@ -1,18 +1,22 @@
 ## Purpose
 
-Exposes operator-facing lifecycle control — compaction, retention, snapshot
-expiration, orphan cleanup, and status — through the router so it is reachable
-via the SDK and therefore uniformly available to the CLI and the MCP server.
+Exposes operator-facing **compaction control** — trigger, status, and dry-run —
+through the router so it is reachable via the SDK and therefore uniformly
+available to the CLI and the MCP server. Retention enforcement, snapshot
+expiration, and orphan cleanup run as compactor background loops with no control
+surface today; exposing them here is future work that requires matching
+compactor `do_action` commands, and is intentionally out of scope for this
+capability's initial delivery.
 
 ## ADDED Requirements
 
-### Requirement: Operational control is reachable through the API
+### Requirement: Compaction control is reachable through the API
 
-The router SHALL expose operational control operations under a dedicated
-`/api/v1/ops/*` surface: triggering compaction, triggering and inspecting
-retention enforcement, expiring snapshots, running orphan cleanup, and reading
-operational status/health. These operations SHALL forward to the compactor's
-existing control surface.
+The router SHALL expose compaction control under a dedicated `/api/v1/ops/*`
+surface: triggering a compaction pass, reading compaction status (active leases
+and metrics), and planning candidates without executing (dry-run). These
+operations SHALL forward to the compactor's Flight `do_action` control surface
+and return its result.
 
 #### Scenario: Trigger compaction via the API
 
@@ -20,10 +24,17 @@ existing control surface.
 - **THEN** the router forwards the request to the compactor
 - **AND** returns the outcome reported by the compactor
 
-#### Scenario: Read operational status
+#### Scenario: Read compaction status
 
-- **WHEN** an authorized caller requests operational status
-- **THEN** the router returns the compactor's current status
+- **WHEN** an authorized caller requests compaction status
+- **THEN** the router returns the compactor's active leases and metrics
+
+#### Scenario: No compactor is reachable
+
+- **WHEN** an authorized caller requests a compaction operation and no compactor
+  service is registered
+- **THEN** the router responds with a service-unavailable error rather than
+  hanging or succeeding
 
 ### Requirement: Operational endpoints are described for SDK generation
 
@@ -34,20 +45,19 @@ first-class SDK capability with no hand-written client per consumer.
 #### Scenario: Ops appears in the SDK
 
 - **WHEN** the SDK is generated from the annotated router
-- **THEN** the SDK exposes methods for the operational control operations
+- **THEN** the SDK exposes methods for the compaction control operations
 
-### Requirement: Destructive operations support dry-run
+### Requirement: Compaction dry-run previews without executing
 
-Operational actions that delete or expire data — retention enforcement, snapshot
-expiration, and orphan cleanup — SHALL support a dry-run mode that reports what
-would be affected without performing deletion, consistent with the compactor's
-existing dry-run semantics.
+The compaction dry-run operation SHALL report the candidate partitions/files it
+would compact without performing any compaction, giving operators a read-only
+preview.
 
-#### Scenario: Retention dry-run reports without deleting
+#### Scenario: Dry-run reports candidates without acting
 
-- **WHEN** a caller requests retention enforcement in dry-run mode
-- **THEN** the response reports the partitions or files that would be removed
-- **AND** no data is deleted
+- **WHEN** a caller requests a compaction dry-run
+- **THEN** the response reports the compaction candidates
+- **AND** no compaction is executed
 
 ### Requirement: Operational control requires authorization
 

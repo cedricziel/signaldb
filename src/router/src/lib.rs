@@ -144,6 +144,10 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .as_ref()
         .map(|key| Authenticator::hash_api_key(key));
     let admin_authenticator = state.authenticator().clone();
+    // Operational control uses the same administrative authentication as the
+    // admin API; clone the inputs before the admin layer moves them.
+    let ops_key_hash = admin_key_hash.clone();
+    let ops_authenticator = admin_authenticator.clone();
     let admin_auth_layer = middleware::from_fn(move |req, next| {
         admin_auth_middleware(
             admin_key_hash.clone(),
@@ -151,6 +155,9 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
             req,
             next,
         )
+    });
+    let ops_auth_layer = middleware::from_fn(move |req, next| {
+        admin_auth_middleware(ops_key_hash.clone(), ops_authenticator.clone(), req, next)
     });
 
     // Build admin routes
@@ -256,6 +263,12 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         )
         // Admin routes with admin authentication
         .nest("/api/v1/admin", admin_router)
+        // Operational control (compaction), admin-authenticated, proxied to the
+        // compactor's Flight do_action surface.
+        .nest(
+            "/api/v1/ops",
+            endpoints::ops::router::<S>().layer(ops_auth_layer),
+        )
         .nest(
             "/api/v1",
             endpoints::tenant::router()

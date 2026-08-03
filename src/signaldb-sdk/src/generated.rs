@@ -5200,6 +5200,43 @@ impl Client {
     pub fn manage_remove_membership(&self) -> builder::ManageRemoveMembership<'_> {
         builder::ManageRemoveMembership::new(self)
     }
+    /**POST /api/v1/ops/compact — trigger a compaction pass now
+
+    Sends a `POST` request to `/api/v1/ops/compact`
+
+    ```ignore
+    let response = client.ops_compact()
+        .send()
+        .await;
+    ```*/
+    pub fn ops_compact(&self) -> builder::OpsCompact<'_> {
+        builder::OpsCompact::new(self)
+    }
+    /**POST /api/v1/ops/compact/dry-run — plan compaction candidates without
+    executing (the read-only preview of what `compact` would do)
+
+    Sends a `POST` request to `/api/v1/ops/compact/dry-run`
+
+    ```ignore
+    let response = client.ops_compact_dry_run()
+        .send()
+        .await;
+    ```*/
+    pub fn ops_compact_dry_run(&self) -> builder::OpsCompactDryRun<'_> {
+        builder::OpsCompactDryRun::new(self)
+    }
+    /**GET /api/v1/ops/compact/status — active leases and compaction metrics
+
+    Sends a `GET` request to `/api/v1/ops/compact/status`
+
+    ```ignore
+    let response = client.ops_compact_status()
+        .send()
+        .await;
+    ```*/
+    pub fn ops_compact_status(&self) -> builder::OpsCompactStatus<'_> {
+        builder::OpsCompactStatus::new(self)
+    }
     /**Submit a native Query IR document
 
     Sends a `POST` request to `/api/v1/query`
@@ -7220,6 +7257,138 @@ pub mod builder {
                 500u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::ops_compact`]
+
+    [`Client::ops_compact`]: super::Client::ops_compact*/
+    #[derive(Debug, Clone)]
+    pub struct OpsCompact<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> OpsCompact<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `POST` request to `/api/v1/ops/compact`
+        pub async fn send(self) -> Result<ResponseValue<::serde_json::Value>, Error<()>> {
+            let Self { client } = self;
+            let url = format!("{}/api/v1/ops/compact", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "ops_compact",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::ops_compact_dry_run`]
+
+    [`Client::ops_compact_dry_run`]: super::Client::ops_compact_dry_run*/
+    #[derive(Debug, Clone)]
+    pub struct OpsCompactDryRun<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> OpsCompactDryRun<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `POST` request to `/api/v1/ops/compact/dry-run`
+        pub async fn send(self) -> Result<ResponseValue<::serde_json::Value>, Error<()>> {
+            let Self { client } = self;
+            let url = format!("{}/api/v1/ops/compact/dry-run", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "ops_compact_dry_run",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::ops_compact_status`]
+
+    [`Client::ops_compact_status`]: super::Client::ops_compact_status*/
+    #[derive(Debug, Clone)]
+    pub struct OpsCompactStatus<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> OpsCompactStatus<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `GET` request to `/api/v1/ops/compact/status`
+        pub async fn send(self) -> Result<ResponseValue<::serde_json::Value>, Error<()>> {
+            let Self { client } = self;
+            let url = format!("{}/api/v1/ops/compact/status", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "ops_compact_status",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }

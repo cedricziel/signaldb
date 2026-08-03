@@ -43,6 +43,47 @@ fn every_language_has_a_cli_flag() {
     }
 }
 
+/// Operational (compaction) capabilities: (name, CLI `ops compact` subcommand,
+/// MCP tool). Ops is HTTP-transport, so every capability is on both surfaces.
+const OPS_MANIFEST: &[(&str, &str, &str)] = &[
+    ("run", "run", "compact_run"),
+    ("status", "status", "compact_status"),
+    ("dry-run", "dry-run", "compact_dry_run"),
+];
+
+/// The subcommands of the CLI's `ops compact` command.
+fn cli_ops_compact_subcommands() -> HashSet<String> {
+    let cmd = signaldb_cli::commands::Cli::command();
+    let ops = cmd
+        .get_subcommands()
+        .find(|c| c.get_name() == "ops")
+        .expect("`ops` subcommand exists");
+    let compact = ops
+        .get_subcommands()
+        .find(|c| c.get_name() == "compact")
+        .expect("`ops compact` subcommand exists");
+    compact
+        .get_subcommands()
+        .map(|c| c.get_name().to_string())
+        .collect()
+}
+
+#[test]
+fn ops_capabilities_have_cli_and_mcp() {
+    use mcp_server::server::McpServer;
+    let cli = cli_ops_compact_subcommands();
+    for (cap, cli_sub, tool) in OPS_MANIFEST {
+        assert!(
+            cli.contains(*cli_sub),
+            "CLI `ops compact {cli_sub}` is missing for {cap}"
+        );
+        assert!(
+            McpServer::has_tool(tool),
+            "MCP tool `{tool}` is missing for {cap}"
+        );
+    }
+}
+
 #[test]
 fn http_languages_have_mcp_tools_and_sql_stays_cli_only() {
     use mcp_server::server::McpServer;

@@ -45,7 +45,9 @@ flowchart LR
   request/response DTOs are defined in that module), and the PromQL/LogQL
   instant and range query endpoints in `endpoints/promql.rs`
   (`/prometheus/api/v1/query{,_range}`) and `endpoints/logql.rs`
-  (`/loki/api/v1/query{,_range}`). Paths are absolute; operationIds on the
+  (`/loki/api/v1/query{,_range}`), and the operational-control endpoints in
+  `endpoints/ops.rs` (`/api/v1/ops/compact{,/status,/dry-run}`, admin-authenticated,
+  proxied to the compactor's Flight `do_action` surface). Paths are absolute; operationIds on the
   management handlers are prefixed `manage_*` and their colliding component
   schemas aliased `Manage*` (via `#[schema(as = ...)]`) so admin and manage
   names don't clash. The PromQL/LogQL handlers set explicit `operation_id`s

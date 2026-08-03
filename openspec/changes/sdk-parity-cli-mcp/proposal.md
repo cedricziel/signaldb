@@ -35,9 +35,12 @@ across API, SDK, CLI, and MCP becomes structural rather than aspirational.
   `admin <noun>`; operational control under `ops <verb>`.
 - Add operational control to the **router as an OpenAPI-annotated ops proxy**
   (`/api/v1/ops/*`) that forwards to the compactor's existing Flight
-  `do_action` surface (compaction, retention, snapshot expiration, orphan
-  cleanup, status/health). Because it is annotated, it regenerates into the SDK,
-  and CLI `ops` verbs plus an MCP ops tool land from the same source.
+  `do_action` surface. The initial scope is **compaction control** (run,
+  status, dry-run), which the compactor already exposes as actions; retention
+  enforcement, snapshot expiration, and orphan cleanup run as compactor
+  background loops with no control surface and are deferred (they need matching
+  compactor actions). Because the proxy is annotated, it regenerates into the
+  SDK, and CLI `ops` verbs plus MCP ops tools land from the same source.
 - Bring the **MCP tool surface to feature parity** with the CLI: every SDK
   capability is exposed as an MCP tool, including query and ops.
 - Add a **parity guarantee and enforcement test**: a check that enumerates the

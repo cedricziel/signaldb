@@ -1,6 +1,7 @@
 pub mod api_key;
 pub mod completions;
 pub mod dataset;
+pub mod ops;
 pub mod query;
 pub mod tenant;
 pub mod user;
@@ -41,6 +42,11 @@ enum Commands {
     Admin {
         #[command(subcommand)]
         action: AdminAction,
+    },
+    /// Operational control (compaction)
+    Ops {
+        #[command(subcommand)]
+        action: ops::OpsAction,
     },
     /// Bootstrap human users directly in the service catalog
     User {
@@ -167,8 +173,31 @@ impl Cli {
             return app.run().await;
         }
 
+        // Ops uses admin authentication, but its endpoints have absolute paths
+        // (`/api/v1/ops/...`), so the SDK client base is the router root — not
+        // the `/api/v1/admin` prefix the admin dispatch uses below.
+        if matches!(self.command, Commands::Ops { .. }) {
+            let admin_key = self.resolve_admin_key()?;
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {admin_key}"))?,
+            );
+            let http = reqwest::Client::builder()
+                .default_headers(headers)
+                .build()?;
+            let client = Client::new_with_client(self.url.trim_end_matches('/'), http);
+            let Commands::Ops { action } = self.command else {
+                unreachable!()
+            };
+            return action.run(&client).await;
+        }
+
         let admin_key = self.resolve_admin_key()?;
-        let base_url = format!("{}/api/v1/admin", self.url.trim_end_matches('/'));
+        // The generated admin methods carry absolute paths (e.g.
+        // `/api/v1/admin/tenants`), so the SDK client base URL is the router
+        // root — not `{url}/api/v1/admin`, which would double-prefix.
+        let base_url = self.url.trim_end_matches('/').to_string();
 
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
@@ -188,6 +217,7 @@ impl Cli {
                 AdminAction::Dataset { action } => action.run(&client).await,
             },
             Commands::User { action } => action.run(&client).await,
+            Commands::Ops { .. } => unreachable!(),
             Commands::Query(_) => unreachable!(),
             Commands::Completions { .. } => unreachable!(),
             Commands::Tui { .. } => unreachable!(),
@@ -304,10 +334,42 @@ mod parse_tests {
     }
 
     #[test]
+    fn ops_compact_subcommands_parse() {
+        assert!(parse(&["signaldb-cli", "ops", "compact", "run"]).is_ok());
+        assert!(parse(&["signaldb-cli", "ops", "compact", "status"]).is_ok());
+        assert!(parse(&["signaldb-cli", "ops", "compact", "dry-run"]).is_ok());
+        // `ops` requires a subcommand.
+        assert!(parse(&["signaldb-cli", "ops"]).is_err());
+    }
+
+    #[test]
     fn old_top_level_management_commands_are_gone() {
         // BREAKING (post-1.0): tenant/api-key/dataset moved under `admin`.
         assert!(parse(&["signaldb-cli", "tenant", "list"]).is_err());
         assert!(parse(&["signaldb-cli", "api-key", "list", "acme"]).is_err());
         assert!(parse(&["signaldb-cli", "dataset", "list", "acme"]).is_err());
+    }
+
+    // Regression: the admin client base URL is the router root, so the generated
+    // methods' absolute paths hit `/api/v1/admin/...` — not a double-prefixed
+    // `/api/v1/admin/api/v1/admin/...`.
+    #[tokio::test]
+    async fn admin_client_uses_root_base_and_absolute_paths() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/v1/admin/tenants")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"tenants":[]}"#)
+            .create_async()
+            .await;
+
+        let http = reqwest::Client::new();
+        // The admin dispatch configures the client with the router root.
+        let client = Client::new_with_client(server.url().trim_end_matches('/'), http);
+        // The request must reach `/api/v1/admin/tenants`; a double-prefixed URL
+        // would miss the mock and fail the assertion below.
+        let _ = client.list_tenants().send().await;
+        mock.assert_async().await;
     }
 }

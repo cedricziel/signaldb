@@ -12,6 +12,8 @@
 //! - `query_metrics` — PromQL query (native Prometheus result)
 //! - `search_logs` — LogQL query (native Loki result)
 //! - `query_ir` — native Query IR document (structured query surface)
+//! - `compact_run` / `compact_status` / `compact_dry_run` — operational
+//!   compaction control (admin-authenticated)
 //!
 //! Raw SQL is served over Arrow Flight (gRPC) rather than the router HTTP API;
 //! this server is an HTTP forwarder and holds no Flight client, so SQL stays a
@@ -332,6 +334,54 @@ impl McpServer {
             .map_err(|e| map_sdk_err(e, "query_ir"))?;
         json_result(&resp.into_inner())
     }
+
+    #[tool(
+        description = "Trigger a compaction pass now (operational control). Requires administrative credentials. Returns the run summary."
+    )]
+    async fn compact_run(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = sdk_client_for(&parts, &self.router_base_url, None);
+        let resp = client
+            .ops_compact()
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "compact_run"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Show active compaction leases and metrics (operational control). Requires administrative credentials."
+    )]
+    async fn compact_status(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = sdk_client_for(&parts, &self.router_base_url, None);
+        let resp = client
+            .ops_compact_status()
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "compact_status"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Plan compaction candidates without executing (read-only preview; operational control). Requires administrative credentials."
+    )]
+    async fn compact_dry_run(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = sdk_client_for(&parts, &self.router_base_url, None);
+        let resp = client
+            .ops_compact_dry_run()
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "compact_dry_run"))?;
+        json_result(&resp.into_inner())
+    }
 }
 
 impl McpServer {
@@ -409,6 +459,9 @@ mod tests {
             "query_metrics",
             "search_logs",
             "query_ir",
+            "compact_run",
+            "compact_status",
+            "compact_dry_run",
         ] {
             assert!(router.has_route(name), "tool `{name}` must be registered");
         }
