@@ -1,11 +1,10 @@
-## Purpose
+# cli-command-surface Specification
 
+## Purpose
 Defines the observable behavior of the `signaldb` CLI as a scriptable client:
 its command taxonomy, how it authenticates and selects endpoints, and how it
 renders query results for downstream tooling.
-
-## ADDED Requirements
-
+## Requirements
 ### Requirement: Command taxonomy
 
 The CLI SHALL organize commands into top-level capability groups: a single
@@ -38,7 +37,7 @@ on `query`.
 
 The CLI SHALL emit each query language's native result shape: `--sql` returns
 tabular rows selectable as `table`, `csv`, or `ndjson`; `--promql`, `--logql`,
-and `--traceql` return their native Tempo/Loki/Prometheus JSON responses
+and `--traceql` return their native Prometheus/Loki/Tempo JSON responses
 unchanged. The CLI SHALL NOT normalize the native-language responses into a
 common row model.
 
@@ -75,9 +74,10 @@ that stdout carries only result data.
 ### Requirement: Endpoint and credential resolution
 
 The CLI SHALL resolve its endpoint, tenant/dataset context, and credentials from
-explicit flags, environment variables, and an optional configuration file, in a
-documented precedence order, without requiring the caller to know which
-transport a given capability uses.
+explicit flags, environment variables, and an optional configuration file. Each
+field resolves independently, in the order: explicit flag > `SIGNALDB_*`
+environment variable > configuration-file value > built-in default. The caller
+need not know which transport a given capability uses.
 
 #### Scenario: Environment configures a scripted invocation
 
@@ -90,3 +90,4 @@ transport a given capability uses.
 - **WHEN** an endpoint is set in the environment and a different endpoint is
   passed as a flag
 - **THEN** the CLI uses the flag value
+
