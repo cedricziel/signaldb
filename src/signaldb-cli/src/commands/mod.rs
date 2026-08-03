@@ -1,6 +1,7 @@
 pub mod api_key;
 pub mod completions;
 pub mod dataset;
+pub mod ops;
 pub mod query;
 pub mod tenant;
 pub mod user;
@@ -41,6 +42,11 @@ enum Commands {
     Admin {
         #[command(subcommand)]
         action: AdminAction,
+    },
+    /// Operational control (compaction)
+    Ops {
+        #[command(subcommand)]
+        action: ops::OpsAction,
     },
     /// Bootstrap human users directly in the service catalog
     User {
@@ -167,6 +173,26 @@ impl Cli {
             return app.run().await;
         }
 
+        // Ops uses admin authentication, but its endpoints have absolute paths
+        // (`/api/v1/ops/...`), so the SDK client base is the router root — not
+        // the `/api/v1/admin` prefix the admin dispatch uses below.
+        if matches!(self.command, Commands::Ops { .. }) {
+            let admin_key = self.resolve_admin_key()?;
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {admin_key}"))?,
+            );
+            let http = reqwest::Client::builder()
+                .default_headers(headers)
+                .build()?;
+            let client = Client::new_with_client(self.url.trim_end_matches('/'), http);
+            let Commands::Ops { action } = self.command else {
+                unreachable!()
+            };
+            return action.run(&client).await;
+        }
+
         let admin_key = self.resolve_admin_key()?;
         let base_url = format!("{}/api/v1/admin", self.url.trim_end_matches('/'));
 
@@ -188,6 +214,7 @@ impl Cli {
                 AdminAction::Dataset { action } => action.run(&client).await,
             },
             Commands::User { action } => action.run(&client).await,
+            Commands::Ops { .. } => unreachable!(),
             Commands::Query(_) => unreachable!(),
             Commands::Completions { .. } => unreachable!(),
             Commands::Tui { .. } => unreachable!(),
@@ -301,6 +328,15 @@ mod parse_tests {
         assert!(parse(&["signaldb-cli", "admin", "tenant", "list"]).is_ok());
         assert!(parse(&["signaldb-cli", "admin", "api-key", "list", "acme"]).is_ok());
         assert!(parse(&["signaldb-cli", "admin", "dataset", "list", "acme"]).is_ok());
+    }
+
+    #[test]
+    fn ops_compact_subcommands_parse() {
+        assert!(parse(&["signaldb-cli", "ops", "compact", "run"]).is_ok());
+        assert!(parse(&["signaldb-cli", "ops", "compact", "status"]).is_ok());
+        assert!(parse(&["signaldb-cli", "ops", "compact", "dry-run"]).is_ok());
+        // `ops` requires a subcommand.
+        assert!(parse(&["signaldb-cli", "ops"]).is_err());
     }
 
     #[test]
