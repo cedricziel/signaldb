@@ -524,6 +524,15 @@ The WAL is organized by tenant, dataset, and signal type under the configured ba
         wal-0000000001.index
 ```
 
+A segment rotates when **either** its `.log` or its `.data` file would exceed
+`max_segment_size`. The `.data` file holds the payloads and grows much faster
+than the metadata `.log`, so in practice rotation is driven by the data file —
+this bounds each segment's size and keeps `.data` offsets well clear of the
+4 GB (2³²) range. Within a segment, each entry's payload is written at the exact
+offset recorded in its `.log` entry (the writer seeks to that offset rather than
+blind-appending), so a short or partial write cannot shift the offsets of the
+entries that follow it.
+
 ### Concrete Example
 
 The runtime `WalConfig` (`src/common/src/wal/mod.rs`) defaults to `wal_dir = ".wal"`, but the services derive their WAL directory from the `[wal].wal_dir` config value (default `.data/wal`) with a per-service suffix: the acceptor uses `{wal_dir}/acceptor` and the writer `{wal_dir}/writer`, overridable via `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR`. The tenant tree shown below sits under the acceptor's service directory; with the defaults that is `.data/wal/acceptor`:

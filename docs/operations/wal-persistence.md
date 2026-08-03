@@ -73,6 +73,8 @@ max_buffer_size_bytes = 134217728  # 128MB
 
 Note: segment size, buffer, and flush tuning currently ship as built-in defaults compiled into the services (64MB segments, 1000-entry buffer, 30s flush; the acceptor uses more aggressive per-signal settings for logs and metrics). The `[wal]` TOML block matches these defaults but the services do not yet read the tuning knobs from it — of the `[wal]` settings, only `wal_dir` changes runtime behavior today.
 
+`max_segment_size` caps **both** the entry-log file and the payload data file. Because payloads dominate size (the log holds only fixed-size per-entry metadata), rotation is driven in practice by the data file crossing the cap; a segment is sealed and a new one started before either file exceeds it. This keeps individual segments small, bounds recovery cost, and keeps data-file offsets well clear of the 4 GB (2³²) range.
+
 ## Docker Compose Configuration
 
 Configure persistent volumes for WAL directories:
@@ -212,6 +214,19 @@ On service restart:
 1. **WAL scan**: Identify unprocessed entries
 2. **Automatic replay**: Reprocess unprocessed entries
 3. **Resume normal operation**: Continue with new data
+
+### Write Integrity
+
+Each entry records the byte offset of its payload in the segment's `.data`
+file, and reads seek to that offset. The offset is therefore authoritative:
+appends **seek to the tracked offset and overwrite**, rather than relying on the
+OS append mode (`O_APPEND`) to place bytes at the physical end of file. This
+makes a short write self-correcting — if a payload write lands only some of its
+bytes and then errors (for example under disk pressure), the offset counter is
+not advanced, so the next append seeks back to the same offset and overwrites
+the partial bytes. A single short write can therefore no longer shift every
+subsequent entry in the segment, which previously corrupted the Arrow framing of
+all following entries.
 
 ### Corrupt or Unreadable Entries
 
