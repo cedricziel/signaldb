@@ -1101,6 +1101,78 @@ mod tests {
         let _ = df.collect().await.unwrap();
     }
 
+    /// Collect the LogicalPlan node types, root-first, following each node's
+    /// input(s). Used to assert plan *shape* (not a brittle golden string).
+    fn plan_node_types(plan: &datafusion::logical_expr::LogicalPlan, out: &mut Vec<&'static str>) {
+        use datafusion::logical_expr::LogicalPlan as LP;
+        out.push(match plan {
+            LP::Projection(_) => "Projection",
+            LP::Filter(_) => "Filter",
+            LP::Aggregate(_) => "Aggregate",
+            LP::Sort(_) => "Sort",
+            LP::Limit(_) => "Limit",
+            LP::TableScan(_) => "TableScan",
+            LP::SubqueryAlias(_) => "SubqueryAlias",
+            _ => "Other",
+        });
+        for input in plan.inputs() {
+            plan_node_types(input, out);
+        }
+    }
+
+    // Task 4.1 (deep) — assert the *shape* of the lowered plan, not just that
+    // substrings appear: Sort at the root, one Aggregate (bucketed by date_bin)
+    // above the Filters, promoted + unpromoted predicates in the same Filter,
+    // and a TableScan leaf. Catches lowering regressions (dropped stage, lost
+    // bucketing, reordering) that an execution result on a tiny fixture would
+    // not. (Pushdown depends on the TableProvider — Iceberg pushes, MemTable
+    // does not — so it is covered by execution/E2E, not plan shape.)
+    #[tokio::test]
+    async fn logs_aggregate_step_lowers_to_expected_plan_shape() {
+        let svc = IrService::new(logs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "where": { "and": [
+                    { "field": "severity_number", "op": "gte", "value": 17 },
+                    { "field": "deployment.environment", "op": "eq", "value": "prod" }
+                ]}},
+                { "aggregate": { "by": ["service_name"], "aggs": [{ "fn": "count", "as": "n" }], "step": "1ms" } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap();
+        let plan = df.logical_plan();
+
+        let mut types = Vec::new();
+        plan_node_types(plan, &mut types);
+
+        // Root is the deterministic Sort; leaf is the TableScan.
+        assert_eq!(types.first(), Some(&"Sort"), "node types: {types:?}");
+        assert_eq!(types.last(), Some(&"TableScan"), "node types: {types:?}");
+        // Exactly one Aggregate, sitting above every Filter, above the scan.
+        assert_eq!(
+            types.iter().filter(|t| **t == "Aggregate").count(),
+            1,
+            "node types: {types:?}"
+        );
+        let agg = types.iter().position(|t| *t == "Aggregate").unwrap();
+        let first_filter = types.iter().position(|t| *t == "Filter").unwrap();
+        let scan = types.iter().position(|t| *t == "TableScan").unwrap();
+        assert!(
+            agg < first_filter && first_filter < scan,
+            "node types: {types:?}"
+        );
+
+        // The Aggregate buckets by date_bin; the Filter carries BOTH the promoted
+        // column predicate and the unpromoted get_field extraction, proving
+        // promotion-aware lowering in one plan.
+        let text = format!("{}", plan.display_indent_schema());
+        assert!(text.contains("date_bin"), "plan:\n{text}");
+        assert!(text.contains("severity_number"), "plan:\n{text}");
+        assert!(text.contains("get_field"), "plan:\n{text}");
+    }
+
     // Task 4.2 — promotion invariance: promoted column vs json-path, same result.
     #[tokio::test]
     async fn promotion_invariance_same_result() {
