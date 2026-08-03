@@ -46,8 +46,8 @@
 
 ## 10. MCP sidecar: resource-origin responsibilities
 
-- [ ] 10.1 Write failing `mcp-server` tests: unauthenticated MCP request → `401` with `WWW-Authenticate: Bearer resource_metadata="…"`; `GET /.well-known/oauth-protected-resource` returns a doc whose `authorization_servers` names the router AS and `resource` equals the MCP URL; an OAuth session no longer requires `X-Tenant-ID`, while an API-key session still does (`cargo test -p mcp-server`).
-- [ ] 10.2 Implement the PRM document route + `401` challenge, and relax the `X-Tenant-ID` requirement for OAuth-authenticated sessions while keeping it for API-key sessions; keep forwarding the bearer verbatim — making 10.1 pass.
+- [x] 10.1 Write failing `mcp-server` tests: unauthenticated MCP request → `401` with `WWW-Authenticate: Bearer resource_metadata="…"`; `GET /.well-known/oauth-protected-resource` returns a doc whose `authorization_servers` names the router AS and `resource` equals the MCP URL; an OAuth session no longer requires `X-Tenant-ID`, while an API-key session still does (`cargo test -p mcp-server`).
+- [x] 10.2 Implement the PRM document route + `401` challenge, and relax the `X-Tenant-ID` requirement for OAuth-authenticated sessions while keeping it for API-key sessions; keep forwarding the bearer verbatim — making 10.1 pass.
 
 ## 11. Consent UI (UI surface)
 
