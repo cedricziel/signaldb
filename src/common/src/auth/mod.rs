@@ -23,7 +23,7 @@ pub use validation::{ValidationError, validate_dataset_id, validate_id, validate
 /// tools). The mirror of the acceptor's ingest write scopes; a token or key
 /// carrying `<signal>:read` may read that signal (see
 /// [`TenantContext::can_read`]).
-pub const READ_SCOPES: [&str; 3] = ["traces:read", "logs:read", "metrics:read"];
+pub const READ_SCOPES: [&str; 4] = ["traces:read", "logs:read", "metrics:read", "profiles:read"];
 
 /// Human principal resolved from a server-side browser session.
 #[derive(Debug, Clone)]
@@ -234,7 +234,7 @@ mod scoped_authorization_tests {
 
     #[test]
     fn every_read_signal_requires_its_matching_read_scope() {
-        for signal in ["metrics", "logs", "traces"] {
+        for signal in ["metrics", "logs", "traces", "profiles"] {
             let allowed = context(Some(vec![format!("{signal}:read")]));
             assert!(allowed.can_read(signal));
             for other in ["metrics", "logs", "traces"] {
@@ -248,7 +248,7 @@ mod scoped_authorization_tests {
     #[test]
     fn legacy_unscoped_keys_may_read_any_signal() {
         let legacy = context(None);
-        for signal in ["metrics", "logs", "traces"] {
+        for signal in ["metrics", "logs", "traces", "profiles"] {
             assert!(legacy.can_read(signal));
         }
     }
@@ -261,7 +261,7 @@ mod scoped_authorization_tests {
             false,
             Some("session-1".into()),
         );
-        for signal in ["metrics", "logs", "traces"] {
+        for signal in ["metrics", "logs", "traces", "profiles"] {
             assert!(viewer.can_read(signal));
         }
     }

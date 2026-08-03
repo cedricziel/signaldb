@@ -194,11 +194,17 @@ impl Authenticator {
             .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?
             .ok_or_else(|| AuthError::unauthorized("Invalid or expired access token"))?;
 
-        // Audience binding (RFC 8707): a token carrying an audience must be used
-        // only at that resource.
-        if let (Some(audience), Some(expected)) = (record.resource.as_deref(), expected_resource)
-            && audience != expected
-        {
+        // Audience binding (RFC 8707). When this deployment declares an MCP
+        // resource, every token must be bound to exactly it — a token carrying
+        // a different audience, or none at all, is refused. A token bound to a
+        // resource is likewise refused where no resource is declared. Only when
+        // neither side names a resource is the check skipped.
+        let audience_ok = match (record.resource.as_deref(), expected_resource) {
+            (Some(audience), Some(expected)) => audience == expected,
+            (None, None) => true,
+            _ => false,
+        };
+        if !audience_ok {
             return Err(AuthError::unauthorized(
                 "access token audience does not match this resource",
             ));
@@ -555,6 +561,23 @@ mod tests {
             .authenticate_oauth_token(&token, None, Some("https://other.example.com/mcp"))
             .await
             .expect_err("audience mismatch is rejected");
+        assert_eq!(err.status_code, 401);
+    }
+
+    #[tokio::test]
+    async fn oauth_token_without_audience_is_rejected_when_resource_configured() {
+        // A deployment that declares a resource must refuse a token that carries
+        // no audience — it cannot have been minted for this resource.
+        let (auth, token) = oauth_authenticator(
+            &["traces:read".to_string()],
+            None,
+            Utc::now() + Duration::hours(1),
+        )
+        .await;
+        let err = auth
+            .authenticate_oauth_token(&token, None, Some("https://signaldb.example.com/mcp"))
+            .await
+            .expect_err("unbound token is rejected where a resource is configured");
         assert_eq!(err.status_code, 401);
     }
 

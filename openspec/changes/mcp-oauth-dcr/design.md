@@ -35,7 +35,7 @@ The router hosts `/.well-known/oauth-authorization-server`, `/register`, `/autho
 
 Consequence: the resource server responsibilities that must live on the _resource's own origin_ — the RFC 9728 metadata document and the `401 WWW-Authenticate` challenge — stay on the **sidecar** (that is the origin clients call). Everything else is the router's. The sidecar still forwards the bearer verbatim; the router validates it. The sidecar learns nothing about OAuth beyond "serve one static document and one 401."
 
-```
+```text
  Claude/OpenAI ──Bearer token──▶  Sidecar (Resource origin)  ──forward verbatim──▶  Router (AS + validator)
                                   • /.well-known/oauth-protected-resource            • /.well-known/oauth-authorization-server
                                   • 401 + WWW-Authenticate                            • /register /authorize /token + consent

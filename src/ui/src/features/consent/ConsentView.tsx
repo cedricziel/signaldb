@@ -18,7 +18,12 @@ import "../shell/LoginPanel.css";
 import "./consent.css";
 
 /** The read scopes SignalDB grants by default when a client requests none. */
-const DEFAULT_READ_SCOPES = ["traces:read", "logs:read", "metrics:read"];
+const DEFAULT_READ_SCOPES = [
+  "traces:read",
+  "logs:read",
+  "metrics:read",
+  "profiles:read",
+];
 
 interface AuthorizeParams {
   clientId: string;
@@ -260,6 +265,8 @@ function scopeLabel(scope: string): string {
       return "Read logs";
     case "metrics:read":
       return "Read metrics";
+    case "profiles:read":
+      return "Read profiles";
     default:
       return scope;
   }

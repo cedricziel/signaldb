@@ -6,10 +6,14 @@
 //!
 //! - `GET /.well-known/oauth-authorization-server` — RFC 8414 metadata
 //! - `POST /oauth/register` — RFC 7591 Dynamic Client Registration
+//! - `GET /oauth/authorize` — authorization endpoint (PKCE mandatory)
+//! - `POST /oauth/token` — token endpoint (authorization-code + refresh)
+//! - `GET /oauth/consent/context`, `POST /oauth/authorize/decision` — consent
+//!   screen support for the explore-UI
 //!
-//! The authorization (`/oauth/authorize` + consent) and token (`/oauth/token`)
-//! endpoints join in later tasks. All endpoints are public: discovery and DCR
-//! are unauthenticated by spec, and `/authorize` performs its own login.
+//! Discovery, DCR, `/authorize`, and `/token` are public (unauthenticated by
+//! spec; `/authorize` sends the user through login itself). The two consent
+//! endpoints are **not** public — they require a valid browser session cookie.
 
 use axum::{
     Form, Json, Router,
@@ -90,13 +94,15 @@ fn all_read_scopes() -> Vec<String> {
     READ_SCOPES.iter().map(|s| s.to_string()).collect()
 }
 
-/// The read scopes to grant for a requested `scope` string: the requested read
-/// scopes that SignalDB recognizes, or all read scopes when none were
-/// requested. Non-read scopes (e.g. write) are never granted through the
-/// consent flow.
-fn granted_read_scopes(requested: Option<&str>) -> Vec<String> {
+/// The read scopes to grant for a requested `scope` string. `None` (no `scope`
+/// requested) grants all read scopes — a sensible default for a read-only
+/// connector. A `scope` that names read scopes grants exactly the recognized
+/// ones. A `scope` that names *only* unrecognized scopes (e.g. `openid`,
+/// `traces:write`) returns `None` so the caller can reject with `invalid_scope`
+/// (RFC 6749 §4.1.2.1) — never silently widen the grant to all read scopes.
+fn granted_read_scopes(requested: Option<&str>) -> Option<Vec<String>> {
     match requested {
-        None => all_read_scopes(),
+        None => Some(all_read_scopes()),
         Some(scope) => {
             let granted: Vec<String> = scope
                 .split_whitespace()
@@ -104,9 +110,9 @@ fn granted_read_scopes(requested: Option<&str>) -> Vec<String> {
                 .map(str::to_string)
                 .collect();
             if granted.is_empty() {
-                all_read_scopes()
+                None
             } else {
-                granted
+                Some(granted)
             }
         }
     }
@@ -183,17 +189,34 @@ struct RegistrationResponse {
     token_endpoint_auth_method: String,
 }
 
-/// Whether a redirect URI is acceptable: an absolute `http`/`https` URL with an
-/// authority. (Claude/OpenAI use `https`; `http` is allowed for localhost dev.)
+/// Whether a redirect URI is acceptable: an absolute URL with an authority,
+/// `https` for any host, or `http` **only for loopback** (`localhost`,
+/// `127.0.0.1`, `[::1]`). Cleartext `http` to a non-loopback host would leak the
+/// authorization code and `state` (OAuth 2.1 / RFC 8252 §7.3).
 fn is_valid_redirect_uri(uri: &str) -> bool {
-    match uri.parse::<axum::http::Uri>() {
-        Ok(parsed) => {
-            matches!(parsed.scheme_str(), Some("http") | Some("https"))
-                && parsed.authority().is_some()
-        }
-        Err(_) => false,
+    let Ok(parsed) = uri.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    let Some(authority) = parsed.authority() else {
+        return false;
+    };
+    match parsed.scheme_str() {
+        Some("https") => true,
+        Some("http") => matches!(
+            authority.host(),
+            "localhost" | "127.0.0.1" | "[::1]" | "::1"
+        ),
+        _ => false,
     }
 }
+
+/// Bounds on a dynamic registration, since the endpoint is unauthenticated
+/// (RFC 7591 §5). These cap the damage of an anonymous caller: `client_name`
+/// renders on the consent screen, so an unbounded value enables spoofing.
+/// (Per-IP rate limiting is a further control tracked as a follow-up.)
+const MAX_REDIRECT_URIS: usize = 8;
+const MAX_REDIRECT_URI_LEN: usize = 2048;
+const MAX_CLIENT_NAME_LEN: usize = 256;
 
 /// Dynamic Client Registration (RFC 7591). Registers a public PKCE client and
 /// returns a fresh `client_id`. No client secret is issued.
@@ -205,6 +228,32 @@ async fn register<S: RouterState>(
         return Err(OAuthError::bad_request(
             "invalid_redirect_uri",
             "at least one redirect_uri is required",
+        ));
+    }
+    if req.redirect_uris.len() > MAX_REDIRECT_URIS {
+        return Err(OAuthError::bad_request(
+            "invalid_client_metadata",
+            format!("at most {MAX_REDIRECT_URIS} redirect_uris are allowed"),
+        ));
+    }
+    if req
+        .redirect_uris
+        .iter()
+        .any(|u| u.len() > MAX_REDIRECT_URI_LEN)
+    {
+        return Err(OAuthError::bad_request(
+            "invalid_redirect_uri",
+            "redirect_uri is too long",
+        ));
+    }
+    if req
+        .client_name
+        .as_deref()
+        .is_some_and(|n| n.len() > MAX_CLIENT_NAME_LEN)
+    {
+        return Err(OAuthError::bad_request(
+            "invalid_client_metadata",
+            format!("client_name must be at most {MAX_CLIENT_NAME_LEN} characters"),
         ));
     }
     if let Some(bad) = req.redirect_uris.iter().find(|u| !is_valid_redirect_uri(u)) {
@@ -465,23 +514,34 @@ pub(crate) async fn authorize_decision<S: RouterState>(
         return Ok(Json(ConsentDecisionResponse { redirect: url }).into_response());
     }
 
-    // The user may only grant a tenant they belong to (instance admins may
-    // grant any).
+    // The user may only grant a tenant they belong to. An instance admin may
+    // grant any tenant, but it must actually exist — otherwise a code would be
+    // minted for a non-existent tenant.
     let membership = state
         .catalog()
         .get_tenant_membership(&user.id, &d.tenant)
         .await
         .map_err(|e| OAuthError::server_error(format!("membership lookup failed: {e}")))?;
-    if membership.is_none() && !user.is_instance_admin {
-        return Err(OAuthError::new(
-            StatusCode::FORBIDDEN,
-            "access_denied",
-            "not a member of the selected tenant",
-        ));
+    if membership.is_none() {
+        let grantable = user.is_instance_admin
+            && state
+                .catalog()
+                .get_tenant(&d.tenant)
+                .await
+                .map_err(|e| OAuthError::server_error(format!("tenant lookup failed: {e}")))?
+                .is_some();
+        if !grantable {
+            return Err(OAuthError::new(
+                StatusCode::FORBIDDEN,
+                "access_denied",
+                "not a member of the selected tenant",
+            ));
+        }
     }
 
-    // Bind the token audience to the configured MCP resource, rejecting a
-    // request for any other resource (RFC 8707).
+    // Bind the token audience to the configured MCP resource (RFC 8707): reject
+    // a client-supplied `resource` that isn't the one we serve — including when
+    // we serve none, in which case a client cannot choose its own audience.
     let configured = state.config().mcp.oauth.resource_url.clone();
     let resource = match (d.resource.as_deref(), configured.as_deref()) {
         (Some(requested), Some(cfg)) if requested != cfg => {
@@ -490,11 +550,24 @@ pub(crate) async fn authorize_decision<S: RouterState>(
                 "requested resource is not served here",
             ));
         }
-        (Some(requested), _) => Some(requested.to_string()),
+        (Some(_), None) => {
+            return Err(OAuthError::bad_request(
+                "invalid_target",
+                "this server does not serve a configured MCP resource",
+            ));
+        }
+        (Some(requested), Some(_)) => Some(requested.to_string()),
         (None, cfg) => cfg.map(str::to_string),
     };
 
-    let scopes = granted_read_scopes(d.scope.as_deref());
+    // Grant the requested read scopes; a scope that names no read scope is an
+    // invalid request rather than a licence to grant everything.
+    let scopes = granted_read_scopes(d.scope.as_deref()).ok_or_else(|| {
+        OAuthError::bad_request(
+            "invalid_scope",
+            "requested scope contains no supported read scope",
+        )
+    })?;
     let code = generate_oauth_token(TokenKind::AuthorizationCode);
     let ttl = chrono::Duration::from_std(state.config().mcp.oauth.authorization_code_ttl)
         .map_err(|e| OAuthError::server_error(format!("invalid authorization_code_ttl: {e}")))?;
@@ -717,18 +790,23 @@ async fn token_authorization_code<S: RouterState>(
         })?;
 
     // The redemption must come from the same client and redirect URI the code
-    // was issued to.
-    if let Some(client_id) = req.client_id.as_deref()
-        && client_id != grant.client_id
-    {
+    // was issued to. `client_id` is required for public clients (RFC 6749
+    // §4.1.3), and `redirect_uri` must match — the grant always records one.
+    let client_id = req
+        .client_id
+        .as_deref()
+        .ok_or_else(|| OAuthError::bad_request("invalid_request", "missing client_id"))?;
+    if client_id != grant.client_id {
         return Err(OAuthError::bad_request(
             "invalid_grant",
             "client_id does not match the authorization code",
         ));
     }
-    if let Some(redirect_uri) = req.redirect_uri.as_deref()
-        && redirect_uri != grant.redirect_uri
-    {
+    let redirect_uri = req
+        .redirect_uri
+        .as_deref()
+        .ok_or_else(|| OAuthError::bad_request("invalid_request", "missing redirect_uri"))?;
+    if redirect_uri != grant.redirect_uri {
         return Err(OAuthError::bad_request(
             "invalid_grant",
             "redirect_uri does not match the authorization code",
@@ -773,17 +851,27 @@ async fn token_refresh<S: RouterState>(
             OAuthError::bad_request("invalid_grant", "refresh token is invalid or expired")
         })?;
 
-    if let Some(client_id) = req.client_id.as_deref()
-        && client_id != grant.client_id
-    {
+    let client_id = req
+        .client_id
+        .as_deref()
+        .ok_or_else(|| OAuthError::bad_request("invalid_request", "missing client_id"))?;
+    if client_id != grant.client_id {
         return Err(OAuthError::bad_request(
             "invalid_grant",
             "client_id does not match the refresh token",
         ));
     }
 
-    // Mint a fresh access token carrying the same grant; the refresh token is
-    // not rotated (the client keeps the one it holds).
+    // Rotate the refresh token (OAuth 2.1 §4.3.1 for public clients): the
+    // presented token is single-use, so revoke it before issuing a fresh
+    // access + refresh pair. Detecting replay of an already-consumed token to
+    // revoke the whole grant family is a tracked follow-up.
+    state
+        .catalog()
+        .revoke_refresh_token(&hash_oauth_token(refresh))
+        .await
+        .map_err(|e| OAuthError::server_error(format!("failed to revoke refresh token: {e}")))?;
+
     issue_tokens(
         state,
         &grant.client_id,
@@ -791,7 +879,7 @@ async fn token_refresh<S: RouterState>(
         &grant.tenant_id,
         &grant.scopes,
         grant.resource.as_deref(),
-        false,
+        true,
     )
     .await
 }
@@ -1319,5 +1407,126 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ---- CodeRabbit review hardening (change: mcp-oauth-dcr) ----
+
+    async fn register_with(app: &axum::Router, body: &str) -> axum::response::Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn register_rejects_non_loopback_http_redirect() {
+        let app = oauth_app().await;
+        let res = register_with(&app, r#"{"redirect_uris":["http://attacker.example/cb"]}"#).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(res).await["error"], "invalid_redirect_uri");
+    }
+
+    #[tokio::test]
+    async fn register_accepts_loopback_http_redirect() {
+        let app = oauth_app().await;
+        let res = register_with(&app, r#"{"redirect_uris":["http://127.0.0.1:9273/cb"]}"#).await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn register_rejects_too_many_redirect_uris() {
+        let app = oauth_app().await;
+        let uris: Vec<String> = (0..9)
+            .map(|i| format!("\"https://c.example/{i}\""))
+            .collect();
+        let body = format!("{{\"redirect_uris\":[{}]}}", uris.join(","));
+        let res = register_with(&app, &body).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(res).await["error"], "invalid_client_metadata");
+    }
+
+    #[tokio::test]
+    async fn decision_rejects_scope_with_no_read_scope() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session(&catalog, "acme").await;
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/authorize/decision")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("signaldb_session={cookie}"))
+                    .body(Body::from(
+                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","scope":"openid profile","tenant":"acme","approved":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(res).await["error"], "invalid_scope");
+    }
+
+    #[tokio::test]
+    async fn token_exchange_requires_client_id() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_authorization_code(&catalog, "raw-code-noclient").await;
+        let res = post_token(
+            &app,
+            format!(
+                "grant_type=authorization_code&code=raw-code-noclient&code_verifier={PKCE_VERIFIER}\
+                 &redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb"
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(res).await["error"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn refresh_rotation_revokes_the_presented_token() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_authorization_code(&catalog, "raw-code-rot").await;
+        let tokens = body_json(
+            post_token(
+                &app,
+                format!(
+                    "grant_type=authorization_code&code=raw-code-rot&code_verifier={PKCE_VERIFIER}\
+                     &redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&client_id=client-1"
+                ),
+            )
+            .await,
+        )
+        .await;
+        let refresh1 = tokens["refresh_token"].as_str().unwrap().to_string();
+
+        // First refresh succeeds and returns a NEW refresh token.
+        let r = body_json(
+            post_token(
+                &app,
+                format!("grant_type=refresh_token&refresh_token={refresh1}&client_id=client-1"),
+            )
+            .await,
+        )
+        .await;
+        let refresh2 = r["refresh_token"].as_str().unwrap().to_string();
+        assert_ne!(refresh1, refresh2, "refresh token must rotate");
+
+        // The original refresh token is now revoked (single-use).
+        let replay = post_token(
+            &app,
+            format!("grant_type=refresh_token&refresh_token={refresh1}&client_id=client-1"),
+        )
+        .await;
+        assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(replay).await["error"], "invalid_grant");
     }
 }

@@ -240,6 +240,9 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .nest(
             "/pyroscope",
             endpoints::pyroscope::router()
+                .layer(middleware::from_fn(|req, next| {
+                    read_scope::require_read_scope("profiles", req, next)
+                }))
                 .layer(query_rate_layer.clone())
                 .layer(auth_layer.clone()),
         )
@@ -267,6 +270,9 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .nest(
             "/api/profiles",
             endpoints::pyroscope::profiles_router()
+                .layer(middleware::from_fn(|req, next| {
+                    read_scope::require_read_scope("profiles", req, next)
+                }))
                 .layer(query_rate_layer.clone())
                 .layer(auth_layer.clone()),
         )
