@@ -3,6 +3,7 @@
 //! This module provides the Authenticator which handles API key validation,
 //! tenant resolution, and dataset resolution across config-based and database-based tenants.
 
+use super::oauth::hash_oauth_token;
 use super::{AuthError, TenantContext, TenantSource, UserContext, hash_session_token};
 use crate::catalog::{Catalog, MembershipRole};
 use crate::config::{AuthConfig, TenantConfig};
@@ -148,9 +149,80 @@ impl Authenticator {
             user.id,
             role,
             user.is_instance_admin,
-            session.id,
+            Some(session.id),
         )
         .await
+    }
+
+    /// Authenticate an opaque OAuth 2.1 access token (change: mcp-oauth-dcr).
+    ///
+    /// The tenant and scopes come from the **token record**, never from an
+    /// `X-Tenant-ID` header or a tool argument — an OAuth session cannot be
+    /// pointed at a tenant it was not granted. `expected_resource` is this
+    /// deployment's configured MCP resource URL; when both it and the token's
+    /// recorded audience are present they must match (RFC 8707), so a token
+    /// minted for another resource is rejected. An expired or revoked token
+    /// is not found and surfaces as unauthorized.
+    pub async fn authenticate_oauth_token(
+        &self,
+        access_token: &str,
+        dataset_id: Option<&str>,
+        expected_resource: Option<&str>,
+    ) -> Result<TenantContext, AuthError> {
+        let record = self
+            .catalog
+            .get_valid_access_token(&hash_oauth_token(access_token))
+            .await
+            .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?
+            .ok_or_else(|| AuthError::unauthorized("Invalid or expired access token"))?;
+
+        // Audience binding (RFC 8707): a token carrying an audience must be used
+        // only at that resource.
+        if let (Some(audience), Some(expected)) = (record.resource.as_deref(), expected_resource)
+            && audience != expected
+        {
+            return Err(AuthError::unauthorized(
+                "access token audience does not match this resource",
+            ));
+        }
+
+        let user = self
+            .catalog
+            .get_user(&record.user_id)
+            .await
+            .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?
+            .ok_or_else(|| AuthError::unauthorized("Access token user not found"))?;
+
+        // Tenant is fixed by the token; the user's role in that tenant still
+        // gates what the token may do.
+        let membership = self
+            .catalog
+            .get_tenant_membership(&user.id, &record.tenant_id)
+            .await
+            .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?;
+        let role = match membership {
+            Some(membership) => membership.role,
+            None if user.is_instance_admin => MembershipRole::Admin,
+            None => {
+                return Err(AuthError::forbidden(format!(
+                    "Token user is not a member of tenant '{}'",
+                    record.tenant_id
+                )));
+            }
+        };
+
+        let context = self
+            .resolve_user_tenant(
+                &record.tenant_id,
+                dataset_id,
+                user.id,
+                role,
+                user.is_instance_admin,
+                None,
+            )
+            .await?;
+        // The OAuth grant's scopes are enforced exactly like API-key scopes.
+        Ok(context.with_api_key_restrictions(Some(record.scopes), None))
     }
 
     /// Resolve an instance administrator from an opaque browser session.
@@ -190,7 +262,7 @@ impl Authenticator {
         user_id: String,
         role: MembershipRole,
         is_instance_admin: bool,
-        session_id: String,
+        session_id: Option<String>,
     ) -> Result<TenantContext, AuthError> {
         if let Some(tenant_config) = self.config_tenants.get(tenant_id) {
             let resolved_dataset = match self.resolve_dataset(tenant_config, dataset_id) {
@@ -387,7 +459,116 @@ impl Authenticator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::oauth::{TokenKind, generate_oauth_token, hash_oauth_token};
     use crate::config::{ApiKeyConfig, DatasetConfig};
+    use chrono::{Duration, Utc};
+
+    /// An authenticator over a database tenant `acme` with dataset `production`,
+    /// a member user, and a stored access token for that user/tenant. Returns
+    /// the authenticator and the raw access token.
+    async fn oauth_authenticator(
+        scopes: &[String],
+        resource: Option<&str>,
+        expires_at: chrono::DateTime<Utc>,
+    ) -> (Authenticator, String) {
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "production").await.unwrap();
+        let user = catalog
+            .create_user("agent@example.com", None, "phc", false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Member)
+            .await
+            .unwrap();
+        let raw = generate_oauth_token(TokenKind::Access);
+        catalog
+            .create_access_token(
+                &hash_oauth_token(&raw),
+                "client-1",
+                &user.id,
+                "acme",
+                scopes,
+                resource,
+                expires_at,
+            )
+            .await
+            .unwrap();
+        (Authenticator::new(AuthConfig::default(), catalog), raw)
+    }
+
+    #[tokio::test]
+    async fn oauth_token_resolves_tenant_and_scopes_from_the_token() {
+        let scopes = vec!["traces:read".to_string(), "logs:read".to_string()];
+        let (auth, token) = oauth_authenticator(
+            &scopes,
+            Some("https://signaldb.example.com/mcp"),
+            Utc::now() + Duration::hours(1),
+        )
+        .await;
+
+        let ctx = auth
+            .authenticate_oauth_token(&token, None, Some("https://signaldb.example.com/mcp"))
+            .await
+            .expect("valid token authenticates");
+        // Tenant comes from the token; scopes are enforced like API-key scopes.
+        assert_eq!(ctx.tenant_id, "acme");
+        assert_eq!(ctx.dataset_id, "production");
+        assert_eq!(ctx.api_key_scopes, Some(scopes));
+        assert!(ctx.can_read("traces"));
+        assert!(!ctx.can_read("metrics"));
+        // No browser session backs an OAuth context.
+        assert_eq!(ctx.session_id, None);
+    }
+
+    #[tokio::test]
+    async fn oauth_token_with_wrong_audience_is_rejected() {
+        let (auth, token) = oauth_authenticator(
+            &["traces:read".to_string()],
+            Some("https://signaldb.example.com/mcp"),
+            Utc::now() + Duration::hours(1),
+        )
+        .await;
+        let err = auth
+            .authenticate_oauth_token(&token, None, Some("https://other.example.com/mcp"))
+            .await
+            .expect_err("audience mismatch is rejected");
+        assert_eq!(err.status_code, 401);
+    }
+
+    #[tokio::test]
+    async fn expired_oauth_token_is_unauthorized() {
+        let (auth, token) = oauth_authenticator(
+            &["traces:read".to_string()],
+            Some("https://signaldb.example.com/mcp"),
+            Utc::now() - Duration::seconds(1),
+        )
+        .await;
+        let err = auth
+            .authenticate_oauth_token(&token, None, Some("https://signaldb.example.com/mcp"))
+            .await
+            .expect_err("expired token is rejected");
+        assert_eq!(err.status_code, 401);
+    }
+
+    #[tokio::test]
+    async fn unknown_oauth_token_is_unauthorized() {
+        let (auth, _token) = oauth_authenticator(
+            &["traces:read".to_string()],
+            Some("https://signaldb.example.com/mcp"),
+            Utc::now() + Duration::hours(1),
+        )
+        .await;
+        let err = auth
+            .authenticate_oauth_token("sdb_at_nonexistent", None, None)
+            .await
+            .expect_err("unknown token is rejected");
+        assert_eq!(err.status_code, 401);
+    }
 
     #[test]
     fn test_hash_api_key() {

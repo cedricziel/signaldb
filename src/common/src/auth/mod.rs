@@ -102,17 +102,21 @@ impl TenantContext {
     }
 
     /// Attach the human principal that produced this tenant context.
+    ///
+    /// `session_id` is the browser session that can revoke this context;
+    /// `None` for principals with no revocable browser session (e.g. an OAuth
+    /// access token, whose revocation is the token row itself).
     pub fn with_user(
         mut self,
         user_id: String,
         role: crate::catalog::MembershipRole,
         is_instance_admin: bool,
-        session_id: String,
+        session_id: Option<String>,
     ) -> Self {
         self.user_id = Some(user_id);
         self.role = Some(role);
         self.is_instance_admin = is_instance_admin;
-        self.session_id = Some(session_id);
+        self.session_id = session_id;
         self
     }
 
@@ -221,7 +225,7 @@ mod scoped_authorization_tests {
             "user-1".into(),
             crate::catalog::MembershipRole::Viewer,
             false,
-            "session-1".into(),
+            Some("session-1".into()),
         );
         assert!(!viewer.can_write());
         assert!(!viewer.can_ingest("metrics"));
@@ -255,7 +259,7 @@ mod scoped_authorization_tests {
             "user-1".into(),
             crate::catalog::MembershipRole::Viewer,
             false,
-            "session-1".into(),
+            Some("session-1".into()),
         );
         for signal in ["metrics", "logs", "traces"] {
             assert!(viewer.can_read(signal));
