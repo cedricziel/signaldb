@@ -1,8 +1,8 @@
 ## 1. Catalog schema & config foundation
 
-- [ ] 1.1 Write failing `common` catalog tests for the new tables: registered OAuth clients, authorization codes, access tokens, refresh tokens — each storing a token/secret **hash** (never the raw value), subject user, tenant, granted scopes, audience, and expiry (`cargo test -p common`).
-- [ ] 1.2 Add forward-only catalog migrations + row types for those tables (SQLite + PostgreSQL), making 1.1 pass.
-- [ ] 1.3 Add `[mcp]`/auth config for the AS issuer URL, resource URL, and token/code lifetimes following config precedence; document in `signaldb.dist.toml` (commented).
+- [x] 1.1 Write failing `common` catalog tests for the new tables: registered OAuth clients, authorization codes, access tokens, refresh tokens — each storing a token/secret **hash** (never the raw value), subject user, tenant, granted scopes, audience, and expiry (`cargo test -p common`).
+- [x] 1.2 Add forward-only catalog migrations + row types for those tables (SQLite + PostgreSQL), making 1.1 pass.
+- [ ] 1.3 Add `[mcp]`/auth config for the AS issuer URL, resource URL, and token/code lifetimes following config precedence; document in `signaldb.dist.toml` (commented). _(folded into the router phase where it is consumed)_
 
 ## 2. Read-scope model (extends the existing scope machinery)
 
@@ -11,8 +11,8 @@
 
 ## 3. Opaque token primitives & store
 
-- [ ] 3.1 Write failing `common` tests for opaque generation + hashing of access/refresh/code values (reusing the `generate_session_token`/`hash_session_token` pattern) and for store operations: insert, lookup-by-hash, single-use consume, revoke (delete), expiry rejection (`cargo test -p common`).
-- [ ] 3.2 Implement the token/code generation, hashing, and catalog-backed store operations, making 3.1 pass.
+- [x] 3.1 Write failing `common` tests for opaque generation + hashing of access/refresh/code values (reusing the `generate_session_token`/`hash_session_token` pattern) and for store operations: insert, lookup-by-hash, single-use consume, revoke (delete), expiry rejection (`cargo test -p common`).
+- [x] 3.2 Implement the token/code generation, hashing, and catalog-backed store operations, making 3.1 pass.
 
 ## 4. Authorization Server metadata discovery (RFC 8414)
 

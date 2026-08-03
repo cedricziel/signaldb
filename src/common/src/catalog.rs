@@ -15,6 +15,17 @@ fn parse_rfc3339(s: &str) -> Result<DateTime<Utc>, sqlx::Error> {
         .map_err(|e| sqlx::Error::Decode(Box::new(e)))
 }
 
+/// Decode a required JSON-array-of-strings column (e.g. OAuth scopes,
+/// redirect URIs) into a `Vec<String>`.
+fn decode_json_vec(json: String) -> Result<Vec<String>, sqlx::Error> {
+    serde_json::from_str(&json).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+}
+
+/// Decode an optional JSON-array-of-strings column into `Option<Vec<String>>`.
+fn decode_json_vec_opt(json: Option<String>) -> Result<Option<Vec<String>>, sqlx::Error> {
+    json.map(decode_json_vec).transpose()
+}
+
 fn parse_api_key_scopes(value: Option<String>) -> Result<Option<Vec<String>>, sqlx::Error> {
     value
         .map(|json| {
@@ -329,6 +340,89 @@ impl Catalog {
                     PRIMARY KEY (tenant_id, dataset_id, signal, attr_key)
                 )"#;
                 query(create_attribute_stats).execute(pool).await?;
+
+                // OAuth 2.1 authorization-server tables (change: mcp-oauth-dcr).
+                // Dynamically-registered clients, single-use authorization
+                // codes, and opaque access/refresh tokens (stored as hashes).
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS oauth_clients (
+                    id TEXT PRIMARY KEY,
+                    client_name TEXT,
+                    redirect_uris TEXT NOT NULL,
+                    grant_types TEXT,
+                    scope TEXT,
+                    token_endpoint_auth_method TEXT NOT NULL DEFAULT 'none',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+                    code_hash TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL,
+                    scopes TEXT NOT NULL,
+                    redirect_uri TEXT NOT NULL,
+                    code_challenge TEXT NOT NULL,
+                    resource TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    expires_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+                    id TEXT PRIMARY KEY,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    client_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL,
+                    scopes TEXT NOT NULL,
+                    resource TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    expires_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+                    id TEXT PRIMARY KEY,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    client_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL,
+                    scopes TEXT NOT NULL,
+                    resource TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    expires_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_oauth_access_tokens_hash ON oauth_access_tokens(token_hash)",
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_hash ON oauth_refresh_tokens(token_hash)",
+                )
+                .execute(pool)
+                .await?;
             }
             Catalog::Postgres(pool) => {
                 // PostgreSQL schema
@@ -514,6 +608,81 @@ impl Catalog {
                     PRIMARY KEY (tenant_id, dataset_id, signal, attr_key)
                 )"#;
                 query(create_attribute_stats).execute(pool).await?;
+
+                // OAuth 2.1 authorization-server tables (change: mcp-oauth-dcr).
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS oauth_clients (
+                    id TEXT PRIMARY KEY,
+                    client_name TEXT,
+                    redirect_uris TEXT NOT NULL,
+                    grant_types TEXT,
+                    scope TEXT,
+                    token_endpoint_auth_method TEXT NOT NULL DEFAULT 'none',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+                    code_hash TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    scopes TEXT NOT NULL,
+                    redirect_uri TEXT NOT NULL,
+                    code_challenge TEXT NOT NULL,
+                    resource TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ NOT NULL
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+                    id TEXT PRIMARY KEY,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    client_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    scopes TEXT NOT NULL,
+                    resource TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ NOT NULL
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+                    id TEXT PRIMARY KEY,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    client_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    scopes TEXT NOT NULL,
+                    resource TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ NOT NULL
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_oauth_access_tokens_hash ON oauth_access_tokens(token_hash)",
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_hash ON oauth_refresh_tokens(token_hash)",
+                )
+                .execute(pool)
+                .await?;
             }
         }
 
@@ -1178,6 +1347,50 @@ pub struct UserSessionRecord {
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+}
+
+/// A dynamically-registered OAuth client (RFC 7591). SignalDB registers only
+/// public clients (`token_endpoint_auth_method = "none"`) that authenticate
+/// with PKCE; no client secret is stored.
+#[derive(Debug, Clone)]
+pub struct OAuthClientRecord {
+    pub id: String,
+    pub client_name: Option<String>,
+    pub redirect_uris: Vec<String>,
+    pub grant_types: Option<Vec<String>>,
+    pub scope: Option<String>,
+    pub token_endpoint_auth_method: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// A redeemed-once authorization code's grant, returned by
+/// [`Catalog::consume_authorization_code`]. The raw code is never stored — the
+/// row is keyed by the code's hash.
+#[derive(Debug, Clone)]
+pub struct OAuthAuthorizationCode {
+    pub client_id: String,
+    pub user_id: String,
+    pub tenant_id: String,
+    pub scopes: Vec<String>,
+    pub redirect_uri: String,
+    pub code_challenge: String,
+    pub resource: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// An opaque OAuth token grant (access or refresh), stored and looked up by
+/// hash. Carries the tenant, scopes, and audience the token was minted for.
+#[derive(Debug, Clone)]
+pub struct OAuthTokenRecord {
+    pub id: String,
+    pub client_id: String,
+    pub user_id: String,
+    pub tenant_id: String,
+    pub scopes: Vec<String>,
+    pub resource: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
 }
 
 /// Map a SQLite row (RFC3339 text timestamps) to a `UserRecord`.
@@ -2576,6 +2789,447 @@ impl Catalog {
         Ok(())
     }
 
+    // ----- OAuth 2.1 authorization-server storage (change: mcp-oauth-dcr) -----
+
+    /// Persist a dynamically-registered OAuth client (RFC 7591) and return the
+    /// stored record. `client_id` is caller-supplied (a fresh UUID).
+    pub async fn register_oauth_client(
+        &self,
+        client_id: &str,
+        client_name: Option<&str>,
+        redirect_uris: &[String],
+        grant_types: Option<&[String]>,
+        scope: Option<&str>,
+        token_endpoint_auth_method: &str,
+    ) -> Result<OAuthClientRecord, sqlx::Error> {
+        let now = Utc::now();
+        let redirect_json = serde_json::to_string(redirect_uris).map_err(|e| {
+            sqlx::Error::Protocol(format!("failed to serialize redirect_uris: {e}"))
+        })?;
+        let grant_json = grant_types
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize grant_types: {e}")))?;
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(
+                    "INSERT INTO oauth_clients (id, client_name, redirect_uris, grant_types, scope, token_endpoint_auth_method, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(client_id)
+                .bind(client_name)
+                .bind(&redirect_json)
+                .bind(&grant_json)
+                .bind(scope)
+                .bind(token_endpoint_auth_method)
+                .bind(now.to_rfc3339())
+                .execute(pool)
+                .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    "INSERT INTO oauth_clients (id, client_name, redirect_uris, grant_types, scope, token_endpoint_auth_method, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                )
+                .bind(client_id)
+                .bind(client_name)
+                .bind(&redirect_json)
+                .bind(&grant_json)
+                .bind(scope)
+                .bind(token_endpoint_auth_method)
+                .bind(now)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(OAuthClientRecord {
+            id: client_id.to_string(),
+            client_name: client_name.map(str::to_owned),
+            redirect_uris: redirect_uris.to_vec(),
+            grant_types: grant_types.map(<[String]>::to_vec),
+            scope: scope.map(str::to_owned),
+            token_endpoint_auth_method: token_endpoint_auth_method.to_string(),
+            created_at: now,
+        })
+    }
+
+    /// Look up a registered OAuth client by `client_id`.
+    pub async fn get_oauth_client(
+        &self,
+        client_id: &str,
+    ) -> Result<Option<OAuthClientRecord>, sqlx::Error> {
+        let sql = "SELECT id, client_name, redirect_uris, grant_types, scope, token_endpoint_auth_method, created_at FROM oauth_clients WHERE id = ";
+        match self {
+            Catalog::Sqlite(pool) => {
+                let row = query(&format!("{sql}?"))
+                    .bind(client_id)
+                    .fetch_optional(pool)
+                    .await?;
+                row.map(|r| {
+                    Ok::<_, sqlx::Error>(OAuthClientRecord {
+                        id: r.get("id"),
+                        client_name: r.get("client_name"),
+                        redirect_uris: decode_json_vec(r.get("redirect_uris"))?,
+                        grant_types: decode_json_vec_opt(r.get("grant_types"))?,
+                        scope: r.get("scope"),
+                        token_endpoint_auth_method: r.get("token_endpoint_auth_method"),
+                        created_at: parse_rfc3339(r.get("created_at"))?,
+                    })
+                })
+                .transpose()
+            }
+            Catalog::Postgres(pool) => {
+                let row = query(&format!("{sql}$1"))
+                    .bind(client_id)
+                    .fetch_optional(pool)
+                    .await?;
+                row.map(|r| {
+                    Ok::<_, sqlx::Error>(OAuthClientRecord {
+                        id: r.get("id"),
+                        client_name: r.get("client_name"),
+                        redirect_uris: decode_json_vec(r.get("redirect_uris"))?,
+                        grant_types: decode_json_vec_opt(r.get("grant_types"))?,
+                        scope: r.get("scope"),
+                        token_endpoint_auth_method: r.get("token_endpoint_auth_method"),
+                        created_at: r.get("created_at"),
+                    })
+                })
+                .transpose()
+            }
+        }
+    }
+
+    /// Store a single-use authorization code, keyed by its hash.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_authorization_code(
+        &self,
+        code_hash: &str,
+        client_id: &str,
+        user_id: &str,
+        tenant_id: &str,
+        scopes: &[String],
+        redirect_uri: &str,
+        code_challenge: &str,
+        resource: Option<&str>,
+        expires_at: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        let scopes_json = serde_json::to_string(scopes)
+            .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize scopes: {e}")))?;
+        let now = Utc::now();
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(
+                    "INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, tenant_id, scopes, redirect_uri, code_challenge, resource, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(code_hash)
+                .bind(client_id)
+                .bind(user_id)
+                .bind(tenant_id)
+                .bind(&scopes_json)
+                .bind(redirect_uri)
+                .bind(code_challenge)
+                .bind(resource)
+                .bind(now.to_rfc3339())
+                .bind(expires_at.to_rfc3339())
+                .execute(pool)
+                .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    "INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, tenant_id, scopes, redirect_uri, code_challenge, resource, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                )
+                .bind(code_hash)
+                .bind(client_id)
+                .bind(user_id)
+                .bind(tenant_id)
+                .bind(&scopes_json)
+                .bind(redirect_uri)
+                .bind(code_challenge)
+                .bind(resource)
+                .bind(now)
+                .bind(expires_at)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Atomically redeem an authorization code: delete its row and return the
+    /// grant. Single-use — a second call with the same hash returns `None`
+    /// because the row is already gone. Returns `None` for an unknown code or
+    /// one whose stored expiry has passed (the row is still removed).
+    pub async fn consume_authorization_code(
+        &self,
+        code_hash: &str,
+    ) -> Result<Option<OAuthAuthorizationCode>, sqlx::Error> {
+        let cols = "client_id, user_id, tenant_id, scopes, redirect_uri, code_challenge, resource, created_at, expires_at";
+        let record = match self {
+            Catalog::Sqlite(pool) => {
+                let row = query(&format!(
+                    "DELETE FROM oauth_authorization_codes WHERE code_hash = ? RETURNING {cols}"
+                ))
+                .bind(code_hash)
+                .fetch_optional(pool)
+                .await?;
+                match row {
+                    None => return Ok(None),
+                    Some(r) => OAuthAuthorizationCode {
+                        client_id: r.get("client_id"),
+                        user_id: r.get("user_id"),
+                        tenant_id: r.get("tenant_id"),
+                        scopes: decode_json_vec(r.get("scopes"))?,
+                        redirect_uri: r.get("redirect_uri"),
+                        code_challenge: r.get("code_challenge"),
+                        resource: r.get("resource"),
+                        created_at: parse_rfc3339(r.get("created_at"))?,
+                        expires_at: parse_rfc3339(r.get("expires_at"))?,
+                    },
+                }
+            }
+            Catalog::Postgres(pool) => {
+                let row = query(&format!(
+                    "DELETE FROM oauth_authorization_codes WHERE code_hash = $1 RETURNING {cols}"
+                ))
+                .bind(code_hash)
+                .fetch_optional(pool)
+                .await?;
+                match row {
+                    None => return Ok(None),
+                    Some(r) => OAuthAuthorizationCode {
+                        client_id: r.get("client_id"),
+                        user_id: r.get("user_id"),
+                        tenant_id: r.get("tenant_id"),
+                        scopes: decode_json_vec(r.get("scopes"))?,
+                        redirect_uri: r.get("redirect_uri"),
+                        code_challenge: r.get("code_challenge"),
+                        resource: r.get("resource"),
+                        created_at: r.get("created_at"),
+                        expires_at: r.get("expires_at"),
+                    },
+                }
+            }
+        };
+        if record.expires_at <= Utc::now() {
+            return Ok(None);
+        }
+        Ok(Some(record))
+    }
+
+    /// Store an opaque access token, keyed by its hash, and return the grant.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_access_token(
+        &self,
+        token_hash: &str,
+        client_id: &str,
+        user_id: &str,
+        tenant_id: &str,
+        scopes: &[String],
+        resource: Option<&str>,
+        expires_at: DateTime<Utc>,
+    ) -> Result<OAuthTokenRecord, sqlx::Error> {
+        self.insert_oauth_token(
+            "oauth_access_tokens",
+            token_hash,
+            client_id,
+            user_id,
+            tenant_id,
+            scopes,
+            resource,
+            expires_at,
+        )
+        .await
+    }
+
+    /// Store an opaque refresh token, keyed by its hash, and return the grant.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_refresh_token(
+        &self,
+        token_hash: &str,
+        client_id: &str,
+        user_id: &str,
+        tenant_id: &str,
+        scopes: &[String],
+        resource: Option<&str>,
+        expires_at: DateTime<Utc>,
+    ) -> Result<OAuthTokenRecord, sqlx::Error> {
+        self.insert_oauth_token(
+            "oauth_refresh_tokens",
+            token_hash,
+            client_id,
+            user_id,
+            tenant_id,
+            scopes,
+            resource,
+            expires_at,
+        )
+        .await
+    }
+
+    /// Shared INSERT for the structurally-identical access/refresh token tables.
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_oauth_token(
+        &self,
+        table: &str,
+        token_hash: &str,
+        client_id: &str,
+        user_id: &str,
+        tenant_id: &str,
+        scopes: &[String],
+        resource: Option<&str>,
+        expires_at: DateTime<Utc>,
+    ) -> Result<OAuthTokenRecord, sqlx::Error> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let scopes_json = serde_json::to_string(scopes)
+            .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize scopes: {e}")))?;
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(&format!(
+                    "INSERT INTO {table} (id, token_hash, client_id, user_id, tenant_id, scopes, resource, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                ))
+                .bind(&id)
+                .bind(token_hash)
+                .bind(client_id)
+                .bind(user_id)
+                .bind(tenant_id)
+                .bind(&scopes_json)
+                .bind(resource)
+                .bind(now.to_rfc3339())
+                .bind(expires_at.to_rfc3339())
+                .execute(pool)
+                .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(&format!(
+                    "INSERT INTO {table} (id, token_hash, client_id, user_id, tenant_id, scopes, resource, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+                ))
+                .bind(&id)
+                .bind(token_hash)
+                .bind(client_id)
+                .bind(user_id)
+                .bind(tenant_id)
+                .bind(&scopes_json)
+                .bind(resource)
+                .bind(now)
+                .bind(expires_at)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(OAuthTokenRecord {
+            id,
+            client_id: client_id.to_string(),
+            user_id: user_id.to_string(),
+            tenant_id: tenant_id.to_string(),
+            scopes: scopes.to_vec(),
+            resource: resource.map(str::to_owned),
+            created_at: now,
+            expires_at,
+        })
+    }
+
+    /// Look up a valid (unexpired) access token by hash.
+    pub async fn get_valid_access_token(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<OAuthTokenRecord>, sqlx::Error> {
+        self.get_valid_oauth_token("oauth_access_tokens", token_hash)
+            .await
+    }
+
+    /// Look up a valid (unexpired) refresh token by hash.
+    pub async fn get_valid_refresh_token(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<OAuthTokenRecord>, sqlx::Error> {
+        self.get_valid_oauth_token("oauth_refresh_tokens", token_hash)
+            .await
+    }
+
+    /// Shared valid-token lookup for the access/refresh token tables.
+    async fn get_valid_oauth_token(
+        &self,
+        table: &str,
+        token_hash: &str,
+    ) -> Result<Option<OAuthTokenRecord>, sqlx::Error> {
+        let cols = "id, client_id, user_id, tenant_id, scopes, resource, created_at, expires_at";
+        match self {
+            Catalog::Sqlite(pool) => {
+                let row = query(&format!(
+                    "SELECT {cols} FROM {table} WHERE token_hash = ? AND expires_at > ?"
+                ))
+                .bind(token_hash)
+                .bind(Utc::now().to_rfc3339())
+                .fetch_optional(pool)
+                .await?;
+                row.map(|r| {
+                    Ok::<_, sqlx::Error>(OAuthTokenRecord {
+                        id: r.get("id"),
+                        client_id: r.get("client_id"),
+                        user_id: r.get("user_id"),
+                        tenant_id: r.get("tenant_id"),
+                        scopes: decode_json_vec(r.get("scopes"))?,
+                        resource: r.get("resource"),
+                        created_at: parse_rfc3339(r.get("created_at"))?,
+                        expires_at: parse_rfc3339(r.get("expires_at"))?,
+                    })
+                })
+                .transpose()
+            }
+            Catalog::Postgres(pool) => {
+                let row = query(&format!(
+                    "SELECT {cols} FROM {table} WHERE token_hash = $1 AND expires_at > NOW()"
+                ))
+                .bind(token_hash)
+                .fetch_optional(pool)
+                .await?;
+                row.map(|r| {
+                    Ok::<_, sqlx::Error>(OAuthTokenRecord {
+                        id: r.get("id"),
+                        client_id: r.get("client_id"),
+                        user_id: r.get("user_id"),
+                        tenant_id: r.get("tenant_id"),
+                        scopes: decode_json_vec(r.get("scopes"))?,
+                        resource: r.get("resource"),
+                        created_at: r.get("created_at"),
+                        expires_at: r.get("expires_at"),
+                    })
+                })
+                .transpose()
+            }
+        }
+    }
+
+    /// Revoke an access token by deleting its row, so subsequent presentations
+    /// fail. Revoking an unknown token is a no-op.
+    pub async fn revoke_access_token(&self, token_hash: &str) -> Result<(), sqlx::Error> {
+        self.delete_oauth_token("oauth_access_tokens", token_hash)
+            .await
+    }
+
+    /// Revoke a refresh token by deleting its row.
+    pub async fn revoke_refresh_token(&self, token_hash: &str) -> Result<(), sqlx::Error> {
+        self.delete_oauth_token("oauth_refresh_tokens", token_hash)
+            .await
+    }
+
+    async fn delete_oauth_token(&self, table: &str, token_hash: &str) -> Result<(), sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(&format!("DELETE FROM {table} WHERE token_hash = ?"))
+                    .bind(token_hash)
+                    .execute(pool)
+                    .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(&format!("DELETE FROM {table} WHERE token_hash = $1"))
+                    .bind(token_hash)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Delete all sessions whose expiry has passed.
     ///
     /// Returns the number of rows removed. Safe to run concurrently — the
@@ -3715,5 +4369,210 @@ mod user_membership_tests {
 
         // Nothing left to remove on a second pass
         assert_eq!(catalog.delete_expired_sessions().await.unwrap(), 0);
+    }
+}
+
+#[cfg(test)]
+mod oauth_storage_tests {
+    use super::*;
+    use chrono::Duration;
+
+    /// A catalog with one user and one tenant, whose ids the OAuth rows
+    /// reference (satisfying the foreign keys).
+    async fn catalog_with_principal() -> (Catalog, String, String) {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let user = catalog
+            .create_user("agent@example.com", None, "phc", false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        (catalog, user.id, "acme".to_string())
+    }
+
+    #[tokio::test]
+    async fn oauth_client_round_trips_and_unknown_is_none() {
+        let (catalog, _user, _tenant) = catalog_with_principal().await;
+        let redirects = vec!["https://claude.ai/cb".to_string()];
+        let stored = catalog
+            .register_oauth_client(
+                "client-1",
+                Some("Claude"),
+                &redirects,
+                None,
+                Some("traces:read"),
+                "none",
+            )
+            .await
+            .unwrap();
+        assert_eq!(stored.id, "client-1");
+
+        let fetched = catalog.get_oauth_client("client-1").await.unwrap().unwrap();
+        assert_eq!(fetched.client_name.as_deref(), Some("Claude"));
+        assert_eq!(fetched.redirect_uris, redirects);
+        assert_eq!(fetched.token_endpoint_auth_method, "none");
+
+        assert!(catalog.get_oauth_client("nope").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn authorization_code_is_single_use() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        let scopes = vec!["traces:read".to_string()];
+        catalog
+            .create_authorization_code(
+                "code-hash-1",
+                "client-1",
+                &user,
+                &tenant,
+                &scopes,
+                "https://claude.ai/cb",
+                "challenge-abc",
+                Some("https://mcp.example.com/mcp"),
+                Utc::now() + Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+
+        let first = catalog
+            .consume_authorization_code("code-hash-1")
+            .await
+            .unwrap()
+            .expect("first consume returns the grant");
+        assert_eq!(first.tenant_id, tenant);
+        assert_eq!(first.scopes, scopes);
+        assert_eq!(first.code_challenge, "challenge-abc");
+        assert_eq!(
+            first.resource.as_deref(),
+            Some("https://mcp.example.com/mcp")
+        );
+
+        // Single-use: a second redemption of the same code finds nothing.
+        assert!(
+            catalog
+                .consume_authorization_code("code-hash-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_authorization_code_is_not_returned() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        catalog
+            .create_authorization_code(
+                "code-hash-old",
+                "client-1",
+                &user,
+                &tenant,
+                &["traces:read".to_string()],
+                "https://claude.ai/cb",
+                "challenge",
+                None,
+                Utc::now() - Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+        assert!(
+            catalog
+                .consume_authorization_code("code-hash-old")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn access_token_valid_lookup_then_revoke() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        let scopes = vec!["traces:read".to_string(), "logs:read".to_string()];
+        catalog
+            .create_access_token(
+                "at-hash-1",
+                "client-1",
+                &user,
+                &tenant,
+                &scopes,
+                Some("https://mcp.example.com/mcp"),
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .unwrap();
+
+        let found = catalog
+            .get_valid_access_token("at-hash-1")
+            .await
+            .unwrap()
+            .expect("valid token is found");
+        assert_eq!(found.tenant_id, tenant);
+        assert_eq!(found.scopes, scopes);
+
+        catalog.revoke_access_token("at-hash-1").await.unwrap();
+        assert!(
+            catalog
+                .get_valid_access_token("at-hash-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_access_token_is_not_valid() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        catalog
+            .create_access_token(
+                "at-hash-old",
+                "client-1",
+                &user,
+                &tenant,
+                &["traces:read".to_string()],
+                None,
+                Utc::now() - Duration::seconds(1),
+            )
+            .await
+            .unwrap();
+        assert!(
+            catalog
+                .get_valid_access_token("at-hash-old")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_token_valid_lookup_then_revoke() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        catalog
+            .create_refresh_token(
+                "rt-hash-1",
+                "client-1",
+                &user,
+                &tenant,
+                &["traces:read".to_string()],
+                Some("https://mcp.example.com/mcp"),
+                Utc::now() + Duration::days(30),
+            )
+            .await
+            .unwrap();
+        assert!(
+            catalog
+                .get_valid_refresh_token("rt-hash-1")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        catalog.revoke_refresh_token("rt-hash-1").await.unwrap();
+        assert!(
+            catalog
+                .get_valid_refresh_token("rt-hash-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }
