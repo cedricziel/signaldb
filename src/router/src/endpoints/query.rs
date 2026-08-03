@@ -217,9 +217,21 @@ async fn execute_ticket<S: RouterState>(
             .map_err(|e| ApiError::from_flight(&e, "query_ir"))?
             .into_inner();
 
+        // Bound the buffered result size as well as the time — the deadline
+        // alone would still let one uncapped query (no `limit` stage) buffer an
+        // unbounded result set for up to the timeout.
         let mut data = Vec::new();
+        let mut bytes: usize = 0;
         while let Some(flight_data) = stream.next().await {
-            data.push(flight_data.map_err(|e| ApiError::from_flight(&e, "query_ir"))?);
+            let fd = flight_data.map_err(|e| ApiError::from_flight(&e, "query_ir"))?;
+            bytes = bytes.saturating_add(fd.data_body.len());
+            if bytes > MAX_IR_RESULT_BYTES {
+                return Err(ApiError::new(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "IR query result too large; add a `limit` stage or narrow the range",
+                ));
+            }
+            data.push(fd);
         }
         super::flight_decode::decode_flight_batches(&data, "query_ir").map_err(ApiError::from)
     })
@@ -229,6 +241,10 @@ async fn execute_ticket<S: RouterState>(
 
 /// Upper bound on a single IR query's querier round-trip and result drain.
 const IR_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Upper bound on the encoded Flight result a single IR query may buffer, so an
+/// uncapped query cannot exhaust router memory before the deadline fires.
+const MAX_IR_RESULT_BYTES: usize = 256 * 1024 * 1024;
 
 /// Shape RecordBatches into the declared result envelope.
 fn build_envelope(
@@ -393,11 +409,23 @@ fn to_series(batches: &[RecordBatch]) -> (Vec<ResultSeries>, Option<i64>) {
         // the columns between are the grouping labels.
         let label_cols: Vec<usize> = (1..ncols - 1).collect();
         let value_col = ncols - 1;
+        // Normalize every column to its declared canonical Arrow type first, so
+        // narrow-int / view / dictionary encodings serialize as the right JSON
+        // (same as `to_rows`).
+        let casted: Vec<ArrayRef> = schema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(c, f)| {
+                let target = canonical_arrow_type(&column_meta(f).value_type);
+                cast(batch.column(c), &target).unwrap_or_else(|_| batch.column(c).clone())
+            })
+            .collect();
         for r in 0..batch.num_rows() {
             let mut labels = BTreeMap::new();
             for &c in &label_cols {
                 let name = schema.field(c).name().clone();
-                let v = match cell(batch.column(c).as_ref(), r) {
+                let v = match cell(casted[c].as_ref(), r) {
                     serde_json::Value::String(s) => s,
                     other => other.to_string(),
                 };
@@ -408,8 +436,8 @@ fn to_series(batches: &[RecordBatch]) -> (Vec<ResultSeries>, Option<i64>) {
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join(",");
-            let t = cell(batch.column(0).as_ref(), r);
-            let value = cell(batch.column(value_col).as_ref(), r);
+            let t = cell(casted[0].as_ref(), r);
+            let value = cell(casted[value_col].as_ref(), r);
             let entry = series.entry(key.clone()).or_insert_with(|| {
                 order.push(key.clone());
                 ResultSeries {
