@@ -63,7 +63,33 @@ cargo run --bin signaldb-mcp -- --stdio
 
 The same settings are available as environment variables (multi-word fields
 need the double-underscore form): `SIGNALDB__MCP__ENABLED`,
-`SIGNALDB__MCP__BIND_ADDRESS`, `SIGNALDB__MCP__ROUTER_URL`.
+`SIGNALDB__MCP__BIND_ADDRESS`, `SIGNALDB__MCP__ROUTER_URL`, and
+`SIGNALDB__MCP__ALLOWED_HOSTS` (see below).
+
+### The `Host` allowlist (serving beyond localhost)
+
+The Streamable HTTP transport carries a DNS-rebinding guard that validates the
+inbound `Host` header, and by default accepts **only loopback hosts**
+(`localhost`, `127.0.0.1`, `::1`). A client that reaches the server by any other
+name or IP — a LAN address, a public hostname — is rejected with
+`403 Forbidden: Host header is not allowed` _before_ authentication runs. (Node's
+`fetch`, which Claude Code uses for HTTP MCP, will not let a client override the
+`Host` header, so there is no client-side workaround.)
+
+When you serve the MCP off-localhost, name the reachable authority in the
+allowlist. The value is a comma-separated list of `host` or `host:port`
+authorities, appended to the loopback defaults:
+
+```bash
+# reached as mcp.example.org (behind TLS) and, for a bare LAN sidecar, by IP:port
+signaldb-mcp --allowed-hosts mcp.example.org,10.0.0.5:30228
+# or via env
+SIGNALDB__MCP__ALLOWED_HOSTS="mcp.example.org,10.0.0.5:30228" signaldb-mcp
+```
+
+The single value `*` disables the guard entirely. The server still authenticates
+every request (bearer + tenant), so `*` drops only the rebinding guard, never
+authorization — but prefer an explicit list where you can.
 
 ## Running as a sidecar
 
@@ -89,6 +115,10 @@ services:
       SIGNALDB__MCP__BIND_ADDRESS: "0.0.0.0:8228"
       # the router, by compose service name
       SIGNALDB__MCP__ROUTER_URL: "http://signaldb:3000"
+      # the authority clients reach this by — otherwise the Host guard 403s
+      # them before auth (see "The Host allowlist" above). Use your TLS
+      # hostname, or the bare host:port for a LAN sidecar.
+      SIGNALDB__MCP__ALLOWED_HOSTS: "mcp.example.org"
     ports: ["8228:8228"] # publish it — required for reachability
     depends_on: [signaldb]
     restart: unless-stopped

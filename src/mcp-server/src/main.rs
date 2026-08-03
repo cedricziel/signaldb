@@ -35,6 +35,16 @@ struct Cli {
     )]
     router_url: String,
 
+    /// Comma-separated `Host` header allowlist (`host` or `host:port`) for the
+    /// Streamable HTTP transport's DNS-rebinding guard. The transport accepts
+    /// only loopback hosts by default; set this to the externally-reachable
+    /// authority (e.g. `signaldb.example.com` or `10.0.0.5:30228`) when serving
+    /// beyond localhost. The single value `*` disables the guard — the server
+    /// still authenticates every request, so this drops only rebinding
+    /// protection, not authorization.
+    #[arg(long, env = "SIGNALDB__MCP__ALLOWED_HOSTS", value_delimiter = ',')]
+    allowed_hosts: Vec<String>,
+
     /// Serve MCP over stdio instead of HTTP (local development). Stdio has no
     /// per-request credential, so downstream calls carry none — dev only.
     #[arg(long)]
@@ -55,7 +65,7 @@ async fn main() -> Result<()> {
         .parse()
         .with_context(|| format!("Invalid bind address: {}", cli.bind_address))?;
 
-    let app = mcp_http_router(McpAppState::new(cli.router_url.clone()));
+    let app = mcp_http_router(McpAppState::new(cli.router_url.clone()), &cli.allowed_hosts);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("Failed to bind MCP server on {addr}"))?;
