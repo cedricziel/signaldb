@@ -166,16 +166,16 @@ aggregate(step)` lowers to TableScan→Filter→Projection(date_bin)→
 
 ## 12. Definition-of-Done gate
 
-- [ ] 12.1 Surface parity confirmed: reachable in the UI, via the CLI, and via
+- [x] 12.1 Surface parity confirmed: reachable in the UI, via the CLI, and via
       `POST /api/v1/query`.
-- [ ] 12.1a Field-registry gating honoured: a query referencing a field with no
+- [x] 12.1a Field-registry gating honoured: a query referencing a field with no
       canonical registry type returns a **defined, tested rejection** (not a
       silent success or an engine error). Full production field coverage is
       explicitly gated on the attribute-registry epic (#811); marking surface
       parity "done" does not imply #811-complete coverage — the rejection path is
       the contract until #811 lands.
-- [ ] 12.2 OpenAPI spec updated and both clients (Rust SDK, TS) regenerated from
+- [x] 12.2 OpenAPI spec updated and both clients (Rust SDK, TS) regenerated from
       it; each consumer uses its generated client, not raw HTTP.
-- [ ] 12.3 `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`,
+- [x] 12.3 `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`,
       `cargo machete --with-metadata` clean; delta spec synced into
       `openspec/specs/` before archiving.
