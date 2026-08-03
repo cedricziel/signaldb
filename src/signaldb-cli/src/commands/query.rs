@@ -352,4 +352,39 @@ mod tests {
         assert_eq!(response.rows.len(), 2);
         assert_eq!(response.window.end_ns, 3_600_000_000_000);
     }
+
+    fn sql_args(flight_url: &str, query: Option<&str>) -> QueryArgs {
+        QueryArgs {
+            query: query.map(str::to_string),
+            sql: true,
+            promql: false,
+            logql: false,
+            traceql: false,
+            ir: false,
+            file: None,
+            url: "http://localhost:3000".to_string(),
+            flight_url: flight_url.to_string(),
+            api_key: None,
+            tenant_id: None,
+            dataset_id: None,
+            format: OutputFormat::Table,
+        }
+    }
+
+    #[tokio::test]
+    async fn sql_against_unreachable_endpoint_errors() {
+        // A runtime failure must surface as an error so the process exits
+        // non-zero (main maps Err → exit 1). Port 1 is not listenable.
+        let args = sql_args("http://127.0.0.1:1", Some("SELECT 1"));
+        assert!(args.run().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn string_language_requires_a_query() {
+        // --promql with no positional and no --ir: run() rejects at runtime.
+        let mut args = sql_args("http://127.0.0.1:1", None);
+        args.sql = false;
+        args.promql = true;
+        assert!(args.run().await.is_err());
+    }
 }

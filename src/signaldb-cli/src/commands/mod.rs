@@ -260,3 +260,54 @@ fn parse_duration(s: &str) -> anyhow::Result<Duration> {
     }
     anyhow::bail!("unsupported duration format: {s} (expected e.g. '5s', '100ms', '2m')")
 }
+
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(args)
+    }
+
+    #[test]
+    fn query_requires_a_language_flag() {
+        // No flag: clap rejects (exit code 2 at runtime).
+        assert!(parse(&["signaldb-cli", "query", "SELECT 1"]).is_err());
+    }
+
+    #[test]
+    fn query_accepts_exactly_one_language() {
+        assert!(parse(&["signaldb-cli", "query", "--sql", "SELECT 1"]).is_ok());
+        assert!(parse(&["signaldb-cli", "query", "--promql", "up"]).is_ok());
+        assert!(parse(&["signaldb-cli", "query", "--logql", "{x=\"y\"}"]).is_ok());
+        assert!(parse(&["signaldb-cli", "query", "--traceql", "{}"]).is_ok());
+    }
+
+    #[test]
+    fn query_rejects_multiple_languages() {
+        assert!(parse(&["signaldb-cli", "query", "--sql", "--promql", "x"]).is_err());
+        assert!(parse(&["signaldb-cli", "query", "--sql", "--ir", "x"]).is_err());
+    }
+
+    #[test]
+    fn ir_needs_no_positional() {
+        // --ir reads from --file or stdin, so the positional is optional.
+        assert!(parse(&["signaldb-cli", "query", "--ir", "--file", "q.json"]).is_ok());
+        assert!(parse(&["signaldb-cli", "query", "--ir"]).is_ok());
+    }
+
+    #[test]
+    fn management_lives_under_admin() {
+        assert!(parse(&["signaldb-cli", "admin", "tenant", "list"]).is_ok());
+        assert!(parse(&["signaldb-cli", "admin", "api-key", "list", "acme"]).is_ok());
+        assert!(parse(&["signaldb-cli", "admin", "dataset", "list", "acme"]).is_ok());
+    }
+
+    #[test]
+    fn old_top_level_management_commands_are_gone() {
+        // BREAKING (post-1.0): tenant/api-key/dataset moved under `admin`.
+        assert!(parse(&["signaldb-cli", "tenant", "list"]).is_err());
+        assert!(parse(&["signaldb-cli", "api-key", "list", "acme"]).is_err());
+        assert!(parse(&["signaldb-cli", "dataset", "list", "acme"]).is_err());
+    }
+}
