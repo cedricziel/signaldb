@@ -5213,6 +5213,98 @@ impl Client {
     pub fn query_ir(&self) -> builder::QueryIr<'_> {
         builder::QueryIr::new(self)
     }
+    /**GET /loki/api/v1/query — instant query
+
+    For a log selector this returns the most recent lines in the window;
+    the instant `time` (or now) is treated as the window end with a
+    default one-hour lookback, matching how Grafana renders instant log
+    panels.
+
+    Sends a `GET` request to `/loki/api/v1/query`
+
+    Arguments:
+    - `direction`: `forward` or `backward`
+    - `limit`: Maximum number of entries
+    - `query`: LogQL query string
+    - `time`: Evaluation timestamp (unix ns/s or RFC3339)
+    ```ignore
+    let response = client.logql_query()
+        .direction(direction)
+        .limit(limit)
+        .query(query)
+        .time(time)
+        .send()
+        .await;
+    ```*/
+    pub fn logql_query(&self) -> builder::LogqlQuery<'_> {
+        builder::LogqlQuery::new(self)
+    }
+    /**GET /loki/api/v1/query_range — range query
+
+    Sends a `GET` request to `/loki/api/v1/query_range`
+
+    Arguments:
+    - `direction`: `forward` or `backward`
+    - `end`: Range end (unix ns/s or RFC3339)
+    - `limit`: Maximum number of entries
+    - `query`: LogQL query string
+    - `start`: Range start (unix ns/s or RFC3339)
+    - `step`: Evaluation interval for metric queries
+    ```ignore
+    let response = client.logql_query_range()
+        .direction(direction)
+        .end(end)
+        .limit(limit)
+        .query(query)
+        .start(start)
+        .step(step)
+        .send()
+        .await;
+    ```*/
+    pub fn logql_query_range(&self) -> builder::LogqlQueryRange<'_> {
+        builder::LogqlQueryRange::new(self)
+    }
+    /**GET|POST /prometheus/api/v1/query — instant query
+
+    Evaluated as a one-bucket range at `time`, returning the latest sample
+    per series as a vector.
+
+    Sends a `GET` request to `/prometheus/api/v1/query`
+
+    Arguments:
+    - `query`: PromQL expression
+    - `time`: Evaluation timestamp (unix seconds or RFC3339)
+    ```ignore
+    let response = client.promql_query()
+        .query(query)
+        .time(time)
+        .send()
+        .await;
+    ```*/
+    pub fn promql_query(&self) -> builder::PromqlQuery<'_> {
+        builder::PromqlQuery::new(self)
+    }
+    /**GET|POST /prometheus/api/v1/query_range
+
+    Sends a `GET` request to `/prometheus/api/v1/query_range`
+
+    Arguments:
+    - `end`: Range end (unix seconds or RFC3339)
+    - `query`: PromQL expression
+    - `start`: Range start (unix seconds or RFC3339)
+    - `step`: Resolution step (Go duration or seconds)
+    ```ignore
+    let response = client.promql_query_range()
+        .end(end)
+        .query(query)
+        .start(start)
+        .step(step)
+        .send()
+        .await;
+    ```*/
+    pub fn promql_query_range(&self) -> builder::PromqlQueryRange<'_> {
+        builder::PromqlQueryRange::new(self)
+    }
     /**GET https://grafana.com/docs/tempo/latest/api_docs/#search
 
     Sends a `GET` request to `/tempo/api/search`
@@ -7200,6 +7292,420 @@ pub mod builder {
                 400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::logql_query`]
+
+    [`Client::logql_query`]: super::Client::logql_query*/
+    #[derive(Debug, Clone)]
+    pub struct LogqlQuery<'a> {
+        client: &'a super::Client,
+        direction: Result<Option<::std::string::String>, String>,
+        limit: Result<Option<i32>, String>,
+        query: Result<::std::string::String, String>,
+        time: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> LogqlQuery<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                direction: Ok(None),
+                limit: Ok(None),
+                query: Err("query was not initialized".to_string()),
+                time: Ok(None),
+            }
+        }
+        pub fn direction<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.direction = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for direction failed".to_string()
+            });
+            self
+        }
+        pub fn limit<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<i32>,
+        {
+            self.limit = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `i32` for limit failed".to_string());
+            self
+        }
+        pub fn query<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.query = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for query failed".to_string()
+            });
+            self
+        }
+        pub fn time<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.time = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for time failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/loki/api/v1/query`
+        pub async fn send(self) -> Result<ResponseValue<::serde_json::Value>, Error<()>> {
+            let Self {
+                client,
+                direction,
+                limit,
+                query,
+                time,
+            } = self;
+            let direction = direction.map_err(Error::InvalidRequest)?;
+            let limit = limit.map_err(Error::InvalidRequest)?;
+            let query = query.map_err(Error::InvalidRequest)?;
+            let time = time.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/loki/api/v1/query", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("direction", &direction))
+                .query(&progenitor_client::QueryParam::new("limit", &limit))
+                .query(&progenitor_client::QueryParam::new("query", &query))
+                .query(&progenitor_client::QueryParam::new("time", &time))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "logql_query",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::logql_query_range`]
+
+    [`Client::logql_query_range`]: super::Client::logql_query_range*/
+    #[derive(Debug, Clone)]
+    pub struct LogqlQueryRange<'a> {
+        client: &'a super::Client,
+        direction: Result<Option<::std::string::String>, String>,
+        end: Result<Option<::std::string::String>, String>,
+        limit: Result<Option<i32>, String>,
+        query: Result<::std::string::String, String>,
+        start: Result<Option<::std::string::String>, String>,
+        step: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> LogqlQueryRange<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                direction: Ok(None),
+                end: Ok(None),
+                limit: Ok(None),
+                query: Err("query was not initialized".to_string()),
+                start: Ok(None),
+                step: Ok(None),
+            }
+        }
+        pub fn direction<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.direction = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for direction failed".to_string()
+            });
+            self
+        }
+        pub fn end<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.end = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for end failed".to_string()
+            });
+            self
+        }
+        pub fn limit<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<i32>,
+        {
+            self.limit = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `i32` for limit failed".to_string());
+            self
+        }
+        pub fn query<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.query = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for query failed".to_string()
+            });
+            self
+        }
+        pub fn start<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.start = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for start failed".to_string()
+            });
+            self
+        }
+        pub fn step<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.step = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for step failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/loki/api/v1/query_range`
+        pub async fn send(self) -> Result<ResponseValue<::serde_json::Value>, Error<()>> {
+            let Self {
+                client,
+                direction,
+                end,
+                limit,
+                query,
+                start,
+                step,
+            } = self;
+            let direction = direction.map_err(Error::InvalidRequest)?;
+            let end = end.map_err(Error::InvalidRequest)?;
+            let limit = limit.map_err(Error::InvalidRequest)?;
+            let query = query.map_err(Error::InvalidRequest)?;
+            let start = start.map_err(Error::InvalidRequest)?;
+            let step = step.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/loki/api/v1/query_range", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("direction", &direction))
+                .query(&progenitor_client::QueryParam::new("end", &end))
+                .query(&progenitor_client::QueryParam::new("limit", &limit))
+                .query(&progenitor_client::QueryParam::new("query", &query))
+                .query(&progenitor_client::QueryParam::new("start", &start))
+                .query(&progenitor_client::QueryParam::new("step", &step))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "logql_query_range",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::promql_query`]
+
+    [`Client::promql_query`]: super::Client::promql_query*/
+    #[derive(Debug, Clone)]
+    pub struct PromqlQuery<'a> {
+        client: &'a super::Client,
+        query: Result<::std::string::String, String>,
+        time: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> PromqlQuery<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                query: Err("query was not initialized".to_string()),
+                time: Ok(None),
+            }
+        }
+        pub fn query<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.query = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for query failed".to_string()
+            });
+            self
+        }
+        pub fn time<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.time = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for time failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/prometheus/api/v1/query`
+        pub async fn send(self) -> Result<ResponseValue<::serde_json::Value>, Error<()>> {
+            let Self {
+                client,
+                query,
+                time,
+            } = self;
+            let query = query.map_err(Error::InvalidRequest)?;
+            let time = time.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/prometheus/api/v1/query", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("query", &query))
+                .query(&progenitor_client::QueryParam::new("time", &time))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "promql_query",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::promql_query_range`]
+
+    [`Client::promql_query_range`]: super::Client::promql_query_range*/
+    #[derive(Debug, Clone)]
+    pub struct PromqlQueryRange<'a> {
+        client: &'a super::Client,
+        end: Result<Option<::std::string::String>, String>,
+        query: Result<::std::string::String, String>,
+        start: Result<Option<::std::string::String>, String>,
+        step: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> PromqlQueryRange<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                end: Ok(None),
+                query: Err("query was not initialized".to_string()),
+                start: Ok(None),
+                step: Ok(None),
+            }
+        }
+        pub fn end<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.end = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for end failed".to_string()
+            });
+            self
+        }
+        pub fn query<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.query = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for query failed".to_string()
+            });
+            self
+        }
+        pub fn start<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.start = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for start failed".to_string()
+            });
+            self
+        }
+        pub fn step<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.step = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for step failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/prometheus/api/v1/query_range`
+        pub async fn send(self) -> Result<ResponseValue<::serde_json::Value>, Error<()>> {
+            let Self {
+                client,
+                end,
+                query,
+                start,
+                step,
+            } = self;
+            let end = end.map_err(Error::InvalidRequest)?;
+            let query = query.map_err(Error::InvalidRequest)?;
+            let start = start.map_err(Error::InvalidRequest)?;
+            let step = step.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/prometheus/api/v1/query_range", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("end", &end))
+                .query(&progenitor_client::QueryParam::new("query", &query))
+                .query(&progenitor_client::QueryParam::new("start", &start))
+                .query(&progenitor_client::QueryParam::new("step", &step))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "promql_query_range",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }

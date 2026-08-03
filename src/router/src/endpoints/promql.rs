@@ -79,6 +79,22 @@ pub struct MetadataParams {
 }
 
 /// GET|POST /prometheus/api/v1/query_range.
+#[utoipa::path(
+    get,
+    path = "/prometheus/api/v1/query_range",
+    operation_id = "promql_query_range",
+    tag = "metrics",
+    security(("bearerAuth" = [])),
+    params(
+        ("query" = String, Query, description = "PromQL expression"),
+        ("start" = Option<String>, Query, description = "Range start (unix seconds or RFC3339)"),
+        ("end" = Option<String>, Query, description = "Range end (unix seconds or RFC3339)"),
+        ("step" = Option<String>, Query, description = "Resolution step (Go duration or seconds)"),
+    ),
+    responses(
+        (status = 200, description = "Prometheus range-query response (matrix)", body = serde_json::Value),
+    )
+)]
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(tenant_id = %tenant_ctx.0.tenant_id, dataset_id = %tenant_ctx.0.dataset_id)
@@ -110,6 +126,20 @@ pub async fn query_range<S: RouterState>(
 ///
 /// Evaluated as a one-bucket range at `time`, returning the latest sample
 /// per series as a vector.
+#[utoipa::path(
+    get,
+    path = "/prometheus/api/v1/query",
+    operation_id = "promql_query",
+    tag = "metrics",
+    security(("bearerAuth" = [])),
+    params(
+        ("query" = String, Query, description = "PromQL expression"),
+        ("time" = Option<String>, Query, description = "Evaluation timestamp (unix seconds or RFC3339)"),
+    ),
+    responses(
+        (status = 200, description = "Prometheus instant-query response (vector)", body = serde_json::Value),
+    )
+)]
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(tenant_id = %tenant_ctx.0.tenant_id, dataset_id = %tenant_ctx.0.dataset_id)
