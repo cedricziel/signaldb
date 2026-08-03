@@ -9,6 +9,8 @@ sources:
   - src/router/src/endpoints/admin.rs
   - src/router/src/endpoints/tenant.rs
   - src/router/src/endpoints/session.rs
+  - src/router/src/endpoints/oauth.rs
+  - src/router/src/read_scope.rs
 ---
 
 # SignalDB Multi-Tenancy & Authentication
@@ -49,11 +51,31 @@ memberships (`SessionMembership { tenant_id, name, role }`); a sole
 membership is auto-selected, several leave `tenant` null so the UI shows a
 picker, none is a 403.
 
+### OAuth 2.1 access tokens (MCP connectors)
+
+A third credential type, for Claude.ai / ChatGPT connectors (change:
+mcp-oauth-dcr; router serves the authorization server, see `docs/users/mcp.md`).
+An `Authorization: Bearer` whose value starts with `sdb_at_` is an **opaque
+OAuth access token**: `auth_middleware` routes it to
+`Authenticator::authenticate_oauth_token`, which looks the token up in the
+catalog and resolves `(user, tenant, scopes)` **from the token record** — not
+from `X-Tenant-ID`, which is ignored for this credential (an OAuth session
+cannot be pointed at a tenant it wasn't granted). Tokens are audience-bound to
+the configured `mcp.oauth.resource_url` (a token for another resource is
+rejected). Tenant is fixed at consent time; one connector per tenant.
+
+**Read scopes.** OAuth scopes populate `TenantContext.api_key_scopes` and are
+enforced like API-key write scopes. `can_read(<signal>)` requires the matching
+`traces:read` / `logs:read` / `metrics:read` scope; a legacy unscoped key or a
+human session is unrestricted. A per-signal guard on the Tempo / Loki /
+Prometheus query routers rejects a scoped caller lacking the scope with `403`.
+The mirror of the acceptor's `<signal>:write` ingest scopes.
+
 ### Error Codes
 
 - **400**: Malformed auth headers (wrong scheme, invalid tenant/dataset ID)
-- **401**: Missing credentials (no auth header/cookie or tenant ID) or invalid API key
-- **403**: Key valid but wrong tenant/dataset
+- **401**: Missing credentials (no auth header/cookie or tenant ID), invalid API key, or expired/revoked/wrong-audience OAuth token
+- **403**: Key valid but wrong tenant/dataset, or a scoped credential lacking the required `<signal>:read`/`:write` scope
 
 ## Isolation Layers
 

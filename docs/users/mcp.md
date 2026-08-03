@@ -4,6 +4,7 @@ type: how-to
 status: living
 sources:
   - src/mcp-server/src/**
+  - src/router/src/endpoints/oauth.rs
   - src/common/src/config/mod.rs
 ---
 
@@ -162,25 +163,53 @@ claude mcp add --transport http signaldb https://mcp.example.org/mcp \
   --header "X-Tenant-ID: your-tenant"
 ```
 
-### Claude.ai and Claude Desktop
-
-Add it under **Settings → Connectors → Add custom connector** with the same
-`/mcp` URL. Two constraints:
-
-- The endpoint **must be HTTPS with a valid certificate** — Claude.ai will not
-  connect to a raw LAN port, so the TLS reverse proxy is required here, not
-  optional.
-- Passing the `Authorization`/`X-Tenant-ID` headers depends on the connector
-  supporting custom headers. The fully-managed alternative is an OAuth flow,
-  which SignalDB's MCP server does not implement in v1 (bearer + tenant headers
-  only) — so header-capable clients like Claude Code are the smoothest path
-  today.
-
 A request that carries no bearer token or no `X-Tenant-ID` is rejected with
 `401` at the MCP server before it reaches the transport. The MCP server does
 not validate the credential itself — it forwards it, and the **router** decides
 whether it is valid; an invalid or revoked key is rejected downstream and comes
 back as a clean MCP tool error.
+
+### Claude.ai and ChatGPT (OAuth connector)
+
+Claude.ai and OpenAI/ChatGPT register a remote MCP server through OAuth 2.1 with
+Dynamic Client Registration — no headers, no pre-registration. Add the `/mcp`
+URL under **Settings → Connectors → Add custom connector**; the client
+discovers SignalDB's authorization server, registers itself, and sends you
+through a sign-in + consent screen. On the consent screen you pick **one
+tenant** and approve the read scopes it requested; the token it receives is
+bound to that tenant. To let a connector reach a second tenant, add it a second
+time and grant the other tenant.
+
+The endpoint **must be HTTPS with a valid certificate** — these clients will not
+connect to a raw LAN port, so the TLS reverse proxy is required here.
+
+**Operator setup.** The authorization server is served by the **router**, off by
+default. Enable it and point it at the externally-reachable URLs clients use:
+
+```toml
+# router config (signaldb.toml)
+[mcp.oauth]
+enabled = true
+issuer_url = "https://signaldb.example.org"        # this AS, as clients reach it
+resource_url = "https://signaldb.example.org/mcp"  # the MCP resource tokens bind to
+# access_token_ttl = "1h"; refresh_token_ttl = "30d"; authorization_code_ttl = "60s"
+```
+
+The standalone `signaldb-mcp` sidecar advertises the same resource so an
+unauthenticated request is challenged toward discovery — pass the matching URLs:
+
+```bash
+signaldb-mcp \
+  --oauth-resource-url https://signaldb.example.org/mcp \
+  --oauth-issuer-url   https://signaldb.example.org
+```
+
+Tokens are opaque, catalog-backed, and audience-bound to `resource_url`;
+revoking one is a row delete. The read scopes a token may hold —
+`traces:read`, `logs:read`, `metrics:read` — gate the corresponding query
+surface (see the [multi-tenancy](../architecture/overview.md) model). The
+existing `Bearer <api-key>` + `X-Tenant-ID` path is unchanged; OAuth is an
+added credential type, not a replacement.
 
 ## Example flow
 
