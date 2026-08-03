@@ -44,7 +44,7 @@ async fn ensure_table_reflects_commits_made_through_other_handles() {
         materialized_labels: Default::default(),
     };
     let catalog = create_catalog(config).await.unwrap();
-    let manager = IcebergTableManager::new(catalog.clone());
+    let manager = IcebergTableManager::new(catalog.clone(), 100);
 
     // First call creates the table.
     manager

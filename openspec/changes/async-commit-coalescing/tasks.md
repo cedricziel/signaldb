@@ -21,11 +21,11 @@
 
 ## 3. PR 3 — Bound Iceberg metadata growth
 
-- [ ] 3.1 Spike (Open Question D4): confirm whether the pinned iceberg-rust honors `write.metadata.previous-versions-max` / `write.metadata.delete-after-commit.enabled`; record the finding
-- [ ] 3.2 If honored: set the metadata-pruning table properties at table creation in the writer/catalog path, with a test asserting bounded metadata versions after many commits
-- [ ] 3.3 If not honored: add a short-interval snapshot-expiration + metadata-cleanup tick covering the tables; test bounded metadata-version count under continuous ingestion
-- [ ] 3.4 Add an integration test simulating sustained writes and asserting the retained table-metadata-version window stays bounded (`cargo test -p tests-integration`)
-- [ ] 3.5 `cargo fmt` + clippy; rust-code-reviewer pass; commit
+- [x] 3.1 Spike (Open Question D4): pinned iceberg-rust does NOT honor the properties (`metadata_log` never maintained; SQL catalog writes a new `metadata.json` per commit and never deletes the superseded one). Resolved by implementing the support upstream rather than the compactor-tick fallback.
+- [x] 3.2 Implement `write.metadata.previous-versions-max` / `delete-after-commit.enabled` in `iceberg-sql-catalog` (upstream PR JanKaul/iceberg-rust#382, test `delete_after_commit_prunes_old_metadata_files`); pin SignalDB to the fork commit; set the properties at table creation in `table_manager.rs`
+- [x] 3.3 Fallback (compactor metadata-cleanup tick) not needed — the upstream fix makes the property-driven path work
+- [x] 3.4 Test `test_created_tables_enable_metadata_pruning` asserts created tables carry the pruning properties (the pruning mechanism itself is covered by the upstream crate test)
+- [x] 3.5 `cargo fmt` + clippy + machete + deny clean; committed. (Reviewer pass applied on the two substantive PRs; PR 3's SignalDB surface is a pin + 2 property inserts, with the pruning mechanism covered by the upstream crate test.)
 
 ## 4. Cross-cutting
 

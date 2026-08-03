@@ -69,8 +69,10 @@ impl CatalogManager {
     /// Create a new catalog manager with the shared Iceberg catalog.
     pub async fn new(config: Configuration) -> Result<Self> {
         let catalog = create_catalog_with_config(&config).await?;
-        let table_manager =
-            crate::iceberg::table_manager::IcebergTableManager::new(catalog.clone());
+        let table_manager = crate::iceberg::table_manager::IcebergTableManager::new(
+            catalog.clone(),
+            config.writer.metadata_previous_versions_max,
+        );
         Ok(Self {
             catalog,
             config,

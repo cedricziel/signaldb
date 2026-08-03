@@ -704,6 +704,7 @@ mod tests {
         CommitCoalescer::new(&WriterConfig {
             commit_interval: Duration::from_secs(interval_secs),
             max_uncommitted_rows: max_rows,
+            ..Default::default()
         })
     }
 
@@ -1084,6 +1085,7 @@ mod tests {
         let config = WriterConfig {
             commit_interval: Duration::from_secs(3600),
             max_uncommitted_rows: 1_000_000,
+            ..Default::default()
         };
         let mut processor =
             WalProcessor::with_config(wal.clone(), catalog_manager, object_store, &config);
@@ -1148,6 +1150,7 @@ mod tests {
         let config = WriterConfig {
             commit_interval: Duration::from_secs(3600),
             max_uncommitted_rows: 1_000_000,
+            ..Default::default()
         };
         let mut processor =
             WalProcessor::with_config(wal.clone(), catalog_manager, object_store, &config);
@@ -1199,6 +1202,7 @@ mod tests {
         let config = WriterConfig {
             commit_interval: Duration::from_secs(3600),
             max_uncommitted_rows: 1_000_000,
+            ..Default::default()
         };
         let mut processor =
             WalProcessor::with_config(wal.clone(), catalog_manager, object_store, &config);

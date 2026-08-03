@@ -258,6 +258,11 @@ commit_interval = "5s"
 # commit_interval elapses, so a spike does not build one oversized commit.
 # This is a ceiling, never a minimum to wait for.
 max_uncommitted_rows = 100000
+#
+# Previous Iceberg metadata.json versions retained per table
+# (write.metadata.previous-versions-max). Older metadata files are deleted on
+# commit, bounding on-disk metadata growth under continuous ingestion.
+metadata_previous_versions_max = 100
 
 [compactor]
 # Compactor Service Configuration

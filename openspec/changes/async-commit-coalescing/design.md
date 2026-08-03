@@ -148,7 +148,10 @@ the fallback keeps the guarantee even if upstream support is absent.
 
 ## Open Questions
 
-- Does the pinned iceberg-rust (JanKaul) honor `write.metadata.previous-versions-max`
-  / `delete-after-commit.enabled`? A short spike in the metadata-bounding PR
-  decides D4's primary vs fallback path; it does not affect the spec or the other
-  PRs.
+- ~~Does the pinned iceberg-rust (JanKaul) honor `write.metadata.previous-versions-max`
+  / `delete-after-commit.enabled`?~~ **Resolved (spike):** No — the pinned rev
+  never maintains `metadata_log` and the SQL catalog writes a new `metadata.json`
+  per commit without deleting the superseded file. Rather than the compactor-tick
+  fallback, we implemented the support upstream (JanKaul/iceberg-rust#382) and
+  pinned SignalDB to the fork commit, then set the properties at table creation.
+  This keeps the property-driven primary path from D4.
