@@ -128,9 +128,9 @@ aggregate(step)` lowers to TableScan→Filter→Projection(date_bin)→
 
 ## 8. CLI surface (`signaldb-bin` / SDK consumer)
 
-- [ ] 8.1 Failing test: a CLI `query` command reads an IR query (file/stdin),
+- [x] 8.1 Failing test: a CLI `query` command reads an IR query (file/stdin),
       submits it via the generated Rust SDK, and prints the enveloped result.
-- [ ] 8.2 Implement the command against the generated SDK (no hand-written HTTP).
+- [x] 8.2 Implement the command against the generated SDK (no hand-written HTTP).
       Make 8.1 pass.
 
 ## 9. UI query builder, single-signal (`ui`)
