@@ -75,7 +75,7 @@ Two ways to configure the export target, in precedence order:
 
 1. **Runtime config (preferred)** — `[self_monitoring.frontend]` in the
    SignalDB config. The router serves it to the browser via
-   `GET /ui/runtime-config.js` (see `resolveExportConfig` in
+   `GET /runtime-config.js` (see `resolveExportConfig` in
    `telemetry/runtimeConfig.ts`), so one image serves every deployment with no
    rebuild. When `api_key` is set it is delivered to the browser and sent as
    `Authorization: Bearer` on cross-origin exports to the acceptor (whose
@@ -137,7 +137,7 @@ build`.
 ### Runtime (preferred): `[self_monitoring.frontend]`
 
 Set in the SignalDB config file; the router serves it to the browser at
-`GET /ui/runtime-config.js` (`window.__SIGNALDB_RUNTIME_CONFIG__`), which
+`GET /runtime-config.js` (`window.__SIGNALDB_RUNTIME_CONFIG__`), which
 `index.html` loads as a blocking classic script before the app boots.
 
 | Key               | Default       | Meaning                                                                   |

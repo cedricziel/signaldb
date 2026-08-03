@@ -42,12 +42,14 @@ flowchart LR
   (`/api/v1/manage/...`), `endpoints/tempo.rs` (the Tempo-compatible trace
   query endpoints under `/tempo/api/...`, whose DTOs live in `tempo-api`),
   `endpoints/query.rs` (the native Query IR endpoint `POST /api/v1/query`, whose
-  request/response DTOs are defined in that module), and the PromQL/LogQL
+  request/response DTOs are defined in that module), the PromQL/LogQL
   instant and range query endpoints in `endpoints/promql.rs`
   (`/prometheus/api/v1/query{,_range}`) and `endpoints/logql.rs`
-  (`/loki/api/v1/query{,_range}`), and the operational-control endpoints in
+  (`/loki/api/v1/query{,_range}`), the operational-control endpoints in
   `endpoints/ops.rs` (`/api/v1/ops/compact{,/status,/dry-run}`, admin-authenticated,
-  proxied to the compactor's Flight `do_action` surface). Paths are absolute; operationIds on the
+  proxied to the compactor's Flight `do_action` surface), and `endpoints/oauth.rs`
+  (the session-authed OAuth consent surface the explore-UI consumes —
+  `GET /oauth/consent/context` and `POST /oauth/authorize/decision`). Paths are absolute; operationIds on the
   management handlers are prefixed `manage_*` and their colliding component
   schemas aliased `Manage*` (via `#[schema(as = ...)]`) so admin and manage
   names don't clash. The PromQL/LogQL handlers set explicit `operation_id`s
