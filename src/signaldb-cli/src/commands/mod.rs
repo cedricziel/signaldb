@@ -194,7 +194,10 @@ impl Cli {
         }
 
         let admin_key = self.resolve_admin_key()?;
-        let base_url = format!("{}/api/v1/admin", self.url.trim_end_matches('/'));
+        // The generated admin methods carry absolute paths (e.g.
+        // `/api/v1/admin/tenants`), so the SDK client base URL is the router
+        // root — not `{url}/api/v1/admin`, which would double-prefix.
+        let base_url = self.url.trim_end_matches('/').to_string();
 
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
@@ -345,5 +348,28 @@ mod parse_tests {
         assert!(parse(&["signaldb-cli", "tenant", "list"]).is_err());
         assert!(parse(&["signaldb-cli", "api-key", "list", "acme"]).is_err());
         assert!(parse(&["signaldb-cli", "dataset", "list", "acme"]).is_err());
+    }
+
+    // Regression: the admin client base URL is the router root, so the generated
+    // methods' absolute paths hit `/api/v1/admin/...` — not a double-prefixed
+    // `/api/v1/admin/api/v1/admin/...`.
+    #[tokio::test]
+    async fn admin_client_uses_root_base_and_absolute_paths() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/v1/admin/tenants")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"tenants":[]}"#)
+            .create_async()
+            .await;
+
+        let http = reqwest::Client::new();
+        // The admin dispatch configures the client with the router root.
+        let client = Client::new_with_client(server.url().trim_end_matches('/'), http);
+        // The request must reach `/api/v1/admin/tenants`; a double-prefixed URL
+        // would miss the mock and fail the assertion below.
+        let _ = client.list_tenants().send().await;
+        mock.assert_async().await;
     }
 }
