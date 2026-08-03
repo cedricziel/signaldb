@@ -52,6 +52,16 @@ impl Resolved {
 /// promoted, but both denote the same logical field with the same type.
 pub trait FieldResolver: Send + Sync {
     fn resolve(&self, source: &str, field: &str) -> Option<Resolved>;
+
+    /// Whether `field` is an actually-known field of `source` (a physical
+    /// column or an explicitly-declared attribute) rather than a permissive
+    /// fallback. Collision checks (extract shadowing, aggregate output names)
+    /// use this so a production resolver that resolves *any* name to a String
+    /// attribute does not spuriously flag every derived/output name as a
+    /// collision. Defaults to "resolvable" for strict/in-memory resolvers.
+    fn is_known(&self, source: &str, field: &str) -> bool {
+        self.resolve(source, field).is_some()
+    }
 }
 
 /// A per-attribute entry in the [`InMemoryResolver`].

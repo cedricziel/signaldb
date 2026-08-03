@@ -319,7 +319,7 @@ impl InferCtx<'_> {
             // No silent shadowing: collide with a registry field, an earlier
             // derived/agg name, or an existing column → rejected.
             let collides = self.names.iter().any(|n| n == &f.name)
-                || self.resolver.resolve(self.source, &f.name).is_some()
+                || self.resolver.is_known(self.source, &f.name)
                 || self.relation.column(&f.name).is_some();
             if collides {
                 return Err(IrError::NameCollision {
@@ -407,7 +407,7 @@ impl InferCtx<'_> {
         // source column.
         let collides = self.names.iter().any(|n| n == &a.as_name)
             || group_cols.iter().any(|c| c.name == a.as_name)
-            || self.resolver.resolve(self.source, &a.as_name).is_some();
+            || self.resolver.is_known(self.source, &a.as_name);
         if collides {
             return Err(IrError::DuplicateName {
                 name: a.as_name.clone(),
