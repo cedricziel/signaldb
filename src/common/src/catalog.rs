@@ -3251,6 +3251,50 @@ impl Catalog {
             }
         }
     }
+
+    /// Delete expired OAuth authorization codes, access tokens, and refresh
+    /// tokens (change: mcp-oauth-dcr). Expired rows already fail validation, but
+    /// nothing removes them; this reaps them so the tables and their `token_hash`
+    /// indexes don't grow without bound. Mirrors [`delete_expired_sessions`];
+    /// wiring a periodic reaper for both is a tracked follow-up. Returns the
+    /// total rows deleted across the three tables.
+    pub async fn delete_expired_oauth_grants(&self) -> Result<u64, sqlx::Error> {
+        let mut deleted = 0u64;
+        match self {
+            Catalog::Sqlite(pool) => {
+                let now = Utc::now().to_rfc3339();
+                for table in [
+                    "oauth_authorization_codes",
+                    "oauth_access_tokens",
+                    "oauth_refresh_tokens",
+                ] {
+                    // `table` is one of these three compile-time literals — never
+                    // user input — so it is safe to name in the statement; every
+                    // value is still bound.
+                    let sql = match table {
+                        "oauth_authorization_codes" => {
+                            "DELETE FROM oauth_authorization_codes WHERE expires_at < ?"
+                        }
+                        "oauth_access_tokens" => {
+                            "DELETE FROM oauth_access_tokens WHERE expires_at < ?"
+                        }
+                        _ => "DELETE FROM oauth_refresh_tokens WHERE expires_at < ?",
+                    };
+                    deleted += query(sql).bind(&now).execute(pool).await?.rows_affected();
+                }
+            }
+            Catalog::Postgres(pool) => {
+                for sql in [
+                    "DELETE FROM oauth_authorization_codes WHERE expires_at < NOW()",
+                    "DELETE FROM oauth_access_tokens WHERE expires_at < NOW()",
+                    "DELETE FROM oauth_refresh_tokens WHERE expires_at < NOW()",
+                ] {
+                    deleted += query(sql).execute(pool).await?.rows_affected();
+                }
+            }
+        }
+        Ok(deleted)
+    }
 }
 
 // ── Compactor lease management ────────────────────────────────────────────────
@@ -4574,5 +4618,52 @@ mod oauth_storage_tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn delete_expired_oauth_grants_reaps_only_expired_rows() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        let past = Utc::now() - Duration::hours(1);
+        let future = Utc::now() + Duration::hours(1);
+        // One expired + one live token in each token table, and one expired code.
+        catalog
+            .create_access_token("at-old", "c", &user, &tenant, &[], None, past)
+            .await
+            .unwrap();
+        catalog
+            .create_access_token("at-live", "c", &user, &tenant, &[], None, future)
+            .await
+            .unwrap();
+        catalog
+            .create_refresh_token("rt-old", "c", &user, &tenant, &[], None, past)
+            .await
+            .unwrap();
+        catalog
+            .create_authorization_code(
+                "code-old",
+                "c",
+                &user,
+                &tenant,
+                &[],
+                "https://c/cb",
+                "chal",
+                None,
+                past,
+            )
+            .await
+            .unwrap();
+
+        let removed = catalog.delete_expired_oauth_grants().await.unwrap();
+        assert_eq!(removed, 3, "the two expired tokens and the expired code");
+
+        // The live access token survives; a second pass removes nothing.
+        assert!(
+            catalog
+                .get_valid_access_token("at-live")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(catalog.delete_expired_oauth_grants().await.unwrap(), 0);
     }
 }

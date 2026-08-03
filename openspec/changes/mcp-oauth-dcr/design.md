@@ -100,3 +100,9 @@ Tracked, intentionally out of this change's scope:
   this change adds count/length caps (redirect_uris, client_name, URI length). A
   per-IP rate limit (RFC 7591 §5) needs pre-tenant rate-limit infrastructure the
   router does not yet have — a follow-up.
+- **Periodic reaper for expired auth rows.** `delete_expired_oauth_grants` (and the
+  pre-existing `delete_expired_sessions`) exist but no live background task calls
+  them yet — expired OAuth codes/tokens fail validation but are not deleted until a
+  reaper runs. Wiring a periodic sweep (sessions + OAuth grants), and a retention
+  policy for registered-but-unused `oauth_clients` rows (which have no expiry), is a
+  follow-up.
