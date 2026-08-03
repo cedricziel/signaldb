@@ -35,24 +35,28 @@ pub async fn flush_storage_writers(
         anyhow::bail!("no Storage writer to flush");
     }
 
-    let body = serde_json::to_vec(&serde_json::json!({
-        "tenant_id": tenant_id,
-        "dataset_id": dataset_id,
-    }))?;
-
     for service in services {
         let mut client = transport
             .get_flight_client(service.service_id)
             .await
             .map_err(|e| anyhow::anyhow!("flush client for {}: {e}", service.service_id))?;
 
-        let mut stream = client
-            .do_action(Action {
-                r#type: FLUSH_ACTION.to_string(),
-                body: body.clone().into(),
-            })
-            .await?
-            .into_inner();
+        // The writer derives the flush scope from the request's tenant metadata
+        // (matching the ingest path), not the action body.
+        let mut request = tonic::Request::new(Action {
+            r#type: FLUSH_ACTION.to_string(),
+            body: Default::default(),
+        });
+        request
+            .metadata_mut()
+            .insert("x-tenant-id", tenant_id.parse()?);
+        if let Some(dataset_id) = dataset_id {
+            request
+                .metadata_mut()
+                .insert("x-dataset-id", dataset_id.parse()?);
+        }
+
+        let mut stream = client.do_action(request).await?.into_inner();
 
         // Drain the (empty) result stream so the flush completes before moving on.
         while let Some(result) = stream.next().await {
