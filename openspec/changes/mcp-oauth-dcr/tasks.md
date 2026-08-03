@@ -66,7 +66,7 @@
 
 ## 14. Docs & skills
 
-- [ ] 14.1 Document the OAuth connector flow and operator setup (issuer/resource URLs, TLS requirement for non-loopback origins, one-connector-per-tenant behavior) — route via the docs skill; update the `multi-tenancy` and MCP/`tempo-api` docs.
+- [ ] 14.1 Document the OAuth connector flow and operator setup (issuer/resource URLs, TLS requirement for non-loopback origins, one-connector-per-tenant behavior) — route via the docs skill; update `docs/users/mcp.md`, `docs/architecture/overview.md`, and the `configuration` skill (new `[mcp.oauth]` section). _(doc-freshness: config/dist.toml + oauth endpoints already flagged these)_
 - [ ] 14.2 Update the `multi-tenancy` skill (and the MCP skill/notes) to describe OAuth tokens, read scopes, and tenant-from-token so described behavior matches.
 
 ## 15. Pre-commit gate
