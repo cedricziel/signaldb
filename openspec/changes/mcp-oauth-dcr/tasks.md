@@ -61,8 +61,8 @@
 
 ## 13. End-to-end integration coverage
 
-- [ ] 13.1 Add a `tests-integration` test that drives the full connector flow against router + sidecar: discovery → DCR → authorize+consent (tenant selected) → PKCE token exchange → authenticated MCP tool call returning only the bound tenant's data.
-- [ ] 13.2 Add integration assertions for isolation and lifecycle: a second-tenant attempt on a token stays scoped to its bound tenant; revoking the token’s record makes the next MCP call `401`; a token minted for another resource/audience is rejected.
+- [x] 13.1 Add a `tests-integration` test that drives the full connector flow against router + sidecar: discovery → DCR → authorize+consent (tenant selected) → PKCE token exchange → authenticated MCP tool call returning only the bound tenant's data.
+- [x] 13.2 Add integration assertions for isolation and lifecycle: a second-tenant attempt on a token stays scoped to its bound tenant; revoking the token’s record makes the next MCP call `401`; a token minted for another resource/audience is rejected.
 
 ## 14. Docs & skills
 
