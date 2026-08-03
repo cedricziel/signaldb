@@ -55,6 +55,38 @@ env_logger.workspace = true
 url.workspace = true
 testcontainers-modules.workspace = true
 
+# Optional dependencies for benchmarks
+criterion = { workspace = true, optional = true }
+
+[features]
+# Enables the Criterion read-path benchmarks under benches/.
+benchmarks = ["dep:criterion"]
+
+[[bench]]
+name = "querier_read_paths"
+harness = false
+required-features = ["benchmarks"]
+
+[[bench]]
+name = "signal_read_paths"
+harness = false
+required-features = ["benchmarks"]
+
+[[bench]]
+name = "compaction"
+harness = false
+required-features = ["benchmarks"]
+
+[[bench]]
+name = "trace_read_analysis"
+harness = false
+required-features = ["benchmarks"]
+
+[[bench]]
+name = "trace_index_scaling"
+harness = false
+required-features = ["benchmarks"]
+
 [[test]]
 name = "self_monitoring"
 path = "tests/self_monitoring.rs"
