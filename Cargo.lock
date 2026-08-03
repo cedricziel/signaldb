@@ -6976,10 +6976,16 @@ dependencies = [
 name = "signaldb-sdk"
 version = "0.1.1"
 dependencies = [
+ "arrow",
+ "arrow-flight",
+ "futures",
  "progenitor-client",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tonic",
 ]
 
 [[package]]
@@ -7725,8 +7731,10 @@ dependencies = [
  "opentelemetry_sdk",
  "prost",
  "querier",
+ "reqwest 0.13.4",
  "router",
  "serde_json",
+ "signaldb-sdk",
  "snap",
  "tempfile",
  "tempo-api",
