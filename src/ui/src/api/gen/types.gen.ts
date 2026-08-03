@@ -326,8 +326,10 @@ export type QueryIrResponse = {
 };
 
 /**
- * The query time range. `from`/`to` are timestamp literals: RFC3339, a
- * relative anchor (`now-1h`), or integer nanoseconds.
+ * The query time range. `from`/`to` are timestamp literal **strings**: RFC3339,
+ * a relative anchor (`now-1h`), or a nanosecond integer as a numeric string
+ * (`"1700000000000000000"`). Kept a `String` so the emitted schema and the
+ * generated clients match exactly what the endpoint accepts.
  */
 export type QueryRange = {
     from: string;

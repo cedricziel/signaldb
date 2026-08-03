@@ -12,6 +12,7 @@ import { runIrQuery } from "../../api/queryIr";
 import type { QueryIrRequest, QueryIrResponse } from "../../api/gen";
 import { FilterChips } from "../logs/FilterChips";
 import type { LabelFilter } from "../../lib/filters";
+import { msToNanos, type TimeRange } from "../../lib/time";
 import {
   buildIrDocument,
   type IrAggregate,
@@ -60,7 +61,18 @@ function aggregateFor(
   return undefined;
 }
 
-export function QueryView() {
+/** Map the shared explore time range to IR range anchors: a relative range
+ * becomes a `now-Ns` anchor (resolved once, server-side), an absolute range
+ * becomes nanosecond strings. */
+function irRange(range: TimeRange | undefined): { from: string; to: string } {
+  if (!range) return { from: "now-1h", to: "now" };
+  if (range.type === "absolute") {
+    return { from: msToNanos(range.fromMs), to: msToNanos(range.toMs) };
+  }
+  return { from: `now-${range.seconds}s`, to: "now" };
+}
+
+export function QueryView({ range }: { range?: TimeRange } = {}) {
   const [source, setSource] = useState<IrSource>("logs");
   const [result, setResult] = useState<IrResult>("rows");
   const [filters, setFilters] = useState<LabelFilter[]>([]);
@@ -71,11 +83,11 @@ export function QueryView() {
       buildIrDocument({
         source,
         result,
-        range: { from: "now-1h", to: "now" },
+        range: irRange(range),
         filters: toIrFilters(filters),
         aggregate: aggregateFor(result, source),
       }),
-    [source, result, filters],
+    [source, result, filters, range],
   );
 
   const query = useQuery({

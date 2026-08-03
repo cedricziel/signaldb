@@ -1210,14 +1210,16 @@ pub mod types {
             Default::default()
         }
     }
-    /**The query time range. `from`/`to` are timestamp literals: RFC3339, a
-    relative anchor (`now-1h`), or integer nanoseconds.*/
+    /**The query time range. `from`/`to` are timestamp literal **strings**: RFC3339,
+    a relative anchor (`now-1h`), or a nanosecond integer as a numeric string
+    (`"1700000000000000000"`). Kept a `String` so the emitted schema and the
+    generated clients match exactly what the endpoint accepts.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "The query time range. `from`/`to` are timestamp literals: RFC3339, a\nrelative anchor (`now-1h`), or integer nanoseconds.",
+    ///  "description": "The query time range. `from`/`to` are timestamp literal **strings**: RFC3339,\na relative anchor (`now-1h`), or a nanosecond integer as a numeric string\n(`\"1700000000000000000\"`). Kept a `String` so the emitted schema and the\ngenerated clients match exactly what the endpoint accepts.",
     ///  "type": "object",
     ///  "required": [
     ///    "from",

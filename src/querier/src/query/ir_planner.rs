@@ -684,20 +684,24 @@ impl Lowering<'_> {
         value_type: &ValueType,
         is_json: bool,
     ) -> Result<Expr, QuerierError> {
-        // Attribute-map values are stored as strings; ordered comparison casts
-        // to Float64 (mirroring the LogQL path). Typed columns compare natively.
-        let (lhs, rhs) = if is_json {
-            let n = value
-                .as_f64()
-                .or_else(|| value.as_str().and_then(|s| s.parse::<f64>().ok()))
-                .ok_or_else(|| {
-                    QuerierError::InvalidInput("ordered comparison needs a number".to_string())
-                })?;
-            (cast(field_expr, DataType::Float64), lit(n))
+        // Route on the resolved ValueType, not the storage form, so a field
+        // compares the same whether promoted (typed column) or unpromoted
+        // (Utf8 attribute extraction) — promotion invariance. A numeric type
+        // compares numerically in both cases (an attribute's Utf8 value is cast
+        // to Float64); a string type compares lexically in both.
+        let literal =
+            coerce(value, value_type).map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        let (lhs, rhs) = if is_numeric(value_type) {
+            if is_json {
+                (
+                    cast(field_expr, DataType::Float64),
+                    lit(literal_as_f64(&literal)),
+                )
+            } else {
+                (field_expr, self.value_lit(&literal, false))
+            }
         } else {
-            let l =
-                coerce(value, value_type).map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
-            (field_expr, self.value_lit(&l, false))
+            (field_expr, self.value_lit(&literal, is_json))
         };
         Ok(match op {
             ComparisonOp::Gt => lhs.gt(rhs),
@@ -867,6 +871,26 @@ fn extract_field(body: &str, parser: &str, key: &str) -> Option<String> {
             None
         }
         _ => None,
+    }
+}
+
+/// Whether a value type compares numerically.
+fn is_numeric(t: &ValueType) -> bool {
+    matches!(
+        t,
+        ValueType::Int64 | ValueType::Float64 | ValueType::DurationNs | ValueType::TimestampNs
+    )
+}
+
+/// A coerced literal as `f64`, for numeric comparison against a `Utf8`-stored
+/// (unpromoted) attribute cast to `Float64`.
+fn literal_as_f64(literal: &Literal) -> f64 {
+    match literal {
+        Literal::Int64(i) => *i as f64,
+        Literal::Float64(f) => *f,
+        Literal::Duration(ns) => *ns as f64,
+        Literal::Timestamp(TimestampLiteral::Absolute(ns)) => *ns as f64,
+        _ => 0.0,
     }
 }
 
@@ -1262,6 +1286,24 @@ mod tests {
                 assert_eq!(col.value(i), "error");
             }
         }
+    }
+
+    // Regression (promotion invariance): an ordered comparison on an unpromoted
+    // String attribute must lower (lexically), not reject with "needs a number".
+    #[tokio::test]
+    async fn ordered_comparison_on_string_attribute_lowers() {
+        let svc = IrService::new(logs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["service_name"],
+            "pipeline": [
+                { "where": { "field": "deployment.environment", "op": "gte", "value": "prod" } }
+            ]
+        }));
+        // Plans and executes; the Utf8 attribute compares lexically, no error.
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap();
+        let _ = df.collect().await.unwrap();
     }
 
     #[test]

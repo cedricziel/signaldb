@@ -59,7 +59,7 @@ export const DEFAULT_STATE: ExploreState = {
   dataset: "",
 };
 
-const SIGNALS: Signal[] = ["logs", "traces", "metrics", "profiles"];
+const SIGNALS: Signal[] = ["logs", "traces", "metrics", "profiles", "query"];
 
 export function parseExploreState(search: string): ExploreState {
   const p = new URLSearchParams(search);

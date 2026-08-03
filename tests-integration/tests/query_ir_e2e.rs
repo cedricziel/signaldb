@@ -411,10 +411,36 @@ async fn post_ir(app: &Router, doc: serde_json::Value) -> (StatusCode, serde_jso
 }
 
 fn range() -> serde_json::Value {
+    // Nanosecond bounds as numeric strings (the `QueryRange` wire type is a
+    // string; a numeric string coerces to an absolute timestamp).
     serde_json::json!({
-        "from": BASE_NS - 1_000_000_000,
-        "to": BASE_NS + 10_000_000_000,
+        "from": (BASE_NS - 1_000_000_000).to_string(),
+        "to": (BASE_NS + 10_000_000_000).to_string(),
     })
+}
+
+/// Poll `POST /api/v1/query` until it returns a non-empty `rows` result or the
+/// deadline elapses — the writer's WAL loop persists asynchronously (a ≥5s base
+/// interval), so a fixed sleep would race it.
+async fn post_ir_until_rows(
+    app: &Router,
+    doc: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let mut last = (StatusCode::OK, serde_json::Value::Null);
+    for _ in 0..40 {
+        let (status, body) = post_ir(app, doc.clone()).await;
+        let has_rows = body
+            .get("rows")
+            .and_then(|r| r.as_array())
+            .map(|r| !r.is_empty())
+            .unwrap_or(false);
+        if status == StatusCode::OK && has_rows {
+            return (status, body);
+        }
+        last = (status, body);
+        sleep(Duration::from_millis(500)).await;
+    }
+    last
 }
 
 // Task 10.1 — a single-signal logs IR query returns the LogQL equivalent.
@@ -446,11 +472,10 @@ async fn logs_ir_query_end_to_end() {
         .await
         .expect("ingest web logs");
 
-    sleep(Duration::from_secs(3)).await;
     let app = build_router(&services).await;
 
     // `{service_name="api"}` in LogQL == this IR filter; expect the two api lines.
-    let (status, body) = post_ir(
+    let (status, body) = post_ir_until_rows(
         &app,
         serde_json::json!({
             "irVersion": 1,
@@ -501,11 +526,10 @@ async fn traces_ir_query_end_to_end() {
         .await
         .expect("ingest checkout spans");
 
-    sleep(Duration::from_secs(3)).await;
     let app = build_router(&services).await;
 
     // Filter to checkout, rank by duration, take the slowest span.
-    let (status, body) = post_ir(
+    let (status, body) = post_ir_until_rows(
         &app,
         serde_json::json!({
             "irVersion": 1,

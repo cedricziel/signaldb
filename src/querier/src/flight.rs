@@ -1369,7 +1369,12 @@ impl FlightService for QuerierFlightService {
                     // failure path (ticket parsing, tenant checks, execution,
                     // conversion) at once.
                     let result: Result<Response<Self::DoGetStream>, Status> = async move {
-                        tracing::info!(ticket = %ticket_content, "Processing Flight ticket");
+                        // Log only the ticket verb at info — the full ticket body
+                        // (e.g. a `query_ir` IR document) can carry query literals
+                        // with PII, so it stays at debug.
+                        let ticket_verb = ticket_content.split(':').next().unwrap_or("");
+                        tracing::info!(ticket_verb = %ticket_verb, "Processing Flight ticket");
+                        tracing::debug!(ticket = %ticket_content, "Flight ticket body");
 
                         // Parse ticket to determine request type
                         let ticket_request = self.parse_ticket(&ticket_content)?;

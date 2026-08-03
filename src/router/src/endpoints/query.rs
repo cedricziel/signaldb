@@ -19,10 +19,12 @@ use common::auth::TenantContextExtractor;
 use common::flight::transport::ServiceCapability;
 use common::query_ir::{Literal, ValueType, coerce};
 use datafusion::arrow::array::{
-    Array, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, RecordBatch,
-    StringArray, TimestampNanosecondArray,
+    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
+    TimestampNanosecondArray,
 };
-use datafusion::arrow::datatypes::DataType;
+use datafusion::arrow::compute::cast;
+use datafusion::arrow::datatypes::{DataType, TimeUnit};
+use datafusion::arrow::util::display::{ArrayFormatter, FormatOptions};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -34,14 +36,16 @@ pub fn router<S: RouterState>() -> Router<S> {
     Router::new().route("/query", post(query_ir::<S>))
 }
 
-/// The query time range. `from`/`to` are timestamp literals: RFC3339, a
-/// relative anchor (`now-1h`), or integer nanoseconds.
+/// The query time range. `from`/`to` are timestamp literal **strings**: RFC3339,
+/// a relative anchor (`now-1h`), or a nanosecond integer as a numeric string
+/// (`"1700000000000000000"`). Kept a `String` so the emitted schema and the
+/// generated clients match exactly what the endpoint accepts.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct QueryRange {
-    #[schema(value_type = String, example = "now-1h")]
-    pub from: serde_json::Value,
-    #[schema(value_type = String, example = "now")]
-    pub to: serde_json::Value,
+    #[schema(example = "now-1h")]
+    pub from: String,
+    #[schema(example = "now")]
+    pub to: String,
 }
 
 /// A versioned Query IR request document.
@@ -165,10 +169,13 @@ pub async fn query_ir<S: RouterState>(
 
 /// Resolve a range to an absolute window using the server-stamped clock.
 fn resolve_window(range: &QueryRange, now_ns: i64) -> Result<ResolvedWindow, ApiError> {
-    let resolve = |v: &serde_json::Value| -> Result<i64, ApiError> {
-        match coerce(v, &ValueType::TimestampNs) {
+    let resolve = |s: &str| -> Result<i64, ApiError> {
+        match coerce(
+            &serde_json::Value::String(s.to_string()),
+            &ValueType::TimestampNs,
+        ) {
             Ok(Literal::Timestamp(ts)) => Ok(ts.resolve(now_ns)),
-            _ => Err(ApiError::bad_request(format!("invalid time bound: {v}"))),
+            _ => Err(ApiError::bad_request(format!("invalid time bound: {s}"))),
         }
     };
     Ok(ResolvedWindow {
@@ -201,19 +208,27 @@ async fn execute_ticket<S: RouterState>(
         common::flight::auth::attach_internal_auth(&mut flight_request, key);
     }
 
-    let mut stream = client
-        .do_get(flight_request)
-        .await
-        .map_err(|e| ApiError::from_flight(&e, "query_ir"))?
-        .into_inner();
+    // Bound the whole querier round-trip + drain with a deadline so a stalled
+    // querier cannot hold the HTTP request (and connection) open indefinitely.
+    tokio::time::timeout(IR_QUERY_TIMEOUT, async move {
+        let mut stream = client
+            .do_get(flight_request)
+            .await
+            .map_err(|e| ApiError::from_flight(&e, "query_ir"))?
+            .into_inner();
 
-    let mut data = Vec::new();
-    while let Some(flight_data) = stream.next().await {
-        data.push(flight_data.map_err(|e| ApiError::from_flight(&e, "query_ir"))?);
-    }
-
-    super::flight_decode::decode_flight_batches(&data, "query_ir").map_err(ApiError::from)
+        let mut data = Vec::new();
+        while let Some(flight_data) = stream.next().await {
+            data.push(flight_data.map_err(|e| ApiError::from_flight(&e, "query_ir"))?);
+        }
+        super::flight_decode::decode_flight_batches(&data, "query_ir").map_err(ApiError::from)
+    })
+    .await
+    .map_err(|_| ApiError::new(StatusCode::GATEWAY_TIMEOUT, "IR query timed out"))?
 }
+
+/// Upper bound on a single IR query's querier round-trip and result drain.
+const IR_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Shape RecordBatches into the declared result envelope.
 fn build_envelope(
@@ -273,8 +288,24 @@ fn column_meta(field: &datafusion::arrow::datatypes::Field) -> ResultColumn {
     }
 }
 
-/// Extract one cell as JSON, following the IR value encoding
-/// (timestamps/durations as integer nanoseconds; others JSON-native).
+/// The canonical Arrow type a column is normalized to before extraction, keyed
+/// by the IR value type `column_meta` declares. Casting once here means `cell`
+/// only handles a fixed set — so DataFusion's `Utf8View`, dictionary, wider
+/// integer, and non-nanosecond timestamp encodings never fall through to null.
+fn canonical_arrow_type(ir_type: &str) -> DataType {
+    match ir_type {
+        "int64" => DataType::Int64,
+        "float64" => DataType::Float64,
+        "bool" => DataType::Boolean,
+        "timestamp_ns" => DataType::Timestamp(TimeUnit::Nanosecond, None),
+        "bytes" => DataType::Binary,
+        _ => DataType::Utf8,
+    }
+}
+
+/// Extract one cell of an already-canonicalized array as JSON, following the IR
+/// value encoding (timestamps as integer nanoseconds, bytes as base64, others
+/// JSON-native).
 fn cell(array: &dyn Array, row: usize) -> serde_json::Value {
     use serde_json::Value;
     if array.is_null(row) {
@@ -291,16 +322,8 @@ fn cell(array: &dyn Array, row: usize) -> serde_json::Value {
     if let Some(a) = downcast!(Int64Array) {
         return Value::from(a.value(row));
     }
-    if let Some(a) = downcast!(Int32Array) {
-        return Value::from(a.value(row) as i64);
-    }
     if let Some(a) = downcast!(Float64Array) {
         return serde_json::Number::from_f64(a.value(row))
-            .map(Value::Number)
-            .unwrap_or(Value::Null);
-    }
-    if let Some(a) = downcast!(Float32Array) {
-        return serde_json::Number::from_f64(a.value(row) as f64)
             .map(Value::Number)
             .unwrap_or(Value::Null);
     }
@@ -310,7 +333,15 @@ fn cell(array: &dyn Array, row: usize) -> serde_json::Value {
     if let Some(a) = downcast!(TimestampNanosecondArray) {
         return Value::from(a.value(row));
     }
-    Value::Null
+    if let Some(a) = downcast!(BinaryArray) {
+        use base64::Engine as _;
+        return Value::String(base64::engine::general_purpose::STANDARD.encode(a.value(row)));
+    }
+    // Last resort (an un-castable type, e.g. a struct/list left as-is): a string
+    // rendering, so the column's data is never silently dropped as null.
+    ArrayFormatter::try_new(array, &FormatOptions::default())
+        .map(|f| Value::String(f.value(row).to_string()))
+        .unwrap_or(Value::Null)
 }
 
 fn to_rows(batches: &[RecordBatch]) -> (Vec<ResultColumn>, Vec<Vec<serde_json::Value>>) {
@@ -329,11 +360,18 @@ fn to_rows(batches: &[RecordBatch]) -> (Vec<ResultColumn>, Vec<Vec<serde_json::V
         .iter()
         .map(|f| column_meta(f))
         .collect();
+    let targets: Vec<DataType> = columns
+        .iter()
+        .map(|c| canonical_arrow_type(&c.value_type))
+        .collect();
     for batch in batches {
+        // Normalize each column to the canonical Arrow type its declared IR type
+        // maps to; keep the original array if a cast is unsupported.
+        let casted: Vec<ArrayRef> = (0..batch.num_columns())
+            .map(|c| cast(batch.column(c), &targets[c]).unwrap_or_else(|_| batch.column(c).clone()))
+            .collect();
         for r in 0..batch.num_rows() {
-            let row = (0..batch.num_columns())
-                .map(|c| cell(batch.column(c).as_ref(), r))
-                .collect();
+            let row = casted.iter().map(|a| cell(a.as_ref(), r)).collect();
             rows.push(row);
         }
     }

@@ -315,11 +315,14 @@ pub fn parse_relative_time(s: &str) -> Option<RelativeTime> {
         return Some(RelativeTime { offset_ns: 0 });
     }
     let rest = s.strip_prefix("now")?;
-    let (sign, dur) = match rest.split_at(1) {
-        ("-", d) => (-1i64, d),
-        ("+", d) => (1i64, d),
+    // Inspect the first *character* — `split_at(1)` would panic on a multi-byte
+    // char (e.g. `now€1h`), and the input is client-supplied.
+    let sign = match rest.chars().next()? {
+        '-' => -1i64,
+        '+' => 1i64,
         _ => return None,
     };
+    let dur = &rest['+'.len_utf8()..]; // '+' and '-' are both 1 byte (ASCII)
     let magnitude = parse_duration_ns(dur)?;
     Some(RelativeTime {
         offset_ns: sign.checked_mul(magnitude)?,
@@ -456,6 +459,10 @@ mod tests {
             parse_relative_time("now+30m").unwrap().offset_ns,
             30 * 60 * 1_000_000_000
         );
+        // A multi-byte char after `now` must not panic (client-supplied input).
+        assert!(parse_relative_time("now€1h").is_none());
+        assert!(parse_relative_time("nowユ").is_none());
+        assert!(coerce(&json!("now€1h"), &ValueType::TimestampNs).is_err());
     }
 
     // Task 1.2 — absent-value semantics (the three-valued truth tables).

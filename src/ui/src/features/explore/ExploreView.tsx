@@ -62,7 +62,7 @@ export function ExploreView({ state, update }: Props) {
       {state.signal === "profiles" && (
         <ProfilesView state={state} update={update} />
       )}
-      {state.signal === "query" && <QueryView />}
+      {state.signal === "query" && <QueryView range={state.range} />}
     </div>
   );
 }
