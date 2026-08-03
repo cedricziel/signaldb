@@ -87,3 +87,16 @@ Consequence: consent works only where the UI bundle is served, so the explore-UI
 ## Migration Plan
 
 Purely additive; no data migration. New catalog tables (registered clients, authorization codes, access/refresh tokens — all hashed, with expiry) are created forward-only. Deploy order: router (AS + validation + catalog schema) before the sidecar advertises the AS, so discovery never points at endpoints that don't exist yet. Rollback: disable the OAuth endpoints and the sidecar's PRM/401 advertisement; the API-key path is untouched throughout, so existing callers are never affected.
+
+## Deferred follow-ups (from CodeRabbit review)
+
+Tracked, intentionally out of this change's scope:
+
+- **Refresh-token grant-family revocation.** Refresh tokens now rotate (single-use;
+  the presented token is revoked on use). Detecting *replay* of an already-consumed
+  refresh token to revoke the whole grant family (OAuth 2.1 §4.3.1) needs a
+  grant-family identifier on the token rows — a follow-up.
+- **Per-IP rate limiting on Dynamic Client Registration.** DCR is unauthenticated;
+  this change adds count/length caps (redirect_uris, client_name, URI length). A
+  per-IP rate limit (RFC 7591 §5) needs pre-tenant rate-limit infrastructure the
+  router does not yet have — a follow-up.
