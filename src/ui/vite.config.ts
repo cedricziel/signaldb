@@ -9,8 +9,12 @@ const pkg = require("./package.json") as { version: string };
 // Paths the SignalDB router serves; the dev server forwards them to a live
 // instance so the browser only ever sees same-origin requests, exactly as in
 // the embedded production build. /ui/session is the router's session login
-// endpoint and /ui/runtime-config.js is its runtime telemetry config —
-// everything else under /ui stays with the dev server itself.
+// endpoint and /runtime-config.js is its runtime telemetry config — the SPA is
+// served from root, so everything else is served by the dev server itself.
+//
+// The OAuth endpoints proxy too, EXCEPT `/oauth/consent`, which is the SPA
+// consent route (served by the dev server); its `/oauth/consent/context` API
+// sibling is proxied because it is a distinct, longer prefix.
 const PROXIED_PATHS = [
   "/loki",
   "/tempo",
@@ -18,7 +22,13 @@ const PROXIED_PATHS = [
   "/pyroscope",
   "/api",
   "/ui/session",
-  "/ui/runtime-config.js",
+  "/runtime-config.js",
+  "/.well-known/oauth-authorization-server",
+  "/.well-known/oauth-protected-resource",
+  "/oauth/authorize",
+  "/oauth/consent/context",
+  "/oauth/register",
+  "/oauth/token",
 ];
 
 export default defineConfig(({ mode }) => {
@@ -58,8 +68,8 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
-    // Served by the router under /ui/ in production.
-    base: "/ui/",
+    // Served by the router at root in production (SPA fallback).
+    base: "/",
     // Surface the dev defaults so the tenant selector can display them, plus
     // the telemetry config baked in at build time (see src/telemetry).
     define: {

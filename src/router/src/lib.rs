@@ -276,12 +276,6 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         // OAuth 2.1 authorization-server endpoints (public: discovery + DCR are
         // unauthenticated by spec; empty unless mcp.oauth.enabled)
         .merge(oauth_routes)
-        // Explore UI static assets + runtime config (public, served from
-        // SIGNALDB_UI_DIR; runtime-config.js from [self_monitoring.frontend])
-        .nest_service(
-            "/ui",
-            ui::service_from_env(&state.config().self_monitoring.frontend),
-        )
         // Admin routes with admin authentication
         .nest("/api/v1/admin", admin_router)
         // Operational control (compaction), admin-authenticated, proxied to the
@@ -299,6 +293,13 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
                 .layer(query_rate_layer)
                 .layer(auth_layer),
         )
+        // Explore UI at root (SPA fallback): every request not matched by an
+        // API route above serves the UI — its `/runtime-config.js` route and,
+        // for any other path, `index.html` so SPA deep links (incl.
+        // `/oauth/consent`) boot the app. Served from SIGNALDB_UI_DIR.
+        .fallback_service(ui::service_from_env(
+            &state.config().self_monitoring.frontend,
+        ))
         // OTel HTTP server metrics for all routes (no-op unless
         // self-monitoring is enabled)
         .layer(middleware::from_fn(
@@ -412,11 +413,11 @@ mod tests {
         };
         let app = create_router(RouterAppState::new(catalog, config));
 
-        // Public route (no auth headers), reached through the /ui nest.
+        // Public route (no auth headers), served at root by the UI fallback.
         let res = app
             .oneshot(
                 Request::builder()
-                    .uri("/ui/runtime-config.js")
+                    .uri("/runtime-config.js")
                     .body(Body::empty())
                     .unwrap(),
             )
