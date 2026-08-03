@@ -63,7 +63,7 @@ Reload or restart Prometheus so the new remote_write target takes effect.
 - Query the data back over SQL (see [Querying with SQL](querying-sql.md)):
 
 ```bash
-signaldb-cli query sql "SELECT * FROM metrics_gauge LIMIT 5" \
+signaldb-cli query --sql "SELECT * FROM metrics_gauge LIMIT 5" \
   --api-key sk-acme-prod-key-123 --tenant-id acme
 ```
 

@@ -95,7 +95,7 @@ Export a few spans, then query them back over SQL (see
 [Querying with SQL](querying-sql.md)):
 
 ```bash
-signaldb-cli query sql "SELECT trace_id, span_name, service_name FROM traces LIMIT 5" \
+signaldb-cli query --sql "SELECT trace_id, span_name, service_name FROM traces LIMIT 5" \
   --api-key sk-acme-prod-key-123 --tenant-id acme
 ```
 

@@ -164,12 +164,12 @@ tenant-taking args via `COMPLETE=<shell> signaldb-cli` — queries the admin
 API like `tenant list`, silently empty when the backend is unreachable).
 
 ```bash
-signaldb-cli tenant list
-signaldb-cli tenant create acme --name "Acme Corp" [--default-dataset production]
-signaldb-cli api-key create acme --name "Production Key"
-signaldb-cli dataset create acme --name production
-signaldb-cli query ...          # SQL queries against SignalDB
-signaldb-cli tui                # Interactive terminal UI
+signaldb-cli admin tenant list
+signaldb-cli admin tenant create acme --name "Acme Corp" [--default-dataset production]
+signaldb-cli admin api-key create acme --name "Production Key"
+signaldb-cli admin dataset create acme --name production
+signaldb-cli query --sql "SELECT ..."   # also --promql/--logql/--traceql/--ir
+signaldb-cli tui                         # Interactive terminal UI
 ```
 
 ### User credential primitives (groundwork)

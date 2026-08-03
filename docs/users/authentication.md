@@ -90,11 +90,11 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
 Tenants, datasets, and API keys are managed by your SignalDB operator via
 one of:
 
-| Method        | Where                                                                                                                                                      |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Static config | `[[auth.tenants]]` blocks in `signaldb.toml`                                                                                                               |
-| Admin API     | `/api/v1/admin/*` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>`                                                    |
-| CLI           | `signaldb-cli tenant\|api-key\|dataset ...` — a client for the admin API (`--url`, default `http://localhost:3000`; `--admin-key` or `SIGNALDB_ADMIN_KEY`) |
+| Method        | Where                                                                                                                                                            |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Static config | `[[auth.tenants]]` blocks in `signaldb.toml`                                                                                                                     |
+| Admin API     | `/api/v1/admin/*` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>`                                                          |
+| CLI           | `signaldb-cli admin tenant\|api-key\|dataset ...` — a client for the admin API (`--url`, default `http://localhost:3000`; `--admin-key` or `SIGNALDB_ADMIN_KEY`) |
 
 Example (operator-side):
 
