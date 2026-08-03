@@ -1006,6 +1006,9 @@ pub struct Configuration {
     /// Querier resource limits
     #[serde(default)]
     pub querier: QuerierConfig,
+    /// Writer commit-coalescing policy
+    #[serde(default)]
+    pub writer: WriterConfig,
     /// MCP (Model Context Protocol) server configuration
     #[serde(default)]
     pub mcp: McpConfig,
@@ -1072,7 +1075,43 @@ impl Default for Configuration {
             profiling: ProfilingConfig::default(),
             compactor: CompactorConfig::default(),
             querier: QuerierConfig::default(),
+            writer: WriterConfig::default(),
             mcp: McpConfig::default(),
+        }
+    }
+}
+
+/// Writer commit-coalescing policy.
+///
+/// The writer commits ingested data to Iceberg asynchronously via its
+/// background processing loop, coalescing pending entries per
+/// `(tenant, dataset, table)` so a high-frequency producer does not force one
+/// Iceberg snapshot (and one catalog metadata write) per request. A group is
+/// committed when `commit_interval` has elapsed since its last commit OR its
+/// pending rows reach `max_uncommitted_rows`, whichever comes first. The row
+/// bound is a burst safety valve that triggers an *earlier* commit; it is never
+/// a minimum that delays a low-volume group. See `[writer]` in
+/// `signaldb.dist.toml`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WriterConfig {
+    /// Maximum time a group's rows may wait before being committed. Guarantees
+    /// liveness for low-volume tables (a single row commits after this
+    /// elapses). Set to `0s` to commit on every processing tick (near the
+    /// legacy synchronous cadence).
+    #[serde(with = "humantime_serde")]
+    pub commit_interval: Duration,
+    /// Row count at which a group is committed early, before `commit_interval`
+    /// elapses, so a burst does not accumulate an unbounded in-memory batch or
+    /// one oversized commit.
+    pub max_uncommitted_rows: usize,
+}
+
+impl Default for WriterConfig {
+    fn default() -> Self {
+        Self {
+            commit_interval: Duration::from_secs(5),
+            max_uncommitted_rows: 100_000,
         }
     }
 }
@@ -1703,6 +1742,37 @@ mod tests {
             assert_eq!(config.compactor.file_count_threshold, 20);
             assert_eq!(config.compactor.min_input_file_size_kb, 2048);
             assert_eq!(config.compactor.max_files_per_job, 100);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_writer_config_defaults() {
+        let writer = WriterConfig::default();
+        assert_eq!(writer.commit_interval, Duration::from_secs(5));
+        assert_eq!(writer.max_uncommitted_rows, 100_000);
+
+        // Present on the top-level Configuration with the same defaults.
+        let config = Configuration::default();
+        assert_eq!(config.writer.commit_interval, Duration::from_secs(5));
+        assert_eq!(config.writer.max_uncommitted_rows, 100_000);
+    }
+
+    #[test]
+    fn test_writer_config_env_vars() {
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB__WRITER__COMMIT_INTERVAL", "30s");
+            jail.set_env("SIGNALDB__WRITER__MAX_UNCOMMITTED_ROWS", "250000");
+
+            let config = Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                .merge(Env::prefixed("SIGNALDB__").split("__"))
+                .extract::<Configuration>()
+                .unwrap();
+
+            assert_eq!(config.writer.commit_interval, Duration::from_secs(30));
+            assert_eq!(config.writer.max_uncommitted_rows, 250_000);
 
             Ok(())
         });

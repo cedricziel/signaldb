@@ -152,6 +152,7 @@ async fn setup_test_services() -> TestServices {
         catalog_manager.clone(),
         object_store.clone(),
         writer_wal.clone(),
+        &common::config::WriterConfig::default(),
     );
 
     // Start background WAL processing
@@ -941,6 +942,7 @@ async fn setup_multi_tenant_test_services() -> TestServices {
         catalog_manager.clone(),
         object_store.clone(),
         writer_wal.clone(),
+        &common::config::WriterConfig::default(),
     );
 
     let _writer_bg_handle = writer_service.start_background_processing();

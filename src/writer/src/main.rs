@@ -165,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create Iceberg-based Flight ingestion service with CatalogManager
     let flight_service =
-        IcebergWriterFlightService::new(catalog_manager, object_store, wal.clone());
+        IcebergWriterFlightService::new(catalog_manager, object_store, wal.clone(), &config.writer);
 
     // Start background WAL processing for Iceberg writes
     let writer_bg_handle = flight_service.start_background_processing();

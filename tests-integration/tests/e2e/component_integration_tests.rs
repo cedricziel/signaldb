@@ -69,7 +69,12 @@ async fn test_acceptor_writer_flow() {
     drop(writer_listener);
 
     let writer_service =
-        IcebergWriterFlightService::new(config.clone(), object_store.clone(), wal.clone());
+        IcebergWriterFlightService::new(
+            config.clone(),
+            object_store.clone(),
+            wal.clone(),
+            &common::config::WriterConfig::default(),
+        );
     let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
         .add_service(FlightServiceServer::new(writer_service))
@@ -422,7 +427,12 @@ async fn test_end_to_end_pipeline() {
     // Start writer
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
     let writer_service =
-        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+        IcebergWriterFlightService::new(
+            config.clone(),
+            object_store.clone(),
+            writer_wal.clone(),
+            &common::config::WriterConfig::default(),
+        );
     let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
@@ -595,7 +605,12 @@ async fn test_direct_acceptor_writer_flight() {
     // Start writer
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
     let writer_service =
-        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+        IcebergWriterFlightService::new(
+            config.clone(),
+            object_store.clone(),
+            writer_wal.clone(),
+            &common::config::WriterConfig::default(),
+        );
     let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
@@ -910,7 +925,12 @@ async fn test_acceptor_processing_simulation() {
     // Start writer
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
     let writer_service =
-        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+        IcebergWriterFlightService::new(
+            config.clone(),
+            object_store.clone(),
+            writer_wal.clone(),
+            &common::config::WriterConfig::default(),
+        );
     let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
@@ -1049,7 +1069,12 @@ async fn test_grpc_service_layer() {
     // Start writer
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
     let writer_service =
-        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+        IcebergWriterFlightService::new(
+            config.clone(),
+            object_store.clone(),
+            writer_wal.clone(),
+            &common::config::WriterConfig::default(),
+        );
     let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
@@ -1230,7 +1255,12 @@ async fn test_end_to_end_without_querier() {
     // Start writer (same as end-to-end)
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
     let writer_service =
-        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+        IcebergWriterFlightService::new(
+            config.clone(),
+            object_store.clone(),
+            writer_wal.clone(),
+            &common::config::WriterConfig::default(),
+        );
     let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
@@ -1378,7 +1408,12 @@ async fn test_object_store_sharing_investigation() {
     // Step 1: Start writer and write some data
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
     let writer_service =
-        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+        IcebergWriterFlightService::new(
+            config.clone(),
+            object_store.clone(),
+            writer_wal.clone(),
+            &common::config::WriterConfig::default(),
+        );
     let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();

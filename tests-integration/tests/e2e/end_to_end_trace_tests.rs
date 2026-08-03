@@ -149,7 +149,12 @@ async fn setup_distributed_services() -> TestServices {
 
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
     let writer_service =
-        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+        IcebergWriterFlightService::new(
+            config.clone(),
+            object_store.clone(),
+            writer_wal.clone(),
+            &common::config::WriterConfig::default(),
+        );
     let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
         .add_service(FlightServiceServer::new(writer_service))
@@ -250,7 +255,12 @@ async fn setup_monolithic_services() -> TestServices {
 
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
     let writer_service =
-        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+        IcebergWriterFlightService::new(
+            config.clone(),
+            object_store.clone(),
+            writer_wal.clone(),
+            &common::config::WriterConfig::default(),
+        );
     let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
         .add_service(FlightServiceServer::new(writer_service))
@@ -523,7 +533,12 @@ async fn setup_performance_services() -> TestServices {
     // Start writer service
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
     let writer_service =
-        IcebergWriterFlightService::new(config.clone(), object_store.clone(), writer_wal.clone());
+        IcebergWriterFlightService::new(
+            config.clone(),
+            object_store.clone(),
+            writer_wal.clone(),
+            &common::config::WriterConfig::default(),
+        );
     let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
