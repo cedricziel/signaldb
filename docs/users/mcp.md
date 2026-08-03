@@ -30,6 +30,9 @@ gating in v1):
 | `query_metrics`       | PromQL query over your tenant's metrics (native Prometheus result). |
 | `search_logs`         | LogQL query over your tenant's logs (native Loki result).           |
 | `query_ir`            | Native Query IR document (the structured, versioned query surface). |
+| `compact_run`         | Trigger a compaction pass now (admin-authenticated).                |
+| `compact_status`      | Active compaction leases and metrics (admin-authenticated).         |
+| `compact_dry_run`     | Plan compaction candidates without executing (admin-authenticated). |
 
 Each query tool accepts an optional `dataset` argument. Omit it to use your
 session's default dataset; pass one to target another dataset your tenant may
