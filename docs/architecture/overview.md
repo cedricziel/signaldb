@@ -189,11 +189,11 @@ flowchart LR
 
 **Purpose**: HTTP API gateway and query routing
 
-| Property       | Value                                                                               |
-| -------------- | ----------------------------------------------------------------------------------- |
-| **Ports**      | HTTP: 3000, Flight: 50053                                                           |
-| **Capability** | `Routing`                                                                           |
-| **APIs**       | Tempo-compatible, Pyroscope-compatible, Loki-compatible (stubs), Admin API, OpenAPI |
+| Property       | Value                                                                                                                       |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**      | HTTP: 3000, Flight: 50053                                                                                                   |
+| **Capability** | `Routing`                                                                                                                   |
+| **APIs**       | Tempo-compatible, Pyroscope-compatible, Loki-compatible (stubs), native Query IR (`POST /api/v1/query`), Admin API, OpenAPI |
 
 The router also serves the explore UI (a static SPA built from `src/ui`)
 under `/ui`, from the directory named by `SIGNALDB_UI_DIR`. See
