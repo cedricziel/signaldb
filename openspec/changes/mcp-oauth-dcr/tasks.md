@@ -51,8 +51,8 @@
 
 ## 11. Consent UI (UI surface)
 
-- [ ] 11.1 Build the consent screen reusing the explore-UI login: shows the requesting client, requested scopes, and the user's grantable tenants for selection; approve/deny posts the consent decision to the router. The UI consumes the generated TypeScript client, not raw fetch.
-- [ ] 11.2 Add a UI test/interaction check that only the user's member tenants are selectable and that denial returns an OAuth error to the client.
+- [x] 11.1 Build the consent screen reusing the explore-UI login: shows the requesting client, requested scopes, and the user's grantable tenants for selection; approve/deny posts the consent decision to the router. The UI consumes the generated TypeScript client, not raw fetch.
+- [x] 11.2 Add a UI test/interaction check that only the user's member tenants are selectable and that denial returns an OAuth error to the client.
 
 ## 12. API contract regeneration (HTTP API surface)
 
