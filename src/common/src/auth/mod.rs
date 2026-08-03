@@ -5,6 +5,7 @@
 
 mod authenticator;
 mod middleware;
+pub mod oauth;
 pub mod password;
 pub mod session;
 pub mod validation;
