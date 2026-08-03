@@ -11,7 +11,7 @@ import {
   type TimeRange,
 } from "./time";
 
-export type Signal = "logs" | "traces" | "metrics" | "profiles";
+export type Signal = "logs" | "traces" | "metrics" | "profiles" | "query";
 
 export interface ExploreState {
   signal: Signal;
@@ -59,7 +59,7 @@ export const DEFAULT_STATE: ExploreState = {
   dataset: "",
 };
 
-const SIGNALS: Signal[] = ["logs", "traces", "metrics", "profiles"];
+const SIGNALS: Signal[] = ["logs", "traces", "metrics", "profiles", "query"];
 
 export function parseExploreState(search: string): ExploreState {
   const p = new URLSearchParams(search);

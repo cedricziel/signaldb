@@ -1,4 +1,5 @@
 pub mod error;
+pub mod ir_planner;
 pub mod logql;
 pub mod logql_metric;
 pub mod logs;
@@ -26,6 +27,21 @@ pub struct LogQueryParams {
     /// `"forward"` or `"backward"` (default).
     #[serde(default)]
     pub direction: Option<String>,
+}
+
+/// Parameters carried in the `query_ir` Flight ticket (JSON-encoded).
+///
+/// The native Query IR surface: a versioned IR document plus the server-stamped
+/// clock the router captured at the ticket boundary. Relative time anchors
+/// (`now-1h`) are resolved once against `now_ns`, so every stage of the plan
+/// sees identical absolute bounds.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct IrQueryParams {
+    /// The IR query document (see `common::query_ir::Document`).
+    pub document: serde_json::Value,
+    /// Server-received clock, unix epoch nanoseconds, for resolving relative
+    /// time anchors deterministically.
+    pub now_ns: i64,
 }
 
 /// Parameters carried in the `query_metric` Flight ticket (JSON-encoded).

@@ -39,8 +39,10 @@ flowchart LR
   component.
 - **Operations** are declared with `#[utoipa::path(...)]` on the handlers in
   `endpoints/admin.rs` (`/api/v1/admin/...`), `endpoints/management.rs`
-  (`/api/v1/manage/...`), and `endpoints/tempo.rs` (the Tempo-compatible trace
-  query endpoints under `/tempo/api/...`, whose DTOs live in `tempo-api`). Paths
+  (`/api/v1/manage/...`), `endpoints/tempo.rs` (the Tempo-compatible trace
+  query endpoints under `/tempo/api/...`, whose DTOs live in `tempo-api`), and
+  `endpoints/query.rs` (the native Query IR endpoint `POST /api/v1/query`, whose
+  request/response DTOs are defined in that module). Paths
   are absolute; operationIds on the management handlers are prefixed `manage_*`
   and their colliding component schemas aliased `Manage*` (via
   `#[schema(as = ...)]`) so admin and manage names don't clash.

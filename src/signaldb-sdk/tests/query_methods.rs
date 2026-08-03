@@ -20,6 +20,41 @@ fn client_exposes_trace_query_builders() {
     let _tag_values = client.search_tag_values();
 }
 
+/// Task 7.1 — the generated `query` operation compiles and round-trips an IR
+/// request type through the SDK's DTOs.
+#[test]
+fn client_exposes_ir_query_and_round_trips_the_request() {
+    use signaldb_sdk::types::{QueryIrRequest, QueryRange};
+
+    let client = Client::new("http://localhost:8080");
+    let _query = client.query_ir(); // the native IR operation builder exists
+
+    let request = QueryIrRequest {
+        ir_version: 1,
+        from: "logs".to_string(),
+        range: QueryRange {
+            from: "now-1h".to_string(),
+            to: "now".to_string(),
+        },
+        result: "rows".to_string(),
+        fields: None,
+        pipeline: vec![
+            serde_json::json!({
+                "where": { "field": "service.name", "op": "eq", "value": "api" }
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ],
+    };
+    // Serializes to the versioned IR document shape and back.
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["irVersion"], 1);
+    assert_eq!(json["from"], "logs");
+    let round: QueryIrRequest = serde_json::from_value(json).unwrap();
+    assert_eq!(round.result, "rows");
+}
+
 #[test]
 fn client_forwards_credentials_via_default_headers() {
     use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};

@@ -1054,6 +1054,317 @@ pub mod types {
             Default::default()
         }
     }
+    /**A versioned Query IR request document.
+
+    The `pipeline` stages are opaque JSON objects at the HTTP boundary — the
+    querier validates and lowers them per the versioned IR contract. See the
+    `query-ir-core` capability for the full stage/predicate grammar.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A versioned Query IR request document.\n\nThe `pipeline` stages are opaque JSON objects at the HTTP boundary — the\nquerier validates and lowers them per the versioned IR contract. See the\n`query-ir-core` capability for the full stage/predicate grammar.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "from",
+    ///    "irVersion",
+    ///    "range",
+    ///    "result"
+    ///  ],
+    ///  "properties": {
+    ///    "fields": {
+    ///      "description": "Curated projection (logical field names) for `rows`/`table`.",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "from": {
+    ///      "description": "The registered signal source: `logs` or `traces`.",
+    ///      "examples": [
+    ///        "logs"
+    ///      ],
+    ///      "type": "string"
+    ///    },
+    ///    "irVersion": {
+    ///      "description": "IR document version (the server accepts a bounded range).",
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    },
+    ///    "pipeline": {
+    ///      "description": "Ordered transform stages (opaque objects; see the IR spec).",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "object"
+    ///      }
+    ///    },
+    ///    "range": {
+    ///      "$ref": "#/components/schemas/QueryRange"
+    ///    },
+    ///    "result": {
+    ///      "description": "Declared result envelope: `rows`, `series`, or `table`.",
+    ///      "examples": [
+    ///        "rows"
+    ///      ],
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct QueryIrRequest {
+        ///Curated projection (logical field names) for `rows`/`table`.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub fields: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+        ///The registered signal source: `logs` or `traces`.
+        pub from: ::std::string::String,
+        ///IR document version (the server accepts a bounded range).
+        #[serde(rename = "irVersion")]
+        pub ir_version: i64,
+        ///Ordered transform stages (opaque objects; see the IR spec).
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub pipeline:
+            ::std::vec::Vec<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
+        pub range: QueryRange,
+        ///Declared result envelope: `rows`, `series`, or `table`.
+        pub result: ::std::string::String,
+    }
+    impl QueryIrRequest {
+        pub fn builder() -> builder::QueryIrRequest {
+            Default::default()
+        }
+    }
+    /**The single canonical response contract. `result` discriminates which fields
+    are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
+    `series` + `step_ns`.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "result",
+    ///    "window"
+    ///  ],
+    ///  "properties": {
+    ///    "columns": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ResultColumn"
+    ///      }
+    ///    },
+    ///    "result": {
+    ///      "description": "The result envelope: `rows`, `series`, or `table`.",
+    ///      "type": "string"
+    ///    },
+    ///    "rows": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "array",
+    ///        "items": {}
+    ///      }
+    ///    },
+    ///    "series": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ResultSeries"
+    ///      }
+    ///    },
+    ///    "step_ns": {
+    ///      "type": [
+    ///        "integer",
+    ///        "null"
+    ///      ],
+    ///      "format": "int64"
+    ///    },
+    ///    "window": {
+    ///      "$ref": "#/components/schemas/ResolvedWindow"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct QueryIrResponse {
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub columns: ::std::vec::Vec<ResultColumn>,
+        ///The result envelope: `rows`, `series`, or `table`.
+        pub result: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub rows: ::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>,
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub series: ::std::vec::Vec<ResultSeries>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub step_ns: ::std::option::Option<i64>,
+        pub window: ResolvedWindow,
+    }
+    impl QueryIrResponse {
+        pub fn builder() -> builder::QueryIrResponse {
+            Default::default()
+        }
+    }
+    /**The query time range. `from`/`to` are timestamp literal **strings**: RFC3339,
+    a relative anchor (`now-1h`), or a nanosecond integer as a numeric string
+    (`"1700000000000000000"`). Kept a `String` so the emitted schema and the
+    generated clients match exactly what the endpoint accepts.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The query time range. `from`/`to` are timestamp literal **strings**: RFC3339,\na relative anchor (`now-1h`), or a nanosecond integer as a numeric string\n(`\"1700000000000000000\"`). Kept a `String` so the emitted schema and the\ngenerated clients match exactly what the endpoint accepts.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "from",
+    ///    "to"
+    ///  ],
+    ///  "properties": {
+    ///    "from": {
+    ///      "examples": [
+    ///        "now-1h"
+    ///      ],
+    ///      "type": "string"
+    ///    },
+    ///    "to": {
+    ///      "examples": [
+    ///        "now"
+    ///      ],
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct QueryRange {
+        pub from: ::std::string::String,
+        pub to: ::std::string::String,
+    }
+    impl QueryRange {
+        pub fn builder() -> builder::QueryRange {
+            Default::default()
+        }
+    }
+    ///The resolved absolute time window, echoed for reproducibility/replay.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The resolved absolute time window, echoed for reproducibility/replay.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "end_ns",
+    ///    "start_ns"
+    ///  ],
+    ///  "properties": {
+    ///    "end_ns": {
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    },
+    ///    "start_ns": {
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ResolvedWindow {
+        pub end_ns: i64,
+        pub start_ns: i64,
+    }
+    impl ResolvedWindow {
+        pub fn builder() -> builder::ResolvedWindow {
+            Default::default()
+        }
+    }
+    ///A named, typed result column.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A named, typed result column.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "name",
+    ///    "type"
+    ///  ],
+    ///  "properties": {
+    ///    "name": {
+    ///      "type": "string"
+    ///    },
+    ///    "type": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ResultColumn {
+        pub name: ::std::string::String,
+        #[serde(rename = "type")]
+        pub type_: ::std::string::String,
+    }
+    impl ResultColumn {
+        pub fn builder() -> builder::ResultColumn {
+            Default::default()
+        }
+    }
+    ///One time series in a `series` result.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One time series in a `series` result.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "labels",
+    ///    "points"
+    ///  ],
+    ///  "properties": {
+    ///    "labels": {
+    ///      "description": "The grouping label set.",
+    ///      "type": "object",
+    ///      "additionalProperties": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "points": {
+    ///      "description": "`[t_ns, value]` points.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "array",
+    ///        "items": {}
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ResultSeries {
+        ///The grouping label set.
+        pub labels: ::std::collections::HashMap<::std::string::String, ::std::string::String>,
+        ///`[t_ns, value]` points.
+        pub points: ::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>,
+    }
+    impl ResultSeries {
+        pub fn builder() -> builder::ResultSeries {
+            Default::default()
+        }
+    }
     /**Result of GET /api/search
     See <https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search>*/
     ///
@@ -3148,6 +3459,467 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct QueryIrRequest {
+            fields: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
+            from: ::std::result::Result<::std::string::String, ::std::string::String>,
+            ir_version: ::std::result::Result<i64, ::std::string::String>,
+            pipeline: ::std::result::Result<
+                ::std::vec::Vec<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
+                ::std::string::String,
+            >,
+            range: ::std::result::Result<super::QueryRange, ::std::string::String>,
+            result: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for QueryIrRequest {
+            fn default() -> Self {
+                Self {
+                    fields: Ok(Default::default()),
+                    from: Err("no value supplied for from".to_string()),
+                    ir_version: Err("no value supplied for ir_version".to_string()),
+                    pipeline: Ok(Default::default()),
+                    range: Err("no value supplied for range".to_string()),
+                    result: Err("no value supplied for result".to_string()),
+                }
+            }
+        }
+        impl QueryIrRequest {
+            pub fn fields<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.fields = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for fields: {e}"));
+                self
+            }
+            pub fn from<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.from = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for from: {e}"));
+                self
+            }
+            pub fn ir_version<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.ir_version = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for ir_version: {e}"));
+                self
+            }
+            pub fn pipeline<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::vec::Vec<
+                            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                        >,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.pipeline = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for pipeline: {e}"));
+                self
+            }
+            pub fn range<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::QueryRange>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.range = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for range: {e}"));
+                self
+            }
+            pub fn result<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.result = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for result: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<QueryIrRequest> for super::QueryIrRequest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: QueryIrRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    fields: value.fields?,
+                    from: value.from?,
+                    ir_version: value.ir_version?,
+                    pipeline: value.pipeline?,
+                    range: value.range?,
+                    result: value.result?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::QueryIrRequest> for QueryIrRequest {
+            fn from(value: super::QueryIrRequest) -> Self {
+                Self {
+                    fields: Ok(value.fields),
+                    from: Ok(value.from),
+                    ir_version: Ok(value.ir_version),
+                    pipeline: Ok(value.pipeline),
+                    range: Ok(value.range),
+                    result: Ok(value.result),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct QueryIrResponse {
+            columns:
+                ::std::result::Result<::std::vec::Vec<super::ResultColumn>, ::std::string::String>,
+            result: ::std::result::Result<::std::string::String, ::std::string::String>,
+            rows: ::std::result::Result<
+                ::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>,
+                ::std::string::String,
+            >,
+            series:
+                ::std::result::Result<::std::vec::Vec<super::ResultSeries>, ::std::string::String>,
+            step_ns: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+            window: ::std::result::Result<super::ResolvedWindow, ::std::string::String>,
+        }
+        impl ::std::default::Default for QueryIrResponse {
+            fn default() -> Self {
+                Self {
+                    columns: Ok(Default::default()),
+                    result: Err("no value supplied for result".to_string()),
+                    rows: Ok(Default::default()),
+                    series: Ok(Default::default()),
+                    step_ns: Ok(Default::default()),
+                    window: Err("no value supplied for window".to_string()),
+                }
+            }
+        }
+        impl QueryIrResponse {
+            pub fn columns<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::ResultColumn>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.columns = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for columns: {e}"));
+                self
+            }
+            pub fn result<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.result = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for result: {e}"));
+                self
+            }
+            pub fn rows<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.rows = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for rows: {e}"));
+                self
+            }
+            pub fn series<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::ResultSeries>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.series = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for series: {e}"));
+                self
+            }
+            pub fn step_ns<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.step_ns = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for step_ns: {e}"));
+                self
+            }
+            pub fn window<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::ResolvedWindow>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.window = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for window: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<QueryIrResponse> for super::QueryIrResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: QueryIrResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    columns: value.columns?,
+                    result: value.result?,
+                    rows: value.rows?,
+                    series: value.series?,
+                    step_ns: value.step_ns?,
+                    window: value.window?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::QueryIrResponse> for QueryIrResponse {
+            fn from(value: super::QueryIrResponse) -> Self {
+                Self {
+                    columns: Ok(value.columns),
+                    result: Ok(value.result),
+                    rows: Ok(value.rows),
+                    series: Ok(value.series),
+                    step_ns: Ok(value.step_ns),
+                    window: Ok(value.window),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct QueryRange {
+            from: ::std::result::Result<::std::string::String, ::std::string::String>,
+            to: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for QueryRange {
+            fn default() -> Self {
+                Self {
+                    from: Err("no value supplied for from".to_string()),
+                    to: Err("no value supplied for to".to_string()),
+                }
+            }
+        }
+        impl QueryRange {
+            pub fn from<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.from = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for from: {e}"));
+                self
+            }
+            pub fn to<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.to = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for to: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<QueryRange> for super::QueryRange {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: QueryRange,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    from: value.from?,
+                    to: value.to?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::QueryRange> for QueryRange {
+            fn from(value: super::QueryRange) -> Self {
+                Self {
+                    from: Ok(value.from),
+                    to: Ok(value.to),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ResolvedWindow {
+            end_ns: ::std::result::Result<i64, ::std::string::String>,
+            start_ns: ::std::result::Result<i64, ::std::string::String>,
+        }
+        impl ::std::default::Default for ResolvedWindow {
+            fn default() -> Self {
+                Self {
+                    end_ns: Err("no value supplied for end_ns".to_string()),
+                    start_ns: Err("no value supplied for start_ns".to_string()),
+                }
+            }
+        }
+        impl ResolvedWindow {
+            pub fn end_ns<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.end_ns = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for end_ns: {e}"));
+                self
+            }
+            pub fn start_ns<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.start_ns = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for start_ns: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ResolvedWindow> for super::ResolvedWindow {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ResolvedWindow,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    end_ns: value.end_ns?,
+                    start_ns: value.start_ns?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ResolvedWindow> for ResolvedWindow {
+            fn from(value: super::ResolvedWindow) -> Self {
+                Self {
+                    end_ns: Ok(value.end_ns),
+                    start_ns: Ok(value.start_ns),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ResultColumn {
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            type_: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ResultColumn {
+            fn default() -> Self {
+                Self {
+                    name: Err("no value supplied for name".to_string()),
+                    type_: Err("no value supplied for type_".to_string()),
+                }
+            }
+        }
+        impl ResultColumn {
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn type_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.type_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for type_: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ResultColumn> for super::ResultColumn {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ResultColumn,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    name: value.name?,
+                    type_: value.type_?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ResultColumn> for ResultColumn {
+            fn from(value: super::ResultColumn) -> Self {
+                Self {
+                    name: Ok(value.name),
+                    type_: Ok(value.type_),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ResultSeries {
+            labels: ::std::result::Result<
+                ::std::collections::HashMap<::std::string::String, ::std::string::String>,
+                ::std::string::String,
+            >,
+            points: ::std::result::Result<
+                ::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for ResultSeries {
+            fn default() -> Self {
+                Self {
+                    labels: Err("no value supplied for labels".to_string()),
+                    points: Err("no value supplied for points".to_string()),
+                }
+            }
+        }
+        impl ResultSeries {
+            pub fn labels<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::collections::HashMap<::std::string::String, ::std::string::String>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.labels = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for labels: {e}"));
+                self
+            }
+            pub fn points<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.points = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for points: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ResultSeries> for super::ResultSeries {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ResultSeries,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    labels: value.labels?,
+                    points: value.points?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ResultSeries> for ResultSeries {
+            fn from(value: super::ResultSeries) -> Self {
+                Self {
+                    labels: Ok(value.labels),
+                    points: Ok(value.points),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct SearchResult {
             metrics: ::std::result::Result<
                 ::std::collections::HashMap<::std::string::String, i32>,
@@ -4427,6 +5199,19 @@ impl Client {
     ```*/
     pub fn manage_remove_membership(&self) -> builder::ManageRemoveMembership<'_> {
         builder::ManageRemoveMembership::new(self)
+    }
+    /**Submit a native Query IR document
+
+    Sends a `POST` request to `/api/v1/query`
+
+    ```ignore
+    let response = client.query_ir()
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn query_ir(&self) -> builder::QueryIr<'_> {
+        builder::QueryIr::new(self)
     }
     /**GET https://grafana.com/docs/tempo/latest/api_docs/#search
 
@@ -6343,6 +7128,78 @@ pub mod builder {
                 500u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::query_ir`]
+
+    [`Client::query_ir`]: super::Client::query_ir*/
+    #[derive(Debug, Clone)]
+    pub struct QueryIr<'a> {
+        client: &'a super::Client,
+        body: Result<types::builder::QueryIrRequest, String>,
+    }
+    impl<'a> QueryIr<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::QueryIrRequest>,
+            <V as std::convert::TryInto<types::QueryIrRequest>>::Error: std::fmt::Display,
+        {
+            self.body = value
+                .try_into()
+                .map(From::from)
+                .map_err(|s| format!("conversion to `QueryIrRequest` for body failed: {}", s));
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(types::builder::QueryIrRequest) -> types::builder::QueryIrRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/query`
+        pub async fn send(self) -> Result<ResponseValue<types::QueryIrResponse>, Error<()>> {
+            let Self { client, body } = self;
+            let body = body
+                .and_then(|v| types::QueryIrRequest::try_from(v).map_err(|e| e.to_string()))
+                .map_err(Error::InvalidRequest)?;
+            let url = format!("{}/api/v1/query", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "query_ir",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }

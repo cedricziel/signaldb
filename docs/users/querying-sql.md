@@ -4,7 +4,6 @@ type: tutorial
 status: living
 sources:
   - src/signaldb-cli/src/commands/query.rs
-  - src/querier/src/query/**
 ---
 
 # Query SignalDB with SQL

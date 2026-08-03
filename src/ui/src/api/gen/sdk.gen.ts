@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantsData, ListTenantsResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsResponses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses } from './types.gen';
+import type { CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantsData, ListTenantsResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, QueryIrData, QueryIrErrors, QueryIrResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsResponses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -220,6 +220,19 @@ export const manageRemoveMembership = <ThrowOnError extends boolean = false>(opt
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}',
     ...options
+});
+
+/**
+ * Submit a native Query IR document.
+ */
+export const queryIr = <ThrowOnError extends boolean = false>(options: Options<QueryIrData, ThrowOnError>): RequestResult<QueryIrResponses, QueryIrErrors, ThrowOnError> => (options.client ?? client).post<QueryIrResponses, QueryIrErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/query',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
 });
 
 /**

@@ -6307,6 +6307,7 @@ dependencies = [
  "anyhow",
  "arrow-flight",
  "axum",
+ "base64 0.23.0",
  "bytes",
  "chrono",
  "clap",

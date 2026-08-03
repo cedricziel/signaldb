@@ -273,6 +273,102 @@ export type ProfileSummary = {
 };
 
 /**
+ * A versioned Query IR request document.
+ *
+ * The `pipeline` stages are opaque JSON objects at the HTTP boundary — the
+ * querier validates and lowers them per the versioned IR contract. See the
+ * `query-ir-core` capability for the full stage/predicate grammar.
+ */
+export type QueryIrRequest = {
+    /**
+     * Curated projection (logical field names) for `rows`/`table`.
+     */
+    fields?: Array<string> | null;
+    /**
+     * The registered signal source: `logs` or `traces`.
+     */
+    from: string;
+    /**
+     * IR document version (the server accepts a bounded range).
+     */
+    irVersion: number;
+    /**
+     * Ordered transform stages (opaque objects; see the IR spec).
+     */
+    pipeline?: Array<{
+        [key: string]: unknown;
+    }>;
+    range: QueryRange;
+    /**
+     * Declared result envelope: `rows`, `series`, or `table`.
+     */
+    result: string;
+};
+
+/**
+ * The single canonical response contract. `result` discriminates which fields
+ * are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
+ * `series` + `step_ns`.
+ */
+export type QueryIrResponse = {
+    columns?: Array<ResultColumn>;
+    /**
+     * The result envelope: `rows`, `series`, or `table`.
+     */
+    result: string;
+    rows?: Array<Array<unknown>>;
+    series?: Array<ResultSeries>;
+    step_ns?: number | null;
+    /**
+     * The resolved absolute window the query ran over.
+     */
+    window: ResolvedWindow;
+};
+
+/**
+ * The query time range. `from`/`to` are timestamp literal **strings**: RFC3339,
+ * a relative anchor (`now-1h`), or a nanosecond integer as a numeric string
+ * (`"1700000000000000000"`). Kept a `String` so the emitted schema and the
+ * generated clients match exactly what the endpoint accepts.
+ */
+export type QueryRange = {
+    from: string;
+    to: string;
+};
+
+/**
+ * The resolved absolute time window, echoed for reproducibility/replay.
+ */
+export type ResolvedWindow = {
+    end_ns: number;
+    start_ns: number;
+};
+
+/**
+ * A named, typed result column.
+ */
+export type ResultColumn = {
+    name: string;
+    type: string;
+};
+
+/**
+ * One time series in a `series` result.
+ */
+export type ResultSeries = {
+    /**
+     * The grouping label set.
+     */
+    labels: {
+        [key: string]: string;
+    };
+    /**
+     * `[t_ns, value]` points.
+     */
+    points: Array<Array<unknown>>;
+};
+
+/**
  * Result of GET /api/search
  * See <https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search>
  */
@@ -1226,6 +1322,37 @@ export type ManageRemoveMembershipResponses = {
 };
 
 export type ManageRemoveMembershipResponse = ManageRemoveMembershipResponses[keyof ManageRemoveMembershipResponses];
+
+export type QueryIrData = {
+    body: QueryIrRequest;
+    path?: never;
+    query?: never;
+    url: '/api/v1/query';
+};
+
+export type QueryIrErrors = {
+    /**
+     * Invalid IR document
+     */
+    400: unknown;
+    /**
+     * Missing or invalid credentials
+     */
+    401: unknown;
+    /**
+     * No querier service available
+     */
+    503: unknown;
+};
+
+export type QueryIrResponses = {
+    /**
+     * The enveloped query result
+     */
+    200: QueryIrResponse;
+};
+
+export type QueryIrResponse2 = QueryIrResponses[keyof QueryIrResponses];
 
 export type SearchData = {
     body?: never;

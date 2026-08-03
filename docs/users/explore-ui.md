@@ -40,6 +40,10 @@ visible in the UI is equally queryable from Grafana.
   type in the highlight box to light up matching frames — e.g. a crate
   prefix like `common::` — while everything else dims, with a matched-share
   readout for finding your code in a library-heavy profile.
+- **Query** — a native [Query IR](querying-ir.md) builder for `logs`/`traces`:
+  pick a source and result envelope, add filter chips, and the tab emits a
+  structured, versioned IR document (no dialect string) via the generated API
+  client, rendering the declared `rows`/`series`/`table` result.
 - **Correlation** — log rows with a `trace_id` open the trace waterfall;
   the span panel links back to logs filtered by that trace.
 - Every view is a URL: time range, filters, and selection live in query
