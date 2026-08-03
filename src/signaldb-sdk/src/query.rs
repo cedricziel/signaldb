@@ -52,7 +52,7 @@ pub enum QueryError {
 /// endpoint. Cheap to construct; a fresh channel is opened per [`sql`] call.
 ///
 /// [`sql`]: QueryClient::sql
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct QueryClient {
     flight_url: String,
     api_key: Option<String>,
@@ -60,6 +60,21 @@ pub struct QueryClient {
     dataset_id: Option<String>,
     timeout: Duration,
     connect_timeout: Duration,
+}
+
+// Manual `Debug` so the API key is never printed (e.g. in a log line or a
+// panic message); everything else is shown.
+impl std::fmt::Debug for QueryClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QueryClient")
+            .field("flight_url", &self.flight_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("tenant_id", &self.tenant_id)
+            .field("dataset_id", &self.dataset_id)
+            .field("timeout", &self.timeout)
+            .field("connect_timeout", &self.connect_timeout)
+            .finish()
+    }
 }
 
 impl QueryClient {
