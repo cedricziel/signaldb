@@ -54,6 +54,7 @@ impl Modify for SecurityAddon {
         (name = "metrics", description = "Prometheus-compatible metrics query (PromQL)"),
         (name = "logs", description = "Loki-compatible log query (LogQL)"),
         (name = "ops", description = "Operational control (compaction)"),
+        (name = "oauth", description = "OAuth 2.1 connector consent flow"),
     ),
     paths(
         crate::endpoints::admin::list_tenants,
@@ -95,6 +96,9 @@ impl Modify for SecurityAddon {
         crate::endpoints::ops::compact,
         crate::endpoints::ops::compact_status,
         crate::endpoints::ops::compact_dry_run,
+        // OAuth 2.1 connector consent flow (change: mcp-oauth-dcr)
+        crate::endpoints::oauth::consent_context,
+        crate::endpoints::oauth::authorize_decision,
     ),
     components(schemas(
         // signaldb-api admin DTOs
@@ -142,6 +146,11 @@ impl Modify for SecurityAddon {
         crate::endpoints::query::ResolvedWindow,
         crate::endpoints::query::ResultColumn,
         crate::endpoints::query::ResultSeries,
+        // OAuth 2.1 connector consent DTOs
+        crate::endpoints::oauth::ConsentDecision,
+        crate::endpoints::oauth::ConsentDecisionResponse,
+        crate::endpoints::oauth::ConsentContextResponse,
+        crate::endpoints::oauth::ConsentTenant,
     )),
 )]
 struct ApiDoc;

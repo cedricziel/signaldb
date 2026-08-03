@@ -25,13 +25,14 @@ use common::auth::{READ_SCOPES, hash_session_token, session_token_from_headers};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use url::Url;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::RouterState;
 
 /// An OAuth error rendered in the RFC 6749 §5.2 shape
 /// (`{"error": ..., "error_description": ...}`) with an appropriate status.
-struct OAuthError {
+pub(crate) struct OAuthError {
     status: StatusCode,
     error: &'static str,
     description: String,
@@ -79,6 +80,7 @@ pub fn router<S: RouterState>() -> Router<S> {
         )
         .route("/oauth/register", post(register::<S>))
         .route("/oauth/authorize", get(authorize::<S>))
+        .route("/oauth/consent/context", get(consent_context::<S>))
         .route("/oauth/authorize/decision", post(authorize_decision::<S>))
         .route("/oauth/token", post(token::<S>))
 }
@@ -340,21 +342,38 @@ async fn authorize<S: RouterState>(
 
 /// Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
 /// is authenticated by their session cookie; `tenant` is their chosen grant.
-#[derive(Debug, Deserialize)]
-struct ConsentDecision {
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ConsentDecision {
+    /// The requesting client's `client_id`.
     client_id: String,
+    /// The redirect URI to return to (must be registered for the client).
     redirect_uri: String,
+    /// The PKCE `code_challenge` from the authorization request.
     code_challenge: String,
     #[serde(default)]
     code_challenge_method: Option<String>,
+    /// Requested scope (space-delimited); read scopes only are granted.
     #[serde(default)]
     scope: Option<String>,
+    /// Opaque `state` to echo back to the client.
     #[serde(default)]
     state: Option<String>,
+    /// Requested resource (audience); must match the configured MCP resource.
     #[serde(default)]
     resource: Option<String>,
+    /// The tenant the user grants access to (must be one they belong to).
     tenant: String,
+    /// Whether the user approved (`true`) or denied (`false`).
     approved: bool,
+}
+
+/// Result of a consent decision: the URL the browser should navigate to (the
+/// client's redirect URI carrying either the authorization `code` or an
+/// `error`).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ConsentDecisionResponse {
+    /// The absolute redirect URL to navigate to.
+    redirect: String,
 }
 
 /// Record the human's consent decision and, on approval, mint the single-use
@@ -362,7 +381,21 @@ struct ConsentDecision {
 /// bound to the chosen tenant (which the user must be a member of), the granted
 /// read scopes, the client, the redirect URI, the PKCE challenge, and the
 /// resource. Returns the URL the SPA should navigate to.
-async fn authorize_decision<S: RouterState>(
+#[utoipa::path(
+    post,
+    path = "/oauth/authorize/decision",
+    tag = "oauth",
+    operation_id = "oauth_consent_decision",
+    security(()),
+    request_body = ConsentDecision,
+    responses(
+        (status = 200, description = "Decision recorded; navigate to `redirect`", body = ConsentDecisionResponse),
+        (status = 401, description = "No active session (login required)"),
+        (status = 403, description = "Not a member of the selected tenant"),
+        (status = 400, description = "Invalid client, redirect URI, or PKCE"),
+    )
+)]
+pub(crate) async fn authorize_decision<S: RouterState>(
     State(state): State<S>,
     headers: HeaderMap,
     Json(d): Json<ConsentDecision>,
@@ -429,7 +462,7 @@ async fn authorize_decision<S: RouterState>(
             &d.redirect_uri,
             &[("error", "access_denied"), ("state", state_param)],
         )?;
-        return Ok(Json(json!({ "redirect": url })).into_response());
+        return Ok(Json(ConsentDecisionResponse { redirect: url }).into_response());
     }
 
     // The user may only grant a tenant they belong to (instance admins may
@@ -484,7 +517,128 @@ async fn authorize_decision<S: RouterState>(
         })?;
 
     let url = redirect_with_params(&d.redirect_uri, &[("code", &code), ("state", state_param)])?;
-    Ok(Json(json!({ "redirect": url })).into_response())
+    Ok(Json(ConsentDecisionResponse { redirect: url }).into_response())
+}
+
+/// Query parameters for the consent-context lookup.
+#[derive(Debug, Deserialize, IntoParams)]
+pub(crate) struct ConsentContextQuery {
+    /// The requesting client's `client_id`.
+    client_id: String,
+}
+
+/// A tenant the consenting user may grant a connector access to.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ConsentTenant {
+    /// Tenant id.
+    id: String,
+    /// The user's role in the tenant.
+    role: common::catalog::MembershipRole,
+}
+
+/// Context the consent screen renders: the requesting client and the tenants
+/// the signed-in user may grant.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ConsentContextResponse {
+    /// Display name of the requesting client, if it registered one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_name: Option<String>,
+    /// Tenants the user may grant access to.
+    tenants: Vec<ConsentTenant>,
+}
+
+/// Provide the consent screen's context: the requesting client's name and the
+/// tenants the signed-in user may grant. Authenticated by the browser session
+/// cookie — the consent screen runs before any tenant is chosen, so unlike
+/// `whoami` this needs no tenant context.
+#[utoipa::path(
+    get,
+    path = "/oauth/consent/context",
+    tag = "oauth",
+    operation_id = "oauth_consent_context",
+    security(()),
+    params(ConsentContextQuery),
+    responses(
+        (status = 200, description = "Consent context", body = ConsentContextResponse),
+        (status = 401, description = "No active session (login required)"),
+        (status = 400, description = "Unknown client"),
+    )
+)]
+pub(crate) async fn consent_context<S: RouterState>(
+    State(state): State<S>,
+    headers: HeaderMap,
+    Query(q): Query<ConsentContextQuery>,
+) -> Result<Response, OAuthError> {
+    let token = session_token_from_headers(&headers).ok_or_else(|| {
+        OAuthError::new(
+            StatusCode::UNAUTHORIZED,
+            "login_required",
+            "no active session",
+        )
+    })?;
+    let session = state
+        .catalog()
+        .get_valid_session(&hash_session_token(&token))
+        .await
+        .map_err(|e| OAuthError::server_error(format!("session lookup failed: {e}")))?
+        .ok_or_else(|| {
+            OAuthError::new(
+                StatusCode::UNAUTHORIZED,
+                "login_required",
+                "session is invalid or expired",
+            )
+        })?;
+    let user = state
+        .catalog()
+        .get_user(&session.user_id)
+        .await
+        .map_err(|e| OAuthError::server_error(format!("user lookup failed: {e}")))?
+        .ok_or_else(|| {
+            OAuthError::new(
+                StatusCode::UNAUTHORIZED,
+                "login_required",
+                "session user not found",
+            )
+        })?;
+
+    let client = state
+        .catalog()
+        .get_oauth_client(&q.client_id)
+        .await
+        .map_err(|e| OAuthError::server_error(format!("client lookup failed: {e}")))?
+        .ok_or_else(|| OAuthError::bad_request("invalid_client", "unknown client_id"))?;
+
+    let tenants = if user.is_instance_admin {
+        state
+            .catalog()
+            .list_tenants()
+            .await
+            .map_err(|e| OAuthError::server_error(format!("tenant lookup failed: {e}")))?
+            .into_iter()
+            .map(|t| ConsentTenant {
+                id: t.id,
+                role: common::catalog::MembershipRole::Admin,
+            })
+            .collect()
+    } else {
+        state
+            .catalog()
+            .list_memberships_for_user(&user.id)
+            .await
+            .map_err(|e| OAuthError::server_error(format!("membership lookup failed: {e}")))?
+            .into_iter()
+            .map(|m| ConsentTenant {
+                id: m.tenant_id,
+                role: m.role,
+            })
+            .collect()
+    };
+
+    Ok(Json(ConsentContextResponse {
+        client_name: client.client_name,
+        tenants,
+    })
+    .into_response())
 }
 
 /// OAuth token endpoint request (form-encoded, RFC 6749). Fields not relevant

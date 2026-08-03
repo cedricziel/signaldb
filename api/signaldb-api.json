@@ -1612,6 +1612,90 @@
         ]
       }
     },
+    "/oauth/authorize/decision": {
+      "post": {
+        "tags": [
+          "oauth"
+        ],
+        "summary": "Record the human's consent decision and, on approval, mint the single-use\nauthorization code. Authenticated by the browser session cookie; the code is\nbound to the chosen tenant (which the user must be a member of), the granted\nread scopes, the client, the redirect URI, the PKCE challenge, and the\nresource. Returns the URL the SPA should navigate to.",
+        "operationId": "oauth_consent_decision",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentDecision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Decision recorded; navigate to `redirect`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentDecisionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid client, redirect URI, or PKCE"
+          },
+          "401": {
+            "description": "No active session (login required)"
+          },
+          "403": {
+            "description": "Not a member of the selected tenant"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/oauth/consent/context": {
+      "get": {
+        "tags": [
+          "oauth"
+        ],
+        "summary": "Provide the consent screen's context: the requesting client's name and the\ntenants the signed-in user may grant. Authenticated by the browser session\ncookie — the consent screen runs before any tenant is chosen, so unlike\n`whoami` this needs no tenant context.",
+        "operationId": "oauth_consent_context",
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "query",
+            "description": "The requesting client's `client_id`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Consent context",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentContextResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown client"
+          },
+          "401": {
+            "description": "No active session (login required)"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
     "/prometheus/api/v1/query": {
       "get": {
         "tags": [
@@ -2023,6 +2107,120 @@
             "type": "string"
           },
           "value": {}
+        }
+      },
+      "ConsentContextResponse": {
+        "type": "object",
+        "description": "Context the consent screen renders: the requesting client and the tenants\nthe signed-in user may grant.",
+        "required": [
+          "tenants"
+        ],
+        "properties": {
+          "client_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display name of the requesting client, if it registered one."
+          },
+          "tenants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConsentTenant"
+            },
+            "description": "Tenants the user may grant access to."
+          }
+        }
+      },
+      "ConsentDecision": {
+        "type": "object",
+        "description": "Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user\nis authenticated by their session cookie; `tenant` is their chosen grant.",
+        "required": [
+          "client_id",
+          "redirect_uri",
+          "code_challenge",
+          "tenant",
+          "approved"
+        ],
+        "properties": {
+          "approved": {
+            "type": "boolean",
+            "description": "Whether the user approved (`true`) or denied (`false`)."
+          },
+          "client_id": {
+            "type": "string",
+            "description": "The requesting client's `client_id`."
+          },
+          "code_challenge": {
+            "type": "string",
+            "description": "The PKCE `code_challenge` from the authorization request."
+          },
+          "code_challenge_method": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "redirect_uri": {
+            "type": "string",
+            "description": "The redirect URI to return to (must be registered for the client)."
+          },
+          "resource": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Requested resource (audience); must match the configured MCP resource."
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Requested scope (space-delimited); read scopes only are granted."
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque `state` to echo back to the client."
+          },
+          "tenant": {
+            "type": "string",
+            "description": "The tenant the user grants access to (must be one they belong to)."
+          }
+        }
+      },
+      "ConsentDecisionResponse": {
+        "type": "object",
+        "description": "Result of a consent decision: the URL the browser should navigate to (the\nclient's redirect URI carrying either the authorization `code` or an\n`error`).",
+        "required": [
+          "redirect"
+        ],
+        "properties": {
+          "redirect": {
+            "type": "string",
+            "description": "The absolute redirect URL to navigate to."
+          }
+        }
+      },
+      "ConsentTenant": {
+        "type": "object",
+        "description": "A tenant the consenting user may grant a connector access to.",
+        "required": [
+          "id",
+          "role"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Tenant id."
+          },
+          "role": {
+            "$ref": "#/components/schemas/MembershipRole",
+            "description": "The user's role in the tenant."
+          }
         }
       },
       "CreateApiKeyRequest": {
@@ -2998,6 +3196,10 @@
     {
       "name": "ops",
       "description": "Operational control (compaction)"
+    },
+    {
+      "name": "oauth",
+      "description": "OAuth 2.1 connector consent flow"
     }
   ]
 }

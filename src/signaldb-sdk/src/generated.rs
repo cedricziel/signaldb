@@ -157,6 +157,214 @@ pub mod types {
             Default::default()
         }
     }
+    /**Context the consent screen renders: the requesting client and the tenants
+    the signed-in user may grant.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Context the consent screen renders: the requesting client and the tenants\nthe signed-in user may grant.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "tenants"
+    ///  ],
+    ///  "properties": {
+    ///    "client_name": {
+    ///      "description": "Display name of the requesting client, if it registered one.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "tenants": {
+    ///      "description": "Tenants the user may grant access to.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ConsentTenant"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConsentContextResponse {
+        ///Display name of the requesting client, if it registered one.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub client_name: ::std::option::Option<::std::string::String>,
+        ///Tenants the user may grant access to.
+        pub tenants: ::std::vec::Vec<ConsentTenant>,
+    }
+    impl ConsentContextResponse {
+        pub fn builder() -> builder::ConsentContextResponse {
+            Default::default()
+        }
+    }
+    /**Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
+    is authenticated by their session cookie; `tenant` is their chosen grant.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user\nis authenticated by their session cookie; `tenant` is their chosen grant.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "approved",
+    ///    "client_id",
+    ///    "code_challenge",
+    ///    "redirect_uri",
+    ///    "tenant"
+    ///  ],
+    ///  "properties": {
+    ///    "approved": {
+    ///      "description": "Whether the user approved (`true`) or denied (`false`).",
+    ///      "type": "boolean"
+    ///    },
+    ///    "client_id": {
+    ///      "description": "The requesting client's `client_id`.",
+    ///      "type": "string"
+    ///    },
+    ///    "code_challenge": {
+    ///      "description": "The PKCE `code_challenge` from the authorization request.",
+    ///      "type": "string"
+    ///    },
+    ///    "code_challenge_method": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "redirect_uri": {
+    ///      "description": "The redirect URI to return to (must be registered for the client).",
+    ///      "type": "string"
+    ///    },
+    ///    "resource": {
+    ///      "description": "Requested resource (audience); must match the configured MCP resource.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "scope": {
+    ///      "description": "Requested scope (space-delimited); read scopes only are granted.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "state": {
+    ///      "description": "Opaque `state` to echo back to the client.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "tenant": {
+    ///      "description": "The tenant the user grants access to (must be one they belong to).",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConsentDecision {
+        ///Whether the user approved (`true`) or denied (`false`).
+        pub approved: bool,
+        ///The requesting client's `client_id`.
+        pub client_id: ::std::string::String,
+        ///The PKCE `code_challenge` from the authorization request.
+        pub code_challenge: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub code_challenge_method: ::std::option::Option<::std::string::String>,
+        ///The redirect URI to return to (must be registered for the client).
+        pub redirect_uri: ::std::string::String,
+        ///Requested resource (audience); must match the configured MCP resource.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub resource: ::std::option::Option<::std::string::String>,
+        ///Requested scope (space-delimited); read scopes only are granted.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub scope: ::std::option::Option<::std::string::String>,
+        ///Opaque `state` to echo back to the client.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub state: ::std::option::Option<::std::string::String>,
+        ///The tenant the user grants access to (must be one they belong to).
+        pub tenant: ::std::string::String,
+    }
+    impl ConsentDecision {
+        pub fn builder() -> builder::ConsentDecision {
+            Default::default()
+        }
+    }
+    /**Result of a consent decision: the URL the browser should navigate to (the
+    client's redirect URI carrying either the authorization `code` or an
+    `error`).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Result of a consent decision: the URL the browser should navigate to (the\nclient's redirect URI carrying either the authorization `code` or an\n`error`).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "redirect"
+    ///  ],
+    ///  "properties": {
+    ///    "redirect": {
+    ///      "description": "The absolute redirect URL to navigate to.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConsentDecisionResponse {
+        ///The absolute redirect URL to navigate to.
+        pub redirect: ::std::string::String,
+    }
+    impl ConsentDecisionResponse {
+        pub fn builder() -> builder::ConsentDecisionResponse {
+            Default::default()
+        }
+    }
+    ///A tenant the consenting user may grant a connector access to.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A tenant the consenting user may grant a connector access to.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "id",
+    ///    "role"
+    ///  ],
+    ///  "properties": {
+    ///    "id": {
+    ///      "description": "Tenant id.",
+    ///      "type": "string"
+    ///    },
+    ///    "role": {
+    ///      "$ref": "#/components/schemas/MembershipRole"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConsentTenant {
+        ///Tenant id.
+        pub id: ::std::string::String,
+        pub role: MembershipRole,
+    }
+    impl ConsentTenant {
+        pub fn builder() -> builder::ConsentTenant {
+            Default::default()
+        }
+    }
     ///Request body for creating a new API key.
     ///
     /// <details><summary>JSON schema</summary>
@@ -2169,6 +2377,322 @@ pub mod types {
                 Self {
                     key: Ok(value.key),
                     value: Ok(value.value),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConsentContextResponse {
+            client_name: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            tenants:
+                ::std::result::Result<::std::vec::Vec<super::ConsentTenant>, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConsentContextResponse {
+            fn default() -> Self {
+                Self {
+                    client_name: Ok(Default::default()),
+                    tenants: Err("no value supplied for tenants".to_string()),
+                }
+            }
+        }
+        impl ConsentContextResponse {
+            pub fn client_name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.client_name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for client_name: {e}"));
+                self
+            }
+            pub fn tenants<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::ConsentTenant>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenants = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenants: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConsentContextResponse> for super::ConsentContextResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConsentContextResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    client_name: value.client_name?,
+                    tenants: value.tenants?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConsentContextResponse> for ConsentContextResponse {
+            fn from(value: super::ConsentContextResponse) -> Self {
+                Self {
+                    client_name: Ok(value.client_name),
+                    tenants: Ok(value.tenants),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConsentDecision {
+            approved: ::std::result::Result<bool, ::std::string::String>,
+            client_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            code_challenge: ::std::result::Result<::std::string::String, ::std::string::String>,
+            code_challenge_method: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            redirect_uri: ::std::result::Result<::std::string::String, ::std::string::String>,
+            resource: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            scope: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            state: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            tenant: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConsentDecision {
+            fn default() -> Self {
+                Self {
+                    approved: Err("no value supplied for approved".to_string()),
+                    client_id: Err("no value supplied for client_id".to_string()),
+                    code_challenge: Err("no value supplied for code_challenge".to_string()),
+                    code_challenge_method: Ok(Default::default()),
+                    redirect_uri: Err("no value supplied for redirect_uri".to_string()),
+                    resource: Ok(Default::default()),
+                    scope: Ok(Default::default()),
+                    state: Ok(Default::default()),
+                    tenant: Err("no value supplied for tenant".to_string()),
+                }
+            }
+        }
+        impl ConsentDecision {
+            pub fn approved<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.approved = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for approved: {e}"));
+                self
+            }
+            pub fn client_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.client_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for client_id: {e}"));
+                self
+            }
+            pub fn code_challenge<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.code_challenge = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for code_challenge: {e}")
+                });
+                self
+            }
+            pub fn code_challenge_method<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.code_challenge_method = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for code_challenge_method: {e}")
+                });
+                self
+            }
+            pub fn redirect_uri<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.redirect_uri = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for redirect_uri: {e}"));
+                self
+            }
+            pub fn resource<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.resource = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for resource: {e}"));
+                self
+            }
+            pub fn scope<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.scope = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for scope: {e}"));
+                self
+            }
+            pub fn state<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.state = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for state: {e}"));
+                self
+            }
+            pub fn tenant<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConsentDecision> for super::ConsentDecision {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConsentDecision,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    approved: value.approved?,
+                    client_id: value.client_id?,
+                    code_challenge: value.code_challenge?,
+                    code_challenge_method: value.code_challenge_method?,
+                    redirect_uri: value.redirect_uri?,
+                    resource: value.resource?,
+                    scope: value.scope?,
+                    state: value.state?,
+                    tenant: value.tenant?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConsentDecision> for ConsentDecision {
+            fn from(value: super::ConsentDecision) -> Self {
+                Self {
+                    approved: Ok(value.approved),
+                    client_id: Ok(value.client_id),
+                    code_challenge: Ok(value.code_challenge),
+                    code_challenge_method: Ok(value.code_challenge_method),
+                    redirect_uri: Ok(value.redirect_uri),
+                    resource: Ok(value.resource),
+                    scope: Ok(value.scope),
+                    state: Ok(value.state),
+                    tenant: Ok(value.tenant),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConsentDecisionResponse {
+            redirect: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConsentDecisionResponse {
+            fn default() -> Self {
+                Self {
+                    redirect: Err("no value supplied for redirect".to_string()),
+                }
+            }
+        }
+        impl ConsentDecisionResponse {
+            pub fn redirect<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.redirect = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for redirect: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConsentDecisionResponse> for super::ConsentDecisionResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConsentDecisionResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    redirect: value.redirect?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConsentDecisionResponse> for ConsentDecisionResponse {
+            fn from(value: super::ConsentDecisionResponse) -> Self {
+                Self {
+                    redirect: Ok(value.redirect),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConsentTenant {
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            role: ::std::result::Result<super::MembershipRole, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConsentTenant {
+            fn default() -> Self {
+                Self {
+                    id: Err("no value supplied for id".to_string()),
+                    role: Err("no value supplied for role".to_string()),
+                }
+            }
+        }
+        impl ConsentTenant {
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
+                self
+            }
+            pub fn role<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::MembershipRole>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.role = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for role: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConsentTenant> for super::ConsentTenant {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConsentTenant,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    id: value.id?,
+                    role: value.role?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConsentTenant> for ConsentTenant {
+            fn from(value: super::ConsentTenant) -> Self {
+                Self {
+                    id: Ok(value.id),
+                    role: Ok(value.role),
                 }
             }
         }
@@ -5301,6 +5825,41 @@ impl Client {
     pub fn logql_query_range(&self) -> builder::LogqlQueryRange<'_> {
         builder::LogqlQueryRange::new(self)
     }
+    /**Record the human's consent decision and, on approval, mint the single-use
+    authorization code. Authenticated by the browser session cookie; the code is
+    bound to the chosen tenant (which the user must be a member of), the granted
+    read scopes, the client, the redirect URI, the PKCE challenge, and the
+    resource. Returns the URL the SPA should navigate to
+
+    Sends a `POST` request to `/oauth/authorize/decision`
+
+    ```ignore
+    let response = client.oauth_consent_decision()
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn oauth_consent_decision(&self) -> builder::OauthConsentDecision<'_> {
+        builder::OauthConsentDecision::new(self)
+    }
+    /**Provide the consent screen's context: the requesting client's name and the
+    tenants the signed-in user may grant. Authenticated by the browser session
+    cookie — the consent screen runs before any tenant is chosen, so unlike
+    `whoami` this needs no tenant context
+
+    Sends a `GET` request to `/oauth/consent/context`
+
+    Arguments:
+    - `client_id`: The requesting client's `client_id`.
+    ```ignore
+    let response = client.oauth_consent_context()
+        .client_id(client_id)
+        .send()
+        .await;
+    ```*/
+    pub fn oauth_consent_context(&self) -> builder::OauthConsentContext<'_> {
+        builder::OauthConsentContext::new(self)
+    }
     /**GET|POST /prometheus/api/v1/query — instant query
 
     Evaluated as a one-bucket range at `time`, returning the latest sample
@@ -7703,6 +8262,140 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::oauth_consent_decision`]
+
+    [`Client::oauth_consent_decision`]: super::Client::oauth_consent_decision*/
+    #[derive(Debug, Clone)]
+    pub struct OauthConsentDecision<'a> {
+        client: &'a super::Client,
+        body: Result<types::builder::ConsentDecision, String>,
+    }
+    impl<'a> OauthConsentDecision<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::ConsentDecision>,
+            <V as std::convert::TryInto<types::ConsentDecision>>::Error: std::fmt::Display,
+        {
+            self.body = value
+                .try_into()
+                .map(From::from)
+                .map_err(|s| format!("conversion to `ConsentDecision` for body failed: {}", s));
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(types::builder::ConsentDecision) -> types::builder::ConsentDecision,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/oauth/authorize/decision`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ConsentDecisionResponse>, Error<()>> {
+            let Self { client, body } = self;
+            let body = body
+                .and_then(|v| types::ConsentDecision::try_from(v).map_err(|e| e.to_string()))
+                .map_err(Error::InvalidRequest)?;
+            let url = format!("{}/oauth/authorize/decision", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "oauth_consent_decision",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                403u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::oauth_consent_context`]
+
+    [`Client::oauth_consent_context`]: super::Client::oauth_consent_context*/
+    #[derive(Debug, Clone)]
+    pub struct OauthConsentContext<'a> {
+        client: &'a super::Client,
+        client_id: Result<::std::string::String, String>,
+    }
+    impl<'a> OauthConsentContext<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                client_id: Err("client_id was not initialized".to_string()),
+            }
+        }
+        pub fn client_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.client_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for client_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/oauth/consent/context`
+        pub async fn send(self) -> Result<ResponseValue<types::ConsentContextResponse>, Error<()>> {
+            let Self { client, client_id } = self;
+            let client_id = client_id.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/oauth/consent/context", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("client_id", &client_id))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "oauth_consent_context",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
