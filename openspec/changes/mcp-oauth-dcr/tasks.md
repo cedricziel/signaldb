@@ -71,4 +71,4 @@
 
 ## 15. Pre-commit gate
 
-- [ ] 15.1 Run `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`, and `cargo machete --with-metadata`; resolve findings before finishing.
+- [x] 15.1 Run `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`, and `cargo machete --with-metadata`; resolve findings before finishing.
