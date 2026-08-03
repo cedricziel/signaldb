@@ -156,12 +156,12 @@ aggregate(step)` lowers to TableScan→Filter→Projection(date_bin)→
 
 ## 11. Docs + skills
 
-- [ ] 11.1 Add user + API documentation for the IR core and `POST /api/v1/query`
+- [x] 11.1 Add user + API documentation for the IR core and `POST /api/v1/query`
       (route via the docs skill; correct audience/frontmatter): the type system,
       versioning policy, stage set, and a worked single-signal example.
-- [ ] 11.2 Update the `tempo-api` skill (and any query-surface skill) to note the
+- [x] 11.2 Update the `tempo-api` skill (and any query-surface skill) to note the
       native IR surface alongside the compatibility dialects.
-- [ ] 11.3 Document the change stack + deferred follow-ups (correlate, structural
+- [x] 11.3 Document the change stack + deferred follow-ups (correlate, structural
       traces, metrics model, field discovery; dialects-into-IR; promotion) so the
       dependency graph is discoverable.
 

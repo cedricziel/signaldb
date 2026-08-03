@@ -11,6 +11,14 @@ sources:
 
 # SignalDB Tempo API Compatibility
 
+> **Native query surface.** The Tempo/LogQL/Prometheus endpoints below are
+> _compatibility dialects_ for Grafana and existing clients. SignalDB also
+> exposes a first-party, structured **Query IR** at `POST /api/v1/query`
+> (`src/router/src/endpoints/query.rs`) — a versioned JSON query document over
+> `logs`/`traces` that the SignalDB UI and CLI build directly, without a dialect
+> string. It routes to the querier's `query_ir:` Flight ticket. See
+> `docs/users/querying-ir.md`. The dialects are unchanged and sit alongside it.
+
 ## Implemented Endpoints (Router :3000)
 
 | Endpoint                                         | Status              | Description                                                                                                                       |
