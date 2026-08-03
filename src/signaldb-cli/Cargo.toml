@@ -22,6 +22,10 @@ tui-tree-widget.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
 
+[lib]
+name = "signaldb_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "signaldb-cli"
 path = "src/main.rs"
