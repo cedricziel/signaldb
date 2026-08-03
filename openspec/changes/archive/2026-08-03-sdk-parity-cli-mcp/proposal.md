@@ -63,9 +63,10 @@ across API, SDK, CLI, and MCP becomes structural rather than aspirational.
   SDK consumer.
 - `mcp-tool-surface`: the `signaldb-mcp` server's tool set — the tools exposed,
   their parity with the CLI, and its status as a pure SDK consumer.
-- `operational-control-api`: operator-facing operational control (compaction,
-  retention, snapshot expiration, orphan cleanup, status/health) exposed through
-  the router and reachable via the SDK, so it is available to CLI and MCP alike.
+- `operational-control-api`: operator-facing compaction control (run, status,
+  dry-run) exposed through the router and reachable via the SDK, so it is
+  available to CLI and MCP alike. Retention/snapshot/orphan lifecycle control is
+  deferred (needs matching compactor actions).
 
 ### Modified Capabilities
 

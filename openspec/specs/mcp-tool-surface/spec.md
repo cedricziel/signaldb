@@ -6,22 +6,23 @@ obligation to remain feature-equal with the CLI while consuming only the SDK.
 ## Requirements
 ### Requirement: MCP tools cover the full client capability set
 
-The MCP server SHALL expose a tool for every capability reachable through the
-SDK — query (SQL, TraceQL, LogQL, PromQL), admin (tenant/API-key/dataset
-management), and operational control — such that any operation available in the
-CLI is also available as an MCP tool.
+The MCP server SHALL expose a tool for every SDK-backed SignalDB capability the
+CLI exposes — the HTTP query languages (PromQL, LogQL, TraceQL, and Query IR;
+SQL is served over Arrow Flight and stays CLI-only), admin (tenant/API-key/
+dataset management), and operational compaction control. Local-only utilities
+(`tui`, `completions`, user bootstrap) are out of scope.
 
 #### Scenario: Query is available as a tool
 
 - **WHEN** an MCP client lists available tools
-- **THEN** the list includes query tools for each supported language (SQL,
-  PromQL, LogQL, TraceQL)
+- **THEN** the list includes query tools for each HTTP query language (PromQL,
+  LogQL, TraceQL, and Query IR); SQL stays CLI-only (Flight transport)
 
 #### Scenario: Operational control is available as a tool
 
 - **WHEN** an MCP client lists available tools
-- **THEN** the list includes tools for operational control (e.g. retention and
-  compaction actions and status)
+- **THEN** the list includes tools for operational compaction control (run,
+  status, and dry-run)
 
 ### Requirement: MCP query results match the SDK's native shape
 

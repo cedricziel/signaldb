@@ -37,7 +37,7 @@ endpoints' JSON responses are passed through unchanged.
 
 **Goals:**
 
-- Make three-way parity (API ≡ SDK ≡ CLI ≡ MCP) structural, enforced by a test.
+- Make four-way parity (API ≡ SDK ≡ CLI ≡ MCP) structural, enforced by a test.
 - Give the SDK full query coverage matching the server's real transports: SQL
   over Flight, the three native languages over the HTTP compat endpoints.
 - Keep the SDK maximally generated; hand-write only what OpenAPI cannot express.
