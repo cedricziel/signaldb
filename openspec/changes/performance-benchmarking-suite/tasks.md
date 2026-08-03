@@ -14,7 +14,7 @@ Read benches live in `tests-integration` (not a querier feature-seam): it alread
 - [x] 3.2 Write the trace-search / groups benchmark (`DISTINCT trace_id` scan). → **~28 ms** median.
 - [x] EXPERIMENT (id-lookup speedup): `trace_lookup_by_id_via_index` — a `trace_id → {hour buckets}` point index turns an id-only lookup (no time input) into a bounded, partition-pruned scan. Measured on a SPREAD trace (spans in 3 hours across ~2 days): full-scan 24 ms (complete), ±1h window 3.2 ms (**incomplete: 1/3 spans**), via-index 10 ms (**complete: 3/3**). Bench asserts completeness.
 - [x] EXPERIMENT (index self-scaling): `trace_index_scaling` — REAL Parquet index, Hive-partitioned by `trace_id` prefix (256 shards) + bloom on `trace_id`. Lookup vs size: 10k→333µs, 100k→342µs, 1M→367µs (**flat: +10% over 100× growth**, sub-ms). Validates prefix-shard pruning keeps a point lookup ~O(1). Caveat: at 1B, shard files grow (~4M rows/shard at 256 shards) → shard finer (more prefix bytes) to stay flat.
-- [ ] 3.3 Write a PromQL metric query benchmark and a LogQL log query benchmark. NOTE: faithful versions need the querier's private PromQL/LogQL engine (a `benchmarks`-gated re-export of `MetricsService`/`LogsService`); raw SQL over the metrics/logs table is only a scan-cost proxy. Decide seam vs proxy before writing.
+- [x] 3.3 LogQL/PromQL read benches in `tests-integration/benches/signal_read_paths.rs` (raw-SQL scan/aggregation PROXIES, not the private query engine — labeled as such): `logs_filter_line_proxy` **~35 ms**, `metrics_range_aggregation_proxy` **~28 ms**. Faithful engine versions remain a follow-up if the querier exposes a `benchmarks` seam. NOTE: faithful versions need the querier's private PromQL/LogQL engine (a `benchmarks`-gated re-export of `MetricsService`/`LogsService`); raw SQL over the metrics/logs table is only a scan-cost proxy. Decide seam vs proxy before writing.
 - [x] 3.4 Run `cargo bench -p tests-integration --features benchmarks --bench querier_read_paths` and confirm both benches execute and report timing.
 
 ## 4. Acceptor OTLP-decode benchmark
@@ -23,7 +23,7 @@ The decode + OTLP→Arrow conversion code lives in `common` (`common::flight::co
 
 - [x] 4.1 Add a `benchmarks` feature + `[[bench]]` entry (in `src/common/Cargo.toml`, where the conversion code lives).
 - [x] 4.2 Build a fixed 1k-span OTLP request and measure protobuf decode + Arrow conversion, with no WAL/object-store write in the closure. → `otlp_decode_and_convert` **~1.36 ms / 1k spans**; `otlp_convert_only` **~0.80 ms** (decode adds ~0.56 ms).
-- [x] 4.3 Run `cargo bench -p common --features benchmarks --bench ingest_and_wal` and confirm timing is reported. NOTE: traces only for now; logs/metrics decode benches are a trivial follow-up using `otlp_logs_to_arrow` / `otlp_metrics_to_arrow`.
+- [x] 4.3 Run `cargo bench -p common --features benchmarks --bench ingest_and_wal` and confirm timing is reported. Logs/metrics decode now covered in `src/common/benches/signal_decode.rs`: logs decode+convert **~1.18 ms/1k**, metrics **~1.14 ms/1k** (convert-only 521 µs / 745 µs).
 
 ## 5. Compaction throughput benchmark
 
