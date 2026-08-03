@@ -233,6 +233,22 @@ max_search_limit = 1000               # Upper bound for client `limit` on /api/s
 max_concurrent_queries_per_tenant = 8 # Unset = unlimited
 ```
 
+### Writer (Commit Coalescing)
+
+```toml
+[writer]
+commit_interval = "5s"        # Max wait before a table's rows are committed (liveness). "0s" = commit every tick
+max_uncommitted_rows = 100000 # Row ceiling that triggers an earlier commit for bursts (a cap, never a minimum)
+```
+
+The writer commits ingested data to Iceberg asynchronously via its background
+loop, coalescing pending entries per `(tenant, dataset, table)`: a group commits
+when `commit_interval` elapses **or** its rows reach `max_uncommitted_rows`,
+whichever comes first. This caps the Iceberg snapshot / catalog-metadata write
+rate independent of ingest rate. Ingested data becomes queryable once committed
+(bounded by `commit_interval`); a client needing read-your-writes forces an
+immediate commit with the writer Flight `do_action("flush")`.
+
 ### MCP (Model Context Protocol server)
 
 The standalone `signaldb-mcp` server. A thin, credential-forwarding client: it

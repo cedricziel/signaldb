@@ -74,8 +74,7 @@ async fn test_wal_processor_integration() -> Result<()> {
 
     // Serialize batch and write to WAL
     let batch_bytes = record_batch_to_bytes(&batch)?;
-    let entry_id = wal
-        .append(WalOperation::WriteTraces, batch_bytes, None)
+    wal.append(WalOperation::WriteTraces, batch_bytes, None)
         .await?;
     wal.flush().await?;
 
@@ -83,10 +82,17 @@ async fn test_wal_processor_integration() -> Result<()> {
     let stats = processor.get_stats();
     assert_eq!(stats.active_writers, 0);
 
-    // Test processing (should work now that table creation is implemented, or fail gracefully due to test environment)
-    let result = processor.process_single_entry(entry_id).await;
+    // Force-commit the pending entry (the read-your-writes drain). The test
+    // batch uses a minimal schema, so the commit may fail in this environment —
+    // that is tolerated; it must only not regress to the obsolete
+    // "not implemented" path.
+    let result = processor
+        .force_commit_pending(writer::FlushScope {
+            tenant_id: "default".to_string(),
+            dataset_id: Some("default".to_string()),
+        })
+        .await;
     if let Err(e) = result {
-        // Should not fail due to "not implemented" anymore
         assert!(!e.to_string().contains("Table creation not yet implemented"));
         println!("Expected test environment failure in processing: {}", e);
     } else {

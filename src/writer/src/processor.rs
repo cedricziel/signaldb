@@ -75,6 +75,28 @@ impl CommitCoalescer {
     }
 }
 
+/// Scope of a forced commit (read-your-writes flush).
+///
+/// A flush forces an immediate commit only for groups matching this scope; all
+/// other `(tenant, dataset, table)` groups keep normal coalescing. This stops
+/// one tenant's flush from bypassing the floor for unrelated tenants and
+/// reintroducing catalog write amplification.
+#[derive(Clone, Debug)]
+pub struct FlushScope {
+    /// Tenant whose pending groups are force-committed.
+    pub tenant_id: String,
+    /// Restrict to a single dataset within the tenant; `None` flushes every
+    /// dataset for the tenant.
+    pub dataset_id: Option<String>,
+}
+
+impl FlushScope {
+    /// Whether a group for `(tenant, dataset)` is covered by this scope.
+    fn matches(&self, tenant: &str, dataset: &str) -> bool {
+        self.tenant_id == tenant && self.dataset_id.as_deref().is_none_or(|d| d == dataset)
+    }
+}
+
 /// Extract the W3C trace context (`traceparent`/`tracestate`) that the ingest
 /// request stored in a WAL entry's metadata. Lets the asynchronous processor
 /// link its batch span back to the originating ingest trace instead of
@@ -158,19 +180,23 @@ impl WalProcessor {
     /// are left unprocessed for a later tick.
     #[tracing::instrument(level = "debug", skip_all)]
     pub async fn process_pending_entries(&mut self) -> Result<()> {
-        self.drain_pending(false).await
+        self.drain_pending(Vec::new()).await
     }
 
-    /// Commit all pending groups immediately, ignoring the coalescing floor.
-    /// The read-your-writes drain used by the force-commit primitive.
-    #[tracing::instrument(level = "debug", skip_all)]
-    pub async fn force_commit_pending(&mut self) -> Result<()> {
-        self.drain_pending(true).await
+    /// Immediately commit the pending groups covered by `scope`, ignoring the
+    /// coalescing floor for them only. Groups outside the scope keep normal
+    /// coalescing. The read-your-writes drain used by the force-commit primitive.
+    #[tracing::instrument(level = "debug", skip_all, fields(tenant_id = %scope.tenant_id))]
+    pub async fn force_commit_pending(&mut self, scope: FlushScope) -> Result<()> {
+        self.drain_pending(vec![scope]).await
     }
 
-    /// Shared drain implementation. When `force` is true the coalescing floor is
-    /// bypassed and every pending group is committed.
-    async fn drain_pending(&mut self, force: bool) -> Result<()> {
+    /// Shared drain implementation. Groups matching any entry in `flush_scopes`
+    /// are force-committed (floor bypassed); all others follow the coalescing
+    /// floor. The background loop passes an empty `flush_scopes` (pure
+    /// coalescing); `Flush` WAL markers contribute their own tenant/dataset
+    /// scope.
+    async fn drain_pending(&mut self, mut flush_scopes: Vec<FlushScope>) -> Result<()> {
         let pending_entries = self.wal.get_unprocessed_entries().await?;
 
         if pending_entries.is_empty() {
@@ -200,14 +226,19 @@ impl WalProcessor {
         // floor on entry metadata (`data_size`) before deserializing instead.
         let mut grouped_entries: HashMap<(String, String, String), TableBatch> = HashMap::new();
 
-        // A `Flush` marker is a force-commit request: it carries no data, but
-        // its presence drains every pending group this cycle (ignoring the
-        // coalescing floor), and the marker is marked processed once drained.
+        // A `Flush` marker is a force-commit request scoped to its own
+        // tenant/dataset: it carries no data, but force-commits that scope's
+        // pending groups this cycle (bypassing the floor), and is marked
+        // processed once drained.
         let mut flush_marker_ids: Vec<Uuid> = Vec::new();
 
         for entry in pending_entries {
             if matches!(entry.operation, common::wal::WalOperation::Flush) {
                 flush_marker_ids.push(entry.id);
+                flush_scopes.push(FlushScope {
+                    tenant_id: entry.tenant_id.clone(),
+                    dataset_id: Some(entry.dataset_id.clone()),
+                });
                 continue;
             }
 
@@ -282,9 +313,6 @@ impl WalProcessor {
             group.1.push(trace_ctx);
         }
 
-        // A pending `Flush` marker forces every group to drain this cycle.
-        let force = force || !flush_marker_ids.is_empty();
-
         // Process each group using batch writes. Marking happens inside
         // process_batch_for_table, interleaved with commits to preserve
         // the idempotency-marker invariant.
@@ -302,13 +330,21 @@ impl WalProcessor {
         for ((tenant_id, dataset_id, table_name), (entries, trace_contexts)) in grouped_entries {
             let writer_key = format!("{tenant_id}:{dataset_id}:{table_name}");
 
+            // A group is force-committed only when a flush scope (explicit
+            // request or a Flush marker) covers its tenant/dataset; unrelated
+            // tenants keep normal coalescing so one flush can't amplify their
+            // commits.
+            let forced = flush_scopes
+                .iter()
+                .any(|s| s.matches(&tenant_id, &dataset_id));
+
             // Coalescing floor: defer this group's commit unless forced, its
             // rows have reached the ceiling, or its interval has elapsed. The
             // entries stay unprocessed (durable in the WAL) and are revisited
             // on a later tick — capping commit rate at ~1 per interval per
             // table regardless of ingest rate (#888).
             let pending_rows: usize = entries.iter().map(|(_, b)| b.num_rows()).sum();
-            if !force && !self.coalescer.should_commit(&writer_key, pending_rows, now) {
+            if !forced && !self.coalescer.should_commit(&writer_key, pending_rows, now) {
                 deferred_groups += 1;
                 tracing::debug!(
                     tenant_id = %tenant_id,
@@ -366,7 +402,9 @@ impl WalProcessor {
                 }
             })
             .await;
-            if !committed {
+            // Only a *forced* group's failure fails the drain; a background
+            // group failing is best-effort (already dead-lettered/retried).
+            if forced && !committed {
                 forced_commit_failed = true;
             }
         }
@@ -395,7 +433,7 @@ impl WalProcessor {
         // an error and the caller retries. The background (non-forced) loop
         // keeps its best-effort semantics — failures there are already
         // dead-lettered and retried without failing the tick.
-        if force && forced_commit_failed {
+        if !flush_scopes.is_empty() && forced_commit_failed {
             return Err(anyhow::anyhow!(
                 "force-commit drain failed: one or more groups did not commit"
             ));
@@ -624,57 +662,6 @@ impl WalProcessor {
         let data = self.wal.read_entry_data(entry).await?;
         bytes_to_record_batch(&data)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize WAL entry data: {}", e))
-    }
-
-    /// Process a single WAL entry (for immediate processing)
-    #[tracing::instrument(skip_all, fields(entry_id = %entry_id))]
-    pub async fn process_single_entry(&mut self, entry_id: Uuid) -> Result<()> {
-        // Find the entry in the current entries
-        let entries = self.wal.get_entries().await?;
-        let entry = entries
-            .iter()
-            .find(|e| e.id == entry_id)
-            .ok_or_else(|| anyhow::anyhow!("WAL entry {} not found", entry_id))?
-            .clone();
-
-        if entry.processed {
-            return Ok(()); // Already processed
-        }
-
-        // Skip flush operations
-        if matches!(entry.operation, common::wal::WalOperation::Flush) {
-            return Ok(());
-        }
-
-        let (tenant_id, dataset_id, table_name) = self.determine_target_table(&entry)?;
-        // Anti-loop guard (#760): processing the _system tenant's own
-        // telemetry must not emit logs/spans that get exported and
-        // re-ingested as _system telemetry.
-        let suppress = common::self_monitoring::is_self_monitoring_tenant(&tenant_id);
-        common::self_monitoring::maybe_suppress_self_telemetry(suppress, async {
-            let batch = self.deserialize_entry_data(&entry).await?;
-
-            match self
-                .process_batch_for_table(
-                    &tenant_id,
-                    &dataset_id,
-                    &table_name,
-                    vec![(entry_id, batch)],
-                    vec![trace_context_from_metadata(&entry.metadata)],
-                )
-                .await
-            {
-                Ok(_) => {
-                    tracing::debug!(entry_id = %entry_id, "Successfully processed single WAL entry");
-                    Ok(())
-                }
-                Err(e) => {
-                    tracing::error!(entry_id = %entry_id, error = %e, "Failed to process WAL entry");
-                    Err(e)
-                }
-            }
-        })
-        .await
     }
 
     /// Get statistics about the processor
@@ -1072,7 +1059,13 @@ mod tests {
         let mut processor = WalProcessor::new(wal.clone(), catalog_manager, object_store);
 
         // No pending entries: force-commit must succeed and commit nothing.
-        processor.force_commit_pending().await.unwrap();
+        processor
+            .force_commit_pending(FlushScope {
+                tenant_id: "acme".to_string(),
+                dataset_id: Some("production".to_string()),
+            })
+            .await
+            .unwrap();
         assert!(wal.get_unprocessed_entries().await.unwrap().is_empty());
     }
 
@@ -1127,7 +1120,13 @@ mod tests {
         );
 
         // Force-commit ignores the floor and drains it.
-        processor.force_commit_pending().await.unwrap();
+        processor
+            .force_commit_pending(FlushScope {
+                tenant_id: "acme".to_string(),
+                dataset_id: Some("production".to_string()),
+            })
+            .await
+            .unwrap();
         assert!(
             wal.get_unprocessed_entries().await.unwrap().is_empty(),
             "force-commit must drain the deferred group"
@@ -1185,18 +1184,117 @@ mod tests {
         );
     }
 
-    /// An Arrow-valid batch whose schema does not match any target table, so
-    /// the commit fails during schema coercion — used to exercise the
-    /// force-commit failure path.
-    fn schema_mismatched_bytes() -> Vec<u8> {
-        use datafusion::arrow::array::Int32Array;
-        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    #[tokio::test]
+    async fn scoped_flush_commits_only_the_requested_tenant() {
+        // A scoped flush must force-commit only its tenant's groups; other
+        // tenants keep coalescing, so one flush can't amplify their commits.
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(coalescing_wal_config(temp_dir.path()))
+                .await
+                .unwrap(),
+        );
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+        let config = WriterConfig {
+            commit_interval: Duration::from_secs(3600),
+            max_uncommitted_rows: 1_000_000,
+        };
+        let mut processor =
+            WalProcessor::with_config(wal.clone(), catalog_manager, object_store, &config);
 
-        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
-        let batch =
-            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
-        common::wal::record_batch_to_bytes(&batch).unwrap()
+        let meta_a = Some(
+            r#"{"tenant_id":"acme","dataset_id":"production","target_table":"metrics_gauge"}"#
+                .to_string(),
+        );
+        let meta_b = Some(
+            r#"{"tenant_id":"globex","dataset_id":"staging","target_table":"metrics_gauge"}"#
+                .to_string(),
+        );
+
+        // First data for both tenants commits immediately (never-committed
+        // groups), which records their commit time and starts their intervals.
+        wal.append(
+            WalOperation::WriteMetrics,
+            metrics_gauge_bytes(5),
+            meta_a.clone(),
+        )
+        .await
+        .unwrap();
+        wal.append(
+            WalOperation::WriteMetrics,
+            metrics_gauge_bytes(5),
+            meta_b.clone(),
+        )
+        .await
+        .unwrap();
+        wal.flush().await.unwrap();
+        processor.process_pending_entries().await.unwrap();
+        assert!(wal.get_unprocessed_entries().await.unwrap().is_empty());
+
+        // Second batch for both — now both are within the (huge) interval, so
+        // the floor would defer them.
+        wal.append(WalOperation::WriteMetrics, metrics_gauge_bytes(5), meta_a)
+            .await
+            .unwrap();
+        let globex_id = wal
+            .append(WalOperation::WriteMetrics, metrics_gauge_bytes(5), meta_b)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        // Flush scoped to acme: acme's batch commits, globex's stays deferred.
+        processor
+            .force_commit_pending(FlushScope {
+                tenant_id: "acme".to_string(),
+                dataset_id: None,
+            })
+            .await
+            .unwrap();
+
+        let unprocessed = wal.get_unprocessed_entries().await.unwrap();
+        assert_eq!(
+            unprocessed.len(),
+            1,
+            "only globex's entry should remain deferred after an acme-scoped flush"
+        );
+        assert_eq!(unprocessed[0].id, globex_id);
     }
+
+    #[tokio::test]
+    async fn deferred_entries_survive_a_processor_restart() {
+        // do_put now acks after WAL flush without committing; the commit is the
+        // background loop's job. An entry acked but not yet committed must be
+        // committed after a restart (a fresh processor over the same WAL),
+        // preserving at-least-once delivery.
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(coalescing_wal_config(temp_dir.path()))
+                .await
+                .unwrap(),
+        );
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+        let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
+
+        // Acked-but-uncommitted: appended and flushed to the WAL, no processing.
+        wal.append(WalOperation::WriteMetrics, metrics_gauge_bytes(5), meta)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+        assert_eq!(wal.get_unprocessed_entries().await.unwrap().len(), 1);
+
+        // "Restart": a brand-new processor (fresh coalescer state, same catalog
+        // + object store) over the same WAL commits the pending entry.
+        let mut restarted = WalProcessor::new(wal.clone(), catalog_manager, object_store);
+        restarted.process_pending_entries().await.unwrap();
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "a restarted processor must commit entries acked before the crash"
+        );
+    }
+
+    use crate::test_support::schema_mismatched_bytes;
 
     #[tokio::test]
     async fn force_commit_reports_error_when_a_group_fails_to_commit() {
@@ -1222,7 +1320,13 @@ mod tests {
         wal.flush().await.unwrap();
 
         assert!(
-            processor.force_commit_pending().await.is_err(),
+            processor
+                .force_commit_pending(FlushScope {
+                    tenant_id: "acme".to_string(),
+                    dataset_id: Some("production".to_string()),
+                })
+                .await
+                .is_err(),
             "force-commit must surface a group commit failure"
         );
         assert_eq!(

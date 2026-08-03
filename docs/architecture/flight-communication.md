@@ -271,8 +271,10 @@ sequenceDiagram
 3. Acceptor appends the batch to its WAL and flushes for durability
 4. Acceptor uses Flight `DoPut` to send Arrow data to Writer (Storage capability)
 5. Writer transforms to the v2 storage schema and appends to its own WAL
-6. Writer confirms; Acceptor marks its WAL entry as processed
-7. Writer's `WalProcessor` asynchronously commits WAL entries to Iceberg (Parquet in the object store)
+6. Writer confirms after its WAL flush (it does **not** block the confirm on the Iceberg commit); Acceptor marks its WAL entry as processed
+7. Writer's `WalProcessor` asynchronously commits WAL entries to Iceberg (Parquet in the object store), **coalescing** pending entries per `(tenant, dataset, table)` — a group commits when `[writer].commit_interval` elapses or its rows reach `[writer].max_uncommitted_rows`. This caps the Iceberg snapshot / catalog-metadata write rate independent of ingest rate.
+
+Because the commit is asynchronous, ingested data is queryable only once committed (bounded by `commit_interval`). A caller needing read-your-writes forces an immediate commit with the Writer Flight `do_action("flush")` (advertised via `list_actions`). The action is **tenant-scoped**: its body is a required JSON `{"tenant_id": "...", "dataset_id"?: "..."}`, and it force-commits only that tenant's (optionally that dataset's) pending groups — an unscoped flush is rejected so one caller cannot force-commit, and amplify catalog writes for, every tenant on the writer. Tests use `common::testing::flush_storage_writers(transport, tenant, dataset)` for a deterministic barrier.
 
 #### Query Flow:
 

@@ -2,7 +2,7 @@ pub mod storage;
 pub use storage::{IcebergTableWriter, RetryConfig};
 
 pub mod processor;
-pub use processor::{ProcessorStats, WalProcessor};
+pub use processor::{FlushScope, ProcessorStats, WalProcessor};
 
 pub mod flight_iceberg;
 pub use flight_iceberg::IcebergWriterFlightService;
@@ -82,6 +82,18 @@ pub(crate) mod test_support {
         )
         .unwrap();
 
+        common::wal::record_batch_to_bytes(&batch).unwrap()
+    }
+
+    /// An Arrow-valid batch whose schema matches no target table, so committing
+    /// it fails during schema coercion — used to exercise commit-failure paths.
+    pub(crate) fn schema_mismatched_bytes() -> Vec<u8> {
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
         common::wal::record_batch_to_bytes(&batch).unwrap()
     }
 }
