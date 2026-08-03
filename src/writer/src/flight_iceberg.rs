@@ -47,28 +47,27 @@ pub const FLUSH_ACTION: &str = "flush";
 const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Parse the required tenant/dataset scope from a `flush` action body
-/// (`{"tenant_id": "...", "dataset_id": "..."?}`). A missing/empty `tenant_id`
-/// is rejected so a flush can never be unscoped (which would force-commit — and
-/// amplify catalog writes for — every tenant on this writer).
-fn parse_flush_scope(body: &Bytes) -> Result<FlushScope, Status> {
-    let json: serde_json::Value = serde_json::from_slice(body).map_err(|e| {
-        Status::invalid_argument(format!(
-            "flush action body must be JSON {{\"tenant_id\": \"...\", \"dataset_id\"?: \"...\"}}: {e}"
-        ))
-    })?;
-    let tenant_id = json
-        .get("tenant_id")
-        .and_then(|v| v.as_str())
+/// from the request's `x-tenant-id` (required) and `x-dataset-id` (optional)
+/// gRPC metadata — the same tenant identity the ingest path carries — so the
+/// flush can only target the tenant the caller is already acting as, and can
+/// never be unscoped (which would force-commit, and amplify catalog writes for,
+/// every tenant on this writer). Reading the scope from the request headers
+/// rather than a free-form body keeps it consistent with `do_put` and prevents
+/// a caller from flushing an arbitrary tenant named in the payload.
+fn parse_flush_scope(metadata: &tonic::metadata::MetadataMap) -> Result<FlushScope, Status> {
+    let tenant_id = metadata
+        .get("x-tenant-id")
+        .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .unwrap_or("");
     if tenant_id.is_empty() {
         return Err(Status::invalid_argument(
-            "flush action requires a non-empty tenant_id (unscoped flush is not allowed)",
+            "flush action requires an x-tenant-id metadata header (unscoped flush is not allowed)",
         ));
     }
-    let dataset_id = json
-        .get("dataset_id")
-        .and_then(|v| v.as_str())
+    let dataset_id = metadata
+        .get("x-dataset-id")
+        .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|d| !d.is_empty())
         .map(str::to_string);
@@ -436,17 +435,21 @@ impl FlightService for IcebergWriterFlightService {
         &self,
         request: Request<arrow_flight::Action>,
     ) -> Result<Response<Self::DoActionStream>, Status> {
+        // The flush scope is taken from the request's tenant metadata (below),
+        // so extract it before consuming the request.
+        let metadata = request.metadata().clone();
         let action = request.into_inner();
         match action.r#type.as_str() {
             // Read-your-writes drain: force-commit the pending groups for the
-            // requested tenant (optionally a single dataset), bypassing the
+            // requesting tenant (optionally a single dataset), bypassing the
             // coalescing floor for that scope only. Used by tests and by clients
             // that need their just-ingested data queryable at once. The scope is
-            // a required JSON body `{"tenant_id": "...", "dataset_id": "..."?}`;
-            // an unscoped flush is rejected so one caller cannot force-commit —
-            // and amplify catalog writes for — every tenant on this writer.
+            // taken from the request's `x-tenant-id` / `x-dataset-id` metadata
+            // (the tenant identity the caller is already acting as); an unscoped
+            // request is rejected so one caller cannot force-commit — and amplify
+            // catalog writes for — every tenant on this writer.
             FLUSH_ACTION => {
-                let scope = parse_flush_scope(&action.body)?;
+                let scope = parse_flush_scope(&metadata)?;
                 // Bound the flush: force_commit_pending drives Iceberg/catalog
                 // commits while holding the processor mutex, so a stuck catalog
                 // or object store must not hang this client-facing RPC (and the
@@ -587,11 +590,18 @@ mod tests {
             Ok(_) => panic!("unscoped flush must be InvalidArgument"),
         }
 
-        // The flush action drains the pending write for the scoped tenant.
-        let flush = Request::new(arrow_flight::Action {
+        // The flush action drains the pending write for the tenant named in the
+        // request metadata.
+        let mut flush = Request::new(arrow_flight::Action {
             r#type: FLUSH_ACTION.to_string(),
-            body: Bytes::from(r#"{"tenant_id":"acme","dataset_id":"production"}"#),
+            body: Bytes::new(),
         });
+        flush
+            .metadata_mut()
+            .insert("x-tenant-id", "acme".parse().unwrap());
+        flush
+            .metadata_mut()
+            .insert("x-dataset-id", "production".parse().unwrap());
         let resp = service.do_action(flush).await.unwrap();
         // Drain the (empty) result stream to completion.
         let _results: Vec<_> = resp.into_inner().collect().await;
@@ -637,10 +647,16 @@ mod tests {
         .unwrap();
         wal.flush().await.unwrap();
 
-        let flush = Request::new(arrow_flight::Action {
+        let mut flush = Request::new(arrow_flight::Action {
             r#type: FLUSH_ACTION.to_string(),
-            body: Bytes::from(r#"{"tenant_id":"acme","dataset_id":"production"}"#),
+            body: Bytes::new(),
         });
+        flush
+            .metadata_mut()
+            .insert("x-tenant-id", "acme".parse().unwrap());
+        flush
+            .metadata_mut()
+            .insert("x-dataset-id", "production".parse().unwrap());
         match service.do_action(flush).await {
             Err(status) => assert_eq!(status.code(), tonic::Code::Internal),
             Ok(_) => panic!("flush must surface the commit failure as an error"),
