@@ -1354,6 +1354,130 @@ export type QueryIrResponses = {
 
 export type QueryIrResponse2 = QueryIrResponses[keyof QueryIrResponses];
 
+export type LogqlQueryData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * LogQL query string
+         */
+        query: string;
+        /**
+         * Evaluation timestamp (unix ns/s or RFC3339)
+         */
+        time?: string;
+        /**
+         * Maximum number of entries
+         */
+        limit?: number;
+        /**
+         * `forward` or `backward`
+         */
+        direction?: string;
+    };
+    url: '/loki/api/v1/query';
+};
+
+export type LogqlQueryResponses = {
+    /**
+     * Loki instant-query response (streams or matrix)
+     */
+    200: unknown;
+};
+
+export type LogqlQueryRangeData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * LogQL query string
+         */
+        query: string;
+        /**
+         * Range start (unix ns/s or RFC3339)
+         */
+        start?: string;
+        /**
+         * Range end (unix ns/s or RFC3339)
+         */
+        end?: string;
+        /**
+         * Evaluation interval for metric queries
+         */
+        step?: string;
+        /**
+         * Maximum number of entries
+         */
+        limit?: number;
+        /**
+         * `forward` or `backward`
+         */
+        direction?: string;
+    };
+    url: '/loki/api/v1/query_range';
+};
+
+export type LogqlQueryRangeResponses = {
+    /**
+     * Loki range-query response (streams or matrix)
+     */
+    200: unknown;
+};
+
+export type PromqlQueryData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * PromQL expression
+         */
+        query: string;
+        /**
+         * Evaluation timestamp (unix seconds or RFC3339)
+         */
+        time?: string;
+    };
+    url: '/prometheus/api/v1/query';
+};
+
+export type PromqlQueryResponses = {
+    /**
+     * Prometheus instant-query response (vector)
+     */
+    200: unknown;
+};
+
+export type PromqlQueryRangeData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * PromQL expression
+         */
+        query: string;
+        /**
+         * Range start (unix seconds or RFC3339)
+         */
+        start?: string;
+        /**
+         * Range end (unix seconds or RFC3339)
+         */
+        end?: string;
+        /**
+         * Resolution step (Go duration or seconds)
+         */
+        step?: string;
+    };
+    url: '/prometheus/api/v1/query_range';
+};
+
+export type PromqlQueryRangeResponses = {
+    /**
+     * Prometheus range-query response (matrix)
+     */
+    200: unknown;
+};
+
 export type SearchData = {
     body?: never;
     path?: never;

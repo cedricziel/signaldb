@@ -130,6 +130,22 @@ fn validate_direction(direction: &str) -> Result<(), ApiError> {
 /// the instant `time` (or now) is treated as the window end with a
 /// default one-hour lookback, matching how Grafana renders instant log
 /// panels.
+#[utoipa::path(
+    get,
+    path = "/loki/api/v1/query",
+    operation_id = "logql_query",
+    tag = "logs",
+    security(("bearerAuth" = [])),
+    params(
+        ("query" = String, Query, description = "LogQL query string"),
+        ("time" = Option<String>, Query, description = "Evaluation timestamp (unix ns/s or RFC3339)"),
+        ("limit" = Option<u32>, Query, description = "Maximum number of entries"),
+        ("direction" = Option<String>, Query, description = "`forward` or `backward`"),
+    ),
+    responses(
+        (status = 200, description = "Loki instant-query response (streams or matrix)", body = serde_json::Value),
+    )
+)]
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(
@@ -163,6 +179,24 @@ pub async fn query<S: RouterState>(
 }
 
 /// GET /loki/api/v1/query_range — range query.
+#[utoipa::path(
+    get,
+    path = "/loki/api/v1/query_range",
+    operation_id = "logql_query_range",
+    tag = "logs",
+    security(("bearerAuth" = [])),
+    params(
+        ("query" = String, Query, description = "LogQL query string"),
+        ("start" = Option<String>, Query, description = "Range start (unix ns/s or RFC3339)"),
+        ("end" = Option<String>, Query, description = "Range end (unix ns/s or RFC3339)"),
+        ("step" = Option<String>, Query, description = "Evaluation interval for metric queries"),
+        ("limit" = Option<u32>, Query, description = "Maximum number of entries"),
+        ("direction" = Option<String>, Query, description = "`forward` or `backward`"),
+    ),
+    responses(
+        (status = 200, description = "Loki range-query response (streams or matrix)", body = serde_json::Value),
+    )
+)]
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(

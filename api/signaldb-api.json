@@ -1366,6 +1366,260 @@
         ]
       }
     },
+    "/loki/api/v1/query": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "GET /loki/api/v1/query — instant query.",
+        "description": "For a log selector this returns the most recent lines in the window;\nthe instant `time` (or now) is treated as the window end with a\ndefault one-hour lookback, matching how Grafana renders instant log\npanels.",
+        "operationId": "logql_query",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "description": "LogQL query string",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "time",
+            "in": "query",
+            "description": "Evaluation timestamp (unix ns/s or RFC3339)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of entries",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "direction",
+            "in": "query",
+            "description": "`forward` or `backward`",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Loki instant-query response (streams or matrix)",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/loki/api/v1/query_range": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "GET /loki/api/v1/query_range — range query.",
+        "operationId": "logql_query_range",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "description": "LogQL query string",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "description": "Range start (unix ns/s or RFC3339)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "description": "Range end (unix ns/s or RFC3339)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "step",
+            "in": "query",
+            "description": "Evaluation interval for metric queries",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of entries",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "direction",
+            "in": "query",
+            "description": "`forward` or `backward`",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Loki range-query response (streams or matrix)",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/prometheus/api/v1/query": {
+      "get": {
+        "tags": [
+          "metrics"
+        ],
+        "summary": "GET|POST /prometheus/api/v1/query — instant query.",
+        "description": "Evaluated as a one-bucket range at `time`, returning the latest sample\nper series as a vector.",
+        "operationId": "promql_query",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "description": "PromQL expression",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "time",
+            "in": "query",
+            "description": "Evaluation timestamp (unix seconds or RFC3339)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Prometheus instant-query response (vector)",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/prometheus/api/v1/query_range": {
+      "get": {
+        "tags": [
+          "metrics"
+        ],
+        "summary": "GET|POST /prometheus/api/v1/query_range.",
+        "operationId": "promql_query_range",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "description": "PromQL expression",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "description": "Range start (unix seconds or RFC3339)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "description": "Range end (unix seconds or RFC3339)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "step",
+            "in": "query",
+            "description": "Resolution step (Go duration or seconds)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Prometheus range-query response (matrix)",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/tempo/api/search": {
       "get": {
         "tags": [
@@ -2633,6 +2887,14 @@
     {
       "name": "query",
       "description": "Native structured Query IR"
+    },
+    {
+      "name": "metrics",
+      "description": "Prometheus-compatible metrics query (PromQL)"
+    },
+    {
+      "name": "logs",
+      "description": "Loki-compatible log query (LogQL)"
     }
   ]
 }

@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantsData, ListTenantsResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, QueryIrData, QueryIrErrors, QueryIrResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsResponses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses } from './types.gen';
+import type { CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantsData, ListTenantsResponses, LogqlQueryData, LogqlQueryRangeData, LogqlQueryRangeResponses, LogqlQueryResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, PromqlQueryData, PromqlQueryRangeData, PromqlQueryRangeResponses, PromqlQueryResponses, QueryIrData, QueryIrErrors, QueryIrResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsResponses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -233,6 +233,50 @@ export const queryIr = <ThrowOnError extends boolean = false>(options: Options<Q
         'Content-Type': 'application/json',
         ...options.headers
     }
+});
+
+/**
+ * GET /loki/api/v1/query — instant query.
+ *
+ * For a log selector this returns the most recent lines in the window;
+ * the instant `time` (or now) is treated as the window end with a
+ * default one-hour lookback, matching how Grafana renders instant log
+ * panels.
+ */
+export const logqlQuery = <ThrowOnError extends boolean = false>(options: Options<LogqlQueryData, ThrowOnError>): RequestResult<LogqlQueryResponses, unknown, ThrowOnError> => (options.client ?? client).get<LogqlQueryResponses, unknown, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/loki/api/v1/query',
+    ...options
+});
+
+/**
+ * GET /loki/api/v1/query_range — range query.
+ */
+export const logqlQueryRange = <ThrowOnError extends boolean = false>(options: Options<LogqlQueryRangeData, ThrowOnError>): RequestResult<LogqlQueryRangeResponses, unknown, ThrowOnError> => (options.client ?? client).get<LogqlQueryRangeResponses, unknown, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/loki/api/v1/query_range',
+    ...options
+});
+
+/**
+ * GET|POST /prometheus/api/v1/query — instant query.
+ *
+ * Evaluated as a one-bucket range at `time`, returning the latest sample
+ * per series as a vector.
+ */
+export const promqlQuery = <ThrowOnError extends boolean = false>(options: Options<PromqlQueryData, ThrowOnError>): RequestResult<PromqlQueryResponses, unknown, ThrowOnError> => (options.client ?? client).get<PromqlQueryResponses, unknown, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/prometheus/api/v1/query',
+    ...options
+});
+
+/**
+ * GET|POST /prometheus/api/v1/query_range.
+ */
+export const promqlQueryRange = <ThrowOnError extends boolean = false>(options: Options<PromqlQueryRangeData, ThrowOnError>): RequestResult<PromqlQueryRangeResponses, unknown, ThrowOnError> => (options.client ?? client).get<PromqlQueryRangeResponses, unknown, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/prometheus/api/v1/query_range',
+    ...options
 });
 
 /**
