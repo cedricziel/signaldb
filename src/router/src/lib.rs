@@ -14,6 +14,7 @@ use std::sync::Arc;
 pub mod discovery;
 pub mod endpoints;
 pub mod openapi;
+pub mod read_scope;
 pub mod ui;
 
 /// The shared state that route handlers depend on.
@@ -229,6 +230,9 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .nest(
             "/tempo",
             endpoints::tempo::router()
+                .layer(middleware::from_fn(|req, next| {
+                    read_scope::require_read_scope("traces", req, next)
+                }))
                 .layer(query_rate_layer.clone())
                 .layer(auth_layer.clone()),
         )
@@ -243,6 +247,9 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .nest(
             "/loki",
             endpoints::logql::router()
+                .layer(middleware::from_fn(|req, next| {
+                    read_scope::require_read_scope("logs", req, next)
+                }))
                 .layer(query_rate_layer.clone())
                 .layer(auth_layer.clone()),
         )
@@ -250,6 +257,9 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .nest(
             "/prometheus",
             endpoints::promql::router()
+                .layer(middleware::from_fn(|req, next| {
+                    read_scope::require_read_scope("metrics", req, next)
+                }))
                 .layer(query_rate_layer.clone())
                 .layer(auth_layer.clone()),
         )

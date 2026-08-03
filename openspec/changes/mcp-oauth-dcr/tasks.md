@@ -41,8 +41,8 @@
 
 ## 9. Read-scope enforcement on the query/MCP surface
 
-- [ ] 9.1 Write failing tests that a token holding `traces:read` may run trace-read tools while a token lacking `metrics:read` is denied metrics reads with an authorization error, scoped to the token's tenant (`cargo test -p router`).
-- [ ] 9.2 Enforce `can_read(signal)` on the query paths the MCP read tools use, making 9.1 pass.
+- [x] 9.1 Write failing tests that a token holding `traces:read` may run trace-read tools while a token lacking `metrics:read` is denied metrics reads with an authorization error, scoped to the token's tenant (`cargo test -p router`).
+- [x] 9.2 Enforce `can_read(signal)` on the query paths the MCP read tools use, making 9.1 pass.
 
 ## 10. MCP sidecar: resource-origin responsibilities
 
