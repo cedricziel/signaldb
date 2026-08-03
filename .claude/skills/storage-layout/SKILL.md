@@ -124,8 +124,8 @@ the services resolve their WAL directory from the TOML-level `[wal] wal_dir`
 
 ### Segment Lifecycle
 
-1. **Write**: Append to current segment's `.log` and `.data`
-2. **Rotation**: When segment exceeds `max_segment_size`, create new segment
+1. **Write**: Append a metadata record to the `.log` and write the payload to the `.data` file at the entry's recorded `data_offset` (the writer seeks to that offset — not a blind `O_APPEND` — so a short write can't shift following entries)
+2. **Rotation**: When **either** the `.log` or the `.data` file would exceed `max_segment_size`, seal the segment and create a new one (the `.data` file dominates size, so it usually drives rotation; this bounds offsets clear of 2³²)
 3. **Processing**: WalProcessor reads unprocessed entries, writes to Iceberg, marks in `.index`
 4. **Cleanup**: Fully-processed segments deleted; partial segments compacted
 
