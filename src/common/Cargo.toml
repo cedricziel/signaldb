@@ -98,6 +98,11 @@ name = "ingest_and_wal"
 harness = false
 required-features = ["benchmarks"]
 
+[[bench]]
+name = "signal_decode"
+harness = false
+required-features = ["benchmarks"]
+
 [dev-dependencies]
 testcontainers-modules.workspace = true
 testcontainers.workspace = true
