@@ -1,60 +1,60 @@
 ## 1. Type system + versioning foundation (`common`)
 
-- [ ] 1.1 Failing unit test (`cargo test -p common`): value-type coercion —
+- [x] 1.1 Failing unit test (`cargo test -p common`): value-type coercion —
       duration suffixes (`"500ms"`), numeric strings, RFC3339/relative timestamps
       coerce to the registry canonical type; an un-coercible literal is rejected
       at validation, never silently cast.
-- [ ] 1.2 Failing unit test: absent-value semantics — comparisons on an absent
+- [x] 1.2 Failing unit test: absent-value semantics — comparisons on an absent
       field evaluate to `absent` (third truth value), `not(absent)=absent`, and
       the `and`/`or` truth tables propagate it; a `where` emits a row only on
       `true`, so both `field = x` and `not(field = x)` exclude absent rows, while
       `exists`/`not(exists)` observe absence. Independent of engine null
       behaviour.
-- [ ] 1.3 Failing unit test: relation-type inference — a pipeline's relation type
+- [x] 1.3 Failing unit test: relation-type inference — a pipeline's relation type
       (RowSet/Series, source, grain, columns) is inferred stage-by-stage, and a
       stage whose input constraint is unmet fails validation naming the stage.
-- [ ] 1.4 Failing unit test: IR versioning — a supported `irVersion` parses; an
+- [x] 1.4 Failing unit test: IR versioning — a supported `irVersion` parses; an
       out-of-range version is rejected reporting the supported range; a document
       with a new optional field still validates (additive tolerance); a stage
       object with an unknown key is rejected (`deny_unknown_fields`
       physical-addressing guard).
-- [ ] 1.5 Failing unit test: declared-envelope validation — `rows`⇔
+- [x] 1.5 Failing unit test: declared-envelope validation — `rows`⇔
       `RowSet{aggregated=false}`, `table`⇔`RowSet{aggregated=true}`, `series`⇔
       `Series`; declaring `series` over a RowSet terminal (or `rows` over a
       grouped aggregate) is rejected with an envelope-mismatch error.
-- [ ] 1.6 Failing unit test: extensible-source forward-compat — the `from` source
+- [x] 1.6 Failing unit test: extensible-source forward-compat — the `from` source
       is resolved against the source registry; an unregistered source is rejected
       with a clear unknown-source error (not a parse failure), and a previously
       valid document still validates unchanged after a new source is registered
       (document shape is source-independent).
-- [ ] 1.7 Implement the IR document types, `ValueType`/`RelationType` (incl. the
+- [x] 1.7 Implement the IR document types, `ValueType`/`RelationType` (incl. the
       `aggregated` discriminator), the versioned operator/function registry,
       coercion, the source registry, and the validator. Make 1.1–1.6 pass.
 
 ## 2. Predicate grammar + structured operands (`common`)
 
-- [ ] 2.1 Failing unit test: nested `and`/`or`/`not` with all operators parses;
+- [x] 2.1 Failing unit test: nested `and`/`or`/`not` with all operators parses;
       a leaf naming a physical column or `attributes_json` is rejected
       (logical-namespace guard).
-- [ ] 2.2 Failing unit test: structured operands — `aggregate`/`order`/`topk`
+- [x] 2.2 Failing unit test: structured operands — `aggregate`/`order`/`topk`
       operands are structured values (an operand supplied as an expression string
       is rejected); every `Agg` has a unique `as` name, a duplicate name or an
       `AggRef`/`order` reference to an unknown name is rejected, and `topk`/
       `bottomk` `n` must be an integer `> 0`.
-- [ ] 2.3 Failing unit test: extract field resolution — an `extract` derives
+- [x] 2.3 Failing unit test: extract field resolution — an `extract` derives
       typed query-local fields usable by later stages with the declared type for
       coercion; a derived name colliding with a registry field or an earlier
       extract is rejected (no silent shadowing).
-- [ ] 2.4 Implement the `Predicate` enum and structured `Agg` (with `as`)/
+- [x] 2.4 Implement the `Predicate` enum and structured `Agg` (with `as`)/
       `Order`/`topk`/`bottomk` operands and extract field-scope resolution. Make
       2.1–2.3 pass.
 
 ## 3. Attribute-registry resolver interface (`common`)
 
-- [ ] 3.1 Failing unit test: resolving a logical field yields either a column ref
+- [x] 3.1 Failing unit test: resolving a logical field yields either a column ref
       or an `attributes_json` path plus the canonical type; unpromoted → json
       path, promoted → column.
-- [ ] 3.2 Implement the resolver interface (field → `Column | JsonPath` + type)
+- [x] 3.2 Implement the resolver interface (field → `Column | JsonPath` + type)
       as a **consumer of the attribute-registry epic (#811)** — a query-facing
       view, not a re-implementation; provide a config/in-memory fallback for
       tests. Make 3.1 pass. (If #811's registry API is not yet available, adapt
