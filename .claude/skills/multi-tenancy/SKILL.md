@@ -158,10 +158,12 @@ Mounted at `/api/v1` with tenant auth (`src/router/src/endpoints/tenant.rs`):
 
 ## CLI Tool
 
-Subcommands: `tenant`, `api-key`, `dataset`, `query` (SQL), `tui`,
-`completions` (static shell scripts; dynamic tenant-ID completion for
-tenant-taking args via `COMPLETE=<shell> signaldb-cli` — queries the admin
-API like `tenant list`, silently empty when the backend is unreachable).
+Subcommands: `query` (one required language flag —
+`--sql`/`--promql`/`--logql`/`--traceql`/`--ir`), `admin`
+(`tenant`/`api-key`/`dataset`), `user`, `tui`, `completions` (static shell
+scripts; dynamic tenant-ID completion for tenant-taking args via
+`COMPLETE=<shell> signaldb-cli` — queries the admin API like
+`admin tenant list`, silently empty when the backend is unreachable).
 
 ```bash
 signaldb-cli admin tenant list
