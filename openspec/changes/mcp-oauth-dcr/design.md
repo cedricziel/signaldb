@@ -66,9 +66,13 @@ Access tokens, refresh tokens, and authorization codes are opaque high-entropy s
 
 Add `traces:read` / `logs:read` / `metrics:read` and a `can_read(signal)` mirroring `can_ingest`: a read tool requires the matching `<signal>:read` scope; `None` scopes remain legacy-unrestricted. OAuth-granted `scope` is written straight into `TenantContext.api_key_scopes`, so existing enforcement carries it with no new mechanism. The consent screen surfaces the requested scopes so the grant is deliberate.
 
-### Decision 6 — Consent UI reuses the explore-UI login
+### Decision 6 — Consent UI reuses the explore-UI login, served at root
 
-`/authorize` reuses the existing login/session; on top of it a consent screen lists the client, requested scopes, and the user's grantable tenants (their memberships) for selection. No new auth UI stack.
+`/authorize` reuses the existing login/session; on top of it a consent screen (a route in the React explore-UI) lists the client, requested scopes, and the user's grantable tenants (their memberships) for selection. No new auth UI stack. The consent decision posts to a router consent API consumed via the generated TypeScript client (never raw fetch), which means the consent API is annotated into the OpenAPI document and the TS client is regenerated.
+
+Consequence: consent works only where the UI bundle is served, so the explore-UI is now mounted at **root (`/`)** rather than `/ui`, and `/authorize` redirects to `/oauth/consent` at root. Mounting at `/` makes the SPA a **fallback service** so every existing API/query route still takes precedence, and the bundle's base path moves `/ui` → `/`. This is a deliberate sub-task (SPA-fallback ordering, asset base path, updating existing `/ui` references and docs) sequenced with the consent work, not a silent reroute.
+
+- **Alternative: server-rendered minimal consent page in the router.** Robust (no UI-bundle dependency, works headless) but plainer and a second UI surface; rejected in favor of a single, consistent explore-UI experience.
 
 ## Risks / Trade-offs
 
