@@ -24,14 +24,16 @@ a querier where DataFusion executes them against the Iceberg tables.
 ## 1. Run your first query
 
 ```bash
-signaldb-cli query sql "SELECT trace_id, span_name, service_name FROM traces LIMIT 10" \
+signaldb-cli query --sql "SELECT trace_id, span_name, service_name FROM traces LIMIT 10" \
   --api-key sk-acme-prod-key-123 \
   --tenant-id acme
 ```
 
-You get a pretty-printed table and a `10 row(s) returned.` summary on
-stderr. All flags can also come from the environment:
-`SIGNALDB_FLIGHT_URL` (default `http://localhost:50053`),
+`query` takes exactly one language flag; `--sql` runs Arrow-Flight SQL. (The
+other flags — `--promql`, `--logql`, `--traceql` — run the corresponding query
+language and return its native JSON.) You get a pretty-printed table and a
+`10 row(s) returned.` summary on stderr. All flags can also come from the
+environment: `SIGNALDB_FLIGHT_URL` (default `http://localhost:50053`),
 `SIGNALDB_API_KEY`, `SIGNALDB_TENANT_ID`, `SIGNALDB_DATASET_ID`.
 
 ## 2. Understand table naming
@@ -66,19 +68,19 @@ your own tenant's catalog.
 Services that reported spans:
 
 ```bash
-signaldb-cli query sql "SELECT DISTINCT service_name FROM traces"
+signaldb-cli query --sql "SELECT DISTINCT service_name FROM traces"
 ```
 
 Slowest spans:
 
 ```bash
-signaldb-cli query sql "SELECT trace_id, span_name, duration_nano FROM traces ORDER BY duration_nano DESC LIMIT 20"
+signaldb-cli query --sql "SELECT trace_id, span_name, duration_nano FROM traces ORDER BY duration_nano DESC LIMIT 20"
 ```
 
 Recent log records:
 
 ```bash
-signaldb-cli query sql "SELECT * FROM logs LIMIT 20"
+signaldb-cli query --sql "SELECT * FROM logs LIMIT 20"
 ```
 
 ## 4. Change the output format
@@ -87,7 +89,7 @@ signaldb-cli query sql "SELECT * FROM logs LIMIT 20"
 object per row, pipe-friendly), or `csv` (with header row):
 
 ```bash
-signaldb-cli query sql "SELECT DISTINCT service_name FROM traces" --format json | jq -r .service_name
+signaldb-cli query --sql "SELECT DISTINCT service_name FROM traces" --format json | jq -r .service_name
 ```
 
 ## Limits to know

@@ -189,14 +189,17 @@ to an attribute extraction — same query, same result either way.
 
 ## Submitting a query
 
-- **CLI:** `signaldb-cli query ir` reads the document from an argument, `--file`,
-  or stdin and prints the enveloped result:
+- **CLI:** `signaldb-cli query --ir` reads the document from an argument,
+  `--file`, or stdin and prints the enveloped result:
 
   ```bash
-  signaldb-cli query ir --file query.json \
+  signaldb-cli query --ir --file query.json \
     --url http://localhost:3000 --api-key "$KEY" --tenant-id acme
-  # or: cat query.json | signaldb-cli query ir --tenant-id acme
+  # or: cat query.json | signaldb-cli query --ir --tenant-id acme
   ```
+
+  (`--ir` is one of the mutually-exclusive language flags on `query`, alongside
+  `--sql`/`--promql`/`--logql`/`--traceql`.)
 
 - **UI:** the Explore view's **Query** tab builds an IR document structurally and
   renders the declared envelope.

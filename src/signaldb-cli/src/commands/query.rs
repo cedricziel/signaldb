@@ -1,204 +1,235 @@
+//! The `query` command: one command, one required language flag.
+//!
+//! `signaldb query --sql|--promql|--logql|--traceql '<q>'`, plus `--ir` for a
+//! native Query IR JSON document (`POST /api/v1/query`). The language flag
+//! determines the signal, the transport, and the output shape. All paths go
+//! through `signaldb-sdk` — the CLI holds no Flight or HTTP client of its own
+//! (see the `client-surface-parity` capability).
+
 use std::io::Read;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use anyhow::Context;
 use arrow::util::pretty::pretty_format_batches;
-use arrow_flight::Ticket;
-use arrow_flight::decode::FlightRecordBatchStream;
-use arrow_flight::flight_service_client::FlightServiceClient;
-use clap::Subcommand;
-use futures::{StreamExt, TryStreamExt};
+use clap::Args;
 use signaldb_sdk::types::{QueryIrRequest, QueryIrResponse};
-use tonic::metadata::MetadataValue;
-use tonic::transport::Endpoint;
+use signaldb_sdk::{Client, QueryClient};
 
-#[derive(Subcommand)]
-pub enum QueryAction {
-    /// Execute a native Query IR document against SignalDB (`POST /api/v1/query`)
-    Ir {
-        /// The IR query document as a JSON string. Omit to read from `--file`
-        /// or, failing that, stdin.
-        query: Option<String>,
+/// One query in one language. Exactly one language flag is required.
+#[derive(Args)]
+#[command(group(
+    clap::ArgGroup::new("lang")
+        .required(true)
+        .multiple(false)
+        .args(["sql", "promql", "logql", "traceql", "ir"])
+))]
+pub struct QueryArgs {
+    /// The query string (SQL/PromQL/LogQL/TraceQL), or — with `--ir` — the IR
+    /// JSON document. Omit with `--ir` to read the document from `--file` or
+    /// stdin.
+    query: Option<String>,
 
-        /// Read the IR query document from a file instead of the argument/stdin.
-        #[arg(long, short = 'f')]
-        file: Option<PathBuf>,
+    /// Run as SQL over Arrow Flight; returns tabular rows.
+    #[arg(long)]
+    sql: bool,
+    /// Run as PromQL; returns native Prometheus JSON.
+    #[arg(long)]
+    promql: bool,
+    /// Run as LogQL; returns native Loki JSON.
+    #[arg(long)]
+    logql: bool,
+    /// Run as TraceQL; returns native Tempo JSON.
+    #[arg(long)]
+    traceql: bool,
+    /// Execute a native Query IR JSON document (`POST /api/v1/query`).
+    #[arg(long)]
+    ir: bool,
 
-        /// Router HTTP URL (the base for the generated SDK client).
-        #[arg(long, env = "SIGNALDB_URL", default_value = "http://localhost:3000")]
-        url: String,
+    /// With `--ir`: read the IR document from a file instead of the
+    /// argument/stdin.
+    #[arg(long, short = 'f')]
+    file: Option<PathBuf>,
 
-        /// API key for authentication.
-        #[arg(long, env = "SIGNALDB_API_KEY")]
-        api_key: Option<String>,
-
-        /// Tenant ID.
-        #[arg(long, env = "SIGNALDB_TENANT_ID")]
-        tenant_id: Option<String>,
-
-        /// Dataset ID.
-        #[arg(long, env = "SIGNALDB_DATASET_ID")]
-        dataset_id: Option<String>,
-    },
-    /// Execute a SQL query against SignalDB
-    Sql {
-        /// SQL query to execute
-        sql: String,
-
-        /// Flight service URL
-        #[arg(
-            long,
-            env = "SIGNALDB_FLIGHT_URL",
-            default_value = "http://localhost:50053"
-        )]
-        flight_url: String,
-
-        /// API key for authentication
-        #[arg(long, env = "SIGNALDB_API_KEY")]
-        api_key: Option<String>,
-
-        /// Tenant ID
-        #[arg(long, env = "SIGNALDB_TENANT_ID")]
-        tenant_id: Option<String>,
-
-        /// Dataset ID
-        #[arg(long, env = "SIGNALDB_DATASET_ID")]
-        dataset_id: Option<String>,
-
-        /// Output format
-        #[arg(long, default_value = "table")]
-        format: OutputFormat,
-    },
+    /// Router base URL (used by `--promql`/`--logql`/`--traceql`/`--ir`).
+    #[arg(long, env = "SIGNALDB_URL", default_value = "http://localhost:3000")]
+    url: String,
+    /// Flight endpoint URL (used by `--sql`).
+    #[arg(
+        long,
+        env = "SIGNALDB_FLIGHT_URL",
+        default_value = "http://localhost:50053"
+    )]
+    flight_url: String,
+    /// API key for authentication.
+    #[arg(long, env = "SIGNALDB_API_KEY")]
+    api_key: Option<String>,
+    /// Tenant ID.
+    #[arg(long, env = "SIGNALDB_TENANT_ID")]
+    tenant_id: Option<String>,
+    /// Dataset ID.
+    #[arg(long, env = "SIGNALDB_DATASET_ID")]
+    dataset_id: Option<String>,
+    /// Output format for `--sql` (the native JSON languages ignore this).
+    #[arg(long, default_value = "table")]
+    format: OutputFormat,
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]
 pub enum OutputFormat {
-    /// Pretty-printed table
+    /// Pretty-printed table.
     Table,
-    /// Newline-delimited JSON (one object per row, pipe-friendly)
+    /// Newline-delimited JSON (one object per row, pipe-friendly).
     Json,
-    /// Comma-separated values with header row
+    /// Comma-separated values with header row.
     Csv,
 }
 
-impl QueryAction {
+impl QueryArgs {
     pub async fn run(self) -> anyhow::Result<()> {
-        match self {
-            QueryAction::Ir {
-                query,
-                file,
-                url,
-                api_key,
-                tenant_id,
-                dataset_id,
-            } => {
-                let ir_text = read_ir_document(query, file.as_deref())?;
-                let request: QueryIrRequest = serde_json::from_str(&ir_text)
-                    .map_err(|e| anyhow::anyhow!("invalid IR document: {e}"))?;
+        // Query IR takes a JSON document (argument, --file, or stdin) rather
+        // than a query string, so it is handled before the string-language path.
+        if self.ir {
+            return self.run_ir().await;
+        }
 
-                let response = submit_ir(
-                    &url,
-                    api_key.as_deref(),
-                    tenant_id.as_deref(),
-                    dataset_id.as_deref(),
-                    request,
-                )
-                .await?;
+        let query = self.query.clone().ok_or_else(|| {
+            anyhow::anyhow!("a query string is required (pass it as the positional argument)")
+        })?;
 
-                println!("{}", serde_json::to_string_pretty(&response)?);
-                Ok(())
+        if self.sql {
+            self.run_sql(&query).await
+        } else if self.promql {
+            let v = self
+                .http_client()?
+                .promql_query()
+                .query(&query)
+                .send()
+                .await;
+            print_json_response(v.map(|r| r.into_inner()), "promql_query")
+        } else if self.logql {
+            let v = self.http_client()?.logql_query().query(&query).send().await;
+            print_json_response(v.map(|r| r.into_inner()), "logql_query")
+        } else if self.traceql {
+            let v = self.http_client()?.search().q(&query).send().await;
+            print_json_response(v.map(|r| r.into_inner()), "tempo search")
+        } else {
+            // clap's required ArgGroup guarantees exactly one flag is set.
+            unreachable!("a language flag is required")
+        }
+    }
+
+    /// Build the SDK HTTP client, carrying bearer/tenant/dataset on every
+    /// request so all generated calls are authenticated.
+    fn http_client(&self) -> anyhow::Result<Client> {
+        build_http_client(
+            &self.url,
+            self.api_key.as_deref(),
+            self.tenant_id.as_deref(),
+            self.dataset_id.as_deref(),
+        )
+    }
+
+    async fn run_ir(&self) -> anyhow::Result<()> {
+        let ir_text = read_ir_document(self.query.clone(), self.file.as_deref())?;
+        let request: QueryIrRequest = serde_json::from_str(&ir_text)
+            .map_err(|e| anyhow::anyhow!("invalid IR document: {e}"))?;
+        let response = submit_ir(
+            &self.url,
+            self.api_key.as_deref(),
+            self.tenant_id.as_deref(),
+            self.dataset_id.as_deref(),
+            request,
+        )
+        .await?;
+        println!("{}", serde_json::to_string_pretty(&response)?);
+        Ok(())
+    }
+
+    async fn run_sql(&self, query: &str) -> anyhow::Result<()> {
+        let mut client = QueryClient::new(&self.flight_url);
+        if let Some(key) = &self.api_key {
+            client = client.with_api_key(key);
+        }
+        if let Some(tenant) = &self.tenant_id {
+            client = client.with_tenant(tenant);
+        }
+        if let Some(dataset) = &self.dataset_id {
+            client = client.with_dataset(dataset);
+        }
+
+        let batches = client.sql(query).await?;
+        if batches.is_empty() || batches.iter().all(|b| b.num_rows() == 0) {
+            eprintln!("No results.");
+            return Ok(());
+        }
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+        match self.format {
+            OutputFormat::Table => {
+                let formatted = pretty_format_batches(&batches)?;
+                println!("{formatted}");
+                eprintln!("{total_rows} row(s) returned.");
             }
-            QueryAction::Sql {
-                sql,
-                flight_url,
-                api_key,
-                tenant_id,
-                dataset_id,
-                format,
-            } => {
-                let endpoint = Endpoint::from_shared(flight_url.clone())
-                    .map_err(|e| anyhow::anyhow!("Invalid flight URL '{flight_url}': {e}"))?
-                    .timeout(Duration::from_secs(30))
-                    .connect_timeout(Duration::from_secs(10));
-
-                let channel = endpoint.connect().await.map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to connect to SignalDB at {flight_url}: {e}\n  \
-                         Is the server running? Try: ./scripts/run-dev.sh"
-                    )
-                })?;
-                let mut client = FlightServiceClient::new(channel);
-
-                let ticket = Ticket {
-                    ticket: sql.as_bytes().to_vec().into(),
-                };
-                let mut request = tonic::Request::new(ticket);
-
-                if let Some(key) = &api_key {
-                    let value = MetadataValue::try_from(format!("Bearer {key}"))?;
-                    request.metadata_mut().insert("authorization", value);
+            OutputFormat::Json => {
+                let mut writer = arrow::json::LineDelimitedWriter::new(std::io::stdout());
+                for batch in &batches {
+                    writer.write(batch)?;
                 }
-                if let Some(tenant) = &tenant_id {
-                    let value = MetadataValue::try_from(tenant.as_str())?;
-                    request.metadata_mut().insert("x-tenant-id", value);
+                writer.finish()?;
+            }
+            OutputFormat::Csv => {
+                let mut writer = arrow::csv::WriterBuilder::new()
+                    .with_header(true)
+                    .build(std::io::stdout());
+                for batch in &batches {
+                    writer.write(batch)?;
                 }
-                if let Some(dataset) = &dataset_id {
-                    let value = MetadataValue::try_from(dataset.as_str())?;
-                    request.metadata_mut().insert("x-dataset-id", value);
-                }
-
-                let response = client
-                    .do_get(request)
-                    .await
-                    .map_err(|status| anyhow::anyhow!("{}", format_flight_error(&status)))?;
-                let flight_stream = response.into_inner();
-                let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(
-                    flight_stream.map_err(|e| arrow_flight::error::FlightError::Tonic(Box::new(e))),
-                );
-
-                let mut batches = Vec::new();
-                while let Some(result) = batch_stream.next().await {
-                    batches.push(result?);
-                }
-
-                if batches.is_empty() {
-                    eprintln!("No results.");
-                    return Ok(());
-                }
-
-                let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-
-                match format {
-                    OutputFormat::Table => {
-                        let formatted = pretty_format_batches(&batches)?;
-                        println!("{formatted}");
-                        eprintln!("{total_rows} row(s) returned.");
-                    }
-                    OutputFormat::Json => {
-                        let mut writer = arrow::json::LineDelimitedWriter::new(std::io::stdout());
-                        for batch in &batches {
-                            writer.write(batch)?;
-                        }
-                        writer.finish()?;
-                    }
-                    OutputFormat::Csv => {
-                        let mut writer = arrow::csv::WriterBuilder::new()
-                            .with_header(true)
-                            .build(std::io::stdout());
-                        for batch in &batches {
-                            writer.write(batch)?;
-                        }
-                    }
-                }
-
-                Ok(())
             }
         }
+        Ok(())
     }
 }
 
-/// Read the IR query document from the argument, a file, or stdin (in that
-/// order of precedence).
+/// Build an SDK HTTP client that carries bearer/tenant/dataset headers on every
+/// request, mirroring how the MCP server constructs it.
+fn build_http_client(
+    url: &str,
+    api_key: Option<&str>,
+    tenant_id: Option<&str>,
+    dataset_id: Option<&str>,
+) -> anyhow::Result<Client> {
+    use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+    let base_url = url.trim_end_matches('/').to_string();
+    let mut headers = HeaderMap::new();
+    if let Some(key) = api_key {
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {key}"))
+                .context("invalid API key for Authorization header")?,
+        );
+    }
+    if let Some(tenant) = tenant_id {
+        headers.insert(
+            "x-tenant-id",
+            HeaderValue::from_str(tenant).context("invalid tenant id")?,
+        );
+    }
+    if let Some(dataset) = dataset_id {
+        headers.insert(
+            "x-dataset-id",
+            HeaderValue::from_str(dataset).context("invalid dataset id")?,
+        );
+    }
+    let http = reqwest::Client::builder()
+        .default_headers(headers)
+        .timeout(Duration::from_secs(60))
+        .build()
+        .context("building HTTP client")?;
+    Ok(Client::new_with_client(&base_url, http))
+}
+
+/// Read the IR document from the argument, else a file, else stdin.
 fn read_ir_document(
     query: Option<String>,
     file: Option<&std::path::Path>,
@@ -221,8 +252,7 @@ fn read_ir_document(
     Ok(buf)
 }
 
-/// Submit an IR document via the generated SDK client and return the enveloped
-/// result. Uses only the generated client — no hand-written HTTP.
+/// Submit a Query IR request via the generated SDK and return the envelope.
 async fn submit_ir(
     url: &str,
     api_key: Option<&str>,
@@ -230,29 +260,7 @@ async fn submit_ir(
     dataset_id: Option<&str>,
     request: QueryIrRequest,
 ) -> anyhow::Result<QueryIrResponse> {
-    use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
-
-    // The generated SDK bakes absolute paths; the base is the router root.
-    let base_url = url.trim_end_matches('/').to_string();
-    let mut headers = HeaderMap::new();
-    if let Some(key) = api_key {
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {key}"))?,
-        );
-    }
-    if let Some(tenant) = tenant_id {
-        headers.insert("x-tenant-id", HeaderValue::from_str(tenant)?);
-    }
-    if let Some(dataset) = dataset_id {
-        headers.insert("x-dataset-id", HeaderValue::from_str(dataset)?);
-    }
-    let http = reqwest::Client::builder()
-        .default_headers(headers)
-        .timeout(Duration::from_secs(60))
-        .build()?;
-    let client = signaldb_sdk::Client::new_with_client(&base_url, http);
-
+    let client = build_http_client(url, api_key, tenant_id, dataset_id)?;
     let response = client
         .query_ir()
         .body(request)
@@ -262,28 +270,20 @@ async fn submit_ir(
     Ok(response.into_inner())
 }
 
-fn format_flight_error(status: &tonic::Status) -> String {
-    let msg = status.message().trim();
-    match status.code() {
-        tonic::Code::Unavailable => {
-            format!("Service unavailable: {msg}\n  No query service is reachable.")
+/// Print a native-JSON query response to stdout, or turn an SDK error into an
+/// `anyhow` error with context so the process exits non-zero with a diagnostic
+/// on stderr.
+fn print_json_response<T, E>(result: Result<T, E>, what: &str) -> anyhow::Result<()>
+where
+    T: serde::Serialize,
+    E: std::fmt::Display,
+{
+    match result {
+        Ok(value) => {
+            println!("{}", serde_json::to_string_pretty(&value)?);
+            Ok(())
         }
-        tonic::Code::Internal => {
-            if let Some(detail) = msg.strip_prefix("Query execution failed: ") {
-                format!("Query failed: {detail}")
-            } else {
-                format!("Server error: {msg}")
-            }
-        }
-        tonic::Code::InvalidArgument => format!("Invalid query: {msg}"),
-        tonic::Code::NotFound => format!("Not found: {msg}"),
-        tonic::Code::Unauthenticated => {
-            format!("Authentication required: {msg}\n  Use --api-key or set SIGNALDB_API_KEY.")
-        }
-        tonic::Code::PermissionDenied => {
-            format!("Permission denied: {msg}\n  Check your API key and tenant access.")
-        }
-        _ => format!("{}: {msg}", status.code()),
+        Err(e) => anyhow::bail!("{what} failed: {e}"),
     }
 }
 
@@ -320,8 +320,8 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    // Task 8.1 — the CLI reads an IR query and submits it via the generated SDK,
-    // returning the enveloped result (no hand-written HTTP).
+    // The CLI reads an IR query and submits it via the generated SDK, returning
+    // the enveloped result (no hand-written HTTP).
     #[tokio::test]
     async fn ir_query_submits_via_sdk_and_returns_envelope() {
         let mut server = mockito::Server::new_async().await;

@@ -34,25 +34,13 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Manage tenants
-    Tenant {
+    /// Query SignalDB in one language (exactly one of
+    /// --sql/--promql/--logql/--traceql)
+    Query(query::QueryArgs),
+    /// Administrative operations (tenants, API keys, datasets)
+    Admin {
         #[command(subcommand)]
-        action: tenant::TenantAction,
-    },
-    /// Manage API keys
-    ApiKey {
-        #[command(subcommand)]
-        action: api_key::ApiKeyAction,
-    },
-    /// Manage datasets
-    Dataset {
-        #[command(subcommand)]
-        action: dataset::DatasetAction,
-    },
-    /// Query SignalDB via SQL
-    Query {
-        #[command(subcommand)]
-        action: query::QueryAction,
+        action: AdminAction,
     },
     /// Bootstrap human users directly in the service catalog
     User {
@@ -121,10 +109,30 @@ enum Commands {
     },
 }
 
+/// Administrative subcommands, all reached through the admin API via the SDK.
+#[derive(Subcommand)]
+enum AdminAction {
+    /// Manage tenants
+    Tenant {
+        #[command(subcommand)]
+        action: tenant::TenantAction,
+    },
+    /// Manage API keys
+    ApiKey {
+        #[command(subcommand)]
+        action: api_key::ApiKeyAction,
+    },
+    /// Manage datasets
+    Dataset {
+        #[command(subcommand)]
+        action: dataset::DatasetAction,
+    },
+}
+
 impl Cli {
     pub async fn run(self) -> anyhow::Result<()> {
-        if let Commands::Query { action } = self.command {
-            return action.run().await;
+        if let Commands::Query(args) = self.command {
+            return args.run().await;
         }
 
         if let Commands::Completions { shell } = self.command {
@@ -174,11 +182,13 @@ impl Cli {
         let client = Client::new_with_client(&base_url, http);
 
         match self.command {
-            Commands::Tenant { action } => action.run(&client).await,
-            Commands::ApiKey { action } => action.run(&client).await,
-            Commands::Dataset { action } => action.run(&client).await,
+            Commands::Admin { action } => match action {
+                AdminAction::Tenant { action } => action.run(&client).await,
+                AdminAction::ApiKey { action } => action.run(&client).await,
+                AdminAction::Dataset { action } => action.run(&client).await,
+            },
             Commands::User { action } => action.run(&client).await,
-            Commands::Query { .. } => unreachable!(),
+            Commands::Query(_) => unreachable!(),
             Commands::Completions { .. } => unreachable!(),
             Commands::Tui { .. } => unreachable!(),
         }

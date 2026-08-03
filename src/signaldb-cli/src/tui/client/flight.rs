@@ -1,16 +1,10 @@
 //! Flight SQL client for TUI data access.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use arrow::array::{Array, Float64Array, Int64Array, StringArray, UInt64Array};
 use arrow::record_batch::RecordBatch;
-use arrow_flight::Ticket;
-use arrow_flight::decode::FlightRecordBatchStream;
-use arrow_flight::flight_service_client::FlightServiceClient;
-use futures::{StreamExt, TryStreamExt};
-use tonic::metadata::MetadataValue;
-use tonic::transport::Endpoint;
+use signaldb_sdk::{QueryClient, QueryError};
 
 use super::models::{
     MetricFilters, MetricNameInfo, MetricType, SpanInfo, TraceDetail, TraceResult,
@@ -61,72 +55,28 @@ impl FlightSqlClient {
     }
 
     /// Execute a SQL query and return raw record batches.
+    ///
+    /// Delegates to `signaldb_sdk::QueryClient` — the TUI holds no Flight
+    /// client of its own (see the `client-surface-parity` capability).
     pub async fn query_sql(&self, sql: &str) -> Result<Vec<RecordBatch>, FlightClientError> {
-        let endpoint = Endpoint::from_shared(self.flight_url.clone())
-            .map_err(|e| {
-                FlightClientError::Connection(format!(
-                    "invalid flight URL '{}': {e}",
-                    self.flight_url
-                ))
-            })?
-            .timeout(Duration::from_secs(30))
-            .connect_timeout(Duration::from_secs(10));
-
-        let channel = endpoint.connect().await.map_err(|e| {
-            FlightClientError::Connection(format!(
-                "failed to connect to SignalDB at {}: {e}",
-                self.flight_url
-            ))
-        })?;
-
-        let mut client = FlightServiceClient::new(channel);
-
-        let ticket = Ticket {
-            ticket: sql.as_bytes().to_vec().into(),
-        };
-        let mut request = tonic::Request::new(ticket);
-
+        let mut client = QueryClient::new(&self.flight_url);
         if let Some(key) = &self.api_key {
-            let value = MetadataValue::try_from(format!("Bearer {key}"))
-                .map_err(|e| FlightClientError::Auth(format!("invalid API key: {e}")))?;
-            request.metadata_mut().insert("authorization", value);
+            client = client.with_api_key(key);
         }
         if let Some(tenant) = &self.tenant_id {
-            let value = MetadataValue::try_from(tenant.as_str())
-                .map_err(|e| FlightClientError::Auth(format!("invalid tenant ID: {e}")))?;
-            request.metadata_mut().insert("x-tenant-id", value);
+            client = client.with_tenant(tenant);
         }
         if let Some(dataset) = &self.dataset_id {
-            let value = MetadataValue::try_from(dataset.as_str())
-                .map_err(|e| FlightClientError::Auth(format!("invalid dataset ID: {e}")))?;
-            request.metadata_mut().insert("x-dataset-id", value);
+            client = client.with_dataset(dataset);
         }
 
-        let response = client
-            .do_get(request)
-            .await
-            .map_err(|status| match status.code() {
-                tonic::Code::Unauthenticated | tonic::Code::PermissionDenied => {
-                    FlightClientError::Auth(status.message().to_string())
-                }
-                tonic::Code::Unavailable => {
-                    FlightClientError::Connection(status.message().to_string())
-                }
-                _ => FlightClientError::Query(status.message().to_string()),
-            })?;
-
-        let flight_stream = response.into_inner();
-        let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(
-            flight_stream.map_err(|e| arrow_flight::error::FlightError::Tonic(Box::new(e))),
-        );
-
-        let mut batches = Vec::new();
-        while let Some(result) = batch_stream.next().await {
-            let batch = result.map_err(|e| FlightClientError::Query(e.to_string()))?;
-            batches.push(batch);
-        }
-
-        Ok(batches)
+        client.sql(sql).await.map_err(|e| match e {
+            QueryError::InvalidUrl { .. } | QueryError::Connect { .. } => {
+                FlightClientError::Connection(e.to_string())
+            }
+            QueryError::Metadata(msg) => FlightClientError::Auth(msg),
+            QueryError::Server(msg) | QueryError::Decode(msg) => FlightClientError::Query(msg),
+        })
     }
 
     /// Search for traces matching the given parameters.
