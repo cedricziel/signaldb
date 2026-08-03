@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantsData, ListTenantsResponses, LogqlQueryData, LogqlQueryRangeData, LogqlQueryRangeResponses, LogqlQueryResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, OpsCompactData, OpsCompactDryRunData, OpsCompactDryRunErrors, OpsCompactDryRunResponses, OpsCompactErrors, OpsCompactResponses, OpsCompactStatusData, OpsCompactStatusErrors, OpsCompactStatusResponses, PromqlQueryData, PromqlQueryRangeData, PromqlQueryRangeResponses, PromqlQueryResponses, QueryIrData, QueryIrErrors, QueryIrResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsResponses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses } from './types.gen';
+import type { CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantsData, ListTenantsResponses, LogqlQueryData, LogqlQueryRangeData, LogqlQueryRangeResponses, LogqlQueryResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, OauthConsentContextData, OauthConsentContextErrors, OauthConsentContextResponses, OauthConsentDecisionData, OauthConsentDecisionErrors, OauthConsentDecisionResponses, OpsCompactData, OpsCompactDryRunData, OpsCompactDryRunErrors, OpsCompactDryRunResponses, OpsCompactErrors, OpsCompactResponses, OpsCompactStatusData, OpsCompactStatusErrors, OpsCompactStatusResponses, PromqlQueryData, PromqlQueryRangeData, PromqlQueryRangeResponses, PromqlQueryResponses, QueryIrData, QueryIrErrors, QueryIrResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsResponses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -285,6 +285,30 @@ export const logqlQueryRange = <ThrowOnError extends boolean = false>(options: O
     url: '/loki/api/v1/query_range',
     ...options
 });
+
+/**
+ * Record the human's consent decision and, on approval, mint the single-use
+ * authorization code. Authenticated by the browser session cookie; the code is
+ * bound to the chosen tenant (which the user must be a member of), the granted
+ * read scopes, the client, the redirect URI, the PKCE challenge, and the
+ * resource. Returns the URL the SPA should navigate to.
+ */
+export const oauthConsentDecision = <ThrowOnError extends boolean = false>(options: Options<OauthConsentDecisionData, ThrowOnError>): RequestResult<OauthConsentDecisionResponses, OauthConsentDecisionErrors, ThrowOnError> => (options.client ?? client).post<OauthConsentDecisionResponses, OauthConsentDecisionErrors, ThrowOnError>({
+    url: '/oauth/authorize/decision',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Provide the consent screen's context: the requesting client's name and the
+ * tenants the signed-in user may grant. Authenticated by the browser session
+ * cookie — the consent screen runs before any tenant is chosen, so unlike
+ * `whoami` this needs no tenant context.
+ */
+export const oauthConsentContext = <ThrowOnError extends boolean = false>(options: Options<OauthConsentContextData, ThrowOnError>): RequestResult<OauthConsentContextResponses, OauthConsentContextErrors, ThrowOnError> => (options.client ?? client).get<OauthConsentContextResponses, OauthConsentContextErrors, ThrowOnError>({ url: '/oauth/consent/context', ...options });
 
 /**
  * GET|POST /prometheus/api/v1/query — instant query.

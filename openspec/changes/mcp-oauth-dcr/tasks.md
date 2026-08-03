@@ -56,8 +56,8 @@
 
 ## 12. API contract regeneration (HTTP API surface)
 
-- [ ] 12.1 Annotate any OAuth/discovery endpoints surfaced in the code-first OpenAPI document and update `api/signaldb-api.json`; keep the golden test `openapi_spec_is_up_to_date` green.
-- [ ] 12.2 Regenerate the Rust SDK (`src/signaldb-sdk`) and the TypeScript client (`src/ui/src/api/gen`) consumed by the consent UI. (CLI connector-management surface — list/revoke granted connectors — is scoped out of v1; note it as a follow-up.)
+- [x] 12.1 Annotate any OAuth/discovery endpoints surfaced in the code-first OpenAPI document and update `api/signaldb-api.json`; keep the golden test `openapi_spec_is_up_to_date` green.
+- [x] 12.2 Regenerate the Rust SDK (`src/signaldb-sdk`) and the TypeScript client (`src/ui/src/api/gen`) consumed by the consent UI. (CLI connector-management surface — list/revoke granted connectors — is scoped out of v1; note it as a follow-up.)
 
 ## 13. End-to-end integration coverage
 
