@@ -87,17 +87,16 @@ aggregate(step)` lowers to TableScan→Filter→Projection(date_bin)→
 - [x] 4.7 Failing test: `regex` safety — a normal pattern matches; an adversarial
       catastrophic-backtracking pattern is bounded by the timeout guard and
       returns an error rather than hanging (predicate `regex` op).
-- [~] 4.8 Implement the single-signal planner (from/where/extract/aggregate/
-  topk/order/limit) → `LogicalPlan`, carrying resolved absolute time bounds
-  through the ticket/plan. `extract` v1 = `json` + `logfmt`; predicate `regex`
-  and the deferred `regex` extract parser run behind a bounded, timeout-
-  guarded matcher. Make 4.1–4.7 pass.
-  DONE: from/where/aggregate/topk/bottomk/order/limit, promotion-invariant
-  resolution against the real scanned schema, absent-value semantics, curated
-  projection, deterministic relative-time, and the bounded predicate-`regex`
-  guard. REMAINING (follow-up commit): `extract` (json/logfmt) lowering — the
-  stage validates (log-only) but currently returns a defined `Unsupported`
-  error at planning until the extraction UDF lands.
+- [x] 4.8 Implement the single-signal planner (from/where/extract/aggregate/
+      topk/order/limit) → `LogicalPlan`, carrying resolved absolute time bounds
+      through the ticket/plan. `extract` v1 = `json` + `logfmt`; predicate
+      `regex` and the deferred `regex` extract parser run behind a bounded,
+      timeout-guarded matcher. Make 4.1–4.7 pass.
+      DONE: from/where/aggregate/topk/bottomk/order/limit + `extract`
+      (json/logfmt via a bounded `ir_extract` scalar UDF), promotion-invariant
+      resolution against the real scanned schema, absent-value semantics,
+      curated projection, deterministic relative-time, and the bounded
+      predicate-`regex` guard.
 
 ## 5. Querier Flight ticket (`querier`)
 

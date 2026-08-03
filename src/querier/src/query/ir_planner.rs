@@ -30,16 +30,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use common::query_ir::{
-    Aggregate, ComparisonOp, Document, FieldResolver, Leaf, Literal, Predicate, Resolved,
-    ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType, coerce, validate,
+    Aggregate, ComparisonOp, Document, Extract, FieldResolver, Leaf, Literal, Parser, Predicate,
+    Resolved, ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType, coerce, validate,
 };
+use datafusion::arrow::array::{Array, ArrayRef, StringArray};
 use datafusion::arrow::datatypes::{DataType, IntervalMonthDayNano, TimeUnit};
 use datafusion::functions::core::expr_fn::{coalesce, get_field};
 use datafusion::functions::datetime::expr_fn::date_bin;
 use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::expr_fn::contains;
 use datafusion::functions_aggregate::expr_fn::{approx_percentile_cont, avg, count, max, min, sum};
-use datafusion::logical_expr::{Expr, cast, col, lit, not};
+use datafusion::logical_expr::{
+    ColumnarValue, Expr, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility, cast,
+    col, lit, not,
+};
 use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
@@ -299,6 +303,7 @@ impl IrService {
             aggregated: false,
             series_shaped: false,
             col_of: HashMap::new(),
+            derived_types: HashMap::new(),
             schema_cols: base
                 .schema()
                 .fields()
@@ -343,8 +348,11 @@ struct Lowering<'a> {
     now_ns: i64,
     aggregated: bool,
     series_shaped: bool,
-    /// Logical name → current DataFrame column name (for post-aggregate refs).
+    /// Logical name → current DataFrame column name (extract-derived and
+    /// post-aggregate output columns).
     col_of: HashMap<String, String>,
+    /// Declared types of extract-derived fields, for literal coercion.
+    derived_types: HashMap<String, ValueType>,
     /// The current base-table physical column names.
     schema_cols: Vec<String>,
 }
@@ -395,10 +403,36 @@ impl Lowering<'_> {
             Stage::Limit(n) => df
                 .limit(0, Some(*n as usize))
                 .map_err(QuerierError::QueryFailed),
-            Stage::Extract(_) => Err(QuerierError::Unsupported(
-                "the `extract` stage is not yet lowered by the IR planner".to_string(),
-            )),
+            Stage::Extract(extract) => self.lower_extract(df, extract),
         }
+    }
+
+    /// Lower an `extract` stage: derive typed, query-local columns from the log
+    /// `body` via the bounded `ir_extract` UDF, one `with_column` per field.
+    fn lower_extract(
+        &mut self,
+        df: DataFrame,
+        extract: &Extract,
+    ) -> Result<DataFrame, QuerierError> {
+        let parser = match extract.parser {
+            Parser::Json => "json",
+            Parser::Logfmt => "logfmt",
+        };
+        let udf = ScalarUDF::from(ExtractUdf::new());
+        let mut df = df;
+        for f in &extract.as_fields {
+            let raw = udf.call(vec![col("body"), lit(parser), lit(f.name.clone())]);
+            let typed = cast(raw, arrow_type_for(&f.value_type));
+            let alias = safe_ident(&f.name);
+            df = df
+                .with_column(&alias, typed)
+                .map_err(QuerierError::QueryFailed)?;
+            // Later stages resolve the logical name to this derived column.
+            self.col_of.insert(f.name.clone(), alias);
+            self.derived_types
+                .insert(f.name.clone(), f.value_type.clone());
+        }
+        Ok(df)
     }
 
     /// The current DataFrame column name for a logical reference.
@@ -557,15 +591,26 @@ impl Lowering<'_> {
     }
 
     fn lower_leaf(&self, leaf: &Leaf) -> Result<Expr, QuerierError> {
-        let resolved = self
-            .resolver
-            .resolve("", &leaf.field)
-            .ok_or_else(|| QuerierError::InvalidInput(format!("unknown field '{}'", leaf.field)))?;
-        let is_json = matches!(resolved, Resolved::JsonPath { .. });
-        let value_type = resolved.value_type().clone();
-        let field_expr = match &resolved {
-            Resolved::Column { name, .. } => col(name.clone()),
-            Resolved::JsonPath { key, .. } => self.attr_expr(key),
+        // An extract-derived or aggregate-output column takes precedence over
+        // registry resolution (it is a real DataFrame column now).
+        let (is_json, value_type, field_expr) = if let Some(alias) = self.col_of.get(&leaf.field) {
+            let ty = self
+                .derived_types
+                .get(&leaf.field)
+                .cloned()
+                .unwrap_or(ValueType::String);
+            (false, ty, col(alias.clone()))
+        } else {
+            let resolved = self.resolver.resolve("", &leaf.field).ok_or_else(|| {
+                QuerierError::InvalidInput(format!("unknown field '{}'", leaf.field))
+            })?;
+            let is_json = matches!(resolved, Resolved::JsonPath { .. });
+            let ty = resolved.value_type().clone();
+            let expr = match &resolved {
+                Resolved::Column { name, .. } => col(name.clone()),
+                Resolved::JsonPath { key, .. } => self.attr_expr(key),
+            };
+            (is_json, ty, expr)
         };
 
         let coerce_val = |v: &serde_json::Value, ty: &ValueType| -> Result<Literal, QuerierError> {
@@ -693,7 +738,8 @@ impl Lowering<'_> {
             Some(fields) => fields
                 .iter()
                 .map(|f| {
-                    if self.aggregated {
+                    if self.aggregated || self.col_of.contains_key(f) {
+                        // Aggregate output or extract-derived column.
                         col(self.df_col(f))
                     } else {
                         match self.resolver.resolve("", f) {
@@ -719,6 +765,108 @@ impl Lowering<'_> {
                 .collect(),
         };
         df.select(projection).map_err(QuerierError::QueryFailed)
+    }
+}
+
+/// The Arrow data type an extracted field is cast to.
+fn arrow_type_for(vt: &ValueType) -> DataType {
+    match vt {
+        ValueType::Int64 | ValueType::DurationNs => DataType::Int64,
+        ValueType::Float64 => DataType::Float64,
+        ValueType::Bool => DataType::Boolean,
+        ValueType::TimestampNs => DataType::Timestamp(TimeUnit::Nanosecond, None),
+        _ => DataType::Utf8,
+    }
+}
+
+/// A scalar UDF that extracts a field from a log body string, `ir_extract(body,
+/// parser, key) -> Utf8`. `extract` v1 supports the `json` and `logfmt`
+/// parsers. Extraction is bounded per row (no backtracking); a missing field
+/// yields NULL, which the IR's absent-value semantics then handle.
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct ExtractUdf {
+    signature: Signature,
+}
+
+impl ExtractUdf {
+    fn new() -> Self {
+        ExtractUdf {
+            signature: Signature::exact(
+                vec![DataType::Utf8, DataType::Utf8, DataType::Utf8],
+                Volatility::Immutable,
+            ),
+        }
+    }
+}
+
+impl ScalarUDFImpl for ExtractUdf {
+    fn name(&self) -> &str {
+        "ir_extract"
+    }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+    fn return_type(&self, _arg_types: &[DataType]) -> datafusion::error::Result<DataType> {
+        Ok(DataType::Utf8)
+    }
+    fn invoke_with_args(
+        &self,
+        args: ScalarFunctionArgs,
+    ) -> datafusion::error::Result<ColumnarValue> {
+        let arrays = ColumnarValue::values_to_arrays(&args.args)?;
+        let bodies = arrays[0]
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| {
+                datafusion::error::DataFusionError::Internal("ir_extract: body not Utf8".into())
+            })?;
+        let parser = string_scalar(&arrays[1], 0);
+        let key = string_scalar(&arrays[2], 0);
+        let out: StringArray = (0..bodies.len())
+            .map(|i| {
+                if bodies.is_null(i) {
+                    None
+                } else {
+                    extract_field(bodies.value(i), &parser, &key)
+                }
+            })
+            .collect();
+        Ok(ColumnarValue::Array(Arc::new(out)))
+    }
+}
+
+fn string_scalar(array: &ArrayRef, row: usize) -> String {
+    array
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .filter(|a| !a.is_null(row))
+        .map(|a| a.value(row).to_string())
+        .unwrap_or_default()
+}
+
+/// Extract a single field from a log body by `parser`. Bounded, allocation-light.
+fn extract_field(body: &str, parser: &str, key: &str) -> Option<String> {
+    match parser {
+        "json" => {
+            let v: serde_json::Value = serde_json::from_str(body).ok()?;
+            let field = v.get(key)?;
+            Some(match field {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Null => return None,
+                other => other.to_string(),
+            })
+        }
+        "logfmt" => {
+            for token in body.split_whitespace() {
+                if let Some((k, val)) = token.split_once('=')
+                    && k == key
+                {
+                    return Some(val.trim_matches('"').to_string());
+                }
+            }
+            None
+        }
+        _ => None,
     }
 }
 
@@ -1053,6 +1201,80 @@ mod tests {
             .unwrap()
             .value(0);
         assert_eq!(dur, 900);
+    }
+
+    /// A logs table whose `body` holds JSON documents, for `extract`.
+    fn logs_json_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("body", DataType::Utf8, true),
+            Field::new("service_name", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20, 30])),
+                Arc::new(StringArray::from(vec![
+                    Some(r#"{"level":"error","code":500}"#),
+                    Some(r#"{"level":"info","code":200}"#),
+                    Some(r#"{"level":"error","code":503}"#),
+                ])),
+                Arc::new(StringArray::from(vec!["api", "api", "web"])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    // Task 4.8 — extract (json) derives a typed field usable by a later stage.
+    #[tokio::test]
+    async fn extract_json_derives_usable_field() {
+        let svc = IrService::new(logs_json_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["level"],
+            "pipeline": [
+                { "extract": { "parser": "json", "as": [{ "name": "level", "type": "string" }] } },
+                { "where": { "field": "level", "op": "eq", "value": "error" } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap();
+        let batches = df.collect().await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 2, "two rows have level=error");
+        // The projected column is the extracted `level`.
+        for b in &batches {
+            let col = b.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+            for i in 0..b.num_rows() {
+                assert_eq!(col.value(i), "error");
+            }
+        }
+    }
+
+    #[test]
+    fn extract_field_parses_json_and_logfmt() {
+        assert_eq!(
+            extract_field(r#"{"level":"error"}"#, "json", "level"),
+            Some("error".to_string())
+        );
+        assert_eq!(
+            extract_field("level=warn dur=5ms", "logfmt", "dur"),
+            Some("5ms".to_string())
+        );
+        assert_eq!(extract_field("no match here", "logfmt", "level"), None);
     }
 
     // Task 4.4 — absent-value semantics in the lowered plan.
