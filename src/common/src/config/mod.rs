@@ -1034,6 +1034,66 @@ pub struct McpConfig {
     /// it is resolved via service discovery like any other downstream call.
     #[serde(default)]
     pub router_url: Option<String>,
+    /// OAuth 2.1 authorization-server settings for the MCP surface. The router
+    /// serves the authorization server; the sidecar ignores this section.
+    #[serde(default)]
+    pub oauth: OAuthConfig,
+}
+
+/// OAuth 2.1 authorization-server configuration for the MCP surface
+/// (change: mcp-oauth-dcr). Consumed by the router, which hosts the
+/// authorization server; the standalone sidecar ignores it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OAuthConfig {
+    /// Whether the router serves the OAuth authorization-server surface
+    /// (discovery, dynamic client registration, `/authorize`, `/token`). Off by
+    /// default so a plain deployment exposes no OAuth endpoints.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Absolute base URL of this authorization server as reached by external
+    /// OAuth clients (e.g. `https://signaldb.example.com`). Used to build the
+    /// absolute URLs in the discovery documents. Required when `enabled`.
+    #[serde(default)]
+    pub issuer_url: Option<String>,
+    /// Absolute URL of the MCP resource the issued tokens are bound to — their
+    /// audience (e.g. `https://signaldb.example.com/mcp`). A token presented to
+    /// a different resource is rejected. Required when `enabled`.
+    #[serde(default)]
+    pub resource_url: Option<String>,
+    /// Lifetime of issued access tokens.
+    #[serde(with = "humantime_serde", default = "default_access_token_ttl")]
+    pub access_token_ttl: Duration,
+    /// Lifetime of issued refresh tokens.
+    #[serde(with = "humantime_serde", default = "default_refresh_token_ttl")]
+    pub refresh_token_ttl: Duration,
+    /// Lifetime of authorization codes; kept short to limit replay.
+    #[serde(with = "humantime_serde", default = "default_authorization_code_ttl")]
+    pub authorization_code_ttl: Duration,
+}
+
+fn default_access_token_ttl() -> Duration {
+    Duration::from_secs(60 * 60) // 1 hour
+}
+
+fn default_refresh_token_ttl() -> Duration {
+    Duration::from_secs(60 * 60 * 24 * 30) // 30 days
+}
+
+fn default_authorization_code_ttl() -> Duration {
+    Duration::from_secs(60) // 60 seconds
+}
+
+impl Default for OAuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            issuer_url: None,
+            resource_url: None,
+            access_token_ttl: default_access_token_ttl(),
+            refresh_token_ttl: default_refresh_token_ttl(),
+            authorization_code_ttl: default_authorization_code_ttl(),
+        }
+    }
 }
 
 impl McpConfig {
@@ -1051,6 +1111,7 @@ impl Default for McpConfig {
             enabled: false,
             bind_address: Self::default_bind(),
             router_url: None,
+            oauth: OAuthConfig::default(),
         }
     }
 }

@@ -5,6 +5,7 @@
 
 mod authenticator;
 mod middleware;
+pub mod oauth;
 pub mod password;
 pub mod session;
 pub mod validation;
@@ -17,6 +18,12 @@ pub use password::{
 };
 pub use session::{SESSION_COOKIE, session_token_from_headers};
 pub use validation::{ValidationError, validate_dataset_id, validate_id, validate_tenant_id};
+
+/// Per-signal read scopes granted over the query surface (e.g. the MCP read
+/// tools). The mirror of the acceptor's ingest write scopes; a token or key
+/// carrying `<signal>:read` may read that signal (see
+/// [`TenantContext::can_read`]).
+pub const READ_SCOPES: [&str; 4] = ["traces:read", "logs:read", "metrics:read", "profiles:read"];
 
 /// Human principal resolved from a server-side browser session.
 #[derive(Debug, Clone)]
@@ -95,17 +102,21 @@ impl TenantContext {
     }
 
     /// Attach the human principal that produced this tenant context.
+    ///
+    /// `session_id` is the browser session that can revoke this context;
+    /// `None` for principals with no revocable browser session (e.g. an OAuth
+    /// access token, whose revocation is the token row itself).
     pub fn with_user(
         mut self,
         user_id: String,
         role: crate::catalog::MembershipRole,
         is_instance_admin: bool,
-        session_id: String,
+        session_id: Option<String>,
     ) -> Self {
         self.user_id = Some(user_id);
         self.role = Some(role);
         self.is_instance_admin = is_instance_admin;
-        self.session_id = Some(session_id);
+        self.session_id = session_id;
         self
     }
 
@@ -134,6 +145,19 @@ impl TenantContext {
             return false;
         }
         let required = format!("{signal}:write");
+        self.api_key_scopes
+            .as_ref()
+            .is_none_or(|scopes| scopes.iter().any(|scope| scope == &required))
+    }
+
+    /// Whether this principal may read a particular telemetry signal.
+    ///
+    /// Every membership role (including `Viewer`) may read; a legacy key with
+    /// no explicit scopes is unrestricted. When scopes are present, the
+    /// matching `<signal>:read` scope is required — write scopes do not grant
+    /// read. This mirrors [`can_ingest`](Self::can_ingest) on the query side.
+    pub fn can_read(&self, signal: &str) -> bool {
+        let required = format!("{signal}:read");
         self.api_key_scopes
             .as_ref()
             .is_none_or(|scopes| scopes.iter().any(|scope| scope == &required))
@@ -201,11 +225,51 @@ mod scoped_authorization_tests {
             "user-1".into(),
             crate::catalog::MembershipRole::Viewer,
             false,
-            "session-1".into(),
+            Some("session-1".into()),
         );
         assert!(!viewer.can_write());
         assert!(!viewer.can_ingest("metrics"));
         assert!(!viewer.can_manage_tenant());
+    }
+
+    #[test]
+    fn every_read_signal_requires_its_matching_read_scope() {
+        for signal in ["metrics", "logs", "traces", "profiles"] {
+            let allowed = context(Some(vec![format!("{signal}:read")]));
+            assert!(allowed.can_read(signal));
+            for other in ["metrics", "logs", "traces"] {
+                if other != signal {
+                    assert!(!allowed.can_read(other));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_unscoped_keys_may_read_any_signal() {
+        let legacy = context(None);
+        for signal in ["metrics", "logs", "traces", "profiles"] {
+            assert!(legacy.can_read(signal));
+        }
+    }
+
+    #[test]
+    fn viewer_sessions_may_still_read() {
+        let viewer = context(None).with_user(
+            "user-1".into(),
+            crate::catalog::MembershipRole::Viewer,
+            false,
+            Some("session-1".into()),
+        );
+        for signal in ["metrics", "logs", "traces", "profiles"] {
+            assert!(viewer.can_read(signal));
+        }
+    }
+
+    #[test]
+    fn write_scopes_do_not_grant_read() {
+        let writer_only = context(Some(vec!["traces:write".into()]));
+        assert!(!writer_only.can_read("traces"));
     }
 }
 

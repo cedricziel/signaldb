@@ -21,12 +21,13 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use axum::{
-    Router,
+    Json, Router,
     body::Body,
     extract::State,
-    http::{Request, StatusCode, header::AUTHORIZATION, request::Parts},
+    http::{Request, StatusCode, Uri, header::AUTHORIZATION, request::Parts},
     middleware::{self, Next},
     response::{IntoResponse, Response},
+    routing::get,
 };
 use dashmap::DashMap;
 use reqwest::header::{HeaderMap, HeaderName};
@@ -40,6 +41,36 @@ use server::McpServer;
 /// Headers forwarded from the MCP caller to the router on every downstream
 /// call, so the request is made as the caller.
 const FORWARDED_HEADERS: [&str; 3] = ["authorization", "x-tenant-id", "x-dataset-id"];
+
+/// Prefix identifying a SignalDB OAuth 2.1 access token. Mirrors
+/// `common::auth::oauth::ACCESS_TOKEN_PREFIX`; duplicated deliberately so the
+/// sidecar keeps depending on no SignalDB internal crate.
+const OAUTH_ACCESS_TOKEN_PREFIX: &str = "sdb_at_";
+
+/// The OAuth 2.1 resource metadata this sidecar advertises (change:
+/// mcp-oauth-dcr). Present only when the deployment enables OAuth.
+#[derive(Clone)]
+pub struct OAuthResource {
+    /// This MCP resource's own public URL — the token audience and the PRM
+    /// `resource` value (e.g. `https://signaldb.example.com/mcp`).
+    pub resource_url: String,
+    /// The authorization server (router) clients are directed to.
+    pub issuer_url: String,
+}
+
+impl OAuthResource {
+    /// Absolute URL of the RFC 9728 Protected Resource Metadata document,
+    /// derived from the resource origin. Returns `None` if `resource_url` is
+    /// not an absolute URL with an authority.
+    fn protected_resource_metadata_url(&self) -> Option<String> {
+        let uri: Uri = self.resource_url.parse().ok()?;
+        let scheme = uri.scheme_str()?;
+        let authority = uri.authority()?;
+        Some(format!(
+            "{scheme}://{authority}/.well-known/oauth-protected-resource"
+        ))
+    }
+}
 
 /// The identity a session is pinned to on its first request: the tenant it
 /// declared and a hash of the credential it presented.
@@ -59,6 +90,8 @@ pub struct McpAppState {
     /// on its first request, so a session cannot be reused under a different
     /// tenant or credential mid-stream.
     session_bindings: Arc<DashMap<String, SessionBinding>>,
+    /// OAuth resource metadata to advertise, when the deployment enables OAuth.
+    oauth: Option<OAuthResource>,
 }
 
 impl McpAppState {
@@ -67,7 +100,18 @@ impl McpAppState {
         Self {
             router_base_url,
             session_bindings: Arc::new(DashMap::new()),
+            oauth: None,
         }
+    }
+
+    /// Advertise OAuth resource metadata (the PRM document + `401` challenge)
+    /// pointing at the given authorization server.
+    pub fn with_oauth(mut self, resource_url: String, issuer_url: String) -> Self {
+        self.oauth = Some(OAuthResource {
+            resource_url,
+            issuer_url,
+        });
+        self
     }
 }
 
@@ -101,9 +145,37 @@ pub fn mcp_http_router(state: McpAppState, allowed_hosts: &[String]) -> Router {
         config,
     );
 
-    Router::new()
+    // The `/mcp` transport is gated by the credential-presence + session-binding
+    // check; the Protected Resource Metadata document is public (it is how an
+    // unauthenticated client discovers where to authenticate).
+    let mcp = Router::new()
         .nest_service("/mcp", service)
-        .layer(middleware::from_fn_with_state(state, mcp_auth_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            mcp_auth_middleware,
+        ));
+
+    let oauth = state.oauth.clone();
+    let well_known = Router::new().route(
+        "/.well-known/oauth-protected-resource",
+        get(move || protected_resource_metadata(oauth.clone())),
+    );
+
+    mcp.merge(well_known)
+}
+
+/// Serve the RFC 9728 Protected Resource Metadata document, naming the
+/// authorization server clients should use. Returns `404` when OAuth is not
+/// configured for this deployment.
+async fn protected_resource_metadata(oauth: Option<OAuthResource>) -> Response {
+    match oauth {
+        Some(oauth) => Json(serde_json::json!({
+            "resource": oauth.resource_url,
+            "authorization_servers": [oauth.issuer_url],
+        }))
+        .into_response(),
+        None => (StatusCode::NOT_FOUND, "OAuth is not enabled").into_response(),
+    }
 }
 
 /// Non-cryptographic hash of the caller's credential, used only to detect a
@@ -114,11 +186,35 @@ fn token_hash(token: &str) -> u64 {
     hasher.finish()
 }
 
-/// Require a bearer token and `X-Tenant-ID`, and pin the session to that
-/// identity, before the request reaches the MCP transport. The MCP server does
-/// not validate the credential itself — that is the router's job; this only
-/// rejects requests that carry *no* credential (401) and requests that try to
-/// reuse a session under a different identity (403).
+/// Build the `401` response for an unauthenticated MCP request, attaching a
+/// `WWW-Authenticate: Bearer resource_metadata="…"` challenge that points at
+/// the Protected Resource Metadata document (RFC 9728) when OAuth is enabled,
+/// so a compliant client discovers where to authenticate.
+fn unauthorized_challenge(state: &McpAppState, message: &'static str) -> Response {
+    let mut response = (StatusCode::UNAUTHORIZED, message).into_response();
+    if let Some(prm_url) = state
+        .oauth
+        .as_ref()
+        .and_then(OAuthResource::protected_resource_metadata_url)
+        && let Ok(value) =
+            format!("Bearer resource_metadata=\"{prm_url}\"").parse::<axum::http::HeaderValue>()
+    {
+        response
+            .headers_mut()
+            .insert(axum::http::header::WWW_AUTHENTICATE, value);
+    }
+    response
+}
+
+/// Require a bearer token before the request reaches the MCP transport, and pin
+/// the session to the presented identity. The MCP server does not validate the
+/// credential itself — that is the router's job; this only rejects requests
+/// that carry no credential (`401`, with a discovery challenge) and refuses a
+/// session reused under a different identity (`403`).
+///
+/// An OAuth access token (recognized by its prefix) carries its own tenant, so
+/// `X-Tenant-ID` is not required for it. An API key still requires the tenant
+/// header, exactly as before.
 async fn mcp_auth_middleware(
     State(state): State<McpAppState>,
     req: Request<Body>,
@@ -135,12 +231,21 @@ async fn mcp_auth_middleware(
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
 
-    let (Some(token), Some(tenant_id)) = (token, tenant_id) else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            "missing bearer token or X-Tenant-ID header",
-        )
-            .into_response();
+    let Some(token) = token else {
+        return unauthorized_challenge(&state, "missing bearer token");
+    };
+    let is_oauth = token.starts_with(OAUTH_ACCESS_TOKEN_PREFIX);
+
+    // The session binding pins the credential (and, for API keys, the tenant).
+    // An OAuth token carries no tenant here, so it binds on the credential
+    // alone.
+    let bound_tenant = if is_oauth {
+        String::new()
+    } else {
+        let Some(tenant_id) = tenant_id else {
+            return unauthorized_challenge(&state, "missing X-Tenant-ID header");
+        };
+        tenant_id
     };
 
     // Pin the session to this identity. A request that carries an established
@@ -152,12 +257,12 @@ async fn mcp_auth_middleware(
         .map(str::to_owned)
     {
         let binding = SessionBinding {
-            tenant_id: tenant_id.clone(),
+            tenant_id: bound_tenant.clone(),
             token_hash: token_hash(&token),
         };
         if let Some(existing) = state.session_bindings.get(&session_id) {
             if *existing != binding {
-                tracing::warn!(%session_id, %tenant_id, "MCP session identity mismatch — refusing reuse");
+                tracing::warn!(%session_id, "MCP session identity mismatch — refusing reuse");
                 return (
                     StatusCode::FORBIDDEN,
                     "session is bound to a different identity",
@@ -217,6 +322,108 @@ mod tests {
 
     fn test_state() -> McpAppState {
         McpAppState::new("http://localhost:3000".to_string())
+    }
+
+    fn test_state_with_oauth() -> McpAppState {
+        McpAppState::new("http://localhost:3000".to_string()).with_oauth(
+            "https://signaldb.example.com/mcp".to_string(),
+            "https://signaldb.example.com".to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn protected_resource_metadata_names_authorization_server() {
+        let app = mcp_http_router(test_state_with_oauth(), &[]);
+        let res = app
+            .oneshot(
+                RequestBuilder::new()
+                    .method("GET")
+                    .uri("/.well-known/oauth-protected-resource")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(doc["resource"], "https://signaldb.example.com/mcp");
+        assert_eq!(
+            doc["authorization_servers"][0],
+            "https://signaldb.example.com"
+        );
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_request_is_challenged_toward_discovery() {
+        let app = mcp_http_router(test_state_with_oauth(), &[]);
+        let res = app
+            .oneshot(
+                RequestBuilder::new()
+                    .method("POST")
+                    .uri("/mcp")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        let challenge = res
+            .headers()
+            .get(axum::http::header::WWW_AUTHENTICATE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            challenge.starts_with("Bearer resource_metadata="),
+            "{challenge}"
+        );
+        assert!(
+            challenge.contains("https://signaldb.example.com/.well-known/oauth-protected-resource"),
+            "{challenge}"
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_bearer_does_not_require_tenant_header() {
+        let app = mcp_http_router(test_state_with_oauth(), &[]);
+        // An OAuth access token carries its own tenant; no X-Tenant-ID needed,
+        // so the request clears the presence check and reaches the transport.
+        let res = app
+            .oneshot(
+                RequestBuilder::new()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("authorization", "Bearer sdb_at_sometoken")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn api_key_bearer_still_requires_tenant_header() {
+        // A non-OAuth bearer without X-Tenant-ID is still rejected.
+        let app = mcp_http_router(test_state_with_oauth(), &[]);
+        let res = app
+            .oneshot(
+                RequestBuilder::new()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("authorization", "Bearer sk-anything")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

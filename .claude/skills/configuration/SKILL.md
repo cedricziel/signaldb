@@ -267,6 +267,25 @@ router_url = "http://localhost:3000" # Router HTTP API to forward to
 
 Env (multi-word fields need the double-underscore form): `SIGNALDB__MCP__ENABLED`, `SIGNALDB__MCP__BIND_ADDRESS`, `SIGNALDB__MCP__ROUTER_URL`. The MCP server ships in the monolithic image, so it can run as a sidecar container from the same image via `entrypoint: [signaldb-mcp]`.
 
+#### MCP OAuth 2.1 authorization server
+
+Served by the **router** (not the sidecar), off by default. Enables one-click
+connector registration from Claude.ai / ChatGPT (OAuth 2.1 + DCR). Tokens are
+opaque, catalog-backed, and audience-bound to `resource_url`. See
+`docs/users/mcp.md`.
+
+```toml
+[mcp.oauth]
+enabled = false                                    # off by default
+issuer_url = "https://signaldb.example.org"        # this AS, as clients reach it (required when enabled)
+resource_url = "https://signaldb.example.org/mcp"  # MCP resource tokens bind to (required when enabled)
+access_token_ttl = "1h"                            # default 1h
+refresh_token_ttl = "30d"                          # default 30d
+authorization_code_ttl = "60s"                     # default 60s
+```
+
+Env: `SIGNALDB__MCP__OAUTH__ENABLED`, `SIGNALDB__MCP__OAUTH__ISSUER_URL`, `SIGNALDB__MCP__OAUTH__RESOURCE_URL`. The sidecar advertises the resource via its own `--oauth-resource-url` / `--oauth-issuer-url` flags (env `SIGNALDB__MCP__OAUTH__RESOURCE_URL` / `_ISSUER_URL`).
+
 ### Self-Monitoring (Dogfooding)
 
 ```toml

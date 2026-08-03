@@ -330,6 +330,15 @@ Tenant (e.g., "acme")
 4. Resolves dataset: explicit header -> tenant default_dataset -> first `is_default` dataset -> 400 error
 5. Returns `TenantContext` with tenant_id, dataset_id, tenant_slug, dataset_slug
 
+Two further credential types resolve to the same `TenantContext`: the
+`signaldb_session` browser cookie (embedded UI), and — when `[mcp.oauth]` is
+enabled — **opaque OAuth 2.1 access tokens** for Claude.ai / ChatGPT MCP
+connectors. The router is the OAuth authorization server (`/oauth/*`,
+`/.well-known/oauth-authorization-server`); a `sdb_at_`-prefixed bearer carries
+its own tenant and read scopes (tenant-from-token, `X-Tenant-ID` ignored),
+audience-bound to the configured MCP resource. See `docs/users/mcp.md` and the
+`multi-tenancy` skill.
+
 ### Isolation Layers
 
 | Layer                 | Isolation Mechanism                                                          |

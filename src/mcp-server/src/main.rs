@@ -49,6 +49,19 @@ struct Cli {
     /// per-request credential, so downstream calls carry none — dev only.
     #[arg(long)]
     stdio: bool,
+
+    /// This MCP resource's own public URL (e.g. `https://signaldb.example.com/mcp`).
+    /// Set together with `--oauth-issuer-url` to advertise OAuth: the server then
+    /// serves the Protected Resource Metadata document and challenges
+    /// unauthenticated requests toward it. Tokens are audience-bound to this URL.
+    #[arg(long, env = "SIGNALDB__MCP__OAUTH__RESOURCE_URL")]
+    oauth_resource_url: Option<String>,
+
+    /// Public URL of the OAuth authorization server (the router) clients are
+    /// directed to (e.g. `https://signaldb.example.com`). Required to advertise
+    /// OAuth; see `--oauth-resource-url`.
+    #[arg(long, env = "SIGNALDB__MCP__OAUTH__ISSUER_URL")]
+    oauth_issuer_url: Option<String>,
 }
 
 #[tokio::main]
@@ -65,7 +78,20 @@ async fn main() -> Result<()> {
         .parse()
         .with_context(|| format!("Invalid bind address: {}", cli.bind_address))?;
 
-    let app = mcp_http_router(McpAppState::new(cli.router_url.clone()), &cli.allowed_hosts);
+    let mut state = McpAppState::new(cli.router_url.clone());
+    match (cli.oauth_resource_url.clone(), cli.oauth_issuer_url.clone()) {
+        (Some(resource_url), Some(issuer_url)) => {
+            tracing::info!(%resource_url, %issuer_url, "OAuth resource metadata enabled");
+            state = state.with_oauth(resource_url, issuer_url);
+        }
+        (None, None) => {}
+        _ => {
+            tracing::warn!(
+                "Ignoring OAuth config: both --oauth-resource-url and --oauth-issuer-url must be set"
+            );
+        }
+    }
+    let app = mcp_http_router(state, &cli.allowed_hosts);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("Failed to bind MCP server on {addr}"))?;

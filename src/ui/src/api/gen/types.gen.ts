@@ -46,6 +46,87 @@ export type Attribute = {
 };
 
 /**
+ * Context the consent screen renders: the requesting client and the tenants
+ * the signed-in user may grant.
+ */
+export type ConsentContextResponse = {
+    /**
+     * Display name of the requesting client, if it registered one.
+     */
+    client_name?: string | null;
+    /**
+     * Tenants the user may grant access to.
+     */
+    tenants: Array<ConsentTenant>;
+};
+
+/**
+ * Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
+ * is authenticated by their session cookie; `tenant` is their chosen grant.
+ */
+export type ConsentDecision = {
+    /**
+     * Whether the user approved (`true`) or denied (`false`).
+     */
+    approved: boolean;
+    /**
+     * The requesting client's `client_id`.
+     */
+    client_id: string;
+    /**
+     * The PKCE `code_challenge` from the authorization request.
+     */
+    code_challenge: string;
+    code_challenge_method?: string | null;
+    /**
+     * The redirect URI to return to (must be registered for the client).
+     */
+    redirect_uri: string;
+    /**
+     * Requested resource (audience); must match the configured MCP resource.
+     */
+    resource?: string | null;
+    /**
+     * Requested scope (space-delimited); read scopes only are granted.
+     */
+    scope?: string | null;
+    /**
+     * Opaque `state` to echo back to the client.
+     */
+    state?: string | null;
+    /**
+     * The tenant the user grants access to (must be one they belong to).
+     */
+    tenant: string;
+};
+
+/**
+ * Result of a consent decision: the URL the browser should navigate to (the
+ * client's redirect URI carrying either the authorization `code` or an
+ * `error`).
+ */
+export type ConsentDecisionResponse = {
+    /**
+     * The absolute redirect URL to navigate to.
+     */
+    redirect: string;
+};
+
+/**
+ * A tenant the consenting user may grant a connector access to.
+ */
+export type ConsentTenant = {
+    /**
+     * Tenant id.
+     */
+    id: string;
+    /**
+     * The user's role in the tenant.
+     */
+    role: MembershipRole;
+};
+
+/**
  * Request body for creating a new API key.
  */
 export type CreateApiKeyRequest = {
@@ -1510,6 +1591,69 @@ export type LogqlQueryRangeResponses = {
      */
     200: unknown;
 };
+
+export type OauthConsentDecisionData = {
+    body: ConsentDecision;
+    path?: never;
+    query?: never;
+    url: '/oauth/authorize/decision';
+};
+
+export type OauthConsentDecisionErrors = {
+    /**
+     * Invalid client, redirect URI, or PKCE
+     */
+    400: unknown;
+    /**
+     * No active session (login required)
+     */
+    401: unknown;
+    /**
+     * Not a member of the selected tenant
+     */
+    403: unknown;
+};
+
+export type OauthConsentDecisionResponses = {
+    /**
+     * Decision recorded; navigate to `redirect`
+     */
+    200: ConsentDecisionResponse;
+};
+
+export type OauthConsentDecisionResponse = OauthConsentDecisionResponses[keyof OauthConsentDecisionResponses];
+
+export type OauthConsentContextData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * The requesting client's `client_id`.
+         */
+        client_id: string;
+    };
+    url: '/oauth/consent/context';
+};
+
+export type OauthConsentContextErrors = {
+    /**
+     * Unknown client
+     */
+    400: unknown;
+    /**
+     * No active session (login required)
+     */
+    401: unknown;
+};
+
+export type OauthConsentContextResponses = {
+    /**
+     * Consent context
+     */
+    200: ConsentContextResponse;
+};
+
+export type OauthConsentContextResponse = OauthConsentContextResponses[keyof OauthConsentContextResponses];
 
 export type PromqlQueryData = {
     body?: never;

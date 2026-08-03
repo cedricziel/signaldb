@@ -503,6 +503,19 @@ default_tenant = "default"
 #                                       # credentials and must sit behind TLS.
 # router_url = "http://localhost:3000"  # router HTTP API to forward to
 
+# OAuth 2.1 authorization server for the MCP surface. Lets Claude.ai and
+# OpenAI/ChatGPT register SignalDB as a remote connector with no human
+# pre-registration. Served by the ROUTER (not the sidecar); off by default.
+# When enabled, issuer_url/resource_url must be the externally-reachable HTTPS
+# URLs external OAuth clients use, so tokens are audience-bound correctly.
+# [mcp.oauth]
+# enabled = false                                    # off by default
+# issuer_url = "https://signaldb.example.com"        # this authorization server's base URL
+# resource_url = "https://signaldb.example.com/mcp"  # the MCP resource tokens are bound to
+# access_token_ttl = "1h"                            # issued access-token lifetime
+# refresh_token_ttl = "30d"                          # issued refresh-token lifetime
+# authorization_code_ttl = "60s"                     # authorization-code lifetime (kept short)
+
 # Environment variable examples:
 # SIGNALDB__MCP__ENABLED=true
 # SIGNALDB__MCP__BIND_ADDRESS=0.0.0.0:8228

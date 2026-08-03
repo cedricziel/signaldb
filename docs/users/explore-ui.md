@@ -11,9 +11,11 @@ sources:
 # Explore UI
 
 SignalDB ships a built-in explore UI for logs, traces, and metrics, served
-by the router at `http://<router>:3000/ui/`. It consumes the same
-Loki-, Tempo-, and Prometheus-compatible APIs that Grafana uses, so anything
-visible in the UI is equally queryable from Grafana.
+by the router at its **root** (`http://<router>:3000/`, as a SPA fallback
+behind the API routes). It consumes the same Loki-, Tempo-, and
+Prometheus-compatible APIs that Grafana uses, so anything visible in the UI is
+equally queryable from Grafana. It also hosts the OAuth connector **consent
+screen** at `/oauth/consent` (see [MCP](mcp.md)).
 
 ![Explore UI logs view: virtualized log list with level colors, volume histogram, and fields sidebar](../assets/screenshots/explore-logs.png)
 
@@ -139,7 +141,7 @@ pnpm install && pnpm ui:build          # builds src/ui/dist
 SIGNALDB_UI_DIR=src/ui/dist cargo run --bin signaldb
 ```
 
-Without `SIGNALDB_UI_DIR`, `/ui` serves a placeholder page. Setting the
+Without `SIGNALDB_UI_DIR`, the root serves a placeholder page. Setting the
 variable to a directory without a built UI fails startup on purpose — a
 misconfigured deployment should not silently ship without its UI.
 

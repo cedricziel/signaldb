@@ -14,6 +14,7 @@ use std::sync::Arc;
 pub mod discovery;
 pub mod endpoints;
 pub mod openapi;
+pub mod read_scope;
 pub mod ui;
 
 /// The shared state that route handlers depend on.
@@ -56,10 +57,10 @@ impl RouterAppState {
         if let Some(discovery_config) = &config.discovery {
             service_registry = service_registry.with_discovery_ttl(discovery_config.ttl);
         }
-        let authenticator = Arc::new(Authenticator::new(
-            config.auth.clone(),
-            Arc::new(catalog.clone()),
-        ));
+        let authenticator = Arc::new(
+            Authenticator::new(config.auth.clone(), Arc::new(catalog.clone()))
+                .with_mcp_resource(config.mcp.oauth.resource_url.clone()),
+        );
 
         Self {
             catalog,
@@ -79,10 +80,10 @@ impl RouterAppState {
         if let Some(discovery_config) = &config.discovery {
             service_registry = service_registry.with_discovery_ttl(discovery_config.ttl);
         }
-        let authenticator = Arc::new(Authenticator::new(
-            config.auth.clone(),
-            Arc::new(catalog.clone()),
-        ));
+        let authenticator = Arc::new(
+            Authenticator::new(config.auth.clone(), Arc::new(catalog.clone()))
+                .with_mcp_resource(config.mcp.oauth.resource_url.clone()),
+        );
 
         Self {
             catalog,
@@ -206,6 +207,14 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
     // Load OpenAPI spec from the generated JSON file
     let openapi_spec = load_openapi_spec();
 
+    // OAuth 2.1 authorization-server surface (change: mcp-oauth-dcr). Mounted
+    // only when enabled, so a plain deployment exposes no OAuth endpoints.
+    let oauth_routes = if state.config().mcp.oauth.enabled {
+        endpoints::oauth::router()
+    } else {
+        Router::new()
+    };
+
     Router::new()
         // Public health check endpoint (no authentication)
         .route("/health", get(health_check))
@@ -221,6 +230,9 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .nest(
             "/tempo",
             endpoints::tempo::router()
+                .layer(middleware::from_fn(|req, next| {
+                    read_scope::require_read_scope("traces", req, next)
+                }))
                 .layer(query_rate_layer.clone())
                 .layer(auth_layer.clone()),
         )
@@ -228,6 +240,9 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .nest(
             "/pyroscope",
             endpoints::pyroscope::router()
+                .layer(middleware::from_fn(|req, next| {
+                    read_scope::require_read_scope("profiles", req, next)
+                }))
                 .layer(query_rate_layer.clone())
                 .layer(auth_layer.clone()),
         )
@@ -235,6 +250,9 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .nest(
             "/loki",
             endpoints::logql::router()
+                .layer(middleware::from_fn(|req, next| {
+                    read_scope::require_read_scope("logs", req, next)
+                }))
                 .layer(query_rate_layer.clone())
                 .layer(auth_layer.clone()),
         )
@@ -242,6 +260,9 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .nest(
             "/prometheus",
             endpoints::promql::router()
+                .layer(middleware::from_fn(|req, next| {
+                    read_scope::require_read_scope("metrics", req, next)
+                }))
                 .layer(query_rate_layer.clone())
                 .layer(auth_layer.clone()),
         )
@@ -249,18 +270,18 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .nest(
             "/api/profiles",
             endpoints::pyroscope::profiles_router()
+                .layer(middleware::from_fn(|req, next| {
+                    read_scope::require_read_scope("profiles", req, next)
+                }))
                 .layer(query_rate_layer.clone())
                 .layer(auth_layer.clone()),
         )
         // UI session login/logout (public; sets/clears the HttpOnly session
         // cookie the auth middleware accepts in place of auth headers)
         .merge(endpoints::session::router())
-        // Explore UI static assets + runtime config (public, served from
-        // SIGNALDB_UI_DIR; runtime-config.js from [self_monitoring.frontend])
-        .nest_service(
-            "/ui",
-            ui::service_from_env(&state.config().self_monitoring.frontend),
-        )
+        // OAuth 2.1 authorization-server endpoints (public: discovery + DCR are
+        // unauthenticated by spec; empty unless mcp.oauth.enabled)
+        .merge(oauth_routes)
         // Admin routes with admin authentication
         .nest("/api/v1/admin", admin_router)
         // Operational control (compaction), admin-authenticated, proxied to the
@@ -278,6 +299,13 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
                 .layer(query_rate_layer)
                 .layer(auth_layer),
         )
+        // Explore UI at root (SPA fallback): every request not matched by an
+        // API route above serves the UI — its `/runtime-config.js` route and,
+        // for any other path, `index.html` so SPA deep links (incl.
+        // `/oauth/consent`) boot the app. Served from SIGNALDB_UI_DIR.
+        .fallback_service(ui::service_from_env(
+            &state.config().self_monitoring.frontend,
+        ))
         // OTel HTTP server metrics for all routes (no-op unless
         // self-monitoring is enabled)
         .layer(middleware::from_fn(
@@ -391,11 +419,11 @@ mod tests {
         };
         let app = create_router(RouterAppState::new(catalog, config));
 
-        // Public route (no auth headers), reached through the /ui nest.
+        // Public route (no auth headers), served at root by the UI fallback.
         let res = app
             .oneshot(
                 Request::builder()
-                    .uri("/ui/runtime-config.js")
+                    .uri("/runtime-config.js")
                     .body(Body::empty())
                     .unwrap(),
             )
