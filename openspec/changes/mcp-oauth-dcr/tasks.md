@@ -36,8 +36,8 @@
 
 ## 8. Authenticator OAuth credential path & audience binding
 
-- [ ] 8.1 Write failing `router`/`common` tests: a valid opaque access token resolves to a `TenantContext` with tenant + scopes from the token (not from `X-Tenant-ID`); an `X-Tenant-ID` naming a different tenant is ignored; expired/revoked tokens → unauthenticated; a token whose recorded audience ≠ the resource is rejected (`cargo test -p router`, `cargo test -p common`).
-- [ ] 8.2 Add the opaque-OAuth-token credential path to `Authenticator` (tenant + scopes from the token record; audience check), making 8.1 pass — leaving the API-key and session paths unchanged.
+- [x] 8.1 Write failing `router`/`common` tests: a valid opaque access token resolves to a `TenantContext` with tenant + scopes from the token (not from `X-Tenant-ID`); an `X-Tenant-ID` naming a different tenant is ignored; expired/revoked tokens → unauthenticated; a token whose recorded audience ≠ the resource is rejected (`cargo test -p router`, `cargo test -p common`).
+- [x] 8.2 Add the opaque-OAuth-token credential path to `Authenticator` (tenant + scopes from the token record; audience check), making 8.1 pass — leaving the API-key and session paths unchanged.
 
 ## 9. Read-scope enforcement on the query/MCP surface
 

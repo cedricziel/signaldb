@@ -56,10 +56,10 @@ impl RouterAppState {
         if let Some(discovery_config) = &config.discovery {
             service_registry = service_registry.with_discovery_ttl(discovery_config.ttl);
         }
-        let authenticator = Arc::new(Authenticator::new(
-            config.auth.clone(),
-            Arc::new(catalog.clone()),
-        ));
+        let authenticator = Arc::new(
+            Authenticator::new(config.auth.clone(), Arc::new(catalog.clone()))
+                .with_mcp_resource(config.mcp.oauth.resource_url.clone()),
+        );
 
         Self {
             catalog,
@@ -79,10 +79,10 @@ impl RouterAppState {
         if let Some(discovery_config) = &config.discovery {
             service_registry = service_registry.with_discovery_ttl(discovery_config.ttl);
         }
-        let authenticator = Arc::new(Authenticator::new(
-            config.auth.clone(),
-            Arc::new(catalog.clone()),
-        ));
+        let authenticator = Arc::new(
+            Authenticator::new(config.auth.clone(), Arc::new(catalog.clone()))
+                .with_mcp_resource(config.mcp.oauth.resource_url.clone()),
+        );
 
         Self {
             catalog,

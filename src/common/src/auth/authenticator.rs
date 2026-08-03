@@ -19,6 +19,9 @@ pub struct Authenticator {
     config_tenants: HashMap<String, TenantConfig>,
     /// Config-based API keys indexed by key_hash -> (tenant_id, key_name)
     config_api_keys: HashMap<String, (String, Option<String>)>,
+    /// The configured MCP resource URL, if any. OAuth access tokens are
+    /// audience-bound to it (change: mcp-oauth-dcr).
+    mcp_resource: Option<String>,
 }
 
 impl Authenticator {
@@ -44,7 +47,22 @@ impl Authenticator {
             catalog,
             config_tenants,
             config_api_keys,
+            mcp_resource: None,
         }
+    }
+
+    /// Set the MCP resource URL that OAuth access tokens must be audience-bound
+    /// to (from `mcp.oauth.resource_url`). Used by
+    /// [`authenticate_oauth_token`](Self::authenticate_oauth_token) via
+    /// [`mcp_resource`](Self::mcp_resource).
+    pub fn with_mcp_resource(mut self, resource: Option<String>) -> Self {
+        self.mcp_resource = resource;
+        self
+    }
+
+    /// The configured MCP resource URL OAuth tokens are bound to, if any.
+    pub fn mcp_resource(&self) -> Option<&str> {
+        self.mcp_resource.as_deref()
     }
 
     /// Authenticate a request using API key and tenant/dataset headers

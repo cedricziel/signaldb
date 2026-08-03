@@ -24,15 +24,18 @@ use std::sync::Arc;
 enum RequestCredentials {
     ApiKey(String),
     UserSession(String),
+    /// An opaque OAuth 2.1 access token (change: mcp-oauth-dcr). Its tenant and
+    /// scopes come from the token record, not from headers.
+    OAuthToken(String),
 }
 
 #[cfg(test)]
 impl PartialEq<&str> for RequestCredentials {
     fn eq(&self, other: &&str) -> bool {
         match self {
-            RequestCredentials::ApiKey(value) | RequestCredentials::UserSession(value) => {
-                value == other
-            }
+            RequestCredentials::ApiKey(value)
+            | RequestCredentials::UserSession(value)
+            | RequestCredentials::OAuthToken(value) => value == other,
         }
     }
 }
@@ -49,10 +52,28 @@ fn extract_auth_headers(
         .map_err(|_| AuthError::bad_request("Invalid Authorization header"))?;
 
     // Parse Bearer token
-    let api_key = auth_header
+    let bearer = auth_header
         .strip_prefix("Bearer ")
         .ok_or_else(|| AuthError::bad_request("Authorization header must use Bearer scheme"))?
         .to_string();
+
+    // Extract and validate the optional X-Dataset-ID header (shared by all
+    // bearer kinds).
+    let dataset_id = match headers.get("x-dataset-id").and_then(|v| v.to_str().ok()) {
+        Some(id) => Some(validate_dataset_id(id)?),
+        None => None,
+    };
+
+    // An OAuth access token carries its own tenant, so X-Tenant-ID is neither
+    // required nor consulted — an OAuth session cannot be pointed at a tenant
+    // it was not granted. The tenant field is unused for this credential kind.
+    if bearer.starts_with(super::oauth::ACCESS_TOKEN_PREFIX) {
+        return Ok((
+            RequestCredentials::OAuthToken(bearer),
+            String::new(),
+            dataset_id,
+        ));
+    }
 
     // Extract and validate X-Tenant-ID header. Absent credentials are 401
     // (unauthenticated), not 400 — the embedded UI's login gate keys on 401.
@@ -64,13 +85,7 @@ fn extract_auth_headers(
 
     let tenant_id = validate_tenant_id(tenant_id_raw)?;
 
-    // Extract and validate optional X-Dataset-ID header
-    let dataset_id = match headers.get("x-dataset-id").and_then(|v| v.to_str().ok()) {
-        Some(id) => Some(validate_dataset_id(id)?),
-        None => None,
-    };
-
-    Ok((RequestCredentials::ApiKey(api_key), tenant_id, dataset_id))
+    Ok((RequestCredentials::ApiKey(bearer), tenant_id, dataset_id))
 }
 
 /// Resolve credentials from the UI session cookie for requests without an
@@ -142,6 +157,14 @@ pub async fn auth_middleware(
         RequestCredentials::UserSession(token) => {
             authenticator
                 .authenticate_session(&token, &tenant_id, dataset_id.as_deref())
+                .await
+        }
+        RequestCredentials::OAuthToken(token) => {
+            // Tenant and scopes come from the token; audience is bound to the
+            // configured MCP resource.
+            let resource = authenticator.mcp_resource().map(str::to_owned);
+            authenticator
+                .authenticate_oauth_token(&token, dataset_id.as_deref(), resource.as_deref())
                 .await
         }
     };
@@ -732,6 +755,91 @@ mod tests {
             probe.exported_events() > 0,
             "normal tenant request processing must still export telemetry"
         );
+    }
+
+    #[tokio::test]
+    async fn oauth_bearer_authenticates_without_tenant_header_and_ignores_it() {
+        use crate::auth::oauth::{TokenKind, generate_oauth_token, hash_oauth_token};
+        use crate::catalog::MembershipRole;
+        use axum::{Router, body::Body, http::Request, middleware, routing::get};
+        use chrono::{Duration, Utc};
+        use tower::ServiceExt;
+
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "production").await.unwrap();
+        let user = catalog
+            .create_user("agent@example.com", None, "phc", false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Member)
+            .await
+            .unwrap();
+        let token = generate_oauth_token(TokenKind::Access);
+        catalog
+            .create_access_token(
+                &hash_oauth_token(&token),
+                "client-1",
+                &user.id,
+                "acme",
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        let authenticator = Arc::new(Authenticator::new(AuthConfig::default(), catalog));
+
+        async fn handler(tenant_ctx: TenantContextExtractor) -> String {
+            tenant_ctx.0.tenant_id
+        }
+        let auth = authenticator.clone();
+        let app = Router::new()
+            .route("/test", get(handler))
+            .layer(middleware::from_fn(move |req, next| {
+                auth_middleware(auth.clone(), req, next)
+            }));
+
+        // No X-Tenant-ID: the OAuth token still authenticates and resolves its
+        // bound tenant.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body, "acme");
+
+        // A conflicting X-Tenant-ID is ignored — the token's tenant wins.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("x-tenant-id", "globex")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body, "acme");
     }
 
     #[test]
