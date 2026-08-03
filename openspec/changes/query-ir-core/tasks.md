@@ -147,11 +147,11 @@ aggregate(step)` lowers to TableScan→Filter→Projection(date_bin)→
 
 ## 10. Cross-service integration (`tests-integration`)
 
-- [ ] 10.1 Failing E2E: ingest logs+traces; a single-signal logs IR query
+- [x] 10.1 Failing E2E: ingest logs+traces; a single-signal logs IR query
       returns results equivalent to the LogQL equivalent.
-- [ ] 10.2 Failing E2E: a single-signal traces IR query (filter + topk) returns
+- [x] 10.2 Failing E2E: a single-signal traces IR query (filter + topk) returns
       the expected spans.
-- [ ] 10.3 Regression assertion: existing TraceQL/LogQL/PromQL E2E queries still
+- [x] 10.3 Regression assertion: existing TraceQL/LogQL/PromQL E2E queries still
       pass unchanged (additive, non-regressing).
 
 ## 11. Docs + skills
