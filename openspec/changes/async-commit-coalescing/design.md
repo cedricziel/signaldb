@@ -84,13 +84,22 @@ _Alternative considered:_ a byte-size ceiling instead of row count. Deferred —
 row count is already available cheaply and is good enough; a byte estimator can
 be added later without a spec change.
 
-### D3 — Force-commit via a writer Flight `do_action("flush")`
+### D3 — Force-commit via a writer Flight `do_action("flush")`, tenant-scoped
 
-Expose `WalProcessor::force_commit_pending()` that commits every pending group
-ignoring the floor, and surface it as a writer Flight `do_action("flush")`
-(today `do_action` returns `unimplemented`). The integration-test harness and any
-read-your-writes client call it after ingest. The pre-existing `WalOperation::Flush`
-marker is honored with the same drain semantics for WAL-driven flushes.
+Expose `WalProcessor::force_commit_pending(scope)` that force-commits the groups
+matching a `FlushScope { tenant_id, dataset_id: Option }` (floor bypassed for
+that scope only; other tenants keep coalescing), and surface it as a writer
+Flight `do_action("flush")` (today `do_action` returns `unimplemented`) whose
+body is a **required** JSON `{"tenant_id", "dataset_id"?}`. An unscoped flush is
+rejected so one caller cannot force-commit — and amplify catalog writes for —
+every tenant on the writer. The integration-test harness and any read-your-writes
+client call it after ingest. The pre-existing `WalOperation::Flush` marker is
+honored with the same drain semantics, scoped to the marker entry's own
+tenant/dataset.
+
+_Scoping added in response to review (rust-code-reviewer + CodeRabbit): an
+unscoped global flush would bypass coalescing for unrelated tenants and
+reintroduce the write amplification this change exists to remove._
 
 _Why:_ a `do_action` is synchronous and directly awaitable from tests, giving
 deterministic waits in place of `sleep`. Repurposing `Flush` keeps a WAL-level

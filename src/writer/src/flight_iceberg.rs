@@ -14,7 +14,7 @@
 //! groups with `do_action(`[`FLUSH_ACTION`]`)` (advertised via `list_actions`),
 //! bounded by [`FLUSH_TIMEOUT`].
 
-use crate::processor::WalProcessor;
+use crate::processor::{FlushScope, WalProcessor};
 use crate::schema_transform::{
     FlightMetadata, determine_wal_operation, extract_flight_metadata, transform_for_signal,
 };
@@ -45,6 +45,38 @@ pub const FLUSH_ACTION: &str = "flush";
 /// synchronously while holding the processor mutex, so it must not hang the RPC
 /// (or the background loop) forever if the catalog/object store stalls.
 const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Parse the required tenant/dataset scope from a `flush` action body
+/// (`{"tenant_id": "...", "dataset_id": "..."?}`). A missing/empty `tenant_id`
+/// is rejected so a flush can never be unscoped (which would force-commit — and
+/// amplify catalog writes for — every tenant on this writer).
+fn parse_flush_scope(body: &Bytes) -> Result<FlushScope, Status> {
+    let json: serde_json::Value = serde_json::from_slice(body).map_err(|e| {
+        Status::invalid_argument(format!(
+            "flush action body must be JSON {{\"tenant_id\": \"...\", \"dataset_id\"?: \"...\"}}: {e}"
+        ))
+    })?;
+    let tenant_id = json
+        .get("tenant_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or("");
+    if tenant_id.is_empty() {
+        return Err(Status::invalid_argument(
+            "flush action requires a non-empty tenant_id (unscoped flush is not allowed)",
+        ));
+    }
+    let dataset_id = json
+        .get("dataset_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string);
+    Ok(FlushScope {
+        tenant_id: tenant_id.to_string(),
+        dataset_id,
+    })
+}
 
 /// Enhanced Flight service that uses Iceberg table writer instead of direct Parquet writes
 /// This demonstrates the integration of the new Iceberg-based processor
@@ -406,15 +438,26 @@ impl FlightService for IcebergWriterFlightService {
     ) -> Result<Response<Self::DoActionStream>, Status> {
         let action = request.into_inner();
         match action.r#type.as_str() {
-            // Read-your-writes drain: commit every pending group immediately,
-            // bypassing the commit-coalescing floor. Used by tests and by
-            // clients that need ingested data queryable at once.
+            // Read-your-writes drain: force-commit the pending groups for the
+            // requested tenant (optionally a single dataset), bypassing the
+            // coalescing floor for that scope only. Used by tests and by clients
+            // that need their just-ingested data queryable at once. The scope is
+            // a required JSON body `{"tenant_id": "...", "dataset_id": "..."?}`;
+            // an unscoped flush is rejected so one caller cannot force-commit —
+            // and amplify catalog writes for — every tenant on this writer.
             FLUSH_ACTION => {
+                let scope = parse_flush_scope(&action.body)?;
                 // Bound the flush: force_commit_pending drives Iceberg/catalog
                 // commits while holding the processor mutex, so a stuck catalog
                 // or object store must not hang this client-facing RPC (and the
                 // background loop behind it) indefinitely.
-                let flush = async { self.processor.lock().await.force_commit_pending().await };
+                let flush = async {
+                    self.processor
+                        .lock()
+                        .await
+                        .force_commit_pending(scope)
+                        .await
+                };
                 match tokio::time::timeout(FLUSH_TIMEOUT, flush).await {
                     Ok(Ok(())) => {
                         let out = stream::empty().boxed();
@@ -533,10 +576,21 @@ mod tests {
             Ok(_) => panic!("unknown do_action type must be Unimplemented"),
         }
 
-        // The flush action drains the pending write.
-        let flush = Request::new(arrow_flight::Action {
+        // An unscoped flush (no tenant) is rejected — it must not force-commit
+        // every tenant on the writer.
+        let unscoped = Request::new(arrow_flight::Action {
             r#type: FLUSH_ACTION.to_string(),
             body: Bytes::new(),
+        });
+        match service.do_action(unscoped).await {
+            Err(status) => assert_eq!(status.code(), tonic::Code::InvalidArgument),
+            Ok(_) => panic!("unscoped flush must be InvalidArgument"),
+        }
+
+        // The flush action drains the pending write for the scoped tenant.
+        let flush = Request::new(arrow_flight::Action {
+            r#type: FLUSH_ACTION.to_string(),
+            body: Bytes::from(r#"{"tenant_id":"acme","dataset_id":"production"}"#),
         });
         let resp = service.do_action(flush).await.unwrap();
         // Drain the (empty) result stream to completion.
@@ -585,7 +639,7 @@ mod tests {
 
         let flush = Request::new(arrow_flight::Action {
             r#type: FLUSH_ACTION.to_string(),
-            body: Bytes::new(),
+            body: Bytes::from(r#"{"tenant_id":"acme","dataset_id":"production"}"#),
         });
         match service.do_action(flush).await {
             Err(status) => assert_eq!(status.code(), tonic::Code::Internal),

@@ -417,7 +417,7 @@ async fn send_test_trace(services: &TestServices, trace_name: &str) -> String {
 /// is the deterministic read-your-writes barrier (no sleeping on the background
 /// loop).
 async fn wait_for_data_persistence(services: &TestServices) {
-    common::testing::flush_storage_writers(&services.flight_transport)
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
         .await
         .expect("flush writer");
 

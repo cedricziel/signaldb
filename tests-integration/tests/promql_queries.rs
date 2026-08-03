@@ -429,7 +429,7 @@ async fn promql_end_to_end() {
 
     // Force the writer to commit now — deterministic read-your-writes instead
     // of waiting out the asynchronous background commit loop.
-    common::testing::flush_storage_writers(&services.flight_transport)
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
         .await
         .expect("flush writer");
     let objects: Vec<_> = {

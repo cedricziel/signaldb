@@ -86,7 +86,12 @@ async fn test_wal_processor_integration() -> Result<()> {
     // batch uses a minimal schema, so the commit may fail in this environment —
     // that is tolerated; it must only not regress to the obsolete
     // "not implemented" path.
-    let result = processor.force_commit_pending().await;
+    let result = processor
+        .force_commit_pending(writer::FlushScope {
+            tenant_id: "default".to_string(),
+            dataset_id: Some("default".to_string()),
+        })
+        .await;
     if let Err(e) = result {
         assert!(!e.to_string().contains("Table creation not yet implemented"));
         println!("Expected test environment failure in processing: {}", e);

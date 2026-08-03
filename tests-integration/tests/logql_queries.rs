@@ -420,7 +420,7 @@ async fn logql_end_to_end() {
 
     // Force the writer to commit now (do_put acks after WAL flush and commits
     // asynchronously) — deterministic read-your-writes instead of sleeping.
-    common::testing::flush_storage_writers(&services.flight_transport)
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
         .await
         .expect("flush writer");
     let objects: Vec<_> = {

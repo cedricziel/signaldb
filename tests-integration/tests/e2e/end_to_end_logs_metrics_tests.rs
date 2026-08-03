@@ -415,7 +415,7 @@ async fn flush_persists_ingested_logs_without_waiting_for_the_loop() {
         .await
         .expect("logs export must be durably accepted");
 
-    common::testing::flush_storage_writers(&services.flight_transport)
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
         .await
         .expect("force-commit flush");
 

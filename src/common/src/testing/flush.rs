@@ -16,18 +16,29 @@ use crate::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 /// here to avoid a `common -> writer` dependency).
 const FLUSH_ACTION: &str = "flush";
 
-/// Force **every** Storage-capable writer reachable through `transport` to
-/// commit its pending writes, so subsequently-issued queries observe the
-/// just-ingested data. Flushes each Storage instance individually (not a
-/// round-robin pick), so it is correct for multi-writer topologies. Returns an
-/// error if no writer is reachable or any flush fails.
-pub async fn flush_storage_writers(transport: &InMemoryFlightTransport) -> anyhow::Result<()> {
+/// Force every Storage-capable writer reachable through `transport` to commit
+/// the pending writes for `tenant_id` (and, when `dataset_id` is `Some`, that
+/// dataset only), so subsequently-issued queries observe the just-ingested
+/// data. The flush is tenant-scoped: it does not disturb other tenants'
+/// coalescing. Flushes each Storage instance individually (not a round-robin
+/// pick), so it is correct for multi-writer topologies. Returns an error if no
+/// writer is reachable or any flush fails.
+pub async fn flush_storage_writers(
+    transport: &InMemoryFlightTransport,
+    tenant_id: &str,
+    dataset_id: Option<&str>,
+) -> anyhow::Result<()> {
     let services = transport
         .discover_services_by_capability(ServiceCapability::Storage)
         .await;
     if services.is_empty() {
         anyhow::bail!("no Storage writer to flush");
     }
+
+    let body = serde_json::to_vec(&serde_json::json!({
+        "tenant_id": tenant_id,
+        "dataset_id": dataset_id,
+    }))?;
 
     for service in services {
         let mut client = transport
@@ -38,7 +49,7 @@ pub async fn flush_storage_writers(transport: &InMemoryFlightTransport) -> anyho
         let mut stream = client
             .do_action(Action {
                 r#type: FLUSH_ACTION.to_string(),
-                body: Default::default(),
+                body: body.clone().into(),
             })
             .await?
             .into_inner();
