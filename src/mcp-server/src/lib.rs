@@ -31,7 +31,8 @@ use axum::{
 use dashmap::DashMap;
 use reqwest::header::{HeaderMap, HeaderName};
 use rmcp::transport::streamable_http_server::{
-    session::local::LocalSessionManager, tower::StreamableHttpService,
+    session::local::LocalSessionManager,
+    tower::{StreamableHttpServerConfig, StreamableHttpService},
 };
 
 use server::McpServer;
@@ -72,13 +73,32 @@ impl McpAppState {
 
 /// Build the axum router that serves MCP over Streamable HTTP at `/mcp`, gated
 /// by a lightweight credential-presence + session-binding check.
-pub fn mcp_http_router(state: McpAppState) -> Router {
+///
+/// `allowed_hosts` configures the Streamable HTTP transport's DNS-rebinding
+/// guard, which validates the inbound `Host` header. The transport defaults to
+/// loopback only (`localhost`/`127.0.0.1`/`::1`); pass additional authorities
+/// (`host` or `host:port`) to reach the server beyond localhost, or the single
+/// entry `"*"` to disable the guard entirely. An empty slice keeps the
+/// loopback-only default.
+pub fn mcp_http_router(state: McpAppState, allowed_hosts: &[String]) -> Router {
     let session_manager = Arc::new(LocalSessionManager::default());
     let base_url = state.router_base_url.clone();
+
+    let mut config = StreamableHttpServerConfig::default();
+    if allowed_hosts.iter().any(|h| h == "*") {
+        // Explicit opt-out: accept any Host. The server still authenticates
+        // every request (bearer + tenant), so this only drops the rebinding
+        // guard, not authorization.
+        config = config.disable_allowed_hosts();
+    } else {
+        // Extend the loopback defaults with the operator-provided authorities.
+        config.allowed_hosts.extend_from_slice(allowed_hosts);
+    }
+
     let service = StreamableHttpService::new(
         move || Ok(McpServer::new(base_url.clone())),
         session_manager,
-        Default::default(),
+        config,
     );
 
     Router::new()
@@ -201,7 +221,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_request_without_bearer() {
-        let app = mcp_http_router(test_state());
+        let app = mcp_http_router(test_state(), &[]);
         let res = app
             .oneshot(
                 RequestBuilder::new()
@@ -218,7 +238,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_request_without_tenant() {
-        let app = mcp_http_router(test_state());
+        let app = mcp_http_router(test_state(), &[]);
         let res = app
             .oneshot(
                 RequestBuilder::new()
@@ -238,7 +258,7 @@ mod tests {
         // With a bearer + tenant present, the request clears the presence check
         // and reaches the MCP transport — validation is the router's job, so the
         // response is no longer a 401 produced by this layer.
-        let app = mcp_http_router(test_state());
+        let app = mcp_http_router(test_state(), &[]);
         let res = app
             .oneshot(
                 RequestBuilder::new()
@@ -262,7 +282,7 @@ mod tests {
     async fn session_bound_to_first_identity() {
         // A session pinned to tenant `acme` cannot be reused by a different
         // identity (tenant `other`, different token) on the same session id.
-        let app = mcp_http_router(test_state());
+        let app = mcp_http_router(test_state(), &[]);
 
         let first = app
             .clone()
@@ -294,6 +314,56 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reused.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Helper: an authenticated `initialize` POST carrying an explicit `Host`.
+    fn init_request_with_host(host: &str) -> Request<Body> {
+        RequestBuilder::new()
+            .method("POST")
+            .uri("/mcp")
+            .header("host", host)
+            .header("authorization", "Bearer sk-anything")
+            .header("x-tenant-id", "acme")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(Body::from(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
+            ))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn non_loopback_host_rejected_by_default() {
+        // With no configured allowlist, the transport's DNS-rebinding guard
+        // accepts only loopback hosts — a non-loopback `Host` is refused.
+        let app = mcp_http_router(test_state(), &[]);
+        let res = app
+            .oneshot(init_request_with_host("signaldb.example.com"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn configured_host_is_allowed() {
+        // Naming the host in the allowlist lets its requests clear the guard.
+        let app = mcp_http_router(test_state(), &["signaldb.example.com".to_string()]);
+        let res = app
+            .oneshot(init_request_with_host("signaldb.example.com"))
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn wildcard_disables_host_guard() {
+        // The `*` sentinel drops the guard, so any `Host` clears it.
+        let app = mcp_http_router(test_state(), &["*".to_string()]);
+        let res = app
+            .oneshot(init_request_with_host("10.0.0.5:30228"))
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
