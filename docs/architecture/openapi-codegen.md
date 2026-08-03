@@ -42,14 +42,14 @@ flowchart LR
   (`/api/v1/manage/...`), `endpoints/tempo.rs` (the Tempo-compatible trace
   query endpoints under `/tempo/api/...`, whose DTOs live in `tempo-api`),
   `endpoints/query.rs` (the native Query IR endpoint `POST /api/v1/query`, whose
-  request/response DTOs are defined in that module), and the PromQL/LogQL instant
-  - range query endpoints in `endpoints/promql.rs`
-    (`/prometheus/api/v1/query{,_range}`) and `endpoints/logql.rs`
-    (`/loki/api/v1/query{,_range}`). Paths are absolute; operationIds on the
-    management handlers are prefixed `manage_*` and their colliding component
-    schemas aliased `Manage*` (via `#[schema(as = ...)]`) so admin and manage
-    names don't clash. The PromQL/LogQL handlers set explicit `operation_id`s
-    (`promql_query`, `logql_query`, …) because their bare handler names collide.
+  request/response DTOs are defined in that module), and the PromQL/LogQL
+  instant and range query endpoints in `endpoints/promql.rs`
+  (`/prometheus/api/v1/query{,_range}`) and `endpoints/logql.rs`
+  (`/loki/api/v1/query{,_range}`). Paths are absolute; operationIds on the
+  management handlers are prefixed `manage_*` and their colliding component
+  schemas aliased `Manage*` (via `#[schema(as = ...)]`) so admin and manage
+  names don't clash. The PromQL/LogQL handlers set explicit `operation_id`s
+  (`promql_query`, `logql_query`, …) because their bare handler names collide.
 - `src/router/src/openapi.rs` assembles everything into the `ApiDoc`
   (`#[derive(OpenApi)]`) — info, `servers`, the `bearerAuth` security scheme,
   tags, the path list, and the component schemas.
@@ -105,12 +105,13 @@ job, and the `codegen` job runs `cargo xtask check` to gate the clients.
 ## Known gaps
 
 - The Tempo (trace), Loki (LogQL), and Prometheus (PromQL) instant/range query
-  endpoints are all annotated. The PromQL/LogQL responses are declared with a
+  endpoints are all annotated. Tempo responses are **typed** (`SearchResult`,
+  `Trace`, …). The PromQL and LogQL responses, however, are declared with a
   **loose `serde_json::Value` body** rather than typed schemas: their
   `[timestamp, "value"]` tuple sample shapes need extra schema handling, so the
-  generated clients see an opaque JSON value and pass the native
-  Tempo/Loki/Prometheus response through unchanged. Tightening those response
-  schemas is a follow-up (epic #620, Phase A).
+  generated clients see an opaque JSON value and pass the native Loki/Prometheus
+  response through unchanged. Tightening those two response schemas is a
+  follow-up (epic #620, Phase A).
 - The polymorphic Tempo attribute `Value` (a serde-tagged union of
   string/int/bool/double) serializes as an untyped object in the schema, so the
   generated clients see it as an arbitrary JSON value rather than a typed enum.

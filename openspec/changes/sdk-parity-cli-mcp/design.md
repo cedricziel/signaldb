@@ -180,7 +180,9 @@ CLI changelog and update `docs/architecture/overview.md`, `docs/users/
 authentication.md`, and the `multi-tenancy` skill's CLI examples in the same PR.
 No back-compat aliases (post-1.0).
 
-**Rollback:** each phase is additive and independently revertible. Reverting
-Phase 2 removes the ops surface without touching query/admin; reverting Phase 1
-restores the prior command tree; the Phase-0 SDK additions are inert unless
-called.
+**Rollback:** each phase is independently revertible. Phase 0 and Phase 2 are
+additive (the Phase-0 SDK additions are inert unless called; reverting Phase 2
+removes the ops surface without touching query/admin). Phase 1 is the one
+**breaking** step — it reshapes the CLI command tree — so its rollback is a
+coordinated CLI release rollback that restores the prior command tree, not a
+silent additive revert.

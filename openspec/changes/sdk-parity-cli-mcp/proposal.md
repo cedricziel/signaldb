@@ -85,9 +85,10 @@ across API, SDK, CLI, and MCP becomes structural rather than aspirational.
   (shared config resolution if surfaced).
 - **API surface:** the PromQL/LogQL/TraceQL compat endpoints gain OpenAPI
   annotations (no behavior change); new `/api/v1/ops/*` router endpoints.
-  **BREAKING** for the CLI command tree — existing top-level
+  **BREAKING (lands in Phase 1)** for the CLI command tree — existing top-level
   `signaldb-cli tenant|api-key|dataset` move under `admin`, and query invocation
-  changes to `query --<lang>`. No change to OTLP ingest, the Tempo/LogQL/PromQL
+  changes to `query --<lang>`. Phase 0 is non-breaking (annotation-only on
+  existing endpoints; response shapes unchanged). No change to OTLP ingest, the Tempo/LogQL/PromQL
   query _semantics_ or their JSON response shapes, Flight wire schemas, or
   on-disk Iceberg/WAL layout.
 - **Generation regimes:** the SDK stays mostly generated (HTTP, code-first
