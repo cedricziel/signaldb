@@ -73,6 +73,8 @@ max_buffer_size_bytes = 134217728  # 128MB
 
 Note: segment size, buffer, and flush tuning currently ship as built-in defaults compiled into the services (64MB segments, 1000-entry buffer, 30s flush; the acceptor uses more aggressive per-signal settings for logs and metrics). The `[wal]` TOML block matches these defaults but the services do not yet read the tuning knobs from it — of the `[wal]` settings, only `wal_dir` changes runtime behavior today.
 
+`max_segment_size` caps **both** the entry-log file and the payload data file. Because payloads dominate size (the log holds only fixed-size per-entry metadata), rotation is driven in practice by the data file crossing the cap; a segment is sealed and a new one started before either file exceeds it. This keeps individual segments small, bounds recovery cost, and keeps data-file offsets well clear of the 4 GB (2³²) range.
+
 ## Docker Compose Configuration
 
 Configure persistent volumes for WAL directories:

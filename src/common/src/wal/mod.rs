@@ -862,8 +862,19 @@ impl Wal {
         let dataset_id = &config.dataset_id;
 
         for (entry_id, operation, data, metadata) in entries_to_flush {
-            // Check if we need to rotate to a new segment
-            if segment.size + data.len() as u64 > config.max_segment_size {
+            // Rotate when EITHER the entry-log or the payload data file would
+            // exceed the segment size cap. The data file holds the payloads and
+            // grows far faster than the log (which stores only fixed-size entry
+            // metadata), so gating rotation on the log size alone lets the data
+            // file grow without bound — on hive it reached multiple GB in a
+            // single never-rotated segment, marching toward the 2^32 offset
+            // limit and giving any single write-path desync an unbounded blast
+            // radius (issue #865). Capping the data file too keeps segments
+            // small, bounds recovery cost, and periodically starts a fresh
+            // (offset-aligned) segment.
+            if segment.size + data.len() as u64 > config.max_segment_size
+                || segment.data_size + data.len() as u64 > config.max_segment_size
+            {
                 // Close current segment
                 segment.close().await?;
 
@@ -1539,6 +1550,61 @@ mod tests {
             unprocessed.is_empty(),
             "dead-lettered entry must be marked processed"
         );
+    }
+
+    #[tokio::test]
+    async fn rotates_when_data_file_exceeds_cap_even_if_log_stays_small() {
+        // Regression for issue #865. Rotation was gated only on the entry-log
+        // size; the payload data file grows far faster (the log stores only
+        // fixed-size metadata), so a workload of small-metadata/large-payload
+        // entries never rotated and the data file grew to multiple GB in one
+        // segment on hive. Here the ~1 KiB payloads blow past the 4 KiB cap on
+        // the data file while the log accrues only ~100 bytes/entry, so ONLY
+        // the data-size check can force rotation.
+        let temp_dir = TempDir::new().unwrap();
+        let config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            max_segment_size: 4096,
+            max_buffer_entries: 1,
+            flush_interval_secs: 1,
+            tenant_id: "t".to_string(),
+            dataset_id: "d".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+        let wal = Wal::new(config).await.unwrap();
+
+        let payload = vec![0xABu8; 1024];
+        for _ in 0..8 {
+            wal.append(WalOperation::WriteTraces, payload.clone(), None)
+                .await
+                .unwrap();
+            wal.flush().await.unwrap();
+        }
+
+        // The 8 KiB of payload must have spilled into more than one segment.
+        let mut data_files = 0usize;
+        let mut rd = tokio::fs::read_dir(temp_dir.path()).await.unwrap();
+        while let Some(e) = rd.next_entry().await.unwrap() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("wal-") && name.ends_with(".data") {
+                data_files += 1;
+            }
+        }
+        assert!(
+            data_files >= 2,
+            "a data file exceeding max_segment_size must force rotation; found {data_files} segment(s)"
+        );
+
+        // Rotation must not lose or corrupt any entry.
+        let entries = wal.get_unprocessed_entries().await.unwrap();
+        assert_eq!(entries.len(), 8, "all entries must survive rotation");
+        for e in &entries {
+            let got = wal.read_entry_data(e).await.unwrap();
+            assert_eq!(got, payload, "entry corrupted across data-size rotation");
+        }
     }
 
     #[tokio::test]
