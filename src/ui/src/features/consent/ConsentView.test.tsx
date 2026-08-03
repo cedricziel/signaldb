@@ -35,7 +35,7 @@ describe("ConsentView", () => {
   it("shows the client, the requested read scope, and only the user's tenants", async () => {
     renderWithClient(<ConsentView />);
 
-    expect(await screen.findByText("Claude")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Claude/ })).toBeInTheDocument();
     // scope=traces:read only → logs/metrics are not offered
     expect(screen.getByText("Read traces")).toBeInTheDocument();
     expect(screen.queryByText("Read logs")).not.toBeInTheDocument();
@@ -46,10 +46,10 @@ describe("ConsentView", () => {
 
   it("approves with the selected tenant", async () => {
     renderWithClient(<ConsentView />);
-    await screen.findByText("Claude");
+    await screen.findByRole("heading", { name: /Claude/ });
 
     await userEvent.click(screen.getByRole("radio", { name: /globex/ }));
-    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await userEvent.click(screen.getByRole("button", { name: "Authorize" }));
 
     await waitFor(() =>
       expect(consentApi.submitConsentDecision).toHaveBeenCalled(),
@@ -65,7 +65,7 @@ describe("ConsentView", () => {
 
   it("denies (approved=false) so the client learns of the refusal", async () => {
     renderWithClient(<ConsentView />);
-    await screen.findByText("Claude");
+    await screen.findByRole("heading", { name: /Claude/ });
 
     await userEvent.click(screen.getByRole("button", { name: "Deny" }));
 

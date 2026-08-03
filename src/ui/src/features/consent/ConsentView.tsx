@@ -161,30 +161,43 @@ export function ConsentView() {
       });
   };
 
+  const single = context.tenants.length === 1 ? context.tenants[0] : null;
+
   return (
     <div className="login-backdrop" role="dialog" aria-label="Authorize access">
       <div className="login-panel consent-panel">
-        <h2>Authorize access</h2>
-        <p className="login-hint">
-          <strong>{clientLabel}</strong> wants to read observability data from
-          SignalDB on your behalf.
-        </p>
-
-        <div className="consent-section">
-          <h3>It will be able to</h3>
-          <ul className="consent-scopes">
-            {scopes.map((s) => (
-              <li key={s}>{scopeLabel(s)}</li>
-            ))}
-          </ul>
+        <div className="consent-header">
+          <span className="consent-badge" aria-hidden="true">
+            <ShieldIcon />
+          </span>
+          <h2>Authorize {clientLabel}</h2>
+          <p className="consent-sub">
+            It's asking to read your observability data in SignalDB.
+          </p>
         </div>
 
-        <div className="consent-section">
-          <h3>Grant access to tenant</h3>
+        <ul className="consent-perms">
+          {scopes.map((s) => (
+            <li key={s}>
+              <EyeIcon />
+              <span>{scopeLabel(s)}</span>
+            </li>
+          ))}
+        </ul>
+
+        <div className="consent-field">
+          <span className="consent-field-label">
+            {single ? "Tenant" : "Grant access to"}
+          </span>
           {context.tenants.length === 0 ? (
-            <p className="login-hint">
-              You are not a member of any tenant, so there is nothing to grant.
+            <p className="consent-empty">
+              You aren't a member of any tenant, so there's nothing to grant.
             </p>
+          ) : single ? (
+            <div className="consent-single">
+              <span className="consent-tenant-name">{single.id}</span>
+              <span className="consent-tenant-meta">{single.role}</span>
+            </div>
           ) : (
             <ul className="consent-tenants">
               {context.tenants.map((t) => (
@@ -227,9 +240,13 @@ export function ConsentView() {
             disabled={busy || context.tenants.length === 0}
             onClick={() => decide(true)}
           >
-            {busy ? "Authorizing…" : "Approve"}
+            {busy ? "Authorizing…" : "Authorize"}
           </button>
         </div>
+
+        <p className="consent-foot">
+          Read-only access to one tenant. You can revoke it anytime.
+        </p>
       </div>
     </div>
   );
@@ -246,4 +263,42 @@ function scopeLabel(scope: string): string {
     default:
       return scope;
   }
+}
+
+function ShieldIcon() {
+  return (
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3Z" />
+      <path d="m9 12 2 2 4-4" />
+    </svg>
+  );
+}
+
+function EyeIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
 }
