@@ -52,10 +52,19 @@ fn http_languages_have_mcp_tools_and_sql_stays_cli_only() {
                 McpServer::has_tool(t),
                 "MCP tool `{t}` for {lang} is missing (HTTP languages must have a tool)"
             ),
-            None => assert!(
-                !McpServer::has_tool("query_sql") && !McpServer::has_tool("sql"),
-                "SQL must stay CLI-only — the HTTP-forwarding MCP holds no Flight client"
-            ),
+            None => {
+                // Only SQL is CLI-only; guard the invariant so an HTTP language
+                // can never be silently marked CLI-only by setting its tool to
+                // `None`.
+                assert_eq!(
+                    *lang, "sql",
+                    "only SQL may be CLI-only; `{lang}` is an HTTP language and needs an MCP tool"
+                );
+                assert!(
+                    !McpServer::has_tool("query_sql") && !McpServer::has_tool("sql"),
+                    "SQL must stay CLI-only — the HTTP-forwarding MCP holds no Flight client"
+                );
+            }
         }
     }
 }

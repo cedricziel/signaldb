@@ -576,6 +576,7 @@ signaldb-cli query --sql "SELECT * FROM traces LIMIT 10"
 signaldb-cli query --promql "rate(http_requests_total[5m])"
 signaldb-cli query --logql '{service_name="api"} |= "error"'
 signaldb-cli query --traceql '{ .service.name = "api" }'
+signaldb-cli query --ir '{"irVersion":1,"from":"logs","result":"rows"}'
 ```
 
 ## Testing

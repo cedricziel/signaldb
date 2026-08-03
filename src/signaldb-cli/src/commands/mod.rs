@@ -35,7 +35,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Query SignalDB in one language (exactly one of
-    /// --sql/--promql/--logql/--traceql)
+    /// --sql/--promql/--logql/--traceql/--ir)
     Query(query::QueryArgs),
     /// Administrative operations (tenants, API keys, datasets)
     Admin {

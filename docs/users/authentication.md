@@ -99,7 +99,7 @@ one of:
 Example (operator-side):
 
 ```bash
-signaldb-cli --admin-key <admin-key> api-key create acme --name "Production Key"
+signaldb-cli --admin-key <admin-key> admin api-key create acme --name "Production Key"
 ```
 
 Tenants and datasets created through the Admin API or CLI are usable for

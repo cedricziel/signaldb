@@ -48,7 +48,7 @@ pub struct QueryArgs {
 
     /// With `--ir`: read the IR document from a file instead of the
     /// argument/stdin.
-    #[arg(long, short = 'f')]
+    #[arg(long, short = 'f', requires = "ir")]
     file: Option<PathBuf>,
 
     /// Router base URL (used by `--promql`/`--logql`/`--traceql`/`--ir`).

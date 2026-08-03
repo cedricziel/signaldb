@@ -15,7 +15,7 @@ other direct transport to a SignalDB service.
 
 #### Scenario: CLI issues a query
 
-- **WHEN** the CLI executes any query (SQL, TraceQL, LogQL, or PromQL)
+- **WHEN** the CLI executes any query (SQL, TraceQL, LogQL, PromQL, or Query IR)
 - **THEN** the request is dispatched through a `signaldb-sdk` client method
 - **AND** the CLI crate contains no direct `FlightServiceClient` or raw HTTP
   construction against a SignalDB service
