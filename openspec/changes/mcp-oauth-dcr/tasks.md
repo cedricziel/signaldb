@@ -2,7 +2,7 @@
 
 - [x] 1.1 Write failing `common` catalog tests for the new tables: registered OAuth clients, authorization codes, access tokens, refresh tokens — each storing a token/secret **hash** (never the raw value), subject user, tenant, granted scopes, audience, and expiry (`cargo test -p common`).
 - [x] 1.2 Add forward-only catalog migrations + row types for those tables (SQLite + PostgreSQL), making 1.1 pass.
-- [ ] 1.3 Add `[mcp]`/auth config for the AS issuer URL, resource URL, and token/code lifetimes following config precedence; document in `signaldb.dist.toml` (commented). _(folded into the router phase where it is consumed)_
+- [x] 1.3 Add `[mcp]`/auth config for the AS issuer URL, resource URL, and token/code lifetimes following config precedence; document in `signaldb.dist.toml` (commented). _(folded into the router phase where it is consumed)_
 
 ## 2. Read-scope model (extends the existing scope machinery)
 
@@ -16,13 +16,13 @@
 
 ## 4. Authorization Server metadata discovery (RFC 8414)
 
-- [ ] 4.1 Write a failing `router` test that `GET /.well-known/oauth-authorization-server` returns registration/authorization/token endpoints, `code_challenge_methods_supported` ⊇ `S256`, and `grant_types_supported` ⊇ `authorization_code`,`refresh_token` (`cargo test -p router`).
-- [ ] 4.2 Implement the metadata handler, making 4.1 pass.
+- [x] 4.1 Write a failing `router` test that `GET /.well-known/oauth-authorization-server` returns registration/authorization/token endpoints, `code_challenge_methods_supported` ⊇ `S256`, and `grant_types_supported` ⊇ `authorization_code`,`refresh_token` (`cargo test -p router`).
+- [x] 4.2 Implement the metadata handler, making 4.1 pass.
 
 ## 5. Dynamic Client Registration (RFC 7591)
 
-- [ ] 5.1 Write failing `router` tests: unauthenticated `POST /register` with valid `redirect_uris` persists a client and returns a unique `client_id`; missing/malformed `redirect_uris` is rejected with no client persisted (`cargo test -p router`).
-- [ ] 5.2 Implement the registration endpoint + persistence, making 5.1 pass.
+- [x] 5.1 Write failing `router` tests: unauthenticated `POST /register` with valid `redirect_uris` persists a client and returns a unique `client_id`; missing/malformed `redirect_uris` is rejected with no client persisted (`cargo test -p router`).
+- [x] 5.2 Implement the registration endpoint + persistence, making 5.1 pass.
 
 ## 6. Authorize + consent (login, tenant selection, PKCE)
 

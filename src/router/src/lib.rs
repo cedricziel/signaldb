@@ -206,6 +206,14 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
     // Load OpenAPI spec from the generated JSON file
     let openapi_spec = load_openapi_spec();
 
+    // OAuth 2.1 authorization-server surface (change: mcp-oauth-dcr). Mounted
+    // only when enabled, so a plain deployment exposes no OAuth endpoints.
+    let oauth_routes = if state.config().mcp.oauth.enabled {
+        endpoints::oauth::router()
+    } else {
+        Router::new()
+    };
+
     Router::new()
         // Public health check endpoint (no authentication)
         .route("/health", get(health_check))
@@ -255,6 +263,9 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         // UI session login/logout (public; sets/clears the HttpOnly session
         // cookie the auth middleware accepts in place of auth headers)
         .merge(endpoints::session::router())
+        // OAuth 2.1 authorization-server endpoints (public: discovery + DCR are
+        // unauthenticated by spec; empty unless mcp.oauth.enabled)
+        .merge(oauth_routes)
         // Explore UI static assets + runtime config (public, served from
         // SIGNALDB_UI_DIR; runtime-config.js from [self_monitoring.frontend])
         .nest_service(
