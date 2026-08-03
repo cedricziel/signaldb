@@ -18,6 +18,12 @@ pub use password::{
 pub use session::{SESSION_COOKIE, session_token_from_headers};
 pub use validation::{ValidationError, validate_dataset_id, validate_id, validate_tenant_id};
 
+/// Per-signal read scopes granted over the query surface (e.g. the MCP read
+/// tools). The mirror of the acceptor's ingest write scopes; a token or key
+/// carrying `<signal>:read` may read that signal (see
+/// [`TenantContext::can_read`]).
+pub const READ_SCOPES: [&str; 3] = ["traces:read", "logs:read", "metrics:read"];
+
 /// Human principal resolved from a server-side browser session.
 #[derive(Debug, Clone)]
 pub struct UserContext {
@@ -138,6 +144,19 @@ impl TenantContext {
             .as_ref()
             .is_none_or(|scopes| scopes.iter().any(|scope| scope == &required))
     }
+
+    /// Whether this principal may read a particular telemetry signal.
+    ///
+    /// Every membership role (including `Viewer`) may read; a legacy key with
+    /// no explicit scopes is unrestricted. When scopes are present, the
+    /// matching `<signal>:read` scope is required — write scopes do not grant
+    /// read. This mirrors [`can_ingest`](Self::can_ingest) on the query side.
+    pub fn can_read(&self, signal: &str) -> bool {
+        let required = format!("{signal}:read");
+        self.api_key_scopes
+            .as_ref()
+            .is_none_or(|scopes| scopes.iter().any(|scope| scope == &required))
+    }
 }
 
 /// Source of tenant configuration
@@ -206,6 +225,46 @@ mod scoped_authorization_tests {
         assert!(!viewer.can_write());
         assert!(!viewer.can_ingest("metrics"));
         assert!(!viewer.can_manage_tenant());
+    }
+
+    #[test]
+    fn every_read_signal_requires_its_matching_read_scope() {
+        for signal in ["metrics", "logs", "traces"] {
+            let allowed = context(Some(vec![format!("{signal}:read")]));
+            assert!(allowed.can_read(signal));
+            for other in ["metrics", "logs", "traces"] {
+                if other != signal {
+                    assert!(!allowed.can_read(other));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_unscoped_keys_may_read_any_signal() {
+        let legacy = context(None);
+        for signal in ["metrics", "logs", "traces"] {
+            assert!(legacy.can_read(signal));
+        }
+    }
+
+    #[test]
+    fn viewer_sessions_may_still_read() {
+        let viewer = context(None).with_user(
+            "user-1".into(),
+            crate::catalog::MembershipRole::Viewer,
+            false,
+            "session-1".into(),
+        );
+        for signal in ["metrics", "logs", "traces"] {
+            assert!(viewer.can_read(signal));
+        }
+    }
+
+    #[test]
+    fn write_scopes_do_not_grant_read() {
+        let writer_only = context(Some(vec!["traces:write".into()]));
+        assert!(!writer_only.can_read("traces"));
     }
 }
 

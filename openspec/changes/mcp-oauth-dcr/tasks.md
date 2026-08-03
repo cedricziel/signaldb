@@ -6,8 +6,8 @@
 
 ## 2. Read-scope model (extends the existing scope machinery)
 
-- [ ] 2.1 Write failing `common` tests for `TenantContext::can_read(signal)` mirroring `can_ingest`: `<signal>:read` required when scopes are `Some`; `None` = legacy-unrestricted; role gate respected (`cargo test -p common`).
-- [ ] 2.2 Implement `can_read` and the `traces:read`/`logs:read`/`metrics:read` scope constants, making 2.1 pass.
+- [x] 2.1 Write failing `common` tests for `TenantContext::can_read(signal)` mirroring `can_ingest`: `<signal>:read` required when scopes are `Some`; `None` = legacy-unrestricted; role gate respected (`cargo test -p common`).
+- [x] 2.2 Implement `can_read` and the `traces:read`/`logs:read`/`metrics:read` scope constants, making 2.1 pass.
 
 ## 3. Opaque token primitives & store
 
