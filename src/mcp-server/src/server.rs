@@ -334,6 +334,14 @@ impl McpServer {
     }
 }
 
+impl McpServer {
+    /// Whether a tool named `name` is registered. Exposed for cross-surface
+    /// parity checks (see the `client-surface-parity` spec).
+    pub fn has_tool(name: &str) -> bool {
+        Self::tool_router().has_route(name)
+    }
+}
+
 #[tool_handler]
 impl ServerHandler for McpServer {}
 

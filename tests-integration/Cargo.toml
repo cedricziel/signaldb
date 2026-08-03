@@ -19,6 +19,8 @@ router = { path = "../src/router" }
 writer = { path = "../src/writer" }
 tempo-api = { path = "../src/tempo-api" }
 signaldb-sdk = { path = "../src/signaldb-sdk" }
+signaldb-cli = { path = "../src/signaldb-cli" }
+mcp-server = { path = "../src/mcp-server" }
 
 # External dependencies
 anyhow.workspace = true
@@ -39,6 +41,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "registry"] }
 tracing-opentelemetry.workspace = true
 axum.workspace = true
 tower.workspace = true
+clap.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 hex.workspace = true
@@ -167,4 +170,4 @@ path = "tests/querier/trace_bloom_pruning.rs"
 
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory
-ignored = ["acceptor", "anyhow", "arrow-flight", "compactor", "datafusion", "futures", "iceberg-rust", "log", "opentelemetry-proto", "querier", "router", "tokio", "tokio-stream", "tonic", "writer"]
+ignored = ["acceptor", "anyhow", "arrow-flight", "compactor", "datafusion", "futures", "iceberg-rust", "log", "mcp-server", "opentelemetry-proto", "querier", "router", "signaldb-cli", "tokio", "tokio-stream", "tonic", "writer"]
