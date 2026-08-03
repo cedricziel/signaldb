@@ -1105,6 +1105,12 @@ pub struct WriterConfig {
     /// elapses, so a burst does not accumulate an unbounded in-memory batch or
     /// one oversized commit.
     pub max_uncommitted_rows: usize,
+    /// Number of previous Iceberg `metadata.json` versions to retain per table
+    /// (`write.metadata.previous-versions-max`). Older metadata files are
+    /// deleted on commit (`write.metadata.delete-after-commit.enabled`),
+    /// bounding on-disk metadata growth under continuous ingestion. Applied at
+    /// table creation.
+    pub metadata_previous_versions_max: usize,
 }
 
 impl Default for WriterConfig {
@@ -1112,6 +1118,7 @@ impl Default for WriterConfig {
         Self {
             commit_interval: Duration::from_secs(5),
             max_uncommitted_rows: 100_000,
+            metadata_previous_versions_max: 100,
         }
     }
 }
@@ -1752,11 +1759,13 @@ mod tests {
         let writer = WriterConfig::default();
         assert_eq!(writer.commit_interval, Duration::from_secs(5));
         assert_eq!(writer.max_uncommitted_rows, 100_000);
+        assert_eq!(writer.metadata_previous_versions_max, 100);
 
         // Present on the top-level Configuration with the same defaults.
         let config = Configuration::default();
         assert_eq!(config.writer.commit_interval, Duration::from_secs(5));
         assert_eq!(config.writer.max_uncommitted_rows, 100_000);
+        assert_eq!(config.writer.metadata_previous_versions_max, 100);
     }
 
     #[test]

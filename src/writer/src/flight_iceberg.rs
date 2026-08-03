@@ -552,6 +552,7 @@ mod tests {
         let writer_config = WriterConfig {
             commit_interval: std::time::Duration::from_secs(3600),
             max_uncommitted_rows: 1_000_000,
+            ..Default::default()
         };
         let service = IcebergWriterFlightService::new(
             catalog_manager,

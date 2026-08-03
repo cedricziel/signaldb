@@ -21,12 +21,18 @@ use super::schemas;
 /// `ensure_table` again rather than hold on to an old handle.
 pub struct IcebergTableManager {
     catalog: Arc<dyn IcebergCatalog>,
+    /// `write.metadata.previous-versions-max` applied to tables at creation.
+    metadata_previous_versions_max: usize,
 }
 
 impl IcebergTableManager {
-    /// Create from catalog reference.
-    pub fn new(catalog: Arc<dyn IcebergCatalog>) -> Self {
-        Self { catalog }
+    /// Create from catalog reference with the metadata-retention window applied
+    /// to newly-created tables.
+    pub fn new(catalog: Arc<dyn IcebergCatalog>, metadata_previous_versions_max: usize) -> Self {
+        Self {
+            catalog,
+            metadata_previous_versions_max,
+        }
     }
 
     /// Load an existing table or create it if it doesn't exist.
@@ -128,9 +134,22 @@ impl IcebergTableManager {
                 dataset_slug,
                 table_name,
             ));
-        if !bloom_properties.is_empty() {
-            builder.with_properties(bloom_properties.into_iter().collect());
-        }
+        // Bound accumulated metadata: keep a window of previous metadata files
+        // and reclaim the rest on commit. Without this the catalog leaves one
+        // orphaned `metadata.json` per commit, growing without bound under
+        // continuous ingestion (#888). Honored by the SQL catalog's
+        // delete-after-commit support (JanKaul/iceberg-rust#382).
+        let mut properties: std::collections::HashMap<String, String> =
+            bloom_properties.into_iter().collect();
+        properties.insert(
+            "write.metadata.delete-after-commit.enabled".to_string(),
+            "true".to_string(),
+        );
+        properties.insert(
+            "write.metadata.previous-versions-max".to_string(),
+            self.metadata_previous_versions_max.to_string(),
+        );
+        builder.with_properties(properties);
         let table_create = builder
             .create()
             .map_err(|e| anyhow::anyhow!("Failed to build CreateTable for {ident}: {e}"))?;

@@ -200,6 +200,168 @@ async fn test_iceberg_namespace_slug_based() -> Result<()> {
     Ok(())
 }
 
+/// Newly-created tables enable metadata delete-after-commit so accumulated
+/// `metadata.json` files stay bounded under continuous ingestion (#888).
+#[tokio::test]
+async fn test_created_tables_enable_metadata_pruning() -> Result<()> {
+    let config = Configuration {
+        schema: SchemaConfig {
+            catalog_type: "sql".to_string(),
+            catalog_uri: "sqlite::memory:".to_string(),
+            default_schemas: Default::default(),
+            materialized_labels: Default::default(),
+        },
+        storage: StorageConfig {
+            dsn: "memory://".to_string(),
+        },
+        auth: AuthConfig {
+            tenants: vec![TenantConfig {
+                id: "tenant-1".to_string(),
+                slug: "mycorp".to_string(),
+                name: "My Corp".to_string(),
+                default_dataset: Some("dataset-1".to_string()),
+                datasets: vec![DatasetConfig {
+                    id: "dataset-1".to_string(),
+                    slug: "prod".to_string(),
+                    is_default: true,
+                    storage: None,
+                }],
+                api_keys: vec![],
+                schema_config: None,
+                limits: None,
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let object_store = Arc::new(InMemory::new());
+    let catalog_manager = Arc::new(CatalogManager::new(config).await?);
+
+    let writer = IcebergTableWriter::new(
+        &catalog_manager,
+        object_store,
+        "tenant-1".to_string(),
+        "dataset-1".to_string(),
+        "traces".to_string(),
+    )
+    .await?;
+
+    let properties = &writer.table_metadata().properties;
+    assert_eq!(
+        properties
+            .get("write.metadata.delete-after-commit.enabled")
+            .map(String::as_str),
+        Some("true"),
+        "created tables must enable metadata delete-after-commit"
+    );
+    assert_eq!(
+        properties
+            .get("write.metadata.previous-versions-max")
+            .map(String::as_str),
+        Some("100"),
+        "created tables must bound retained metadata versions"
+    );
+
+    Ok(())
+}
+
+/// End-to-end: with a small retention window, superseded `metadata.json` files
+/// are actually reclaimed on commit (not merely accumulated), proving the
+/// property wiring + the pinned catalog's delete-after-commit work together.
+#[tokio::test]
+async fn test_metadata_pruning_reclaims_old_metadata_files() -> Result<()> {
+    use futures::TryStreamExt;
+    use iceberg_rust::catalog::tabular::Tabular;
+    use object_store::ObjectStore;
+
+    let temp_dir = tempdir()?;
+    let storage_dir = temp_dir.path().join("storage");
+    std::fs::create_dir_all(&storage_dir)?;
+
+    let mut config = Configuration {
+        schema: SchemaConfig {
+            catalog_type: "sql".to_string(),
+            catalog_uri: "sqlite::memory:".to_string(),
+            default_schemas: Default::default(),
+            materialized_labels: Default::default(),
+        },
+        storage: StorageConfig {
+            dsn: format!("file://{}", storage_dir.display()),
+        },
+        auth: AuthConfig {
+            tenants: vec![TenantConfig {
+                id: "tenant-1".to_string(),
+                slug: "mycorp".to_string(),
+                name: "My Corp".to_string(),
+                default_dataset: Some("dataset-1".to_string()),
+                datasets: vec![DatasetConfig {
+                    id: "dataset-1".to_string(),
+                    slug: "prod".to_string(),
+                    is_default: true,
+                    storage: None,
+                }],
+                api_keys: vec![],
+                schema_config: None,
+                limits: None,
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    // Retain only two previous metadata versions so pruning is observable
+    // after a handful of commits (rather than the production default of 100).
+    config.writer.metadata_previous_versions_max = 2;
+
+    let object_store = common::storage::create_object_store(&config.storage)?;
+    let catalog_manager = Arc::new(CatalogManager::new(config).await?);
+
+    // Create the table (applies the retention properties).
+    let _writer = IcebergTableWriter::new(
+        &catalog_manager,
+        object_store.clone(),
+        "tenant-1".to_string(),
+        "dataset-1".to_string(),
+        "traces".to_string(),
+    )
+    .await?;
+
+    // Commit several times to accumulate metadata versions.
+    let ident = catalog_manager.build_table_identifier("tenant-1", "dataset-1", "traces");
+    const COMMITS: usize = 6;
+    for i in 0..COMMITS {
+        let tabular = catalog_manager.catalog().load_tabular(&ident).await?;
+        let mut table = match tabular {
+            Tabular::Table(table) => table,
+            _ => panic!("expected a table"),
+        };
+        table
+            .new_transaction(None)
+            .update_properties(vec![("marker".to_string(), i.to_string())])
+            .commit()
+            .await
+            .map_err(|e| anyhow::anyhow!("commit {i} failed: {e}"))?;
+    }
+
+    // Count retained metadata files. Without pruning this would be one per
+    // version (≈ COMMITS + 1); with previous-versions-max = 2 it stays bounded.
+    let metadata_files = object_store
+        .list(None)
+        .try_collect::<Vec<_>>()
+        .await?
+        .into_iter()
+        .filter(|m| m.location.as_ref().ends_with(".metadata.json"))
+        .count();
+
+    assert!(
+        metadata_files <= 4,
+        "expected metadata files pruned to a bounded window (<=4), found {metadata_files} \
+         after {COMMITS} commits"
+    );
+
+    Ok(())
+}
+
 /// Integration test verifying partition specs survive create→serialize→deserialize (D2)
 #[tokio::test]
 async fn test_partition_spec_roundtrip() -> Result<()> {

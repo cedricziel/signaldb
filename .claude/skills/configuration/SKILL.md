@@ -239,6 +239,7 @@ max_concurrent_queries_per_tenant = 8 # Unset = unlimited
 [writer]
 commit_interval = "5s"        # Max wait before a table's rows are committed (liveness). "0s" = commit every tick
 max_uncommitted_rows = 100000 # Row ceiling that triggers an earlier commit for bursts (a cap, never a minimum)
+metadata_previous_versions_max = 100 # Previous metadata.json versions retained per table (older deleted on commit)
 ```
 
 The writer commits ingested data to Iceberg asynchronously via its background

@@ -162,6 +162,15 @@ catalog_uri = "sqlite::memory:"          # In-memory (default, for dev/testing)
 
 For a file-backed catalog — both the `sqlite://<path>` and the on-disk `sqlite:file:<path>` URI forms — SignalDB enables **WAL journal mode** on the database before the catalog opens its connection pool (`enable_wal_on_sqlite_catalog` in `src/common/src/iceberg/mod.rs`); in-memory catalogs are left untouched. WAL lets readers proceed during a write and makes each write cheaper, so concurrent trace/log commits don't serialize behind an exclusive rollback-journal lock and stall first-time table creation. WAL adds `-wal`/`-shm` sidecar files next to `catalog.db`. The `iceberg-sql-catalog` pool exposes no connection options, so its `busy_timeout` stays at sqlx's 5s default; the service discovery catalog (`src/common/src/catalog.rs`), which we open directly, additionally sets a 30s `busy_timeout` and `synchronous = NORMAL`.
 
+### Metadata retention
+
+Every Iceberg commit writes a new `metadata.json`. To stop these accumulating without bound under continuous ingestion, SignalDB sets two properties on every table at creation (`src/common/src/iceberg/table_manager.rs`):
+
+- `write.metadata.previous-versions-max` — retain a bounded window of previous metadata files (default 100, configurable via `[writer].metadata_previous_versions_max`).
+- `write.metadata.delete-after-commit.enabled = true` — delete metadata files aged out of that window on each commit.
+
+These are honored by the SQL catalog's delete-after-commit support (contributed upstream as [JanKaul/iceberg-rust#382](https://github.com/JanKaul/iceberg-rust/pull/382); SignalDB is temporarily pinned to a fork commit carrying it — see the note in `Cargo.toml`). This is safe because SignalDB queries only current snapshots (no metadata time-travel), and snapshot history is separately bounded by the compactor's snapshot expiration.
+
 ### Namespace Structure
 
 Iceberg namespaces use a two-level hierarchy based on **slugs**:
