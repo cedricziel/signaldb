@@ -13,16 +13,18 @@
 
 use axum::{
     Form, Json, Router,
-    extract::State,
+    extract::{Query, State},
+    http::HeaderMap,
     http::StatusCode,
     http::header,
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
-use common::auth::READ_SCOPES;
 use common::auth::oauth::{TokenKind, generate_oauth_token, hash_oauth_token, verify_pkce_s256};
+use common::auth::{READ_SCOPES, hash_session_token, session_token_from_headers};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use url::Url;
 use uuid::Uuid;
 
 use crate::RouterState;
@@ -76,7 +78,51 @@ pub fn router<S: RouterState>() -> Router<S> {
             get(authorization_server_metadata::<S>),
         )
         .route("/oauth/register", post(register::<S>))
+        .route("/oauth/authorize", get(authorize::<S>))
+        .route("/oauth/authorize/decision", post(authorize_decision::<S>))
         .route("/oauth/token", post(token::<S>))
+}
+
+/// The signal read scopes a consent may grant, as a `Vec` for convenience.
+fn all_read_scopes() -> Vec<String> {
+    READ_SCOPES.iter().map(|s| s.to_string()).collect()
+}
+
+/// The read scopes to grant for a requested `scope` string: the requested read
+/// scopes that SignalDB recognizes, or all read scopes when none were
+/// requested. Non-read scopes (e.g. write) are never granted through the
+/// consent flow.
+fn granted_read_scopes(requested: Option<&str>) -> Vec<String> {
+    match requested {
+        None => all_read_scopes(),
+        Some(scope) => {
+            let granted: Vec<String> = scope
+                .split_whitespace()
+                .filter(|s| READ_SCOPES.contains(s))
+                .map(str::to_string)
+                .collect();
+            if granted.is_empty() {
+                all_read_scopes()
+            } else {
+                granted
+            }
+        }
+    }
+}
+
+/// Append query parameters to an absolute redirect URI, preserving any it
+/// already carries.
+fn redirect_with_params(base: &str, params: &[(&str, &str)]) -> Result<String, OAuthError> {
+    let mut url = Url::parse(base).map_err(|_| {
+        OAuthError::bad_request("invalid_request", "redirect_uri is not a valid URL")
+    })?;
+    {
+        let mut pairs = url.query_pairs_mut();
+        for (k, v) in params {
+            pairs.append_pair(k, v);
+        }
+    }
+    Ok(url.to_string())
 }
 
 /// RFC 8414 Authorization Server Metadata. Absolute URLs are built from the
@@ -191,6 +237,254 @@ async fn register<S: RouterState>(
         token_endpoint_auth_method: stored.token_endpoint_auth_method,
     };
     Ok((StatusCode::CREATED, Json(body)).into_response())
+}
+
+/// Authorization endpoint query parameters (RFC 6749 §4.1.1 + PKCE).
+#[derive(Debug, Default, Deserialize)]
+struct AuthorizeParams {
+    #[serde(default)]
+    response_type: Option<String>,
+    #[serde(default)]
+    client_id: Option<String>,
+    #[serde(default)]
+    redirect_uri: Option<String>,
+    #[serde(default)]
+    code_challenge: Option<String>,
+    #[serde(default)]
+    code_challenge_method: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    resource: Option<String>,
+}
+
+/// Authorization endpoint (RFC 6749 §4.1). Validates the request against the
+/// registered client — refusing to redirect anywhere untrusted — then hands off
+/// to the consent screen (a route in the explore-UI served at root). The code
+/// is minted by [`authorize_decision`] once the human approves. PKCE is
+/// mandatory.
+async fn authorize<S: RouterState>(
+    State(state): State<S>,
+    Query(p): Query<AuthorizeParams>,
+) -> Result<Response, OAuthError> {
+    // Validate client and redirect_uri BEFORE trusting the redirect target;
+    // errors here cannot be sent to an unverified URI, so they are direct 400s.
+    let client_id = p
+        .client_id
+        .as_deref()
+        .ok_or_else(|| OAuthError::bad_request("invalid_request", "missing client_id"))?;
+    let client = state
+        .catalog()
+        .get_oauth_client(client_id)
+        .await
+        .map_err(|e| OAuthError::server_error(format!("client lookup failed: {e}")))?
+        .ok_or_else(|| OAuthError::bad_request("invalid_client", "unknown client_id"))?;
+    let redirect_uri = p
+        .redirect_uri
+        .as_deref()
+        .ok_or_else(|| OAuthError::bad_request("invalid_request", "missing redirect_uri"))?;
+    if !client.redirect_uris.iter().any(|u| u == redirect_uri) {
+        return Err(OAuthError::bad_request(
+            "invalid_request",
+            "redirect_uri is not registered for this client",
+        ));
+    }
+
+    // The redirect target is now trusted; validation failures below are
+    // reported to it per RFC 6749 §4.1.2.1.
+    let state_param = p.state.as_deref().unwrap_or_default();
+    if p.response_type.as_deref() != Some("code") {
+        let url = redirect_with_params(
+            redirect_uri,
+            &[
+                ("error", "unsupported_response_type"),
+                ("state", state_param),
+            ],
+        )?;
+        return Ok(Redirect::to(&url).into_response());
+    }
+    let pkce_ok = p.code_challenge.as_deref().is_some_and(|c| !c.is_empty())
+        && p.code_challenge_method.as_deref().unwrap_or("S256") == "S256";
+    if !pkce_ok {
+        let url = redirect_with_params(
+            redirect_uri,
+            &[("error", "invalid_request"), ("state", state_param)],
+        )?;
+        return Ok(Redirect::to(&url).into_response());
+    }
+
+    // Hand off to the consent screen, echoing the validated request. The
+    // decision endpoint re-validates everything, so nothing here is trusted on
+    // return.
+    let mut consent = url::form_urlencoded::Serializer::new(String::new());
+    consent.append_pair("client_id", client_id);
+    consent.append_pair("redirect_uri", redirect_uri);
+    if let Some(cc) = p.code_challenge.as_deref() {
+        consent.append_pair("code_challenge", cc);
+    }
+    consent.append_pair("code_challenge_method", "S256");
+    if let Some(scope) = p.scope.as_deref() {
+        consent.append_pair("scope", scope);
+    }
+    if let Some(st) = p.state.as_deref() {
+        consent.append_pair("state", st);
+    }
+    if let Some(res) = p.resource.as_deref() {
+        consent.append_pair("resource", res);
+    }
+    let consent_url = format!("/oauth/consent?{}", consent.finish());
+    Ok(Redirect::to(&consent_url).into_response())
+}
+
+/// Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
+/// is authenticated by their session cookie; `tenant` is their chosen grant.
+#[derive(Debug, Deserialize)]
+struct ConsentDecision {
+    client_id: String,
+    redirect_uri: String,
+    code_challenge: String,
+    #[serde(default)]
+    code_challenge_method: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    resource: Option<String>,
+    tenant: String,
+    approved: bool,
+}
+
+/// Record the human's consent decision and, on approval, mint the single-use
+/// authorization code. Authenticated by the browser session cookie; the code is
+/// bound to the chosen tenant (which the user must be a member of), the granted
+/// read scopes, the client, the redirect URI, the PKCE challenge, and the
+/// resource. Returns the URL the SPA should navigate to.
+async fn authorize_decision<S: RouterState>(
+    State(state): State<S>,
+    headers: HeaderMap,
+    Json(d): Json<ConsentDecision>,
+) -> Result<Response, OAuthError> {
+    // Authenticate the consenting user from their browser session.
+    let token = session_token_from_headers(&headers).ok_or_else(|| {
+        OAuthError::new(
+            StatusCode::UNAUTHORIZED,
+            "login_required",
+            "no active session",
+        )
+    })?;
+    let session = state
+        .catalog()
+        .get_valid_session(&hash_session_token(&token))
+        .await
+        .map_err(|e| OAuthError::server_error(format!("session lookup failed: {e}")))?
+        .ok_or_else(|| {
+            OAuthError::new(
+                StatusCode::UNAUTHORIZED,
+                "login_required",
+                "session is invalid or expired",
+            )
+        })?;
+    let user = state
+        .catalog()
+        .get_user(&session.user_id)
+        .await
+        .map_err(|e| OAuthError::server_error(format!("user lookup failed: {e}")))?
+        .ok_or_else(|| {
+            OAuthError::new(
+                StatusCode::UNAUTHORIZED,
+                "login_required",
+                "session user not found",
+            )
+        })?;
+
+    // Re-validate the client and redirect URI (nothing from the SPA is trusted).
+    let client = state
+        .catalog()
+        .get_oauth_client(&d.client_id)
+        .await
+        .map_err(|e| OAuthError::server_error(format!("client lookup failed: {e}")))?
+        .ok_or_else(|| OAuthError::bad_request("invalid_client", "unknown client_id"))?;
+    if !client.redirect_uris.iter().any(|u| u == &d.redirect_uri) {
+        return Err(OAuthError::bad_request(
+            "invalid_request",
+            "redirect_uri is not registered for this client",
+        ));
+    }
+    if d.code_challenge.is_empty() || d.code_challenge_method.as_deref().unwrap_or("S256") != "S256"
+    {
+        return Err(OAuthError::bad_request(
+            "invalid_request",
+            "a S256 code_challenge is required",
+        ));
+    }
+
+    let state_param = d.state.as_deref().unwrap_or_default();
+
+    // Denial: bounce back to the client with an access_denied error.
+    if !d.approved {
+        let url = redirect_with_params(
+            &d.redirect_uri,
+            &[("error", "access_denied"), ("state", state_param)],
+        )?;
+        return Ok(Json(json!({ "redirect": url })).into_response());
+    }
+
+    // The user may only grant a tenant they belong to (instance admins may
+    // grant any).
+    let membership = state
+        .catalog()
+        .get_tenant_membership(&user.id, &d.tenant)
+        .await
+        .map_err(|e| OAuthError::server_error(format!("membership lookup failed: {e}")))?;
+    if membership.is_none() && !user.is_instance_admin {
+        return Err(OAuthError::new(
+            StatusCode::FORBIDDEN,
+            "access_denied",
+            "not a member of the selected tenant",
+        ));
+    }
+
+    // Bind the token audience to the configured MCP resource, rejecting a
+    // request for any other resource (RFC 8707).
+    let configured = state.config().mcp.oauth.resource_url.clone();
+    let resource = match (d.resource.as_deref(), configured.as_deref()) {
+        (Some(requested), Some(cfg)) if requested != cfg => {
+            return Err(OAuthError::bad_request(
+                "invalid_target",
+                "requested resource is not served here",
+            ));
+        }
+        (Some(requested), _) => Some(requested.to_string()),
+        (None, cfg) => cfg.map(str::to_string),
+    };
+
+    let scopes = granted_read_scopes(d.scope.as_deref());
+    let code = generate_oauth_token(TokenKind::AuthorizationCode);
+    let ttl = chrono::Duration::from_std(state.config().mcp.oauth.authorization_code_ttl)
+        .map_err(|e| OAuthError::server_error(format!("invalid authorization_code_ttl: {e}")))?;
+    state
+        .catalog()
+        .create_authorization_code(
+            &hash_oauth_token(&code),
+            &d.client_id,
+            &user.id,
+            &d.tenant,
+            &scopes,
+            &d.redirect_uri,
+            &d.code_challenge,
+            resource.as_deref(),
+            chrono::Utc::now() + ttl,
+        )
+        .await
+        .map_err(|e| {
+            OAuthError::server_error(format!("failed to store authorization code: {e}"))
+        })?;
+
+    let url = redirect_with_params(&d.redirect_uri, &[("code", &code), ("state", state_param)])?;
+    Ok(Json(json!({ "redirect": url })).into_response())
 }
 
 /// OAuth token endpoint request (form-encoded, RFC 6749). Fields not relevant
@@ -412,6 +706,7 @@ async fn issue_tokens<S: RouterState>(
 
 #[cfg(test)]
 mod tests {
+    use super::hash_oauth_token;
     use crate::{RouterAppState, create_router};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -419,6 +714,7 @@ mod tests {
     use common::config::{Configuration, OAuthConfig};
     use serde_json::Value;
     use tower::ServiceExt;
+    use url::Url;
 
     // Canonical RFC 7636 Appendix B PKCE pair.
     const PKCE_VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -687,5 +983,187 @@ mod tests {
         let doc = body_json(res).await;
         assert!(doc["access_token"].as_str().is_some_and(|s| !s.is_empty()));
         assert_eq!(doc["scope"], "traces:read");
+    }
+
+    async fn seed_client(catalog: &Catalog) {
+        catalog
+            .register_oauth_client(
+                "client-1",
+                Some("Claude"),
+                &["https://claude.ai/cb".to_string()],
+                None,
+                None,
+                "none",
+            )
+            .await
+            .unwrap();
+    }
+
+    /// Create a user who is a member of `tenant`, with a live session; return
+    /// the raw session cookie value.
+    async fn seed_user_session(catalog: &Catalog, tenant: &str) -> String {
+        use common::auth::{generate_session_token, hash_session_token};
+        catalog
+            .upsert_tenant(tenant, tenant, Some("production"), "database")
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user("human@example.com", None, "phc", false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, tenant, common::catalog::MembershipRole::Member)
+            .await
+            .unwrap();
+        let cookie = generate_session_token();
+        catalog
+            .create_user_session(
+                &user.id,
+                &hash_session_token(&cookie),
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        cookie
+    }
+
+    #[tokio::test]
+    async fn authorize_without_pkce_redirects_with_error() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/oauth/authorize?response_type=code&client_id=client-1&redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&state=xyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(res.status().is_redirection());
+        let location = res
+            .headers()
+            .get(axum::http::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(location.starts_with("https://claude.ai/cb"), "{location}");
+        assert!(location.contains("error=invalid_request"), "{location}");
+    }
+
+    #[tokio::test]
+    async fn authorize_with_valid_request_redirects_to_consent() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/oauth/authorize?response_type=code&client_id=client-1&redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&code_challenge=abc&code_challenge_method=S256")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(res.status().is_redirection());
+        let location = res
+            .headers()
+            .get(axum::http::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(location.starts_with("/oauth/consent?"), "{location}");
+        assert!(location.contains("client_id=client-1"), "{location}");
+    }
+
+    #[tokio::test]
+    async fn approved_decision_issues_a_bound_code() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session(&catalog, "acme").await;
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/authorize/decision")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("signaldb_session={cookie}"))
+                    .body(Body::from(
+                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"chal-1","scope":"traces:read","state":"st","tenant":"acme","approved":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let doc = body_json(res).await;
+        let redirect = doc["redirect"].as_str().unwrap();
+        assert!(redirect.starts_with("https://claude.ai/cb?"), "{redirect}");
+        assert!(redirect.contains("code="), "{redirect}");
+        assert!(redirect.contains("state=st"), "{redirect}");
+
+        // The issued code is bound to the chosen tenant, scope, and challenge.
+        let code = Url::parse(redirect)
+            .unwrap()
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.into_owned())
+            .unwrap();
+        let grant = catalog
+            .consume_authorization_code(&hash_oauth_token(&code))
+            .await
+            .unwrap()
+            .expect("code was stored");
+        assert_eq!(grant.tenant_id, "acme");
+        assert_eq!(grant.scopes, vec!["traces:read".to_string()]);
+        assert_eq!(grant.code_challenge, "chal-1");
+        assert_eq!(grant.client_id, "client-1");
+    }
+
+    #[tokio::test]
+    async fn decision_rejects_tenant_the_user_is_not_a_member_of() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session(&catalog, "acme").await;
+        // The user is a member of acme only; granting globex must fail even
+        // though the tenant row exists.
+        catalog
+            .upsert_tenant("globex", "Globex", Some("production"), "database")
+            .await
+            .unwrap();
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/authorize/decision")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("signaldb_session={cookie}"))
+                    .body(Body::from(
+                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"chal-1","tenant":"globex","approved":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn decision_without_session_requires_login() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/authorize/decision")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"chal-1","tenant":"acme","approved":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 }

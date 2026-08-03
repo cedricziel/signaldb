@@ -26,8 +26,8 @@
 
 ## 6. Authorize + consent (login, tenant selection, PKCE)
 
-- [ ] 6.1 Write failing `router` tests: `/authorize` without `code_challenge` is rejected; an approved request issues a single-use code bound to the selected tenant, scopes, client, redirect URI, PKCE challenge, and resource; a code can never bind a tenant the user is not a member of (`cargo test -p router`).
-- [ ] 6.2 Implement `/authorize` reusing the existing login/session, the consent decision handler, and consent-time tenant selection restricted to the user's memberships, making 6.1 pass.
+- [x] 6.1 Write failing `router` tests: `/authorize` without `code_challenge` is rejected; an approved request issues a single-use code bound to the selected tenant, scopes, client, redirect URI, PKCE challenge, and resource; a code can never bind a tenant the user is not a member of (`cargo test -p router`).
+- [x] 6.2 Implement `/authorize` reusing the existing login/session, the consent decision handler, and consent-time tenant selection restricted to the user's memberships, making 6.1 pass.
 
 ## 7. Token endpoint (code exchange + refresh)
 
