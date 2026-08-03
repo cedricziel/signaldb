@@ -24,7 +24,9 @@
 //! ```
 
 mod config_builder;
+mod flush;
 mod otel_capture;
 
 pub use config_builder::TestConfigBuilder;
+pub use flush::flush_storage_writers;
 pub use otel_capture::OtelExportProbe;

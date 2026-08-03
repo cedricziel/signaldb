@@ -626,57 +626,6 @@ impl WalProcessor {
             .map_err(|e| anyhow::anyhow!("Failed to deserialize WAL entry data: {}", e))
     }
 
-    /// Process a single WAL entry (for immediate processing)
-    #[tracing::instrument(skip_all, fields(entry_id = %entry_id))]
-    pub async fn process_single_entry(&mut self, entry_id: Uuid) -> Result<()> {
-        // Find the entry in the current entries
-        let entries = self.wal.get_entries().await?;
-        let entry = entries
-            .iter()
-            .find(|e| e.id == entry_id)
-            .ok_or_else(|| anyhow::anyhow!("WAL entry {} not found", entry_id))?
-            .clone();
-
-        if entry.processed {
-            return Ok(()); // Already processed
-        }
-
-        // Skip flush operations
-        if matches!(entry.operation, common::wal::WalOperation::Flush) {
-            return Ok(());
-        }
-
-        let (tenant_id, dataset_id, table_name) = self.determine_target_table(&entry)?;
-        // Anti-loop guard (#760): processing the _system tenant's own
-        // telemetry must not emit logs/spans that get exported and
-        // re-ingested as _system telemetry.
-        let suppress = common::self_monitoring::is_self_monitoring_tenant(&tenant_id);
-        common::self_monitoring::maybe_suppress_self_telemetry(suppress, async {
-            let batch = self.deserialize_entry_data(&entry).await?;
-
-            match self
-                .process_batch_for_table(
-                    &tenant_id,
-                    &dataset_id,
-                    &table_name,
-                    vec![(entry_id, batch)],
-                    vec![trace_context_from_metadata(&entry.metadata)],
-                )
-                .await
-            {
-                Ok(_) => {
-                    tracing::debug!(entry_id = %entry_id, "Successfully processed single WAL entry");
-                    Ok(())
-                }
-                Err(e) => {
-                    tracing::error!(entry_id = %entry_id, error = %e, "Failed to process WAL entry");
-                    Err(e)
-                }
-            }
-        })
-        .await
-    }
-
     /// Get statistics about the processor
     pub fn get_stats(&self) -> ProcessorStats {
         ProcessorStats {
@@ -1185,18 +1134,40 @@ mod tests {
         );
     }
 
-    /// An Arrow-valid batch whose schema does not match any target table, so
-    /// the commit fails during schema coercion — used to exercise the
-    /// force-commit failure path.
-    fn schema_mismatched_bytes() -> Vec<u8> {
-        use datafusion::arrow::array::Int32Array;
-        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    #[tokio::test]
+    async fn deferred_entries_survive_a_processor_restart() {
+        // do_put now acks after WAL flush without committing; the commit is the
+        // background loop's job. An entry acked but not yet committed must be
+        // committed after a restart (a fresh processor over the same WAL),
+        // preserving at-least-once delivery.
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(coalescing_wal_config(temp_dir.path()))
+                .await
+                .unwrap(),
+        );
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+        let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
 
-        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
-        let batch =
-            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
-        common::wal::record_batch_to_bytes(&batch).unwrap()
+        // Acked-but-uncommitted: appended and flushed to the WAL, no processing.
+        wal.append(WalOperation::WriteMetrics, metrics_gauge_bytes(5), meta)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+        assert_eq!(wal.get_unprocessed_entries().await.unwrap().len(), 1);
+
+        // "Restart": a brand-new processor (fresh coalescer state, same catalog
+        // + object store) over the same WAL commits the pending entry.
+        let mut restarted = WalProcessor::new(wal.clone(), catalog_manager, object_store);
+        restarted.process_pending_entries().await.unwrap();
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "a restarted processor must commit entries acked before the crash"
+        );
     }
+
+    use crate::test_support::schema_mismatched_bytes;
 
     #[tokio::test]
     async fn force_commit_reports_error_when_a_group_fails_to_commit() {

@@ -411,14 +411,16 @@ async fn send_test_trace(services: &TestServices, trace_name: &str) -> String {
     hex::encode(&trace_id)
 }
 
-/// Wait for data to be processed and persisted
+/// Force the writer to commit ingested data, then confirm it landed.
+///
+/// `do_put` acks after WAL flush and commits asynchronously, so a force-commit
+/// is the deterministic read-your-writes barrier (no sleeping on the background
+/// loop).
 async fn wait_for_data_persistence(services: &TestServices) {
-    // Allow more time for WAL processing and Iceberg table creation
-    println!("⏳ Waiting for WAL processing and Iceberg table writes...");
-    sleep(Duration::from_secs(15)).await;
+    common::testing::flush_storage_writers(&services.flight_transport)
+        .await
+        .expect("flush writer");
 
-    // With Iceberg, data might be organized differently
-    // List all objects to see what's being created
     let objects: Vec<_> = services
         .object_store
         .list(None)
@@ -429,25 +431,6 @@ async fn wait_for_data_persistence(services: &TestServices) {
     println!("✅ Found {} objects in object store:", objects.len());
     for obj in &objects {
         println!("  📁 Object: {}", obj.location);
-    }
-
-    if objects.is_empty() {
-        println!("⚠️  No objects found yet - waiting a bit more for Iceberg writes...");
-        sleep(Duration::from_secs(5)).await;
-
-        // Try again
-        let objects: Vec<_> = services
-            .object_store
-            .list(None)
-            .try_collect()
-            .await
-            .unwrap();
-
-        if objects.is_empty() {
-            println!("⚠️  Still no objects - Iceberg may be buffering writes");
-        } else {
-            println!("✅ Found {} objects after additional wait", objects.len());
-        }
     }
 }
 

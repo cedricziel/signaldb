@@ -1,3 +1,19 @@
+//! Writer Flight service: the Storage-capability ingest endpoint.
+//!
+//! ## Commit contract
+//!
+//! `do_put` writes each batch to the writer WAL, flushes for durability, and
+//! **acknowledges without committing to Iceberg** — the commit is deferred to
+//! the background [`WalProcessor`] loop, which coalesces commits per
+//! `(tenant, dataset, table)` (see `[writer]` config). This decouples ingest
+//! ack latency from Iceberg/catalog latency and caps the snapshot/metadata
+//! write rate. Consequently, ingested data is queryable only once the loop
+//! commits it (bounded by `commit_interval`).
+//!
+//! A client needing read-your-writes forces an immediate commit of all pending
+//! groups with `do_action(`[`FLUSH_ACTION`]`)` (advertised via `list_actions`),
+//! bounded by [`FLUSH_TIMEOUT`].
+
 use crate::processor::WalProcessor;
 use crate::schema_transform::{
     FlightMetadata, determine_wal_operation, extract_flight_metadata, transform_for_signal,
@@ -24,6 +40,11 @@ use tracing::Instrument;
 /// Flight `do_action` type that forces an immediate commit of all pending
 /// writes (read-your-writes drain), bypassing the commit-coalescing floor.
 pub const FLUSH_ACTION: &str = "flush";
+
+/// Upper bound on a client-triggered `do_action("flush")`. The flush commits
+/// synchronously while holding the processor mutex, so it must not hang the RPC
+/// (or the background loop) forever if the catalog/object store stalls.
+const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Enhanced Flight service that uses Iceberg table writer instead of direct Parquet writes
 /// This demonstrates the integration of the new Iceberg-based processor
@@ -332,28 +353,21 @@ impl FlightService for IcebergWriterFlightService {
             wal_entry_ids.push(entry_id);
         }
 
-        // Force flush WAL to ensure durability before acknowledging
+        // Acknowledge once the data is durable in the WAL. The Iceberg commit
+        // is deferred to the background processing loop, which coalesces
+        // commits per (tenant, dataset, table) — this decouples ingest ack
+        // latency from Iceberg/catalog latency (#889) and lets the coalescing
+        // floor cap the commit rate (#888). Ingested data becomes queryable
+        // once the loop commits it (bounded by `commit_interval`); a client
+        // needing read-your-writes can force a drain with `do_action("flush")`.
         self.wal
             .flush()
             .await
             .map_err(|e| Status::internal(format!("Failed to flush WAL: {e}")))?;
-
-        // Process entries using the Iceberg processor
-        // This is done synchronously to ensure consistency, but could be made async
-        let mut processor = self.processor.lock().await;
-        for entry_id in wal_entry_ids {
-            match processor.process_single_entry(entry_id).await {
-                Ok(_) => {
-                    tracing::debug!(entry_id = %entry_id, "Successfully processed WAL entry via Iceberg");
-                }
-                Err(e) => {
-                    tracing::error!(entry_id = %entry_id, error = %e, "Failed to process WAL entry via Iceberg");
-                    return Err(Status::internal(format!(
-                        "Failed to process via Iceberg: {e}"
-                    )));
-                }
-            }
-        }
+        tracing::debug!(
+            entry_count = wal_entry_ids.len(),
+            "Durably buffered ingest entries; Iceberg commit deferred to the background loop"
+        );
 
         let result = PutResult {
             app_metadata: Bytes::new(),
@@ -396,14 +410,21 @@ impl FlightService for IcebergWriterFlightService {
             // bypassing the commit-coalescing floor. Used by tests and by
             // clients that need ingested data queryable at once.
             FLUSH_ACTION => {
-                self.processor
-                    .lock()
-                    .await
-                    .force_commit_pending()
-                    .await
-                    .map_err(|e| Status::internal(format!("Flush failed: {e}")))?;
-                let out = stream::empty().boxed();
-                Ok(Response::new(out))
+                // Bound the flush: force_commit_pending drives Iceberg/catalog
+                // commits while holding the processor mutex, so a stuck catalog
+                // or object store must not hang this client-facing RPC (and the
+                // background loop behind it) indefinitely.
+                let flush = async { self.processor.lock().await.force_commit_pending().await };
+                match tokio::time::timeout(FLUSH_TIMEOUT, flush).await {
+                    Ok(Ok(())) => {
+                        let out = stream::empty().boxed();
+                        Ok(Response::new(out))
+                    }
+                    Ok(Err(e)) => Err(Status::internal(format!("Flush failed: {e}"))),
+                    Err(_) => Err(Status::deadline_exceeded(format!(
+                        "Flush did not complete within {FLUSH_TIMEOUT:?}"
+                    ))),
+                }
             }
             other => Err(Status::unimplemented(format!(
                 "do_action does not support {other:?}"
@@ -525,5 +546,52 @@ mod tests {
             wal.get_unprocessed_entries().await.unwrap().is_empty(),
             "flush action must commit the pending write"
         );
+    }
+
+    #[tokio::test]
+    async fn do_action_flush_surfaces_commit_failure_as_internal() {
+        let temp_dir = tempdir().unwrap();
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+        let wal_config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            max_segment_size: 8 * 1024 * 1024,
+            max_buffer_entries: 1000,
+            flush_interval_secs: 5,
+            tenant_id: "acme".to_string(),
+            dataset_id: "production".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+        let wal = Arc::new(Wal::new(wal_config).await.unwrap());
+        let service = IcebergWriterFlightService::new(
+            catalog_manager,
+            object_store,
+            wal.clone(),
+            &WriterConfig::default(),
+        );
+
+        // Routes to metrics_gauge but the batch schema does not match, so the
+        // commit fails — the flush RPC must report that, not a silent success.
+        wal.append(
+            WalOperation::WriteMetrics,
+            crate::test_support::schema_mismatched_bytes(),
+            Some(r#"{"target_table":"metrics_gauge"}"#.to_string()),
+        )
+        .await
+        .unwrap();
+        wal.flush().await.unwrap();
+
+        let flush = Request::new(arrow_flight::Action {
+            r#type: FLUSH_ACTION.to_string(),
+            body: Bytes::new(),
+        });
+        match service.do_action(flush).await {
+            Err(status) => assert_eq!(status.code(), tonic::Code::Internal),
+            Ok(_) => panic!("flush must surface the commit failure as an error"),
+        }
+        // The uncommitted entry remains for retry.
+        assert_eq!(wal.get_unprocessed_entries().await.unwrap().len(), 1);
     }
 }

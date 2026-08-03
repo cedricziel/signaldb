@@ -204,8 +204,15 @@ The acceptor keeps one WAL per tenant/dataset/signal combination; the writer kee
 2. **Data written to Acceptor WAL** (durability checkpoint)
 3. **Client acknowledgment sent** (data is durable)
 4. **Data forwarded to Writer via Flight** (Storage capability)
-5. **Writer processes and stores to Parquet**
-6. **WAL entries marked as processed** (cleanup eligible)
+5. **Writer appends to its own WAL and confirms** — the confirm does **not** wait for the Iceberg commit
+6. **Writer's background loop commits to Parquet/Iceberg asynchronously**, coalescing pending entries per `(tenant, dataset, table)` per `[writer].commit_interval` / `max_uncommitted_rows` (see the Configuration reference)
+7. **WAL entries marked as processed** (cleanup eligible)
+
+Because step 6 is asynchronous, freshly-ingested data is queryable only once the
+background loop commits it (bounded by `commit_interval`, default 5s). This
+decouples ingest acknowledgement latency from Iceberg/catalog latency and caps
+the catalog-metadata write rate. A caller needing immediate queryability forces
+a commit with the Writer Flight `do_action("flush")`.
 
 ### Recovery Process
 

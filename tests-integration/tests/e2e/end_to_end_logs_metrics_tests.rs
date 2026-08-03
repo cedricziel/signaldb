@@ -37,6 +37,7 @@ struct TestServices {
     object_store: Arc<dyn ObjectStore>,
     log_handler: LogHandler,
     metrics_handler: MetricsHandler,
+    flight_transport: Arc<InMemoryFlightTransport>,
     _temp_dir: TempDir,
 }
 
@@ -170,12 +171,13 @@ async fn setup_logs_metrics_services() -> TestServices {
     ));
 
     let log_handler = LogHandler::new(flight_transport.clone(), wal_manager.clone());
-    let metrics_handler = MetricsHandler::new(flight_transport, wal_manager);
+    let metrics_handler = MetricsHandler::new(flight_transport.clone(), wal_manager);
 
     TestServices {
         object_store,
         log_handler,
         metrics_handler,
+        flight_transport,
         _temp_dir: temp_dir,
     }
 }
@@ -395,6 +397,34 @@ async fn test_logs_ingestion_and_persistence() {
     assert!(
         locations.iter().any(|location| location.contains("logs")),
         "expected at least one logs object path, found: {locations:?}"
+    );
+}
+
+#[tokio::test]
+async fn flush_persists_ingested_logs_without_waiting_for_the_loop() {
+    // do_put now acks after WAL flush and commits asynchronously via the
+    // background loop (≥5s). The force-commit primitive gives read-your-writes:
+    // after flushing, data is committed with no wait at all — a fully
+    // deterministic barrier in place of the object-store polling above.
+    let services = setup_logs_metrics_services().await;
+    let tenant_context = test_tenant_context();
+
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(&tenant_context, build_logs_request())
+        .await
+        .expect("logs export must be durably accepted");
+
+    common::testing::flush_storage_writers(&services.flight_transport)
+        .await
+        .expect("force-commit flush");
+
+    // No sleep: the synchronous flush has already committed the data, so the
+    // object store contains the logs immediately.
+    let locations = object_locations(&services.object_store).await;
+    assert!(
+        locations.iter().any(|location| location.contains("logs")),
+        "flush must persist logs immediately, found: {locations:?}"
     );
 }
 

@@ -418,8 +418,11 @@ async fn logql_end_to_end() {
         .await
         .expect("ingest web logs");
 
-    // Wait for WAL processing and Iceberg persistence.
-    sleep(Duration::from_secs(15)).await;
+    // Force the writer to commit now (do_put acks after WAL flush and commits
+    // asynchronously) — deterministic read-your-writes instead of sleeping.
+    common::testing::flush_storage_writers(&services.flight_transport)
+        .await
+        .expect("flush writer");
     let objects: Vec<_> = {
         use futures::TryStreamExt;
         services

@@ -427,8 +427,11 @@ async fn promql_end_to_end() {
         .await
         .expect("ingest api histogram");
 
-    // Wait for persistence.
-    sleep(Duration::from_secs(15)).await;
+    // Force the writer to commit now — deterministic read-your-writes instead
+    // of waiting out the asynchronous background commit loop.
+    common::testing::flush_storage_writers(&services.flight_transport)
+        .await
+        .expect("flush writer");
     let objects: Vec<_> = {
         use futures::TryStreamExt;
         services

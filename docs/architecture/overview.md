@@ -134,7 +134,7 @@ flowchart LR
 6. **Schema Transformation**: Writer transforms v1 Flight schema to v2 Iceberg schema (field renames, type conversions, computed partition fields).
 7. **Writer WAL Persistence**: Writer writes transformed data to its WAL (segmented by tenant/dataset/signal type) and confirms to the Acceptor.
 8. **Client Acknowledgment**: Acceptor marks its WAL entry processed and acknowledges to the client.
-9. **Background Flush**: Writer's `WalProcessor` reads WAL entries every 5 seconds (with exponential backoff up to 300s on repeated failures), creates/loads Iceberg tables, and writes Parquet files to the object store via DataFusion.
+9. **Background Flush**: Writer's `WalProcessor` reads WAL entries every 5 seconds (with exponential backoff up to 300s on repeated failures), creates/loads Iceberg tables, and writes Parquet files to the object store via DataFusion. Commits are **coalesced** per `(tenant, dataset, table)` (`[writer].commit_interval` / `max_uncommitted_rows`), so freshly-ingested data is queryable only once committed; a caller needing read-your-writes forces a commit with the Writer Flight `do_action("flush")`. See `architecture/flight-communication.md`.
 10. **WAL Cleanup**: Processed WAL entries are marked and fully-processed segments are deleted.
 
 ### Query Path Detail

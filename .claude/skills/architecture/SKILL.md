@@ -46,7 +46,7 @@ Key details:
 1. Acceptor writes to WAL before acknowledging client
 2. Acceptor converts OTLP protobuf -> Arrow RecordBatches using Flight schemas (v1)
 3. Writer transforms v1 Flight schema -> v2 Iceberg schema (field renames, type conversions, computed partition fields, materialized `label_<key>` columns for configured attributes across all four signals, allowlists resolved per tenant (tenant schema override replaces the global set); new tables (all signals) store attributes as typed `Map<String,String>` columns for exact any-attribute matching)
-4. Writer's WalProcessor reads WAL entries every 5s (exponential backoff on failure), writes Parquet via DataFusion
+4. Writer's `do_put` acks after its WAL flush (it does NOT commit synchronously); WalProcessor reads WAL entries every 5s (exponential backoff on failure) and writes Parquet via DataFusion, coalescing commits per `(tenant, dataset, table)` (`[writer].commit_interval` / `max_uncommitted_rows`) to cap the Iceberg/catalog write rate. Data is queryable once committed; `do_action("flush")` forces an immediate commit (read-your-writes)
 5. Processed WAL entries are marked and cleaned up
 
 ## Query Path
