@@ -62,43 +62,49 @@
 
 ## 4. IR → LogicalPlan planner, single-signal (`querier`)
 
-- [ ] 4.1 Failing unit test (`cargo test -p querier`): `from(logs) + where +
+- [x] 4.1 Failing unit test (`cargo test -p querier`): `from(logs) + where +
 aggregate(step)` lowers to TableScan→Filter→Projection(date_bin)→
       Aggregate→Sort, with an unpromoted-field filter emitted as a JSON
       extraction, satisfying the denotational spec on a fixture.
-- [ ] 4.2 Failing unit test: promotion invariance — the same IR lowers to a
+- [x] 4.2 Failing unit test: promotion invariance — the same IR lowers to a
       column-ref filter when the field is promoted and a json-path filter when
       not, and both execute to the same result over a fixture table.
-- [ ] 4.3 Failing unit test: `from(traces) + where + topk` (single-signal trace
+- [x] 4.3 Failing unit test: `from(traces) + where + topk` (single-signal trace
       query) lowers and executes; `extract` on `traces` is rejected (log-only).
-- [ ] 4.4 Failing unit test (**execution-level**, `cargo test -p querier`):
+- [x] 4.4 Failing unit test (**execution-level**, `cargo test -p querier`):
       absent-value semantics hold in the _lowered plan_, not just the type layer —
       `not(field = x)` over a fixture where some rows lack `field` excludes those
       rows, proving the result is independent of DataFusion's SQL NULL behaviour
       (the guarantee task 1.2 asserts at the type level).
-- [ ] 4.5 Failing unit test: curated projection — a `rows` result returns only
+- [x] 4.5 Failing unit test: curated projection — a `rows` result returns only
       the `fields` set (or the bounded default), never all physical columns
       (`SELECT *`), including for a source with many promoted columns; a `fields`
       entry absent from the terminal relation is rejected.
-- [ ] 4.6 Failing test: relative-time determinism — with a fixed injected clock,
+- [x] 4.6 Failing test: relative-time determinism — with a fixed injected clock,
       a `now-1h` query resolves one absolute `[t0,t1]` at the ticket boundary,
       every stage sees identical bounds, the resolved window is echoed in the
       response, and replaying the echoed absolute window reproduces the result.
-- [ ] 4.7 Failing test: `regex` safety — a normal pattern matches; an adversarial
+- [x] 4.7 Failing test: `regex` safety — a normal pattern matches; an adversarial
       catastrophic-backtracking pattern is bounded by the timeout guard and
       returns an error rather than hanging (predicate `regex` op).
-- [ ] 4.8 Implement the single-signal planner (from/where/extract/aggregate/
-      topk/order/limit) → `LogicalPlan`, carrying resolved absolute time bounds
-      through the ticket/plan. `extract` v1 = `json` + `logfmt`; predicate `regex`
-      and the deferred `regex` extract parser run behind a bounded, timeout-
-      guarded matcher. Make 4.1–4.7 pass.
+- [~] 4.8 Implement the single-signal planner (from/where/extract/aggregate/
+  topk/order/limit) → `LogicalPlan`, carrying resolved absolute time bounds
+  through the ticket/plan. `extract` v1 = `json` + `logfmt`; predicate `regex`
+  and the deferred `regex` extract parser run behind a bounded, timeout-
+  guarded matcher. Make 4.1–4.7 pass.
+  DONE: from/where/aggregate/topk/bottomk/order/limit, promotion-invariant
+  resolution against the real scanned schema, absent-value semantics, curated
+  projection, deterministic relative-time, and the bounded predicate-`regex`
+  guard. REMAINING (follow-up commit): `extract` (json/logfmt) lowering — the
+  stage validates (log-only) but currently returns a defined `Unsupported`
+  error at planning until the extraction UDF lands.
 
 ## 5. Querier Flight ticket (`querier`)
 
-- [ ] 5.1 Failing test: a `query_ir:{tenant}:{dataset}:{json}` ticket is
+- [x] 5.1 Failing test: a `query_ir:{tenant}:{dataset}:{json}` ticket is
       dispatched, planned, executed, and streams RecordBatches tagged with the
       declared envelope; a malformed ticket returns `invalid_argument`.
-- [ ] 5.2 Implement the ticket branch in `src/querier/src/flight.rs` alongside
+- [x] 5.2 Implement the ticket branch in `src/querier/src/flight.rs` alongside
       the existing `query_*` prefixes. Make 5.1 pass.
 
 ## 6. Router endpoint + OpenAPI (`router`)

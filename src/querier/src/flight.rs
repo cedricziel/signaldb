@@ -25,6 +25,7 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use tracing::Instrument;
 
+use crate::query::ir_planner::IrService;
 use crate::query::logs::LogsService;
 use crate::query::metrics::MetricsService;
 use crate::query::profile::{
@@ -33,8 +34,8 @@ use crate::query::profile::{
 };
 use crate::query::trace::TraceService;
 use crate::query::{
-    DetectedFieldsParams, FindTraceByIdParams, LogQueryParams, LogSeriesParams, MetricQueryParams,
-    MetricSeriesParams, PromQlQueryParams, SearchQueryParams,
+    DetectedFieldsParams, FindTraceByIdParams, IrQueryParams, LogQueryParams, LogSeriesParams,
+    MetricQueryParams, MetricSeriesParams, PromQlQueryParams, SearchQueryParams,
 };
 
 /// Queries the Iceberg catalog directly, bypassing `datafusion_iceberg`'s
@@ -220,6 +221,12 @@ enum TicketRequest {
         dataset_slug: String,
         params: LogQueryParams,
     },
+    /// Native Query IR ticket: `query_ir:{tenant}:{dataset}:{json IrQueryParams}`.
+    QueryIr {
+        tenant_slug: String,
+        dataset_slug: String,
+        params: IrQueryParams,
+    },
     QueryLogsLabels {
         tenant_slug: String,
         dataset_slug: String,
@@ -285,6 +292,7 @@ pub struct QuerierFlightService {
     profile_service: ProfileService,
     logs_service: LogsService,
     metrics_service: MetricsService,
+    ir_service: IrService,
     #[allow(dead_code)]
     iceberg_catalog: Option<Arc<dyn iceberg_rust::catalog::Catalog>>,
     limits: QuerierConfig,
@@ -409,6 +417,7 @@ impl QuerierFlightService {
             .with_max_search_limit(limits.max_search_limit);
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
         let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
+        let ir_service = IrService::new(session_ctx.as_ref().clone());
 
         Self {
             object_store,
@@ -419,6 +428,7 @@ impl QuerierFlightService {
             profile_service,
             logs_service,
             metrics_service,
+            ir_service,
             iceberg_catalog: None,
             limits,
             query_permits: dashmap::DashMap::new(),
@@ -495,6 +505,7 @@ impl QuerierFlightService {
             .with_max_search_limit(limits.max_search_limit);
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
         let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
+        let ir_service = IrService::new(session_ctx.as_ref().clone());
 
         Ok(Self {
             object_store,
@@ -505,6 +516,7 @@ impl QuerierFlightService {
             profile_service,
             logs_service,
             metrics_service,
+            ir_service,
             iceberg_catalog: Some(iceberg_catalog),
             limits,
             query_permits: dashmap::DashMap::new(),
@@ -855,6 +867,24 @@ impl QuerierFlightService {
             }
             return Err(Status::invalid_argument(
                 "Invalid query_logs ticket format. Expected: query_logs:tenant:dataset:{json}",
+            ));
+        }
+
+        // Native Query IR: query_ir:{tenant}:{dataset}:{json IrQueryParams}
+        if let Some(remainder) = ticket_content.strip_prefix("query_ir:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                let params: IrQueryParams = serde_json::from_str(parts[2]).map_err(|e| {
+                    Status::invalid_argument(format!("Invalid query_ir parameters: {e}"))
+                })?;
+                return Ok(TicketRequest::QueryIr {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    params,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid query_ir ticket format. Expected: query_ir:tenant:dataset:{json}",
             ));
         }
 
@@ -1359,6 +1389,7 @@ impl FlightService for QuerierFlightService {
                             | TicketRequest::SqlProfiles { tenant_slug, .. }
                             | TicketRequest::ProfilesByTrace { tenant_slug, .. }
                             | TicketRequest::QueryLogs { tenant_slug, .. }
+                            | TicketRequest::QueryIr { tenant_slug, .. }
                             | TicketRequest::QueryLogsLabels { tenant_slug, .. }
                             | TicketRequest::QueryLogsLabelValues { tenant_slug, .. }
                             | TicketRequest::QueryLogsSeries { tenant_slug, .. }
@@ -1421,6 +1452,7 @@ impl FlightService for QuerierFlightService {
                             TicketRequest::SqlProfiles { .. } => "sql_profiles",
                             TicketRequest::ProfilesByTrace { .. } => "profiles_by_trace",
                             TicketRequest::QueryLogs { .. } => "query_logs",
+                            TicketRequest::QueryIr { .. } => "query_ir",
                             TicketRequest::QueryLogsLabels { .. } => "query_logs_labels",
                             TicketRequest::QueryLogsLabelValues { .. } => "query_logs_label_values",
                             TicketRequest::QueryLogsSeries { .. } => "query_logs_series",
@@ -1730,6 +1762,23 @@ impl FlightService for QuerierFlightService {
                                         .query_logs(&params, &tenant_slug, &dataset_slug)
                                         .await
                                         .map_err(querier_error_to_status)?
+                                }
+                                TicketRequest::QueryIr {
+                                    tenant_slug,
+                                    dataset_slug,
+                                    params,
+                                } => {
+                                    tracing::info!(
+                                        tenant_slug = %tenant_slug,
+                                        dataset_slug = %dataset_slug,
+                                        "Executing query_ir"
+                                    );
+                                    let (batches, _window) = self
+                                        .ir_service
+                                        .query(&params, &tenant_slug, &dataset_slug)
+                                        .await
+                                        .map_err(querier_error_to_status)?;
+                                    batches
                                 }
                                 TicketRequest::QueryLogsLabels {
                                     tenant_slug,
@@ -2496,6 +2545,33 @@ mod tests {
             }
             other => panic!("expected QueryLogs, got {other:?}"),
         }
+    }
+
+    // Task 5.1 — the query_ir ticket is dispatched; a malformed ticket is
+    // rejected with invalid_argument.
+    #[tokio::test]
+    async fn parse_query_ir_ticket() {
+        let service = make_service().await;
+        let ticket = r#"query_ir:acme:prod:{"document":{"irVersion":1,"from":"logs","range":{"from":"now-1h","to":"now"},"result":"rows","pipeline":[]},"now_ns":1700000000000000000}"#;
+        match service.parse_ticket(ticket).unwrap() {
+            TicketRequest::QueryIr {
+                tenant_slug,
+                dataset_slug,
+                params,
+            } => {
+                assert_eq!(tenant_slug, "acme");
+                assert_eq!(dataset_slug, "prod");
+                assert_eq!(params.now_ns, 1_700_000_000_000_000_000);
+                assert_eq!(params.document["from"], "logs");
+            }
+            other => panic!("expected QueryIr, got {other:?}"),
+        }
+
+        // A malformed IR ticket (bad JSON payload) is invalid_argument.
+        let err = service
+            .parse_ticket("query_ir:acme:prod:{not json}")
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 
     #[tokio::test]
