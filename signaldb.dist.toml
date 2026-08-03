@@ -243,6 +243,22 @@ max_search_limit = 1000
 # are rejected with RESOURCE_EXHAUSTED (retryable). Unset = unlimited.
 # max_concurrent_queries_per_tenant = 8
 
+[writer]
+# Writer commit-coalescing policy — how the writer batches ingested data
+# into Iceberg commits. Coalescing caps the Iceberg snapshot (and catalog
+# metadata) write rate per (tenant, dataset, table), independent of how
+# fast producers send.
+#
+# Maximum time a table's rows may wait before being committed. Guarantees
+# liveness for low-volume tables (a single row commits after this elapses).
+# Set to "0s" to commit on every processing tick.
+commit_interval = "5s"
+#
+# Row count that triggers an *earlier* commit for a burst, before
+# commit_interval elapses, so a spike does not build one oversized commit.
+# This is a ceiling, never a minimum to wait for.
+max_uncommitted_rows = 100000
+
 [compactor]
 # Compactor Service Configuration
 # The compactor manages the complete data lifecycle with three phases:

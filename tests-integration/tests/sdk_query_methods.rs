@@ -221,6 +221,7 @@ async fn setup() -> TestServices {
         catalog_manager.clone(),
         object_store.clone(),
         writer_wal.clone(),
+        &common::config::WriterConfig::default(),
     );
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(

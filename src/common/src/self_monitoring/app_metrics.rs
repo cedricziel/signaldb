@@ -57,6 +57,11 @@ pub struct AppMetrics {
 
     // Tenant storage accounting
     pub tenant_storage_usage_bytes: Gauge<u64>,
+
+    // Writer commit-coalescing: groups held back by the floor on the last
+    // processing cycle. A sustained non-zero value alongside rising
+    // `signaldb.wal.entries_pending` indicates the commit path is stalling.
+    pub writer_groups_deferred: Gauge<u64>,
 }
 
 static APP_METRICS: OnceLock<AppMetrics> = OnceLock::new();
@@ -195,6 +200,13 @@ impl AppMetrics {
                 .u64_gauge("signaldb.tenant.storage_usage")
                 .with_description("Live Iceberg data-file bytes stored per tenant")
                 .with_unit("By")
+                .build(),
+            writer_groups_deferred: meter
+                .u64_gauge("signaldb.writer.groups_deferred")
+                .with_description(
+                    "Writer groups deferred by the commit-coalescing floor last cycle",
+                )
+                .with_unit("{group}")
                 .build(),
         }
     }

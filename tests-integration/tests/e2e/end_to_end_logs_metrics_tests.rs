@@ -141,7 +141,12 @@ async fn setup_logs_metrics_services() -> TestServices {
             .expect("Failed to create CatalogManager for writer"),
     );
     let writer_service =
-        IcebergWriterFlightService::new(writer_catalog_manager, object_store.clone(), writer_wal);
+        IcebergWriterFlightService::new(
+            writer_catalog_manager,
+            object_store.clone(),
+            writer_wal,
+            &common::config::WriterConfig::default(),
+        );
     let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
         .add_service(FlightServiceServer::new(writer_service))

@@ -110,7 +110,12 @@ async fn test_iceberg_flight_service_integration() -> Result<()> {
     let wal = Arc::new(Wal::new(wal_config).await?);
 
     // Create Iceberg Flight service
-    let _service = IcebergWriterFlightService::new(catalog_manager, object_store, wal);
+    let _service = IcebergWriterFlightService::new(
+        catalog_manager,
+        object_store,
+        wal,
+        &common::config::WriterConfig::default(),
+    );
 
     // Verify service was created successfully
     // Note: Full Flight service testing would require actual gRPC integration,

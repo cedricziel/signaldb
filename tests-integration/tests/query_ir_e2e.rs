@@ -149,8 +149,12 @@ async fn setup() -> TestServices {
             .await
             .expect("catalog mgr"),
     );
-    let writer_service =
-        IcebergWriterFlightService::new(catalog_manager.clone(), object_store, writer_wal);
+    let writer_service = IcebergWriterFlightService::new(
+        catalog_manager.clone(),
+        object_store,
+        writer_wal,
+        &common::config::WriterConfig::default(),
+    );
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()

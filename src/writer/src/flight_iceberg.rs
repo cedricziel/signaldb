@@ -9,6 +9,7 @@ use arrow_flight::{
 };
 use bytes::Bytes;
 use common::CatalogManager;
+use common::config::WriterConfig;
 use common::flight::schema::FlightSchemas;
 use common::wal::{Wal, WalOperation, record_batch_to_bytes};
 use datafusion::arrow::datatypes::SchemaRef;
@@ -19,6 +20,10 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 use tracing::Instrument;
+
+/// Flight `do_action` type that forces an immediate commit of all pending
+/// writes (read-your-writes drain), bypassing the commit-coalescing floor.
+pub const FLUSH_ACTION: &str = "flush";
 
 /// Enhanced Flight service that uses Iceberg table writer instead of direct Parquet writes
 /// This demonstrates the integration of the new Iceberg-based processor
@@ -38,8 +43,10 @@ impl IcebergWriterFlightService {
         catalog_manager: Arc<CatalogManager>,
         object_store: Arc<dyn ObjectStore>,
         wal: Arc<Wal>,
+        writer_config: &WriterConfig,
     ) -> Self {
-        let processor = WalProcessor::new(wal.clone(), catalog_manager, object_store);
+        let processor =
+            WalProcessor::with_config(wal.clone(), catalog_manager, object_store, writer_config);
 
         Self {
             processor: Arc::new(Mutex::new(processor)),
@@ -381,16 +388,41 @@ impl FlightService for IcebergWriterFlightService {
     type DoActionStream = BoxStream<'static, Result<arrow_flight::Result, Status>>;
     async fn do_action(
         &self,
-        _request: Request<arrow_flight::Action>,
+        request: Request<arrow_flight::Action>,
     ) -> Result<Response<Self::DoActionStream>, Status> {
-        Err(Status::unimplemented("do_action not supported"))
+        let action = request.into_inner();
+        match action.r#type.as_str() {
+            // Read-your-writes drain: commit every pending group immediately,
+            // bypassing the commit-coalescing floor. Used by tests and by
+            // clients that need ingested data queryable at once.
+            FLUSH_ACTION => {
+                self.processor
+                    .lock()
+                    .await
+                    .force_commit_pending()
+                    .await
+                    .map_err(|e| Status::internal(format!("Flush failed: {e}")))?;
+                let out = stream::empty().boxed();
+                Ok(Response::new(out))
+            }
+            other => Err(Status::unimplemented(format!(
+                "do_action does not support {other:?}"
+            ))),
+        }
     }
     type ListActionsStream = BoxStream<'static, Result<arrow_flight::ActionType, Status>>;
     async fn list_actions(
         &self,
         _request: Request<arrow_flight::Empty>,
     ) -> Result<Response<Self::ListActionsStream>, Status> {
-        let out = stream::empty().boxed();
+        let out = stream::once(async {
+            Ok(arrow_flight::ActionType {
+                r#type: FLUSH_ACTION.to_string(),
+                description: "Commit all pending writes immediately (read-your-writes drain)"
+                    .to_string(),
+            })
+        })
+        .boxed();
         Ok(Response::new(out))
     }
 }
@@ -420,9 +452,78 @@ mod tests {
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
 
-        let service = IcebergWriterFlightService::new(catalog_manager, object_store, wal);
+        let service = IcebergWriterFlightService::new(
+            catalog_manager,
+            object_store,
+            wal,
+            &WriterConfig::default(),
+        );
 
         // Verify service was created successfully
         assert!(service.processor.lock().await.get_stats().active_writers == 0);
+    }
+
+    #[tokio::test]
+    async fn do_action_flush_commits_pending_writes() {
+        let temp_dir = tempdir().unwrap();
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+        let wal_config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            max_segment_size: 8 * 1024 * 1024,
+            max_buffer_entries: 1000,
+            flush_interval_secs: 5,
+            tenant_id: "acme".to_string(),
+            dataset_id: "production".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+        let wal = Arc::new(Wal::new(wal_config).await.unwrap());
+        // A large interval means the background loop would defer this write; the
+        // flush action must commit it regardless.
+        let writer_config = WriterConfig {
+            commit_interval: std::time::Duration::from_secs(3600),
+            max_uncommitted_rows: 1_000_000,
+        };
+        let service = IcebergWriterFlightService::new(
+            catalog_manager,
+            object_store,
+            wal.clone(),
+            &writer_config,
+        );
+
+        wal.append(
+            WalOperation::WriteMetrics,
+            crate::test_support::metrics_gauge_bytes(5),
+            Some(r#"{"target_table":"metrics_gauge"}"#.to_string()),
+        )
+        .await
+        .unwrap();
+        wal.flush().await.unwrap();
+
+        // Unknown actions are still rejected.
+        let unknown = Request::new(arrow_flight::Action {
+            r#type: "nope".to_string(),
+            body: Bytes::new(),
+        });
+        match service.do_action(unknown).await {
+            Err(status) => assert_eq!(status.code(), tonic::Code::Unimplemented),
+            Ok(_) => panic!("unknown do_action type must be Unimplemented"),
+        }
+
+        // The flush action drains the pending write.
+        let flush = Request::new(arrow_flight::Action {
+            r#type: FLUSH_ACTION.to_string(),
+            body: Bytes::new(),
+        });
+        let resp = service.do_action(flush).await.unwrap();
+        // Drain the (empty) result stream to completion.
+        let _results: Vec<_> = resp.into_inner().collect().await;
+
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "flush action must commit the pending write"
+        );
     }
 }

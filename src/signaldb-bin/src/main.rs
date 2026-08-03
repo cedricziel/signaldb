@@ -164,6 +164,7 @@ async fn main() -> Result<()> {
         catalog_manager.clone(),
         object_store.clone(),
         writer_wal.clone(),
+        &config.writer,
     );
 
     // Start background WAL processing for Iceberg writes
