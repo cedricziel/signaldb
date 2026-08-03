@@ -261,6 +261,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
             endpoints::tenant::router()
                 .nest("/manage", endpoints::management::router())
                 .route("/whoami", get(endpoints::session::whoami::<S>))
+                .merge(endpoints::query::router())
                 .layer(query_rate_layer)
                 .layer(auth_layer),
         )

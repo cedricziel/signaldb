@@ -1321,6 +1321,51 @@
         }
       }
     },
+    "/api/v1/query": {
+      "post": {
+        "tags": [
+          "query"
+        ],
+        "summary": "Submit a native Query IR document.",
+        "operationId": "query_ir",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryIrRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The enveloped query result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryIrResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid IR document"
+          },
+          "401": {
+            "description": "Missing or invalid credentials"
+          },
+          "503": {
+            "description": "No querier service available"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/tempo/api/search": {
       "get": {
         "tags": [
@@ -2056,6 +2101,177 @@
           }
         }
       },
+      "QueryIrRequest": {
+        "type": "object",
+        "description": "A versioned Query IR request document.\n\nThe `pipeline` stages are opaque JSON objects at the HTTP boundary — the\nquerier validates and lowers them per the versioned IR contract. See the\n`query-ir-core` capability for the full stage/predicate grammar.",
+        "required": [
+          "irVersion",
+          "from",
+          "range",
+          "result"
+        ],
+        "properties": {
+          "fields": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Curated projection (logical field names) for `rows`/`table`."
+          },
+          "from": {
+            "type": "string",
+            "description": "The registered signal source: `logs` or `traces`.",
+            "example": "logs"
+          },
+          "irVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "IR document version (the server accepts a bounded range)."
+          },
+          "pipeline": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Ordered transform stages (opaque objects; see the IR spec)."
+          },
+          "range": {
+            "$ref": "#/components/schemas/QueryRange"
+          },
+          "result": {
+            "type": "string",
+            "description": "Declared result envelope: `rows`, `series`, or `table`.",
+            "example": "rows"
+          }
+        }
+      },
+      "QueryIrResponse": {
+        "type": "object",
+        "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`.",
+        "required": [
+          "result",
+          "window"
+        ],
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResultColumn"
+            }
+          },
+          "result": {
+            "type": "string",
+            "description": "The result envelope: `rows`, `series`, or `table`."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {}
+            }
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResultSeries"
+            }
+          },
+          "step_ns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "window": {
+            "$ref": "#/components/schemas/ResolvedWindow",
+            "description": "The resolved absolute window the query ran over."
+          }
+        }
+      },
+      "QueryRange": {
+        "type": "object",
+        "description": "The query time range. `from`/`to` are timestamp literals: RFC3339, a\nrelative anchor (`now-1h`), or integer nanoseconds.",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "example": "now-1h"
+          },
+          "to": {
+            "type": "string",
+            "example": "now"
+          }
+        }
+      },
+      "ResolvedWindow": {
+        "type": "object",
+        "description": "The resolved absolute time window, echoed for reproducibility/replay.",
+        "required": [
+          "start_ns",
+          "end_ns"
+        ],
+        "properties": {
+          "end_ns": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "start_ns": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ResultColumn": {
+        "type": "object",
+        "description": "A named, typed result column.",
+        "required": [
+          "name",
+          "type"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "ResultSeries": {
+        "type": "object",
+        "description": "One time series in a `series` result.",
+        "required": [
+          "labels",
+          "points"
+        ],
+        "properties": {
+          "labels": {
+            "type": "object",
+            "description": "The grouping label set.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {}
+            },
+            "description": "`[t_ns, value]` points."
+          }
+        }
+      },
       "SearchResult": {
         "type": "object",
         "description": "Result of GET /api/search\nSee <https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search>",
@@ -2413,6 +2629,10 @@
     {
       "name": "traces",
       "description": "Tempo-compatible trace search and retrieval"
+    },
+    {
+      "name": "query",
+      "description": "Native structured Query IR"
     }
   ]
 }

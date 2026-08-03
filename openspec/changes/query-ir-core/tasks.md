@@ -109,21 +109,21 @@ aggregate(step)` lowers to TableScan→Filter→Projection(date_bin)→
 
 ## 6. Router endpoint + OpenAPI (`router`)
 
-- [ ] 6.1 Failing test (`cargo test -p router`): `POST /api/v1/query` validates
+- [x] 6.1 Failing test (`cargo test -p router`): `POST /api/v1/query` validates
       auth/tenant headers, forwards the IR as a `query_ir` ticket, and streams
       the enveloped result; unauthenticated/invalid requests are rejected.
-- [ ] 6.2 Implement `src/router/src/endpoints/query.rs`; register it in
+- [x] 6.2 Implement `src/router/src/endpoints/query.rs`; register it in
       `endpoints/mod.rs`. Make 6.1 pass.
-- [ ] 6.3 Add the endpoint + versioned IR request schema + result-envelope
+- [x] 6.3 Add the endpoint + versioned IR request schema + result-envelope
       schemas to the code-first OpenAPI (`src/router/src/openapi.rs`); assert the
       spec snapshot test covers the new operation.
 
 ## 7. Generated clients (SDK parity)
 
-- [ ] 7.1 Regenerate the Rust SDK (`src/signaldb-sdk`) from the updated OpenAPI;
+- [x] 7.1 Regenerate the Rust SDK (`src/signaldb-sdk`) from the updated OpenAPI;
       smoke test that the generated `query` operation compiles and round-trips an
       IR request type.
-- [ ] 7.2 Regenerate the TypeScript client (`src/ui/src/api/gen`); assert the
+- [x] 7.2 Regenerate the TypeScript client (`src/ui/src/api/gen`); assert the
       generated `query` operation and IR/envelope types are present.
 
 ## 8. CLI surface (`signaldb-bin` / SDK consumer)

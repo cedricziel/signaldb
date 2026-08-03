@@ -50,6 +50,7 @@ impl Modify for SecurityAddon {
         (name = "users", description = "Human user management"),
         (name = "memberships", description = "Tenant membership management"),
         (name = "traces", description = "Tempo-compatible trace search and retrieval"),
+        (name = "query", description = "Native structured Query IR"),
     ),
     paths(
         crate::endpoints::admin::list_tenants,
@@ -79,6 +80,8 @@ impl Modify for SecurityAddon {
         crate::endpoints::tempo::query_single_trace,
         crate::endpoints::tempo::search_tags,
         crate::endpoints::tempo::search_tag_values,
+        // Native Query IR
+        crate::endpoints::query::query_ir,
     ),
     components(schemas(
         // signaldb-api admin DTOs
@@ -119,6 +122,13 @@ impl Modify for SecurityAddon {
         tempo_api::ProfileSummary,
         tempo_api::TagSearchResponse,
         tempo_api::TagValuesResponse,
+        // Native Query IR request/response DTOs
+        crate::endpoints::query::QueryIrRequest,
+        crate::endpoints::query::QueryRange,
+        crate::endpoints::query::QueryIrResponse,
+        crate::endpoints::query::ResolvedWindow,
+        crate::endpoints::query::ResultColumn,
+        crate::endpoints::query::ResultSeries,
     )),
 )]
 struct ApiDoc;

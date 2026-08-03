@@ -6,6 +6,7 @@ pub mod logql;
 pub mod management;
 pub mod promql;
 pub mod pyroscope;
+pub mod query;
 pub mod session;
 pub mod tempo;
 pub mod tenant;
