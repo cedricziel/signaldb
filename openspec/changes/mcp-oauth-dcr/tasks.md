@@ -31,8 +31,8 @@
 
 ## 7. Token endpoint (code exchange + refresh)
 
-- [ ] 7.1 Write failing `router` tests: code + matching `S256` verifier (with matching `client_id`/`redirect_uri`) yields access + refresh tokens and consumes the code; PKCE mismatch → `invalid_grant`; reused/expired code → `invalid_grant`; refresh mints an access token with the same tenant/scopes/audience (`cargo test -p router`).
-- [ ] 7.2 Implement `/token` for the `authorization_code` and `refresh_token` grants, making 7.1 pass.
+- [x] 7.1 Write failing `router` tests: code + matching `S256` verifier (with matching `client_id`/`redirect_uri`) yields access + refresh tokens and consumes the code; PKCE mismatch → `invalid_grant`; reused/expired code → `invalid_grant`; refresh mints an access token with the same tenant/scopes/audience (`cargo test -p router`).
+- [x] 7.2 Implement `/token` for the `authorization_code` and `refresh_token` grants, making 7.1 pass.
 
 ## 8. Authenticator OAuth credential path & audience binding
 
