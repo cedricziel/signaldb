@@ -97,10 +97,15 @@ impl WalSegment {
         let data_path = wal_dir.join(format!("wal-{segment_id:010}.data"));
         let index_path = wal_dir.join(format!("wal-{segment_id:010}.index"));
 
+        // Opened for writing without O_APPEND: `append` seeks to the entry's
+        // authoritative offset before writing (see `append`), so O_APPEND —
+        // which forces every write to the physical EOF regardless of the
+        // recorded offset — must not be set (issue #865).
         let file = Some(
             OpenOptions::new()
                 .create(true)
-                .append(true)
+                .write(true)
+                .truncate(false)
                 .open(&path)
                 .await
                 .context("Failed to create WAL segment file")?,
@@ -109,7 +114,8 @@ impl WalSegment {
         let data_file = Some(
             OpenOptions::new()
                 .create(true)
-                .append(true)
+                .write(true)
+                .truncate(false)
                 .open(&data_path)
                 .await
                 .context("Failed to create WAL data file")?,
@@ -190,10 +196,14 @@ impl WalSegment {
             0
         };
 
+        // Reopened for writing without O_APPEND, matching `new` — appends seek
+        // to the tracked offset (issue #865). `data_size`/`size` are reseeded
+        // from the on-disk lengths below, so writes resume at the true EOF.
         let file = Some(
             OpenOptions::new()
                 .create(true)
-                .append(true)
+                .write(true)
+                .truncate(false)
                 .open(&path)
                 .await?,
         );
@@ -201,7 +211,8 @@ impl WalSegment {
         let data_file = Some(
             OpenOptions::new()
                 .create(true)
-                .append(true)
+                .write(true)
+                .truncate(false)
                 .open(&data_path)
                 .await?,
         );
@@ -236,9 +247,20 @@ impl WalSegment {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // Write data to data file first
+        // Write the payload to the data file at its authoritative offset.
+        //
+        // `data_offset` is recorded on the entry and later drives the read
+        // seek, so the write must land at exactly that offset. We seek there
+        // and overwrite rather than trusting O_APPEND to place bytes at the
+        // physical EOF. This keeps the recorded offset and the physical write
+        // location identical even after a short write: a partial-then-errored
+        // write never advances `self.data_size`, so the next append seeks back
+        // to the same offset and overwrites the debris instead of landing
+        // past it. With O_APPEND a single short write permanently shifted every
+        // subsequent entry, corrupting the Arrow framing (issue #865).
         let data_offset = self.data_size;
         if let Some(ref mut data_file) = self.data_file {
+            data_file.seek(SeekFrom::Start(data_offset)).await?;
             data_file.write_all(data).await?;
             data_file.flush().await?;
         }
@@ -260,9 +282,14 @@ impl WalSegment {
         // Serialize entry
         let entry_data = bincode::serialize(&entry).context("Failed to serialize WAL entry")?;
 
-        // Write entry length followed by entry data
+        // Write entry length followed by entry data at the log's authoritative
+        // offset (`self.size`), for the same reason as the data file above: a
+        // short log write leaves `self.size` unadvanced so the next append
+        // overwrites the partial record rather than appending past it, which
+        // would otherwise wedge recovery with a mid-file garbage record.
         if let Some(ref mut file) = self.file {
             let entry_len = entry_data.len() as u64;
+            file.seek(SeekFrom::Start(self.size)).await?;
             file.write_all(&entry_len.to_le_bytes()).await?;
             file.write_all(&entry_data).await?;
             file.flush().await?;
@@ -1278,6 +1305,92 @@ mod tests {
         };
         let data = segment.read_entry_data(&good).await.unwrap();
         assert_eq!(data, payload);
+    }
+
+    #[tokio::test]
+    async fn append_stays_consistent_after_a_partial_data_write() {
+        // Regression for the LIVE hive WAL corruption (issue #865). The data
+        // file is offset-addressed: each entry records `data_offset =
+        // self.data_size`. But `append` writes the payload with the data file
+        // opened O_APPEND and advances `self.data_size` only *after* a fully
+        // successful `write_all`, with no truncate-on-error. If a data write
+        // ever lands some bytes and then errors (ENOSPC / interrupted syscall
+        // under disk pressure — hive is a TrueNAS box), those bytes are
+        // durably at the physical EOF but unaccounted for. From then on every
+        // subsequent entry records the stale, smaller offset while O_APPEND
+        // places its bytes *past* the orphan debris — so every following read
+        // is shifted by a constant, which is exactly the fixed-offset Arrow
+        // framing errors flooding the writer on hive.
+        //
+        // #868's concurrency guard never induces a short write, so it stays
+        // green; this test targets that gap head-on. It reproduces the state a
+        // partial write leaves — orphan bytes at EOF, counter not advanced —
+        // by writing through the same handle `append` uses, then asserts the
+        // next entry still round-trips byte-identical.
+        let temp_dir = TempDir::new().unwrap();
+        let mut segment = WalSegment::new(temp_dir.path(), 0).await.unwrap();
+
+        // A healthy first entry.
+        let first = record_batch_to_bytes(&make_batch_val(1)).unwrap();
+        let first_id = Uuid::new_v4();
+        segment
+            .append(first_id, WalOperation::WriteTraces, &first, "t", "d", None)
+            .await
+            .unwrap();
+
+        // Simulate the aftermath of a partial write that errored *inside*
+        // append's write_all, before `self.data_size` advanced: bytes durably
+        // at EOF, counter unchanged. We inject them through the very handle a
+        // real partial write would use.
+        let orphan = b"PARTIAL-WRITE-DEBRIS";
+        {
+            let data_file = segment.data_file.as_mut().unwrap();
+            data_file.write_all(orphan).await.unwrap();
+            data_file.flush().await.unwrap();
+        }
+        // `self.data_size` deliberately NOT advanced — mirrors the real bug.
+
+        // The next healthy entry. Its recorded offset is `self.data_size`, but
+        // under O_APPEND its bytes land after the orphan debris.
+        let second = record_batch_to_bytes(&make_batch_val(2)).unwrap();
+        let second_id = Uuid::new_v4();
+        segment
+            .append(
+                second_id,
+                WalOperation::WriteTraces,
+                &second,
+                "t",
+                "d",
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Must read back byte-identical. Today it does not: the read seeks to
+        // the stale offset and returns orphan + shifted bytes, which the Arrow
+        // reader then rejects with the #865 framing errors.
+        let second_entry = segment
+            .entries
+            .iter()
+            .find(|e| e.id == second_id)
+            .cloned()
+            .unwrap();
+        let read_back = segment.read_entry_data(&second_entry).await.unwrap();
+        assert_eq!(
+            read_back, second,
+            "entry read back corrupted after a partial data write: the WAL \
+             desynced its offset counter from the physical data file"
+        );
+
+        // The first entry must remain intact regardless.
+        let first_entry = segment
+            .entries
+            .iter()
+            .find(|e| e.id == first_id)
+            .cloned()
+            .unwrap();
+        let first_read = segment.read_entry_data(&first_entry).await.unwrap();
+        assert_eq!(first_read, first, "first entry corrupted");
     }
 
     fn make_batch() -> RecordBatch {

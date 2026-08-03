@@ -213,6 +213,19 @@ On service restart:
 2. **Automatic replay**: Reprocess unprocessed entries
 3. **Resume normal operation**: Continue with new data
 
+### Write Integrity
+
+Each entry records the byte offset of its payload in the segment's `.data`
+file, and reads seek to that offset. The offset is therefore authoritative:
+appends **seek to the tracked offset and overwrite**, rather than relying on the
+OS append mode (`O_APPEND`) to place bytes at the physical end of file. This
+makes a short write self-correcting — if a payload write lands only some of its
+bytes and then errors (for example under disk pressure), the offset counter is
+not advanced, so the next append seeks back to the same offset and overwrites
+the partial bytes. A single short write can therefore no longer shift every
+subsequent entry in the segment, which previously corrupted the Arrow framing of
+all following entries.
+
 ### Corrupt or Unreadable Entries
 
 An entry can become unreadable — a truncated or partial data write, an entry
