@@ -135,13 +135,13 @@ aggregate(step)` lowers to TableScan→Filter→Projection(date_bin)→
 
 ## 9. UI query builder, single-signal (`ui`)
 
-- [ ] 9.1 Failing component test (`src/ui`): a builder appends stage objects
+- [x] 9.1 Failing component test (`src/ui`): a builder appends stage objects
       (from(logs) → where(FilterChips) → aggregate) and emits a valid IR document
       via the generated TS client — no dialect-string compilation in the browser.
-- [ ] 9.2 Failing component test: each envelope renders with the right view —
+- [x] 9.2 Failing component test: each envelope renders with the right view —
       `rows`→log/span list, `series`→chart, `table`→topN — chosen from the
       declared envelope before results arrive.
-- [ ] 9.3 Implement the builder + renderers in `src/ui/src/features/explore`
+- [x] 9.3 Implement the builder + renderers in `src/ui/src/features/explore`
       (+ a `query-builder` lib), logs and traces, consuming only the generated
       client. Make 9.1–9.2 pass.
 

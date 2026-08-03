@@ -11,7 +11,7 @@ import {
   type TimeRange,
 } from "./time";
 
-export type Signal = "logs" | "traces" | "metrics" | "profiles";
+export type Signal = "logs" | "traces" | "metrics" | "profiles" | "query";
 
 export interface ExploreState {
   signal: Signal;
