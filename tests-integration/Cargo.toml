@@ -68,6 +68,11 @@ harness = false
 required-features = ["benchmarks"]
 
 [[bench]]
+name = "signal_read_paths"
+harness = false
+required-features = ["benchmarks"]
+
+[[bench]]
 name = "compaction"
 harness = false
 required-features = ["benchmarks"]
