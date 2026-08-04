@@ -44,14 +44,35 @@ correlation can join on them.
 - **THEN** the exemplar's `trace_id`/`span_id` are available as join keys without
   parsing a blob
 
-### Requirement: Summary metrics are passthrough, not recomputable histograms
+### Requirement: Summary metrics are passthrough; histogram_quantile over Summary is rejected
 
 OTLP Summary metrics carry precomputed client-side quantiles and SHALL be stored
-and returned as such. The system SHALL NOT treat a Summary as a bucketed histogram
-or claim to recompute an arbitrary `histogram_quantile` from it.
+and returned as such. The system SHALL NOT treat a Summary as a bucketed histogram.
+An arbitrary `histogram_quantile` applied to a Summary SHALL return a deterministic,
+typed unsupported-operation error — never a fabricated or silently passed-through
+value.
 
-#### Scenario: Summary quantiles are returned as stored, not recomputed
+#### Scenario: Summary quantiles returned as stored
 
-- **WHEN** a Summary metric is queried
-- **THEN** its precomputed quantiles are returned as stored, and an arbitrary
-  `histogram_quantile` over it is rejected or passed through rather than fabricated
+- **WHEN** a Summary metric's stored quantiles are queried
+- **THEN** its precomputed quantiles are returned as stored
+
+#### Scenario: histogram_quantile over Summary is a typed error
+
+- **WHEN** `histogram_quantile` is applied to a Summary metric
+- **THEN** the query returns a deterministic typed unsupported-operation error, not a
+  fabricated value
+
+### Requirement: Legacy data_json metrics coexist during migration
+
+Metrics persisted under the prior `data_json` blob layout SHALL remain readable
+through the same typed metric surface as newly-typed metrics, returning
+result-equivalent values, until the compactor has rewritten them into the typed
+substrate.
+
+#### Scenario: Legacy metric reads result-equivalent to typed
+
+- **WHEN** a query spans metrics stored under the legacy `data_json` layout and the
+  typed substrate
+- **THEN** it returns one result-equivalent set across both, with legacy rows read
+  via a compatibility path until compaction rewrites them

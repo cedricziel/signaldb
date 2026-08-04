@@ -41,3 +41,12 @@ the typed map itself, since Parquet keeps no per-key statistics inside a map.
 - **THEN** pruning is obtained from the derived containment index (or from a
   promoted column when present), and the plan does not claim row-group pruning from
   the typed map's value leaf
+
+#### Scenario: One scan resolves mixed physical layouts to one typed column
+
+- **WHEN** a single table scan spans files in the legacy `Map<String,String>`
+  layout, the typed-store layout, and a promoted-column layout for the same field
+- **THEN** the registry resolves each file's physical representation to the one
+  logical field and returns a single column under the canonical type — legacy
+  values that cannot be safely cast reading as null (per `typed-attribute-storage`),
+  not as a query error

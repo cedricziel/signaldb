@@ -56,9 +56,12 @@ See `proposal.md` — Why. The load-bearing facts that shape the approach:
   sequences a dependent PR stack.
 - Parquet `Variant` — out of scope as a deliverable (not usable in this fork; see
   Context). The binary residue keeps a future Variant path open.
-- Full typed-wire fidelity for structured/duplicate-key data in phase 1 — the
-  Flight/WAL wire stays JSON-in-Utf8; scalars (incl. full i64) type fine from it,
-  bytes/interned/dup-keys need the `extract_value` fix, not a new wire.
+- Phase-1 fidelity is scoped: the Flight/WAL wire stays JSON-in-Utf8; scalars
+  (incl. full i64) and — via the `extract_value` fix — **bytes and interned strings**
+  survive it. **Duplicate keys and key order do not** survive a `serde_json::Map`
+  round-trip, so that fidelity requires building the binary residue at the acceptor
+  _before_ JSON serialization, or the typed-wire phase — it is not delivered by the
+  `extract_value` fix alone (corrected per review).
 - Cross-version semconv attribute renaming (schema transformation) — hints come
   from one pinned semconv snapshot.
 - Redesigning the compaction engine or partition strategy beyond what
@@ -155,6 +158,17 @@ to the residue rather than flipping the type. Write-path and plan-path read the
 same versioned resolution; a config/schema-version bump is the only mutation and it
 invalidates cached resolutions. This closes the "mutable derived source of truth
 with no invalidation" hole and prevents cross-tenant type contamination.
+
+**Migration rule for a canonical-type change.** When a config/version bump changes a
+field's canonical type, existing rows in the old typed home are **not** retyped in
+place (monotonicity). They remain readable through the coexistence read-path (the
+same machinery that reads legacy `Map<String,String>` files): a value that
+safe-casts to the new type reads as the new type, one that does not reads via the
+residue. The compactor migrates old-home values forward on its next pass (to the new
+home where lossless, else the residue). The one-home invariant is preserved because
+the _registry_ names exactly one canonical home at any version; "old home" rows are
+a migration artifact the read-path unifies, not a second live home. A type change is
+therefore a forward-only, version-gated event, not a free toggle.
 
 ### D6 — Ingest enforces at write; wire stays JSON in phase 1
 
@@ -267,8 +281,21 @@ Implemented as a dependent PR stack (charter now, stack later):
 12. **Later stack layers** (own changes, out of this charter's specs):
     delivery-side tail/pagination; typed wire + WAL.
 
-Rollback: each stack layer is independently revertable; the coexistence
-read-path means a reverted substrate layer still reads both representations.
+Rollback is per-layer and not uniform — the plan distinguishes revertable from
+forward-only layers:
+
+- **Revertable (additive):** substrate, warm index, and promotion layers. The
+  coexistence read-path means a reverted binary still reads both the legacy and
+  typed representations, so reverting the reader is safe; new files simply stop
+  being written in the typed layout. Legacy representations are retained until the
+  compactor rewrite (layer 7) runs, so a revert before that has both to read.
+- **Forward-only (data-shape changes):** the `extract_value` fidelity fix (layer 1),
+  the typed metric substrate (layer 9), and the typed wire/WAL (layer 13). A binary
+  from _before_ these layers cannot read data written _after_ them. Reverting
+  requires either keeping the newer reader or a compactor backfill to the old shape;
+  these layers ship behind their own flags and are called out as forward-only, not
+  claimed as freely revertable. A per-layer read/write compatibility matrix is an
+  implementation-task deliverable for each such layer.
 
 ## Open Questions
 

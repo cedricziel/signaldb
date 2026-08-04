@@ -26,7 +26,13 @@ by which of these it operates on.
 Rate/increase over a cumulative series SHALL be computed using the known reset
 points (from the series `start_time`) and over a delta series SHALL be computed
 from the delta values directly. The computation SHALL depend on OTLP
-`aggregation_temporality`, not on a monotonicity-only heuristic.
+`aggregation_temporality`, not on a monotonicity-only heuristic. The semantics
+SHALL be fixed, not implementation-dependent: samples are ordered by timestamp;
+`increase` returns the total accumulated over the range (unnormalized), while
+`rate` returns that total divided by the range's elapsed seconds
+(per-second-normalized); a detected reset contributes the post-reset value (the
+counter is not treated as decreasing); and gaps are spanned by the surrounding
+samples within the range without extrapolation beyond it.
 
 #### Scenario: Rate respects temporality
 
@@ -40,6 +46,11 @@ from the delta values directly. The computation SHALL depend on OTLP
 - **WHEN** a cumulative series resets (a new `start_time`)
 - **THEN** the reset is recognized from the OTLP start-time boundary rather than
   inferred from a sample-value decrease
+
+#### Scenario: rate is per-second, increase is the total
+
+- **WHEN** a counter accumulates 120 over a 60-second range with no reset
+- **THEN** `increase` returns 120 and `rate` returns 2 (per second)
 
 ### Requirement: Histogram quantiles are computed over OTLP bucket structure
 

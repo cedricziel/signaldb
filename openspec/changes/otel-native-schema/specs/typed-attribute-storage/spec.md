@@ -34,16 +34,37 @@ scattered across multiple typed homes.
 
 Lossless preservation SHALL hold from the OTLP boundary, not merely from the
 storage write. The OTLP→internal conversion SHALL preserve `BytesValue` as bytes
-(distinct from a string), preserve string-table-indexed values, and preserve
-duplicate keys and key order to the extent the residue represents them — rather
-than mapping bytes to a possibly-invalid string or dropping interned values to
-null.
+(distinct from a string) and preserve string-table-indexed values — rather than
+mapping bytes to a possibly-invalid string or dropping interned values to null.
+**Phase scoping:** bytes and interned-string fidelity are delivered in phase 1
+(the `extract_value` fix). Preservation of **duplicate keys and key order**
+requires the binary residue to be constructed before the JSON-in-Utf8 wire
+serialization collapses them (a `serde_json::Map` sorts and de-duplicates); this
+change SHALL either build the residue at the acceptor from the OTLP `KeyValueList`
+directly, or defer duplicate/ordered-key fidelity to the typed-wire phase — and
+SHALL document which, rather than claiming duplicate/order fidelity it does not
+deliver.
 
 #### Scenario: Bytes are not degraded to a string
 
 - **WHEN** a `BytesValue` attribute is ingested
 - **THEN** it is retrievable as bytes, distinguishable from a string attribute, and
   not corrupted by a UTF-8 conversion
+
+### Requirement: Residue values are read through an explicit raw accessor
+
+Because a logical field resolves to one registry-owned canonical type, a residue
+value (off-type, array, kvlist, or bytes) SHALL NOT be surfaced as that field's
+canonical-typed value. Reading residue content SHALL be an explicit raw/any-typed
+retrieval that returns the original `AnyValue`; a canonical-typed read of a field
+SHALL return the typed value or null, never a coerced residue value.
+
+#### Scenario: Off-type value is invisible to the typed read, visible to the raw read
+
+- **WHEN** a field canonically typed integer has an off-type string occurrence in
+  the residue
+- **THEN** a typed read of the field returns null for that row, and an explicit raw
+  read returns the original string `AnyValue`
 
 ### Requirement: Warm tier — a derived typed containment index prunes before promotion
 

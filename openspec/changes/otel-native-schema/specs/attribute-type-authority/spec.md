@@ -11,10 +11,14 @@ value.
 ### Requirement: Canonical type is one per tenant+dataset+field and monotonic
 
 The registry SHALL own exactly one canonical type per (tenant, dataset, logical
-field). The canonical type SHALL be stable and monotonic: once established it
-SHALL NOT be changed by later ingested data, and existing stored values SHALL NOT
-be retyped. It changes only by explicit operator action (config) or a declared
-schema-version bump. No other component SHALL assert a competing canonical type.
+field), where **logical field identity includes the signal and the attribute
+level** (resource / scope / record) — so `service.name` as a resource attribute
+and a same-named record attribute are distinct fields with independent canonical
+types, and cannot collide on one home. The canonical type SHALL be stable and
+monotonic: once established it SHALL NOT be changed by later ingested data, and
+existing stored values SHALL NOT be retyped. It changes only by explicit operator
+action (config) or a declared schema-version bump (see the migration rule in
+`design.md` D9). No other component SHALL assert a competing canonical type.
 
 #### Scenario: Canonical type is scoped per tenant+dataset
 
@@ -55,13 +59,35 @@ SHALL NOT rewrite or coerce the sender's stored value.
 - **WHEN** a key has no config override and no applicable semconv hint
 - **THEN** the first observed `AnyValue` type becomes the canonical home
 
+### Requirement: First-seen assignment is atomic across concurrent writers
+
+When the canonical home is established from the first observed `AnyValue` (no
+config/semconv hint), the assignment SHALL be linearizable: the registry SHALL
+commit exactly one winner via a compare-and-set (or transaction), and concurrent
+writers SHALL obtain the committed winner before persisting. A writer whose
+observed type differs from the committed winner SHALL route its value to the
+residue rather than creating a second typed home for the field.
+
+#### Scenario: Concurrent first-writers converge on one home
+
+- **WHEN** two acceptors observe the same new key with different `AnyValue` types
+  at the same time
+- **THEN** the registry commits one canonical home, both writers use it, and the
+  losing type's value is routed to the residue — the field is never written to two
+  typed homes
+
 ### Requirement: schema_url is resource/scope only and hints, never retypes
 
 The registry SHALL read `schema_url` only from resource and scope levels (OTLP
 defines it nowhere else) and use it solely to pick the semconv snapshot for a
-type _hint_. A missing or unrecognized `schema_url` SHALL fall through to the
-observed-`AnyValue` home without error. This change SHALL NOT implement
-cross-version semconv attribute renaming.
+type _hint_. When both a scope-level and a resource-level `schema_url` apply,
+**scope-level SHALL take precedence** (most-specific wins); record/signal-level
+attributes (which have no `schema_url`) SHALL resolve their hint from the scope
+`schema_url`, else the resource `schema_url`. The selected hint source SHALL be
+recorded in resolution metadata so every writer picks the same home. A missing or
+unrecognized `schema_url` SHALL fall through to the observed-`AnyValue` home
+without error. This change SHALL NOT implement cross-version semconv attribute
+renaming.
 
 #### Scenario: Missing schema_url falls through without error
 

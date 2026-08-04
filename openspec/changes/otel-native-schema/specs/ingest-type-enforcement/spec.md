@@ -6,40 +6,40 @@ at write time, rather than reconstructed by casting a stringified value at read.
 
 ## ADDED Requirements
 
-### Requirement: Ingest resolves and stores the canonical type at write
+### Requirement: Ingest routes by the canonical authority, never rewriting the sender's value
 
-The ingest path SHALL resolve each attribute's canonical type through the
-registry (semconv → `AnyValue` → config) and encode the value into the typed
-physical substrate under that type before persistence. Ingest SHALL NOT persist
-attribute values as an untyped string map that requires read-time type
-reconstruction.
+The ingest path SHALL resolve each attribute through the registry using the same
+canonical authority as reads — precedence **config → semconv hint → observed
+`AnyValue`** (see `attribute-type-authority`) — and route the value to the field's
+canonical typed home when its sent type matches, or to the structured residue when
+it does not. Ingest SHALL store the value **as sent**; it SHALL NOT coerce or
+rewrite the sender's value, and SHALL NOT persist attributes as an untyped string
+map requiring read-time reconstruction.
 
-#### Scenario: Typed value is stored typed
+#### Scenario: Matching-type value is stored in the canonical home
 
-- **WHEN** a record with a typed attribute is ingested
-- **THEN** the value is written into the typed substrate under its canonical
-  type, and a later read returns it typed without a read-time cast
+- **WHEN** a record's attribute matches the field's canonical type
+- **THEN** the value is written to the typed home and a later read returns it typed
+  without a read-time cast
 
-#### Scenario: Semconv-typed key is coerced at write
+#### Scenario: Off-type value is routed to the residue, not coerced
 
-- **WHEN** a sender transmits a semantic-convention key under a different
-  `AnyValue` type than the convention declares (e.g. a numeric status code as a
-  string)
-- **THEN** ingest coerces the value to the registry's canonical type where the
-  coercion is lossless, and records the value typed
+- **WHEN** a sender transmits a key under a different `AnyValue` type than the
+  field's canonical type (e.g. a semconv-integer key sent as a string)
+- **THEN** ingest retains the value **as sent** in the residue (not coerced to the
+  canonical type), and the occurrence is recorded as an off-type mismatch
 
-### Requirement: Ingest never drops records on type conflict or coercion failure
+### Requirement: Ingest never drops records on type mismatch
 
 The ingest path SHALL NOT reject or silently discard a record because an
-attribute's sent type conflicts with the canonical type or cannot be losslessly
-coerced. The value SHALL be retained (under its sent type's home or the residue),
-and the condition SHALL be observable.
+attribute's sent type does not match the canonical type. The value SHALL be
+retained losslessly (in the residue), and the condition SHALL be observable.
 
-#### Scenario: Lossy coercion falls back to retention
+#### Scenario: Off-type value is retained, not dropped
 
-- **WHEN** an attribute value cannot be losslessly coerced to the canonical type
-- **THEN** the record is still ingested, the value is retained without loss, and
-  the event is surfaced (metric/log) rather than dropped
+- **WHEN** an attribute value does not match the field's canonical type
+- **THEN** the record is still ingested, the value is retained without loss in the
+  residue, and the mismatch is surfaced (metric/log) rather than dropped
 
 ### Requirement: Ingest wire format compatibility during migration
 

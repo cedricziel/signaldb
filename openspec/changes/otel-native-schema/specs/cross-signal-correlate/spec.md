@@ -32,16 +32,27 @@ encodings.
 
 ### Requirement: Correlation is bounded in fan-out and time, without changing join truth
 
-Correlation SHALL be bounded so a one-to-many relationship cannot produce an
-unbounded result: an enrichment fan-out cap SHALL apply only to result-producing
-join kinds (inner, left), and SHALL be paired with a deterministic ordering so a
-capped result is reproducible, not an arbitrary subset. Fan-out caps SHALL NOT be
-applied to semi/anti joins (which produce at most one row per source and where a
-cap would change the boolean answer). The target-signal scan SHALL be bounded to a
-time window derived from the source rows; the window SHALL be documented as part of
-the join's truth condition (absence/enrichment is _within the window_), and for
-anti/left joins the operator SHALL be able to widen the window to cover
-late-arriving data. Any applied bound SHALL be reported, not silent.
+Correlation SHALL be bounded so no join kind can perform unbounded work. A
+**source-side bound** (a cap on source cardinality after the source pipeline) SHALL
+apply to **every** join kind, including semi/anti; when the source or target bound
+cannot be met, the query SHALL return an explicit resource error rather than run
+unbounded. Separately, a **result fan-out cap** SHALL apply only to result-producing
+join kinds (inner, left), paired with a deterministic ordering so a capped result
+is reproducible, not an arbitrary subset; fan-out caps SHALL NOT be applied to
+semi/anti joins (which produce at most one row per source and where a cap would
+change the boolean answer — their boundedness comes from the source-side bound and
+a target scan that short-circuits on first match). The target-signal scan SHALL be
+bounded to a time window derived from the source rows; the window SHALL be
+documented as part of the join's truth condition (absence/enrichment is _within the
+window_), and for anti/left joins the operator SHALL be able to widen the window to
+cover late-arriving data. Any applied bound SHALL be reported, not silent.
+
+#### Scenario: Unbounded source is a resource error, for every join kind
+
+- **WHEN** a correlation (of any kind, including semi/anti) has a source relation
+  exceeding the source-side bound
+- **THEN** the query returns an explicit resource error rather than performing
+  unbounded work
 
 #### Scenario: Enrichment fan-out cap is deterministic and reported
 

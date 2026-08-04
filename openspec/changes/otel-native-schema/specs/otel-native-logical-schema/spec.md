@@ -36,9 +36,12 @@ SHALL carry its OpenTelemetry `AnyValue` type and be observable as its typed val
 (string, bool, int, double, bytes). An array or key-value-list attribute SHALL be
 preserved without loss and **retrievable but not required to be filterable**
 (served from the structured residue). Resource-, scope-, and record-level
-attributes share one dotted namespace; when a key appears at more than one level,
-record-level SHALL shadow scope-level SHALL shadow resource-level, and an explicit
-level qualifier SHALL be available to address a shadowed level unambiguously.
+attributes share one dotted namespace for _addressing_; when a key appears at more
+than one level, record-level SHALL shadow scope-level SHALL shadow resource-level
+for the unqualified name, and an explicit level qualifier SHALL be available to
+address a shadowed level unambiguously. For _typing_, a field's identity includes
+its signal and level (see `attribute-type-authority`), so the same dotted key at
+two levels is two fields that MAY carry different canonical types.
 
 #### Scenario: Typed scalar attribute is not stringified
 

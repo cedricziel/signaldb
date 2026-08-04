@@ -52,6 +52,21 @@ under memory pressure rather than completing.
   single trace's span count or a precomputed column — not on a whole-relation
   recursive expansion
 
+### Requirement: A hard per-trace resource budget bounds evaluation
+
+Because a single trace can contain an arbitrarily large number of spans, the
+per-trace evaluator SHALL enforce a configurable hard budget (a maximum span count
+and/or byte size per evaluated trace). A trace exceeding the budget SHALL fail with
+an explicit resource error (and identify the offending trace) rather than proceed to
+out-of-memory termination. The materialized-ancestry strategy SHALL enforce the
+equivalent budget at write time (bounding the precomputed ancestry it will store).
+
+#### Scenario: Oversized trace errors within budget, not OOM
+
+- **WHEN** a matched trace exceeds the configured per-trace span/byte budget
+- **THEN** evaluation of that trace fails with an explicit resource error naming the
+  trace, and the process does not OOM
+
 ### Requirement: Structural matching is trace-only
 
 The `match` stage SHALL be valid only on the `traces` source and SHALL be
