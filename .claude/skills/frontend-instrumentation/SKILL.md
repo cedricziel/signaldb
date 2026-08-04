@@ -21,15 +21,21 @@ and is initialised once from `main.tsx`. Two outcomes drive the design:
 2. **Followable sessions** — every span carries `session.id` plus the active
    `tenant.id` / `dataset.id`, so all activity from one browser session can be
    grouped and lined up against the backend's per-tenant traces.
+3. **Server → client correlation** — for the one request the client can never
+   instrument (the initial HTML document), the server's trace context is read
+   back from the response's `Server-Timing: traceparent` entry and linked to
+   the `documentLoad` span.
 
 ## Module map
 
-| File                                   | Responsibility                                                                                                                                                                |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `telemetry/index.ts`                   | `initTelemetry()` — provider, context manager, propagators, auto-instrumentations, exporter selection, error capture; exports `tracer`                                        |
-| `telemetry/session.ts`                 | `createSessionManager()` — RUM session id with sliding inactivity window + absolute cap, `localStorage`-backed                                                                |
-| `telemetry/sessionSpanProcessor.ts`    | `SpanProcessor` that stamps `session.id` / `tenant.id` / `dataset.id` on every span                                                                                           |
-| `telemetry/navigationSpanProcessor.ts` | `SpanProcessor` that collapses the auto-instrumentation's `Navigation: <url>` span to the static name `Navigation`, moving the URL into `url.full` / `url.path` / `url.query` |
+| File                                          | Responsibility                                                                                                                                                                |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `telemetry/index.ts`                          | `initTelemetry()` — provider, context manager, propagators, auto-instrumentations, exporter selection, error capture; exports `tracer`                                        |
+| `telemetry/session.ts`                        | `createSessionManager()` — RUM session id with sliding inactivity window + absolute cap, `localStorage`-backed                                                                |
+| `telemetry/sessionSpanProcessor.ts`           | `SpanProcessor` that stamps `session.id` / `tenant.id` / `dataset.id` on every span                                                                                           |
+| `telemetry/navigationSpanProcessor.ts`        | `SpanProcessor` that collapses the auto-instrumentation's `Navigation: <url>` span to the static name `Navigation`, moving the URL into `url.full` / `url.path` / `url.query` |
+| `telemetry/serverTiming.ts`                   | Strict parser for the `Server-Timing: traceparent` context SignalDB returns on every HTTP response (see `docs/users/response-trace-context.md`)                               |
+| `telemetry/serverCorrelationSpanProcessor.ts` | `SpanProcessor` that links the `documentLoad` span to the server span that served the document, via the navigation entry's `serverTiming`                                     |
 
 ## Rules
 
@@ -115,19 +121,37 @@ names **low-cardinality** (no ids/timestamps in the name — put those in
 attributes). The web auto-instrumentation's route span otherwise names itself
 after the full URL; `navigationSpanProcessor.ts` rewrites it to enforce this.
 
+### Server-returned context: link, never parent
+
+The document request goes out before any JS runs, so it cannot carry
+`traceparent`. SignalDB returns its server span's context on every response
+(`Server-Timing: traceparent;desc="..."` + `traceresponse`; see
+`docs/users/response-trace-context.md`), and
+`serverCorrelationSpanProcessor.ts` reads it off the navigation performance
+entry to attach it to the `documentLoad` span **as a span link** — never as a
+parent. If the server sampled its span out (flags `00`) a parent would point
+at a span that is never exported and dangle the client trace; a link to an
+unexported span is harmless. Parsing is strict (version `00`, lowercase hex,
+exact widths, non-zero ids) and the whole path is best-effort: any failure
+degrades to "no link", never an error. Fetch/XHR calls do **not** need this —
+they already root the trace via the request-side `traceparent`.
+
 ## Backend must continue the trace
 
 Frontend propagation only pays off if the backend **extracts** the incoming
 `traceparent` and continues the trace. Injecting the header is necessary but not
 sufficient for true end-to-end — confirm the router/querier parse W3C trace
 context on inbound HTTP. If they don't yet, browser traces and backend traces
-stay disconnected even though the header is present.
+stay disconnected even though the header is present. The reverse direction is
+covered too: the shared HTTP middleware returns the server span's context on
+every response, which is what the document-load correlation above consumes.
 
 ## Testing
 
 Unit-test the pure logic (`session.ts`, `sessionSpanProcessor.ts`,
-`navigationSpanProcessor.ts`, `runtimeConfig.ts`) with injected
-clock/storage/id — see the `.test.ts` files.
+`navigationSpanProcessor.ts`, `serverTiming.ts`,
+`serverCorrelationSpanProcessor.ts`, `runtimeConfig.ts`) with injected
+clock/storage/id/entry providers — see the `.test.ts` files.
 Do **not** import `telemetry/index.ts` from tests: it pulls in `zone.js` and
 patches globals. The SDK wiring is validated by `pnpm --filter signaldb-ui
 build`.
