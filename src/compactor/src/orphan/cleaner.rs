@@ -83,6 +83,28 @@ impl OrphanCleaner {
         &self,
         candidates: Vec<OrphanCandidate>,
     ) -> Result<DeletionResult> {
+        use tracing::Instrument;
+
+        let span = tracing::info_span!(
+            "orphan_delete_batch",
+            signaldb.job.candidates = candidates.len() as i64,
+            signaldb.job.files_deleted = tracing::field::Empty,
+        );
+        let record_span = span.clone();
+        let result = self
+            .delete_orphans_batch_inner(candidates)
+            .instrument(span)
+            .await;
+        if let Ok(r) = &result {
+            record_span.record("signaldb.job.files_deleted", r.deleted_count as i64);
+        }
+        result
+    }
+
+    async fn delete_orphans_batch_inner(
+        &self,
+        candidates: Vec<OrphanCandidate>,
+    ) -> Result<DeletionResult> {
         if candidates.is_empty() {
             tracing::info!("No orphan candidates to delete");
             return Ok(DeletionResult {

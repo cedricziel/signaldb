@@ -205,6 +205,9 @@ pub fn job_span(job_kind: &str, tenant_id: &str, dataset_id: &str, table: Option
         signaldb.tenant.id = %tenant_id,
         signaldb.dataset.id = %dataset_id,
         signaldb.table = Empty,
+        signaldb.job.partitions_dropped = Empty,
+        signaldb.job.snapshots_expired = Empty,
+        signaldb.job.files_deleted = Empty,
     );
     if let Some(table) = table {
         span.record("signaldb.table", table);

@@ -1181,14 +1181,31 @@ impl QuerierFlightService {
         ctx: &SessionContext,
         sql: &str,
     ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error + Send + Sync>> {
-        tracing::info!(sql = %sql, "Executing query");
+        // Literals sanitized before the text reaches logs or spans — raw
+        // SQL can carry PII in string/numeric literals.
+        let sanitized = common::self_monitoring::sanitize::sanitize_query_text(sql);
+        tracing::info!(sql = %sanitized, "Executing query");
 
-        let df = ctx.sql(sql).await?;
+        let df = ctx
+            .sql(sql)
+            .instrument(tracing::info_span!(
+                "signaldb.query.plan",
+                signaldb.query.text = %sanitized,
+            ))
+            .await?;
         // Cap the number of rows a raw SQL query can materialize; the
         // client controls the SQL, so an unbounded SELECT could otherwise
         // buffer arbitrarily many rows in memory.
         let df = df.limit(0, Some(self.limits.max_sql_rows))?;
-        let batches = df.collect().await?;
+        let exec_span = tracing::info_span!(
+            "signaldb.query.execute",
+            signaldb.query.rows = tracing::field::Empty,
+            signaldb.query.batches = tracing::field::Empty,
+        );
+        let batches = df.collect().instrument(exec_span.clone()).await?;
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        exec_span.record("signaldb.query.rows", rows as i64);
+        exec_span.record("signaldb.query.batches", batches.len() as i64);
 
         Ok(batches)
     }

@@ -66,27 +66,27 @@ independently shippable and TDD-ordered within.
 
 ## 6. Catalog DB client spans
 
-- [ ] 6.1 Write failing test: a catalog operation under a traced request
+- [x] 6.1 Write failing test: a catalog operation under a traced request
       exports a CLIENT span with `db.system.name`, `db.operation.name`,
       `db.namespace`
-- [ ] 6.2 Instrument catalog/discovery sqlx call paths in
+- [x] 6.2 Instrument catalog/discovery sqlx call paths in
       `common/src/catalog.rs` + `service_bootstrap.rs` via `db_client_span`
 
 ## 7. Query execution stage spans (querier)
 
-- [ ] 7.1 Write failing test: an executed query decomposes into
+- [x] 7.1 Write failing test: an executed query decomposes into
       plan/scan/execute/encode child spans with `signaldb.*` row/byte
       counts under the Flight SERVER span
-- [ ] 7.2 Implement stage spans in `querier/src/query/`
-- [ ] 7.3 Write failing test: recorded query text has literals replaced by
+- [x] 7.2 Implement stage spans in `querier/src/query/`
+- [x] 7.3 Write failing test: recorded query text has literals replaced by
       placeholders; implement sanitize-before-record helper in `common`
 
 ## 8. Compactor lifecycle job spans
 
-- [ ] 8.1 Write failing tests: retention enforcement, snapshot expiration,
+- [x] 8.1 Write failing tests: retention enforcement, snapshot expiration,
       and orphan cleanup runs each export a root span with tenant/dataset/
       table and affected-object counts
-- [ ] 8.2 Implement via `job_span` in compactor retention/lifecycle modules;
+- [x] 8.2 Implement via `job_span` in compactor retention/lifecycle modules;
       align existing `compaction_job` span fields to `signaldb.*` names
 
 ## 9. Hygiene sweep and construction guard

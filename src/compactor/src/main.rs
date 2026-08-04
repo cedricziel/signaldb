@@ -25,6 +25,7 @@ use compactor::scheduler::RoundRobinScheduler;
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::transport::Server;
+use tracing::Instrument;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -576,12 +577,23 @@ async fn main() -> Result<()> {
                                     for table_name in &signal_tables {
                                         let tid = &tenant_config.id;
                                         let did = &dataset_config.id;
+                                        let job_span = common::self_monitoring::spans::job_span(
+                                            "orphan_cleanup",
+                                            tid,
+                                            did,
+                                            Some(table_name),
+                                        );
                                         match orphan_detector
                                             .identify_orphan_candidates(tid, did, table_name)
+                                            .instrument(job_span.clone())
                                             .await
                                         {
                                             Ok(candidates) if !candidates.is_empty() => {
-                                                match orphan_cleaner.delete_orphans_batch(candidates).await {
+                                                match orphan_cleaner
+                                                    .delete_orphans_batch(candidates)
+                                                    .instrument(job_span.clone())
+                                                    .await
+                                                {
                                                     Ok(result) => tracing::info!(
                                                         "Orphan cleanup {}/{}/{}: deleted={}, \
                                                          would_delete={}, bytes_freed={}, failed={}",

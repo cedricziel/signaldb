@@ -8,6 +8,7 @@ pub mod metrics;
 pub mod profiling;
 // Self-profiling samples CPU via pyroscope's pprof-rs backend, which (like
 // the external agent in `profiling`) is unavailable on Windows.
+pub mod sanitize;
 #[cfg(not(target_os = "windows"))]
 pub mod self_profiling;
 pub mod span_error;

@@ -125,12 +125,11 @@ impl CompactionExecutor {
         &self,
         candidate: CompactionCandidate,
     ) -> Result<CompactionResult> {
-        let span = tracing::info_span!(
-            "compaction_job",
-            tenant_id = %candidate.tenant_id,
-            dataset_id = %candidate.dataset_id,
-            table = %candidate.table_name,
-            partition = %candidate.partition_id,
+        let span = common::self_monitoring::spans::job_span(
+            "compaction",
+            &candidate.tenant_id,
+            &candidate.dataset_id,
+            Some(&candidate.table_name),
         );
 
         async {
