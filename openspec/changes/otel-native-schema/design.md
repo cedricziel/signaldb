@@ -166,9 +166,9 @@ with no invalidation" hole and prevents cross-tenant type contamination.
 
 **Migration rule for a canonical-type change.** When a config/version bump changes a
 field's canonical type, existing rows in the old typed home are **not** retyped in
-place (monotonicity). They remain readable through the coexistence read-path (the
-same machinery that reads legacy `Map<String,String>` files): a value that
-safe-casts to the new type reads as the new type, one that does not reads via the
+place (monotonicity). They remain readable through a version-aware read-path
+within the typed substrate: an old-home value that safe-casts to the new
+canonical type reads as the new type, one that does not reads via the
 residue. The compactor migrates old-home values forward on its next pass (to the new
 home where lossless, else the residue). The one-home invariant is preserved because
 the _registry_ names exactly one canonical home at any version; "old home" rows are
@@ -227,11 +227,12 @@ version clocks instead of today's conflated v1/v2 axis.
   but does not prune (no per-key Parquet stats). Mitigation: the warm containment
   index (D4) is in-scope, not optional; the perf story is index-or-promotion, and
   the specs de-conflate "cast-free" from "pruned".
-- **Coexistence read-path reintroduces a cast for legacy files** → legacy
-  `Map<String,String>` must be safe-cast (null-on-fail, never a hard error) to the
-  canonical type; the no-cast guarantee holds only for typed-substrate files, and
-  cross-boundary consistency is result-level until compaction rewrites the legacy
-  files. Stated as a spec scope, not hidden.
+- **One-shot cutover abandons pre-cutover data** → the typed layout replaces the
+  legacy `Map<String,String>` layout with no coexistence read-path and no
+  compactor rewrite (user decision; post-1.0 breaking-changes policy). Tables are
+  recreated in the typed layout at cutover; pre-cutover files are not readable by
+  the new binary. Accepted because deployments are retention-bounded (default
+  30d) — stated openly, not hidden.
 - **Off-type values become unfilterable** → D3 keeps them lossless in the residue
   but not typed-queryable until an operator repins the type; that is the accepted
   cost of never corrupting the sender's value.
@@ -258,13 +259,14 @@ version clocks instead of today's conflated v1/v2 axis.
 Implemented as a dependent PR stack (charter now, stack later):
 
 1. **Spike (blocking) — feasibility, not Variant.** Prototype the warm containment
-   index and prove the datafusion-iceberg provider can present two attribute
-   layouts (legacy map + typed) under one scan. Benchmark on real hive data: typed
-   map vs. string-map vs. promoted column vs. warm-index, across query classes
-   including a **conflicted/off-type key**, **files-pruned %** (predicted ~0 for the
-   bare typed map), footer/metadata % on realistic **small flush files**, legacy
-   mixed-scan coercion cost, residue parse cost, and **per-attribute registry
-   lookup cost**. (Variant is out of scope — see Context.)
+   index and prove the datafusion-iceberg provider handles the typed layout
+   (per-type maps + binary residue) under one scan, including **field-id promotion
+   evolution** across file generations (pre-promotion files null-fill, no error).
+   Benchmark on real hive data: typed map vs. string-map vs. promoted column vs.
+   warm-index, across query classes including a **conflicted/off-type key**,
+   **files-pruned %** (predicted ~0 for the bare typed map), footer/metadata % on
+   realistic **small flush files**, residue parse cost, and **per-attribute
+   registry lookup cost**. (Variant is out of scope — see Context.)
 2. **`extract_value` fidelity fix:** preserve bytes and interned strings at the
    OTLP boundary (prereq for any losslessness claim). Duplicate-key/order fidelity
    is deferred to acceptor-side binary residue or the typed-wire phase (layer 13),
@@ -274,42 +276,34 @@ Implemented as a dependent PR stack (charter now, stack later):
 4. **Type authority + registry consistency:** one canonical type per (tenant,
    dataset, field) via config→semconv-hint→observed, monotonic, cache-invalidated
    (D2, D9).
-5. **Tiered substrate + coexistence read-path:** land cold one-home store + binary
-   residue + warm index; legacy files safe-cast on read; new writes typed (D3, D4).
+5. **Tiered substrate + one-shot cutover:** land cold one-home store + binary
+   residue + warm index; tables are created/recreated in the typed layout — no
+   coexistence read-path, no legacy safe-cast (D3, D4; breaking-changes policy).
 6. **Ingest enforcement:** route ingest through the registry to the canonical home
    or residue, replace `json_strings_to_map_array` (D6).
 7. **Promotion as pure-perf + invariant test:** typed promotion via
    `attr_demand`/compactor, Iceberg field-id evolution, per-table budget + LRU
    demotion; assert the demote-and-still-correct invariant (D5).
-8. **Compactor rewrite** of legacy attribute layout to the typed substrate.
-9. **Typed metric substrate** (`typed-metric-storage`): bucket-native histograms,
+8. **Typed metric substrate** (`typed-metric-storage`): bucket-native histograms,
    typed temporality, exemplar join keys, Summary passthrough — replacing
-   `data_json`. **BREAKING** metric layout.
-10. **Metric-native operators** (`metric-native-query`): rate/increase, histogram
-    quantiles, vector matching as custom operators over the typed substrate.
-11. **Correlate** and **structural `match`** (per-trace evaluator baseline).
-12. **Later stack layers** (own changes, out of this charter's specs):
+   `data_json` in the same one-shot cutover. **BREAKING** metric layout.
+9. **Metric-native operators** (`metric-native-query`): rate/increase, histogram
+   quantiles, vector matching as custom operators over the typed substrate.
+10. **Correlate** and **structural `match`** (per-trace evaluator baseline).
+11. **Later stack layers** (own changes, out of this charter's specs):
     delivery-side tail/pagination; typed wire + WAL.
 
-Rollback is per-layer and not uniform — the plan distinguishes revertable from
-forward-only layers:
-
-- **Revertable (additive), pre-compaction only:** substrate, warm index, and
-  promotion layers. The coexistence read-path means a reverted binary still reads
-  both the legacy and typed representations, so reverting the reader is safe; new
-  files simply stop being written in the typed layout. This holds **only while the
-  legacy representation still exists** — i.e. before the compactor rewrite (layer 7)
-  runs for a given file.
-- **Forward-only (data-shape changes):** the `extract_value` fidelity fix (layer 1),
-  the **attribute compactor rewrite (layer 7)** — once it rewrites legacy files to
-  the typed layout, the legacy representation is gone, so a pre-typed binary can no
-  longer read them — the typed metric substrate (layer 9), and the typed wire/WAL
-  (layer 13). A binary from _before_ these layers cannot read data written (or
-  rewritten) _after_ them. Reverting requires either keeping the newer reader or a
-  compactor backfill to the old shape; these layers ship behind their own flags and
-  are called out as forward-only, not claimed as freely revertable. A per-layer
-  read/write compatibility matrix and the retention window for legacy
-  representations are implementation-task deliverables for each such layer.
+Rollback is simple under the one-shot cutover: the layout change is
+**forward-only by policy**. There is no coexistence read-path and no
+compatibility matrix — a pre-cutover binary cannot read post-cutover tables and
+vice versa. Rolling back the cutover means redeploying the old binary and
+recreating tables in the old layout, losing data written since the cutover — an
+accepted cost given the post-1.0 breaking-changes policy and retention-bounded
+deployments. Layers that precede any layout change (spike, `extract_value` fix
+in behavior-compatible form, logical schema, registry) remain ordinarily
+revertable; layers after the cutover (promotion, metrics, operators) evolve the
+typed layout via Iceberg schema evolution and roll back with their own feature
+flags.
 
 ## Open Questions
 

@@ -63,16 +63,15 @@ value.
 - **THEN** the query returns a deterministic typed unsupported-operation error, not a
   fabricated value
 
-### Requirement: Legacy data_json metrics coexist during migration
+### Requirement: The typed metric layout replaces data_json in one cutover
 
-Metrics persisted under the prior `data_json` blob layout SHALL remain readable
-through the same typed metric surface as newly-typed metrics, returning
-result-equivalent values, until the compactor has rewritten them into the typed
-substrate.
+The typed metric substrate SHALL replace the prior `data_json` blob layout in a
+single breaking cutover: metric tables are created (or recreated) in the typed
+layout, with no compatibility read path for pre-cutover blob files. Pre-cutover
+metric data is not migrated.
 
-#### Scenario: Legacy metric reads result-equivalent to typed
+#### Scenario: No blob read path after cutover
 
-- **WHEN** a query spans metrics stored under the legacy `data_json` layout and the
-  typed substrate
-- **THEN** it returns one result-equivalent set across both, with legacy rows read
-  via a compatibility path until compaction rewrites them
+- **WHEN** the typed metric substrate is active for a table
+- **THEN** every metric read is served from the typed columns and no `data_json`
+  parse occurs on the query path
