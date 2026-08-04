@@ -30,6 +30,15 @@ impl ApiError {
 
     /// Map a querier Flight status to an HTTP error, preserving its message.
     pub fn from_flight(status: &tonic::Status, what: &str) -> Self {
+        // When the caller runs inside a Flight CLIENT span
+        // (`do_get_client_span`), record the failure on it per RPC semconv
+        // (clients treat every non-OK code as an error). A no-op when the
+        // current span is not an rpc.client span — the fields don't exist.
+        common::self_monitoring::spans::record_rpc_result(
+            &tracing::Span::current(),
+            common::self_monitoring::spans::RpcBoundary::Client,
+            status.code(),
+        );
         let code = match status.code() {
             tonic::Code::NotFound => StatusCode::NOT_FOUND,
             tonic::Code::InvalidArgument => StatusCode::BAD_REQUEST,

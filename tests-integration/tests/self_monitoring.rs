@@ -364,3 +364,72 @@ async fn sampling_ratio_respected() {
         );
     }
 }
+
+/// Flight client spans (`otel-compliant-self-tracing` group 5): the
+/// `do_get_client_span` helper injects the CLIENT span's own context into
+/// the request metadata, so a server span extracted from that metadata is
+/// the client span's child — CLIENT → SERVER, not sibling-under-handler.
+#[tokio::test(flavor = "multi_thread")]
+async fn do_get_client_span_parents_the_server_span() {
+    use opentelemetry::trace::{SpanKind, Status as OtelStatus};
+
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
+    let (exporter, provider, subscriber) =
+        in_memory_tracing_setup(opentelemetry_sdk::trace::Sampler::AlwaysOn);
+
+    tracing::subscriber::with_default(subscriber, || {
+        // Ambient handler span, as at a router endpoint.
+        let handler_span = tracing::info_span!("handler");
+        let _guard = handler_span.enter();
+
+        let mut request = tonic::Request::new(());
+        let client_span =
+            common::flight::trace_context::do_get_client_span(Some("query_ir"), &mut request);
+        // Simulate the client call failing with a non-OK status.
+        {
+            let _in_call = client_span.enter();
+            common::self_monitoring::spans::record_rpc_result(
+                &client_span,
+                common::self_monitoring::spans::RpcBoundary::Client,
+                tonic::Code::Unavailable,
+            );
+        }
+
+        // "Querier side": server span adopts from the request metadata.
+        let server_span = common::self_monitoring::spans::rpc_server_span(
+            common::self_monitoring::spans::FLIGHT_DO_GET,
+            Some("query_ir"),
+        );
+        common::flight::trace_context::set_parent_from_metadata(&server_span, request.metadata());
+        let _server_guard = server_span.enter();
+    });
+
+    provider.force_flush().unwrap();
+    let spans = exporter.get_finished_spans().unwrap();
+    let client = spans
+        .iter()
+        .find(|s| s.span_kind == SpanKind::Client)
+        .expect("client span");
+    let server = spans
+        .iter()
+        .find(|s| s.span_kind == SpanKind::Server)
+        .expect("server span");
+
+    assert_eq!(
+        client.name,
+        "arrow.flight.protocol.FlightService/DoGet query_ir"
+    );
+    // Server joins the client's trace as its child.
+    assert_eq!(
+        client.span_context.trace_id(),
+        server.span_context.trace_id()
+    );
+    assert_eq!(server.parent_span_id, client.span_context.span_id());
+    // Client-side: any non-OK code is an error.
+    assert!(matches!(client.status, OtelStatus::Error { .. }));
+    // Server-side: UNAVAILABLE would be a server fault, but this span got
+    // no recorded result — status untouched.
+    assert_eq!(server.status, OtelStatus::Unset);
+}

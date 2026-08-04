@@ -22,6 +22,16 @@ pub const FLIGHT_DO_PUT: &str = "arrow.flight.protocol.FlightService/DoPut";
 pub const FLIGHT_DO_ACTION: &str = "arrow.flight.protocol.FlightService/DoAction";
 pub const FLIGHT_GET_FLIGHT_INFO: &str = "arrow.flight.protocol.FlightService/GetFlightInfo";
 
+/// Extract the low-cardinality verb from a Flight ticket for span naming.
+/// Raw-SQL tickets have no `op:` prefix, so their first `:`-segment is query
+/// text — only short lowercase identifiers qualify, keeping SQL and other
+/// high-cardinality content out of span names.
+pub fn ticket_verb(ticket: &str) -> Option<&str> {
+    ticket.split(':').next().filter(|v| {
+        !v.is_empty() && v.len() <= 32 && v.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+    })
+}
+
 /// Which side of an RPC a span describes — determines the status mapping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RpcBoundary {
@@ -64,14 +74,20 @@ pub fn rpc_server_span(rpc_method: &str, detail: Option<&str>) -> Span {
 }
 
 /// CLIENT span wrapping an outbound gRPC/Flight call (the whole logical
-/// call, retries included). `server_address` is `host:port` when known.
+/// call, retries included). `detail` is the same low-cardinality
+/// disambiguator server spans use (e.g. the ticket verb);
+/// `server_address` is `host:port` when known.
 ///
 /// Record the outcome via [`record_rpc_result`]; per RPC semconv, clients
 /// treat every non-OK status as an error (unlike servers).
-pub fn rpc_client_span(rpc_method: &str, server_address: Option<&str>) -> Span {
+pub fn rpc_client_span(
+    rpc_method: &str,
+    detail: Option<&str>,
+    server_address: Option<&str>,
+) -> Span {
     let span = tracing::info_span!(
         "rpc.client",
-        otel.name = %rpc_method,
+        otel.name = Empty,
         otel.kind = "client",
         otel.status_code = Empty,
         otel.status_message = Empty,
@@ -81,7 +97,17 @@ pub fn rpc_client_span(rpc_method: &str, server_address: Option<&str>) -> Span {
         error.r#type = Empty,
         server.address = Empty,
         server.port = Empty,
+        signaldb.flight.ticket_verb = Empty,
     );
+    match detail {
+        Some(detail) => {
+            span.record("otel.name", format!("{rpc_method} {detail}").as_str());
+            span.record("signaldb.flight.ticket_verb", detail);
+        }
+        None => {
+            span.record("otel.name", rpc_method);
+        }
+    }
     if let Some(addr) = server_address {
         match addr.rsplit_once(':') {
             Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => {

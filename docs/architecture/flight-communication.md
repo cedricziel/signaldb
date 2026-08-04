@@ -240,8 +240,11 @@ detached root.
 **Read path.** An `http_trace_context_middleware` at the Router's HTTP boundary
 roots each request in a server span whose parent is the caller-supplied
 `traceparent`, so an external client that propagates trace context sees
-SignalDB's query trace join theirs. Downstream `#[instrument]` handler spans and
-the Router → Querier Flight calls they make become children of that span. The
+SignalDB's query trace join theirs. Downstream `#[instrument]` handler spans
+become children of that span, and each Router → Querier Flight call runs
+inside a semconv RPC CLIENT span (`do_get_client_span`) whose context is
+injected into the request metadata — so the querier's SERVER span is the
+client span's child and the trace reads SERVER → CLIENT → SERVER. The
 middleware mirrors the anti-loop guard above: `_system` tenant requests bypass
 the span so self-monitoring queries are not re-instrumented and re-ingested.
 

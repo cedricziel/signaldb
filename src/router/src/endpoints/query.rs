@@ -13,6 +13,8 @@
 
 use std::collections::BTreeMap;
 
+use tracing::Instrument;
+
 use arrow_flight::Ticket;
 use axum::{Router, extract::State, http::StatusCode, routing::post};
 use common::auth::TenantContextExtractor;
@@ -201,40 +203,52 @@ async fn execute_ticket<S: RouterState>(
             )
         })?;
 
+    let verb = common::self_monitoring::spans::ticket_verb(&ticket_content).map(str::to_owned);
     let ticket = Ticket::new(ticket_content);
     let mut flight_request = tonic::Request::new(ticket);
-    common::flight::trace_context::inject_context_into_request(&mut flight_request);
+    let rpc_span =
+        common::flight::trace_context::do_get_client_span(verb.as_deref(), &mut flight_request);
     if let Some(key) = &state.config().auth.internal_service_key {
         common::flight::auth::attach_internal_auth(&mut flight_request, key);
     }
 
     // Bound the whole querier round-trip + drain with a deadline so a stalled
     // querier cannot hold the HTTP request (and connection) open indefinitely.
-    tokio::time::timeout(IR_QUERY_TIMEOUT, async move {
-        let mut stream = client
-            .do_get(flight_request)
-            .await
-            .map_err(|e| ApiError::from_flight(&e, "query_ir"))?
-            .into_inner();
+    let record_span = rpc_span.clone();
+    tokio::time::timeout(
+        IR_QUERY_TIMEOUT,
+        async move {
+            let mut stream = client
+                .do_get(flight_request)
+                .await
+                .map_err(|e| ApiError::from_flight(&e, "query_ir"))?
+                .into_inner();
 
-        // Bound the buffered result size as well as the time — the deadline
-        // alone would still let one uncapped query (no `limit` stage) buffer an
-        // unbounded result set for up to the timeout.
-        let mut data = Vec::new();
-        let mut bytes: usize = 0;
-        while let Some(flight_data) = stream.next().await {
-            let fd = flight_data.map_err(|e| ApiError::from_flight(&e, "query_ir"))?;
-            bytes = bytes.saturating_add(fd.data_body.len());
-            if bytes > MAX_IR_RESULT_BYTES {
-                return Err(ApiError::new(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "IR query result too large; add a `limit` stage or narrow the range",
-                ));
+            // Bound the buffered result size as well as the time — the deadline
+            // alone would still let one uncapped query (no `limit` stage) buffer an
+            // unbounded result set for up to the timeout.
+            let mut data = Vec::new();
+            let mut bytes: usize = 0;
+            while let Some(flight_data) = stream.next().await {
+                let fd = flight_data.map_err(|e| ApiError::from_flight(&e, "query_ir"))?;
+                bytes = bytes.saturating_add(fd.data_body.len());
+                if bytes > MAX_IR_RESULT_BYTES {
+                    return Err(ApiError::new(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "IR query result too large; add a `limit` stage or narrow the range",
+                    ));
+                }
+                data.push(fd);
             }
-            data.push(fd);
+            common::self_monitoring::spans::record_rpc_result(
+                &record_span,
+                common::self_monitoring::spans::RpcBoundary::Client,
+                tonic::Code::Ok,
+            );
+            super::flight_decode::decode_flight_batches(&data, "query_ir").map_err(ApiError::from)
         }
-        super::flight_decode::decode_flight_batches(&data, "query_ir").map_err(ApiError::from)
-    })
+        .instrument(rpc_span),
+    )
     .await
     .map_err(|_| ApiError::new(StatusCode::GATEWAY_TIMEOUT, "IR query timed out"))?
 }
