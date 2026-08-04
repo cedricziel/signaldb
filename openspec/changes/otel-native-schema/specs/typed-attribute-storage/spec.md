@@ -123,19 +123,16 @@ bounded, demand-selected, budgeted promoted set.
 - **THEN** physical column count does not grow proportionally to attribute
   cardinality; only budgeted demand-selected keys are promoted
 
-### Requirement: Legacy stringified attributes read via explicit typed coercion, scoped to migration
+### Requirement: The typed layout replaces the legacy layout in one cutover
 
-Where attribute data was persisted under the prior `Map<String,String>` layout,
-the read path SHALL present it through the same logical fields, using an explicit
-typed coercion (safe cast: a value that does not parse to the canonical type reads
-as null, never a hard query error). The no-read-time-cast guarantee applies to
-typed-substrate files only; consistency across the legacy/typed boundary is
-result-level and holds fully only once the compactor has rewritten legacy files.
+The typed substrate SHALL replace the prior `Map<String,String>` attribute layout
+in a single breaking cutover: tables are created (or recreated) in the typed
+layout, and the read path SHALL NOT carry a legacy coexistence or safe-cast
+compatibility path for pre-cutover files. Pre-cutover data is not migrated.
 
-#### Scenario: Legacy value that cannot be coerced reads as null, not an error
+#### Scenario: No legacy read path after cutover
 
-- **WHEN** a legacy stringified value cannot be safely coerced to the canonical
-  type (e.g. `"200 OK"` to integer)
-- **THEN** it reads as null for the typed predicate and the query does not error,
-  and the discrepancy resolves once compaction rewrites the file to the typed home
-  or residue
+- **WHEN** the typed substrate is active for a table
+- **THEN** every data file of that table is in the typed layout and the read path
+  performs no legacy-map coercion — the no-read-time-cast guarantee holds for the
+  whole table

@@ -44,9 +44,9 @@ the typed map itself, since Parquet keeps no per-key statistics inside a map.
 
 #### Scenario: One scan resolves mixed physical layouts to one typed column
 
-- **WHEN** a single table scan spans files in the legacy `Map<String,String>`
-  layout, the typed-store layout, and a promoted-column layout for the same field
+- **WHEN** a single table scan spans files in the typed-store layout and files in
+  a promoted-column layout for the same field (generations from before/after a
+  promotion or demotion)
 - **THEN** the registry resolves each file's physical representation to the one
-  logical field and returns a single column under the canonical type — legacy
-  values that cannot be safely cast reading as null (per `typed-attribute-storage`),
-  not as a query error
+  logical field and returns a single column under the canonical type — files
+  predating the promoted column read from the typed home, never a query error

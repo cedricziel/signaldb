@@ -66,10 +66,11 @@ one unit.
   **Warm**: a derived typed containment index (a typed generalization of today's
   `attr_tokens`) — the only thing that prunes before promotion, because Parquet
   keeps no per-key stats inside a map. (3) **Hot**: promoted typed columns
-  (stats + bloom). **BREAKING** (on-disk Iceberg layout): new typed columns are
-  _added_; legacy `Map<String,String>` files are read via safe coercion and
-  rewritten by the compactor (the old map columns persist in old files until
-  rewritten). Also fixes `extract_value` so bytes and interned strings survive;
+  (stats + bloom). **BREAKING** (on-disk Iceberg layout): the typed layout
+  replaces `Map<String,String>` in **one go** — no coexistence read-path, no
+  legacy safe-cast, no compactor rewrite of old files (per the project's
+  breaking-changes policy; pre-cutover data is not migrated). Also fixes
+  `extract_value` so bytes and interned strings survive;
   duplicate-key/order fidelity is deferred (needs acceptor-side residue or phase 2).
 
 - **The promotion-is-only-perf invariant is load-bearing and testable — and now
@@ -172,9 +173,9 @@ one unit.
 - **querier / router / tempo-api**: dialects (TraceQL/LogQL/PromQL) re-expressed
   as projections onto the one logical schema; registry resolves to the typed
   substrate; typed predicates gain pushdown.
-- **compactor**: demand-driven, batched promotion of hot keys to typed columns;
-  rewrite of legacy `Map<String,String>` files to the typed substrate; bounded
-  Iceberg metadata growth (cf. #895).
+- **compactor**: demand-driven, batched promotion of hot keys to typed columns
+  and LRU demotion (fold-back into the typed map on compaction); bounded Iceberg
+  metadata growth (cf. #895).
 - **ui / cli / signaldb-sdk / ui client**: explore/discovery surfaces bind to
   logical dotted names and canonical types (subsumes `query-field-discovery`).
 - **openspec/changes**: archive `query-metrics-model`, `query-field-discovery`,
