@@ -632,31 +632,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_iceberg_writer_creation() {
-        let catalog_manager = CatalogManager::new_in_memory().await.unwrap();
-        let object_store = Arc::new(InMemory::new());
-
-        // Try to create a writer for the traces table
-        let result = IcebergTableWriter::new(
-            &catalog_manager,
-            object_store,
-            "default".to_string(),
-            "default".to_string(),
-            "traces".to_string(),
-        )
-        .await;
-
-        // This should work now that table creation is implemented
-        // It might fail due to catalog setup issues in tests, but not due to "not implemented"
-        if let Err(e) = result {
-            // The error should not be about table creation not being implemented
-            assert!(!e.to_string().contains("Table creation not yet implemented"));
-            // It's okay to fail for other reasons like catalog setup in tests
-            log::debug!("Expected failure due to test environment: {e}");
-        }
-    }
-
-    #[tokio::test]
     async fn test_iceberg_writer_with_memory_catalog() {
         let catalog_manager = create_test_catalog_manager().await;
 

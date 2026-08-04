@@ -237,26 +237,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn test_data_file_change() {
-        let change = DataFileChange {
-            file_path: "data/file1.parquet".to_string(),
-            size_bytes: 1024 * 1024,
-            record_count: 10000,
-        };
-
-        assert_eq!(change.file_path, "data/file1.parquet");
-        assert_eq!(change.size_bytes, 1024 * 1024);
-        assert_eq!(change.record_count, 10000);
-    }
-
-    #[tokio::test]
-    async fn test_committer_creation() {
-        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let committer = IcebergCommitter::new(catalog_manager);
-
-        // Just verify it constructs properly
-        assert!(std::mem::size_of_val(&committer) > 0);
-    }
 }

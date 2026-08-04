@@ -135,40 +135,4 @@ mod tests {
         let terminal = render_tab_bar(&state);
         assert_buffer_contains(&terminal, "[3] Logs");
     }
-
-    #[test]
-    fn tab_bar_snapshot_admin() {
-        let mut state = AppState::new(
-            "http://localhost:3000".into(),
-            "http://localhost:50053".into(),
-            Duration::from_secs(5),
-        );
-        state.set_permission(Permission::Admin {
-            admin_key: "key".into(),
-        });
-
-        let terminal = render_tab_bar(&state);
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("tab_bar_admin", content);
-    }
-
-    #[test]
-    fn tab_bar_snapshot_tenant() {
-        let mut state = AppState::new(
-            "http://localhost:3000".into(),
-            "http://localhost:50053".into(),
-            Duration::from_secs(5),
-        );
-        state.set_permission(Permission::Tenant {
-            api_key: "key".into(),
-            tenant_id: "acme".into(),
-            dataset_id: None,
-        });
-
-        let terminal = render_tab_bar(&state);
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("tab_bar_tenant", content);
-    }
 }

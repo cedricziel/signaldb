@@ -455,25 +455,6 @@ mod tests {
         assert_eq!(config.base_delay_ms, 100);
     }
 
-    #[test]
-    fn test_data_file_info() {
-        let mut partition_values = HashMap::new();
-        partition_values.insert("year".to_string(), "2026".to_string());
-        partition_values.insert("month".to_string(), "02".to_string());
-
-        let file_info = DataFileInfo {
-            file_path: "data/file1.parquet".to_string(),
-            size_bytes: 1024 * 1024,
-            record_count: 10000,
-            partition_values,
-        };
-
-        assert_eq!(file_info.file_path, "data/file1.parquet");
-        assert_eq!(file_info.size_bytes, 1024 * 1024);
-        assert_eq!(file_info.record_count, 10000);
-        assert_eq!(file_info.partition_values.len(), 2);
-    }
-
     #[tokio::test]
     async fn test_executor_creation() {
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());

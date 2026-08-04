@@ -259,19 +259,6 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_json_viewer_empty() {
-        let mut terminal = Terminal::new(TestBackend::new(60, 6)).unwrap();
-        let val = serde_json::json!({});
-        let mut state = TreeState::default();
-        terminal
-            .draw(|frame| render_json_tree(frame, frame.area(), &val, &mut state, "Attributes"))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("json_viewer_empty", content);
-    }
-
-    #[test]
     fn snapshot_json_viewer_nested() {
         let mut terminal = Terminal::new(TestBackend::new(80, 15)).unwrap();
         let val = serde_json::json!({

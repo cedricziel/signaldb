@@ -361,16 +361,20 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_service_registry_debug_impl() {
-        // Test that our manual Debug implementation works
-        use std::collections::HashMap;
-        let _services: Arc<RwLock<HashMap<uuid::Uuid, common::catalog::Ingester>>> =
-            Arc::new(RwLock::new(HashMap::new()));
+    #[tokio::test]
+    async fn debug_format_redacts_internal_fields() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let registry = ServiceRegistry::new(catalog);
 
-        // We can't easily test the actual ServiceRegistry Debug without a catalog,
-        // but we can test that the structure compiles
-        let debug_output = "ServiceRegistry";
-        assert!(debug_output.contains("ServiceRegistry"));
+        let debug_output = format!("{registry:?}");
+
+        // The manual Debug impl exists specifically to avoid dumping the
+        // full services map / catalog (which may carry credentials) into
+        // logs; pin its exact placeholder shape so a future `#[derive(Debug)]`
+        // regression is caught.
+        assert_eq!(
+            debug_output,
+            "ServiceRegistry { services: \"Arc<RwLock<HashMap<Uuid, Ingester>>>\", catalog: \"Catalog\", flight_transport: \"Option<Arc<InMemoryFlightTransport>>\" }"
+        );
     }
 }

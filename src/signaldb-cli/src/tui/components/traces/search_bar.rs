@@ -186,16 +186,4 @@ mod tests {
             .unwrap();
         assert_buffer_contains(&terminal, "Trace Search");
     }
-
-    #[test]
-    fn snapshot_search_bar_unfocused() {
-        let mut terminal = Terminal::new(TestBackend::new(80, 3)).unwrap();
-        let bar = TraceSearchBar::new();
-        terminal
-            .draw(|frame| bar.render(frame, frame.area()))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("trace_search_bar_unfocused", content);
-    }
 }

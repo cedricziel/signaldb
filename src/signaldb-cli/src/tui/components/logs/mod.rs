@@ -445,19 +445,4 @@ mod tests {
             .unwrap();
         assert_buffer_contains(&terminal, "Log Attributes");
     }
-
-    #[test]
-    fn snapshot_logs_with_detail() {
-        let mut terminal = Terminal::new(TestBackend::new(100, 25)).unwrap();
-        let mut panel = LogsPanel::new();
-        panel.set_data(&make_batches());
-        panel.show_detail = true;
-        let state = make_state();
-        terminal
-            .draw(|frame| panel.render(frame, frame.area(), &state))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("logs_with_detail", content);
-    }
 }

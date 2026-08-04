@@ -660,30 +660,6 @@ mod tests {
     }
 
     #[test]
-    fn test_span_batch_from_record_batch() {
-        let span = Span {
-            trace_id: "trace_id".to_string(),
-            span_id: "span_id".to_string(),
-            parent_span_id: "parent_span_id".to_string(),
-            status: SpanStatus::Ok,
-            is_root: true,
-            name: "name".to_string(),
-            service_name: "service_name".to_string(),
-            span_kind: SpanKind::Client,
-            start_time_unix_nano: 0,
-            duration_nano: 0,
-            attributes: HashMap::new(),
-            resource: HashMap::new(),
-            children: vec![],
-            events: vec![],
-        };
-
-        let record_batch = span.to_record_batch();
-        let span_batch = SpanBatch::from_record_batch(&record_batch);
-        assert_eq!(span_batch.spans.len(), 1);
-    }
-
-    #[test]
     fn test_span_attributes_round_trip_via_record_batch() {
         let mut attributes = HashMap::new();
         attributes.insert(

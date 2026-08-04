@@ -320,28 +320,6 @@ mod tests {
     use super::*;
     use chrono::Utc;
 
-    #[test]
-    fn test_deletion_result_creation() {
-        let result = DeletionResult {
-            deleted_count: 10,
-            failed_count: 2,
-            total_bytes_freed: 10240,
-            would_delete_count: 0,
-            would_free_bytes: 0,
-            failed_deletions: vec![
-                ("file1.parquet".to_string(), "permission denied".to_string()),
-                ("file2.parquet".to_string(), "not found".to_string()),
-            ],
-        };
-
-        assert_eq!(result.deleted_count, 10);
-        assert_eq!(result.failed_count, 2);
-        assert_eq!(result.total_bytes_freed, 10240);
-        assert_eq!(result.would_delete_count, 0);
-        assert_eq!(result.would_free_bytes, 0);
-        assert_eq!(result.failed_deletions.len(), 2);
-    }
-
     #[tokio::test]
     async fn test_empty_candidates() {
         let config = OrphanCleanupConfig::default();
@@ -393,26 +371,34 @@ mod tests {
         assert_eq!(result.failed_count, 0);
     }
 
-    #[test]
-    fn test_batch_size_calculations() {
+    #[tokio::test]
+    async fn dry_run_mode_accounts_for_every_candidate_across_multiple_batches() {
+        // Arrange: batch_size smaller than the candidate count forces
+        // delete_orphans_batch to split the work across several batches.
         let config = OrphanCleanupConfig {
-            batch_size: 100,
+            dry_run: true,
+            batch_size: 2,
+            revalidate_before_delete: false,
             ..Default::default()
         };
+        let object_store = Arc::new(object_store::memory::InMemory::new());
+        let cleaner = OrphanCleaner::new(config, object_store);
 
-        // Test batch count calculation
-        let candidates_count: usize = 250;
-        let expected_batches = candidates_count.div_ceil(config.batch_size);
-        assert_eq!(expected_batches, 3);
+        let candidates: Vec<OrphanCandidate> = (0..5)
+            .map(|i| OrphanCandidate {
+                path: format!("file{i}.parquet"),
+                size_bytes: 1024,
+                last_modified: Utc::now(),
+                table_identifier: "tenant/dataset/table".to_string(),
+            })
+            .collect();
 
-        // Test with exact multiple
-        let candidates_count: usize = 300;
-        let expected_batches = candidates_count.div_ceil(config.batch_size);
-        assert_eq!(expected_batches, 3);
+        // Act
+        let result = cleaner.delete_orphans_batch(candidates).await.unwrap();
 
-        // Test with single batch
-        let candidates_count: usize = 50;
-        let expected_batches = candidates_count.div_ceil(config.batch_size);
-        assert_eq!(expected_batches, 1);
+        // Assert: every candidate is accounted for exactly once, even though
+        // it took three separate batches (2 + 2 + 1) to process them all.
+        assert_eq!(result.would_delete_count, 5);
+        assert_eq!(result.would_free_bytes, 5 * 1024);
     }
 }

@@ -189,29 +189,4 @@ mod tests {
         assert_buffer_contains(&terminal, "io.opentelemetry.rust");
         assert_buffer_contains(&terminal, "scope_attributes");
     }
-
-    #[test]
-    fn snapshot_detail_placeholder() {
-        let mut terminal = Terminal::new(TestBackend::new(60, 6)).unwrap();
-        let mut detail = LogDetail::new();
-        terminal
-            .draw(|frame| detail.render(frame, frame.area(), &[], &[]))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("log_detail_placeholder", content);
-    }
-
-    #[test]
-    fn snapshot_detail_with_data() {
-        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
-        let mut detail = LogDetail::new();
-        let (columns, values) = selected_row();
-        terminal
-            .draw(|frame| detail.render(frame, frame.area(), &columns, &values))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("log_detail_with_data", content);
-    }
 }

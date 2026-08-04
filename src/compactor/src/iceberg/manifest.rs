@@ -197,27 +197,3 @@ impl Default for ManifestReader {
         Self::new()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_manifest_reader_creation() {
-        let _reader = ManifestReader::new();
-        // Basic smoke test - reader is constructible
-    }
-
-    #[test]
-    fn test_manifest_file_info() {
-        let info = ManifestFileInfo {
-            file_path: "s3://bucket/data/file.parquet".to_string(),
-            file_size_bytes: 1024,
-            record_count: 100,
-        };
-
-        assert_eq!(info.file_path, "s3://bucket/data/file.parquet");
-        assert_eq!(info.file_size_bytes, 1024);
-        assert_eq!(info.record_count, 100);
-    }
-}

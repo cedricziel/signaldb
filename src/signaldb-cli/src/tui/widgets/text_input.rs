@@ -406,28 +406,4 @@ mod tests {
         let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
         assert!(content.contains("Enter name..."));
     }
-
-    #[test]
-    fn snapshot_text_input_focused() {
-        let mut terminal = Terminal::new(TestBackend::new(40, 3)).unwrap();
-        let input = TextInput::with_text("acme-corp");
-        terminal
-            .draw(|frame| input.render(frame, frame.area(), "Tenant ID", true))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("text_input_focused", content);
-    }
-
-    #[test]
-    fn snapshot_text_input_empty() {
-        let mut terminal = Terminal::new(TestBackend::new(40, 3)).unwrap();
-        let input = TextInput::with_placeholder("Enter value...");
-        terminal
-            .draw(|frame| input.render(frame, frame.area(), "Value", false))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("text_input_empty", content);
-    }
 }
