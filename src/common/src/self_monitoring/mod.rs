@@ -113,6 +113,48 @@ pub(crate) fn build_metadata(config: &Configuration) -> MetadataMap {
     map
 }
 
+/// The OpenTelemetry semantic-conventions version SignalDB's own telemetry
+/// targets. Single source of truth: the resource and instrumentation-scope
+/// `schema_url` both derive from it, and the convention registry pins the
+/// same version.
+pub const SEMCONV_SCHEMA_URL: &str = "https://opentelemetry.io/schemas/1.43.0";
+
+/// Per-process `service.instance.id`, generated once so the
+/// `(service.namespace, service.name, service.instance.id)` triplet is
+/// globally unique per run and stable across every provider built in it.
+fn service_instance_id() -> &'static str {
+    static INSTANCE_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    INSTANCE_ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
+
+/// Build the telemetry resource per the OTel resource conventions:
+/// per-service `service.name` under the shared `signaldb` namespace, a
+/// per-process instance id, and the stable `deployment.environment.name`
+/// (config-sourced; the deprecated `deployment.environment` is not emitted).
+fn build_resource(config: &Configuration, service_name: &str) -> Resource {
+    use opentelemetry_semantic_conventions::attribute::{
+        DEPLOYMENT_ENVIRONMENT_NAME, SERVICE_INSTANCE_ID, SERVICE_NAME, SERVICE_NAMESPACE,
+        SERVICE_VERSION,
+    };
+
+    // Attributes go through `with_attributes` (which overrides the builder's
+    // default-detector resource, e.g. `unknown_service`); `with_schema_url`
+    // merges the other way around and would lose them.
+    Resource::builder()
+        .with_attributes(vec![
+            KeyValue::new(SERVICE_NAME, service_name.to_string()),
+            KeyValue::new(SERVICE_NAMESPACE, "signaldb"),
+            KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
+            KeyValue::new(SERVICE_INSTANCE_ID, service_instance_id()),
+            KeyValue::new(
+                DEPLOYMENT_ENVIRONMENT_NAME,
+                config.self_monitoring.environment.clone(),
+            ),
+        ])
+        .with_schema_url(std::iter::empty::<KeyValue>(), SEMCONV_SCHEMA_URL)
+        .build()
+}
+
 pub fn init_telemetry(config: &Configuration, service_name: &str) -> Result<Option<Telemetry>> {
     if !config.self_monitoring.enabled {
         return Ok(None);
@@ -121,13 +163,7 @@ pub fn init_telemetry(config: &Configuration, service_name: &str) -> Result<Opti
     let endpoint = &config.self_monitoring.endpoint;
     let metadata = build_metadata(config);
 
-    let resource = Resource::builder()
-        .with_attributes(vec![
-            KeyValue::new("service.name", service_name.to_string()),
-            KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
-            KeyValue::new("deployment.environment", "self-monitoring"),
-        ])
-        .build();
+    let resource = build_resource(config, service_name);
 
     let span_exporter = SpanExporter::builder()
         .with_tonic()
@@ -333,6 +369,63 @@ mod tests {
         // sampling that drops joined caller traces.
         let s = resolve_trace_sampler(0.1, Some("bogus".into()), None);
         assert_eq!(format!("{s:?}"), "ParentBased(TraceIdRatioBased(0.1))");
+    }
+
+    #[test]
+    fn resource_carries_semconv_service_identity() {
+        let config = Configuration::default();
+        let resource = build_resource(&config, "signaldb-querier");
+        let get = |r: &opentelemetry_sdk::Resource, k: &'static str| {
+            r.get(&opentelemetry::Key::from_static_str(k))
+                .map(|v| v.to_string())
+        };
+
+        assert_eq!(
+            get(&resource, "service.name").as_deref(),
+            Some("signaldb-querier")
+        );
+        assert_eq!(
+            get(&resource, "service.namespace").as_deref(),
+            Some("signaldb")
+        );
+        assert_eq!(
+            get(&resource, "service.version").as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(resource.schema_url(), Some(SEMCONV_SCHEMA_URL));
+
+        // The instance id is a UUID, and stable within the process so the
+        // (namespace, name, instance) triplet stays globally unique per run.
+        let instance = get(&resource, "service.instance.id").expect("service.instance.id present");
+        assert!(uuid::Uuid::parse_str(&instance).is_ok());
+        let again = build_resource(&config, "signaldb-querier");
+        assert_eq!(get(&again, "service.instance.id"), Some(instance));
+    }
+
+    #[test]
+    fn resource_environment_is_config_sourced_stable_name() {
+        let mut config = Configuration::default();
+        config.self_monitoring.environment = "staging".to_string();
+        let resource = build_resource(&config, "signaldb-router");
+
+        // Stable attribute name, config-sourced value...
+        assert_eq!(
+            resource
+                .get(&opentelemetry::Key::from_static_str(
+                    "deployment.environment.name"
+                ))
+                .map(|v| v.to_string())
+                .as_deref(),
+            Some("staging")
+        );
+        // ...and the deprecated `deployment.environment` is gone.
+        assert!(
+            resource
+                .get(&opentelemetry::Key::from_static_str(
+                    "deployment.environment"
+                ))
+                .is_none()
+        );
     }
 
     #[tokio::test]

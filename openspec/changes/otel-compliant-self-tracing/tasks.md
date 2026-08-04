@@ -5,18 +5,18 @@ independently shippable and TDD-ordered within.
 
 ## 1. Foundations: semconv pin, resource, sampler
 
-- [ ] 1.1 Add `opentelemetry-semantic-conventions` (features
+- [x] 1.1 Add `opentelemetry-semantic-conventions` (features
       `semconv_experimental`) to workspace deps; add a single
       `SEMCONV_SCHEMA_URL` constant in `common::self_monitoring`
-- [ ] 1.2 Write failing test in `common` asserting exported resource carries
+- [x] 1.2 Write failing test in `common` asserting exported resource carries
       `service.namespace=signaldb`, per-process `service.instance.id`,
       `deployment.environment.name`, schema_url — and NOT the deprecated
       `deployment.environment`
-- [ ] 1.3 Implement resource changes in `init_telemetry` (config-sourced
+- [x] 1.3 Implement resource changes in `init_telemetry` (config-sourced
       environment name, UUID instance id, schema_url on resource + scope)
-- [ ] 1.4 Write failing test: unrecognized `OTEL_TRACES_SAMPLER` value falls
+- [x] 1.4 Write failing test: unrecognized `OTEL_TRACES_SAMPLER` value falls
       back to ParentBased sampling
-- [ ] 1.5 Fix `resolve_trace_sampler` unrecognized-name arm to ParentBased
+- [x] 1.5 Fix `resolve_trace_sampler` unrecognized-name arm to ParentBased
 
 ## 2. Span factories and conformance pins (common)
 
@@ -112,7 +112,7 @@ independently shippable and TDD-ordered within.
 - [ ] 10.2 Generate `signaldb.*` Rust constants from the registry
       (opentelemetry-rust template set), switch factories to them, add
       `git diff --exit-code` drift gate + `registry diff
-    --baseline-registry` evolution gate
+  --baseline-registry` evolution gate
 
 ## 11. Live-check CI harness
 

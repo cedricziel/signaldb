@@ -86,7 +86,12 @@ pub mod utils {
             .with(tracing_subscriber::fmt::layer());
 
         if let Some(telemetry) = telemetry {
-            let tracer = telemetry.tracer_provider().tracer("signaldb");
+            // Scope carries the pinned semconv schema_url alongside the
+            // resource-level one set in `build_resource`.
+            let scope = opentelemetry::InstrumentationScope::builder("signaldb")
+                .with_schema_url(crate::self_monitoring::SEMCONV_SCHEMA_URL)
+                .build();
+            let tracer = telemetry.tracer_provider().tracer_with_scope(scope);
             let otel_span_layer = tracing_opentelemetry::layer()
                 .with_tracer(tracer)
                 .with_filter(OtelExportFilter);

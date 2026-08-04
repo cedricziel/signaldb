@@ -421,6 +421,10 @@ rate_limit_delay_ms = 0               # Delay between batches in milliseconds (d
 # (or always_on / always_off / parentbased_traceidratio) and
 # OTEL_TRACES_SAMPLER_ARG=<ratio>.
 # trace_sample_ratio = 0.1
+# Value of the `deployment.environment.name` resource attribute on exported
+# telemetry (default: "production"). Semconv well-known values: production,
+# staging, development, test.
+# environment = "production"
 # Profile this process's CPU and store the profiles in SignalDB itself
 # (OTLP profiles to `endpoint` under the tenant/dataset above). Works even
 # when `enabled` is false. Mutually exclusive with [profiling] below —
