@@ -191,6 +191,25 @@ SQL — before creating its processing span. The suppression marker is a tokio
 task-local: it crosses neither the Flight hop between services nor
 `tokio::spawn`, which is why each handler carries its own call site.
 
+#### Boundary Spans (RPC Semantic Conventions)
+
+Every Flight handler roots its request in a semconv RPC SERVER span built by
+the factories in `src/common/src/self_monitoring/spans.rs` — the single
+sanctioned construction path for boundary spans. Flight has no semantic
+convention of its own, so it is modeled as plain gRPC: spans are named by the
+fully-qualified logical method, disambiguated by a low-cardinality detail
+segment where one exists —
+`arrow.flight.protocol.FlightService/DoGet query_ir` (Querier, ticket verb),
+`…/DoPut` (Writer), `…/DoAction compact_dry_run` (Compactor, action type) —
+and carry `rpc.system.name = grpc`, `rpc.method`, and the string
+`rpc.response.status_code`. Status mapping follows the RPC semconv asymmetry:
+a server span is marked failed only for server-fault gRPC codes (`UNKNOWN`,
+`DEADLINE_EXCEEDED`, `UNIMPLEMENTED`, `INTERNAL`, `UNAVAILABLE`, `DATA_LOSS`);
+codes like `NOT_FOUND` are the caller's problem and leave the span status
+unset. Raw-SQL tickets have no `op:` prefix, so their first `:`-segment is
+query text — the Querier only appends the verb when it matches a short
+lowercase identifier, keeping SQL out of span names.
+
 #### Trace Context Propagation
 
 W3C trace context (`traceparent`/`tracestate`) is propagated across SignalDB
@@ -235,7 +254,7 @@ the cause where it still exists: the whole `do_get` body runs inside a single
 error boundary that, on any `Err`, calls
 `common::self_monitoring::record_span_exception` to attach an OpenTelemetry
 `exception` event (`exception.message`) and an error status to the
-`flight_do_get` span. Because the boundary wraps the entire request, every
+`…FlightService/DoGet` server span. Because the boundary wraps the entire request, every
 failure path — ticket parsing, cross-tenant rejection, query execution, and
 result conversion — is captured, not just execution errors. The helper is a
 no-op when self-monitoring is disabled (`Span::current()` is the disabled span),

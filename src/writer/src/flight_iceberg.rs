@@ -242,11 +242,16 @@ impl FlightService for IcebergWriterFlightService {
             .and_then(|m| m.tenant_id.as_deref())
             .is_some_and(common::self_monitoring::is_self_monitoring_tenant);
 
-        // Process within a span that joins the sender's distributed trace
-        // (parent must be set before the span is first entered). The span is
-        // created under the suppression scope so it is itself not exported
-        // for _system batches.
-        let make_span = || tracing::info_span!("flight_do_put");
+        // Process within a semconv RPC SERVER span that joins the sender's
+        // distributed trace (parent must be set before the span is first
+        // entered). The span is created under the suppression scope so it
+        // is itself not exported for _system batches.
+        let make_span = || {
+            common::self_monitoring::spans::rpc_server_span(
+                common::self_monitoring::spans::FLIGHT_DO_PUT,
+                None,
+            )
+        };
         let span = if suppress {
             common::self_monitoring::suppress_self_telemetry_sync(make_span)
         } else {
@@ -261,7 +266,8 @@ impl FlightService for IcebergWriterFlightService {
         }
         // Boxed: the state machine is large, and nesting it by value inside
         // the suppression wrapper overflows rustc's layout-query depth.
-        common::self_monitoring::maybe_suppress_self_telemetry(suppress, Box::pin(async move {
+        let record_span = span.clone();
+        let result = common::self_monitoring::maybe_suppress_self_telemetry(suppress, Box::pin(async move {
         if let Some(ref metadata) = flight_metadata {
             tracing::info!(
                 schema_version = %metadata.schema_version,
@@ -407,7 +413,18 @@ impl FlightService for IcebergWriterFlightService {
         Ok(Response::new(out))
         }
         .instrument(span)))
-        .await
+        .await;
+        let code = result
+            .as_ref()
+            .err()
+            .map(|s| s.code())
+            .unwrap_or(tonic::Code::Ok);
+        common::self_monitoring::spans::record_rpc_result(
+            &record_span,
+            common::self_monitoring::spans::RpcBoundary::Server,
+            code,
+        );
+        result
     }
 
     type DoGetStream = BoxStream<'static, Result<FlightData, Status>>;

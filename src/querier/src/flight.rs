@@ -1342,11 +1342,29 @@ impl FlightService for QuerierFlightService {
                 .nth(1)
                 .is_some_and(common::self_monitoring::is_self_monitoring_tenant);
 
-        // Process within a span that joins the caller's distributed trace
-        // (e.g. Router -> Querier); the parent must be set before the span
-        // is first entered. The span is created under the suppression scope
-        // so it is itself not exported for _system queries.
-        let make_span = || tracing::info_span!("flight_do_get");
+        // Process within a semconv RPC SERVER span that joins the caller's
+        // distributed trace (e.g. Router -> Querier); the parent must be set
+        // before the span is first entered. The span is created under the
+        // suppression scope so it is itself not exported for _system queries.
+        //
+        // The ticket verb disambiguates the span name only when it looks
+        // like a verb: raw-SQL tickets have no `op:` prefix, so their first
+        // `:`-segment is query text and must stay out of the span name.
+        let span_ticket_verb = ticket_content
+            .split(':')
+            .next()
+            .filter(|v| {
+                !v.is_empty()
+                    && v.len() <= 32
+                    && v.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+            })
+            .map(str::to_owned);
+        let make_span = || {
+            common::self_monitoring::spans::rpc_server_span(
+                common::self_monitoring::spans::FLIGHT_DO_GET,
+                span_ticket_verb.as_deref(),
+            )
+        };
         let span = if suppress {
             common::self_monitoring::suppress_self_telemetry_sync(make_span)
         } else {
@@ -2061,6 +2079,16 @@ impl FlightService for QuerierFlightService {
                     if let Err(status) = &result {
                         common::self_monitoring::record_span_exception(status);
                     }
+                    let code = result
+                        .as_ref()
+                        .err()
+                        .map(|s| s.code())
+                        .unwrap_or(tonic::Code::Ok);
+                    common::self_monitoring::spans::record_rpc_result(
+                        &tracing::Span::current(),
+                        common::self_monitoring::spans::RpcBoundary::Server,
+                        code,
+                    );
                     result
                 }
                 .instrument(span),
@@ -2886,5 +2914,96 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The Flight boundary emits a semconv RPC SERVER span: fully-qualified
+    /// method name disambiguated by the ticket verb, `rpc.*` attributes,
+    /// and the server-side status asymmetry (a client-fault gRPC code
+    /// leaves span status unset).
+    #[tokio::test]
+    async fn do_get_emits_semconv_rpc_server_span() {
+        use opentelemetry::trace::{SpanKind, Status as OtelStatus, TracerProvider as _};
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing::instrument::WithSubscriber;
+        use tracing_subscriber::prelude::*;
+
+        let object_store = Arc::new(InMemory::new());
+        let config = Configuration {
+            database: DatabaseConfig {
+                dsn: "sqlite::memory:".to_string(),
+            },
+            discovery: Some(DiscoveryConfig {
+                dsn: "sqlite::memory:".to_string(),
+                heartbeat_interval: Duration::from_secs(5),
+                poll_interval: Duration::from_secs(10),
+                ttl: Duration::from_secs(60),
+            }),
+            ..Default::default()
+        };
+        let bootstrap =
+            ServiceBootstrap::new(config, ServiceType::Querier, "localhost:50054".to_string())
+                .await
+                .unwrap();
+        let flight_transport = Arc::new(InMemoryFlightTransport::new(bootstrap));
+        let service = QuerierFlightService::new(object_store, flight_transport);
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("test");
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        async {
+            // Unknown verb: parse fails with a client-fault code.
+            let ticket = Ticket {
+                ticket: bytes::Bytes::from("bogus_op:sometenant:xyz"),
+            };
+            let result = service.do_get(Request::new(ticket)).await;
+            assert!(result.is_err());
+        }
+        .with_subscriber(subscriber)
+        .await;
+
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        let names: Vec<_> = spans.iter().map(|s| s.name.to_string()).collect();
+        let span = spans
+            .iter()
+            .find(|s| {
+                s.name
+                    .starts_with("arrow.flight.protocol.FlightService/DoGet")
+            })
+            .unwrap_or_else(|| panic!("no RPC server span; exported = {names:?}"));
+
+        assert_eq!(
+            span.name,
+            "arrow.flight.protocol.FlightService/DoGet bogus_op"
+        );
+        assert_eq!(span.span_kind, SpanKind::Server);
+        let attr = |key: &str| {
+            span.attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == key)
+                .map(|kv| kv.value.as_str().to_string())
+        };
+        assert_eq!(attr("rpc.system.name").as_deref(), Some("grpc"));
+        assert_eq!(
+            attr("rpc.method").as_deref(),
+            Some("arrow.flight.protocol.FlightService/DoGet")
+        );
+        assert_eq!(
+            attr("signaldb.flight.ticket_verb").as_deref(),
+            Some("bogus_op")
+        );
+        // The unparseable ticket surfaces as INTERNAL — a server-fault
+        // code, so the span is marked failed (the client-fault-stays-unset
+        // asymmetry is pinned by the factory conformance tests).
+        assert_eq!(
+            attr("rpc.response.status_code").as_deref(),
+            Some("INTERNAL")
+        );
+        assert!(matches!(span.status, OtelStatus::Error { .. }));
     }
 }

@@ -173,9 +173,23 @@ impl FlightService for CompactorFlightService {
         &self,
         request: Request<Action>,
     ) -> Result<Response<Self::DoActionStream>, Status> {
+        use tracing::Instrument;
+
+        let metadata = request.metadata().clone();
         let action = request.into_inner();
 
-        match action.r#type.as_str() {
+        // RPC SERVER boundary span, named by the fully-qualified Flight
+        // method plus the low-cardinality action type, joined to the
+        // caller's trace context.
+        let span = common::self_monitoring::spans::rpc_server_span(
+            common::self_monitoring::spans::FLIGHT_DO_ACTION,
+            Some(action.r#type.as_str()),
+        );
+        common::flight::trace_context::set_parent_from_metadata(&span, &metadata);
+
+        let record_span = span.clone();
+        let result = async move {
+        let out: Result<Response<Self::DoActionStream>, Status> = match action.r#type.as_str() {
             "compact_now" => {
                 let candidates =
                     self.planner.plan().await.map_err(|e| {
@@ -296,7 +310,22 @@ impl FlightService for CompactorFlightService {
             other => Err(Status::invalid_argument(format!(
                 "Unknown action: {other:?}. Valid actions: compact_now, compact_status, compact_dry_run"
             ))),
+        };
+        out
         }
+        .instrument(span)
+        .await;
+        let code = result
+            .as_ref()
+            .err()
+            .map(|s| s.code())
+            .unwrap_or(tonic::Code::Ok);
+        common::self_monitoring::spans::record_rpc_result(
+            &record_span,
+            common::self_monitoring::spans::RpcBoundary::Server,
+            code,
+        );
+        result
     }
 
     /// List available DoAction commands supported by this service.
@@ -323,5 +352,98 @@ impl FlightService for CompactorFlightService {
         Ok(Response::new(Box::pin(stream::iter(
             actions.into_iter().map(Ok),
         ))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::executor::{CompactionExecutor, ExecutorConfig};
+    use crate::lease::LeaseManager;
+    use crate::metrics::CompactionMetrics;
+    use crate::planner::{CompactionPlanner, PlannerConfig};
+    use common::catalog::Catalog;
+    use common::catalog_manager::CatalogManager;
+    use std::time::Duration;
+    use uuid::Uuid;
+
+    async fn make_service() -> CompactorFlightService {
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let planner = Arc::new(CompactionPlanner::new(
+            catalog_manager.clone(),
+            PlannerConfig {
+                file_count_threshold: 10,
+                min_input_file_size_bytes: 1024 * 1024,
+                max_files_per_job: 50,
+                target_file_size_bytes: 128 * 1024 * 1024,
+            },
+        ));
+        let metrics = CompactionMetrics::new();
+        let executor = Arc::new(CompactionExecutor::new(
+            catalog_manager,
+            ExecutorConfig::default(),
+            metrics.clone(),
+        ));
+        let catalog = Arc::new(Catalog::new_in_memory().await.unwrap());
+        let lease_manager = LeaseManager::new(catalog, Uuid::new_v4(), Duration::from_secs(300));
+        CompactorFlightService::new(planner, executor, lease_manager, metrics)
+    }
+
+    /// `do_action` is an RPC boundary: it emits a semconv SERVER span named
+    /// by the fully-qualified Flight method plus the low-cardinality action
+    /// type.
+    #[tokio::test]
+    async fn do_action_emits_semconv_rpc_server_span() {
+        use opentelemetry::trace::{SpanKind, Status as OtelStatus, TracerProvider as _};
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing::instrument::WithSubscriber;
+        use tracing_subscriber::prelude::*;
+
+        let service = make_service().await;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("test");
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        async {
+            let action = Action {
+                r#type: "compact_dry_run".to_string(),
+                body: Default::default(),
+            };
+            let result = service.do_action(Request::new(action)).await;
+            assert!(result.is_ok(), "dry run should succeed");
+        }
+        .with_subscriber(subscriber)
+        .await;
+
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        let names: Vec<_> = spans.iter().map(|s| s.name.to_string()).collect();
+        let span = spans
+            .iter()
+            .find(|s| {
+                s.name
+                    .starts_with("arrow.flight.protocol.FlightService/DoAction")
+            })
+            .unwrap_or_else(|| panic!("no RPC server span; exported = {names:?}"));
+
+        assert_eq!(
+            span.name,
+            "arrow.flight.protocol.FlightService/DoAction compact_dry_run"
+        );
+        assert_eq!(span.span_kind, SpanKind::Server);
+        let attr = |key: &str| {
+            span.attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == key)
+                .map(|kv| kv.value.as_str().to_string())
+        };
+        assert_eq!(attr("rpc.system.name").as_deref(), Some("grpc"));
+        assert_eq!(attr("rpc.response.status_code").as_deref(), Some("OK"));
+        assert_eq!(span.status, OtelStatus::Unset);
     }
 }
