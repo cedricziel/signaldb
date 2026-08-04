@@ -78,7 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v6.0.9
 
       - uses: actions/setup-node@v7
         with:
@@ -126,7 +126,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v6.0.9
 
       - uses: actions/setup-node@v7
         with:
@@ -489,7 +489,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v6.0.9
 
       - uses: actions/setup-node@v7
         with:
