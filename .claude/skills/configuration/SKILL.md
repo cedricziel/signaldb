@@ -296,6 +296,7 @@ interval = "60s"
 tenant_id = "_system"
 dataset_id = "_monitoring"
 trace_sample_ratio = 0.1              # 0.0-1.0; OTEL_TRACES_SAMPLER env vars win
+environment = "production"           # deployment.environment.name resource attribute
 profiles_enabled = false             # CPU self-profiling -> OTLP profiles into this tenant
 profile_sample_rate_hz = 99          # sampling frequency
 profile_interval = "60s"             # one profile window per interval
