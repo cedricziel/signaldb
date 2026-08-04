@@ -224,7 +224,7 @@ mod tests {
     #[test]
     fn test_common_commands_default() {
         let default_cmd = CommonCommands::default();
-        matches!(default_cmd, CommonCommands::Start);
+        assert!(matches!(default_cmd, CommonCommands::Start));
     }
 
     #[test]
