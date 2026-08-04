@@ -387,8 +387,11 @@ async fn sdk_query_methods_against_live_router() {
         .handle_grpc_otlp_metrics(&ctx, gauge_metrics("api", 10.0))
         .await
         .expect("ingest gauge");
-    // Allow WAL → writer → Iceberg persistence.
-    sleep(Duration::from_secs(15)).await;
+    // Force the writer to commit now — deterministic read-your-writes instead
+    // of waiting out the asynchronous background commit loop.
+    common::testing::flush_storage_writers(&services.flight_transport, TENANT, Some(DATASET))
+        .await
+        .expect("flush writer");
 
     let (base_url, flight_url) = serve_router(&services).await;
 
