@@ -5349,6 +5349,8 @@ pub mod types {
 
 SignalDB admin, tenant-management, and query HTTP API
 
+Every response whose request was traced carries the server's W3C trace context back to the caller: `Server-Timing: traceparent;desc="00-<trace-id>-<span-id>-<flags>"` (readable in browsers via the Performance API) and the equivalent `traceresponse` header, plus `Server-Timing` `dur` entries with server-side stage timings (always `total`, endpoint-specific stages where available) and `Timing-Allow-Origin: *` so cross-origin pages can read the timing entries. The headers are omitted when self-monitoring tracing is disabled.
+
 Version: 1.0.0*/
 pub struct Client {
     pub(crate) baseurl: String,

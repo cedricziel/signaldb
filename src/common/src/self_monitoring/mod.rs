@@ -16,7 +16,7 @@ pub mod spans;
 pub mod suppress;
 
 pub use app_metrics::{
-    AppMetrics, app_metrics, http_metrics_middleware, http_trace_context_middleware,
+    AppMetrics, ServerTimings, app_metrics, http_metrics_middleware, http_trace_context_middleware,
     should_count_tenant,
 };
 pub use profiling::{ProfilingHandle, init_profiling};

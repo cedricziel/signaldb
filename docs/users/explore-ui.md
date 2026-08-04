@@ -150,7 +150,10 @@ misconfigured deployment should not silently ship without its UI.
 The UI is instrumented with OpenTelemetry (browser SDK). It injects a W3C
 `traceparent` into every API call so a user action correlates end-to-end with
 the backend traces it triggers, and stamps every span with a RUM `session.id`
-plus the active `tenant.id` / `dataset.id`.
+plus the active `tenant.id` / `dataset.id`. The initial page load is
+correlated in the reverse direction: the `documentLoad` span links to the
+server span that served the document, read back from the response's
+[`Server-Timing: traceparent`](response-trace-context.md) entry.
 
 Export is **opt-in**. The preferred way to turn it on is the
 `[self_monitoring.frontend]` config section — the router serves it to the

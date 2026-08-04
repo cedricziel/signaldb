@@ -626,7 +626,13 @@ pub async fn query_single_trace<S: RouterState>(
     tenant_ctx: TenantContextExtractor,
     Path(trace_id): Path<String>,
     Query(params): Query<TraceQueryParams>,
-) -> Result<axum::Json<tempo_api::Trace>, axum::http::StatusCode> {
+) -> Result<
+    (
+        axum::Extension<common::self_monitoring::ServerTimings>,
+        axum::Json<tempo_api::Trace>,
+    ),
+    axum::http::StatusCode,
+> {
     tracing::info!(
         trace_id = %trace_id,
         tenant_id = %tenant_ctx.0.tenant_id,
@@ -681,6 +687,7 @@ pub async fn query_single_trace<S: RouterState>(
         common::flight::auth::attach_internal_auth(&mut flight_request, key);
     }
 
+    let querier_started = std::time::Instant::now();
     match client
         .do_get(flight_request)
         .instrument(rpc_span.clone())
@@ -702,6 +709,8 @@ pub async fn query_single_trace<S: RouterState>(
                     }
                 }
             }
+            let querier_elapsed = querier_started.elapsed();
+            let convert_started = std::time::Instant::now();
 
             // Convert flight data to trace format
             match flight_data_to_tempo_trace(trace_data, &trace_id) {
@@ -728,7 +737,11 @@ pub async fn query_single_trace<S: RouterState>(
                             }
                         }
                     }
-                    return Ok(axum::Json(trace));
+                    return Ok(timed_trace_response(
+                        trace,
+                        querier_elapsed,
+                        convert_started.elapsed(),
+                    ));
                 }
                 Ok(None) => {
                     tracing::info!(trace_id = %trace_id, "No trace data found");
@@ -747,6 +760,24 @@ pub async fn query_single_trace<S: RouterState>(
     // Return 404 when no trace data is found
     tracing::info!(trace_id = %trace_id, "Trace not found");
     Err(axum::http::StatusCode::NOT_FOUND)
+}
+
+/// Assemble the single-trace response together with its stage timings —
+/// `querier` (Flight round-trip to the querier, including streaming the
+/// result) and `convert` (Flight data → Tempo JSON) — which the trace-context
+/// middleware surfaces as `Server-Timing` entries.
+fn timed_trace_response(
+    trace: tempo_api::Trace,
+    querier: std::time::Duration,
+    convert: std::time::Duration,
+) -> (
+    axum::Extension<common::self_monitoring::ServerTimings>,
+    axum::Json<tempo_api::Trace>,
+) {
+    let mut timings = common::self_monitoring::ServerTimings::new();
+    timings.push("querier", querier);
+    timings.push("convert", convert);
+    (axum::Extension(timings), axum::Json(trace))
 }
 
 /// Map the querier's Flight status for a trace lookup onto an HTTP status.
@@ -1169,6 +1200,26 @@ mod tests {
             children: Vec::new(),
             events: Vec::new(),
         }
+    }
+
+    #[test]
+    fn single_trace_response_carries_stage_timings() {
+        let trace = tempo_api::Trace {
+            trace_id: "trace-1".to_string(),
+            root_service_name: String::new(),
+            root_trace_name: String::new(),
+            start_time_unix_nano: "0".to_string(),
+            duration_ms: 0,
+            span_sets: Vec::new(),
+            profiles: None,
+        };
+        let (axum::Extension(timings), _json) = timed_trace_response(
+            trace,
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(1),
+        );
+        let names: Vec<_> = timings.entries().iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, ["querier", "convert"]);
     }
 
     #[test]

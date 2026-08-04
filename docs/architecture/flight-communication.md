@@ -248,6 +248,14 @@ client span's child and the trace reads SERVER → CLIENT → SERVER. The
 middleware mirrors the anti-loop guard above: `_system` tenant requests bypass
 the span so self-monitoring queries are not re-instrumented and re-ingested.
 
+**Response direction.** The same middleware returns the server span's context
+to the caller on every response — `Server-Timing: traceparent;desc="..."`
+plus the W3C `traceresponse` header, formatted by
+`trace_context::format_traceparent` (which refuses invalid all-zero contexts,
+so nothing is emitted when self-monitoring is disabled). See
+[Trace Context on HTTP Responses](../users/response-trace-context.md) for the
+caller-facing contract.
+
 #### Error Recording on Query Spans
 
 A failing query is only useful in a trace if the reason survives. By the time a

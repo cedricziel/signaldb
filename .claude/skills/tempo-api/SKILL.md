@@ -50,6 +50,11 @@ depends on them.
 7. Results stream back as Arrow RecordBatches (trace not found -> Flight `not_found` status -> HTTP 404)
 8. Router formats as Tempo JSON response
 
+Responses carry the server span's trace context and stage timings
+(`Server-Timing: traceparent;desc="..."` + `traceresponse`; trace lookup adds
+`querier`/`convert` `dur` entries via the `ServerTimings` response extension) —
+see `docs/users/response-trace-context.md`.
+
 ## Tempo gRPC Querier Protocol (standalone querier)
 
 The standalone querier serves Tempo's internal `tempopb.Querier` gRPC

@@ -428,7 +428,8 @@ pub async fn http_trace_context_middleware(
     // Parent must be adopted before the span is first entered.
     crate::flight::trace_context::set_parent_from_http_headers(&span, request.headers());
 
-    let response = next.run(request).instrument(span.clone()).await;
+    let start = std::time::Instant::now();
+    let mut response = next.run(request).instrument(span.clone()).await;
 
     let status = response.status();
     span.record("http.response.status_code", status.as_u16() as i64);
@@ -438,7 +439,83 @@ pub async fn http_trace_context_middleware(
         span.record("otel.status_code", "ERROR");
         span.record("error.type", status.as_u16().to_string().as_str());
     }
+    append_trace_response_headers(&mut response, &span, start.elapsed());
     response
+}
+
+/// Named server-side stage durations a handler wants surfaced as
+/// `Server-Timing` entries on its response.
+///
+/// Handlers opt in by inserting a value into the response extensions
+/// (e.g. returning `(axum::Extension(timings), body)`); the trace-context
+/// middleware drains it and appends one `<name>;dur=<ms>` entry per stage.
+/// Names are `&'static str` by design: Server-Timing entry names are a
+/// low-cardinality token grammar, not a place for runtime values.
+#[derive(Debug, Clone, Default)]
+pub struct ServerTimings(Vec<(&'static str, std::time::Duration)>);
+
+impl ServerTimings {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a stage duration under `name` (a Server-Timing token, e.g.
+    /// `plan` or `storage_scan`).
+    pub fn push(&mut self, name: &'static str, duration: std::time::Duration) {
+        self.0.push((name, duration));
+    }
+
+    /// The recorded stages in insertion order.
+    pub fn entries(&self) -> &[(&'static str, std::time::Duration)] {
+        &self.0
+    }
+}
+
+/// Return the server span's trace context and timing to the caller:
+/// `Server-Timing: traceparent;desc="..."` (the de-facto RUM back-channel,
+/// readable by browsers via the Performance API even on document/resource
+/// requests), the W3C Trace Context Level 2 `traceresponse` header, and
+/// `Timing-Allow-Origin` so cross-origin pages may read the timing entries.
+///
+/// No-op when the span context is invalid — self-monitoring disabled — so an
+/// all-zero context is never emitted.
+fn append_trace_response_headers(
+    response: &mut axum::response::Response,
+    span: &tracing::Span,
+    elapsed: std::time::Duration,
+) {
+    use opentelemetry::trace::TraceContextExt;
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+    // Drain unconditionally: stage timings never travel past this middleware,
+    // whether or not they end up in a header.
+    let stage_timings = response.extensions_mut().remove::<ServerTimings>();
+
+    let context = span.context();
+    let span_context = context.span().span_context().clone();
+    let Some(traceparent) = crate::flight::trace_context::format_traceparent(&span_context) else {
+        return;
+    };
+
+    let mut server_timing = format!("traceparent;desc=\"{traceparent}\"");
+    for (name, duration) in stage_timings.iter().flat_map(|t| t.0.iter()) {
+        let ms = duration.as_secs_f64() * 1e3;
+        server_timing.push_str(&format!(", {name};dur={ms:.3}"));
+    }
+    let total_ms = elapsed.as_secs_f64() * 1e3;
+    server_timing.push_str(&format!(", total;dur={total_ms:.3}"));
+
+    let headers = response.headers_mut();
+    if let Ok(value) = axum::http::HeaderValue::from_str(&server_timing) {
+        headers.insert(axum::http::HeaderName::from_static("server-timing"), value);
+    }
+    if let Ok(value) = axum::http::HeaderValue::from_str(&traceparent) {
+        headers.insert(axum::http::HeaderName::from_static("traceresponse"), value);
+    }
+    headers.insert(
+        axum::http::HeaderName::from_static("timing-allow-origin"),
+        axum::http::HeaderValue::from_static("*"),
+    );
 }
 
 #[cfg(test)]
@@ -522,5 +599,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(without.status(), axum::http::StatusCode::OK);
+
+        // Without an OTel layer (self-monitoring disabled) the span context is
+        // invalid, so no trace/timing response headers may be emitted.
+        for response in [&with_tp, &without] {
+            assert!(response.headers().get("server-timing").is_none());
+            assert!(response.headers().get("traceresponse").is_none());
+            assert!(response.headers().get("timing-allow-origin").is_none());
+        }
     }
 }

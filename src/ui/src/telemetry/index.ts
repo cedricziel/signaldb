@@ -47,6 +47,7 @@ import {
 } from "@opentelemetry/semantic-conventions";
 import { getDefaultSessionManager } from "./session";
 import { NavigationSpanProcessor } from "./navigationSpanProcessor";
+import { ServerCorrelationSpanProcessor } from "./serverCorrelationSpanProcessor";
 import { SessionSpanProcessor } from "./sessionSpanProcessor";
 import { resolveExportConfig, resolveServiceName } from "./runtimeConfig";
 
@@ -129,6 +130,10 @@ export function initTelemetry(): void {
     // and exported.
     new NavigationSpanProcessor(),
     new SessionSpanProcessor(getDefaultSessionManager()),
+    // Link the documentLoad span to the server span that served the document
+    // (read back from the navigation entry's Server-Timing traceparent) —
+    // the initial HTML request cannot carry an outbound `traceparent`.
+    new ServerCorrelationSpanProcessor(),
   ];
   const exporter = resolveExporter();
   if (exporter) {
