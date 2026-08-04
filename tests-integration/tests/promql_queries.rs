@@ -702,8 +702,8 @@ async fn promql_vector_function_produces_constant_series() {
 
     assert_eq!(status, StatusCode::OK, "vector(): {body}");
     assert!(
-        matrix_value_sum(&body) >= 42.0,
-        "vector(42) present: {body}"
+        matrix_all_values_near(&body, 42.0, 1e-9),
+        "every vector(42) sample must equal 42 exactly: {body}"
     );
 }
 
@@ -720,7 +720,10 @@ async fn promql_absent_function_reports_missing_metric() {
     .await;
 
     assert_eq!(status, StatusCode::OK, "absent(): {body}");
-    assert!(matrix_value_sum(&body) >= 1.0, "absent yields ≥1: {body}");
+    assert!(
+        matrix_all_values_near(&body, 1.0, 1e-9),
+        "absent(does_not_exist) must yield exactly 1: {body}"
+    );
 }
 
 #[tokio::test]
@@ -789,14 +792,20 @@ fn matrix_value_sum(body: &serde_json::Value) -> f64 {
 /// True if every sample value across every series in a matrix response is
 /// within `epsilon` of `expected`.
 fn matrix_all_values_near(body: &serde_json::Value, expected: f64, epsilon: f64) -> bool {
-    body["data"]["result"]
-        .as_array()
-        .map(|series| {
-            series
-                .iter()
-                .flat_map(|s| s["values"].as_array().cloned().unwrap_or_default())
-                .filter_map(|sample| sample[1].as_str().and_then(|v| v.parse::<f64>().ok()))
-                .all(|v| (v - expected).abs() < epsilon)
+    let Some(series) = body["data"]["result"].as_array() else {
+        return false;
+    };
+    let samples: Vec<&serde_json::Value> = series
+        .iter()
+        .flat_map(|s| s["values"].as_array().into_iter().flatten())
+        .collect();
+    // An empty result or a sample without a parseable numeric value is a
+    // failure, not a vacuous pass.
+    !samples.is_empty()
+        && samples.iter().all(|sample| {
+            sample[1]
+                .as_str()
+                .and_then(|v| v.parse::<f64>().ok())
+                .is_some_and(|v| (v - expected).abs() < epsilon)
         })
-        .unwrap_or(false)
 }

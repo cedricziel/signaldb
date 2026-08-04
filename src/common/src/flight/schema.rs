@@ -243,15 +243,23 @@ mod tests {
         let profile_trace_id = schemas.profile_schema.field_with_name("trace_id").unwrap();
         assert_eq!(profile_trace_id.data_type(), &DataType::Binary);
         assert!(profile_trace_id.is_nullable());
+
+        let log_span_id = schemas.log_schema.field_with_name("span_id").unwrap();
+        assert_eq!(log_span_id.data_type(), &DataType::Binary);
+        assert!(log_span_id.is_nullable());
     }
 
     #[test]
     fn profile_schema_identity_field_is_non_nullable_while_correlation_fields_are_nullable() {
         let schema = FlightSchemas::new().profile_schema;
 
-        assert!(!schema.field_with_name("profile_id").unwrap().is_nullable());
+        let profile_id = schema.field_with_name("profile_id").unwrap();
+        assert_eq!(profile_id.data_type(), &DataType::Binary);
+        assert!(!profile_id.is_nullable());
         assert!(schema.field_with_name("trace_id").unwrap().is_nullable());
-        assert!(schema.field_with_name("span_id").unwrap().is_nullable());
+        let span_id = schema.field_with_name("span_id").unwrap();
+        assert_eq!(span_id.data_type(), &DataType::Binary);
+        assert!(span_id.is_nullable());
     }
 
     #[test]

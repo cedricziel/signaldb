@@ -150,10 +150,17 @@ mod tests {
         // through it, proving the catalog and storage components are wired
         // together correctly rather than merely constructed.
         let writer = ctx
-            .create_table("test_tenant", "test_dataset", "test_table")
+            .create_table("test_tenant", "test_dataset", "traces")
             .await?;
 
-        assert_eq!(writer.table_identifier().name(), "test_table");
+        assert_eq!(writer.table_identifier().name(), "traces");
+        // The writer's table identity must preserve the tenant/dataset
+        // namespace, not just the terminal name.
+        assert_eq!(
+            writer.table_identifier().namespace().to_string(),
+            "test_tenant.test_dataset",
+            "writer table identity must carry the tenant/dataset namespace"
+        );
         Ok(())
     }
 

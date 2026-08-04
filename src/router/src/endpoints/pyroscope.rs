@@ -152,6 +152,12 @@ fn parse_time_at(value: &str, now: i64) -> Option<i64> {
             return Some(now);
         }
         let rest = rest.strip_prefix('-')?;
+        // split_at takes a byte index; a trailing multi-byte character (e.g.
+        // "now-1é") would land mid-character and panic in a handler that
+        // receives client-controlled input. Relative units are ASCII-only.
+        if !rest.is_ascii() {
+            return None;
+        }
         let (digits, unit) = rest.split_at(rest.len().saturating_sub(1));
         let amount: i64 = digits.parse().ok()?;
         let seconds = match unit {
@@ -595,6 +601,14 @@ mod tests {
     fn rejects_unparseable_time_values() {
         assert_eq!(parse_time("later"), None);
         assert_eq!(parse_time_at("now-1x", 1_700_100_000), None);
+    }
+
+    #[test]
+    fn rejects_non_ascii_relative_time_without_panicking() {
+        // Regression: split_at on a byte index panicked on a trailing
+        // multi-byte character in this client-controlled parameter (DoS).
+        assert_eq!(parse_time_at("now-1é", 1_700_100_000), None);
+        assert_eq!(parse_time_at("now-é", 1_700_100_000), None);
     }
 
     // ---- Router-level tests: the routed handlers, not just the helpers ----
