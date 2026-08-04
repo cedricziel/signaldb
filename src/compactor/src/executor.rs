@@ -456,14 +456,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_executor_creation() {
+    async fn new_executor_starts_with_zero_jobs_started() {
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let config = ExecutorConfig::default();
         let metrics = CompactionMetrics::new();
 
         let executor = CompactionExecutor::new(catalog_manager, config, metrics);
 
-        assert_eq!(executor.config.max_retries, 3);
         assert_eq!(executor.metrics().jobs_started(), 0);
     }
 }

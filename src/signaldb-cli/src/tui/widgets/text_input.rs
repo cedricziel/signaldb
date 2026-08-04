@@ -224,14 +224,16 @@ mod tests {
     fn new_is_empty() {
         let input = TextInput::new();
         assert!(input.text().is_empty());
-        assert_eq!(input.cursor, 0);
     }
 
     #[test]
-    fn with_text_sets_cursor_to_end() {
-        let input = TextInput::with_text("hello");
+    fn with_text_places_cursor_at_end() {
+        let mut input = TextInput::with_text("hello");
         assert_eq!(input.text(), "hello");
-        assert_eq!(input.cursor, 5);
+        // Backspace deletes the char before the cursor; observing "hell"
+        // proves the cursor was placed after the final char, not the field.
+        input.handle_key(press(KeyCode::Backspace));
+        assert_eq!(input.text(), "hell");
     }
 
     #[test]
@@ -241,18 +243,16 @@ mod tests {
         input.handle_key(press(KeyCode::Char('b')));
         input.handle_key(press(KeyCode::Char('c')));
         assert_eq!(input.text(), "abc");
-        assert_eq!(input.cursor, 3);
     }
 
     #[test]
-    fn backspace_deletes_before_cursor() {
+    fn backspace_deletes_char_before_cursor() {
         let mut input = TextInput::with_text("abc");
         assert_eq!(
             input.handle_key(press(KeyCode::Backspace)),
             TextInputAction::Changed
         );
         assert_eq!(input.text(), "ab");
-        assert_eq!(input.cursor, 2);
     }
 
     #[test]
@@ -260,81 +260,96 @@ mod tests {
         let mut input = TextInput::new();
         input.handle_key(press(KeyCode::Backspace));
         assert!(input.text().is_empty());
-        assert_eq!(input.cursor, 0);
     }
 
     #[test]
-    fn delete_removes_char_at_cursor() {
+    fn delete_removes_char_after_cursor() {
         let mut input = TextInput::with_text("abc");
-        input.cursor = 1;
+        input.handle_key(press(KeyCode::Home));
+        input.handle_key(press(KeyCode::Right)); // cursor between 'a' and 'b'
         input.handle_key(press(KeyCode::Delete));
         assert_eq!(input.text(), "ac");
-        assert_eq!(input.cursor, 1);
     }
 
     #[test]
-    fn left_right_movement() {
+    fn left_then_right_returns_cursor_to_original_position() {
         let mut input = TextInput::with_text("abc");
         input.handle_key(press(KeyCode::Left));
-        assert_eq!(input.cursor, 2);
         input.handle_key(press(KeyCode::Left));
-        assert_eq!(input.cursor, 1);
         input.handle_key(press(KeyCode::Right));
-        assert_eq!(input.cursor, 2);
+        // Cursor should now sit between 'b' and 'c'; a char typed here
+        // reveals the exact insertion point.
+        input.handle_key(press(KeyCode::Char('X')));
+        assert_eq!(input.text(), "abXc");
     }
 
     #[test]
-    fn left_at_start_stays() {
+    fn left_at_start_is_noop() {
         let mut input = TextInput::with_text("abc");
-        input.cursor = 0;
+        input.handle_key(press(KeyCode::Home));
         input.handle_key(press(KeyCode::Left));
-        assert_eq!(input.cursor, 0);
+        input.handle_key(press(KeyCode::Char('X')));
+        assert_eq!(input.text(), "Xabc");
     }
 
     #[test]
-    fn right_at_end_stays() {
+    fn right_at_end_is_noop() {
         let mut input = TextInput::with_text("abc");
         input.handle_key(press(KeyCode::Right));
-        assert_eq!(input.cursor, 3);
+        input.handle_key(press(KeyCode::Char('X')));
+        assert_eq!(input.text(), "abcX");
     }
 
     #[test]
-    fn home_end_keys() {
+    fn home_end_keys_move_cursor_to_boundaries() {
         let mut input = TextInput::with_text("hello world");
         input.handle_key(press(KeyCode::Home));
-        assert_eq!(input.cursor, 0);
+        input.handle_key(press(KeyCode::Char('X')));
+        assert_eq!(input.text(), "Xhello world");
+
         input.handle_key(press(KeyCode::End));
-        assert_eq!(input.cursor, 11);
+        input.handle_key(press(KeyCode::Char('Y')));
+        assert_eq!(input.text(), "Xhello worldY");
     }
 
     #[test]
-    fn ctrl_a_goes_to_start() {
+    fn ctrl_a_moves_cursor_to_start() {
         let mut input = TextInput::with_text("abc");
         input.handle_key(press_ctrl('a'));
-        assert_eq!(input.cursor, 0);
+        input.handle_key(press(KeyCode::Char('X')));
+        assert_eq!(input.text(), "Xabc");
     }
 
     #[test]
-    fn ctrl_e_goes_to_end() {
+    fn ctrl_e_moves_cursor_to_end() {
         let mut input = TextInput::with_text("abc");
-        input.cursor = 0;
+        input.handle_key(press(KeyCode::Home));
         input.handle_key(press_ctrl('e'));
-        assert_eq!(input.cursor, 3);
+        input.handle_key(press(KeyCode::Char('X')));
+        assert_eq!(input.text(), "abcX");
     }
 
     #[test]
-    fn ctrl_u_clears_before_cursor() {
+    fn ctrl_u_clears_text_before_cursor() {
         let mut input = TextInput::with_text("abcdef");
-        input.cursor = 3;
+        input.handle_key(press(KeyCode::Home));
+        input.handle_key(press(KeyCode::Right));
+        input.handle_key(press(KeyCode::Right));
+        input.handle_key(press(KeyCode::Right)); // cursor between 'c' and 'd'
         input.handle_key(press_ctrl('u'));
         assert_eq!(input.text(), "def");
-        assert_eq!(input.cursor, 0);
+        // Cursor should now be at the start of the remaining text.
+        input.handle_key(press(KeyCode::Char('X')));
+        assert_eq!(input.text(), "Xdef");
     }
 
     #[test]
-    fn ctrl_k_clears_after_cursor() {
+    fn ctrl_k_clears_text_after_cursor() {
         let mut input = TextInput::with_text("abcdef");
-        input.cursor = 3;
+        input.handle_key(press(KeyCode::Home));
+        input.handle_key(press(KeyCode::Right));
+        input.handle_key(press(KeyCode::Right));
+        input.handle_key(press(KeyCode::Right)); // cursor between 'c' and 'd'
         input.handle_key(press_ctrl('k'));
         assert_eq!(input.text(), "abc");
     }
@@ -358,11 +373,13 @@ mod tests {
     }
 
     #[test]
-    fn clear_resets() {
+    fn clear_resets_text_and_cursor() {
         let mut input = TextInput::with_text("hello");
         input.clear();
         assert!(input.text().is_empty());
-        assert_eq!(input.cursor, 0);
+        // Cursor should have reset to the start alongside the text.
+        input.handle_key(press(KeyCode::Char('X')));
+        assert_eq!(input.text(), "X");
     }
 
     #[test]
@@ -370,16 +387,17 @@ mod tests {
         let mut input = TextInput::new();
         input.set_text("new text");
         assert_eq!(input.text(), "new text");
-        assert_eq!(input.cursor, 8);
+        input.handle_key(press(KeyCode::Backspace));
+        assert_eq!(input.text(), "new tex");
     }
 
     #[test]
     fn insert_at_cursor_middle() {
         let mut input = TextInput::with_text("ac");
-        input.cursor = 1;
+        input.handle_key(press(KeyCode::Home));
+        input.handle_key(press(KeyCode::Right)); // cursor between 'a' and 'c'
         input.handle_key(press(KeyCode::Char('b')));
         assert_eq!(input.text(), "abc");
-        assert_eq!(input.cursor, 2);
     }
 
     #[test]

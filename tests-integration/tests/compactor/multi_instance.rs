@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use common::catalog::Catalog;
 use common::catalog_manager::CatalogManager;
 use common::flight::conversion::conversion_logs::otlp_logs_to_arrow;
@@ -88,45 +88,36 @@ fn build_logs_request(batch_num: usize, rows: usize) -> ExportLogsServiceRequest
 
 /// Write `batches` small log files into `tenant/dataset/logs`.
 ///
-/// Returns false when the test environment cannot create the writer, in which
-/// case the caller should skip (mirrors the other compactor tests).
+/// Propagates writer-creation and write failures instead of swallowing them,
+/// so a broken write path fails the test rather than silently skipping the
+/// lease/mutual-exclusion assertions that are this file's actual value.
 async fn write_small_log_files(
     catalog_manager: &Arc<CatalogManager>,
     object_store: Arc<InMemory>,
     tenant_id: &str,
     dataset_id: &str,
     batches: usize,
-) -> Result<bool> {
-    let writer_result = IcebergTableWriter::new(
+) -> Result<()> {
+    let mut writer = IcebergTableWriter::new(
         catalog_manager,
         object_store,
         tenant_id.to_string(),
         dataset_id.to_string(),
         "logs".to_string(),
     )
-    .await;
-
-    let mut writer = match writer_result {
-        Ok(w) => w,
-        Err(e) => {
-            log::warn!("Could not create writer in test environment: {e}");
-            return Ok(false);
-        }
-    };
+    .await
+    .context("Failed to create IcebergTableWriter for in-memory test table")?;
 
     for i in 0..batches {
         let batch =
             otlp_logs_to_arrow(&build_logs_request(i, 100)).expect("conversion should succeed");
-        if let Err(e) = writer
+        writer
             .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
             .await
-        {
-            log::warn!("Failed to write log batch {i}: {e}");
-            return Ok(false);
-        }
+            .with_context(|| format!("Failed to write log batch {i}"))?;
     }
 
-    Ok(true)
+    Ok(())
 }
 
 fn make_candidate(tenant_id: &str, dataset_id: &str) -> CompactionCandidate {
@@ -275,18 +266,14 @@ async fn test_two_instances_compact_without_duplicate_work() -> Result<()> {
     let datasets = ["dataset-a", "dataset-b"];
 
     for dataset_id in &datasets {
-        if !write_small_log_files(
+        write_small_log_files(
             &catalog_manager,
             object_store.clone(),
             tenant_id,
             dataset_id,
             10,
         )
-        .await?
-        {
-            log::info!("Test skipped due to environment limitations");
-            return Ok(());
-        }
+        .await?;
     }
 
     let candidates: Vec<CompactionCandidate> = datasets
@@ -409,18 +396,14 @@ async fn test_crashed_instance_lease_taken_over() -> Result<()> {
     let tenant_id = "takeover-tenant";
     let dataset_id = "takeover-dataset";
 
-    if !write_small_log_files(
+    write_small_log_files(
         &catalog_manager,
         object_store.clone(),
         tenant_id,
         dataset_id,
         10,
     )
-    .await?
-    {
-        log::info!("Test skipped due to environment limitations");
-        return Ok(());
-    }
+    .await?;
 
     let candidate = make_candidate(tenant_id, dataset_id);
 

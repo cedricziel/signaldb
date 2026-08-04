@@ -403,12 +403,20 @@ fn window() -> String {
     format!("start={start}&end={end}&step=1h")
 }
 
-#[tokio::test]
-async fn promql_end_to_end() {
+/// The ingested metrics' timestamp, in unix seconds (Prometheus param units).
+fn at_timestamp() -> u64 {
+    BASE_NS / 1_000_000_000
+}
+
+/// Boots the full stack, ingests `requests{job=api}=10`,
+/// `requests{job=web}=20`, and a `latency` histogram (buckets [1,2,4],
+/// counts [1,2,3,4]), and force-flushes the writer so reads observe the
+/// data deterministically. Shared arrange step for every PromQL endpoint
+/// test below.
+async fn setup_with_ingested_metrics() -> (TestServices, Router) {
     let services = setup().await;
     let ctx = test_tenant_context();
 
-    // Ingest: requests{job=api}=10, requests{job=web}=20.
     services
         .metrics_handler
         .handle_grpc_otlp_metrics(&ctx, gauge_metrics("api", 10.0, "200"))
@@ -419,7 +427,6 @@ async fn promql_end_to_end() {
         .handle_grpc_otlp_metrics(&ctx, gauge_metrics("web", 20.0, "500"))
         .await
         .expect("ingest web gauge");
-    // Ingest: latency histogram (buckets [1,2,4], counts [1,2,3,4]).
     services
         .metrics_handler
         .handle_grpc_otlp_metrics(&ctx, histogram_metrics("api"))
@@ -452,14 +459,20 @@ async fn promql_end_to_end() {
     );
 
     let app = build_router(&services).await;
+    (services, app)
+}
+
+#[tokio::test]
+async fn promql_range_query_returns_matrix_with_all_series() {
+    let (_services, app) = setup_with_ingested_metrics().await;
     let w = window();
 
-    // 1. Range query: matrix with the two series.
     let (status, body) = get(
         &app,
         &format!("/prometheus/api/v1/query_range?query=requests&{w}"),
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "query_range: {body}");
     assert_eq!(body["data"]["resultType"], "matrix");
     let values = matrix_value_sum(&body);
@@ -467,30 +480,45 @@ async fn promql_end_to_end() {
         (values - 30.0).abs() < 1e-9,
         "api+web should total 30: {body}"
     );
+}
 
-    // 2. Aggregation: sum(requests) = 30.
+#[tokio::test]
+async fn promql_range_query_sum_aggregates_across_series() {
+    let (_services, app) = setup_with_ingested_metrics().await;
+    let w = window();
+
     let (status, body) = get(
         &app,
         &format!("/prometheus/api/v1/query_range?query=sum(requests)&{w}"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(status, StatusCode::OK, "sum(requests): {body}");
     let series = body["data"]["result"]
         .as_array()
         .cloned()
         .unwrap_or_default();
     assert_eq!(series.len(), 1, "sum collapses to one series: {body}");
-    assert!((matrix_value_sum(&body) - 30.0).abs() < 1e-9);
+    assert!(
+        (matrix_value_sum(&body) - 30.0).abs() < 1e-9,
+        "sum(requests) should total 30: {body}"
+    );
+}
 
-    // 3. Instant query evaluated at the data's timestamp returns a vector
-    //    carrying the last sample of each series (10 + 20 = 30).
-    let at = BASE_NS / 1_000_000_000;
+#[tokio::test]
+async fn promql_instant_query_returns_last_sample_per_series() {
+    let (_services, app) = setup_with_ingested_metrics().await;
+    let at = at_timestamp();
+
+    // Instant query evaluated at the data's timestamp returns a vector
+    // carrying the last sample of each series (10 + 20 = 30).
     let (status, body) = get(
         &app,
         &format!("/prometheus/api/v1/query?query=requests&time={at}"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(status, StatusCode::OK, "instant query: {body}");
     assert_eq!(body["data"]["resultType"], "vector");
     let vector = body["data"]["result"]
         .as_array()
@@ -505,9 +533,15 @@ async fn promql_end_to_end() {
         (vsum - 30.0).abs() < 1e-9,
         "instant values total 30: {body}"
     );
+}
+
+#[tokio::test]
+async fn promql_instant_query_empty_window_returns_empty_vector() {
+    let (_services, app) = setup_with_ingested_metrics().await;
 
     // A query whose window contains no data returns an empty vector, not 500.
     let (status, body) = get(&app, "/prometheus/api/v1/query?query=requests&time=100").await;
+
     assert_eq!(status, StatusCode::OK, "empty-window instant query: {body}");
     assert_eq!(body["data"]["resultType"], "vector");
     assert!(
@@ -516,46 +550,71 @@ async fn promql_end_to_end() {
             .is_none_or(|a| a.is_empty()),
         "empty window yields no series: {body}"
     );
+}
 
-    // 4. Labels include __name__, job, and the code attribute.
+#[tokio::test]
+async fn promql_labels_endpoint_lists_series_labels() {
+    let (_services, app) = setup_with_ingested_metrics().await;
+    let w = window();
+
     let (status, body) = get(&app, &format!("/prometheus/api/v1/labels?{w}")).await;
-    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(status, StatusCode::OK, "labels: {body}");
     let labels: Vec<String> = serde_json::from_value(body["data"].clone()).unwrap_or_default();
     assert!(labels.contains(&"__name__".to_string()), "{labels:?}");
     assert!(labels.contains(&"job".to_string()), "{labels:?}");
     assert!(labels.contains(&"code".to_string()), "{labels:?}");
+}
 
-    // 5. __name__ values include the metric.
+#[tokio::test]
+async fn promql_label_values_endpoint_lists_metric_names() {
+    let (_services, app) = setup_with_ingested_metrics().await;
+    let w = window();
+
     let (status, body) = get(
         &app,
         &format!("/prometheus/api/v1/label/__name__/values?{w}"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(status, StatusCode::OK, "label values: {body}");
     let names: Vec<String> = serde_json::from_value(body["data"].clone()).unwrap_or_default();
     assert!(names.contains(&"requests".to_string()), "{names:?}");
+}
 
-    // 6. Series matching the selector.
+#[tokio::test]
+async fn promql_series_endpoint_returns_matching_series() {
+    let (_services, app) = setup_with_ingested_metrics().await;
+    let w = window();
+
     let (status, body) = get(
         &app,
         &format!("/prometheus/api/v1/series?match%5B%5D=requests&{w}"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(status, StatusCode::OK, "series: {body}");
     let series = body["data"].as_array().cloned().unwrap_or_default();
     assert!(
         series.iter().all(|s| s["__name__"] == "requests"),
         "series should all be requests: {body}"
     );
     assert_eq!(series.len(), 2, "one series per job: {body}");
+}
 
-    // 7. histogram_quantile over the stored latency histogram: the median
-    //    interpolates to 3.333… within the (2,4] bucket.
+#[tokio::test]
+async fn promql_histogram_quantile_interpolates_median() {
+    let (_services, app) = setup_with_ingested_metrics().await;
+    let w = window();
+
+    // histogram_quantile over the stored latency histogram: the median
+    // interpolates to 3.333… within the (2,4] bucket.
     let (status, body) = get(
         &app,
         &format!("/prometheus/api/v1/query_range?query=histogram_quantile(0.5,latency)&{w}"),
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "histogram_quantile: {body}");
     assert_eq!(body["data"]["resultType"], "matrix");
     let q = matrix_value_sum(&body);
@@ -563,11 +622,17 @@ async fn promql_end_to_end() {
         (q - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-6,
         "median latency ≈ 3.333, got {q}: {body}"
     );
+}
 
-    // 8. New function families, exercised end-to-end through the router to
-    //    confirm the query→lowering→execution wiring (the math itself is
-    //    covered by the querier unit tests). `>` is percent-encoded (%3E),
-    //    subquery brackets/colon as %5B/%3A/%5D.
+// The remaining tests exercise newer function families end-to-end through
+// the router to confirm the query→lowering→execution wiring (the math
+// itself is covered by the querier unit tests). `>` is percent-encoded
+// (%3E), subquery brackets/colon as %5B/%3A/%5D.
+
+#[tokio::test]
+async fn promql_vector_division_yields_one_per_series() {
+    let (_services, app) = setup_with_ingested_metrics().await;
+    let w = window();
 
     // Vector-to-vector arithmetic: requests / requests = 1 per series.
     let (status, body) = get(
@@ -575,18 +640,19 @@ async fn promql_end_to_end() {
         &format!("/prometheus/api/v1/query_range?query=requests/requests&{w}"),
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "vector division: {body}");
     assert_eq!(body["data"]["resultType"], "matrix");
-    for s in body["data"]["result"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-    {
-        for sample in s["values"].as_array().cloned().unwrap_or_default() {
-            let v: f64 = sample[1].as_str().unwrap_or("0").parse().unwrap_or(0.0);
-            assert!((v - 1.0).abs() < 1e-9, "a/a should be 1: {body}");
-        }
-    }
+    assert!(
+        matrix_all_values_near(&body, 1.0, 1e-9),
+        "a/a should be 1 for every sample: {body}"
+    );
+}
+
+#[tokio::test]
+async fn promql_comparison_filter_keeps_matching_series() {
+    let (_services, app) = setup_with_ingested_metrics().await;
+    let w = window();
 
     // Scalar comparison filters to the matching series (web=20 > 15).
     let (status, body) = get(
@@ -594,11 +660,18 @@ async fn promql_end_to_end() {
         &format!("/prometheus/api/v1/query_range?query=requests%3E15&{w}"),
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "comparison filter: {body}");
     assert!(
         (matrix_value_sum(&body) - 20.0).abs() < 1e-9,
         "only web (20) survives > 15: {body}"
     );
+}
+
+#[tokio::test]
+async fn promql_histogram_fraction_computes_bucket_ratio() {
+    let (_services, app) = setup_with_ingested_metrics().await;
+    let w = window();
 
     // histogram_fraction over the latency histogram: (0, 2] = 3/10 = 0.3.
     let (status, body) = get(
@@ -606,11 +679,18 @@ async fn promql_end_to_end() {
         &format!("/prometheus/api/v1/query_range?query=histogram_fraction(0,2,latency)&{w}"),
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "histogram_fraction: {body}");
     assert!(
         (matrix_value_sum(&body) - 0.3).abs() < 1e-6,
         "fraction in (0,2] ≈ 0.3: {body}"
     );
+}
+
+#[tokio::test]
+async fn promql_vector_function_produces_constant_series() {
+    let (_services, app) = setup_with_ingested_metrics().await;
+    let w = window();
 
     // vector(42): a synthetic constant series.
     let (status, body) = get(
@@ -618,11 +698,18 @@ async fn promql_end_to_end() {
         &format!("/prometheus/api/v1/query_range?query=vector(42)&{w}"),
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "vector(): {body}");
     assert!(
         matrix_value_sum(&body) >= 42.0,
         "vector(42) present: {body}"
     );
+}
+
+#[tokio::test]
+async fn promql_absent_function_reports_missing_metric() {
+    let (_services, app) = setup_with_ingested_metrics().await;
+    let w = window();
 
     // absent() of a missing metric yields 1.
     let (status, body) = get(
@@ -630,24 +717,58 @@ async fn promql_end_to_end() {
         &format!("/prometheus/api/v1/query_range?query=absent(does_not_exist)&{w}"),
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "absent(): {body}");
     assert!(matrix_value_sum(&body) >= 1.0, "absent yields ≥1: {body}");
+}
 
-    // Subquery under an over_time reducer, and the @ modifier and time() all
-    // lower and execute cleanly over the router.
-    for query in [
-        "avg_over_time(requests%5B1h%3A5m%5D)",
-        &format!("requests@{at}"),
-        "time()",
-    ] {
-        let (status, body) = get(
-            &app,
-            &format!("/prometheus/api/v1/query_range?query={query}&{w}"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{query}: {body}");
-        assert_eq!(body["data"]["resultType"], "matrix", "{query}: {body}");
-    }
+#[tokio::test]
+async fn promql_subquery_avg_over_time_executes() {
+    let (_services, app) = setup_with_ingested_metrics().await;
+    let w = window();
+
+    // Subquery under an over_time reducer lowers and executes cleanly.
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query=avg_over_time(requests%5B1h%3A5m%5D)&{w}"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "avg_over_time subquery: {body}");
+    assert_eq!(body["data"]["resultType"], "matrix");
+}
+
+#[tokio::test]
+async fn promql_at_modifier_pins_evaluation_time() {
+    let (_services, app) = setup_with_ingested_metrics().await;
+    let w = window();
+    let at = at_timestamp();
+
+    // The @ modifier lowers and executes cleanly over the router.
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query=requests@{at}&{w}"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "@ modifier: {body}");
+    assert_eq!(body["data"]["resultType"], "matrix");
+}
+
+#[tokio::test]
+async fn promql_time_function_executes() {
+    let (_services, app) = setup_with_ingested_metrics().await;
+    let w = window();
+
+    // time() lowers and executes cleanly over the router.
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query=time()&{w}"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "time(): {body}");
+    assert_eq!(body["data"]["resultType"], "matrix");
 }
 
 /// Sum all sample values across all series in a matrix response.
@@ -662,4 +783,19 @@ fn matrix_value_sum(body: &serde_json::Value) -> f64 {
                 .sum()
         })
         .unwrap_or(0.0)
+}
+
+/// True if every sample value across every series in a matrix response is
+/// within `epsilon` of `expected`.
+fn matrix_all_values_near(body: &serde_json::Value, expected: f64, epsilon: f64) -> bool {
+    body["data"]["result"]
+        .as_array()
+        .map(|series| {
+            series
+                .iter()
+                .flat_map(|s| s["values"].as_array().cloned().unwrap_or_default())
+                .filter_map(|sample| sample[1].as_str().and_then(|v| v.parse::<f64>().ok()))
+                .all(|v| (v - expected).abs() < epsilon)
+        })
+        .unwrap_or(false)
 }

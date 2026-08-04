@@ -92,23 +92,32 @@ async fn manifest_live_bytes(
         .sum())
 }
 
-#[tokio::test]
-async fn storage_usage_is_accounted_from_live_files_and_enforced() -> Result<()> {
+/// A fresh in-memory catalog and a config with a 1-byte quota for `TENANT`
+/// (any data at all is over quota). Shared arrange step for the tests below;
+/// each test gets its own `CatalogManager` so writes in one don't leak into
+/// another.
+async fn setup_quota_tenant() -> Result<(common::config::Configuration, Arc<CatalogManager>)> {
     let _ = env_logger::builder().is_test(true).try_init();
 
     let mut config = common::testing::TestConfigBuilder::new()
         .in_memory()
         .with_tenant(TENANT, DATASET)
         .build();
-    config.auth.default_limits.max_storage_bytes = Some(1); // 1 byte: any data is over quota
+    config.auth.default_limits.max_storage_bytes = Some(1);
     let catalog_manager = Arc::new(CatalogManager::new(config.clone()).await?);
+    Ok((config, catalog_manager))
+}
 
-    // Before any data lands, the tenant has no usage and passes the gate
-    // even though a quota is configured (accounting lag must not block).
-    let tracker = StorageUsageTracker::from_auth_config(&config.auth);
-    assert!(tracker.quotas_configured());
-    tracker.replace_all(compute_usage(&catalog_manager).await?);
-    assert!(tracker.check_ingest(TENANT).is_ok());
+#[tokio::test]
+async fn storage_usage_accounting_matches_manifest_and_grows_monotonically() -> Result<()> {
+    let (_config, catalog_manager) = setup_quota_tenant().await?;
+
+    // Before any data lands, accounting reports nothing for the tenant.
+    let usage_before = compute_usage(&catalog_manager).await?;
+    assert!(
+        !usage_before.contains_key(TENANT),
+        "tenant with no data must not appear in the usage map"
+    );
 
     // Write real Parquet data files into the tenant's traces table.
     write_traces(&catalog_manager, 3).await?;
@@ -125,8 +134,34 @@ async fn storage_usage_is_accounted_from_live_files_and_enforced() -> Result<()>
         "usage accounting must equal the sum of live data-file sizes"
     );
 
-    // Publish the refreshed usage: the tenant is now over its 1-byte quota
-    // and ingest is rejected with a quota_exceeded error.
+    // More data grows the count monotonically (no double-count assertions
+    // here, just that the fresh snapshot supersedes the old one).
+    write_traces(&catalog_manager, 2).await?;
+    let usage_after = compute_usage(&catalog_manager).await?;
+    assert!(
+        usage_after[TENANT] > counted,
+        "additional writes must increase accounted usage"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn storage_quota_enforcement_rejects_over_quota_tenant_and_isolates_others() -> Result<()> {
+    let (config, catalog_manager) = setup_quota_tenant().await?;
+    let tracker = StorageUsageTracker::from_auth_config(&config.auth);
+    assert!(tracker.quotas_configured());
+
+    // Before any data lands, the tenant has no usage and passes the gate
+    // even though a quota is configured (accounting lag must not block).
+    tracker.replace_all(compute_usage(&catalog_manager).await?);
+    assert!(tracker.check_ingest(TENANT).is_ok());
+
+    // Write real Parquet data files, then publish the refreshed usage: the
+    // tenant is now over its 1-byte quota and ingest is rejected with a
+    // quota_exceeded error.
+    write_traces(&catalog_manager, 3).await?;
+    let usage = compute_usage(&catalog_manager).await?;
+    let counted = usage[TENANT];
     tracker.replace_all(usage);
     let err = tracker
         .check_ingest(TENANT)
@@ -136,15 +171,15 @@ async fn storage_usage_is_accounted_from_live_files_and_enforced() -> Result<()>
 
     // A tenant without data stays unaffected by someone else's usage.
     assert!(tracker.check_ingest("other-tenant").is_ok());
+    Ok(())
+}
 
-    // More data grows the count monotonically (no double-count assertions
-    // here, just that the fresh snapshot supersedes the old one).
-    write_traces(&catalog_manager, 2).await?;
-    let usage_after = compute_usage(&catalog_manager).await?;
-    assert!(
-        usage_after[TENANT] > counted,
-        "additional writes must increase accounted usage"
-    );
+#[tokio::test]
+async fn storage_usage_counts_profiles_toward_tenant_total() -> Result<()> {
+    let (_config, catalog_manager) = setup_quota_tenant().await?;
+
+    write_traces(&catalog_manager, 3).await?;
+    let usage_traces_only = compute_usage(&catalog_manager).await?;
 
     // The profiles signal (issue #635) must count toward the same tenant
     // quota: accounting walks every table in the tenant namespace, so a
@@ -158,7 +193,7 @@ async fn storage_usage_is_accounted_from_live_files_and_enforced() -> Result<()>
     );
     assert_eq!(
         usage_with_profiles[TENANT],
-        usage_after[TENANT] + profile_bytes,
+        usage_traces_only[TENANT] + profile_bytes,
         "profiles tables must count toward tenant storage usage"
     );
     Ok(())

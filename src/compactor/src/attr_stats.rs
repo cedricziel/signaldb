@@ -252,8 +252,24 @@ mod tests {
         assert!(!ns.capped);
         assert_eq!(stats["pod"].present_rows, 2);
         assert_eq!(stats["pod"].distinct, 2);
+    }
 
-        // Advisory logging must not panic on real stats or empty input.
+    #[test]
+    fn log_promotion_candidates_does_not_panic_on_real_or_empty_stats() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "log_attributes",
+            DataType::Utf8,
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec![Some(
+                r#"{"namespace":"prod"}"#,
+            )]))],
+        )
+        .unwrap();
+        let (stats, total) = analyze_batches(&[batch]);
+
         log_promotion_candidates("logs", &stats, total);
         log_promotion_candidates("logs", &BTreeMap::new(), 0);
     }

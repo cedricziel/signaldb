@@ -199,13 +199,17 @@ pub async fn list_available_schemas() -> Json<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RouterAppState;
-    use common::catalog::Catalog;
+    use crate::{RouterAppState, create_router};
+    use axum::body::Body;
+    use axum::http::{Request, header};
+    use common::catalog::{Catalog, MembershipRole};
     use common::config::{
-        Configuration, DefaultSchemas, SchemaConfig, TenantSchemaConfig, TenantsConfig,
+        ApiKeyConfig, AuthConfig, Configuration, DefaultSchemas, SchemaConfig, TenantConfig,
+        TenantSchemaConfig, TenantsConfig,
     };
     use common::tenant_api::TenantApi;
     use std::collections::HashMap;
+    use tower::ServiceExt;
 
     async fn create_test_state() -> RouterAppState {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
@@ -297,5 +301,132 @@ mod tests {
         let tenant_schema = config.get_tenant_schema_config("test-tenant");
         assert_eq!(tenant_schema.catalog_type, "memory");
         assert_eq!(tenant_schema.catalog_uri, "memory://test");
+    }
+
+    /// GET /tenants/:tenant_id rejects a path tenant_id that doesn't match
+    /// the authenticated tenant, regardless of whether that tenant exists.
+    /// This is the handler-level guard (`forbidden_tenant`), not something
+    /// `TenantApi` itself enforces.
+    #[tokio::test]
+    async fn get_tenant_with_mismatched_path_tenant_is_forbidden() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![TenantConfig {
+                    id: "acme".to_string(),
+                    slug: "acme".to_string(),
+                    name: "Acme".to_string(),
+                    default_dataset: Some("default".to_string()),
+                    datasets: vec![],
+                    api_keys: vec![ApiKeyConfig {
+                        key: "sk-test-key".to_string(),
+                        name: Some("test".to_string()),
+                    }],
+                    schema_config: None,
+                    limits: None,
+                }],
+                ..Default::default()
+            },
+            ..Configuration::default()
+        };
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/api/v1/tenants/other-tenant")
+            .header("authorization", "Bearer sk-test-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["error"],
+            "Requested tenant does not match authenticated tenant"
+        );
+    }
+
+    /// POST /tenants/:tenant_id/tables/create requires the authenticated
+    /// principal to be able to manage the tenant. A signed-in user with a
+    /// non-admin membership role must be rejected before `TenantApi` is
+    /// ever invoked.
+    #[tokio::test]
+    async fn create_tenant_tables_without_admin_role_is_forbidden() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![TenantConfig {
+                    id: "acme".to_string(),
+                    slug: "acme".to_string(),
+                    name: "Acme".to_string(),
+                    default_dataset: Some("default".to_string()),
+                    datasets: vec![],
+                    api_keys: vec![],
+                    schema_config: None,
+                    limits: None,
+                }],
+                ..Default::default()
+            },
+            ..Configuration::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+
+        let password_hash = common::auth::hash_password("member password").unwrap();
+        let member = catalog
+            .create_user("member@example.com", Some("Member"), &password_hash, false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&member.id, "acme", MembershipRole::Member)
+            .await
+            .unwrap();
+
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let login_request = Request::builder()
+            .method("POST")
+            .uri("/ui/session")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "email": "member@example.com",
+                    "password": "member password",
+                    "tenant": "acme"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let login_response = app.clone().oneshot(login_request).await.unwrap();
+        assert_eq!(login_response.status(), StatusCode::OK);
+        let cookie = login_response
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("Set-Cookie present")
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .expect("cookie name=value")
+            .to_string();
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/tenants/acme/tables/create")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "Tenant administrator privileges required");
     }
 }

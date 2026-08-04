@@ -177,7 +177,7 @@ mod tests {
     };
 
     /// Handler that always fails before WAL durability, e.g. when the
-    /// OTLP → Arrow conversion errors (issue #926).
+    /// OTLP -> Arrow conversion errors (issue #926) or the WAL write fails.
     struct FailingMetricsHandler;
 
     #[async_trait::async_trait]
@@ -187,18 +187,26 @@ mod tests {
             _tenant_context: &TenantContext,
             _request: ExportMetricsServiceRequest,
         ) -> anyhow::Result<()> {
-            anyhow::bail!("Failed to durably accept metrics for types: gauge")
+            anyhow::bail!("WAL unavailable")
         }
     }
 
-    #[tokio::test]
-    async fn export_rejects_with_unavailable_when_conversion_fails() {
-        // A conversion failure must be rejected so the client retries;
-        // ACKing it would silently drop the data (issue #926).
-        let service = MetricsAcceptorService::new(FailingMetricsHandler);
+    /// Handler that always succeeds (rate-limit/quota tests must fail before it).
+    struct NoopMetricsHandler;
 
-        let mut tonic_request = Request::new(ExportMetricsServiceRequest::default());
-        tonic_request.extensions_mut().insert(TenantContext {
+    #[async_trait::async_trait]
+    impl MetricsHandlerTrait for NoopMetricsHandler {
+        async fn handle_grpc_otlp_metrics(
+            &self,
+            _tenant_context: &TenantContext,
+            _request: ExportMetricsServiceRequest,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn test_tenant_context() -> TenantContext {
+        TenantContext {
             tenant_id: "test-tenant".to_string(),
             dataset_id: "test-dataset".to_string(),
             tenant_slug: "test-tenant".to_string(),
@@ -211,24 +219,11 @@ mod tests {
             is_instance_admin: false,
             session_id: None,
             source: common::auth::TenantSource::Config,
-        });
-
-        let status = service
-            .export(tonic_request)
-            .await
-            .expect_err("export must fail when data is not durably accepted");
-
-        assert_eq!(status.code(), tonic::Code::Unavailable);
+        }
     }
 
-    #[tokio::test]
-    async fn test_metrics_acceptor_service() {
-        let mut mock_handler = MockMetricsHandler::new();
-        mock_handler.expect_handle_grpc_otlp_metrics();
-
-        let service = MetricsAcceptorService::new(mock_handler);
-
-        let request = ExportMetricsServiceRequest {
+    fn sample_metrics_request() -> ExportMetricsServiceRequest {
+        ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -263,27 +258,121 @@ mod tests {
                 }],
                 schema_url: "".to_string(),
             }],
-        };
+        }
+    }
 
-        // Add TenantContext to request extensions (normally added by auth middleware)
+    #[tokio::test]
+    async fn export_forwards_metrics_to_handler_and_succeeds() {
+        let mock_handler = MockMetricsHandler::new();
+        let service = MetricsAcceptorService::new(mock_handler);
+
+        let request = sample_metrics_request();
         let mut tonic_request = Request::new(request);
-        tonic_request.extensions_mut().insert(TenantContext {
-            tenant_id: "test-tenant".to_string(),
-            dataset_id: "test-dataset".to_string(),
-            tenant_slug: "test-tenant".to_string(),
-            dataset_slug: "test-dataset".to_string(),
-            api_key_name: Some("test-key".to_string()),
-            api_key_scopes: None,
-            api_key_dataset_id: None,
-            user_id: None,
-            role: None,
-            is_instance_admin: false,
-            session_id: None,
-            source: common::auth::TenantSource::Config,
-        });
+        tonic_request.extensions_mut().insert(test_tenant_context());
 
-        let response = service.export(tonic_request).await;
+        let response = service
+            .export(tonic_request)
+            .await
+            .expect("export of valid metrics must succeed");
+        assert_eq!(
+            response.into_inner(),
+            ExportMetricsServiceResponse::default()
+        );
 
-        assert!(response.is_ok());
+        let calls = service.handler.handle_grpc_otlp_metrics_calls.lock().await;
+        assert_eq!(calls.len(), 1, "handler must be invoked exactly once");
+        assert_eq!(
+            calls[0].resource_metrics[0].scope_metrics[0].metrics[0].name, "test_metric",
+            "handler must receive the exact request the client sent"
+        );
+    }
+
+    #[tokio::test]
+    async fn export_rejects_with_unavailable_when_write_path_fails() {
+        let service = MetricsAcceptorService::new(FailingMetricsHandler);
+
+        let mut tonic_request = Request::new(ExportMetricsServiceRequest::default());
+        tonic_request.extensions_mut().insert(test_tenant_context());
+
+        let status = service
+            .export(tonic_request)
+            .await
+            .expect_err("export must fail when data is not durably accepted");
+
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert!(status.message().contains("durably accept"));
+    }
+
+    #[tokio::test]
+    async fn export_rejects_with_resource_exhausted_when_rate_limited() {
+        use common::config::{AuthConfig, TenantLimits};
+
+        // One request per second: the first export passes, the second is
+        // rejected with the gRPC analog of HTTP 429.
+        let limiter = Arc::new(TenantRateLimiter::from_auth_config(&AuthConfig {
+            default_limits: TenantLimits {
+                max_ingest_requests_per_sec: Some(1),
+                burst_seconds: 1.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let service = MetricsAcceptorService::new(NoopMetricsHandler).with_rate_limiter(limiter);
+
+        let mut first = Request::new(ExportMetricsServiceRequest::default());
+        first.extensions_mut().insert(test_tenant_context());
+        service
+            .export(first)
+            .await
+            .expect("first request is within budget");
+
+        let mut second = Request::new(ExportMetricsServiceRequest::default());
+        second.extensions_mut().insert(test_tenant_context());
+        let status = service
+            .export(second)
+            .await
+            .expect_err("second request must exceed the 1 rps budget");
+
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert!(status.message().contains("request rate"));
+    }
+
+    #[tokio::test]
+    async fn export_rejects_with_resource_exhausted_when_over_storage_quota() {
+        use common::config::{AuthConfig, TenantLimits};
+        use common::storage_usage::StorageUsageTracker;
+        use std::collections::HashMap;
+
+        let tenant_id = test_tenant_context().tenant_id;
+        let tracker = Arc::new(StorageUsageTracker::from_auth_config(&AuthConfig {
+            default_limits: TenantLimits {
+                max_storage_bytes: Some(1_000),
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let service =
+            MetricsAcceptorService::new(NoopMetricsHandler).with_storage_quota(tracker.clone());
+
+        // Under quota: export passes.
+        tracker.replace_all(HashMap::from([(tenant_id.clone(), 999)]));
+        let mut under = Request::new(ExportMetricsServiceRequest::default());
+        under.extensions_mut().insert(test_tenant_context());
+        service
+            .export(under)
+            .await
+            .expect("export under quota must pass");
+
+        // Usage refresh reports the tenant at its cap: export is rejected.
+        tracker.replace_all(HashMap::from([(tenant_id, 1_000)]));
+        let mut over = Request::new(ExportMetricsServiceRequest::default());
+        over.extensions_mut().insert(test_tenant_context());
+        let status = service
+            .export(over)
+            .await
+            .expect_err("export at quota must be rejected");
+
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert!(status.message().contains("quota_exceeded"));
     }
 }

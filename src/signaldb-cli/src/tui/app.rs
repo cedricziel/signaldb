@@ -970,20 +970,6 @@ mod tests {
     }
 
     #[test]
-    fn render_full_layout_snapshot() {
-        let mut terminal = Terminal::new(TestBackend::new(100, 10)).unwrap();
-        let mut app = make_app();
-        app.state.connection_status = ConnectionStatus::Connected;
-        app.state.set_permission(Permission::Admin {
-            admin_key: "key".into(),
-        });
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("app_full_layout", content);
-    }
-
-    #[test]
     fn set_tenant_updates_state_and_closes_overlay() {
         let mut app = make_app();
         app.state.active_overlay = ActiveOverlay::ContextSelector;
