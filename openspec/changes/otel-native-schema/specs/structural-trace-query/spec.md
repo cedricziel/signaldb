@@ -54,18 +54,24 @@ under memory pressure rather than completing.
 
 ### Requirement: A hard per-trace resource budget bounds evaluation
 
-Because a single trace can contain an arbitrarily large number of spans, the
-per-trace evaluator SHALL enforce a configurable hard budget (a maximum span count
-and/or byte size per evaluated trace). A trace exceeding the budget SHALL fail with
-an explicit resource error (and identify the offending trace) rather than proceed to
-out-of-memory termination. The materialized-ancestry strategy SHALL enforce the
-equivalent budget at write time (bounding the precomputed ancestry it will store).
+Because a single trace can contain an arbitrarily large number of spans — and a
+single span can carry large attribute/event/link payloads — the per-trace
+evaluator SHALL enforce a **mandatory finite byte budget** per evaluated trace (a
+span-count cap MAY be configured additionally, but is not sufficient alone). The
+byte budget SHALL be checked **before** adding a span's data to the per-trace
+adjacency structure. A trace exceeding the budget SHALL produce an **explicit
+outcome — a resource error that fails the query, or an explicitly-flagged partial
+result — never a silent truncation or a false negative**, and SHALL identify the
+offending trace. The materialized-ancestry strategy SHALL enforce the equivalent
+aggregate per-trace budget **at write time**, with the same explicit-outcome rule
+(no silently truncated ancestry).
 
-#### Scenario: Oversized trace errors within budget, not OOM
+#### Scenario: Oversized trace produces an explicit outcome, not OOM or a false negative
 
-- **WHEN** a matched trace exceeds the configured per-trace span/byte budget
-- **THEN** evaluation of that trace fails with an explicit resource error naming the
-  trace, and the process does not OOM
+- **WHEN** a matched trace exceeds the mandatory per-trace byte budget
+- **THEN** the query fails with an explicit resource error naming the trace (or
+  returns an explicitly-flagged partial result) — never a silent truncation, a
+  false negative, or an OOM
 
 ### Requirement: Structural matching is trace-only
 
