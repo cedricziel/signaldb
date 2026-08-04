@@ -43,6 +43,11 @@ when a span has none. Exceptions follow the OpenTelemetry convention — the
 event named `exception`, carrying `exception.message`/`.type`/`.stacktrace`
 in its attributes — so a failure recorded on a span is visible in the trace.
 
+Responses additionally carry SignalDB's server-side trace context and stage
+timings (`Server-Timing` with `traceparent`, `querier`/`convert`/`total`
+`dur` entries, and a `traceresponse` header) — see
+[Trace Context on HTTP Responses](response-trace-context.md).
+
 ## Error mapping
 
 | HTTP status | Meaning                                                                      |

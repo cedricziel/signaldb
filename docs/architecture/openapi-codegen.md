@@ -61,6 +61,11 @@ flowchart LR
 The router serves this document live at `/api/v1/openapi.json`
 (`openapi_document()`), so the served spec is always exactly the code.
 
+Cross-cutting response headers that apply to every operation — the
+`Server-Timing`/`traceresponse` trace-context headers the shared middleware
+adds — are documented once in `info.description`, not repeated as per-response
+header schemas on each path.
+
 ## The spec artifact and its golden test
 
 `api/signaldb-api.json` is the committed OpenAPI 3.1 document. A golden test in

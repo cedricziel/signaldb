@@ -71,6 +71,13 @@ Trace continuity: a caller-supplied W3C `traceparent` is honored at every
 boundary, and the sampler is parent-based by default (an unrecognized
 `OTEL_TRACES_SAMPLER` value also falls back to parent-based).
 
+The HTTP middleware also returns the server span's context to the caller on
+every response (`Server-Timing: traceparent;desc="..."` + `traceresponse`,
+plus `dur` stage timings), with the trace flags reflecting the sampling
+decision. Headers are omitted when self-monitoring is disabled and on
+`_system` tenant requests. Caller-facing reference:
+[Trace Context on HTTP Responses](../users/response-trace-context.md).
+
 ## Renames (breaking for dashboards)
 
 | Old                                                       | New                                                   |
