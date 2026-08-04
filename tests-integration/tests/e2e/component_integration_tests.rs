@@ -1,14 +1,18 @@
 use acceptor::handler::otlp_grpc::TraceHandler;
 use acceptor::services::otlp_trace_service::TraceAcceptorService;
+use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use common::config::Configuration;
-use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
+use common::flight::transport::{FlightServiceMetadata, InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::{Wal, WalConfig};
 use futures::{StreamExt, TryStreamExt, stream};
 use object_store::{ObjectStore, memory::InMemory};
 use opentelemetry_proto::tonic::{
-    collector::trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
+    collector::trace::v1::{
+        ExportTraceServiceRequest, trace_service_client::TraceServiceClient,
+        trace_service_server::TraceServiceServer,
+    },
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
 };
 use querier::flight::QuerierFlightService;
@@ -17,9 +21,131 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
-use tokio::time::{sleep, timeout};
-use tonic::transport::Server;
+use tokio::time::{Instant, sleep, timeout};
+use tonic::transport::{Channel, Server};
 use writer::IcebergWriterFlightService;
+
+/// Poll `flight_transport` until at least `min_count` services advertising
+/// `capability` are discoverable, or `timeout_duration` elapses.
+///
+/// Replaces a fixed "give the service time to register" sleep with a check
+/// of the actual condition being waited for: the test proceeds the moment
+/// registration lands, and the timeout only bounds a genuine registration
+/// failure rather than pacing the happy path.
+async fn wait_for_capability(
+    flight_transport: &InMemoryFlightTransport,
+    capability: ServiceCapability,
+    min_count: usize,
+    timeout_duration: Duration,
+) -> Vec<FlightServiceMetadata> {
+    let start = Instant::now();
+    loop {
+        let services = flight_transport
+            .discover_services_by_capability(capability.clone())
+            .await;
+        if services.len() >= min_count || start.elapsed() >= timeout_duration {
+            return services;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Poll until every `(capability, min_count)` pair is satisfied, or
+/// `timeout_duration` elapses. Used where a test needs several services
+/// registered before proceeding, instead of one fixed sleep covering all of
+/// them.
+async fn wait_for_capabilities(
+    flight_transport: &InMemoryFlightTransport,
+    expected: &[(ServiceCapability, usize)],
+    timeout_duration: Duration,
+) {
+    let start = Instant::now();
+    loop {
+        let mut satisfied = true;
+        for (capability, min_count) in expected {
+            let count = flight_transport
+                .discover_services_by_capability(capability.clone())
+                .await
+                .len();
+            if count < *min_count {
+                satisfied = false;
+                break;
+            }
+        }
+        if satisfied || start.elapsed() >= timeout_duration {
+            return;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Poll the object store until it has persisted at least one object, or
+/// `timeout_duration` elapses.
+///
+/// Replaces a fixed "allow time for async processing" sleep with a check of
+/// the actual condition the test cares about — data landing in the store.
+async fn wait_for_objects(
+    object_store: &Arc<dyn ObjectStore>,
+    timeout_duration: Duration,
+) -> Vec<object_store::ObjectMeta> {
+    let start = Instant::now();
+    loop {
+        let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
+        if !objects.is_empty() || start.elapsed() >= timeout_duration {
+            return objects;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Connect to a gRPC OTLP trace endpoint, retrying until the server is
+/// accepting connections or `timeout_duration` elapses.
+///
+/// `tokio::spawn`-ed servers need a moment to bind; this replaces a fixed
+/// pre-connect sleep with a retry on the actual failure mode (connection
+/// refused).
+async fn connect_trace_client_with_retry(
+    endpoint: String,
+    timeout_duration: Duration,
+) -> TraceServiceClient<Channel> {
+    let start = Instant::now();
+    loop {
+        match TraceServiceClient::connect(endpoint.clone()).await {
+            Ok(client) => return client,
+            Err(e) => {
+                if start.elapsed() >= timeout_duration {
+                    panic!("Failed to connect to {endpoint} after {timeout_duration:?}: {e}");
+                }
+                sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+}
+
+/// Retry `get_client_for_capability` until it succeeds or `timeout_duration`
+/// elapses — the actual condition a fixed "let the writer register" sleep
+/// was standing in for.
+async fn get_client_with_retry(
+    flight_transport: &InMemoryFlightTransport,
+    capability: ServiceCapability,
+    timeout_duration: Duration,
+) -> Result<FlightServiceClient<Channel>, Box<dyn std::error::Error + Send + Sync>> {
+    let start = Instant::now();
+    loop {
+        match flight_transport
+            .get_client_for_capability(capability.clone())
+            .await
+        {
+            Ok(client) => return Ok(client),
+            Err(e) => {
+                if start.elapsed() >= timeout_duration {
+                    return Err(e);
+                }
+                sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+}
 
 /// Test the complete flow: Acceptor → Writer → WAL → Object Store
 #[tokio::test]
@@ -93,8 +219,14 @@ async fn test_acceptor_writer_flow() {
 
     let writer_id = writer_bootstrap.service_id();
 
-    // Give services time to start
-    sleep(Duration::from_millis(200)).await;
+    // Wait for the writer to register as discoverable before pointing the
+    // acceptor at it.
+    let storage_services =
+        wait_for_capability(&flight_transport, ServiceCapability::Storage, 1, Duration::from_secs(10)).await;
+    assert!(
+        !storage_services.is_empty(),
+        "Writer did not register a Storage-capable service within the timeout"
+    );
 
     // Set up acceptor with flight transport
     let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
@@ -111,7 +243,6 @@ async fn test_acceptor_writer_flow() {
         .serve(acceptor_addr);
 
     tokio::spawn(acceptor_server);
-    sleep(Duration::from_millis(200)).await;
 
     // Create test trace data
     let trace_id = vec![1; 16];
@@ -151,9 +282,7 @@ async fn test_acceptor_writer_flow() {
 
     // Send trace to acceptor
     let endpoint = format!("http://{acceptor_addr}");
-    let mut client = opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint)
-        .await
-        .unwrap();
+    let mut client = connect_trace_client_with_retry(endpoint, Duration::from_secs(10)).await;
 
     let _response = timeout(Duration::from_secs(5), client.export(trace_request))
         .await
@@ -206,9 +335,7 @@ async fn test_acceptor_writer_flow() {
     );
 
     // Verify data reached object store via writer
-    sleep(Duration::from_millis(2000)).await; // Allow more time for async processing
-
-    let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
+    let objects = wait_for_objects(&object_store, Duration::from_secs(15)).await;
     println!("🔍 Objects in store: {:?}", objects.len());
     for obj in &objects {
         println!("  - {}", obj.location);
@@ -282,12 +409,14 @@ async fn test_querier_integration() {
 
     tokio::spawn(querier_server);
 
-    sleep(Duration::from_millis(200)).await;
-
     // Test that querier can be discovered
-    let querier_services = flight_transport
-        .discover_services_by_capability(ServiceCapability::QueryExecution)
-        .await;
+    let querier_services = wait_for_capability(
+        &flight_transport,
+        ServiceCapability::QueryExecution,
+        1,
+        Duration::from_secs(10),
+    )
+    .await;
 
     assert!(
         !querier_services.is_empty(),
@@ -433,8 +562,16 @@ async fn test_end_to_end_pipeline() {
     // Focus on Flight service integration testing
     println!("✓ All Flight services started (acceptor, writer, querier)");
 
-    // Allow all services to start and register
-    sleep(Duration::from_secs(2)).await;
+    // Wait for the writer and querier to register before sending data.
+    wait_for_capabilities(
+        &flight_transport,
+        &[
+            (ServiceCapability::Storage, 1),
+            (ServiceCapability::QueryExecution, 1),
+        ],
+        Duration::from_secs(10),
+    )
+    .await;
 
     // Debug: Check what services are registered
     let trace_ingestion_services = flight_transport
@@ -468,9 +605,7 @@ async fn test_end_to_end_pipeline() {
     };
 
     let endpoint = format!("http://{acceptor_addr}");
-    let mut otlp_client = opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint)
-        .await
-        .unwrap();
+    let mut otlp_client = connect_trace_client_with_retry(endpoint, Duration::from_secs(10)).await;
 
     let _response = timeout(Duration::from_secs(5), otlp_client.export(trace_request))
         .await
@@ -479,10 +614,8 @@ async fn test_end_to_end_pipeline() {
 
     println!("✓ Step 1: OTLP trace sent to acceptor");
 
-    // Step 2: Allow time for processing and verify data in object store
-    sleep(Duration::from_secs(3)).await;
-
-    let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
+    // Step 2: Wait for processing and verify data in object store
+    let objects = wait_for_objects(&object_store, Duration::from_secs(15)).await;
     println!("Objects in store: {}", objects.len());
     for obj in &objects {
         println!("  - {}", obj.location);
@@ -572,12 +705,14 @@ async fn test_direct_acceptor_writer_flight() {
 
     let _writer_id = writer_bootstrap.service_id();
 
-    sleep(Duration::from_millis(500)).await;
-
-    // Test 1: Can we get a Flight client for the writer?
-    let client_result = flight_transport
-        .get_client_for_capability(ServiceCapability::Storage)
-        .await;
+    // Test 1: Can we get a Flight client for the writer? Poll instead of a
+    // fixed sleep since writer registration completes asynchronously.
+    let client_result = get_client_with_retry(
+        &flight_transport,
+        ServiceCapability::Storage,
+        Duration::from_secs(10),
+    )
+    .await;
 
     println!("Flight client creation: {:?}", client_result.is_ok());
     assert!(
@@ -627,9 +762,7 @@ async fn test_direct_acceptor_writer_flight() {
     println!("Received {response_count} put responses");
 
     // Test 3: Check if data reached object store
-    sleep(Duration::from_secs(2)).await;
-
-    let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
+    let objects = wait_for_objects(&object_store, Duration::from_secs(15)).await;
     println!("Objects in store after direct Flight: {}", objects.len());
 
     for obj in &objects {

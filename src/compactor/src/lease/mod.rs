@@ -353,6 +353,17 @@ mod tests {
         }
     }
 
+    // NOTE on determinism: lease expiry is computed against `Utc::now()`
+    // (wall-clock, see `renew`/catalog SQL comparisons) rather than tokio's
+    // virtual clock, so `tokio::time::pause()`/`advance()` cannot substitute
+    // for real elapsed time in this test. Real sleeps are therefore
+    // unavoidable, but the assertions below are restructured to be
+    // load-tolerant: instead of a single fixed sleep followed by one
+    // point-in-time check (which can false-fail if the renewal task's first
+    // tick is delayed by scheduler contention under CI load), both phases
+    // poll for the actual effect being waited on across a generous window,
+    // so a slow-but-eventually-correct renewal still passes and only a
+    // genuine regression times out.
     #[tokio::test(flavor = "multi_thread")]
     async fn renewal_keeps_lease_held_past_its_ttl() {
         let catalog = Arc::new(make_catalog().await);
@@ -364,6 +375,7 @@ mod tests {
         let mgr1 = LeaseManager::new(catalog.clone(), id1, ttl);
         let mgr2 = LeaseManager::new(catalog.clone(), id2, ttl);
         let cand = make_candidate("renewal-test");
+        let poll_interval = Duration::from_millis(150);
 
         let lease = mgr1
             .try_acquire_default(&cand)
@@ -372,24 +384,37 @@ mod tests {
             .expect("instance 1 acquires");
         let renewal = mgr1.spawn_renewal(lease.clone());
 
-        // Sleep past the original TTL: the renewal task must have
-        // extended the lease, so instance 2 still cannot take it.
-        tokio::time::sleep(ttl + Duration::from_millis(500)).await;
-        let steal = mgr2.try_acquire_default(&cand).await.unwrap();
-        assert!(
-            steal.is_none(),
-            "renewed lease must not be stolen after the original TTL"
-        );
+        // While the renewal task is alive, the lease must never become
+        // stealable -- checked repeatedly across a window well past the
+        // original TTL, not just once at a single fixed offset.
+        let hold_window = ttl + Duration::from_secs(2);
+        let start = std::time::Instant::now();
+        while start.elapsed() < hold_window {
+            let steal = mgr2.try_acquire_default(&cand).await.unwrap();
+            assert!(
+                steal.is_none(),
+                "renewed lease must not be stolen while renewal is active (t={:?})",
+                start.elapsed()
+            );
+            tokio::time::sleep(poll_interval).await;
+        }
 
-        // Stop renewing: after the TTL elapses the lease expires and
-        // instance 2 takes over.
+        // Stop renewing: poll (bounded by a generous timeout) until the
+        // lease becomes claimable, rather than sleeping a fixed duration
+        // and checking once.
         drop(renewal);
-        tokio::time::sleep(ttl + Duration::from_millis(500)).await;
-        let steal = mgr2.try_acquire_default(&cand).await.unwrap();
-        assert!(
-            steal.is_some(),
-            "expired lease must be claimable once renewal stops"
-        );
+        let takeover_timeout = ttl + Duration::from_secs(5);
+        let start = std::time::Instant::now();
+        loop {
+            if mgr2.try_acquire_default(&cand).await.unwrap().is_some() {
+                break;
+            }
+            assert!(
+                start.elapsed() < takeover_timeout,
+                "expired lease should become claimable within {takeover_timeout:?} once renewal stops"
+            );
+            tokio::time::sleep(poll_interval).await;
+        }
     }
 
     #[tokio::test]

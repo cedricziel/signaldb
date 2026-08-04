@@ -3,52 +3,44 @@
 //! This test verifies that the compactor correctly handles concurrent writes
 //! from the Writer service using Iceberg's optimistic concurrency control.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use common::catalog_manager::CatalogManager;
-use compactor::executor::{CompactionExecutor, ExecutorConfig};
+use compactor::executor::{CompactionExecutor, CompactionStatus, ExecutorConfig};
 use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionCandidate, PartitionStats};
-use datafusion::arrow::array::{Int64Array, StringArray};
-use datafusion::arrow::datatypes::{DataType, Field, Schema};
-use datafusion::arrow::record_batch::RecordBatch;
 use object_store::memory::InMemory;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::time::sleep;
+use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
+use tests_integration::generators;
 use writer::IcebergTableWriter;
 
-/// Creates a test trace RecordBatch with the given trace_id prefix and row count
-fn create_trace_batch(trace_id_prefix: &str, num_rows: usize) -> Result<RecordBatch> {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("trace_id", DataType::Utf8, false),
-        Field::new("span_id", DataType::Utf8, false),
-        Field::new("span_name", DataType::Utf8, false),
-        Field::new("timestamp", DataType::Int64, false),
-        Field::new("duration_ns", DataType::Int64, false),
-    ]));
-
-    let trace_ids: Vec<String> = (0..num_rows)
-        .map(|i| format!("{trace_id_prefix}-{i:04}"))
-        .collect();
-    let span_ids: Vec<String> = (0..num_rows).map(|i| format!("span-{i:04}")).collect();
-    let span_names: Vec<String> = (0..num_rows).map(|_| "test-span".to_string()).collect();
-    let timestamps: Vec<i64> = (0..num_rows)
-        .map(|i| 1704067200000000 + i as i64 * 1000)
-        .collect();
-    let durations: Vec<i64> = (0..num_rows).map(|i| 1000000 + i as i64 * 100).collect();
-
-    let batch = RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(StringArray::from(trace_ids)),
-            Arc::new(StringArray::from(span_ids)),
-            Arc::new(StringArray::from(span_names)),
-            Arc::new(Int64Array::from(timestamps)),
-            Arc::new(Int64Array::from(durations)),
-        ],
-    )?;
-
-    Ok(batch)
+/// Writes `num_files` single-file batches of `rows_per_file` rows each into a
+/// single partition, via the shared [`generators::generate_traces`] helper.
+///
+/// This deliberately reuses the real v1 trace schema/generator (see
+/// `tests-integration/src/generators/data_generator.rs`) rather than a
+/// test-local hand-rolled `RecordBatch`: an earlier, narrower hand-rolled
+/// schema here was missing columns the writer's schema requires (e.g.
+/// `service_name`), and every write site was wrapped in a
+/// `log::warn!`-and-`return Ok(())` guard that silently turned that write
+/// failure into a passing test. Now that those guards are gone (writes are
+/// hard errors), reusing the already-correct generator both fixes the
+/// schema mismatch and avoids reintroducing a second, divergent copy of the
+/// trace schema that could drift out of sync again.
+async fn write_trace_files(
+    writer: &mut IcebergTableWriter,
+    num_files: usize,
+    rows_per_file: usize,
+) -> Result<()> {
+    let config = DataGeneratorConfig {
+        partition_count: 1,
+        files_per_partition: num_files,
+        rows_per_file,
+        base_timestamp: chrono::Utc::now().timestamp_millis() - (60 * 60 * 1000),
+        partition_granularity: PartitionGranularity::Hour,
+    };
+    generators::generate_traces(writer, &config).await?;
+    Ok(())
 }
 
 /// Test concurrent writes scenario:
@@ -77,36 +69,20 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
     // Phase 1: Create initial small files via Writer
     log::info!("Phase 1: Creating initial small files via Writer");
 
-    let writer_result = IcebergTableWriter::new(
+    let mut writer = IcebergTableWriter::new(
         &catalog_manager,
         object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
     )
-    .await;
+    .await
+    .context("Failed to create writer for initial batches")?;
 
-    let mut writer = match writer_result {
-        Ok(w) => w,
-        Err(e) => {
-            log::warn!("Could not create writer in test environment: {e}");
-            log::info!("Test skipped due to environment limitations");
-            return Ok(());
-        }
-    };
-
-    // Write 10 small batches (100 rows each = 1000 rows total)
-    for i in 0..10 {
-        let batch = create_trace_batch(&format!("initial-{i}"), 100)?;
-        if let Err(e) = writer
-            .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
-            .await
-        {
-            log::warn!("Failed to write initial batch {i}: {e}");
-            return Ok(()); // Skip test if writes fail
-        }
-        log::debug!("Wrote initial batch {i}");
-    }
+    // Write 10 small files (100 rows each = 1000 rows total)
+    write_trace_files(&mut writer, 10, 100)
+        .await
+        .context("Failed to write initial batches")?;
 
     log::info!("Initial writes complete: 10 small batches created");
 
@@ -114,6 +90,7 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
     log::info!("Phase 2: Setting up compaction executor");
 
     let executor_config = ExecutorConfig::default();
+    let max_retries = executor_config.max_retries;
     let metrics = CompactionMetrics::new();
     let executor = Arc::new(CompactionExecutor::new(
         catalog_manager.clone(),
@@ -141,76 +118,77 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
     let executor_clone = executor.clone();
     let candidate_clone = candidate.clone();
 
+    // Release the compaction task and the concurrent writer from the same
+    // starting line via a Barrier instead of guessing a "head start" with a
+    // fixed sleep: a constant-duration sleep either wastes wall-clock when
+    // it's longer than needed, or, under CI load, fails to give compaction
+    // any lead at all -- flaky in both directions. The Barrier removes the
+    // arbitrary constant; it does not (and cannot, without adding test-only
+    // hooks into the compactor's execution path) force *which* side wins the
+    // resulting Iceberg OCC race, so every possible race outcome is asserted
+    // explicitly in Phase 6 instead of only checking the branch that
+    // happened to occur.
+    let start_barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let compaction_barrier = start_barrier.clone();
+
     let compaction_handle = tokio::spawn(async move {
+        compaction_barrier.wait().await;
         log::info!("Compaction task started");
         let result = executor_clone.execute_candidate(candidate_clone).await;
         log::info!("Compaction task completed: {result:?}");
         result
     });
 
-    // Give compaction a moment to start
-    sleep(Duration::from_millis(50)).await;
+    start_barrier.wait().await;
 
     // Phase 4: Simulate concurrent write from Writer service
     log::info!("Phase 4: Writing concurrent data via Writer");
 
-    let concurrent_writer_result = IcebergTableWriter::new(
+    let mut concurrent_writer = IcebergTableWriter::new(
         &catalog_manager,
         object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
     )
-    .await;
+    .await
+    .context("Failed to create concurrent writer")?;
 
-    if let Ok(mut concurrent_writer) = concurrent_writer_result {
-        // Write 5 new batches concurrently
-        for i in 0..5 {
-            let batch = create_trace_batch(&format!("concurrent-{i}"), 100)?;
-            if let Err(e) = concurrent_writer
-                .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
-                .await
-            {
-                log::warn!("Failed to write concurrent batch {i}: {e}");
-                // Continue anyway
-            } else {
-                log::debug!("Wrote concurrent batch {i}");
-            }
-            sleep(Duration::from_millis(20)).await; // Stagger writes slightly
-        }
-        log::info!("Concurrent writes complete: 5 new batches created");
-    } else {
-        log::warn!("Could not create concurrent writer");
-    }
+    // Write 5 new files concurrently. append_batches_with_marker already
+    // retries Iceberg CAS conflicts internally (see
+    // IcebergTableWriter::append_batches_with_marker), so an error surfacing
+    // here past that retry loop is a genuine failure, not an expected
+    // transient race with the concurrently running compaction -- it must
+    // fail the test rather than being logged and skipped.
+    write_trace_files(&mut concurrent_writer, 5, 100)
+        .await
+        .context("Failed to write concurrent batches")?;
+    log::info!("Concurrent writes complete: 5 new batches created");
 
-    // Phase 5: Wait for compaction to complete
+    // Phase 5: Wait for compaction to complete. A hard error here (task
+    // panic, or a non-conflict failure surfacing out of execute_candidate)
+    // must fail the test, not be logged and swallowed -- silently accepting
+    // it would let the test "pass" having asserted nothing about the one
+    // thing it exists to check.
     log::info!("Phase 5: Waiting for compaction to complete");
-    let compaction_result = compaction_handle.await?;
+    let result = compaction_handle
+        .await
+        .context("Compaction task panicked")?
+        .context("Compaction execution returned a hard error")?;
 
-    // Phase 6: Verify results
+    // Phase 6: Verify results. Every branch of the race is asserted
+    // unconditionally on the authoritative `result.status` -- no branch is
+    // skipped, and no branch is "the incidental timing didn't hit it, so
+    // nothing was checked".
     log::info!("Phase 6: Verifying results");
+    log::info!("Compaction completed with status: {:?}", result.status);
+    log::info!("Duration: {:?}", result.duration);
+    log::info!(
+        "Input files: {}, Output files: {}",
+        result.input_files_count,
+        result.output_files_count
+    );
 
-    match compaction_result {
-        Ok(result) => {
-            log::info!("Compaction completed with status: {:?}", result.status);
-            log::info!("Duration: {:?}", result.duration);
-            log::info!(
-                "Input files: {}, Output files: {}",
-                result.input_files_count,
-                result.output_files_count
-            );
-
-            if let Some(error) = result.error {
-                log::warn!("Compaction reported error: {error}");
-            }
-        }
-        Err(e) => {
-            log::warn!("Compaction failed: {e:?}");
-            // This is acceptable - concurrent operations may cause conflicts
-        }
-    }
-
-    // Check metrics
     let summary = metrics.summary();
     log::info!("=== Compaction Metrics ===");
     log::info!("Jobs started: {}", summary.jobs_started);
@@ -221,37 +199,88 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
     log::info!("Total input files: {}", summary.total_input_files);
     log::info!("Total output files: {}", summary.total_output_files);
 
-    // Key assertion: At least one job should have been started
     assert_eq!(
         summary.jobs_started, 1,
-        "Should have started 1 compaction job"
+        "Should have started exactly 1 compaction job"
+    );
+    assert_eq!(
+        summary.jobs_succeeded + summary.jobs_failed,
+        1,
+        "The single compaction job should have resolved exactly once"
     );
 
-    // If conflicts were detected, verify retry logic was triggered
-    if summary.conflicts_detected > 0 {
-        log::info!(
-            "✓ Conflicts detected: {}, retries attempted: {}",
-            summary.conflicts_detected,
-            summary.retries_attempted
-        );
-        assert!(
-            summary.retries_attempted > 0,
-            "Should have attempted retries after conflict detection"
-        );
-        assert!(
-            summary.retries_attempted <= 3,
-            "Should not exceed max retry attempts (3)"
-        );
-    }
-
-    // If compaction succeeded, verify file consolidation happened
-    if summary.jobs_succeeded > 0 && summary.total_input_files > 0 {
-        log::info!("✓ Compaction succeeded");
-        if summary.total_output_files < summary.total_input_files {
-            log::info!(
-                "✓ File consolidation: {} files -> {} files",
-                summary.total_input_files,
-                summary.total_output_files
+    match result.status {
+        CompactionStatus::Success => {
+            assert_eq!(
+                summary.jobs_succeeded, 1,
+                "Success status must be reflected in the succeeded-jobs metric"
+            );
+            assert!(
+                result.output_files_count <= result.input_files_count,
+                "Successful compaction must not increase file count: {} -> {}",
+                result.input_files_count,
+                result.output_files_count
+            );
+        }
+        CompactionStatus::Conflict => {
+            assert_eq!(
+                summary.jobs_failed, 1,
+                "Conflict status must be reflected in the failed-jobs metric"
+            );
+            assert!(
+                summary.conflicts_detected >= 1,
+                "Conflict status must have recorded at least one conflict"
+            );
+            assert!(
+                (1..=max_retries as usize).contains(&summary.retries_attempted),
+                "Retries attempted ({}) should be between 1 and max_retries ({max_retries})",
+                summary.retries_attempted,
+            );
+        }
+        CompactionStatus::Failed => {
+            // KNOWN-ISSUE: with the Barrier-synchronized tight overlap this
+            // test now exercises, this branch is hit deterministically on
+            // this machine -- and it is masking a real compactor bug, not
+            // an acceptable outcome, so we pin it precisely rather than
+            // accepting any `Failed` status.
+            //
+            // `compactor::commit::is_conflict_error` (src/compactor/src/commit.rs)
+            // classifies retryable OCC conflicts by keyword-matching
+            // `anyhow::Error::to_string()`. But the only call site
+            // (executor.rs `execute_job`) wraps `commit_compaction()`'s
+            // result in `.context("Failed to commit compaction")` before
+            // that check ever sees it. `anyhow::Error`'s `Display` (what
+            // `.to_string()` uses) renders *only* the outermost context
+            // message, not the chain -- so the nested cause actually
+            // produced by a losing race, e.g. "Snapshot conflict: table
+            // snapshot changed from X to Y during compaction" (or the
+            // post-commit-verification variant), never reaches
+            // `is_conflict_error`. Every commit-time conflict is therefore
+            // misrouted to `CompactionStatus::Failed` and never retried --
+            // the conflict-retry path this test was written to exercise is
+            // effectively dead code. Confirmed by temporarily switching the
+            // `tracing::error!` in executor.rs to `{e:?}` and observing the
+            // full chain.
+            //
+            // Fixing `is_conflict_error` is a compactor behavior change,
+            // out of scope for this test-determinism cleanup -- reported
+            // instead so it can be fixed and this pin removed.
+            let is_pinned_known_issue =
+                result.error.as_deref() == Some("Failed to commit compaction");
+            assert!(
+                is_pinned_known_issue,
+                "Compaction failed with an unexpected non-conflict error -- concurrent OCC \
+                 writes should only ever produce Success, a recognized Conflict, or the pinned \
+                 known-issue commit failure, so this is a real bug: {:?}",
+                result.error
+            );
+            log::warn!(
+                "KNOWN-ISSUE: compaction lost the OCC race and was misclassified as Failed \
+                 instead of Conflict (see comment above) -- accepting this pinned outcome."
+            );
+            assert_eq!(
+                summary.jobs_failed, 1,
+                "Failed status must be reflected in the failed-jobs metric"
             );
         }
     }
@@ -279,34 +308,20 @@ async fn test_concurrent_compactions_different_partitions() -> Result<()> {
     let table_name = "traces";
 
     // Create initial data via Writer
-    let writer_result = IcebergTableWriter::new(
+    let mut writer = IcebergTableWriter::new(
         &catalog_manager,
         object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
     )
-    .await;
-
-    let mut writer = match writer_result {
-        Ok(w) => w,
-        Err(e) => {
-            log::warn!("Could not create writer: {e}");
-            return Ok(());
-        }
-    };
+    .await
+    .context("Failed to create writer")?;
 
     // Write data (simulating two logical partitions)
-    for i in 0..10 {
-        let batch = create_trace_batch(&format!("trace-{i}"), 100)?;
-        if let Err(e) = writer
-            .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
-            .await
-        {
-            log::warn!("Write failed: {e}");
-            return Ok(());
-        }
-    }
+    write_trace_files(&mut writer, 10, 100)
+        .await
+        .context("Failed to write test data")?;
 
     log::info!("Created test data");
 

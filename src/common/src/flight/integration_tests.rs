@@ -270,12 +270,13 @@ async fn test_catalog_unavailability_scenarios() {
         perms.set_mode(0o444); // r--r--r--
         std::fs::set_permissions(&restricted_dir, perms).unwrap();
 
+        let restricted_db_path = restricted_dir.join("test.db");
         let restricted_config = Configuration {
             database: DatabaseConfig {
-                dsn: format!("sqlite:{}/test.db", restricted_dir.display()),
+                dsn: format!("sqlite:{}", restricted_db_path.display()),
             },
             discovery: Some(DiscoveryConfig {
-                dsn: format!("sqlite:{}/test.db", restricted_dir.display()),
+                dsn: format!("sqlite:{}", restricted_db_path.display()),
                 heartbeat_interval: Duration::from_secs(1),
                 poll_interval: Duration::from_secs(2),
                 ttl: Duration::from_secs(10),
@@ -290,12 +291,39 @@ async fn test_catalog_unavailability_scenarios() {
         )
         .await;
 
-        // This might succeed or fail depending on system behavior
-        // The key is that it should handle the error gracefully
-        if result.is_err() {
-            // The error was handled gracefully
-            // Different systems may have different error messages
+        // Whether the restricted directory blocks catalog creation depends on
+        // whether the process honors Unix permission bits (e.g. it does not
+        // when running as root in some CI containers). Either outcome is
+        // acceptable, but each must be verified concretely rather than
+        // silently accepted -- a bare `if result.is_err() {}` with no `else`
+        // asserts nothing when the call unexpectedly succeeds.
+        match result {
+            Err(e) => {
+                let message = e.to_string();
+                assert!(
+                    !message.is_empty(),
+                    "Bootstrap failure against a restricted directory should carry a diagnostic error message"
+                );
+            }
+            Ok(bootstrap) => {
+                // Permission bits were bypassed (e.g. running as root); confirm
+                // the bootstrap genuinely succeeded rather than silently doing
+                // nothing, then clean up.
+                assert!(
+                    restricted_db_path.exists(),
+                    "A successful bootstrap should have created the catalog database file"
+                );
+                bootstrap
+                    .shutdown()
+                    .await
+                    .expect("Failed to shutdown bootstrap created against restricted directory");
+            }
         }
+
+        // Restore permissions so TempDir cleanup can remove the directory.
+        let mut perms = std::fs::metadata(&restricted_dir).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&restricted_dir, perms).unwrap();
     }
 }
 
@@ -423,24 +451,52 @@ async fn test_service_discovery_across_transports() {
         .await
         .expect("Failed to register second service");
 
-    // Wait a bit for catalog synchronization
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Poll until catalog synchronization makes both registrations visible from
+    // the other transport, instead of racing a fixed sleep against catalog
+    // propagation. The timeout only bounds genuine failure.
+    let discovery_timeout = Duration::from_secs(5);
+    let poll_interval = Duration::from_millis(20);
+    let start = tokio::time::Instant::now();
 
-    // Transport1 should be able to discover services registered by transport2 via catalog
-    let query_services_from_transport1 = transport1
-        .discover_services_by_capability(ServiceCapability::QueryExecution)
-        .await;
+    let (query_services_from_transport1, trace_services_from_transport2) = loop {
+        // Transport1 should be able to discover services registered by transport2 via catalog
+        let query_services_from_transport1 = transport1
+            .discover_services_by_capability(ServiceCapability::QueryExecution)
+            .await;
 
-    // Transport2 should be able to discover services registered by transport1 via catalog
-    let trace_services_from_transport2 = transport2
-        .discover_services_by_capability(ServiceCapability::TraceIngestion)
-        .await;
+        // Transport2 should be able to discover services registered by transport1 via catalog
+        let trace_services_from_transport2 = transport2
+            .discover_services_by_capability(ServiceCapability::TraceIngestion)
+            .await;
 
-    // Both should find services from the catalog (registered as ingesters)
-    // Note: The specific discovery behavior depends on catalog integration
+        if !query_services_from_transport1.is_empty() && !trace_services_from_transport2.is_empty()
+        {
+            break (
+                query_services_from_transport1,
+                trace_services_from_transport2,
+            );
+        }
+
+        if start.elapsed() >= discovery_timeout {
+            break (
+                query_services_from_transport1,
+                trace_services_from_transport2,
+            );
+        }
+
+        tokio::time::sleep(poll_interval).await;
+    };
+
+    // Both directions must find services from the catalog (registered as
+    // ingesters). A one-directional regression must fail the test, so this
+    // requires both, not either.
     assert!(
-        !query_services_from_transport1.is_empty() || !trace_services_from_transport2.is_empty(),
-        "Should discover services across transports via catalog"
+        !query_services_from_transport1.is_empty(),
+        "transport1 should discover the QueryExecution service registered by transport2 via catalog"
+    );
+    assert!(
+        !trace_services_from_transport2.is_empty(),
+        "transport2 should discover the TraceIngestion service registered by transport1 via catalog"
     );
 
     // Note: Bootstraps are moved when creating transports, so they are cleaned up automatically
