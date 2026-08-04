@@ -1761,8 +1761,11 @@ mod tests {
         #[tokio::test]
         async fn metrics_query_range_is_not_implemented() {
             let app = test_app().await;
+            // `q` is a required param: without it the Query extractor answers
+            // 400 before the handler runs. A well-formed request must get the
+            // handler's 501 (TraceQL metrics unimplemented, #552).
             assert_eq!(
-                authed_get(&app, "/tempo/api/metrics/query_range").await,
+                authed_get(&app, "/tempo/api/metrics/query_range?q=%7B%7D").await,
                 StatusCode::NOT_IMPLEMENTED
             );
         }
