@@ -50,7 +50,12 @@ The server is off by default. Enable it in `signaldb.toml`:
 enabled = true
 bind_address = "127.0.0.1:8228"      # serves MCP at /mcp; loopback by default
 router_url = "http://localhost:3000" # the router HTTP API to forward to
+router_timeout = 30                  # seconds per forwarded request (default 30)
 ```
+
+Each forwarded request is bounded by `router_timeout` (plus a fixed 5s connect
+timeout), so a hung router fails the tool call cleanly instead of hanging the
+agent indefinitely. Raise it if your agents run slow analytical queries.
 
 The server forwards live bearer credentials, so it binds **loopback by
 default**. Exposing it off-host means changing `bind_address` to a routable
@@ -67,7 +72,8 @@ cargo run --bin signaldb-mcp -- --stdio
 
 The same settings are available as environment variables (multi-word fields
 need the double-underscore form): `SIGNALDB__MCP__ENABLED`,
-`SIGNALDB__MCP__BIND_ADDRESS`, `SIGNALDB__MCP__ROUTER_URL`, and
+`SIGNALDB__MCP__BIND_ADDRESS`, `SIGNALDB__MCP__ROUTER_URL`,
+`SIGNALDB__MCP__ROUTER_TIMEOUT` (seconds, also `--router-timeout`), and
 `SIGNALDB__MCP__ALLOWED_HOSTS` (see below).
 
 ### The `Host` allowlist (serving beyond localhost)

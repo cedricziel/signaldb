@@ -45,6 +45,11 @@ struct Cli {
     #[arg(long, env = "SIGNALDB__MCP__ALLOWED_HOSTS", value_delimiter = ',')]
     allowed_hosts: Vec<String>,
 
+    /// Overall timeout, in seconds, for each HTTP request forwarded to the
+    /// router, so a hung router fails MCP tool calls instead of hanging them.
+    #[arg(long, env = "SIGNALDB__MCP__ROUTER_TIMEOUT", default_value_t = 30)]
+    router_timeout: u64,
+
     /// Serve MCP over stdio instead of HTTP (local development). Stdio has no
     /// per-request credential, so downstream calls carry none — dev only.
     #[arg(long)]
@@ -76,8 +81,10 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     init_tracing();
 
+    let router_timeout = std::time::Duration::from_secs(cli.router_timeout);
+
     if cli.stdio {
-        return serve_stdio(cli.router_url).await;
+        return serve_stdio(cli.router_url, router_timeout).await;
     }
 
     let addr: SocketAddr = cli
@@ -85,7 +92,7 @@ async fn main() -> Result<()> {
         .parse()
         .with_context(|| format!("Invalid bind address: {}", cli.bind_address))?;
 
-    let mut state = McpAppState::new(cli.router_url.clone());
+    let mut state = McpAppState::new(cli.router_url.clone()).with_router_timeout(router_timeout);
     match (cli.oauth_resource_url.clone(), cli.oauth_issuer_url.clone()) {
         (Some(resource_url), Some(issuer_url)) => {
             tracing::info!(%resource_url, %issuer_url, "OAuth resource metadata enabled");
@@ -126,11 +133,11 @@ fn init_tracing() {
 }
 
 /// Serve the MCP handler over stdio for local development.
-async fn serve_stdio(router_url: String) -> Result<()> {
+async fn serve_stdio(router_url: String, router_timeout: std::time::Duration) -> Result<()> {
     use rmcp::ServiceExt;
 
     tracing::info!("SignalDB MCP server starting on stdio (development)");
-    let service = McpServer::new(router_url)
+    let service = McpServer::new(router_url, router_timeout)
         .serve(rmcp::transport::stdio())
         .await
         .context("Failed to start MCP stdio transport")?;

@@ -1044,6 +1044,11 @@ pub struct McpConfig {
     /// it is resolved via service discovery like any other downstream call.
     #[serde(default)]
     pub router_url: Option<String>,
+    /// Overall timeout, in seconds, for HTTP requests the MCP server forwards
+    /// to the router. Guards MCP tool calls against a hung router.
+    /// Env: SIGNALDB__MCP__ROUTER_TIMEOUT
+    #[serde(default = "McpConfig::default_router_timeout")]
+    pub router_timeout: u64,
     /// OAuth 2.1 authorization-server settings for the MCP surface. The router
     /// serves the authorization server; the sidecar ignores this section.
     #[serde(default)]
@@ -1113,6 +1118,12 @@ impl McpConfig {
         // non-loopback address is an explicit opt-in that should sit behind TLS.
         "127.0.0.1:8228".to_string()
     }
+
+    fn default_router_timeout() -> u64 {
+        // Generous enough for slow analytical queries through the router,
+        // small enough that a hung router cannot hang MCP tool calls forever.
+        30
+    }
 }
 
 impl Default for McpConfig {
@@ -1121,6 +1132,7 @@ impl Default for McpConfig {
             enabled: false,
             bind_address: Self::default_bind(),
             router_url: None,
+            router_timeout: Self::default_router_timeout(),
             oauth: OAuthConfig::default(),
         }
     }
@@ -1820,6 +1832,29 @@ mod tests {
             assert_eq!(config.compactor.file_count_threshold, 20);
             assert_eq!(config.compactor.min_input_file_size_kb, 2048);
             assert_eq!(config.compactor.max_files_per_job, 100);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn mcp_router_timeout_defaults_to_30_seconds() {
+        let config = McpConfig::default();
+        assert_eq!(config.router_timeout, 30);
+    }
+
+    #[test]
+    fn mcp_router_timeout_env_var_overrides_default() {
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB__MCP__ROUTER_TIMEOUT", "45");
+
+            let config = Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                .merge(Env::prefixed("SIGNALDB__").split("__"))
+                .extract::<Configuration>()
+                .unwrap();
+
+            assert_eq!(config.mcp.router_timeout, 45);
 
             Ok(())
         });

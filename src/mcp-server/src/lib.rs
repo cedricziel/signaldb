@@ -19,7 +19,9 @@ pub mod server;
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::time::Duration;
 
+use anyhow::Context;
 use axum::{
     Json, Router,
     body::Body,
@@ -41,6 +43,16 @@ use server::McpServer;
 /// Headers forwarded from the MCP caller to the router on every downstream
 /// call, so the request is made as the caller.
 const FORWARDED_HEADERS: [&str; 3] = ["authorization", "x-tenant-id", "x-dataset-id"];
+
+/// Connect timeout for the HTTP client forwarding to the router. Short and
+/// fixed: establishing a TCP connection to the router is a local-network hop.
+pub const ROUTER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Default overall request timeout for the HTTP client forwarding to the
+/// router. Overridable via `SIGNALDB__MCP__ROUTER_TIMEOUT` (seconds) so slow
+/// analytical queries can be accommodated; a hung router must never hang MCP
+/// tool calls indefinitely (issue #885).
+pub const DEFAULT_ROUTER_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Prefix identifying a SignalDB OAuth 2.1 access token. Mirrors
 /// `common::auth::oauth::ACCESS_TOKEN_PREFIX`; duplicated deliberately so the
@@ -86,6 +98,8 @@ struct SessionBinding {
 pub struct McpAppState {
     /// Base URL of the router HTTP API downstream calls are forwarded to.
     pub router_base_url: String,
+    /// Overall timeout for each downstream request to the router.
+    pub router_timeout: Duration,
     /// Pins each MCP session (keyed by `mcp-session-id`) to the identity seen
     /// on its first request, so a session cannot be reused under a different
     /// tenant or credential mid-stream.
@@ -99,9 +113,16 @@ impl McpAppState {
     pub fn new(router_base_url: String) -> Self {
         Self {
             router_base_url,
+            router_timeout: DEFAULT_ROUTER_TIMEOUT,
             session_bindings: Arc::new(DashMap::new()),
             oauth: None,
         }
+    }
+
+    /// Override the overall timeout for downstream requests to the router.
+    pub fn with_router_timeout(mut self, timeout: Duration) -> Self {
+        self.router_timeout = timeout;
+        self
     }
 
     /// Advertise OAuth resource metadata (the PRM document + `401` challenge)
@@ -127,6 +148,7 @@ impl McpAppState {
 pub fn mcp_http_router(state: McpAppState, allowed_hosts: &[String]) -> Router {
     let session_manager = Arc::new(LocalSessionManager::default());
     let base_url = state.router_base_url.clone();
+    let router_timeout = state.router_timeout;
 
     let mut config = StreamableHttpServerConfig::default();
     if allowed_hosts.iter().any(|h| h == "*") {
@@ -140,7 +162,7 @@ pub fn mcp_http_router(state: McpAppState, allowed_hosts: &[String]) -> Router {
     }
 
     let service = StreamableHttpService::new(
-        move || Ok(McpServer::new(base_url.clone())),
+        move || Ok(McpServer::new(base_url.clone(), router_timeout)),
         session_manager,
         config,
     );
@@ -286,11 +308,22 @@ async fn mcp_auth_middleware(
 /// `dataset_override` sets `X-Dataset-ID` for tools that accept an explicit
 /// dataset argument; when `None`, the caller's incoming `X-Dataset-ID` (or the
 /// session default) is used.
+///
+/// `timeout` bounds each downstream request end-to-end (connect is separately
+/// capped at [`ROUTER_CONNECT_TIMEOUT`]), so a hung router fails the tool call
+/// instead of hanging it indefinitely.
+///
+/// # Errors
+///
+/// Returns an error if the underlying HTTP client cannot be constructed. This
+/// must not be swallowed: a fallback default client would silently drop the
+/// forwarded credential headers.
 pub fn sdk_client_for(
     parts: &Parts,
     router_base_url: &str,
     dataset_override: Option<&str>,
-) -> signaldb_sdk::Client {
+    timeout: Duration,
+) -> anyhow::Result<signaldb_sdk::Client> {
     let mut headers = HeaderMap::new();
     for name in FORWARDED_HEADERS {
         if name == "x-dataset-id" && dataset_override.is_some() {
@@ -309,9 +342,11 @@ pub fn sdk_client_for(
     }
     let http = reqwest::Client::builder()
         .default_headers(headers)
+        .connect_timeout(ROUTER_CONNECT_TIMEOUT)
+        .timeout(timeout)
         .build()
-        .unwrap_or_default();
-    signaldb_sdk::Client::new_with_client(router_base_url, http)
+        .context("Failed to build router HTTP client")?;
+    Ok(signaldb_sdk::Client::new_with_client(router_base_url, http))
 }
 
 #[cfg(test)]
@@ -573,6 +608,68 @@ mod tests {
         assert_ne!(res.status(), StatusCode::FORBIDDEN);
     }
 
+    /// Overall request timeout used by tests that expect a response.
+    const ROUTER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    #[test]
+    fn default_router_timeout_is_30_seconds() {
+        assert_eq!(DEFAULT_ROUTER_TIMEOUT, std::time::Duration::from_secs(30));
+        assert_eq!(test_state().router_timeout, DEFAULT_ROUTER_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn sdk_client_times_out_instead_of_hanging_on_stalled_router() {
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+
+        // A router that accepts the connection, reads the request, and never
+        // answers. Without a request timeout the tool call hangs forever
+        // (issue #885); with one it must fail fast.
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stalled mock server");
+        let addr = listener.local_addr().expect("mock server local addr");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept connection");
+            let mut buf = [0u8; 4096];
+            // Keep reading (and never respond) until the client gives up.
+            while let Ok(n) = socket.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+            }
+        });
+
+        let parts = RequestBuilder::new()
+            .method("POST")
+            .uri("/mcp")
+            .header("authorization", "Bearer sk-tenant-key")
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        let client = sdk_client_for(
+            &parts,
+            &format!("http://{addr}"),
+            None,
+            std::time::Duration::from_millis(200),
+        )
+        .expect("build forwarding client");
+
+        let started = std::time::Instant::now();
+        let result = client.list_tenants().send().await;
+        assert!(
+            result.is_err(),
+            "request against a stalled router must fail, not succeed"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "request must be cut off by the client timeout, took {:?}",
+            started.elapsed()
+        );
+        server.abort();
+    }
+
     /// Spawns a one-shot mock HTTP server, returning its address and a handle
     /// that resolves to the raw request bytes it received once a client has
     /// connected and sent a request.
@@ -630,7 +727,8 @@ mod tests {
             .0;
 
         let (addr, handle) = spawn_header_capturing_server().await;
-        let client = sdk_client_for(&parts, &format!("http://{addr}"), None);
+        let client = sdk_client_for(&parts, &format!("http://{addr}"), None, ROUTER_TIMEOUT)
+            .expect("build forwarding client");
         client
             .list_tenants()
             .send()
@@ -666,7 +764,13 @@ mod tests {
             .0;
 
         let (addr, handle) = spawn_header_capturing_server().await;
-        let client = sdk_client_for(&parts, &format!("http://{addr}"), Some("prod"));
+        let client = sdk_client_for(
+            &parts,
+            &format!("http://{addr}"),
+            Some("prod"),
+            ROUTER_TIMEOUT,
+        )
+        .expect("build forwarding client");
         client
             .list_tenants()
             .send()
