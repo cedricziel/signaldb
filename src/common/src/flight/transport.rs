@@ -367,9 +367,16 @@ impl InMemoryFlightTransport {
         // advertise zstd for responses. Every in-tree Flight server accepts
         // zstd (see `crate::flight::flight_service_server`); mixed-version
         // deployments must upgrade servers before clients.
+        //
+        // Also raise tonic's 4 MiB receive default on both directions: one
+        // OTLP export becomes one FlightData message, and Arrow encoding
+        // inflates OTLP, so the default wedges oversized batches in the WAL
+        // retry loop (#944). Every Flight server applies the same limit.
         let client = FlightServiceClient::new(channel)
             .send_compressed(tonic::codec::CompressionEncoding::Zstd)
-            .accept_compressed(tonic::codec::CompressionEncoding::Zstd);
+            .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
+            .max_decoding_message_size(crate::flight::MAX_GRPC_MESSAGE_SIZE)
+            .max_encoding_message_size(crate::flight::MAX_GRPC_MESSAGE_SIZE);
 
         // Add to connection pool
         {

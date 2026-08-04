@@ -33,6 +33,20 @@ pub mod transport;
 #[cfg(test)]
 mod integration_tests;
 
+/// Maximum gRPC message size (encoding and decoding) for all Flight
+/// servers and clients, in bytes.
+///
+/// tonic's default receive limit is 4 MiB. One OTLP export becomes one
+/// FlightData message on the acceptor → writer `do_put` path, and Arrow
+/// encoding inflates OTLP (resource JSON repeated per row, IDs as hex
+/// text), so a ~4 MB OTLP payload can exceed the default. When that
+/// happens the writer rejects `do_put`, and the acceptor's WAL entry
+/// retries the same oversized batch forever — a permanently wedged entry.
+///
+/// Every `FlightServiceServer` and `FlightServiceClient` must apply this
+/// limit via `max_decoding_message_size` / `max_encoding_message_size`.
+pub const MAX_GRPC_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+
 /// IPC write options for Flight payloads: lz4-frame buffer compression.
 ///
 /// lz4 keeps encode/decode cheap on the latency-sensitive query path while
@@ -77,14 +91,29 @@ pub fn batches_to_compressed_flight_data(
     Ok(flight_data)
 }
 
-/// Construct a `FlightServiceServer` with the shared compression policy:
-/// accept zstd- and gzip-compressed requests (uncompressed always works)
-/// and compress responses with zstd when the client advertises support.
+/// Construct a `FlightServiceServer` with the shared transport policy.
+///
+/// Every Flight server in SignalDB must be built through this function so
+/// no construction site can diverge from either policy:
+///
+/// - **Compression**: accept zstd- and gzip-compressed requests
+///   (uncompressed always works) and compress responses with zstd when the
+///   client advertises support.
+/// - **Message-size limits**: [`MAX_GRPC_MESSAGE_SIZE`] on both directions,
+///   because tonic's 4 MiB receive default wedges oversized `do_put`
+///   batches in the WAL retry loop (#944).
+///
+/// For authenticated endpoints use
+/// [`flight_service_server_with_interceptor`] — the size setters are not
+/// exposed once the interceptor wrapper is applied, so the policy must be
+/// attached to the inner server first.
 pub fn flight_service_server<T: FlightService>(service: T) -> FlightServiceServer<T> {
     FlightServiceServer::new(service)
         .accept_compressed(CompressionEncoding::Zstd)
         .accept_compressed(CompressionEncoding::Gzip)
         .send_compressed(CompressionEncoding::Zstd)
+        .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE)
+        .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
 }
 
 /// [`flight_service_server`] wrapped with a per-request interceptor,
