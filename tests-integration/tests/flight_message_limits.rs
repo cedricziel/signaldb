@@ -11,7 +11,9 @@
 //! - a >4 MiB FlightData message is rejected by a default-configured server
 //!   (the wedge), and
 //! - the same payload round-trips once server and client apply
-//!   `common::flight::MAX_GRPC_MESSAGE_SIZE`.
+//!   `common::flight::MAX_GRPC_MESSAGE_SIZE`, and
+//! - chunking via `common::flight::chunk` keeps every message under the
+//!   limit while preserving all rows.
 
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
@@ -21,6 +23,7 @@ use arrow_flight::{
     HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
 use common::flight::MAX_GRPC_MESSAGE_SIZE;
+use common::flight::chunk::{MAX_ENCODED_BATCH_SIZE, split_batch_for_grpc};
 use datafusion::arrow::array::{ArrayRef, Int64Array, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
@@ -263,5 +266,44 @@ async fn oversized_message_round_trips_with_explicit_limits() -> anyhow::Result<
         .map_err(|e| anyhow::anyhow!("do_put failed despite explicit limits: {e}"))?;
 
     assert_eq!(service.rows_received.load(Ordering::SeqCst), expected_rows);
+    Ok(())
+}
+
+/// The sender-side guarantee: chunking bounds every FlightData message well
+/// under the limit, so any batch (under the per-row size assumption) can
+/// always transit — the WAL retry loop can no longer be wedged by size.
+#[tokio::test]
+async fn chunked_oversized_batch_round_trips_and_preserves_rows() -> anyhow::Result<()> {
+    let service = RowCountingFlightService::default();
+    let addr = start_server(service.clone(), true).await?;
+    let mut client = connect(addr, true).await?;
+
+    // ~34 MiB: larger than the per-chunk budget, so the sender must split.
+    let batch = synthetic_batch(16384);
+    assert!(batch.get_array_memory_size() > MAX_ENCODED_BATCH_SIZE);
+    let expected_rows = batch.num_rows();
+    let chunks = split_batch_for_grpc(&batch, MAX_ENCODED_BATCH_SIZE)?;
+    assert!(chunks.len() > 1, "oversized batch must be split");
+    let flight_data = batches_to_flight_data(&batch.schema(), chunks)?;
+
+    for (i, message) in flight_data.iter().enumerate() {
+        let encoded =
+            message.data_header.len() + message.data_body.len() + message.app_metadata.len();
+        assert!(
+            encoded < MAX_GRPC_MESSAGE_SIZE,
+            "chunked message {i} is {encoded} bytes, limit is {MAX_GRPC_MESSAGE_SIZE}"
+        );
+    }
+
+    do_put_all(&mut client, flight_data)
+        .await
+        .map_err(|e| anyhow::anyhow!("chunked do_put failed: {e}"))?;
+
+    assert_eq!(service.rows_received.load(Ordering::SeqCst), expected_rows);
+    // Schema message plus at least two chunk messages.
+    assert!(
+        service.messages_received.load(Ordering::SeqCst) > 2,
+        "an oversized batch must arrive as multiple FlightData messages"
+    );
     Ok(())
 }

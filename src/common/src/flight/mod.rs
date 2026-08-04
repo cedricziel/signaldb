@@ -25,6 +25,7 @@ use tonic::codec::CompressionEncoding;
 use tonic::service::interceptor::InterceptedService;
 
 pub mod auth;
+pub mod chunk;
 pub mod conversion;
 pub mod schema;
 pub mod trace_context;
@@ -45,6 +46,8 @@ mod integration_tests;
 ///
 /// Every `FlightServiceServer` and `FlightServiceClient` must apply this
 /// limit via `max_decoding_message_size` / `max_encoding_message_size`.
+/// The sender additionally chunks batches (see [`chunk`]) so a single
+/// message stays well below this bound.
 pub const MAX_GRPC_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 
 /// IPC write options for Flight payloads: lz4-frame buffer compression.
