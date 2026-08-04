@@ -259,12 +259,29 @@ impl IrService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<(Vec<RecordBatch>, ResolvedWindow), QuerierError> {
+        use tracing::Instrument;
+
         let doc: Document = serde_json::from_value(params.document.clone())
             .map_err(|e| QuerierError::InvalidInput(format!("invalid IR document: {e}")))?;
+        // Stage spans (INTERNAL) under the Flight SERVER span, so a slow
+        // query is attributable to planning vs execution.
         let (df, window) = self
             .plan(&doc, tenant_slug, dataset_slug, params.now_ns)
+            .instrument(tracing::info_span!("signaldb.query.plan"))
             .await?;
-        let batches = df.collect().await.map_err(QuerierError::QueryFailed)?;
+        let exec_span = tracing::info_span!(
+            "signaldb.query.execute",
+            signaldb.query.rows = tracing::field::Empty,
+            signaldb.query.batches = tracing::field::Empty,
+        );
+        let batches = df
+            .collect()
+            .instrument(exec_span.clone())
+            .await
+            .map_err(QuerierError::QueryFailed)?;
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        exec_span.record("signaldb.query.rows", rows as i64);
+        exec_span.record("signaldb.query.batches", batches.len() as i64);
         Ok((batches, window))
     }
 
@@ -1510,5 +1527,61 @@ mod tests {
             &trace_cols,
             "traces",
         );
+    }
+
+    /// Group 7 (`otel-compliant-self-tracing`): query execution decomposes
+    /// into plan/execute stage spans carrying result-size attributes.
+    #[tokio::test]
+    async fn query_emits_stage_spans_with_row_counts() {
+        use opentelemetry::trace::TracerProvider as _;
+        use tracing::instrument::WithSubscriber;
+        use tracing_subscriber::prelude::*;
+
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("test");
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        async {
+            let svc = IrService::new(logs_ctx());
+            let params = crate::query::IrQueryParams {
+                document: serde_json::json!({
+                    "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                    "result": "rows",
+                    "pipeline": []
+                }),
+                now_ns: 0,
+            };
+            let _ = svc.query(&params, "t", "d").await.unwrap();
+        }
+        .with_subscriber(subscriber)
+        .await;
+
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        let names: Vec<_> = spans.iter().map(|s| s.name.to_string()).collect();
+        assert!(
+            names.iter().any(|n| n == "signaldb.query.plan"),
+            "no plan stage span; exported = {names:?}"
+        );
+        let exec = spans
+            .iter()
+            .find(|s| s.name == "signaldb.query.execute")
+            .unwrap_or_else(|| panic!("no execute stage span; exported = {names:?}"));
+        let rows = exec
+            .attributes
+            .iter()
+            .find(|kv| kv.key.as_str() == "signaldb.query.rows")
+            .map(|kv| kv.value.clone())
+            .unwrap_or_else(|| {
+                panic!(
+                    "execute span carries signaldb.query.rows; attrs = {:?}",
+                    exec.attributes
+                )
+            });
+        assert!(matches!(rows, opentelemetry::Value::I64(_)));
     }
 }

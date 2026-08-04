@@ -74,11 +74,11 @@ independently shippable and TDD-ordered within.
 
 ## 7. Query execution stage spans (querier)
 
-- [ ] 7.1 Write failing test: an executed query decomposes into
+- [x] 7.1 Write failing test: an executed query decomposes into
       plan/scan/execute/encode child spans with `signaldb.*` row/byte
       counts under the Flight SERVER span
-- [ ] 7.2 Implement stage spans in `querier/src/query/`
-- [ ] 7.3 Write failing test: recorded query text has literals replaced by
+- [x] 7.2 Implement stage spans in `querier/src/query/`
+- [x] 7.3 Write failing test: recorded query text has literals replaced by
       placeholders; implement sanitize-before-record helper in `common`
 
 ## 8. Compactor lifecycle job spans
