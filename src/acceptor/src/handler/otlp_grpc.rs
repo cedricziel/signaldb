@@ -103,8 +103,20 @@ impl TraceHandler {
             .await
             .context("Failed to get WAL")?;
 
-        // Convert OTLP traces to Arrow RecordBatch
-        let record_batch = otlp_traces_to_arrow(&request);
+        // Convert OTLP traces to Arrow RecordBatch. A conversion failure
+        // must reject the export (client retries) instead of ACKing an
+        // empty batch — that would be silent data loss (issue #926).
+        let record_batch = otlp_traces_to_arrow(&request)
+            .inspect_err(|error| {
+                tracing::error!(
+                    tenant_id = %tenant_context.tenant_id,
+                    dataset_id = %tenant_context.dataset_id,
+                    signal = "traces",
+                    error = %error,
+                    "OTLP to Arrow conversion failed - rejecting export"
+                );
+            })
+            .context("Failed to convert OTLP traces to Arrow")?;
 
         let mut metadata = serde_json::json!({
             "schema_version": "v1",

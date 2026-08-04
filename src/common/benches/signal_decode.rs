@@ -176,7 +176,7 @@ fn bench_logs_decode(c: &mut Criterion) {
     group.bench_function("otlp_decode_and_convert", |b| {
         b.iter(|| {
             let decoded = ExportLogsServiceRequest::decode(black_box(&wire_bytes[..])).unwrap();
-            let batch = otlp_logs_to_arrow(&decoded);
+            let batch = otlp_logs_to_arrow(&decoded).expect("conversion should succeed");
             black_box(batch);
         });
     });
@@ -184,7 +184,7 @@ fn bench_logs_decode(c: &mut Criterion) {
     // Conversion only (protobuf already decoded), to isolate the Arrow build.
     group.bench_function("otlp_convert_only", |b| {
         b.iter(|| {
-            let batch = otlp_logs_to_arrow(black_box(&request));
+            let batch = otlp_logs_to_arrow(black_box(&request)).expect("conversion should succeed");
             black_box(batch);
         });
     });
@@ -203,7 +203,7 @@ fn bench_metrics_decode(c: &mut Criterion) {
     group.bench_function("otlp_decode_and_convert", |b| {
         b.iter(|| {
             let decoded = ExportMetricsServiceRequest::decode(black_box(&wire_bytes[..])).unwrap();
-            let batch = otlp_metrics_to_arrow(&decoded);
+            let batch = otlp_metrics_to_arrow(&decoded).expect("conversion should succeed");
             black_box(batch);
         });
     });
@@ -211,7 +211,8 @@ fn bench_metrics_decode(c: &mut Criterion) {
     // Conversion only (protobuf already decoded), to isolate the Arrow build.
     group.bench_function("otlp_convert_only", |b| {
         b.iter(|| {
-            let batch = otlp_metrics_to_arrow(black_box(&request));
+            let batch =
+                otlp_metrics_to_arrow(black_box(&request)).expect("conversion should succeed");
             black_box(batch);
         });
     });

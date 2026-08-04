@@ -1,6 +1,7 @@
 use datafusion::arrow::array::{
     ArrayRef, BinaryArray, Int32Array, StringArray, UInt32Array, UInt64Array,
 };
+use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
@@ -19,7 +20,13 @@ use crate::flight::schema::FlightSchemas;
 use super::extract_scope_json;
 
 /// Convert OTLP log data to Arrow RecordBatch using the Flight log schema
-pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> RecordBatch {
+///
+/// # Errors
+///
+/// Returns an error if the Arrow arrays cannot be assembled into a
+/// `RecordBatch`. Callers must reject the export instead of acknowledging
+/// it, otherwise the data would be silently lost.
+pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> Result<RecordBatch, ArrowError> {
     let schemas = FlightSchemas::new();
     let schema = schemas.log_schema.clone();
 
@@ -118,11 +125,10 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> RecordBatch {
     let service_name_array: ArrayRef = Arc::new(StringArray::from(service_names));
     let event_name_array: ArrayRef = Arc::new(StringArray::from(event_names));
 
-    // Clone schema for potential error case
-    let schema_clone = schema.clone();
-
-    // Create and return the RecordBatch
-    let result = RecordBatch::try_new(
+    // Create and return the RecordBatch. Assembly failures must propagate:
+    // swallowing them into an empty batch would ACK data that was never
+    // stored (silent data loss, issue #926).
+    RecordBatch::try_new(
         Arc::new(schema),
         vec![
             time_array,
@@ -140,9 +146,7 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> RecordBatch {
             service_name_array,
             event_name_array,
         ],
-    );
-
-    result.unwrap_or_else(|_| RecordBatch::new_empty(Arc::new(schema_clone)))
+    )
 }
 
 /// Convert Arrow RecordBatch to OTLP ExportLogsServiceRequest
@@ -386,6 +390,53 @@ mod tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use opentelemetry_proto::tonic::common::v1::any_value::Value;
     use std::sync::Arc;
+
+    #[test]
+    fn otlp_logs_to_arrow_propagates_conversion_errors_via_result() {
+        // The conversion is fallible: a RecordBatch assembly failure must
+        // surface as Err so the acceptor rejects the export instead of
+        // ACKing an empty batch (issue #926). Pin the Result contract and
+        // that an empty request converts to an empty batch (the only way a
+        // zero-row batch may legitimately be produced).
+        let request = ExportLogsServiceRequest::default();
+        let result: Result<RecordBatch, ArrowError> = otlp_logs_to_arrow(&request);
+        let batch = result.expect("empty request must convert to an empty batch");
+        assert_eq!(batch.num_rows(), 0);
+    }
+
+    #[test]
+    fn otlp_logs_to_arrow_returns_ok_with_one_row_per_log_record() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1_000_000_000,
+                        observed_time_unix_nano: 1_100_000_000,
+                        severity_number: 9,
+                        severity_text: "INFO".to_string(),
+                        body: None,
+                        attributes: vec![],
+                        dropped_attributes_count: 0,
+                        flags: 0,
+                        trace_id: vec![],
+                        span_id: vec![],
+                        event_name: String::new(),
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let batch = otlp_logs_to_arrow(&request).expect("conversion should succeed");
+        assert_eq!(batch.num_rows(), 1);
+    }
 
     #[test]
     fn test_arrow_to_otlp_logs() {

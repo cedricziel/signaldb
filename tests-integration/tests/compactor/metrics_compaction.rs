@@ -193,7 +193,7 @@ async fn test_metrics_gauge_compaction() -> Result<()> {
     // Write 10 small batches (100 rows each = 1000 rows total)
     for i in 0..10 {
         let request = create_gauge_batch(i, 100)?;
-        let batch = otlp_metrics_to_arrow(&request);
+        let batch = otlp_metrics_to_arrow(&request)?;
 
         if let Err(e) = writer
             .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
@@ -305,7 +305,7 @@ async fn test_metrics_histogram_compaction() -> Result<()> {
     // Write 10 small batches (100 rows each = 1000 rows total)
     for i in 0..10 {
         let request = create_histogram_batch(i, 100)?;
-        let batch = otlp_metrics_to_arrow(&request);
+        let batch = otlp_metrics_to_arrow(&request)?;
 
         if let Err(e) = writer
             .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])

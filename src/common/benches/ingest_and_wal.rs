@@ -108,7 +108,7 @@ fn bench_ingest_decode(c: &mut Criterion) {
     group.bench_function("otlp_decode_and_convert", |b| {
         b.iter(|| {
             let decoded = ExportTraceServiceRequest::decode(black_box(&wire_bytes[..])).unwrap();
-            let batch = otlp_traces_to_arrow(&decoded);
+            let batch = otlp_traces_to_arrow(&decoded).expect("conversion should succeed");
             black_box(batch);
         });
     });
@@ -116,7 +116,8 @@ fn bench_ingest_decode(c: &mut Criterion) {
     // Conversion only (protobuf already decoded), to isolate the Arrow build.
     group.bench_function("otlp_convert_only", |b| {
         b.iter(|| {
-            let batch = otlp_traces_to_arrow(black_box(&request));
+            let batch =
+                otlp_traces_to_arrow(black_box(&request)).expect("conversion should succeed");
             black_box(batch);
         });
     });
@@ -125,7 +126,7 @@ fn bench_ingest_decode(c: &mut Criterion) {
 }
 
 fn bench_wal_roundtrip(c: &mut Criterion) {
-    let batch = otlp_traces_to_arrow(&sample_request());
+    let batch = otlp_traces_to_arrow(&sample_request()).expect("conversion should succeed");
 
     let mut group = c.benchmark_group("wal");
     group.throughput(Throughput::Elements(batch.num_rows() as u64));

@@ -172,6 +172,51 @@ mod tests {
         resource::v1::Resource,
     };
 
+    /// Handler that always fails before WAL durability, e.g. when the
+    /// OTLP → Arrow conversion errors (issue #926).
+    struct FailingLogHandler;
+
+    #[async_trait::async_trait]
+    impl LogHandlerTrait for FailingLogHandler {
+        async fn handle_grpc_otlp_logs(
+            &self,
+            _tenant_context: &TenantContext,
+            _request: ExportLogsServiceRequest,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("Failed to convert OTLP logs to Arrow")
+        }
+    }
+
+    #[tokio::test]
+    async fn export_rejects_with_unavailable_when_conversion_fails() {
+        // A conversion failure must be rejected so the client retries;
+        // ACKing it would silently drop the data (issue #926).
+        let service = LogAcceptorService::new(FailingLogHandler);
+
+        let mut tonic_request = Request::new(ExportLogsServiceRequest::default());
+        tonic_request.extensions_mut().insert(TenantContext {
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            tenant_slug: "test-tenant".to_string(),
+            dataset_slug: "test-dataset".to_string(),
+            api_key_name: Some("test-key".to_string()),
+            api_key_scopes: None,
+            api_key_dataset_id: None,
+            user_id: None,
+            role: None,
+            is_instance_admin: false,
+            session_id: None,
+            source: common::auth::TenantSource::Config,
+        });
+
+        let status = service
+            .export(tonic_request)
+            .await
+            .expect_err("export must fail when data is not durably accepted");
+
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+    }
+
     #[tokio::test]
     async fn test_log_acceptor_service() {
         let mut mock_handler = MockLogHandler::new();

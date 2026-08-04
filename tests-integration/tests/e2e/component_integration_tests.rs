@@ -907,7 +907,8 @@ async fn test_otlp_to_arrow_conversion() {
     // Test: Can we convert OTLP to Arrow like the acceptor does?
     // This uses the same conversion logic as in the acceptor
     let record_batch =
-        common::flight::conversion::conversion_traces::otlp_traces_to_arrow(&trace_request);
+        common::flight::conversion::conversion_traces::otlp_traces_to_arrow(&trace_request)
+            .expect("conversion should succeed");
 
     println!("OTLP → Arrow conversion completed successfully");
     println!(

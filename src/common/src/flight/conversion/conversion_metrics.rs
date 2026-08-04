@@ -1,6 +1,7 @@
 use datafusion::arrow::array::{
     ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray, UInt64Array,
 };
+use datafusion::arrow::error::ArrowError;
 use opentelemetry_proto::tonic::{
     collector::metrics::v1::ExportMetricsServiceRequest,
     common::v1::KeyValue,
@@ -31,9 +32,15 @@ use crate::flight::schema::FlightSchemas;
 use super::extract_scope_json;
 
 /// Convert OTLP metric data to Arrow RecordBatch using the Flight metric schema
+///
+/// # Errors
+///
+/// Returns an error if the Arrow arrays cannot be assembled into a
+/// `RecordBatch`. Callers must reject the export instead of acknowledging
+/// it, otherwise the data would be silently lost.
 pub fn otlp_metrics_to_arrow(
     request: &ExportMetricsServiceRequest,
-) -> datafusion::arrow::record_batch::RecordBatch {
+) -> Result<datafusion::arrow::record_batch::RecordBatch, ArrowError> {
     let schemas = FlightSchemas::new();
     let schema = schemas.metric_schema.clone();
 
@@ -217,11 +224,10 @@ pub fn otlp_metrics_to_arrow(
         Arc::new(Int32Array::from(aggregation_temporities));
     let is_monotonic_array: ArrayRef = Arc::new(BooleanArray::from(is_monotonics));
 
-    // Clone schema for potential error case
-    let schema_clone = schema.clone();
-
-    // Create and return the RecordBatch
-    let result = RecordBatch::try_new(
+    // Create and return the RecordBatch. Assembly failures must propagate:
+    // swallowing them into an empty batch would ACK data that was never
+    // stored (silent data loss, issue #926).
+    RecordBatch::try_new(
         Arc::new(schema),
         vec![
             name_array,
@@ -237,9 +243,7 @@ pub fn otlp_metrics_to_arrow(
             aggregation_temporality_array,
             is_monotonic_array,
         ],
-    );
-
-    result.unwrap_or_else(|_| RecordBatch::new_empty(Arc::new(schema_clone)))
+    )
 }
 
 /// Extract number data points from OTLP NumberDataPoint
@@ -1384,6 +1388,19 @@ mod tests {
 
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn otlp_metrics_to_arrow_propagates_conversion_errors_via_result() {
+        // The conversion is fallible: a RecordBatch assembly failure must
+        // surface as Err so the acceptor rejects the export instead of
+        // ACKing an empty batch (issue #926). Pin the Result contract and
+        // that an empty request converts to an empty batch (the only way a
+        // zero-row batch may legitimately be produced).
+        let request = ExportMetricsServiceRequest::default();
+        let result: Result<RecordBatch, ArrowError> = otlp_metrics_to_arrow(&request);
+        let batch = result.expect("empty request must convert to an empty batch");
+        assert_eq!(batch.num_rows(), 0);
+    }
 
     #[test]
     fn test_arrow_to_otlp_metrics_gauge() {
