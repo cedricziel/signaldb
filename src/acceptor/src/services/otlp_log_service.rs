@@ -187,16 +187,33 @@ mod tests {
         }
     }
 
-    /// Handler that always succeeds (rate-limit/quota tests must fail before it).
-    struct NoopLogHandler;
+    /// Handler that always succeeds and counts invocations: rejection tests
+    /// assert the guard fires BEFORE the handler, not merely that the
+    /// endpoint returns the right status while the export is still accepted.
+    struct RecordingLogHandler {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl RecordingLogHandler {
+        fn new() -> (Self, Arc<std::sync::atomic::AtomicUsize>) {
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            (
+                Self {
+                    calls: calls.clone(),
+                },
+                calls,
+            )
+        }
+    }
 
     #[async_trait::async_trait]
-    impl LogHandlerTrait for NoopLogHandler {
+    impl LogHandlerTrait for RecordingLogHandler {
         async fn handle_grpc_otlp_logs(
             &self,
             _tenant_context: &TenantContext,
             _request: ExportLogsServiceRequest,
         ) -> anyhow::Result<()> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
     }
@@ -312,7 +329,8 @@ mod tests {
             },
             ..Default::default()
         }));
-        let service = LogAcceptorService::new(NoopLogHandler).with_rate_limiter(limiter);
+        let (handler, handler_calls) = RecordingLogHandler::new();
+        let service = LogAcceptorService::new(handler).with_rate_limiter(limiter);
 
         let mut first = Request::new(ExportLogsServiceRequest::default());
         first.extensions_mut().insert(test_tenant_context());
@@ -330,6 +348,11 @@ mod tests {
 
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
         assert!(status.message().contains("request rate"));
+        assert_eq!(
+            handler_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "rate-limited export must be rejected before reaching the handler"
+        );
     }
 
     #[tokio::test]
@@ -346,7 +369,8 @@ mod tests {
             },
             ..Default::default()
         }));
-        let service = LogAcceptorService::new(NoopLogHandler).with_storage_quota(tracker.clone());
+        let (handler, handler_calls) = RecordingLogHandler::new();
+        let service = LogAcceptorService::new(handler).with_storage_quota(tracker.clone());
 
         // Under quota: export passes.
         tracker.replace_all(HashMap::from([(tenant_id.clone(), 999)]));
@@ -368,5 +392,10 @@ mod tests {
 
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
         assert!(status.message().contains("quota_exceeded"));
+        assert_eq!(
+            handler_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "over-quota export must be rejected before reaching the handler"
+        );
     }
 }

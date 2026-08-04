@@ -526,6 +526,10 @@ async fn logql_series_endpoint_returns_matching_series() {
     assert_eq!(status, StatusCode::OK, "series: {body}");
     let series = body["data"].as_array().cloned().unwrap_or_default();
     assert!(
+        !series.is_empty(),
+        "the api selector must match at least one series: {body}"
+    );
+    assert!(
         series.iter().all(|s| s["service_name"] == "api"),
         "series should all be api: {body}"
     );
