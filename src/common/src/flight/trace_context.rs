@@ -193,6 +193,26 @@ pub fn add_link_from_fields(
     }
 }
 
+/// Render a span context as a W3C `traceparent` value
+/// (`00-<trace-id>-<span-id>-<trace-flags>`), e.g. for returning the server
+/// side of a trace to HTTP callers (`Server-Timing`/`traceresponse` response
+/// headers).
+///
+/// Returns `None` for an invalid (all-zero) context — the tracing-otel bridge
+/// yields one when self-monitoring is disabled — so callers never emit a
+/// meaningless header.
+pub fn format_traceparent(span_context: &opentelemetry::trace::SpanContext) -> Option<String> {
+    if !span_context.is_valid() {
+        return None;
+    }
+    Some(format!(
+        "00-{}-{}-{:02x}",
+        span_context.trace_id(),
+        span_context.span_id(),
+        span_context.trace_flags().to_u8(),
+    ))
+}
+
 struct HeaderMapExtractor<'a>(&'a axum::http::HeaderMap);
 
 impl Extractor for HeaderMapExtractor<'_> {
@@ -316,5 +336,44 @@ mod tests {
         // Without an OTel-enabled subscriber and global propagator, there is
         // no sampled context to propagate.
         assert!(current_trace_context_fields().is_none());
+    }
+
+    #[test]
+    fn format_traceparent_renders_sampled_context() {
+        use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceId, TraceState};
+        let ctx = SpanContext::new(
+            TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").expect("valid trace id"),
+            SpanId::from_hex("b7ad6b7169203331").expect("valid span id"),
+            TraceFlags::SAMPLED,
+            false,
+            TraceState::default(),
+        );
+        assert_eq!(
+            format_traceparent(&ctx).as_deref(),
+            Some(SAMPLE_TRACEPARENT)
+        );
+    }
+
+    #[test]
+    fn format_traceparent_reflects_unsampled_flags() {
+        use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceId, TraceState};
+        let ctx = SpanContext::new(
+            TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").expect("valid trace id"),
+            SpanId::from_hex("b7ad6b7169203331").expect("valid span id"),
+            TraceFlags::default(),
+            false,
+            TraceState::default(),
+        );
+        assert_eq!(
+            format_traceparent(&ctx).as_deref(),
+            Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00")
+        );
+    }
+
+    #[test]
+    fn format_traceparent_rejects_invalid_context() {
+        use opentelemetry::trace::SpanContext;
+        // An all-zero (invalid) context must never be rendered into a header.
+        assert_eq!(format_traceparent(&SpanContext::empty_context()), None);
     }
 }
