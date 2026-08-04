@@ -155,7 +155,12 @@ pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> RecordBatch 
                 service_names.push(service_name.clone());
                 start_times.push(span.start_time_unix_nano);
                 end_times.push(span.end_time_unix_nano);
-                durations.push(span.end_time_unix_nano - span.start_time_unix_nano);
+                // Clamp to zero when end < start (clock skew / bad client data)
+                // to avoid u64 underflow: panic in debug, wrap-around in release.
+                durations.push(
+                    span.end_time_unix_nano
+                        .saturating_sub(span.start_time_unix_nano),
+                );
                 span_kinds.push(span_kind.to_string());
                 status_codes.push(status_code);
                 status_messages.push(status_message);
@@ -890,6 +895,38 @@ mod tests {
         assert_eq!(stored(2), "Error");
         // A missing status is unspecified, not an error.
         assert_eq!(extract_status(&Span::default()).0, "Unspecified");
+    }
+
+    #[test]
+    fn otlp_traces_to_arrow_clamps_duration_to_zero_when_end_before_start() {
+        // A span whose end timestamp precedes its start timestamp must not
+        // underflow the u64 duration (panic in debug, wrap in release).
+        let span = Span {
+            trace_id: hex::decode("0123456789abcdef0123456789abcdef").unwrap(),
+            span_id: hex::decode("0123456789abcdef").unwrap(),
+            name: "clock-skewed-span".to_string(),
+            start_time_unix_nano: 2_000_000_000,
+            end_time_unix_nano: 1_000_000_000,
+            ..Default::default()
+        };
+
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: None,
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![span],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let result = otlp_traces_to_arrow(&request);
+
+        assert_eq!(result.num_rows(), 1);
+        let duration_array = get_uint64_column(&result, "duration_nano").unwrap();
+        assert_eq!(duration_array.value(0), 0);
     }
 
     #[test]
