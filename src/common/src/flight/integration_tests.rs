@@ -351,7 +351,8 @@ async fn test_flight_transport_connection_pooling() {
     .expect("Failed to create service bootstrap");
 
     // Create transport with small pool for testing
-    let transport = bootstrap.create_flight_transport_with_config(2, 5);
+    let transport =
+        bootstrap.create_flight_transport_with_config(2, std::time::Duration::from_secs(5));
 
     // Register a service
     transport

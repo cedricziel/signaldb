@@ -79,6 +79,16 @@ struct FlightConnection {
     last_used: std::time::Instant,
 }
 
+/// Time allowed to *dial* a peer before giving up. Distinct from the
+/// per-request deadline: a slow query is not a slow connection.
+pub const DEFAULT_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Headroom added on top of the querier's `query_timeout` when deriving the
+/// per-request deadline. The server-side timeout must always win the race so
+/// callers receive its `DeadlineExceeded` (→ 504) rather than a client-side
+/// `Cancelled` that carries no diagnostic detail.
+pub const REQUEST_TIMEOUT_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Catalog-based Flight transport that manages service discovery and connection pooling
 #[derive(Clone)]
 pub struct InMemoryFlightTransport {
@@ -88,8 +98,12 @@ pub struct InMemoryFlightTransport {
     connections: Arc<tokio::sync::RwLock<HashMap<String, FlightConnection>>>,
     /// Maximum number of connections to keep in pool
     max_pool_size: usize,
-    /// Connection timeout in seconds
-    connection_timeout: u64,
+    /// Time allowed to establish a channel to a peer.
+    connect_timeout: std::time::Duration,
+    /// Deadline applied to every request issued on a channel. Kept above the
+    /// querier's own `query_timeout` so the server, not the client, decides
+    /// when a query has run too long.
+    request_timeout: std::time::Duration,
     /// Rotates capability-based selection across healthy instances.
     round_robin: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -97,11 +111,13 @@ pub struct InMemoryFlightTransport {
 impl InMemoryFlightTransport {
     /// Create a new InMemoryFlightTransport with the given ServiceBootstrap
     pub fn new(bootstrap: ServiceBootstrap) -> Self {
+        let request_timeout = Self::default_request_timeout(bootstrap.config());
         Self {
             bootstrap: Arc::new(bootstrap),
             connections: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             max_pool_size: 50,
-            connection_timeout: 30,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            request_timeout,
             round_robin: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
@@ -110,15 +126,27 @@ impl InMemoryFlightTransport {
     pub fn with_pool_config(
         bootstrap: ServiceBootstrap,
         max_pool_size: usize,
-        connection_timeout: u64,
+        connect_timeout: std::time::Duration,
     ) -> Self {
+        let request_timeout = Self::default_request_timeout(bootstrap.config());
         Self {
             bootstrap: Arc::new(bootstrap),
             connections: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             max_pool_size,
-            connection_timeout,
+            connect_timeout,
+            request_timeout,
             round_robin: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
+    }
+
+    /// Derive the per-request deadline from the configured querier
+    /// `query_timeout` plus [`REQUEST_TIMEOUT_GRACE`], so raising the query
+    /// budget automatically raises the client's patience with it.
+    fn default_request_timeout(config: &crate::config::Configuration) -> std::time::Duration {
+        config
+            .querier
+            .query_timeout
+            .saturating_add(REQUEST_TIMEOUT_GRACE)
     }
 
     /// The configured internal service key for authenticating outbound
@@ -232,8 +260,12 @@ impl InMemoryFlightTransport {
             "Creating new Flight client connection to {}",
             service_metadata.endpoint
         );
+        // `connect_timeout` bounds dialing only; `timeout` is tonic's
+        // per-request deadline and must outlast the querier's query_timeout
+        // so a slow-but-progressing query is not aborted by the client.
         let endpoint = Endpoint::from_shared(service_metadata.endpoint.clone())?
-            .timeout(std::time::Duration::from_secs(self.connection_timeout));
+            .connect_timeout(self.connect_timeout)
+            .timeout(self.request_timeout);
         let channel = endpoint.connect().await?;
         let client = FlightServiceClient::new(channel);
 
@@ -375,7 +407,8 @@ impl InMemoryFlightTransport {
             bootstrap: self.bootstrap.clone(),
             connections: self.connections.clone(),
             max_pool_size: self.max_pool_size,
-            connection_timeout: self.connection_timeout,
+            connect_timeout: self.connect_timeout,
+            request_timeout: self.request_timeout,
             round_robin: self.round_robin.clone(),
         };
 
@@ -415,6 +448,32 @@ mod tests {
                 .unwrap();
 
         InMemoryFlightTransport::new(bootstrap)
+    }
+
+    /// The per-request deadline the transport applies to outbound Flight
+    /// calls must outlast the querier's own `query_timeout`. Otherwise the
+    /// client aborts first with `Cancelled` and the querier's honest
+    /// `DeadlineExceeded` (which routers map to 504) can never be observed.
+    #[tokio::test]
+    async fn request_timeout_outlasts_querier_query_timeout() {
+        let transport = create_test_transport().await;
+        let query_timeout = transport.bootstrap.config().querier.query_timeout;
+
+        assert!(
+            transport.request_timeout > query_timeout,
+            "request timeout {:?} must exceed querier query_timeout {query_timeout:?}",
+            transport.request_timeout,
+        );
+    }
+
+    /// Dialing a peer and waiting on a long-running query are different
+    /// concerns: a connect timeout must not bound query wall-clock time.
+    #[tokio::test]
+    async fn connect_timeout_is_independent_of_request_timeout() {
+        let transport = create_test_transport().await;
+
+        assert_eq!(transport.connect_timeout, DEFAULT_CONNECT_TIMEOUT);
+        assert!(transport.request_timeout > transport.connect_timeout);
     }
 
     #[tokio::test]
