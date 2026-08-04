@@ -150,6 +150,13 @@ The response is a flamebearer document that Grafana's flamegraph panel
 with no matching profiles returns an empty flamegraph with HTTP 200, not
 an error.
 
+Failures (including `GET /api/profiles/trace/{trace_id}`) return a JSON
+body in the same error shape as the other query APIs, with the reason in
+`error` — e.g. `{"status":"error","errorType":"bad_data","error":"missing
+or empty 'label' parameter"}`. `errorType` is `bad_data` (400),
+`not_found` (404), `rate_limited` (429), `timeout` (504), `unavailable`
+(503, no querier), or `internal` (500).
+
 ### SQL
 
 The profiles table is queryable with SQL through the querier's Flight
