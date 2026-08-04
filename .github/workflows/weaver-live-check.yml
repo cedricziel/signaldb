@@ -1,0 +1,132 @@
+# Semconv live-check (otel-compliant-self-tracing, task group 11).
+#
+# Boots the monolithic binary with self-monitoring pointed at a
+# `weaver registry live-check` OTLP listener, drives ingest (signal-producer)
+# and query traffic, then stops the listener and fails on violation-level
+# findings against otel/registry/ (+ upstream semconv v1.43.0).
+#
+# Bake-in mode: the job is advisory (continue-on-error) and not a required
+# check. Flip continue-on-error to false once the signal is stable.
+#
+# Known noise from the initial local smoke run (candidates for finding
+# filters once the filter schema is pinned): tracing-opentelemetry bridge
+# fields (busy_ns, idle_ns, target, code.*), log-bridge records (log.*,
+# "log event"), and per-callsite tracing event names. Real violations the
+# smoke run caught (fixed since): string-typed http.response.status_code
+# and server.port.
+name: Weaver Live Check
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  WEAVER_VERSION: v0.25.1
+
+jobs:
+  live-check:
+    name: Semconv live-check
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Init submodules
+        run: git submodule update --init --recursive
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "live-check"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+
+      - name: Build binaries
+        run: cargo build --bin signaldb --bin signal-producer
+
+      - name: Start weaver live-check listener
+        run: |
+          docker run -d --name weaver \
+            -p 14317:4317 -p 14320:4320 \
+            -v "$PWD/otel/registry:/registry" \
+            otel/weaver:${WEAVER_VERSION} registry live-check \
+            -r /registry \
+            --include-unreferenced \
+            --otlp-grpc-address 0.0.0.0 --otlp-grpc-port 4317 \
+            --admin-port 4320 \
+            --inactivity-timeout 0 \
+            --no-stream \
+            --format json --output http \
+            --fail-on violation
+          # Wait for the listener to accept connections.
+          for i in $(seq 1 30); do
+            (echo > /dev/tcp/localhost/14317) 2>/dev/null && break
+            sleep 1
+          done
+
+      - name: Boot SignalDB with self-monitoring
+        env:
+          SIGNALDB__SELF_MONITORING__ENABLED: "true"
+          SIGNALDB__SELF_MONITORING__ENDPOINT: "http://localhost:14317"
+          SIGNALDB__SELF_MONITORING__TRACE_SAMPLE_RATIO: "1.0"
+          OTEL_TRACES_SAMPLER: "always_on"
+          RUST_LOG: "info"
+        run: |
+          mkdir -p .data
+          nohup ./target/debug/signaldb > signaldb.log 2>&1 &
+          echo $! > signaldb.pid
+          for i in $(seq 1 60); do
+            curl -sf localhost:3000/health >/dev/null && break
+            sleep 2
+          done
+          curl -sf localhost:3000/health
+
+      - name: Drive ingest and query traffic
+        run: |
+          ./target/debug/signal-producer \
+            --endpoint http://localhost:4317 \
+            --count 3 --interval 2 --traces-per-tick 4
+          # Query surfaces (successes and client-error paths both emit spans).
+          curl -s "localhost:3000/api/search?limit=5" >/dev/null || true
+          curl -s "localhost:3000/api/search/tags" >/dev/null || true
+          curl -s "localhost:3000/api/traces/00000000000000000000000000000000" >/dev/null || true
+          curl -s "localhost:3000/api/v1/labels" >/dev/null || true
+          curl -s "localhost:3000/api/v1/query_range?query=up&start=0&end=1&step=1" >/dev/null || true
+          # Let the batch span exporter flush.
+          sleep 15
+
+      - name: Stop SignalDB (flush exporters)
+        run: |
+          kill "$(cat signaldb.pid)" 2>/dev/null || true
+          sleep 5
+
+      - name: Stop listener and evaluate findings
+        run: |
+          curl -s -X POST localhost:14320/stop -o live-check-report.json || true
+          code=$(docker wait weaver)
+          docker logs weaver > weaver-stdout.txt 2>&1 || true
+          echo "== live-check summary (registry_coverage & findings) =="
+          tail -50 weaver-stdout.txt || true
+          if [ -s live-check-report.json ]; then
+            head -c 4000 live-check-report.json; echo
+          fi
+          echo "weaver exit code: $code"
+          exit "$code"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weaver-live-check-report
+          path: |
+            live-check-report.json
+            weaver-stdout.txt
+            signaldb.log
+          if-no-files-found: ignore

@@ -1,0 +1,14 @@
+# SignalDB semantic-convention registry (OTel Weaver, format manifest/2.0).
+#
+# The single source of truth for the `signaldb.*` attributes SignalDB's
+# self-monitoring telemetry emits, layered on the pinned upstream OTel
+# semantic conventions (the same version common::self_monitoring::
+# SEMCONV_SCHEMA_URL claims). Validated in CI with
+# `weaver registry check`; the span factories' literal field names are
+# pinned against this file by a unit test in the common crate.
+name: signaldb
+description: SignalDB self-monitoring semantic conventions
+schema_url: https://signaldb.dev/schemas/0.1.0
+dependencies:
+  - schema_url: https://opentelemetry.io/schemas/1.43.0
+    registry_path: https://github.com/open-telemetry/semantic-conventions@v1.43.0[model]

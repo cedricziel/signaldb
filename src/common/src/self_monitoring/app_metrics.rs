@@ -416,8 +416,8 @@ pub async fn http_trace_context_middleware(
     if let Some(server_address) = &server_address {
         span.record("server.address", server_address.as_str());
     }
-    if let Some(server_port) = &server_port {
-        span.record("server.port", server_port.as_str());
+    if let Some(server_port) = server_port.as_ref().and_then(|p| p.parse::<i64>().ok()) {
+        span.record("server.port", server_port);
     }
     if let Some(client_address) = &client_address {
         span.record("client.address", client_address.as_str());
@@ -431,7 +431,7 @@ pub async fn http_trace_context_middleware(
     let response = next.run(request).instrument(span.clone()).await;
 
     let status = response.status();
-    span.record("http.response.status_code", status.as_u16());
+    span.record("http.response.status_code", status.as_u16() as i64);
     // Server spans fail only on 5xx (a 4xx is the caller's problem);
     // `error.type` is the status code as a string, per HTTP semconv.
     if status.is_server_error() {

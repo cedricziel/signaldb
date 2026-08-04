@@ -1,0 +1,106 @@
+groups:
+  - id: registry.signaldb.tenancy
+    type: attribute_group
+    display_name: SignalDB Tenancy Attributes
+    brief: Tenant/dataset scoping for multi-tenant operations.
+    attributes:
+      - id: signaldb.tenant.id
+        type: string
+        stability: development
+        brief: The SignalDB tenant the operation acts on.
+        examples: ["acme", "_system"]
+      - id: signaldb.dataset.id
+        type: string
+        stability: development
+        brief: The dataset within the tenant.
+        examples: ["production", "_monitoring"]
+      - id: signaldb.table
+        type: string
+        stability: development
+        brief: The signal table the operation targets.
+        examples: ["traces", "logs", "metrics_gauge"]
+
+  - id: registry.signaldb.flight
+    type: attribute_group
+    display_name: SignalDB Flight Attributes
+    brief: Arrow Flight RPC detail beyond the generic gRPC conventions.
+    attributes:
+      - id: signaldb.flight.ticket_verb
+        type: string
+        stability: development
+        brief: >
+          The low-cardinality operation verb from the Flight ticket
+          (raw-SQL tickets carry no verb and record nothing).
+        examples: ["query_ir", "find_trace", "search_traces"]
+
+  - id: registry.signaldb.job
+    type: attribute_group
+    display_name: SignalDB Background Job Attributes
+    brief: Compactor/writer background job runs and their affected-object counts.
+    attributes:
+      - id: signaldb.job.kind
+        type: string
+        stability: development
+        brief: The background job kind.
+        examples: ["compaction", "retention_enforcement", "orphan_cleanup"]
+      - id: signaldb.job.partitions_dropped
+        type: int
+        stability: development
+        brief: Partitions dropped by a retention run.
+      - id: signaldb.job.snapshots_expired
+        type: int
+        stability: development
+        brief: Iceberg snapshots expired by a retention run.
+      - id: signaldb.job.files_deleted
+        type: int
+        stability: development
+        brief: Files deleted by an orphan-cleanup batch.
+      - id: signaldb.job.candidates
+        type: int
+        stability: development
+        brief: Candidate count entering an orphan-cleanup batch.
+
+  - id: registry.signaldb.wal
+    type: attribute_group
+    display_name: SignalDB WAL Attributes
+    brief: Write-ahead-log operation detail on ingest/persistence spans.
+    attributes:
+      - id: signaldb.wal.operation
+        type: string
+        stability: development
+        brief: The WAL operation kind.
+        examples: ["WriteTraces", "WriteLogs"]
+      - id: signaldb.wal.data_size
+        type: int
+        stability: development
+        brief: Payload size of a WAL append, in bytes.
+      - id: signaldb.wal.entry_id
+        type: string
+        stability: development
+        brief: The WAL entry id being marked processed.
+        examples: ["550e8400-e29b-41d4-a716-446655440000"]
+      - id: signaldb.wal.entry_count
+        type: int
+        stability: development
+        brief: Number of WAL entries in a writer batch.
+
+  - id: registry.signaldb.query
+    type: attribute_group
+    display_name: SignalDB Query Attributes
+    brief: Query execution stage detail on querier spans.
+    attributes:
+      - id: signaldb.query.rows
+        type: int
+        stability: development
+        brief: Rows returned by the execute stage.
+      - id: signaldb.query.batches
+        type: int
+        stability: development
+        brief: Arrow record batches returned by the execute stage.
+      - id: signaldb.query.text
+        type: string
+        stability: development
+        brief: >
+          The query text with all literals replaced by placeholders
+          (see common::self_monitoring::sanitize) — never raw user SQL.
+        examples: ["SELECT * FROM t WHERE name = ?"]

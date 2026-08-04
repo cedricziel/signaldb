@@ -41,6 +41,13 @@ cargo machete --with-metadata                           # Unused dependencies
 cargo deny check                                        # License/security audit
 ```
 
+CI additionally enforces span hygiene (no bare `#[tracing::instrument]`;
+`otel.kind` only inside `common::self_monitoring` — boundary spans come from
+the span factories), validates `otel/registry/` with `weaver registry check`,
+and runs an advisory semconv live-check workflow. See
+`docs/contributing/rust.md` ("Boundary Spans Come From the Factories") and
+`docs/operations/self-monitoring-traces.md`.
+
 ## Running Services
 
 ### Monolithic Mode

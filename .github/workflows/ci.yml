@@ -198,6 +198,14 @@ jobs:
             exit 1
           fi
 
+      # Validate the SignalDB semantic-convention registry (Weaver pinned —
+      # 0.x, breaking minor releases). The factories' literal field names are
+      # pinned against this registry by common's registry_pins tests.
+      - name: Weaver registry check
+        run: |
+          docker run --rm -v "$PWD/otel/registry:/registry" \
+            otel/weaver:v0.25.1 registry check -r /registry
+
   # Parallel test matrix - depends on check passing
   test:
     name: Test Suite
