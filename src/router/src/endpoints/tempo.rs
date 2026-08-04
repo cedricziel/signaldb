@@ -802,7 +802,9 @@ fn trace_lookup_status_to_http(trace_id: &str, status: &tonic::Status) -> axum::
             tracing::warn!(trace_id = %trace_id, error = %status, "Trace query throttled");
             axum::http::StatusCode::TOO_MANY_REQUESTS
         }
-        tonic::Code::DeadlineExceeded => {
+        // `Cancelled` is what a client-side channel deadline looks like, so
+        // it means the same thing to the caller as `DeadlineExceeded`.
+        tonic::Code::DeadlineExceeded | tonic::Code::Cancelled => {
             tracing::error!(trace_id = %trace_id, error = %status, "Trace query timed out");
             axum::http::StatusCode::GATEWAY_TIMEOUT
         }
@@ -919,16 +921,24 @@ pub async fn search<S: RouterState>(
         }
         Err(e) => {
             tracing::error!(error = %e, "Flight search query failed");
-            // Surface caller errors honestly: bad selectors are 400,
-            // unsupported query features are 501, everything else 500.
-            return Err(match e.code() {
-                tonic::Code::InvalidArgument => axum::http::StatusCode::BAD_REQUEST,
-                tonic::Code::Unimplemented => axum::http::StatusCode::NOT_IMPLEMENTED,
-                tonic::Code::ResourceExhausted => axum::http::StatusCode::TOO_MANY_REQUESTS,
-                tonic::Code::DeadlineExceeded => axum::http::StatusCode::GATEWAY_TIMEOUT,
-                _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            });
+            return Err(search_status_to_http(&e));
         }
+    }
+}
+
+/// Map the querier's Flight status for a trace search onto an HTTP status.
+/// Surface caller errors honestly: bad selectors are 400, unsupported query
+/// features are 501, exhausted timeouts are 504, everything else 500.
+fn search_status_to_http(status: &tonic::Status) -> axum::http::StatusCode {
+    match status.code() {
+        tonic::Code::InvalidArgument => axum::http::StatusCode::BAD_REQUEST,
+        tonic::Code::Unimplemented => axum::http::StatusCode::NOT_IMPLEMENTED,
+        tonic::Code::ResourceExhausted => axum::http::StatusCode::TOO_MANY_REQUESTS,
+        // `Cancelled` is what a client-side channel deadline looks like.
+        tonic::Code::DeadlineExceeded | tonic::Code::Cancelled => {
+            axum::http::StatusCode::GATEWAY_TIMEOUT
+        }
+        _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -1199,6 +1209,50 @@ mod tests {
             resource: Default::default(),
             children: Vec::new(),
             events: Vec::new(),
+        }
+    }
+
+    /// A client-side deadline on the Flight channel surfaces as
+    /// `Cancelled`, not `DeadlineExceeded`. Both mean "the query ran out of
+    /// time", so both must read as 504 — leaving `Cancelled` in the
+    /// catch-all arm turns every slow trace lookup into a bodyless 500.
+    #[test]
+    fn timeout_codes_map_to_gateway_timeout() {
+        for code in [tonic::Code::DeadlineExceeded, tonic::Code::Cancelled] {
+            let status = tonic::Status::new(code, "Timeout expired");
+            assert_eq!(
+                trace_lookup_status_to_http("abc123", &status),
+                axum::http::StatusCode::GATEWAY_TIMEOUT,
+                "trace lookup: {code:?} must map to 504"
+            );
+            assert_eq!(
+                search_status_to_http(&status),
+                axum::http::StatusCode::GATEWAY_TIMEOUT,
+                "search: {code:?} must map to 504"
+            );
+        }
+    }
+
+    #[test]
+    fn non_timeout_codes_keep_their_mapping() {
+        let cases = [
+            (tonic::Code::NotFound, axum::http::StatusCode::NOT_FOUND),
+            (
+                tonic::Code::InvalidArgument,
+                axum::http::StatusCode::BAD_REQUEST,
+            ),
+            (
+                tonic::Code::ResourceExhausted,
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+            ),
+            (
+                tonic::Code::Internal,
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+        for (code, expected) in cases {
+            let status = tonic::Status::new(code, "boom");
+            assert_eq!(trace_lookup_status_to_http("abc123", &status), expected);
         }
     }
 
