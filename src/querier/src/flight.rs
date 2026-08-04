@@ -311,11 +311,28 @@ pub struct QuerierFlightService {
     tenant_reg_locks: dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
 }
 
+/// Build the querier's SessionConfig with DataFusion scan/pushdown options
+/// from `[querier.datafusion]` applied. Only mutates `SessionConfig` options;
+/// it deliberately leaves `create_default_catalog_and_schema` untouched — the
+/// per-request session builder (`session_for_request`) relies on the default
+/// catalog behavior of the shared context and disables it itself when
+/// cloning state.
+fn session_config_from(limits: &QuerierConfig) -> SessionConfig {
+    let mut config = SessionConfig::new();
+    let options = config.options_mut();
+    options.execution.split_file_groups_by_statistics =
+        limits.datafusion.split_file_groups_by_statistics;
+    options.execution.parquet.pushdown_filters = limits.datafusion.pushdown_filters;
+    options.execution.parquet.reorder_filters = limits.datafusion.reorder_filters;
+    config
+}
+
 /// Build a SessionContext whose RuntimeEnv enforces the configured memory
 /// limit (spilling operators use the default disk manager). Falls back to
-/// an unlimited default context if the runtime cannot be built, which is
+/// an unlimited-memory context if the runtime cannot be built, which is
 /// logged as an error and practically cannot happen with default settings.
 fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
+    let session_config = session_config_from(limits);
     let mut builder = RuntimeEnvBuilder::new();
     match limits.memory_limit_mb {
         Some(mb) => {
@@ -336,14 +353,14 @@ fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
     }
     match builder.build() {
         Ok(runtime_env) => {
-            SessionContext::new_with_config_rt(SessionConfig::new(), Arc::new(runtime_env))
+            SessionContext::new_with_config_rt(session_config, Arc::new(runtime_env))
         }
         Err(e) => {
             tracing::error!(
                 error = %e,
-                "Failed to build limited RuntimeEnv; falling back to unlimited defaults"
+                "Failed to build limited RuntimeEnv; falling back to unlimited memory"
             );
-            SessionContext::new()
+            SessionContext::new_with_config(session_config)
         }
     }
 }
@@ -2464,6 +2481,41 @@ mod tests {
         for _ in 0..100 {
             assert!(service.try_acquire_query_permit("acme").unwrap().is_none());
         }
+    }
+
+    #[test]
+    fn session_enables_datafusion_scan_options_by_default() {
+        let ctx = session_context_with_limits(&QuerierConfig::default());
+        let options = ctx.state().config_options().clone();
+        assert!(
+            options.execution.split_file_groups_by_statistics,
+            "statistics-based file grouping must be on by default"
+        );
+        assert!(
+            options.execution.parquet.pushdown_filters,
+            "Parquet row-level filter pushdown must be on by default"
+        );
+        assert!(
+            options.execution.parquet.reorder_filters,
+            "Parquet filter reordering must be on by default"
+        );
+    }
+
+    #[test]
+    fn session_honors_disabled_datafusion_scan_options() {
+        let limits = QuerierConfig {
+            datafusion: common::config::QuerierDataFusionConfig {
+                split_file_groups_by_statistics: false,
+                pushdown_filters: false,
+                reorder_filters: false,
+            },
+            ..QuerierConfig::default()
+        };
+        let ctx = session_context_with_limits(&limits);
+        let options = ctx.state().config_options().clone();
+        assert!(!options.execution.split_file_groups_by_statistics);
+        assert!(!options.execution.parquet.pushdown_filters);
+        assert!(!options.execution.parquet.reorder_filters);
     }
 
     #[test]
