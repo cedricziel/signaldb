@@ -7737,6 +7737,7 @@ dependencies = [
  "opentelemetry-proto",
  "opentelemetry_sdk",
  "prost",
+ "pyroscope-api",
  "querier",
  "reqwest 0.13.4",
  "router",
