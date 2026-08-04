@@ -1,8 +1,10 @@
-//! Task 0.2 demo — dual-layout coexistence scan.
+//! Task 0.2 demo — typed-layout + promotion-evolution viability scan.
 //!
 //! Runs the spike in `otel_native_spike::coexistence` and prints a PASS/FAIL
-//! line per probe, followed by the single-scan output over both data-file
-//! generations. Exit code is non-zero if any probe failed.
+//! line per probe, followed by the single-scan output over pre- and
+//! post-promotion file generations (both typed layout — the legacy
+//! `Map<String,String>` coexistence scope was dropped for the one-shot
+//! cutover). Exit code is non-zero if any probe failed.
 
 use anyhow::Result;
 use otel_native_spike::coexistence;

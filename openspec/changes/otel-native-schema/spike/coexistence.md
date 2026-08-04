@@ -17,11 +17,13 @@ layout in a one-shot breaking cutover (see proposal/design).
 
 Temp SQLite catalog (`iceberg-sql-catalog`) + local filesystem object store —
 the same catalog/write machinery the product uses (`write_parquet_partitioned`,
-snapshot commit per generation). Table schema: id/timestamp columns + typed
-homes `attributes_str: Map<String,Utf8>`, `attributes_int: Map<String,Int64>`,
-`attributes_double: Map<String,Float64>`, `attributes_bool: Map<String,Boolean>`
+snapshot commit per generation). Table schema — id/timestamp columns plus:
 
-- `attributes_residue: Map<String,Binary>` (CBOR-encoded off-type values).
+- `attributes_str: Map<String,Utf8>`
+- `attributes_int: Map<String,Int64>`
+- `attributes_double: Map<String,Float64>`
+- `attributes_bool: Map<String,Boolean>`
+- `attributes_residue: Map<String,Binary>` (CBOR-encoded off-type values)
 
 Two generations: gen-1 written pre-promotion; then schema evolution ADDs a
 promoted column `attr_http_response_status_code: Int64`; gen-2 written carrying

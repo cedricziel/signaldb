@@ -23,7 +23,7 @@ use std::time::Instant;
 use anyhow::Result;
 use datafusion::common::ScalarValue;
 use datafusion::functions_nested::expr_fn::array_has;
-use datafusion::physical_plan::metrics::MetricsSet;
+use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::{ExecutionPlan, collect};
 use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext, col, lit};
 use rand::rngs::StdRng;
@@ -134,14 +134,34 @@ struct PruneMetrics {
 fn walk_metrics(plan: &Arc<dyn ExecutionPlan>, acc: &mut PruneMetrics) {
     if let Some(set) = plan.metrics() {
         let m: MetricsSet = set.aggregate_by_name();
+        // sum_by_name silently returns 0 for MetricValue::PruningMetrics
+        // (issue #958) — pruning counters must be matched structurally.
         let get = |name: &str| m.sum_by_name(name).map(|v| v.as_usize()).unwrap_or(0);
-        acc.row_groups_pruned_statistics += get("row_groups_pruned_statistics");
-        acc.row_groups_pruned_bloom_filter += get("row_groups_pruned_bloom_filter");
-        acc.row_groups_matched_bloom_filter += get("row_groups_matched_bloom_filter");
-        acc.files_ranges_pruned_statistics += get("files_ranges_pruned_statistics");
         acc.pushdown_rows_pruned += get("pushdown_rows_pruned");
         acc.pushdown_rows_matched += get("pushdown_rows_matched");
         acc.output_rows += get("output_rows");
+        for metric in m.iter() {
+            if let MetricValue::PruningMetrics {
+                name,
+                pruning_metrics,
+            } = metric.value()
+            {
+                let pruned = pruning_metrics.pruned();
+                match name.as_ref() {
+                    "row_groups_pruned_statistics" => acc.row_groups_pruned_statistics += pruned,
+                    "row_groups_pruned_bloom_filter" => {
+                        acc.row_groups_pruned_bloom_filter += pruned
+                    }
+                    "row_groups_matched_bloom_filter" => {
+                        acc.row_groups_matched_bloom_filter += pruned
+                    }
+                    "files_ranges_pruned_statistics" => {
+                        acc.files_ranges_pruned_statistics += pruned
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
     for child in plan.children() {
         walk_metrics(child, acc);
@@ -385,6 +405,12 @@ async fn main() -> Result<()> {
     println!(
         "false negatives: int={} str={}  (MUST be 0)",
         cust_int.false_negatives, cust_str.false_negatives
+    );
+    anyhow::ensure!(
+        cust_int.false_negatives == 0 && cust_str.false_negatives == 0,
+        "warm-index pre-filter produced false negatives (int={}, str={})",
+        cust_int.false_negatives,
+        cust_str.false_negatives
     );
     Ok(())
 }

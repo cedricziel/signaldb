@@ -48,7 +48,8 @@ async fn main() -> Result<()> {
     let reps: usize = std::env::var("BENCH_REPS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(3);
+        .unwrap_or(3)
+        .max(1);
     let data_dir = std::env::var("SPIKE_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -92,6 +93,11 @@ async fn main() -> Result<()> {
     rows.extend(log_rows);
     let load_ms = t0.elapsed().as_secs_f64() * 1e3;
 
+    anyhow::ensure!(
+        !rows.is_empty(),
+        "no rows loaded from {} — is SPIKE_DATA_DIR pointing at a fetched hive sample?",
+        data_dir.display()
+    );
     let attr_total: usize = rows.iter().map(|r| r.attrs.len()).sum();
     println!(
         "\nloaded {} rows in {load_ms:.0} ms  (traces {trace_row_count} from {trace_files} files, \
