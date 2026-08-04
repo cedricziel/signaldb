@@ -18,7 +18,15 @@ group — including across writer restarts: the writer identity SHALL be
 the WAL-persisted one (stable across restarts), and sequence allocation
 SHALL guarantee that every batch resident after a restart numbers above
 any watermark a previous incarnation of the same writer committed, before
-any insert is accepted. Every Iceberg commit SHALL record the group's
+any insert is accepted. Sequence allocation SHALL NOT wrap: at counter
+exhaustion the allocator advances durably (preserving monotonicity) and,
+if no monotone continuation exists, rejects further inserts retryably
+rather than emitting a sequence at or below an existing watermark. During
+startup replay, pending WAL entries covered by the writer's durable
+commit evidence (a crash between an Iceberg commit and its
+mark-processed) SHALL be reconciled as committed — marked processed, not
+served by hot scans — before the group becomes servable. Every Iceberg
+commit SHALL record the group's
 committed high-water sequence in the table's metadata within the same
 atomic commit transaction as the data files. On a concurrent-commit
 conflict the writer SHALL retry against the latest table metadata,
@@ -51,6 +59,21 @@ snapshot expiration) MUST preserve them.
   replays or accepts new batches for that group
 - **THEN** every resident batch carries a sequence strictly above W, so
   none is incorrectly filtered as already committed
+
+#### Scenario: Crash between commit and mark-processed does not duplicate
+
+- **WHEN** a writer crashes after a group's Iceberg commit succeeded but
+  before the covering WAL entries were marked processed, and then restarts
+- **THEN** replay reconciles those entries as committed instead of
+  serving them to hot scans, so their rows are returned only from the
+  committed snapshot
+
+#### Scenario: Sequence exhaustion fails closed
+
+- **WHEN** a group's sequence counter reaches exhaustion with no monotone
+  continuation available
+- **THEN** further inserts are rejected retryably and no sequence at or
+  below an existing watermark is ever emitted
 
 #### Scenario: Concurrent writers do not lose each other's watermarks
 
@@ -101,6 +124,13 @@ hot arm.
 - **THEN** the writer signals truncation and the consumer treats that
   writer's hot arm as unresolved rather than merging a partial result
 
+#### Scenario: Query-wide hot buffering is bounded across writers
+
+- **WHEN** the combined hot results across all scanned writers would
+  exceed the querier's per-query hot-buffer budget
+- **THEN** the querier stops buffering at the budget, treats the
+  remaining writers' hot arms as unresolved, and records the degradation
+
 #### Scenario: Hot batches match the cold schema
 
 - **WHEN** a hot batch is returned for a table that also has committed data
@@ -125,6 +155,14 @@ alone using the table's canonical schema.
   yet run
 - **THEN** a query over the covering time range returns the batch's rows,
   merged with committed data
+
+#### Scenario: A newly joined writer's data is visible immediately
+
+- **WHEN** a writer joins the deployment, acknowledges a batch, and a
+  query over the covering range executes immediately afterwards
+- **THEN** the fan-out includes the new writer and the query returns the
+  batch's rows — writer-set caching never introduces a visibility window
+  for acknowledged data
 
 #### Scenario: First data for a new table is queryable before the table exists
 

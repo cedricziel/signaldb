@@ -77,7 +77,7 @@ bounded and multi-writer composes.
 `writer_id` here is the WAL-persisted identity
 (`Wal::load_or_create_writer_id`), stable across restarts — not the
 per-incarnation ServiceBootstrap UUID. **Sequences stay strictly
-increasing across restarts via an epoch**: a small counter persisted in
+increasing across restarts via an epoch**: a counter persisted in
 the WAL directory alongside `writer_id` is incremented once per writer
 start, and sequences are `(epoch << 32) | counter`. Replay reassigns
 sequences in the new epoch, so every replayed or fresh batch numbers above
@@ -85,7 +85,26 @@ any watermark a previous incarnation committed — a restart can never
 produce a resident batch whose sequence falls at or below an existing
 watermark. Allocation is atomic per group; the contiguous-prefix rule for
 chunked commits holds within an epoch, which suffices because a drain
-never spans a restart.
+never spans a restart. **Overflow is handled, not assumed away**: when a
+group's counter approaches saturation (2³² allocations in one epoch — a
+long-lived writer can reach this), the writer persists an epoch increment
+and rolls forward mid-run, keeping sequences monotonic; if the epoch space
+itself is ever exhausted, sequence allocation fails closed and ingest is
+rejected retryably rather than wrapping below an existing watermark.
+Boundary tests cover counter saturation and the epoch roll.
+
+**Replay reconciles already-committed entries before serving them**: a
+crash after an Iceberg commit but before `mark_processed` leaves WAL
+entries pending whose rows are already in the table. Blindly reassigning
+those entries new-epoch sequences (above every watermark) would make the
+hot filter keep them — a guaranteed duplicate. During startup replay,
+before a group becomes servable, the writer reconciles pending entries
+against its durable commit evidence (the idempotency marker, which by
+construction covers exactly the commit whose marks may be missing) and
+marks covered entries processed instead of inserting them as scannable.
+The "warming" state (D7) keeps the scan surface degraded until this
+reconciliation completes. A crash-after-commit-before-mark test asserts no
+duplicate rows are served.
 
 **Concurrent watermark commits**: on a catalog CAS conflict, the writer
 reloads the latest table metadata, reapplies only its own
@@ -179,22 +198,27 @@ a single over-cap batch) signals truncation instead of sending a partial
 set, and the querier treats a truncated response as an unresolvable
 boundary for that writer — drop its hot data, record degradation — never
 merging a silently partial hot arm. Continuation/pagination is a possible
-follow-up optimization, not part of this change. Buffered hot bytes are
-registered against the querier's DataFusion memory pool — the hot buffer
-must not be invisible to `session_context_with_limits`. Writer discovery
-is cached in the querier with a TTL at or below the heartbeat interval
-(today it is a catalog SQL query per call — unacceptable per user query,
-especially on SQLite). The TTL bounds a real staleness window: a newly
-joined writer holding acknowledged data is invisible to the fan-out for
-up to one TTL, so read-your-writes for its batches is delayed by at most
-TTL (still far below today's commit-visibility lag); this is documented
-as a bounded degradation and covered by a writer-set-change test rather
-than adding invalidation machinery in this change. Fan-out covers **all**
-Storage-capable writers (ingest round-robins, so every writer may hold
-any table's hot data) with a per-writer timeout; timeout/failure →
-degrade per spec. A per-request table-resolution cache keeps
-multi-reference queries (self-joins, multi-statement trace flows) from
-repeating hot scans.
+follow-up optimization, not part of this change. On top of the per-writer
+cap there is a **query-wide hot-buffer budget**: fan-out buffers up to
+`writer_count × per_writer_cap` bytes, so the provider enforces a total
+byte budget per query and fails closed when it would be exceeded —
+further writers' hot arms are treated as unresolved (degradation
+recorded) rather than buffered past the budget; DataFusion memory-pool
+registration accounts the bytes but does not define admission, so the
+budget does. Writer discovery avoids the per-query catalog discovery SQL
+(unacceptable per user query, especially on SQLite) **without a staleness
+window**: registrations bump a monotonic routing generation in the
+catalog; the querier caches the writer set keyed by that generation and
+re-reads only the cheap generation scalar per query, refetching the full
+set when it changes. A newly joined writer is therefore included in the
+first fan-out after it registers — TTL-only caching was rejected because
+its staleness window contradicts the no-omission contract for data
+acknowledged before query execution. A writer-joins-then-immediate-query
+test pins this. Fan-out covers **all** Storage-capable writers (ingest
+round-robins, so every writer may hold any table's hot data) with a
+per-writer timeout; timeout/failure → degrade per spec. A per-request
+table-resolution cache keeps multi-reference queries (self-joins,
+multi-statement trace flows) from repeating hot scans.
 
 ### D6: Hot scans are authenticated and scoped
 
@@ -210,7 +234,12 @@ out of scope here: inter-service Flight channels are plaintext today for
 deployment-wide posture rather than forking it per-endpoint — requiring
 TLS/mTLS across all service-to-service Flight links is a real hardening
 item, but it belongs to a dedicated transport-security change covering
-every channel, not a rider on this one.
+every channel, not a rider on this one. The dependency is stated
+explicitly as a deployment prerequisite: hot scans return tenant data, so
+inter-service Flight links MUST run on a trusted private network segment
+(the same boundary `do_put` already requires for confidentiality) until
+the transport-security change lands, and that change must cover `do_get`;
+the ops docs (task 5.2) state this boundary requirement.
 
 ### D7: Degradation surfaces through telemetry, not invented response fields
 

@@ -7,9 +7,11 @@
       WAL directory alongside the WAL-persisted `writer_id`, incremented
       per start, sequence = epoch << 32 | counter); FIFO drain advances a
       contiguously-committed high-water mark, chunked commits advance only
-      the contiguous prefix; unit tests for sequence/watermark accounting
-      and restart-after-commit continuity (no resident batch at or below a
-      prior incarnation's watermark)
+      the contiguous prefix; epoch rolls forward durably on counter
+      saturation and allocation fails closed (retryable rejection) at
+      exhaustion; unit tests for sequence/watermark accounting,
+      restart-after-commit continuity (no resident batch at or below a
+      prior incarnation's watermark), and saturation/roll boundaries
 - [ ] 1.2 Write `signaldb.hot.<writer_id>.seq` via `update_properties` in
       the same transaction as `append_data` (alongside the existing
       idempotency marker, unchanged); CAS-conflict retry reloads latest
@@ -26,7 +28,11 @@
       with explicit truncation signaling (single over-cap batch included);
       `_system` anti-loop guard; tests for isolation, auth, pruning, and
       truncation signaling
-- [ ] 1.5 Replay-in-progress writers report "warming" on the scan surface
+- [ ] 1.5 Replay-in-progress writers report "warming" on the scan surface;
+      replay reconciles pending entries covered by the idempotency marker
+      (crash after commit, before mark-processed) as processed before the
+      group becomes servable; crash-after-commit-before-mark test asserts
+      no duplicate rows are served
 
 ## 2. Compactor — watermark preservation
 
@@ -35,11 +41,13 @@
 
 ## 3. Querier — hybrid provider
 
-- [ ] 3.1 Cached Storage-writer discovery (TTL at or below the heartbeat
-      interval) in the querier; per-request table-resolution cache so
-      multi-reference queries scan hot data once per table; test covering
-      a writer-set change between acknowledgement and query (staleness
-      bounded by the TTL)
+- [ ] 3.1 Generation-keyed writer discovery cache in the querier:
+      registrations bump a monotonic routing generation in the catalog,
+      the querier re-reads only the generation scalar per query and
+      refetches the writer set on change (no staleness window, no
+      full-discovery SQL per query); per-request table-resolution cache so
+      multi-reference queries scan hot data once per table; test: writer
+      joins, acks a batch, immediate query includes it
 - [ ] 3.2 `HybridTableProvider` returned from `LiveIcebergSchema::table()`:
       eager hot fan-out to all Storage-capable writers (per-writer
       timeout), then cold resolution pinning snapshot S and reading
@@ -50,7 +58,9 @@
       entirely, serve committed only, record degradation (unbounded raw-SQL
       test); truncated scan responses treated as unresolvable; `UnionExec`
       arms with identical schemas; `Inexact` pushdown; unknown statistics;
-      hot bytes registered against the DataFusion memory pool
+      hot bytes registered against the DataFusion memory pool and bounded
+      by a query-wide hot-buffer budget (overflow → remaining hot arms
+      unresolved + degradation, tested)
 - [ ] 3.3 Querier-side arm-schema equality: re-coerce hot batches against
       the pinned schema via the shared `common` helpers; assert
       field-for-field equality including nullability and derived columns;
@@ -84,7 +94,9 @@
       action for operational/targeted use
 - [ ] 5.2 Config flag to disable the hybrid provider (rollback path);
       document in signaldb.dist.toml and ops docs, including degradation
-      semantics and the deliberate follow-up of raising `commit_interval`
+      semantics, the trusted-private-network boundary required for
+      inter-service Flight (until the transport-security change covers
+      `do_get`), and the deliberate follow-up of raising `commit_interval`
 - [ ] 5.3 Full workspace test run, clippy, fmt, cargo machete; update
       architecture/tempo-api skill docs for the new query flow
 - [ ] 5.4 `openspec validate --strict` passes; sync deltas / archive per
