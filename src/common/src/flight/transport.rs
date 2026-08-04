@@ -428,8 +428,8 @@ mod tests {
     use crate::config::{Configuration, DatabaseConfig, DiscoveryConfig};
     use std::time::Duration;
 
-    async fn create_test_transport() -> InMemoryFlightTransport {
-        let config = Configuration {
+    fn test_configuration() -> Configuration {
+        Configuration {
             database: DatabaseConfig {
                 dsn: "sqlite::memory:".to_string(),
             },
@@ -440,7 +440,11 @@ mod tests {
                 ttl: Duration::from_secs(60),
             }),
             ..Default::default()
-        };
+        }
+    }
+
+    async fn create_test_transport() -> InMemoryFlightTransport {
+        let config = test_configuration();
 
         let bootstrap =
             ServiceBootstrap::new(config, ServiceType::Router, "localhost:50051".to_string())
@@ -474,6 +478,29 @@ mod tests {
 
         assert_eq!(transport.connect_timeout, DEFAULT_CONNECT_TIMEOUT);
         assert!(transport.request_timeout > transport.connect_timeout);
+    }
+
+    /// `with_pool_config` is where a caller can override the connect timeout,
+    /// so it must keep that value without letting it bound query wall-clock
+    /// time — the request deadline still comes from `query_timeout`.
+    #[tokio::test]
+    async fn with_pool_config_keeps_connect_timeout_and_derives_request_timeout() {
+        let config = test_configuration();
+        let query_timeout = config.querier.query_timeout;
+        let bootstrap =
+            ServiceBootstrap::new(config, ServiceType::Router, "localhost:50051".to_string())
+                .await
+                .unwrap();
+
+        let connect_timeout = Duration::from_secs(3);
+        let transport = InMemoryFlightTransport::with_pool_config(bootstrap, 2, connect_timeout);
+
+        assert_eq!(transport.connect_timeout, connect_timeout);
+        assert_eq!(
+            transport.request_timeout,
+            query_timeout.saturating_add(REQUEST_TIMEOUT_GRACE)
+        );
+        assert!(transport.request_timeout > connect_timeout);
     }
 
     #[tokio::test]

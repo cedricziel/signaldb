@@ -893,13 +893,15 @@ pub async fn search<S: RouterState>(
             let mut stream = response.into_inner();
             let mut search_results = Vec::new();
 
-            // Collect all flight data
+            // Collect all flight data. As on the trace-lookup path, the
+            // querier's terminal status usually surfaces here rather than at
+            // `do_get` — a timeout in particular — so map it in both places.
             while let Some(flight_data) = stream.next().await {
                 match flight_data {
                     Ok(data) => search_results.push(data),
                     Err(e) => {
                         tracing::error!(error = %e, "Error reading flight data for search");
-                        return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+                        return Err(search_status_to_http(&e));
                     }
                 }
             }
