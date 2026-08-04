@@ -87,6 +87,12 @@ fn emitted_signaldb_attributes_are_registered() {
     let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src");
     let mut used = BTreeSet::new();
     for path in rust_files_under(&src_root) {
+        // Skip this file: the scanner unit tests below contain fixture
+        // literals (e.g. signaldb.foo.bar) that are inputs to the heuristic,
+        // not attributes the codebase emits.
+        if path.ends_with("common/tests/registry_pins.rs") {
+            continue;
+        }
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         used.extend(signaldb_span_field_usages(&content));
     }
