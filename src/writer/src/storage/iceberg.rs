@@ -637,20 +637,18 @@ mod tests {
 
         let object_store = Arc::new(InMemory::new());
 
-        // Try to create a writer
-        let result = IcebergTableWriter::new(
+        // With a real in-memory SQL catalog, creating the writer (and thus the
+        // "traces" table) must deterministically succeed.
+        let writer = IcebergTableWriter::new(
             &catalog_manager,
             object_store,
             "test-tenant".to_string(),
             "local".to_string(),
             "traces".to_string(),
         )
-        .await;
+        .await
+        .expect("IcebergTableWriter::new should succeed against an in-memory SQL catalog");
 
-        // This might work or fail due to test environment setup, but not due to "not implemented"
-        if let Err(e) = result {
-            assert!(!e.to_string().contains("Table creation not yet implemented"));
-            log::debug!("Expected failure due to test environment: {e}");
-        }
+        assert_eq!(writer.table_identifier().name(), "traces");
     }
 }
