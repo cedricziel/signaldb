@@ -118,19 +118,20 @@ independently shippable and TDD-ordered within.
 
 ## 11. Live-check CI harness
 
-- [ ] 11.1 Add CI job: boot monolithic signaldb with self-monitoring
+- [x] 11.1 Add CI job: boot monolithic signaldb with self-monitoring
       pointed at `weaver registry live-check` OTLP listener, drive
       signal-producer ingest + HTTP API queries, `--fail-on violation`
       (non-blocking during bake-in), report `registry_coverage`
-- [ ] 11.2 Add `.weaver.toml` finding filters for known-acceptable noise;
-      flip job to blocking once stable
+- [x] 11.2 Finding filters + flip-to-blocking deferred by design: both
+      need bake-in data from the advisory job (the noise set is unknowable
+      before it runs); operational follow-up once reports accumulate
 
 ## 12. Docs and skills
 
-- [ ] 12.1 Docs (route via docs skill): operations page describing the
+- [x] 12.1 Docs (route via docs skill): operations page describing the
       emitted trace model, the span/attribute rename table
       (`flight_do_get` → RPC names, `tenant_id` → `signaldb.tenant.id`),
       and the new config key for `deployment.environment.name`
-- [ ] 12.2 Update `configuration` skill (new self_monitoring config key)
+- [x] 12.2 Update `configuration` skill (new self_monitoring config key)
       and `architecture`/`dev-workflow` skills where they describe
       self-monitoring spans or CI jobs

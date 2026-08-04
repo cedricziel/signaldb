@@ -112,7 +112,9 @@ pub fn rpc_client_span(
         match addr.rsplit_once(':') {
             Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => {
                 span.record("server.address", host);
-                span.record("server.port", port);
+                if let Ok(port) = port.parse::<i64>() {
+                    span.record("server.port", port);
+                }
             }
             _ => {
                 span.record("server.address", addr);

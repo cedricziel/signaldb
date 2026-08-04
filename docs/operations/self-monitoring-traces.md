@@ -1,0 +1,97 @@
+---
+audience: operator
+type: reference
+status: living
+sources:
+  - src/common/src/self_monitoring/**
+  - otel/registry/**
+---
+
+# Self-Monitoring Trace Model
+
+The spans SignalDB emits about its own operation follow the OpenTelemetry
+semantic conventions, pinned at **semconv v1.43.0** (the `schema_url` on
+every exported resource and instrumentation scope). This page is the
+operator-facing reference: what spans exist, what they're named, and what
+changed if you had dashboards on the old names.
+
+## Resource identity
+
+Every service exports with:
+
+| Attribute                     | Value                                                                                                                                  |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `service.namespace`           | `signaldb`                                                                                                                             |
+| `service.name`                | `signaldb-acceptor`, `signaldb-router`, `signaldb-writer`, `signaldb-querier`, `signaldb-compactor` (or `signaldb` in monolithic mode) |
+| `service.version`             | crate version                                                                                                                          |
+| `service.instance.id`         | per-process UUID                                                                                                                       |
+| `deployment.environment.name` | `[self_monitoring] environment` config key (default `production`)                                                                      |
+
+The deprecated `deployment.environment` attribute is no longer emitted.
+
+## Span model
+
+```mermaid
+flowchart LR
+    C[Client trace] -->|traceparent| A["SERVER<br/>POST /v1/traces"]
+    A --> W1["CLIENT<br/>…FlightService/DoPut"]
+    W1 --> W2["SERVER<br/>…FlightService/DoPut"]
+    W2 -.->|span link| B["INTERNAL batch<br/>(writer WAL processor)"]
+    C2[Query client] -->|traceparent| R["SERVER<br/>GET /api/traces/{id}"]
+    R --> Q1["CLIENT<br/>…FlightService/DoGet find_trace"]
+    Q1 --> Q2["SERVER<br/>…FlightService/DoGet find_trace"]
+    Q2 --> P["INTERNAL<br/>signaldb.query.plan / execute"]
+```
+
+- **HTTP boundaries** (router APIs, acceptor OTLP/HTTP + remote-write,
+  health): SERVER spans named `{method} {route}` with the stable `http.*`
+  attributes. 4xx leaves span status unset (caller fault); 5xx sets Error +
+  `error.type`.
+- **gRPC/Flight boundaries**: SERVER and CLIENT spans named by the
+  fully-qualified method plus a low-cardinality detail
+  (`arrow.flight.protocol.FlightService/DoGet query_ir`,
+  `…/DoAction compact_dry_run`, OTLP
+  `opentelemetry.proto.collector.trace.v1.TraceService/Export`), carrying
+  `rpc.system.name=grpc`, `rpc.method`, string `rpc.response.status_code`.
+  Server spans fail only on server-fault codes; client spans on any non-OK.
+- **SQL catalog**: CLIENT spans `{verb} signaldb-catalog` with
+  `db.system.name` / `db.operation.name` / `db.namespace`.
+- **Query stages**: `signaldb.query.plan` / `signaldb.query.execute`
+  INTERNAL spans with `signaldb.query.rows`/`batches`; recorded query text
+  is always literal-sanitized (`… WHERE name = ?`).
+- **Background jobs**: `compaction`, `retention_enforcement`,
+  `orphan_cleanup` root INTERNAL spans with `signaldb.tenant.id` /
+  `signaldb.dataset.id` / `signaldb.table` and affected-object counts
+  (`signaldb.job.partitions_dropped`, `…snapshots_expired`,
+  `…files_deleted`).
+- **WAL fan-in**: the writer's batch span **links** to every distinct
+  source ingest trace (one link per origin, never a parent).
+
+Trace continuity: a caller-supplied W3C `traceparent` is honored at every
+boundary, and the sampler is parent-based by default (an unrecognized
+`OTEL_TRACES_SAMPLER` value also falls back to parent-based).
+
+## Renames (breaking for dashboards)
+
+| Old                                                       | New                                                   |
+| --------------------------------------------------------- | ----------------------------------------------------- |
+| span `flight_do_get`                                      | `arrow.flight.protocol.FlightService/DoGet <verb>`    |
+| span `flight_do_put`                                      | `arrow.flight.protocol.FlightService/DoPut`           |
+| span `compaction_job`                                     | `compaction`                                          |
+| field `tenant_id`                                         | `signaldb.tenant.id`                                  |
+| field `dataset_id`                                        | `signaldb.dataset.id`                                 |
+| field `table` / `table_name`                              | `signaldb.table`                                      |
+| field `entry_count`                                       | `signaldb.wal.entry_count`                            |
+| field `operation` / `data_size` / `entry_id` (WAL spans)  | `signaldb.wal.operation` / `…data_size` / `…entry_id` |
+| resource `deployment.environment` (= `"self-monitoring"`) | `deployment.environment.name` (config-sourced)        |
+
+## Conventions registry and enforcement
+
+The `signaldb.*` attributes are declared in `otel/registry/` (an OTel
+Weaver registry layered on upstream semconv v1.43.0). CI validates the
+registry (`weaver registry check`), pins code↔registry drift
+(`registry_pins` test), enforces span-construction rules (no bare
+`#[tracing::instrument]`; `otel.kind` only in the span factories), and an
+advisory **Weaver Live Check** workflow boots the monolithic binary
+against a `weaver registry live-check` listener and reports findings plus
+`registry_coverage` per PR.
