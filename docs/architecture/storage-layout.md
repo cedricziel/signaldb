@@ -164,10 +164,12 @@ For a file-backed catalog — both the `sqlite://<path>` and the on-disk `sqlite
 
 ### Metadata retention
 
-Every Iceberg commit writes a new `metadata.json`. To stop these accumulating without bound under continuous ingestion, SignalDB sets two properties on every table at creation (`src/common/src/iceberg/table_manager.rs`):
+Every Iceberg commit writes a new `metadata.json`. To stop these accumulating without bound under continuous ingestion, SignalDB sets two properties on every table (`src/common/src/iceberg/table_manager.rs`):
 
 - `write.metadata.previous-versions-max` — retain a bounded window of previous metadata files (default 100, configurable via `[writer].metadata_previous_versions_max`).
 - `write.metadata.delete-after-commit.enabled = true` — delete metadata files aged out of that window on each commit.
+
+The properties are applied at table creation, and `ensure_table` backfills any that are absent when it loads a pre-existing table (#959: tables created before the properties existed never pruned, so metadata accumulated forever). The backfill only adds missing keys — operator-set values are never overwritten — so it commits at most once per table; a commit lost to a concurrent-writer race is logged and retried on the next load. Note the backfill bounds growth going forward only: metadata files that already aged out of the metadata-log before the backfill are orphaned and need a one-time cleanup.
 
 These are honored by the SQL catalog's delete-after-commit support (contributed upstream as [JanKaul/iceberg-rust#382](https://github.com/JanKaul/iceberg-rust/pull/382); SignalDB is temporarily pinned to a fork commit carrying it — see the note in `Cargo.toml`). This is safe because SignalDB queries only current snapshots (no metadata time-travel), and snapshot history is separately bounded by the compactor's snapshot expiration.
 
