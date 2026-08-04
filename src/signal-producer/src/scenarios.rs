@@ -21,6 +21,13 @@ use rand::rngs::ThreadRng;
 use crate::emit::{self, Clock};
 use crate::fleet::{Fleet, ServiceTelemetry};
 
+/// The largest timeline offset (in unscaled milliseconds) at which any
+/// scenario closes a span — `rideshare_request_ride`'s root closes at 640 ms.
+/// [`run`] anchors the scenario clock at least this far (scaled) in the past
+/// so even the slowest trace has fully completed by the time it is emitted;
+/// the `spans_never_end_in_the_future` test guards this bound.
+const MAX_TIMELINE_MS: f64 = 640.0;
+
 /// Per-invocation simulation state passed down through a scenario.
 pub struct Sim<'a> {
     fleet: &'a Fleet,
@@ -58,10 +65,15 @@ impl<'a> Sim<'a> {
 /// (checkouts/rides are rarer than browsing/pings).
 pub fn run(fleet: &Fleet, rng: &mut ThreadRng, namespace: &str) {
     let scale = rng.random_range(0.55..1.9);
+    // Age the clock past the whole scaled timeline so every span — including
+    // the root, which closes last — ends in the past rather than the future.
+    // The extra jitter keeps traces looking like they happened a moment ago
+    // at slightly varying ages.
+    let age_ms = MAX_TIMELINE_MS * scale + rng.random_range(20.0..180.0);
     let mut sim = Sim {
         fleet,
         rng,
-        clock: Clock::starting(120.0),
+        clock: Clock::starting(age_ms),
         scale,
     };
 
@@ -1327,4 +1339,127 @@ fn client_ip(sim: &mut Sim) -> String {
         sim.rng.random_range(0i64..255),
         sim.rng.random_range(1i64..254),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    //! Regression tests for #797: produced spans must carry realistic
+    //! simulated durations — non-zero roots, children nested inside their
+    //! parent's window, and no span ending in the future.
+
+    use std::collections::HashMap;
+    use std::time::{Duration, SystemTime};
+
+    use opentelemetry::trace::{SpanId, SpanKind, TraceId};
+    use opentelemetry_sdk::trace::SpanData;
+
+    use super::run;
+    use crate::fleet::Fleet;
+    use crate::topology;
+
+    /// Runs every estate's scenarios repeatedly against in-memory exporters
+    /// and returns all finished spans. Scenario choice and timing scale are
+    /// random, so the assertions below must hold for every possible draw.
+    fn produce_spans() -> Vec<SpanData> {
+        let estates = topology::estates("all");
+        let (fleet, exporter) = Fleet::build_in_memory(&estates);
+        let mut rng = rand::rng();
+        for _ in 0..25 {
+            for estate in &estates {
+                run(&fleet, &mut rng, estate.namespace);
+            }
+        }
+        exporter
+            .get_finished_spans()
+            .expect("in-memory exporter should return finished spans")
+    }
+
+    fn duration_of(span: &SpanData) -> Duration {
+        span.end_time
+            .duration_since(span.start_time)
+            .unwrap_or_else(|_| panic!("span '{}' ends before it starts", span.name))
+    }
+
+    #[test]
+    fn every_span_has_a_positive_duration() {
+        let spans = produce_spans();
+        assert!(!spans.is_empty(), "scenarios should emit spans");
+        for span in &spans {
+            assert!(
+                duration_of(span) > Duration::ZERO,
+                "span '{}' has zero duration",
+                span.name
+            );
+        }
+    }
+
+    #[test]
+    fn root_spans_have_realistic_durations() {
+        let spans = produce_spans();
+        let roots: Vec<_> = spans
+            .iter()
+            .filter(|s| s.parent_span_id == SpanId::INVALID)
+            .collect();
+        assert!(!roots.is_empty(), "scenarios should emit root spans");
+        for root in roots {
+            let duration = duration_of(root);
+            assert!(
+                duration >= Duration::from_millis(5),
+                "root span '{}' lasts only {duration:?} — traces would list as ~0",
+                root.name
+            );
+            assert!(
+                duration <= Duration::from_secs(5),
+                "root span '{}' lasts an implausible {duration:?}",
+                root.name
+            );
+        }
+    }
+
+    #[test]
+    fn spans_never_end_in_the_future() {
+        let spans = produce_spans();
+        let now = SystemTime::now();
+        for span in &spans {
+            assert!(
+                span.end_time <= now,
+                "span '{}' has an end timestamp in the future",
+                span.name
+            );
+        }
+    }
+
+    #[test]
+    fn child_spans_nest_inside_their_parents_window() {
+        let spans = produce_spans();
+        let by_id: HashMap<(TraceId, SpanId), &SpanData> = spans
+            .iter()
+            .map(|s| ((s.span_context.trace_id(), s.span_context.span_id()), s))
+            .collect();
+        for span in &spans {
+            if span.parent_span_id == SpanId::INVALID {
+                continue;
+            }
+            // Consumer spans model asynchronous message processing and may
+            // legitimately start after their Producer parent has ended.
+            if span.span_kind == SpanKind::Consumer {
+                continue;
+            }
+            let parent = by_id
+                .get(&(span.span_context.trace_id(), span.parent_span_id))
+                .unwrap_or_else(|| panic!("span '{}' has no exported parent", span.name));
+            assert!(
+                span.start_time >= parent.start_time,
+                "span '{}' starts before its parent '{}'",
+                span.name,
+                parent.name
+            );
+            assert!(
+                span.end_time <= parent.end_time,
+                "span '{}' ends after its parent '{}'",
+                span.name,
+                parent.name
+            );
+        }
+    }
 }

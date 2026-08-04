@@ -15,3 +15,6 @@ tracing-subscriber.workspace = true
 opentelemetry = { workspace = true, features = ["trace", "metrics", "logs"] }
 opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "logs"] }
 opentelemetry-otlp = { workspace = true, features = ["grpc-tonic", "trace", "metrics", "logs"] }
+
+[dev-dependencies]
+opentelemetry_sdk = { workspace = true, features = ["trace", "testing"] }
