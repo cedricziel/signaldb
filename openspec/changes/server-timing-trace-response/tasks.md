@@ -23,6 +23,6 @@
 
 ## 4. Docs and surface hygiene
 
-- [ ] 4.1 Document the `Server-Timing`, `traceresponse`, and `Timing-Allow-Origin` response headers in the router's OpenAPI description (`src/router/src/openapi.rs`) — headers only, no endpoint/schema changes, so no SDK/TS client regeneration needed
+- [x] 4.1 Document the `Server-Timing`, `traceresponse`, and `Timing-Allow-Origin` response headers in the router's OpenAPI description (`src/router/src/openapi.rs`) — headers only, no endpoint/schema changes, so no SDK/TS client regeneration needed
 - [ ] 4.2 Add a docs page on response trace context and server timings (what the headers mean, how to correlate from DevTools/RUM tools) — route placement via the docs skill
 - [ ] 4.3 Update the `frontend-instrumentation` skill to describe server→client correlation via `serverTiming` and the link-not-parent policy
