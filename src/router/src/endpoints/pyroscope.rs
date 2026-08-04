@@ -11,6 +11,7 @@
 //! Handlers forward tenant-scoped Flight tickets to the querier and shape
 //! the JSON results into `pyroscope-api` types.
 
+use super::api_error::ApiError;
 use crate::RouterState;
 use arrow_flight::Ticket;
 use axum::{
@@ -175,14 +176,17 @@ fn search_params_json(parsed: &ParsedQuery, from: Option<i64>, until: Option<i64
 async fn execute_ticket<S: RouterState>(
     state: &S,
     ticket_content: String,
-) -> Result<Vec<RecordBatch>, StatusCode> {
+) -> Result<Vec<RecordBatch>, ApiError> {
     let mut client = state
         .service_registry()
         .get_flight_client_for_capability(ServiceCapability::QueryExecution)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to get Flight client for profile query");
-            StatusCode::SERVICE_UNAVAILABLE
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "no querier service available",
+            )
         })?;
 
     let verb = common::self_monitoring::spans::ticket_verb(&ticket_content).map(str::to_owned);
@@ -206,16 +210,18 @@ async fn execute_ticket<S: RouterState>(
         data.push(flight_data.map_err(|e| flight_status_to_http(&e))?);
     }
 
-    super::flight_decode::decode_flight_batches(&data, "profiles")
+    super::flight_decode::decode_flight_batches(&data, "profiles").map_err(ApiError::from)
 }
 
-fn flight_status_to_http(status: &tonic::Status) -> StatusCode {
+/// Map the querier's Flight status onto an HTTP error carrying the
+/// querier's message (#921).
+fn flight_status_to_http(status: &tonic::Status) -> ApiError {
     common::self_monitoring::spans::record_rpc_result(
         &tracing::Span::current(),
         common::self_monitoring::spans::RpcBoundary::Client,
         status.code(),
     );
-    match status.code() {
+    let code = match status.code() {
         tonic::Code::NotFound => StatusCode::NOT_FOUND,
         tonic::Code::InvalidArgument => StatusCode::BAD_REQUEST,
         tonic::Code::ResourceExhausted => StatusCode::TOO_MANY_REQUESTS,
@@ -225,7 +231,8 @@ fn flight_status_to_http(status: &tonic::Status) -> StatusCode {
             tracing::error!(error = %status, "Profile Flight query failed");
             StatusCode::INTERNAL_SERVER_ERROR
         }
-    }
+    };
+    ApiError::new(code, status.message())
 }
 
 /// Collect every value of the (single) string column across batches.
@@ -249,15 +256,21 @@ fn string_values(batches: &[RecordBatch]) -> Vec<String> {
 /// Decode the single JSON document returned by flamegraph/diff tickets.
 fn decode_json_result<T: serde::de::DeserializeOwned>(
     batches: &[RecordBatch],
-) -> Result<T, StatusCode> {
+) -> Result<T, ApiError> {
     let values = string_values(batches);
     let json = values.first().ok_or_else(|| {
         tracing::error!("Profile query returned no result document");
-        StatusCode::INTERNAL_SERVER_ERROR
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "profile query returned no result document",
+        )
     })?;
     serde_json::from_str(json).map_err(|e| {
         tracing::error!(error = %e, "Failed to parse profile query result");
-        StatusCode::INTERNAL_SERVER_ERROR
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to parse the profile query result",
+        )
     })
 }
 
@@ -273,7 +286,7 @@ pub async fn render<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<RenderParams>,
-) -> Result<axum::Json<RenderResponse>, StatusCode> {
+) -> Result<axum::Json<RenderResponse>, ApiError> {
     let parsed = parse_query(params.query.as_deref().unwrap_or(""));
     let from = params.from.as_deref().and_then(parse_time);
     let until = params.until.as_deref().and_then(parse_time);
@@ -319,7 +332,7 @@ pub async fn render_diff<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<RenderParams>,
-) -> Result<axum::Json<RenderResponse>, StatusCode> {
+) -> Result<axum::Json<RenderResponse>, ApiError> {
     let parsed = parse_query(params.query.as_deref().unwrap_or(""));
     let left_from = params.left_from.as_deref().and_then(parse_time);
     let left_until = params.left_until.as_deref().and_then(parse_time);
@@ -377,7 +390,7 @@ pub async fn label_names<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<DiscoveryParams>,
-) -> Result<axum::Json<LabelsResponse>, StatusCode> {
+) -> Result<axum::Json<LabelsResponse>, ApiError> {
     let ticket = format!(
         "label_names:{}:{}:{}",
         tenant_ctx.0.tenant_slug,
@@ -396,10 +409,10 @@ pub async fn label_values<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<DiscoveryParams>,
-) -> Result<axum::Json<LabelsResponse>, StatusCode> {
-    let label = params.label.clone().filter(|l| !l.is_empty()).ok_or(
+) -> Result<axum::Json<LabelsResponse>, ApiError> {
+    let label = params.label.clone().filter(|l| !l.is_empty()).ok_or_else(
         // Pyroscope requires the label parameter here.
-        StatusCode::BAD_REQUEST,
+        || ApiError::bad_request("missing or empty 'label' parameter"),
     )?;
     let ticket = format!(
         "label_values:{}:{}:{}:{}",
@@ -420,7 +433,7 @@ pub async fn profile_types<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<DiscoveryParams>,
-) -> Result<axum::Json<Vec<ProfileType>>, StatusCode> {
+) -> Result<axum::Json<Vec<ProfileType>>, ApiError> {
     let ticket = format!(
         "profile_types:{}:{}:{}",
         tenant_ctx.0.tenant_slug,
@@ -510,7 +523,7 @@ pub(crate) async fn fetch_profiles_for_trace<S: RouterState>(
     tenant_slug: &str,
     dataset_slug: &str,
     trace_id: &str,
-) -> Result<Vec<tempo_api::ProfileSummary>, StatusCode> {
+) -> Result<Vec<tempo_api::ProfileSummary>, ApiError> {
     let ticket = format!("profiles_by_trace:{tenant_slug}:{dataset_slug}:{trace_id}");
     let batches = execute_ticket(state, ticket).await?;
     Ok(batches_to_profile_summaries(&batches))
@@ -528,7 +541,7 @@ pub async fn profiles_by_trace<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
     axum::extract::Path(trace_id): axum::extract::Path<String>,
-) -> Result<axum::Json<Vec<tempo_api::ProfileSummary>>, StatusCode> {
+) -> Result<axum::Json<Vec<tempo_api::ProfileSummary>>, ApiError> {
     let summaries = fetch_profiles_for_trace(
         &state,
         &tenant_ctx.0.tenant_slug,
@@ -572,5 +585,98 @@ mod tests {
         let one_hour_ago = parse_time("now-1h").expect("relative time");
         assert!((now - 3600 - one_hour_ago).abs() <= 2);
         assert!(parse_time("later").is_none());
+    }
+
+    /// The querier's Flight message must survive into the HTTP error so
+    /// callers see why a profile query failed (#921).
+    #[test]
+    fn flight_status_mapping_preserves_the_querier_message() {
+        let status = tonic::Status::invalid_argument("unknown sample type 'wall'");
+        let err = flight_status_to_http(&status);
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.message, "unknown sample type 'wall'");
+    }
+
+    // ---- Router-level: error responses carry a JSON body (#921) ----
+
+    mod error_bodies {
+        use crate::{RouterAppState, create_router};
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use common::catalog::Catalog;
+        use common::config::{ApiKeyConfig, Configuration, TenantConfig};
+        use tower::ServiceExt;
+
+        fn test_config() -> Configuration {
+            let mut config = Configuration::default();
+            config.auth = common::config::AuthConfig {
+                tenants: vec![TenantConfig {
+                    id: "acme".to_string(),
+                    slug: "acme".to_string(),
+                    name: "Acme".to_string(),
+                    default_dataset: Some("default".to_string()),
+                    datasets: vec![],
+                    api_keys: vec![ApiKeyConfig {
+                        key: "sk-test-key".to_string(),
+                        name: Some("test".to_string()),
+                    }],
+                    schema_config: None,
+                    limits: None,
+                }],
+                ..Default::default()
+            };
+            config
+        }
+
+        async fn get_error(uri: &str) -> (StatusCode, serde_json::Value) {
+            let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+            let app = create_router(RouterAppState::new(catalog, test_config()));
+            let request = Request::builder()
+                .uri(uri)
+                .header("authorization", "Bearer sk-test-key")
+                .header("x-tenant-id", "acme")
+                .body(Body::empty())
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert!(
+                !body.is_empty(),
+                "error response for {uri} must carry a body"
+            );
+            let json: serde_json::Value =
+                serde_json::from_slice(&body).expect("error body must be valid JSON");
+            assert!(
+                json["error"]
+                    .as_str()
+                    .is_some_and(|message| !message.is_empty()),
+                "error body for {uri} must carry a non-empty 'error' message: {json}"
+            );
+            (status, json)
+        }
+
+        #[tokio::test]
+        async fn render_without_a_querier_explains_itself() {
+            let (status, _) = get_error("/pyroscope/render?query=cpu").await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        }
+
+        #[tokio::test]
+        async fn label_values_without_label_explains_itself() {
+            let (status, json) = get_error("/pyroscope/label-values").await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(
+                json["error"].as_str().unwrap().contains("label"),
+                "message should name the missing parameter: {json}"
+            );
+        }
+
+        #[tokio::test]
+        async fn profiles_by_trace_without_a_querier_explains_itself() {
+            let (status, _) = get_error("/api/profiles/trace/0123456789abcdef").await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        }
     }
 }

@@ -1,3 +1,4 @@
+use super::api_error::ApiError;
 use crate::RouterState;
 use arrow_flight::{FlightData, Ticket, utils::flight_data_to_batches};
 use axum::{
@@ -640,7 +641,7 @@ pub async fn query_single_trace<S: RouterState>(
         axum::Extension<common::self_monitoring::ServerTimings>,
         axum::Json<tempo_api::Trace>,
     ),
-    axum::http::StatusCode,
+    ApiError,
 > {
     tracing::info!(
         trace_id = %trace_id,
@@ -667,7 +668,10 @@ pub async fn query_single_trace<S: RouterState>(
         Ok(client) => client,
         Err(e) => {
             tracing::error!(error = %e, "Failed to get Flight client for query execution");
-            return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+            return Err(ApiError::new(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "no querier service available",
+            ));
         }
     };
 
@@ -737,10 +741,11 @@ pub async fn query_single_trace<S: RouterState>(
                         .await
                         {
                             Ok(profiles) => trace.profiles = Some(profiles),
-                            Err(status) => {
+                            Err(err) => {
                                 tracing::warn!(
                                     trace_id = %trace_id,
-                                    status = ?status,
+                                    status = %err.status,
+                                    error = %err.message,
                                     "Failed to fetch linked profiles for trace"
                                 );
                             }
@@ -757,7 +762,10 @@ pub async fn query_single_trace<S: RouterState>(
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "Failed to convert flight data to trace");
-                    return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+                    return Err(ApiError::new(
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to decode trace data returned by the querier",
+                    ));
                 }
             }
         }
@@ -768,7 +776,10 @@ pub async fn query_single_trace<S: RouterState>(
 
     // Return 404 when no trace data is found
     tracing::info!(trace_id = %trace_id, "Trace not found");
-    Err(axum::http::StatusCode::NOT_FOUND)
+    Err(ApiError::new(
+        axum::http::StatusCode::NOT_FOUND,
+        format!("trace {trace_id} not found"),
+    ))
 }
 
 /// Assemble the single-trace response together with its stage timings —
@@ -789,16 +800,16 @@ fn timed_trace_response(
     (axum::Extension(timings), axum::Json(trace))
 }
 
-/// Map the querier's Flight status for a trace lookup onto an HTTP status.
-/// Not-found is an expected outcome and logged at info; everything else is
-/// an error.
-fn trace_lookup_status_to_http(trace_id: &str, status: &tonic::Status) -> axum::http::StatusCode {
+/// Map the querier's Flight status for a trace lookup onto an HTTP error
+/// carrying the querier's message (#921). Not-found is an expected outcome
+/// and logged at info; everything else is an error.
+fn trace_lookup_status_to_http(trace_id: &str, status: &tonic::Status) -> ApiError {
     common::self_monitoring::spans::record_rpc_result(
         &tracing::Span::current(),
         common::self_monitoring::spans::RpcBoundary::Client,
         status.code(),
     );
-    match status.code() {
+    let code = match status.code() {
         tonic::Code::NotFound => {
             tracing::info!(trace_id = %trace_id, "Trace not found");
             axum::http::StatusCode::NOT_FOUND
@@ -821,7 +832,8 @@ fn trace_lookup_status_to_http(trace_id: &str, status: &tonic::Status) -> axum::
             tracing::error!(trace_id = %trace_id, error = %status, "Flight query failed for trace");
             axum::http::StatusCode::INTERNAL_SERVER_ERROR
         }
-    }
+    };
+    ApiError::new(code, status.message())
 }
 
 /// GET https://grafana.com/docs/tempo/latest/api_docs/#search
@@ -848,7 +860,7 @@ pub async fn search<S: RouterState>(
     state: State<S>,
     tenant_ctx: TenantContextExtractor,
     Query(query): Query<tempo_api::SearchQueryParams>,
-) -> Result<axum::Json<tempo_api::SearchResult>, axum::http::StatusCode> {
+) -> Result<axum::Json<tempo_api::SearchResult>, ApiError> {
     tracing::info!(
         tenant_id = %tenant_ctx.0.tenant_id,
         dataset_id = %tenant_ctx.0.dataset_id,
@@ -871,14 +883,20 @@ pub async fn search<S: RouterState>(
         Ok(client) => client,
         Err(e) => {
             tracing::error!(error = %e, "Failed to get Flight client for query execution");
-            return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+            return Err(ApiError::new(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "no querier service available",
+            ));
         }
     };
 
     // Create Flight query for trace search with tenant context
     let search_params = serde_json::to_string(&query).map_err(|e| {
         tracing::error!(error = %e, "Failed to serialize search parameters");
-        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to serialize search parameters",
+        )
     })?;
     let ticket = Ticket::new(format!(
         "search_traces:{}:{}:{search_params}",
@@ -926,7 +944,10 @@ pub async fn search<S: RouterState>(
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "Failed to convert flight data to search results");
-                    return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+                    return Err(ApiError::new(
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to decode search results returned by the querier",
+                    ));
                 }
             }
         }
@@ -937,11 +958,12 @@ pub async fn search<S: RouterState>(
     }
 }
 
-/// Map the querier's Flight status for a trace search onto an HTTP status.
-/// Surface caller errors honestly: bad selectors are 400, unsupported query
-/// features are 501, exhausted timeouts are 504, everything else 500.
-fn search_status_to_http(status: &tonic::Status) -> axum::http::StatusCode {
-    match status.code() {
+/// Map the querier's Flight status for a trace search onto an HTTP error
+/// carrying the querier's message (#921). Surface caller errors honestly:
+/// bad selectors are 400, unsupported query features are 501, exhausted
+/// timeouts are 504, everything else 500.
+fn search_status_to_http(status: &tonic::Status) -> ApiError {
+    let code = match status.code() {
         tonic::Code::InvalidArgument => axum::http::StatusCode::BAD_REQUEST,
         tonic::Code::Unimplemented => axum::http::StatusCode::NOT_IMPLEMENTED,
         tonic::Code::ResourceExhausted => axum::http::StatusCode::TOO_MANY_REQUESTS,
@@ -950,7 +972,8 @@ fn search_status_to_http(status: &tonic::Status) -> axum::http::StatusCode {
             axum::http::StatusCode::GATEWAY_TIMEOUT
         }
         _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-    }
+    };
+    ApiError::new(code, status.message())
 }
 
 /// Tag names trace search can actually filter on today (see the
@@ -1045,7 +1068,7 @@ async fn distinct_column_values<S: RouterState>(
     column: &str,
     start: Option<i64>,
     end: Option<i64>,
-) -> Result<Vec<String>, axum::http::StatusCode> {
+) -> Result<Vec<String>, ApiError> {
     let (start_secs, end_secs) =
         resolve_tag_values_window(start, end, chrono::Utc::now().timestamp());
     let sql = distinct_values_sql(
@@ -1057,7 +1080,7 @@ async fn distinct_column_values<S: RouterState>(
     )
     .map_err(|e| {
         tracing::warn!(error = %e, "Rejecting tag values query with invalid time bounds");
-        axum::http::StatusCode::BAD_REQUEST
+        ApiError::bad_request(e)
     })?;
 
     let mut client = state
@@ -1066,7 +1089,10 @@ async fn distinct_column_values<S: RouterState>(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to get Flight client for tag values");
-            axum::http::StatusCode::SERVICE_UNAVAILABLE
+            ApiError::new(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "no querier service available",
+            )
         })?;
     let mut flight_request = tonic::Request::new(Ticket::new(sql));
     let rpc_span = common::flight::trace_context::do_get_client_span(None, &mut flight_request);
@@ -1085,7 +1111,7 @@ async fn distinct_column_values<S: RouterState>(
                 e.code(),
             );
             tracing::error!(error = %e, "Tag values query failed");
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.message())
         })?
         .into_inner();
 
@@ -1093,7 +1119,7 @@ async fn distinct_column_values<S: RouterState>(
     while let Some(data) = stream.next().await {
         flight_data.push(data.map_err(|e| {
             tracing::error!(error = %e, "Error reading tag values flight data");
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.message())
         })?);
     }
     if flight_data.is_empty() {
@@ -1102,7 +1128,10 @@ async fn distinct_column_values<S: RouterState>(
 
     let batches = flight_data_to_batches(&flight_data).map_err(|e| {
         tracing::error!(error = %e, "Failed to decode tag values flight data");
-        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to decode tag values returned by the querier",
+        )
     })?;
 
     let mut values = Vec::new();
@@ -1134,8 +1163,7 @@ async fn distinct_column_values<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip_all)]
-pub async fn search_tags()
--> Result<axum::Json<tempo_api::TagSearchResponse>, axum::http::StatusCode> {
+pub async fn search_tags() -> Result<axum::Json<tempo_api::TagSearchResponse>, ApiError> {
     let response = tempo_api::TagSearchResponse {
         tag_names: RESOURCE_TAGS
             .iter()
@@ -1173,7 +1201,7 @@ pub async fn search_tag_values<S: RouterState>(
     tenant_ctx: TenantContextExtractor,
     Path(tag_name): Path<String>,
     Query(params): Query<TagValueSearchParams>,
-) -> Result<axum::Json<tempo_api::TagValuesResponse>, axum::http::StatusCode> {
+) -> Result<axum::Json<tempo_api::TagValuesResponse>, ApiError> {
     let tag_values =
         tag_values_for(&state, &tenant_ctx.0, &tag_name, params.start, params.end).await?;
     Ok(axum::Json(tempo_api::TagValuesResponse { tag_values }))
@@ -1185,7 +1213,7 @@ async fn tag_values_for<S: RouterState>(
     tag_name: &str,
     start: Option<i64>,
     end: Option<i64>,
-) -> Result<Vec<String>, axum::http::StatusCode> {
+) -> Result<Vec<String>, ApiError> {
     if let Some(column) = tag_value_column(tag_name) {
         return distinct_column_values(&state.0, tenant_ctx, column, start, end).await;
     }
@@ -1200,14 +1228,17 @@ async fn tag_values_for<S: RouterState>(
     // Attribute tag values require an index (#411); saying so beats an
     // empty list that looks like "no data".
     tracing::debug!(tag_name = %tag_name, "Tag value lookup not implemented for this tag");
-    Err(axum::http::StatusCode::NOT_IMPLEMENTED)
+    Err(ApiError::new(
+        axum::http::StatusCode::NOT_IMPLEMENTED,
+        format!("tag value lookup is not implemented for tag '{tag_name}'"),
+    ))
 }
 
 /// GET /api/v2/search/tags?scope=<resource|span|intrinsic>
 #[tracing::instrument(skip_all)]
 pub async fn search_tags_v2(
     Query(_params): Query<TagSearchV2Params>,
-) -> Result<axum::Json<tempo_api::v2::TagSearchResponse>, axum::http::StatusCode> {
+) -> Result<axum::Json<tempo_api::v2::TagSearchResponse>, ApiError> {
     let response = tempo_api::v2::TagSearchResponse {
         scopes: vec![
             tempo_api::v2::TagSearchScope {
@@ -1230,7 +1261,7 @@ pub async fn search_tag_values_v2<S: RouterState>(
     tenant_ctx: TenantContextExtractor,
     Path(scoped_tag): Path<String>,
     Query(params): Query<TagValueSearchV2Params>,
-) -> Result<axum::Json<tempo_api::v2::TagValuesResponse>, axum::http::StatusCode> {
+) -> Result<axum::Json<tempo_api::v2::TagValuesResponse>, ApiError> {
     let values =
         tag_values_for(&state, &tenant_ctx.0, &scoped_tag, params.start, params.end).await?;
     Ok(axum::Json(tempo_api::v2::TagValuesResponse {
@@ -1251,9 +1282,12 @@ pub async fn search_tag_values_v2<S: RouterState>(
 #[tracing::instrument(skip_all)]
 pub async fn metrics_query(
     Query(_params): Query<MetricsQueryParams>,
-) -> Result<axum::Json<MetricsResponse>, axum::http::StatusCode> {
+) -> Result<axum::Json<MetricsResponse>, ApiError> {
     tracing::debug!("TraceQL metrics instant query not implemented");
-    Err(axum::http::StatusCode::NOT_IMPLEMENTED)
+    Err(ApiError::new(
+        axum::http::StatusCode::NOT_IMPLEMENTED,
+        "TraceQL metrics queries are not implemented",
+    ))
 }
 
 /// GET /api/metrics/query_range - Range TraceQL metrics query with time series
@@ -1263,9 +1297,12 @@ pub async fn metrics_query(
 #[tracing::instrument(skip_all)]
 pub async fn metrics_query_range(
     Query(_params): Query<MetricsRangeQueryParams>,
-) -> Result<axum::Json<MetricsResponse>, axum::http::StatusCode> {
+) -> Result<axum::Json<MetricsResponse>, ApiError> {
     tracing::debug!("TraceQL metrics range query not implemented");
-    Err(axum::http::StatusCode::NOT_IMPLEMENTED)
+    Err(ApiError::new(
+        axum::http::StatusCode::NOT_IMPLEMENTED,
+        "TraceQL metrics queries are not implemented",
+    ))
 }
 
 #[cfg(test)]
@@ -1314,12 +1351,12 @@ mod tests {
         for code in [tonic::Code::DeadlineExceeded, tonic::Code::Cancelled] {
             let status = tonic::Status::new(code, "Timeout expired");
             assert_eq!(
-                trace_lookup_status_to_http("abc123", &status),
+                trace_lookup_status_to_http("abc123", &status).status,
                 axum::http::StatusCode::GATEWAY_TIMEOUT,
                 "trace lookup: {code:?} must map to 504"
             );
             assert_eq!(
-                search_status_to_http(&status),
+                search_status_to_http(&status).status,
                 axum::http::StatusCode::GATEWAY_TIMEOUT,
                 "search: {code:?} must map to 504"
             );
@@ -1345,7 +1382,149 @@ mod tests {
         ];
         for (code, expected) in cases {
             let status = tonic::Status::new(code, "boom");
-            assert_eq!(trace_lookup_status_to_http("abc123", &status), expected);
+            assert_eq!(
+                trace_lookup_status_to_http("abc123", &status).status,
+                expected
+            );
+        }
+    }
+
+    /// The querier's diagnostic message (e.g. #920's "did you send
+    /// milliseconds?" hint) must survive the mapping so the caller sees it
+    /// in the response body instead of a bodyless status code (#921).
+    #[test]
+    fn status_mappers_preserve_the_querier_message() {
+        let hint = "start/end look like unix milliseconds; did you send milliseconds \
+                    where unix seconds were expected?";
+        let status = tonic::Status::invalid_argument(hint);
+        assert_eq!(trace_lookup_status_to_http("abc123", &status).message, hint);
+        assert_eq!(search_status_to_http(&status).message, hint);
+    }
+
+    // ---- Router-level: error responses carry a JSON body (#921) ----
+
+    mod error_bodies {
+        use crate::{RouterAppState, create_router};
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use common::catalog::Catalog;
+        use common::config::{ApiKeyConfig, Configuration, TenantConfig};
+        use tower::ServiceExt;
+
+        fn test_config() -> Configuration {
+            let mut config = Configuration::default();
+            config.auth = common::config::AuthConfig {
+                tenants: vec![TenantConfig {
+                    id: "acme".to_string(),
+                    slug: "acme".to_string(),
+                    name: "Acme".to_string(),
+                    default_dataset: Some("default".to_string()),
+                    datasets: vec![],
+                    api_keys: vec![ApiKeyConfig {
+                        key: "sk-test-key".to_string(),
+                        name: Some("test".to_string()),
+                    }],
+                    schema_config: None,
+                    limits: None,
+                }],
+                ..Default::default()
+            };
+            config
+        }
+
+        async fn test_app() -> axum::Router {
+            let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+            create_router(RouterAppState::new(catalog, test_config()))
+        }
+
+        async fn get_error(uri: &str) -> (StatusCode, serde_json::Value) {
+            let app = test_app().await;
+            let request = Request::builder()
+                .uri(uri)
+                .header("authorization", "Bearer sk-test-key")
+                .header("x-tenant-id", "acme")
+                .body(Body::empty())
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            let status = response.status();
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert!(
+                !body.is_empty(),
+                "error response for {uri} must carry a body"
+            );
+            assert!(
+                content_type.starts_with("application/json"),
+                "error response for {uri} must be JSON, got {content_type:?}"
+            );
+            let json: serde_json::Value =
+                serde_json::from_slice(&body).expect("error body must be valid JSON");
+            assert!(
+                json["error"]
+                    .as_str()
+                    .is_some_and(|message| !message.is_empty()),
+                "error body for {uri} must carry a non-empty 'error' message: {json}"
+            );
+            (status, json)
+        }
+
+        #[tokio::test]
+        async fn trace_lookup_without_a_querier_explains_itself() {
+            let (status, _) = get_error("/tempo/api/traces/0123456789abcdef").await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        }
+
+        #[tokio::test]
+        async fn search_without_a_querier_explains_itself() {
+            let (status, _) = get_error("/tempo/api/search").await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        }
+
+        #[tokio::test]
+        async fn tag_values_without_a_querier_explains_itself() {
+            let (status, _) = get_error("/tempo/api/search/tag/service.name/values").await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        }
+
+        /// #920/#979: a millisecond `start` is rejected before any querier
+        /// contact — and the 400 must carry the diagnostic in the envelope,
+        /// not an empty body (#921).
+        #[tokio::test]
+        async fn millisecond_tag_window_is_rejected_with_an_explanation() {
+            let (status, json) = get_error(
+                "/tempo/api/search/tag/service.name/values?start=1700000000000&end=1700000001000",
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(
+                json["error"].as_str().unwrap().contains("milliseconds"),
+                "message should carry the unit hint: {json}"
+            );
+        }
+
+        #[tokio::test]
+        async fn unqueryable_tag_values_explain_themselves() {
+            let (status, json) = get_error("/tempo/api/search/tag/http.method/values").await;
+            assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+            assert!(
+                json["error"].as_str().unwrap().contains("http.method"),
+                "message should name the tag: {json}"
+            );
+        }
+
+        #[tokio::test]
+        async fn metrics_queries_explain_they_are_not_implemented() {
+            let (status, _) = get_error("/tempo/api/metrics/query").await;
+            assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+            let (status, _) = get_error("/tempo/api/metrics/query_range").await;
+            assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
         }
     }
 
