@@ -136,7 +136,7 @@ the services resolve their WAL directory from the TOML-level `[wal] wal_dir`
 - Tables created lazily on first write
 - Config: `[schema] catalog_type = "sql"`, `catalog_uri = "sqlite::memory:"`
 - File-backed catalogs get **WAL journal mode** set out-of-band (`enable_wal_on_sqlite_catalog` in `iceberg/mod.rs`) before the pool opens, so concurrent trace/log commits don't serialize behind a rollback lock and stall first-time table creation; the `iceberg-sql-catalog` pool exposes no options, so `busy_timeout` stays at sqlx's 5s default
-- **Metadata retention**: tables are created with `write.metadata.previous-versions-max = 100` + `write.metadata.delete-after-commit.enabled = true` (`table_manager.rs`), so superseded `metadata.json` files are reclaimed on commit instead of accumulating; honored by the SQL catalog's delete-after-commit support (upstream JanKaul/iceberg-rust#382, currently a fork pin — see `Cargo.toml`)
+- **Metadata retention**: every table gets `write.metadata.previous-versions-max = 100` + `write.metadata.delete-after-commit.enabled = true` (`table_manager.rs`) — set at creation and backfilled by `ensure_table` on load for pre-existing tables that lack them (#959; only absent keys are added, so operator-set values survive) — so superseded `metadata.json` files are reclaimed on commit instead of accumulating; honored by the SQL catalog's delete-after-commit support (upstream JanKaul/iceberg-rust#382, currently a fork pin — see `Cargo.toml`). Files already aged out before the backfill stay orphaned (one-time cleanup needed).
 
 ## Table Types (up to 7 per tenant-dataset)
 

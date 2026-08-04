@@ -11,6 +11,11 @@ use iceberg_rust::table::Table;
 use super::names;
 use super::schemas;
 
+/// Standard Iceberg property: delete aged-out metadata files after commit.
+const DELETE_AFTER_COMMIT_KEY: &str = "write.metadata.delete-after-commit.enabled";
+/// Standard Iceberg property: how many previous metadata files to retain.
+const PREVIOUS_VERSIONS_MAX_KEY: &str = "write.metadata.previous-versions-max";
+
 /// Manages the lifecycle of Iceberg tables.
 ///
 /// Provides `ensure_table()` which loads an existing table or creates it
@@ -35,6 +40,51 @@ impl IcebergTableManager {
         }
     }
 
+    /// Commit the metadata pruning properties onto tables that lack them.
+    ///
+    /// Tables created before #895 have no `write.metadata.*` properties, so
+    /// the catalog's delete-after-commit never fires for them and superseded
+    /// metadata files accumulate forever (#959). Only absent keys are added
+    /// -- operator-set values are never overwritten -- so this commits at
+    /// most once per table and is a no-op afterwards. A failed commit (e.g.
+    /// losing a CAS race to a concurrent writer) is logged and skipped: the
+    /// loaded handle stays valid and the next `ensure_table` call retries.
+    async fn backfill_metadata_pruning_properties(&self, table: &mut Table) {
+        let properties = &table.metadata().properties;
+        let mut missing = Vec::new();
+        if !properties.contains_key(DELETE_AFTER_COMMIT_KEY) {
+            missing.push((DELETE_AFTER_COMMIT_KEY.to_string(), "true".to_string()));
+        }
+        if !properties.contains_key(PREVIOUS_VERSIONS_MAX_KEY) {
+            missing.push((
+                PREVIOUS_VERSIONS_MAX_KEY.to_string(),
+                self.metadata_previous_versions_max.to_string(),
+            ));
+        }
+        if missing.is_empty() {
+            return;
+        }
+
+        let ident = table.identifier().clone();
+        if let Err(e) = table
+            .new_transaction(None)
+            .update_properties(missing)
+            .commit()
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                table = %ident,
+                "Failed to backfill metadata pruning properties; will retry on next load"
+            );
+        } else {
+            tracing::info!(
+                table = %ident,
+                "Backfilled metadata pruning properties on pre-existing table"
+            );
+        }
+    }
+
     /// Load an existing table or create it if it doesn't exist.
     ///
     /// This method:
@@ -50,7 +100,7 @@ impl IcebergTableManager {
     ) -> Result<Table> {
         let ident = names::build_table_identifier(tenant_slug, dataset_slug, table_name);
         if let Ok(tabular) = self.catalog.clone().load_tabular(&ident).await {
-            let table = match tabular {
+            let mut table = match tabular {
                 Tabular::Table(table) => table,
                 _ => {
                     return Err(anyhow::anyhow!(
@@ -60,6 +110,7 @@ impl IcebergTableManager {
                 }
             };
 
+            self.backfill_metadata_pruning_properties(&mut table).await;
             return Ok(table);
         }
 
@@ -141,12 +192,9 @@ impl IcebergTableManager {
         // delete-after-commit support (JanKaul/iceberg-rust#382).
         let mut properties: std::collections::HashMap<String, String> =
             bloom_properties.into_iter().collect();
+        properties.insert(DELETE_AFTER_COMMIT_KEY.to_string(), "true".to_string());
         properties.insert(
-            "write.metadata.delete-after-commit.enabled".to_string(),
-            "true".to_string(),
-        );
-        properties.insert(
-            "write.metadata.previous-versions-max".to_string(),
+            PREVIOUS_VERSIONS_MAX_KEY.to_string(),
             self.metadata_previous_versions_max.to_string(),
         );
         builder.with_properties(properties);
