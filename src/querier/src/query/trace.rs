@@ -121,7 +121,7 @@ impl TraceService {
             .find(|f| f.name() == "timestamp")
             .map(|f| f.data_type().clone());
         if let Some(start) = params.start {
-            let start_nanos = start.saturating_mul(1_000_000_000);
+            let start_nanos = unix_seconds_to_nanos("start", start)?;
             df = df
                 .filter(col("start_time_unix_nano").gt_eq(lit(start_nanos)))
                 .map_err(|e| {
@@ -144,7 +144,7 @@ impl TraceService {
             }
         }
         if let Some(end) = params.end {
-            let end_nanos = end.saturating_mul(1_000_000_000);
+            let end_nanos = unix_seconds_to_nanos("end", end)?;
             df = df
                 .filter(col("start_time_unix_nano").lt_eq(lit(end_nanos)))
                 .map_err(|e| {
@@ -425,7 +425,7 @@ impl TraceService {
 
         // Apply time range filters if provided
         if let Some(start) = query.start {
-            let start_nanos = start.saturating_mul(1_000_000_000);
+            let start_nanos = unix_seconds_to_nanos("start", start)?;
             df = df
                 .filter(col("start_time_unix_nano").gt_eq(lit(start_nanos)))
                 .map_err(|e| {
@@ -434,7 +434,7 @@ impl TraceService {
                 })?;
         }
         if let Some(end) = query.end {
-            let end_nanos = end.saturating_mul(1_000_000_000);
+            let end_nanos = unix_seconds_to_nanos("end", end)?;
             df = df
                 .filter(col("start_time_unix_nano").lt_eq(lit(end_nanos)))
                 .map_err(|e| {
@@ -764,19 +764,41 @@ const TRACE_LOOKUP_COLUMNS: [&str; 13] = [
 /// the bound — floor for a lower bound, ceil for an upper bound — so this
 /// pruning predicate never excludes a row the precise `start_time_unix_nano`
 /// filter would keep.
+/// Convert a caller-supplied unix-**second** timestamp into nanoseconds.
+///
+/// Tempo's `start`/`end` query parameters are unix seconds. Anything that
+/// does not survive the conversion is not a unix-second timestamp — most
+/// often milliseconds from a client that guessed the unit. Saturating such a
+/// value produced an `i64::MAX` sentinel that downstream predicate handling
+/// could not represent, so the query silently matched nothing and the caller
+/// saw a plausible-looking "trace not found". Reject it instead, so the
+/// router can answer 400 and name the problem.
+fn unix_seconds_to_nanos(name: &str, seconds: i64) -> Result<i64, QuerierError> {
+    seconds.checked_mul(1_000_000_000).ok_or_else(|| {
+        QuerierError::InvalidInput(format!(
+            "`{name}` ({seconds}) is out of range: expected a unix timestamp in seconds \
+             (did you send milliseconds?)"
+        ))
+    })
+}
+
 fn timestamp_bound_scalar(
     nanos: i64,
     col_type: &DataType,
     round_up: bool,
 ) -> Result<ScalarValue, QuerierError> {
     // `nanos` is a unix-epoch value (non-negative in practice); floor for a
-    // lower bound, ceil for an upper bound, using positive-safe arithmetic
-    // (signed `i64::div_ceil` is still unstable).
+    // lower bound, ceil for an upper bound (signed `i64::div_ceil` is still
+    // unstable). Deriving the ceiling from the remainder rather than
+    // `nanos + divisor - 1` keeps it overflow-free at the top of the range,
+    // where the addition would otherwise wrap to a negative bound that
+    // excludes every row.
     let scale = |divisor: i64| {
-        if round_up {
-            (nanos + divisor - 1).div_euclid(divisor)
+        let quotient = nanos.div_euclid(divisor);
+        if round_up && nanos.rem_euclid(divisor) != 0 {
+            quotient.saturating_add(1)
         } else {
-            nanos.div_euclid(divisor)
+            quotient
         }
     };
     Ok(match col_type {
@@ -1035,6 +1057,75 @@ mod tests {
     #[test]
     fn timestamp_bound_rejects_non_timestamp() {
         assert!(timestamp_bound_scalar(0, &DataType::Int64, false).is_err());
+    }
+
+    /// The ceiling used for upper bounds must not overflow at the top of the
+    /// i64 range. `nanos + divisor - 1` panics there in debug and wraps to a
+    /// negative bound in release, which silently excludes every row.
+    #[test]
+    fn timestamp_bound_ceiling_survives_i64_max() {
+        for unit in [
+            TimeUnit::Nanosecond,
+            TimeUnit::Microsecond,
+            TimeUnit::Millisecond,
+            TimeUnit::Second,
+        ] {
+            let ty = DataType::Timestamp(unit, None);
+            let bound = timestamp_bound_scalar(i64::MAX, &ty, true)
+                .unwrap_or_else(|e| panic!("{unit:?} upper bound must build: {e}"));
+            let value = match bound {
+                ScalarValue::TimestampNanosecond(Some(v), _)
+                | ScalarValue::TimestampMicrosecond(Some(v), _)
+                | ScalarValue::TimestampMillisecond(Some(v), _)
+                | ScalarValue::TimestampSecond(Some(v), _) => v,
+                other => panic!("{unit:?} produced unexpected scalar {other:?}"),
+            };
+            assert!(value > 0, "{unit:?} upper bound wrapped negative: {value}");
+        }
+    }
+
+    #[test]
+    fn timestamp_bound_rounds_outward() {
+        let ty = DataType::Timestamp(TimeUnit::Microsecond, None);
+        // 1_500ns is 1.5us: floor to 1, ceil to 2, so neither bound can
+        // exclude a row the precise nanosecond filter would keep.
+        assert_eq!(
+            timestamp_bound_scalar(1_500, &ty, false).unwrap(),
+            ScalarValue::TimestampMicrosecond(Some(1), None)
+        );
+        assert_eq!(
+            timestamp_bound_scalar(1_500, &ty, true).unwrap(),
+            ScalarValue::TimestampMicrosecond(Some(2), None)
+        );
+    }
+
+    /// Tempo's `start`/`end` are unix *seconds*. A caller that sends
+    /// milliseconds used to saturate to an `i64::MAX` nanosecond sentinel
+    /// and silently return "not found"; it must be rejected instead.
+    #[test]
+    fn unix_seconds_to_nanos_rejects_out_of_range() {
+        assert!(matches!(
+            unix_seconds_to_nanos("end", 1_785_829_987_000),
+            Err(QuerierError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            unix_seconds_to_nanos("start", i64::MAX),
+            Err(QuerierError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn unix_seconds_to_nanos_accepts_representable_instants() {
+        // Now, and the largest second that still fits in i64 nanoseconds.
+        assert_eq!(
+            unix_seconds_to_nanos("end", 1_785_829_987).unwrap(),
+            1_785_829_987_000_000_000
+        );
+        assert_eq!(
+            unix_seconds_to_nanos("end", 9_223_372_036).unwrap(),
+            9_223_372_036_000_000_000
+        );
+        assert_eq!(unix_seconds_to_nanos("start", 0).unwrap(), 0);
     }
 
     #[test]

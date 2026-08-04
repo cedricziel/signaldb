@@ -539,6 +539,65 @@ async fn test_tempo_endpoints_end_to_end() {
     println!("🎯 End-to-end Tempo API test completed successfully!");
 }
 
+/// Tempo's `start`/`end` are unix seconds. A client that sends milliseconds
+/// used to overflow the seconds->nanos conversion into an `i64::MAX`
+/// sentinel, which matched nothing: the caller got a plausible-looking "trace
+/// not found" for a trace that exists. It must be an explicit 400 instead,
+/// while the same window in seconds still resolves the trace.
+#[tokio::test]
+async fn test_trace_lookup_rejects_millisecond_time_bounds() {
+    let services = setup_test_services().await;
+    let router_state = create_router_state(&services).await;
+
+    let authenticator = router_state.authenticator().clone();
+    let app: Router = tempo::router()
+        .with_state(router_state)
+        .layer(middleware::from_fn(move |req, next| {
+            auth_middleware(authenticator.clone(), req, next)
+        }));
+
+    let trace_id = send_test_trace(&services, "millisecond-bounds-span").await;
+    wait_for_data_persistence(&services).await;
+
+    let request = |uri: String| {
+        Request::builder()
+            .uri(uri)
+            .header("Authorization", "Bearer test-key-123")
+            .header("X-Tenant-ID", "test-tenant")
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    // Sanity check: a seconds-valued window resolves the trace, so a
+    // failure below is about the unit and not about the fixture.
+    let seconds_response = app
+        .clone()
+        .oneshot(request(format!(
+            "/api/traces/{trace_id}?start=0&end=4102444800"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(
+        seconds_response.status(),
+        StatusCode::OK,
+        "seconds-valued bounds must resolve the trace"
+    );
+
+    // The same instant expressed in milliseconds is not a representable
+    // unix-second timestamp and must be rejected, not silently emptied.
+    let millis_response = app
+        .oneshot(request(format!(
+            "/api/traces/{trace_id}?start=0&end=4102444800000"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(
+        millis_response.status(),
+        StatusCode::BAD_REQUEST,
+        "millisecond-valued `end` must be a 400, not a silent not-found"
+    );
+}
+
 /// Test search endpoint with proper service setup
 #[tokio::test]
 async fn test_tempo_search_endpoint() {
