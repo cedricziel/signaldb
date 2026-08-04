@@ -22,4 +22,9 @@ ignore = [
     "RUSTSEC-2026-0098",
     "RUSTSEC-2026-0099",
     "RUSTSEC-2026-0104",
+    # rkyv 0.7 enters the lockfile as an inert optional dependency of rust_decimal (pinned by
+    # the iceberg-rust fork). Not compiled into any SignalDB target (`cargo tree -i rkyv` finds
+    # no reachable path), so the archive-validation vulnerability is unexploitable. Fix requires
+    # rust_decimal on rkyv 0.8.17+; remove when the iceberg-rust fork updates. Mirrors deny.toml.
+    "RUSTSEC-2026-0235",
 ]
