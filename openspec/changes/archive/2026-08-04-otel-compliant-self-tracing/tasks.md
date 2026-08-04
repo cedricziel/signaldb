@@ -113,8 +113,8 @@ independently shippable and TDD-ordered within.
       span field used in code is declared in the registry (Weaver codegen
       of Rust constants and the `registry diff --baseline-registry`
       evolution gate deferred — codegen needs the otel-rust template
-      vendoring and diff needs a first released baseline; tracked as
-      follow-ups in the change archive notes)
+      vendoring and diff needs a first released baseline; tracked in
+      #913)
 
 ## 11. Live-check CI harness
 
@@ -124,7 +124,7 @@ independently shippable and TDD-ordered within.
       (non-blocking during bake-in), report `registry_coverage`
 - [x] 11.2 Finding filters + flip-to-blocking deferred by design: both
       need bake-in data from the advisory job (the noise set is unknowable
-      before it runs); operational follow-up once reports accumulate
+      before it runs); tracked in #912
 
 ## 12. Docs and skills
 

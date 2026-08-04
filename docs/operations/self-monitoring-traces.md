@@ -94,4 +94,5 @@ registry (`weaver registry check`), pins code↔registry drift
 `#[tracing::instrument]`; `otel.kind` only in the span factories), and an
 advisory **Weaver Live Check** workflow boots the monolithic binary
 against a `weaver registry live-check` listener and reports findings plus
-`registry_coverage` per PR.
+`registry_coverage` per PR (hardening to a blocking check is tracked in
+#912; further follow-ups: #913, #914, #915, #916).
