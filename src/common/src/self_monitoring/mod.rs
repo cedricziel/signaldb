@@ -89,6 +89,26 @@ impl Telemetry {
     }
 }
 
+/// The production tracing→OTel bridge layer.
+///
+/// Disables the tracing-opentelemetry convenience attributes (`busy_ns`,
+/// `idle_ns`, `target`, `code.*`): none of them exist in otel/registry/ or
+/// upstream semconv, so each one is a violation under
+/// `weaver registry live-check`. Boundary spans carry their curated
+/// attribute sets from the [`spans`] factories instead.
+pub fn otel_span_layer<S>(
+    tracer: opentelemetry_sdk::trace::SdkTracer,
+) -> tracing_opentelemetry::OpenTelemetryLayer<S, opentelemetry_sdk::trace::SdkTracer>
+where
+    S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
+{
+    tracing_opentelemetry::layer()
+        .with_tracer(tracer)
+        .with_location(false)
+        .with_tracked_inactivity(false)
+        .with_target(false)
+}
+
 pub(crate) fn build_metadata(config: &Configuration) -> MetadataMap {
     let mut map = MetadataMap::new();
     map.insert(

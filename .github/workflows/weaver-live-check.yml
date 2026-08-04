@@ -8,12 +8,14 @@
 # Bake-in mode: the job is advisory (continue-on-error) and not a required
 # check. Flip continue-on-error to false once the signal is stable.
 #
-# Known noise from the initial local smoke run (candidates for finding
-# filters once the filter schema is pinned): tracing-opentelemetry bridge
-# fields (busy_ns, idle_ns, target, code.*), log-bridge records (log.*,
-# "log event"), and per-callsite tracing event names. Real violations the
-# smoke run caught (fixed since): string-typed http.response.status_code
-# and server.port. Filters + flip-to-blocking tracked in #912.
+# The tracing-opentelemetry bridge fields (busy_ns, idle_ns, target,
+# code.*) that used to fail every run are disabled at the source:
+# common::self_monitoring::otel_span_layer configures the bridge, pinned
+# by the otel_bridge_attrs test in the common crate. Remaining noise from
+# the initial smoke run (log-bridge records, per-callsite event names) is
+# information-level only. Real violations the smoke run caught (fixed
+# since): string-typed http.response.status_code and server.port.
+# Flip-to-blocking tracked in #912.
 name: Weaver Live Check
 
 on:
