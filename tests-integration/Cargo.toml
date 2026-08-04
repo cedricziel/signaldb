@@ -113,6 +113,14 @@ name = "flight_rpc_tests"
 path = "tests/e2e/flight_rpc_tests.rs"
 
 [[test]]
+name = "end_to_end_trace_tests"
+path = "tests/e2e/end_to_end_trace_tests.rs"
+
+[[test]]
+name = "component_integration_tests"
+path = "tests/e2e/component_integration_tests.rs"
+
+[[test]]
 name = "prometheus_remote_write_test"
 path = "tests/prometheus_remote_write_test.rs"
 

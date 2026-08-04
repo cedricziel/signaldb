@@ -1,14 +1,20 @@
+use acceptor::handler::WalManager;
 use acceptor::handler::otlp_grpc::TraceHandler;
 use acceptor::services::otlp_trace_service::TraceAcceptorService;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_flight::utils::flight_data_to_batches;
+use common::CatalogManager;
+use common::auth::{TenantContext, TenantSource};
 use common::catalog::Catalog;
-use common::config::Configuration;
+use common::config::{
+    ApiKeyConfig, AuthConfig, Configuration, DatasetConfig, DefaultSchemas, SchemaConfig,
+    StorageConfig, TenantConfig, WriterConfig,
+};
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::{Wal, WalConfig};
 use futures::{StreamExt, TryStreamExt};
-use object_store::{ObjectStore, memory::InMemory};
+use object_store::ObjectStore;
 use opentelemetry_proto::tonic::{
     collector::trace::v1::{ExportTraceServiceRequest, trace_service_server::TraceServiceServer},
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
@@ -21,8 +27,12 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
+use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 use writer::IcebergWriterFlightService;
+
+const TEST_TENANT: &str = "test-tenant";
+const TEST_DATASET: &str = "test-dataset";
 
 /// Expected service counts for readiness checking
 #[derive(Debug, Clone)]
@@ -40,12 +50,8 @@ async fn wait_for_service_registration(
     timeout_duration: Duration,
 ) -> Result<(), String> {
     let start_time = std::time::Instant::now();
-    let mut attempts = 0;
 
     loop {
-        attempts += 1;
-
-        // Check current service counts
         let trace_ingestion_services = flight_transport
             .discover_services_by_capability(ServiceCapability::TraceIngestion)
             .await;
@@ -62,31 +68,19 @@ async fn wait_for_service_registration(
             storage: storage_services.len(),
         };
 
-        log::debug!(
-            "Service registration check (attempt {attempts}): Expected {expected:?}, Current {current_counts:?}"
-        );
-
-        // Check if all expected services are registered
         if current_counts.trace_ingestion >= expected.trace_ingestion
             && current_counts.query_execution >= expected.query_execution
             && current_counts.storage >= expected.storage
         {
-            println!(
-                "✅ All expected services registered after {:?} (attempt {})",
-                start_time.elapsed(),
-                attempts
-            );
             return Ok(());
         }
 
-        // Check for timeout
         if start_time.elapsed() >= timeout_duration {
             return Err(format!(
                 "Service registration timeout after {timeout_duration:?}. Expected {expected:?}, but got {current_counts:?}"
             ));
         }
 
-        // Wait before next check
         sleep(Duration::from_millis(100)).await;
     }
 }
@@ -96,239 +90,215 @@ struct TestServices {
     pub object_store: Arc<dyn ObjectStore>,
     pub flight_transport: Arc<InMemoryFlightTransport>,
     pub acceptor_addr: std::net::SocketAddr,
-    pub writer_addr: std::net::SocketAddr,
-    pub querier_addr: std::net::SocketAddr,
     pub config: Configuration,
     pub _temp_dir: TempDir,
 }
 
-/// Set up test infrastructure with shared configuration
-async fn setup_test_infrastructure() -> (Configuration, TempDir, Arc<dyn ObjectStore>) {
+/// Set up the full trace pipeline (acceptor, writer, querier) wired the same
+/// way production does: a CatalogManager-backed writer and querier sharing an
+/// Iceberg catalog, and an acceptor whose gRPC endpoint has a TenantContext
+/// injected via a test interceptor (tests don't run the real auth stack).
+async fn setup_services() -> TestServices {
     let temp_dir = TempDir::new().unwrap();
-    let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
 
-    // Set up service discovery with shared SQLite database
+    let storage_dir = temp_dir.path().join("storage");
+    std::fs::create_dir_all(&storage_dir).unwrap();
+    let storage_dsn = format!("file://{}", storage_dir.display());
+    let object_store: Arc<dyn ObjectStore> =
+        common::storage::create_object_store_from_dsn(&storage_dsn)
+            .expect("Failed to create object store from filesystem DSN");
+
     let catalog_db_path = temp_dir.path().join("catalog.db");
     let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
 
     let mut config = Configuration::default();
     config.discovery = Some(common::config::DiscoveryConfig {
-        dsn: catalog_dsn,
+        dsn: catalog_dsn.clone(),
         heartbeat_interval: Duration::from_secs(30),
         poll_interval: Duration::from_secs(60),
         ttl: Duration::from_secs(300),
     });
-
-    (config, temp_dir, object_store)
-}
-
-/// Set up all services for testing (distributed mode)
-async fn setup_distributed_services() -> TestServices {
-    let (config, temp_dir, object_store) = setup_test_infrastructure().await;
+    // Each test needs its own isolated Iceberg catalog: the default
+    // "sqlite::memory:" is shared across all connections in the same
+    // process, causing cross-test Iceberg table conflicts under parallel
+    // execution. A per-test on-disk SQLite file gives full isolation.
+    let iceberg_catalog_db_path = temp_dir.path().join("iceberg_catalog.db");
+    config.schema = SchemaConfig {
+        catalog_type: "sql".to_string(),
+        catalog_uri: format!("sqlite://{}", iceberg_catalog_db_path.display()),
+        default_schemas: DefaultSchemas::default(),
+        materialized_labels: Default::default(),
+    };
+    config.storage = StorageConfig {
+        dsn: storage_dsn.clone(),
+    };
+    config.auth = AuthConfig {
+        tenants: vec![TenantConfig {
+            id: TEST_TENANT.to_string(),
+            slug: TEST_TENANT.to_string(),
+            name: "Test Tenant".to_string(),
+            default_dataset: Some(TEST_DATASET.to_string()),
+            datasets: vec![DatasetConfig {
+                id: TEST_DATASET.to_string(),
+                slug: TEST_DATASET.to_string(),
+                is_default: true,
+                storage: None,
+            }],
+            api_keys: vec![ApiKeyConfig {
+                key: "test-key-123".to_string(),
+                name: Some("test-key".to_string()),
+            }],
+            schema_config: None,
+            limits: None,
+        }],
+        admin_api_key: None,
+        internal_service_key: None,
+        default_limits: Default::default(),
+        storage_usage_refresh_interval: Duration::from_secs(60),
+    };
 
     let wal_config = WalConfig {
         wal_dir: PathBuf::from(temp_dir.path()),
         max_segment_size: 1024 * 1024,
         max_buffer_entries: 1,
         flush_interval_secs: 1,
+        tenant_id: TEST_TENANT.to_string(),
+        dataset_id: TEST_DATASET.to_string(),
+        retention_secs: 3600,
+        cleanup_interval_secs: 300,
+        compaction_threshold: 0.5,
     };
 
     let acceptor_bootstrap = ServiceBootstrap::new(
         config.clone(),
         ServiceType::Acceptor,
-        "127.0.0.1:50058".to_string(),
+        "127.0.0.1:0".to_string(),
     )
     .await
     .unwrap();
     let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
 
-    // Start writer Flight service
-    let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let writer_addr = writer_listener.local_addr().unwrap();
-    drop(writer_listener);
-
-    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service =
-        IcebergWriterFlightService::new(
-            config.clone(),
-            object_store.clone(),
-            writer_wal.clone(),
-            &common::config::WriterConfig::default(),
-        );
-    let _bg = writer_service.start_background_processing();
-    let writer_server = Server::builder()
-        .add_service(FlightServiceServer::new(writer_service))
-        .serve(writer_addr);
-    tokio::spawn(writer_server);
-
-    // Create writer bootstrap for proper service registration
-    let writer_bootstrap =
-        ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
+    // Shared CatalogManager: writer and querier must see the same Iceberg
+    // catalog for ingested data to be queryable back.
+    let catalog_manager = Arc::new(
+        CatalogManager::new(config.clone())
             .await
-            .unwrap();
-    let _writer_id = writer_bootstrap.service_id();
+            .expect("Failed to create CatalogManager"),
+    );
 
-    // Start querier service for query testing
-    let querier_service = QuerierFlightService::new(object_store.clone(), flight_transport.clone());
-    let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let querier_addr = querier_listener.local_addr().unwrap();
-    drop(querier_listener);
+    // Pre-create the Iceberg namespace so the querier's catalog cache
+    // includes it: QuerierFlightService::new_with_catalog_manager caches
+    // namespaces at construction time, before any data has been written.
+    {
+        use iceberg_rust::catalog::namespace::Namespace;
 
-    let querier_server = Server::builder()
-        .add_service(FlightServiceServer::new(querier_service))
-        .serve(querier_addr);
-    tokio::spawn(querier_server);
-
-    let querier_bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Querier,
-        querier_addr.to_string(),
-    )
-    .await
-    .unwrap();
-    let _querier_id = querier_bootstrap.service_id();
-
-    // Start acceptor
-    let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal.clone());
-    let acceptor_service = TraceAcceptorService::new(trace_handler);
-    let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let acceptor_addr = acceptor_listener.local_addr().unwrap();
-    drop(acceptor_listener);
-
-    let acceptor_server = Server::builder()
-        .add_service(TraceServiceServer::new(acceptor_service))
-        .serve(acceptor_addr);
-    tokio::spawn(acceptor_server);
-
-    // Wait for all services to register with proper service readiness check
-    let expected_services = ExpectedServices {
-        trace_ingestion: 1, // acceptor
-        query_execution: 1, // querier
-        storage: 1,         // writer
-    };
-
-    wait_for_service_registration(
-        &flight_transport,
-        expected_services,
-        Duration::from_secs(10),
-    )
-    .await
-    .expect("Failed to wait for service registration in distributed mode");
-
-    TestServices {
-        object_store,
-        flight_transport,
-        acceptor_addr,
-        writer_addr,
-        querier_addr,
-        config,
-        _temp_dir: temp_dir,
+        let namespace = Namespace::try_new(&[TEST_TENANT.to_string(), TEST_DATASET.to_string()])
+            .expect("valid namespace");
+        catalog_manager
+            .catalog()
+            .create_namespace(&namespace, None)
+            .await
+            .expect("Failed to pre-create Iceberg namespace");
     }
-}
 
-/// Set up all services for testing (monolithic mode)
-async fn setup_monolithic_services() -> TestServices {
-    let (config, temp_dir, object_store) = setup_test_infrastructure().await;
-
-    let wal_config = WalConfig {
-        wal_dir: PathBuf::from(temp_dir.path()),
-        max_segment_size: 1024 * 1024,
-        max_buffer_entries: 1,
-        flush_interval_secs: 1,
-    };
-
-    // Use the same flight transport pattern as the working distributed test
-    let acceptor_bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Acceptor,
-        "127.0.0.1:50058".to_string(),
-    )
-    .await
-    .unwrap();
-    let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
-
-    // Start writer Flight service (same as working test)
+    // Start writer Flight service. Bind first and keep the listener alive
+    // (serve_with_incoming) to avoid a TOCTOU port-reuse race under parallel
+    // test execution.
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
-    drop(writer_listener);
-
     let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service =
-        IcebergWriterFlightService::new(
-            config.clone(),
-            object_store.clone(),
-            writer_wal.clone(),
-            &common::config::WriterConfig::default(),
-        );
-    let _bg = writer_service.start_background_processing();
-    let writer_server = Server::builder()
-        .add_service(FlightServiceServer::new(writer_service))
-        .serve(writer_addr);
-    tokio::spawn(writer_server);
+    let writer_service = IcebergWriterFlightService::new(
+        catalog_manager.clone(),
+        object_store.clone(),
+        writer_wal,
+        &WriterConfig::default(),
+    );
+    let _writer_bg = writer_service.start_background_processing();
+    tokio::spawn(
+        Server::builder()
+            .add_service(FlightServiceServer::new(writer_service))
+            .serve_with_incoming(TcpListenerStream::new(writer_listener)),
+    );
+    ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
+        .await
+        .unwrap();
 
-    // Create writer bootstrap for proper service registration
-    let writer_bootstrap =
-        ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
-            .await
-            .unwrap();
-    let _writer_id = writer_bootstrap.service_id();
-
-    // Start querier service for query testing
-    let querier_service = QuerierFlightService::new(object_store.clone(), flight_transport.clone());
+    // Start querier Flight service with per-tenant catalog registration.
     let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let querier_addr = querier_listener.local_addr().unwrap();
-    drop(querier_listener);
-
-    let querier_server = Server::builder()
-        .add_service(FlightServiceServer::new(querier_service))
-        .serve(querier_addr);
-    tokio::spawn(querier_server);
-
-    let querier_bootstrap = ServiceBootstrap::new(
+    let querier_service = QuerierFlightService::new_with_catalog_manager(
+        flight_transport.clone(),
+        catalog_manager,
+        common::config::QuerierConfig::default(),
+    )
+    .await
+    .expect("Failed to create querier service");
+    tokio::spawn(
+        Server::builder()
+            .add_service(FlightServiceServer::new(querier_service))
+            .serve_with_incoming(TcpListenerStream::new(querier_listener)),
+    );
+    ServiceBootstrap::new(
         config.clone(),
         ServiceType::Querier,
         querier_addr.to_string(),
     )
     .await
     .unwrap();
-    let _querier_id = querier_bootstrap.service_id();
 
-    // Start acceptor (same as working test)
-    let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal.clone());
+    // Start the acceptor. Tests don't run the real auth stack, so a test
+    // interceptor injects the fixed TenantContext that the OTLP client's
+    // (header-less) requests should have been authenticated to.
+    let wal_manager = Arc::new(WalManager::new(
+        wal_config.clone(),
+        wal_config.clone(),
+        wal_config.clone(),
+        wal_config,
+    ));
+    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager);
     let acceptor_service = TraceAcceptorService::new(trace_handler);
+    let acceptor_service_with_auth =
+        TraceServiceServer::with_interceptor(acceptor_service, |mut req: tonic::Request<()>| {
+            req.extensions_mut().insert(TenantContext {
+                tenant_id: TEST_TENANT.to_string(),
+                dataset_id: TEST_DATASET.to_string(),
+                tenant_slug: TEST_TENANT.to_string(),
+                dataset_slug: TEST_DATASET.to_string(),
+                api_key_name: Some("test-key".to_string()),
+                api_key_scopes: None,
+                api_key_dataset_id: None,
+                user_id: None,
+                role: None,
+                is_instance_admin: false,
+                session_id: None,
+                source: TenantSource::Config,
+            });
+            Ok(req)
+        });
     let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let acceptor_addr = acceptor_listener.local_addr().unwrap();
-    drop(acceptor_listener);
-
-    let acceptor_server = Server::builder()
-        .add_service(TraceServiceServer::new(acceptor_service))
-        .serve(acceptor_addr);
-    tokio::spawn(acceptor_server);
-
-    // Wait for all services to register with proper service readiness check
-    // Monolithic mode needs the same services as distributed mode
-    let expected_services = ExpectedServices {
-        trace_ingestion: 1, // acceptor
-        query_execution: 1, // querier
-        storage: 1,         // writer
-    };
+    tokio::spawn(
+        Server::builder()
+            .add_service(acceptor_service_with_auth)
+            .serve_with_incoming(TcpListenerStream::new(acceptor_listener)),
+    );
 
     wait_for_service_registration(
         &flight_transport,
-        expected_services,
+        ExpectedServices {
+            trace_ingestion: 1,
+            query_execution: 1,
+            storage: 1,
+        },
         Duration::from_secs(15),
     )
     .await
-    .expect("Failed to wait for service registration in monolithic mode");
+    .expect("Failed to wait for service registration");
 
     TestServices {
         object_store,
         flight_transport,
         acceptor_addr,
-        writer_addr,
-        querier_addr,
         config,
         _temp_dir: temp_dir,
     }
@@ -349,14 +319,6 @@ async fn verify_service_discovery(services: &TestServices) {
         .discover_services_by_capability(ServiceCapability::Storage)
         .await;
 
-    println!("📋 Service Discovery Status:");
-    println!(
-        "  - TraceIngestion services: {}",
-        trace_ingestion_services.len()
-    );
-    println!("  - QueryExecution services: {}", query_services.len());
-    println!("  - Storage services: {}", storage_services.len());
-
     assert!(
         !trace_ingestion_services.is_empty(),
         "No trace ingestion services found"
@@ -366,8 +328,6 @@ async fn verify_service_discovery(services: &TestServices) {
         "No query execution services found"
     );
     assert!(!storage_services.is_empty(), "No storage services found");
-
-    println!("✅ Service discovery verification passed");
 }
 
 /// Send a test trace via OTLP and return the trace ID
@@ -407,202 +367,17 @@ async fn send_test_trace(services: &TestServices, trace_name: &str) -> Vec<u8> {
         }],
     };
 
-    // Send trace
     let endpoint = format!("http://{}", services.acceptor_addr);
     let mut otlp_client = opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint)
         .await
         .unwrap();
 
-    let _response = timeout(Duration::from_secs(5), otlp_client.export(trace_request))
+    timeout(Duration::from_secs(5), otlp_client.export(trace_request))
         .await
         .expect("OTLP export timed out")
         .expect("OTLP export failed");
 
-    println!(
-        "✅ Successfully sent trace {} to acceptor",
-        hex::encode(&trace_id)
-    );
-
     trace_id
-}
-
-/// Send a test trace via OTLP with detailed timeout logging (for monolithic mode)
-async fn send_test_trace_with_logging(services: &TestServices, trace_name: &str) -> Vec<u8> {
-    let trace_id = vec![0xff; 16];
-    let span_id = vec![0xaa; 8];
-
-    let trace_request = ExportTraceServiceRequest {
-        resource_spans: vec![ResourceSpans {
-            resource: None,
-            scope_spans: vec![ScopeSpans {
-                scope: None,
-                spans: vec![Span {
-                    trace_id: trace_id.clone(),
-                    span_id: span_id.clone(),
-                    parent_span_id: vec![],
-                    name: trace_name.to_string(),
-                    kind: 1,
-                    start_time_unix_nano: 1_000_000_000,
-                    end_time_unix_nano: 2_000_000_000,
-                    ..Default::default()
-                }],
-                schema_url: "".to_string(),
-            }],
-            schema_url: "".to_string(),
-        }],
-    };
-
-    let endpoint = format!("http://{}", services.acceptor_addr);
-    println!("🔗 Attempting to connect to OTLP endpoint: {endpoint}");
-
-    let mut otlp_client = match opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint.clone()).await {
-        Ok(client) => {
-            println!("✅ Successfully connected to OTLP endpoint");
-            client
-        }
-        Err(e) => {
-            println!("❌ Failed to connect to OTLP endpoint {endpoint}: {e}");
-            panic!("OTLP connection failed: {e}");
-        }
-    };
-
-    println!("📤 Sending trace via OTLP...");
-
-    // Add detailed timing to identify where the hang occurs
-    let start_time = std::time::Instant::now();
-    println!("⏱️  Starting OTLP export at {start_time:?}");
-
-    let export_result = timeout(Duration::from_secs(15), otlp_client.export(trace_request)).await;
-
-    match export_result {
-        Ok(Ok(_response)) => {
-            println!(
-                "✅ OTLP export completed successfully in {:?}",
-                start_time.elapsed()
-            );
-        }
-        Ok(Err(e)) => {
-            println!(
-                "❌ OTLP export failed after {:?}: {e}",
-                start_time.elapsed()
-            );
-            panic!("OTLP export failed: {e}");
-        }
-        Err(_) => {
-            println!("⏰ OTLP export timed out after {:?}", start_time.elapsed());
-
-            // Let's check if the issue is in service discovery
-            println!("🔍 Checking if acceptor can discover storage services...");
-            let storage_check = services
-                .flight_transport
-                .discover_services_by_capability(ServiceCapability::Storage)
-                .await;
-            println!("📋 Storage services discoverable: {}", storage_check.len());
-            for service in &storage_check {
-                println!("  - {} at {}", service.service_type, service.endpoint);
-            }
-
-            panic!("OTLP export timed out - likely hanging in Flight communication");
-        }
-    }
-
-    println!("✅ Trace sent successfully");
-    trace_id
-}
-
-/// Set up all services for performance testing
-async fn setup_performance_services() -> TestServices {
-    let (config, temp_dir, object_store) = setup_test_infrastructure().await;
-
-    let wal_config = WalConfig {
-        wal_dir: PathBuf::from(temp_dir.path()),
-        max_segment_size: 1024 * 1024,
-        max_buffer_entries: 10, // Smaller buffer for performance testing
-        flush_interval_secs: 1,
-    };
-
-    let service_bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Acceptor,
-        "127.0.0.1:50052".to_string(),
-    )
-    .await
-    .unwrap();
-    let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
-
-    // Start writer service
-    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service =
-        IcebergWriterFlightService::new(
-            config.clone(),
-            object_store.clone(),
-            writer_wal.clone(),
-            &common::config::WriterConfig::default(),
-        );
-    let _bg = writer_service.start_background_processing();
-    let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let writer_addr = writer_listener.local_addr().unwrap();
-    drop(writer_listener);
-
-    let writer_server = Server::builder()
-        .add_service(FlightServiceServer::new(writer_service))
-        .serve(writer_addr);
-    tokio::spawn(writer_server);
-
-    let writer_bootstrap =
-        ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
-            .await
-            .unwrap();
-    let _writer_id = writer_bootstrap.service_id();
-
-    // Start acceptor service
-    let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal.clone());
-    let acceptor_service = TraceAcceptorService::new(trace_handler);
-    let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let acceptor_addr = acceptor_listener.local_addr().unwrap();
-    drop(acceptor_listener);
-
-    let acceptor_server = Server::builder()
-        .add_service(TraceServiceServer::new(acceptor_service))
-        .serve(acceptor_addr);
-    tokio::spawn(acceptor_server);
-
-    sleep(Duration::from_millis(500)).await;
-
-    TestServices {
-        object_store,
-        flight_transport,
-        acceptor_addr,
-        writer_addr,
-        querier_addr: "127.0.0.1:0".parse().unwrap(), // Not used in performance test
-        config,
-        _temp_dir: temp_dir,
-    }
-}
-
-/// Verify data persistence and WAL processing
-async fn verify_data_persistence(services: &TestServices, processing_delay: Duration) {
-    // Verify data persistence - allow extra time for WAL processing and Flight communication
-    sleep(processing_delay).await;
-
-    let objects: Vec<_> = services
-        .object_store
-        .list(None)
-        .try_collect()
-        .await
-        .unwrap();
-    println!("📦 Objects in store: {}", objects.len());
-    for obj in &objects {
-        println!("  - {}", obj.location);
-    }
-
-    assert!(
-        !objects.is_empty(),
-        "No data found in object store after ingestion"
-    );
-
-    println!("✅ Data successfully persisted to object store");
 }
 
 /// Poll the object store until it has persisted data or the timeout elapses.
@@ -638,15 +413,9 @@ async fn validate_trace_query_data(
         .map_err(|e| format!("Failed to get querier client: {e}"))?;
 
     let query_ticket = arrow_flight::Ticket::new(format!(
-        "find_trace:default:default:{}",
+        "find_trace:{TEST_TENANT}:{TEST_DATASET}:{}",
         hex::encode(expected_trace_id)
     ));
-
-    println!(
-        "🔍 Validating trace data for {} ({})",
-        expected_span_name,
-        hex::encode(expected_trace_id)
-    );
 
     let query_result = timeout(Duration::from_secs(10), query_client.do_get(query_ticket))
         .await
@@ -657,15 +426,10 @@ async fn validate_trace_query_data(
             let mut stream = response.into_inner();
             let mut flight_data = Vec::new();
 
-            // Collect all flight data
             while let Some(flight_data_result) = stream.next().await {
                 match flight_data_result {
-                    Ok(data) => {
-                        flight_data.push(data);
-                    }
-                    Err(e) => {
-                        return Err(format!("Error reading flight data: {e}"));
-                    }
+                    Ok(data) => flight_data.push(data),
+                    Err(e) => return Err(format!("Error reading flight data: {e}")),
                 }
             }
 
@@ -673,7 +437,6 @@ async fn validate_trace_query_data(
                 return Err("No flight data received".to_string());
             }
 
-            // Convert flight data back to Arrow RecordBatches
             let batches = flight_data_to_batches(&flight_data)
                 .map_err(|e| format!("Failed to convert flight data to batches: {e}"))?;
 
@@ -681,46 +444,20 @@ async fn validate_trace_query_data(
                 return Err("No record batches found in flight data".to_string());
             }
 
-            println!(
-                "📊 Received {} record batches with trace data",
-                batches.len()
-            );
-
-            // Validate the trace data
             let mut found_matching_trace = false;
             let mut found_matching_span_name = false;
 
-            for (batch_idx, batch) in batches.iter().enumerate() {
-                println!(
-                    "  📋 Batch {}: {} rows, {} columns",
-                    batch_idx,
-                    batch.num_rows(),
-                    batch.num_columns()
-                );
-
-                // Log column names for debugging
-                let schema = batch.schema();
-                println!(
-                    "    Columns: {:?}",
-                    schema.fields().iter().map(|f| f.name()).collect::<Vec<_>>()
-                );
-
-                // Look for trace_id column
-                if let Some(trace_id_col) = batch.column_by_name("trace_id") {
-                    if validate_trace_id_column(trace_id_col, expected_trace_id)? {
-                        found_matching_trace = true;
-                        println!("    ✅ Found matching trace_id in batch {batch_idx}");
-                    }
+            for batch in &batches {
+                if let Some(trace_id_col) = batch.column_by_name("trace_id")
+                    && validate_trace_id_column(trace_id_col, expected_trace_id)?
+                {
+                    found_matching_trace = true;
                 }
 
-                // Look for span_name column
-                if let Some(span_name_col) = batch.column_by_name("span_name") {
-                    if validate_span_name_column(span_name_col, expected_span_name)? {
-                        found_matching_span_name = true;
-                        println!(
-                            "    ✅ Found matching span_name '{expected_span_name}' in batch {batch_idx}"
-                        );
-                    }
+                if let Some(span_name_col) = batch.column_by_name("span_name")
+                    && validate_span_name_column(span_name_col, expected_span_name)?
+                {
+                    found_matching_span_name = true;
                 }
             }
 
@@ -737,7 +474,6 @@ async fn validate_trace_query_data(
                 ));
             }
 
-            println!("✅ Trace data validation successful - all expected data found");
             Ok(())
         }
         Err(e) => Err(format!("Query failed: {e}")),
@@ -751,16 +487,15 @@ fn validate_trace_id_column(
 ) -> Result<bool, String> {
     use datafusion::arrow::array::Array;
 
-    // Handle different possible array types for trace_id
     if let Some(binary_array) = column
         .as_any()
         .downcast_ref::<datafusion::arrow::array::BinaryArray>()
     {
         for i in 0..binary_array.len() {
-            if let Some(value) = binary_array.value(i).get(0..expected_trace_id.len()) {
-                if value == expected_trace_id {
-                    return Ok(true);
-                }
+            if let Some(value) = binary_array.value(i).get(0..expected_trace_id.len())
+                && value == expected_trace_id
+            {
+                return Ok(true);
             }
         }
     } else if let Some(string_array) = column
@@ -769,10 +504,10 @@ fn validate_trace_id_column(
     {
         let expected_hex = hex::encode(expected_trace_id);
         for i in 0..string_array.len() {
-            if let Some(value) = string_array.value(i).get(0..expected_hex.len()) {
-                if value == expected_hex {
-                    return Ok(true);
-                }
+            if let Some(value) = string_array.value(i).get(0..expected_hex.len())
+                && value == expected_hex
+            {
+                return Ok(true);
             }
         }
     }
@@ -801,22 +536,18 @@ fn validate_span_name_column(
     Ok(false)
 }
 
-/// Complete end-to-end test: OTLP ingestion → Storage → Query retrieval
+/// Complete end-to-end test: OTLP ingestion -> WAL -> Writer -> Iceberg ->
+/// Query retrieval, exercised over the real Flight wire protocol (not the
+/// Tempo HTTP API, which is covered separately in router_tempo_endpoints.rs).
 ///
-/// This test extends the working component_integration_tests pattern
-/// to validate the complete SignalDB pipeline end-to-end.
+/// Both query paths are asserted for real: a direct Flight `find_trace`
+/// against the querier, and the same ticket resolved through the router's
+/// `ServiceRegistry` (proving service-discovery-mediated Flight queries
+/// work, not just a direct client-to-querier connection).
 #[tokio::test]
 async fn test_complete_trace_ingestion_and_query_pipeline() {
-    println!("🚀 Starting complete end-to-end trace pipeline test...");
+    let services = setup_services().await;
 
-    // Set up all services in distributed mode
-    let services = setup_distributed_services().await;
-
-    println!("✅ Writer service started at {}", services.writer_addr);
-    println!("✅ Querier service started at {}", services.querier_addr);
-    println!("✅ Acceptor service started at {}", services.acceptor_addr);
-
-    // Setup Router state for query routing
     let catalog_dsn = services.config.discovery.as_ref().unwrap().dsn.clone();
     let catalog = Catalog::new(&catalog_dsn).await.unwrap();
     let service_registry = ServiceRegistry::with_flight_transport(
@@ -825,195 +556,67 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
     );
     let _router_state = RouterAppState::new(catalog, services.config.clone());
 
-    println!("✅ Router state initialized");
-
-    // Verify service discovery
     verify_service_discovery(&services).await;
 
-    // Send test trace data
     let trace_id = send_test_trace(&services, "end-to-end-test-span").await;
 
-    // Verify data persistence and WAL processing
-    verify_data_persistence(&services, Duration::from_secs(5)).await;
+    let objects = wait_for_objects_persisted(&services.object_store, Duration::from_secs(15)).await;
+    assert!(
+        !objects.is_empty(),
+        "No data found in object store after ingestion"
+    );
 
-    // Test querying the trace back and validate the returned data.
-    //
-    // This is the primary correctness check of the test: the ingested
-    // trace_id/span_name must actually round-trip through Flight query.
-    // A failure here must fail the test, not be downgraded to a warning.
+    // Primary correctness check: the ingested trace_id/span_name must
+    // actually round-trip through a direct Flight query against the querier.
     validate_trace_query_data(&services, &trace_id, "end-to-end-test-span")
         .await
         .expect(
-            "Step 3: trace query validation failed - queried data did not match the \
-             ingested trace (trace_id/span_name did not round-trip via Flight query)",
+            "trace query validation failed - queried data did not match the ingested trace \
+             (trace_id/span_name did not round-trip via Flight query)",
         );
-    println!("✅ Step 3: Successfully queried and validated trace data via Flight protocol");
 
-    // Test router-based query
-    println!("🔍 Testing router-based trace query...");
-
-    let router_query_result = service_registry
+    // The router must be able to resolve a QueryExecution-capable Flight
+    // client through service discovery and successfully execute the same
+    // ticket - not just the direct client used above.
+    let mut router_client = service_registry
         .get_flight_client_for_capability(ServiceCapability::QueryExecution)
-        .await;
-
-    match router_query_result {
-        Ok(mut router_client) => {
-            let router_ticket = arrow_flight::Ticket::new(format!(
-                "find_trace:default:default:{}",
-                hex::encode(&trace_id)
-            ));
-
-            match timeout(Duration::from_secs(10), router_client.do_get(router_ticket)).await {
-                Ok(Ok(response)) => {
-                    let mut stream = response.into_inner();
-                    let mut data_count = 0;
-
-                    while (stream.next().await).is_some() {
-                        data_count += 1;
-                    }
-
-                    println!("✅ Step 4: Router can successfully query traces via Flight");
-                    println!("  - Router received {data_count} data chunks");
-                }
-                Ok(Err(e)) => {
-                    println!("⚠️  Router query failed: {e} (may be expected)");
-                }
-                Err(_) => {
-                    println!("⚠️  Router query timed out (may be expected)");
-                }
-            }
-        }
-        Err(e) => {
-            println!("⚠️  Router could not get query client: {e} (may be expected)");
-        }
-    }
-
-    // Verification Summary
-    println!("\n🎯 END-TO-END TEST SUMMARY:");
-    println!("✅ OTLP Ingestion: Traces successfully received by acceptor");
-    println!("✅ WAL Processing: Data written to WAL and processed");
-    println!("✅ Flight Communication: Acceptor → Writer via Flight protocol");
-    println!("✅ Data Persistence: Traces stored in object store (Parquet)");
-    println!("✅ Service Discovery: All services properly registered and discoverable");
-    println!("✅ Query Infrastructure: Flight-based query mechanism operational");
-
-    let objects: Vec<_> = services
-        .object_store
-        .list(None)
-        .try_collect()
         .await
-        .unwrap();
-    if !objects.is_empty() {
-        println!("✅ OVERALL: Complete trace pipeline FUNCTIONAL");
-    } else {
-        panic!("❌ OVERALL: Trace pipeline FAILED - no data persisted");
-    }
+        .expect("router could not get a Flight client for QueryExecution");
 
-    println!("\n🚀 Phase 3 end-to-end trace pipeline test COMPLETED SUCCESSFULLY!");
+    let router_ticket = arrow_flight::Ticket::new(format!(
+        "find_trace:{TEST_TENANT}:{TEST_DATASET}:{}",
+        hex::encode(&trace_id)
+    ));
+
+    let mut router_stream = timeout(Duration::from_secs(10), router_client.do_get(router_ticket))
+        .await
+        .expect("router-mediated query timed out")
+        .expect("router-mediated query failed")
+        .into_inner();
+
+    let mut router_data_chunks = 0;
+    while let Some(chunk) = router_stream.next().await {
+        chunk.expect("error reading router-mediated flight data");
+        router_data_chunks += 1;
+    }
+    assert!(
+        router_data_chunks > 0,
+        "router-mediated query returned no Flight data chunks"
+    );
 }
 
-/// Test monolithic deployment mode
-///
-/// This test validates that Flight communication works when all services
-/// are running in the same process (monolithic mode).
-#[tokio::test]
-async fn test_monolithic_mode_trace_pipeline() {
-    println!("🚀 Testing monolithic mode trace pipeline...");
-
-    // Set up all services in monolithic mode
-    let services = setup_monolithic_services().await;
-
-    println!("✅ All services started in monolithic mode:");
-    println!("  - Writer: {}", services.writer_addr);
-    println!("  - Querier: {}", services.querier_addr);
-    println!("  - Acceptor: {}", services.acceptor_addr);
-
-    // Verify service discovery
-    println!("📋 Monolithic Service Discovery Status:");
-    let trace_ingestion_services = services
-        .flight_transport
-        .discover_services_by_capability(ServiceCapability::TraceIngestion)
-        .await;
-    let query_services = services
-        .flight_transport
-        .discover_services_by_capability(ServiceCapability::QueryExecution)
-        .await;
-    let storage_services = services
-        .flight_transport
-        .discover_services_by_capability(ServiceCapability::Storage)
-        .await;
-
-    println!(
-        "  - TraceIngestion services: {}",
-        trace_ingestion_services.len()
-    );
-    println!("  - QueryExecution services: {}", query_services.len());
-    println!("  - Storage services: {}", storage_services.len());
-
-    assert!(
-        !trace_ingestion_services.is_empty(),
-        "No trace ingestion services found in monolithic mode"
-    );
-    assert!(
-        !query_services.is_empty(),
-        "No query execution services found in monolithic mode"
-    );
-    assert!(
-        !storage_services.is_empty(),
-        "No storage services found in monolithic mode"
-    );
-
-    println!("✅ Monolithic service discovery verification passed");
-
-    // Send test trace with detailed logging
-    let trace_id = send_test_trace_with_logging(&services, "monolithic-test-span").await;
-
-    // Verify data persistence
-    verify_data_persistence(&services, Duration::from_secs(4)).await;
-
-    // Test query with data validation.
-    //
-    // This is the primary correctness check of the test: the ingested
-    // trace_id/span_name must actually round-trip through Flight query in
-    // monolithic mode. A failure here must fail the test, not be downgraded
-    // to a warning.
-    validate_trace_query_data(&services, &trace_id, "monolithic-test-span")
-        .await
-        .expect(
-            "trace query validation failed in monolithic mode - queried data did not match \
-             the ingested trace (trace_id/span_name did not round-trip via Flight query)",
-        );
-    println!("✅ Query and data validation successful in monolithic mode");
-
-    println!("🎯 MONOLITHIC MODE TEST SUMMARY:");
-    println!("✅ All services running in single process space");
-    println!("✅ Flight communication working between localhost services");
-    println!("✅ Service discovery working within monolithic deployment");
-    println!("✅ Data ingestion and persistence working");
-    println!("✅ Query infrastructure operational");
-
-    println!("\n🚀 Monolithic mode test COMPLETED SUCCESSFULLY!");
-}
-
-/// Performance benchmark test for Flight communication
-///
-/// This test measures the performance of the Flight-based communication.
+/// Performance/volume check for Flight communication: ingest a batch of
+/// traces and verify they are all durably persisted. Throughput numbers are
+/// informational only - they are not asserted on, since wall-clock timing on
+/// a shared CI runner is not a reliable correctness signal and no baseline
+/// has been established to compare against.
 #[tokio::test]
 async fn test_flight_communication_performance() {
-    println!("🚀 Testing Flight communication performance...");
+    let services = setup_services().await;
 
-    // Set up services for performance testing
-    let services = setup_performance_services().await;
-
-    println!("✅ Performance test services started:");
-    println!("  - Writer: {}", services.writer_addr);
-    println!("  - Acceptor: {}", services.acceptor_addr);
-
-    // Performance test: Send multiple traces
-    let num_traces: u32 = 50; // Smaller number for reliable testing
+    let num_traces: u32 = 50;
     let start_time = std::time::Instant::now();
 
-    // Create gRPC client
     let endpoint = format!("http://{}", services.acceptor_addr);
     let mut otlp_client = opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint)
         .await
@@ -1023,7 +626,6 @@ async fn test_flight_communication_performance() {
         let mut trace_id = vec![0u8; 16];
         let mut span_id = vec![0u8; 8];
 
-        // Create unique trace and span IDs
         trace_id[12..16].copy_from_slice(&i.to_be_bytes());
         span_id[4..8].copy_from_slice(&i.to_be_bytes());
 
@@ -1047,7 +649,10 @@ async fn test_flight_communication_performance() {
             }],
         };
 
-        let _response = otlp_client.export(trace_request).await.unwrap();
+        timeout(Duration::from_secs(5), otlp_client.export(trace_request))
+            .await
+            .expect("OTLP export timed out")
+            .expect("OTLP export failed");
     }
 
     let ingestion_duration = start_time.elapsed();
@@ -1055,30 +660,14 @@ async fn test_flight_communication_performance() {
     // Wait deterministically for processing to complete instead of a fixed
     // sleep: proceed as soon as data is persisted, bounded by a generous
     // timeout so a genuine persistence failure still fails the test promptly.
-    let objects =
-        wait_for_objects_persisted(&services.object_store, Duration::from_secs(30)).await;
+    let objects = wait_for_objects_persisted(&services.object_store, Duration::from_secs(30)).await;
 
-    // Throughput numbers are informational only - they are not asserted on,
-    // since wall-clock timing on a shared CI runner is not a reliable
-    // correctness signal and no baseline has been established to compare
-    // against. What this test verifies is that ingestion completes and data
-    // is durably persisted.
-    println!("🎯 PERFORMANCE TEST RESULTS (informational, not asserted):");
-    println!("📈 Ingested {num_traces} traces in {ingestion_duration:?}");
     println!(
-        "📈 Average per trace: {:?}",
-        ingestion_duration / num_traces
+        "Ingested {num_traces} traces in {ingestion_duration:?} (informational, not asserted)"
     );
-    println!(
-        "📈 Throughput: {:.2} traces/second",
-        num_traces as f64 / ingestion_duration.as_secs_f64()
-    );
-    println!("📦 Objects stored: {}", objects.len());
 
     assert!(
         !objects.is_empty(),
         "No data was stored after ingesting {num_traces} traces"
     );
-
-    println!("✅ Flight communication performance test PASSED");
 }
