@@ -1924,6 +1924,26 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "description": "Window start (unix seconds)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "description": "Window end (unix seconds)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
           }
         ],
         "responses": {
@@ -1936,6 +1956,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "start/end are not unix-second timestamps"
           },
           "501": {
             "description": "Tag not queryable yet"
