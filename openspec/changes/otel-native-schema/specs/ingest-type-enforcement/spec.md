@@ -33,12 +33,16 @@ map requiring read-time reconstruction.
 
 The ingest path SHALL NOT reject or silently discard a record because an
 attribute's sent type does not match the canonical type. The value SHALL be
-retained losslessly (in the residue), and the condition SHALL be observable.
+retained in the residue and the condition SHALL be observable. "Losslessly" is
+scoped to the phase-one carrier: the **decoded `AnyValue`** (type + scalar value,
+incl. bytes/interned via the `extract_value` fix) is preserved; **duplicate keys
+and key order are not preserved in phase 1** (the JSON-in-Utf8 wire collapses
+them) and are deferred to acceptor-side binary residue or the typed-wire phase.
 
 #### Scenario: Off-type value is retained, not dropped
 
 - **WHEN** an attribute value does not match the field's canonical type
-- **THEN** the record is still ingested, the value is retained without loss in the
+- **THEN** the record is still ingested, its decoded `AnyValue` is retained in the
   residue, and the mismatch is surfaced (metric/log) rather than dropped
 
 ### Requirement: Ingest wire format compatibility during migration

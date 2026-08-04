@@ -69,7 +69,8 @@ one unit.
   (stats + bloom). **BREAKING** (on-disk Iceberg layout): new typed columns are
   _added_; legacy `Map<String,String>` files are read via safe coercion and
   rewritten by the compactor (the old map columns persist in old files until
-  rewritten). Also fixes `extract_value` so bytes/interned/duplicate keys survive.
+  rewritten). Also fixes `extract_value` so bytes and interned strings survive;
+  duplicate-key/order fidelity is deferred (needs acceptor-side residue or phase 2).
 
 - **The promotion-is-only-perf invariant is load-bearing and testable — and now
   actually holds**, because one canonical home means resolution never coalesces

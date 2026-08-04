@@ -87,7 +87,11 @@ physical shape into queries.
 ### D2 — Type authority: stored value is AnyValue-as-sent; precedence picks the canonical home, never rewrites
 
 The stored value is **always** the `AnyValue` as sent. The registry owns one
-canonical type per **(tenant, dataset, field)**, chosen by precedence: (1) config
+canonical type per **(tenant, dataset, field)**, where **`field` is the full
+logical identity — signal + attribute level (resource/scope/record) + dotted name**
+(so same-named resource and record attributes are distinct fields). This full
+identity keys the registry, the resolution cache, and the promoted-column set
+alike. Chosen by precedence: (1) config
 override; else (2) a **semconv type hint** from a pinned snapshot, selected by the
 applicable **resource-/scope-level** `schema_url`; else (3) the observed `AnyValue`
 type (first-seen). Precedence only selects which typed home is canonical — it
@@ -152,7 +156,8 @@ original "same-result" (value equality over a cast) because there is no cast.
 
 ### D9 — Registry consistency: monotonic, per tenant+dataset, cache-invalidated on version bump
 
-The registry's canonical type per (tenant, dataset, field) is monotonic (D2) — so
+The registry's canonical type per (tenant, dataset, field) — `field` being the full
+signal+level+name identity from D2 — is monotonic (D2) — so
 already-written data never disagrees with a later type; new conflicting values go
 to the residue rather than flipping the type. Write-path and plan-path read the
 same versioned resolution; a config/schema-version bump is the only mutation and it
@@ -241,9 +246,12 @@ version clocks instead of today's conflated v1/v2 axis.
   semi/anti; structural "no silent cap" is only met by a per-trace evaluator or
   materialized ancestry, not a recursive CTE. Encoded in the specs, not left to
   implementation.
-- **`extract_value` is on the critical path for losslessness** → bytes/interned/
-  duplicate-key fidelity must be fixed there (an early stack layer), else the
-  "lossless residue" claim is false regardless of substrate.
+- **`extract_value` is on the critical path for losslessness** → bytes/interned
+  fidelity must be fixed there (an early stack layer), else the "lossless residue"
+  claim is false regardless of substrate. Duplicate-key/order fidelity is **not**
+  achievable in `extract_value` alone (the JSON-in-Utf8 wire's `serde_json::Map`
+  collapses it) — it needs acceptor-side binary residue before serialization, or
+  the typed-wire phase.
 
 ## Migration Plan
 
@@ -257,8 +265,10 @@ Implemented as a dependent PR stack (charter now, stack later):
    bare typed map), footer/metadata % on realistic **small flush files**, legacy
    mixed-scan coercion cost, residue parse cost, and **per-attribute registry
    lookup cost**. (Variant is out of scope — see Context.)
-2. **`extract_value` fidelity fix:** preserve bytes, interned strings, duplicate/
-   ordered keys at the OTLP boundary (prereq for any losslessness claim).
+2. **`extract_value` fidelity fix:** preserve bytes and interned strings at the
+   OTLP boundary (prereq for any losslessness claim). Duplicate-key/order fidelity
+   is deferred to acceptor-side binary residue or the typed-wire phase (layer 13),
+   since `serde_json::Map` on the phase-1 wire collapses it.
 3. **Logical schema + reconciliation:** declare the canonical logical schema and
    refactor `schema_parser`/`schemas.toml` so physical is its realization (D1, D7).
 4. **Type authority + registry consistency:** one canonical type per (tenant,
@@ -284,18 +294,22 @@ Implemented as a dependent PR stack (charter now, stack later):
 Rollback is per-layer and not uniform — the plan distinguishes revertable from
 forward-only layers:
 
-- **Revertable (additive):** substrate, warm index, and promotion layers. The
-  coexistence read-path means a reverted binary still reads both the legacy and
-  typed representations, so reverting the reader is safe; new files simply stop
-  being written in the typed layout. Legacy representations are retained until the
-  compactor rewrite (layer 7) runs, so a revert before that has both to read.
+- **Revertable (additive), pre-compaction only:** substrate, warm index, and
+  promotion layers. The coexistence read-path means a reverted binary still reads
+  both the legacy and typed representations, so reverting the reader is safe; new
+  files simply stop being written in the typed layout. This holds **only while the
+  legacy representation still exists** — i.e. before the compactor rewrite (layer 7)
+  runs for a given file.
 - **Forward-only (data-shape changes):** the `extract_value` fidelity fix (layer 1),
-  the typed metric substrate (layer 9), and the typed wire/WAL (layer 13). A binary
-  from _before_ these layers cannot read data written _after_ them. Reverting
-  requires either keeping the newer reader or a compactor backfill to the old shape;
-  these layers ship behind their own flags and are called out as forward-only, not
-  claimed as freely revertable. A per-layer read/write compatibility matrix is an
-  implementation-task deliverable for each such layer.
+  the **attribute compactor rewrite (layer 7)** — once it rewrites legacy files to
+  the typed layout, the legacy representation is gone, so a pre-typed binary can no
+  longer read them — the typed metric substrate (layer 9), and the typed wire/WAL
+  (layer 13). A binary from _before_ these layers cannot read data written (or
+  rewritten) _after_ them. Reverting requires either keeping the newer reader or a
+  compactor backfill to the old shape; these layers ship behind their own flags and
+  are called out as forward-only, not claimed as freely revertable. A per-layer
+  read/write compatibility matrix and the retention window for legacy
+  representations are implementation-task deliverables for each such layer.
 
 ## Open Questions
 
