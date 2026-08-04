@@ -149,8 +149,7 @@ enabled = true                        # Default enabled
 tick_interval = "5m"                  # Planning cycle interval
 target_file_size_mb = 128             # Target size after compaction
 file_count_threshold = 10             # Min files to trigger compaction
-min_input_file_size_kb = 1024         # Min file size to consider (1MB)
-max_files_per_job = 50                # Max files per compaction job
+max_input_file_size_kb = 65536        # Max file size to consider (64MB); larger files are left alone
 max_candidates_per_cycle = 20         # Max candidates per scheduling cycle (0 = unlimited)
 max_per_tenant = 5                    # Max candidates per tenant per cycle (0 = unlimited)
 lease_ttl_seconds = 300               # Compaction lease validity without renewal

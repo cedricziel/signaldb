@@ -99,8 +99,7 @@ async fn register(catalog_manager: &Arc<CatalogManager>) -> SessionContext {
 async fn compact(catalog_manager: &Arc<CatalogManager>) {
     let planner_config = PlannerConfig {
         file_count_threshold: 2,
-        min_input_file_size_bytes: 1,
-        max_files_per_job: 500,
+        max_input_file_size_bytes: u64::MAX, // include every file
         target_file_size_bytes: 128 * 1024 * 1024,
     };
     let planner = CompactionPlanner::new(catalog_manager.clone(), planner_config.clone());

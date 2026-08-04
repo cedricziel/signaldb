@@ -14,6 +14,7 @@ Complete reference for configuring SignalDB Compactor retention and lifecycle ma
 ## Table of Contents
 
 - [Configuration Overview](#configuration-overview)
+- [Compaction Settings](#compaction-settings)
 - [Retention Configuration](#retention-configuration)
 - [Orphan Cleanup Configuration](#orphan-cleanup-configuration)
 - [Attribute Promotion Configuration](#attribute-promotion-configuration)
@@ -38,6 +39,42 @@ Compactor lifecycle configuration is located in the `[compactor]` section of `si
 - **Container:** the compactor's `--config` flag defaults to `./signaldb.toml` relative to the working directory. If you mount a config file elsewhere (e.g. `/config/signaldb.toml`), you must pass `--config /config/signaldb.toml` explicitly or the mounted file is silently ignored.
 
 **Duration syntax:** retention durations are humantime strings (`"1h"`, `"7d"`, `"30d"`, `"90d"`), not integers. Orphan-cleanup intervals are plain integer hour counts.
+
+## Compaction Settings
+
+### `[compactor]`
+
+Controls compaction planning: which files are merged into larger ones and when a table qualifies.
+
+| Field                      | Type            | Default          | Description                                                                                                                        |
+| -------------------------- | --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                  | `bool`          | `true`           | Enable the compactor service                                                                                                       |
+| `tick_interval`            | duration string | `"5m"`           | Interval between compaction planning cycles                                                                                        |
+| `target_file_size_mb`      | integer (MB)    | `128`            | Target output file size after compaction                                                                                           |
+| `file_count_threshold`     | integer         | `10`             | Minimum number of _small_ files (see below) required to trigger compaction                                                         |
+| `max_input_file_size_kb`   | integer (KB)    | `65536` (64 MB)  | Maximum input file size considered for compaction. Files at or above this size are treated as already compacted and are left alone |
+| `max_candidates_per_cycle` | integer         | `20`             | Maximum candidates processed per scheduling cycle (`0` = unlimited)                                                                |
+| `max_per_tenant`           | integer         | `5`              | Maximum candidates per tenant per cycle (`0` = unlimited)                                                                          |
+| `lease_ttl_seconds`        | integer         | `300`            | How long a compaction lease stays valid without renewal                                                                            |
+| `metrics_addr`             | `string`        | `"0.0.0.0:9091"` | Observability HTTP endpoint (`""` = disabled)                                                                                      |
+
+**How file selection works:** compaction exists to merge many small ingest files into few large ones. Only files **smaller than** `max_input_file_size_kb` count as compaction inputs; when at least `file_count_threshold` such files exist, the table becomes a candidate and its small files are rewritten toward `target_file_size_mb`. Files at or above the maximum are considered "already big" — re-reading and rewriting them buys nothing, so they never trigger compaction on their own. The default of 64 MB is half the default 128 MB target output size, which keeps freshly ingested files (typically tens to hundreds of KB) always eligible.
+
+**Example:**
+
+```toml
+[compactor]
+enabled = true
+tick_interval = "5m"
+target_file_size_mb = 128
+file_count_threshold = 10
+max_input_file_size_kb = 65536  # 64 MB; files >= this are left alone
+```
+
+> **Removed settings (breaking change, issue #934):**
+>
+> - `min_input_file_size_kb` was replaced by `max_input_file_size_kb` with **inverted semantics**. The old minimum-size filter excluded exactly the small ingest files compaction exists to merge, so a default deployment never compacted anything. There is no backward-compat alias; deployments setting the old key must switch to the new one.
+> - `max_files_per_job` was removed. It was never enforced: the executor rewrites a whole table per job and commits a full-replace snapshot, so a per-job file cap cannot be honored under the current execution model.
 
 ## Retention Configuration
 
@@ -413,6 +450,18 @@ Nested compactor keys use the double-underscore form: `SIGNALDB__` prefix, with 
 ```
 SIGNALDB__COMPACTOR__<SECTION>__<FIELD>
 ```
+
+### Compaction Environment Variables
+
+```bash
+SIGNALDB__COMPACTOR__ENABLED=true
+SIGNALDB__COMPACTOR__TICK_INTERVAL=5m
+SIGNALDB__COMPACTOR__TARGET_FILE_SIZE_MB=128
+SIGNALDB__COMPACTOR__FILE_COUNT_THRESHOLD=10
+SIGNALDB__COMPACTOR__MAX_INPUT_FILE_SIZE_KB=65536
+```
+
+`SIGNALDB__COMPACTOR__MIN_INPUT_FILE_SIZE_KB` and `SIGNALDB__COMPACTOR__MAX_FILES_PER_JOB` no longer exist (see [Compaction Settings](#compaction-settings)).
 
 ### Retention Environment Variables
 
