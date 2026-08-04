@@ -21,6 +21,9 @@ struct MetricsInner {
     partitions_dropped: AtomicUsize,
     /// Total number of snapshots expired
     snapshots_expired: AtomicUsize,
+    /// Data files whose partition value could not be determined (kept, not
+    /// subject to retention)
+    unclassifiable_files: AtomicUsize,
     /// Total bytes reclaimed
     bytes_reclaimed: AtomicU64,
     /// Total duration in milliseconds
@@ -42,6 +45,7 @@ impl RetentionMetrics {
                 partitions_evaluated: AtomicUsize::new(0),
                 partitions_dropped: AtomicUsize::new(0),
                 snapshots_expired: AtomicUsize::new(0),
+                unclassifiable_files: AtomicUsize::new(0),
                 bytes_reclaimed: AtomicU64::new(0),
                 total_duration_ms: AtomicU64::new(0),
             }),
@@ -71,6 +75,13 @@ impl RetentionMetrics {
     pub fn record_snapshots_expired(&self, count: usize) {
         self.inner
             .snapshots_expired
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Record data files whose partition value could not be determined
+    pub fn record_unclassifiable_files(&self, count: usize) {
+        self.inner
+            .unclassifiable_files
             .fetch_add(count, Ordering::Relaxed);
     }
 
@@ -106,6 +117,11 @@ impl RetentionMetrics {
     /// Get total snapshots expired
     pub fn snapshots_expired(&self) -> usize {
         self.inner.snapshots_expired.load(Ordering::Relaxed)
+    }
+
+    /// Get total data files whose partition value could not be determined
+    pub fn unclassifiable_files(&self) -> usize {
+        self.inner.unclassifiable_files.load(Ordering::Relaxed)
     }
 
     /// Get total bytes reclaimed
@@ -158,5 +174,15 @@ mod tests {
 
         metrics.record_duration_ms(1500);
         assert_eq!(metrics.total_duration_ms(), 1500);
+    }
+
+    #[test]
+    fn unclassifiable_files_counter_accumulates() {
+        let metrics = RetentionMetrics::new();
+        assert_eq!(metrics.unclassifiable_files(), 0);
+
+        metrics.record_unclassifiable_files(2);
+        metrics.record_unclassifiable_files(3);
+        assert_eq!(metrics.unclassifiable_files(), 5);
     }
 }

@@ -19,7 +19,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
-use iceberg_rust::spec::manifest::Status;
+use iceberg_rust::spec::manifest::{DataFile, Status};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -27,6 +27,7 @@ use tracing::{debug, info, warn};
 use common::CatalogManager;
 
 use crate::commit::{IcebergCommitter, is_conflict_error};
+use crate::iceberg::partition::{TIMESTAMP_HOUR_FIELD, data_file_partition_hours};
 use crate::iceberg::{ManifestReader, PartitionManager, SnapshotManager};
 use crate::retention::config::RetentionConfig;
 use crate::retention::policy::RetentionPolicyResolver;
@@ -410,9 +411,10 @@ impl RetentionEnforcer {
         // Actually drop partitions: one replace commit removes every data
         // file in the expired partitions. Retried on CAS conflicts with
         // concurrent compaction/ingest commits.
-        let expired_hours: HashSet<String> = expired_partitions
+        let expired_hours: HashSet<i64> = expired_partitions
             .iter()
-            .filter_map(|p| p.partition_values.get("timestamp_hour").cloned())
+            .filter_map(|p| p.partition_values.get(TIMESTAMP_HOUR_FIELD))
+            .filter_map(|hours| hours.parse::<i64>().ok())
             .collect();
 
         const MAX_ATTEMPTS: usize = 3;
@@ -457,10 +459,13 @@ impl RetentionEnforcer {
     }
 
     /// One attempt at dropping the expired partitions: load the table
-    /// fresh, split the live data files into kept vs expired by their
-    /// `timestamp_hour=<N>` partition value, and commit a CAS-guarded,
-    /// post-verified `replace` with only the kept files. Physical file
-    /// deletion is left to the orphan cleaner.
+    /// fresh, split the live data files into kept vs expired by the
+    /// `timestamp_hour` partition value recorded in each manifest entry,
+    /// and commit a CAS-guarded, post-verified `replace` with only the
+    /// kept files. Files whose partition value cannot be determined are
+    /// kept (safe default), logged, and counted in
+    /// `compactor_unclassifiable_files_total`. Physical file deletion is
+    /// left to the orphan cleaner.
     ///
     /// Returns (partitions_dropped, files_dropped, bytes_reclaimed).
     async fn try_drop_partitions_once(
@@ -468,7 +473,7 @@ impl RetentionEnforcer {
         tenant_id: &str,
         dataset_id: &str,
         table_name: &str,
-        expired_hours: &HashSet<String>,
+        expired_hours: &HashSet<i64>,
     ) -> Result<(usize, usize, u64)> {
         let table_identifier = self
             .catalog_manager
@@ -498,9 +503,10 @@ impl RetentionEnforcer {
             .context("Failed to read data files for partition drop")?;
 
         let mut kept_files = Vec::new();
-        let mut dropped_hours: HashSet<String> = HashSet::new();
+        let mut dropped_hours: HashSet<i64> = HashSet::new();
         let mut dropped_files = 0usize;
         let mut dropped_bytes = 0u64;
+        let mut unclassifiable_files = 0usize;
 
         let mut file_iter = std::pin::pin!(file_iter);
         while let Some(result) = file_iter.next().await {
@@ -509,25 +515,37 @@ impl RetentionEnforcer {
                 continue;
             }
             let data_file = entry.data_file();
-            let partition_hour = data_file
-                .file_path()
-                .split('/')
-                .find(|component| component.starts_with("timestamp_hour="))
-                .and_then(|component| component.strip_prefix("timestamp_hour="));
 
-            match partition_hour {
-                Some(hour) if expired_hours.contains(hour) => {
-                    dropped_hours.insert(hour.to_string());
+            match classify_data_file(data_file, expired_hours) {
+                FileDisposition::Drop(hours) => {
+                    dropped_hours.insert(hours);
                     dropped_files += 1;
                     dropped_bytes += *data_file.file_size_in_bytes() as u64;
                     debug!(
                         file_path = %data_file.file_path(),
-                        partition_hour = %hour,
+                        partition_hour = hours,
                         "Dropping expired data file"
                     );
                 }
-                _ => kept_files.push(data_file.clone()),
+                FileDisposition::Keep => kept_files.push(data_file.clone()),
+                FileDisposition::KeepUnclassifiable => {
+                    unclassifiable_files += 1;
+                    warn!(
+                        tenant_id = %tenant_id,
+                        dataset_id = %dataset_id,
+                        table_name = %table_name,
+                        file_path = %data_file.file_path(),
+                        "Data file has no recoverable timestamp_hour partition value; \
+                         keeping it and excluding it from retention"
+                    );
+                    kept_files.push(data_file.clone());
+                }
             }
+        }
+
+        if unclassifiable_files > 0 {
+            self.metrics
+                .record_unclassifiable_files(unclassifiable_files);
         }
 
         if dropped_files == 0 {
@@ -707,6 +725,30 @@ impl RetentionEnforcer {
     }
 }
 
+/// How a partition-drop pass treats a single data file.
+#[derive(Debug, PartialEq, Eq)]
+enum FileDisposition {
+    /// The file belongs to an expired partition (hours since epoch) and is
+    /// removed from the replace commit.
+    Drop(i64),
+    /// The file belongs to a live partition and is kept.
+    Keep,
+    /// The file's partition value could not be determined from the manifest
+    /// entry or the file path. It is kept as the safe default and surfaced
+    /// via a warning and `compactor_unclassifiable_files_total`.
+    KeepUnclassifiable,
+}
+
+/// Classify a data file against the set of expired partition hours using
+/// the manifest entry's partition value (see [`data_file_partition_hours`]).
+fn classify_data_file(data_file: &DataFile, expired_hours: &HashSet<i64>) -> FileDisposition {
+    match data_file_partition_hours(data_file) {
+        Some(hours) if expired_hours.contains(&hours) => FileDisposition::Drop(hours),
+        Some(_) => FileDisposition::Keep,
+        None => FileDisposition::KeepUnclassifiable,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,6 +822,50 @@ mod tests {
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].0, "traces");
         assert_eq!(tables[0].1, SignalType::Traces);
+    }
+
+    #[test]
+    fn classify_data_file_drops_expired_partitions_from_manifest_values() {
+        use crate::iceberg::partition::test_support::{hour_partition, test_data_file};
+
+        let expired: HashSet<i64> = [473_364].into_iter().collect();
+
+        // Paths deliberately carry NO timestamp_hour= component: the manifest
+        // entry's partition struct alone must classify the file.
+        let expired_file = test_data_file(
+            hour_partition(473_364),
+            "s3://bucket/3af9c2/data/00000-0-expired.parquet",
+        );
+        assert_eq!(
+            classify_data_file(&expired_file, &expired),
+            FileDisposition::Drop(473_364)
+        );
+
+        let live_file = test_data_file(
+            hour_partition(473_400),
+            "s3://bucket/9c2e1b/data/00000-0-live.parquet",
+        );
+        assert_eq!(
+            classify_data_file(&live_file, &expired),
+            FileDisposition::Keep
+        );
+    }
+
+    #[test]
+    fn classify_data_file_keeps_unclassifiable_files() {
+        use crate::iceberg::partition::test_support::test_data_file;
+        use iceberg_rust::spec::values::{Struct, Value};
+
+        // No partition value in the manifest AND no timestamp_hour= path
+        // component: the file must be kept (safe default) and flagged.
+        let empty_partition = Struct::from_iter(std::iter::empty::<(String, Option<Value>)>());
+        let file = test_data_file(empty_partition, "s3://bucket/data/00000-0-mystery.parquet");
+        let expired: HashSet<i64> = [473_364].into_iter().collect();
+
+        assert_eq!(
+            classify_data_file(&file, &expired),
+            FileDisposition::KeepUnclassifiable
+        );
     }
 
     /// Group 8 (`otel-compliant-self-tracing`): a retention run exports a

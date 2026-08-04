@@ -6,9 +6,63 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use futures::StreamExt;
-use iceberg_rust::spec::manifest::Status;
+use iceberg_rust::spec::manifest::{DataFile, Status};
+use iceberg_rust::spec::values::Value;
 use iceberg_rust::table::Table;
 use std::collections::HashMap;
+use tracing::warn;
+
+/// Name of the hour partition field used by all SignalDB signal tables
+/// (Iceberg Hour transform on the `timestamp` column).
+pub const TIMESTAMP_HOUR_FIELD: &str = "timestamp_hour";
+
+/// Extract the hour partition value (hours since Unix epoch) for a data file.
+///
+/// The authoritative source is the typed partition struct recorded in the
+/// manifest entry (`DataFile::partition`): the Hour transform stores an
+/// integer, so this is layout-independent and survives any change to file
+/// locations (object-storage hash prefixes, location providers, fork bumps).
+///
+/// Parsing the `timestamp_hour=<N>` file-path component is kept only as a
+/// fallback for manifest entries that genuinely lack a usable partition
+/// value (absent field or null value, e.g. legacy manifests); the fallback
+/// logs a warning because it depends on the storage layout.
+///
+/// Returns `None` when neither source yields a value — callers must treat
+/// such files as unclassifiable and keep them (safe default).
+pub fn data_file_partition_hours(data_file: &DataFile) -> Option<i64> {
+    match data_file.partition().get(TIMESTAMP_HOUR_FIELD) {
+        Some(Some(Value::Int(hours))) => return Some(i64::from(*hours)),
+        Some(Some(Value::LongInt(hours))) => return Some(*hours),
+        Some(Some(unexpected)) => {
+            warn!(
+                file_path = %data_file.file_path(),
+                partition_value = ?unexpected,
+                "Manifest partition value for timestamp_hour has an unexpected type; \
+                 falling back to file-path parsing"
+            );
+        }
+        // Field absent or value null: fall through to the path fallback.
+        _ => {}
+    }
+
+    let recovered = data_file
+        .file_path()
+        .split('/')
+        .find(|component| component.starts_with("timestamp_hour="))
+        .and_then(|component| component.strip_prefix("timestamp_hour="))
+        .and_then(|hours| hours.parse::<i64>().ok());
+
+    if recovered.is_some() {
+        warn!(
+            file_path = %data_file.file_path(),
+            "Manifest entry has no usable timestamp_hour partition value; \
+             recovered it from the file path (layout-dependent fallback)"
+        );
+    }
+
+    recovered
+}
 
 /// Information about a table partition
 #[derive(Debug, Clone)]
@@ -119,9 +173,12 @@ impl PartitionManager {
     /// List all partitions for a table by scanning its current snapshot manifests.
     ///
     /// Reads manifest files from the current snapshot, groups non-deleted data
-    /// files by their `timestamp_hour=<N>` partition directory component (where N
-    /// is hours since Unix epoch, produced by the Iceberg Hour transform), and
-    /// returns one `PartitionInfo` per unique partition value found.
+    /// files by the `timestamp_hour` partition value recorded in each manifest
+    /// entry (integer hours since Unix epoch, produced by the Iceberg Hour
+    /// transform), and returns one `PartitionInfo` per unique partition value
+    /// found. Files whose partition value cannot be determined (see
+    /// [`data_file_partition_hours`]) are excluded from the listing with a
+    /// warning — they never enter retention decisions.
     pub async fn list_partitions(&self, table: &Table) -> Result<Vec<PartitionInfo>> {
         let all_manifests = table
             .manifests(None, None)
@@ -138,7 +195,7 @@ impl PartitionManager {
             .context("Failed to read data files from manifests")?;
 
         // Accumulate (file_count, total_bytes) per partition hour (integer hours since epoch).
-        let mut by_hour: HashMap<String, (usize, u64)> = HashMap::new();
+        let mut by_hour: HashMap<i64, (usize, u64)> = HashMap::new();
 
         let mut file_iter = std::pin::pin!(file_iter);
         while let Some(result) = file_iter.next().await {
@@ -146,28 +203,29 @@ impl PartitionManager {
             if *entry.status() == Status::Deleted {
                 continue;
             }
-            let file_path = entry.data_file().file_path();
-            let file_size = *entry.data_file().file_size_in_bytes() as u64;
+            let data_file = entry.data_file();
+            let file_size = *data_file.file_size_in_bytes() as u64;
 
-            // Extract "timestamp_hour=<N>" path segment produced by Iceberg Hour transform.
-            // The Hour transform on the "timestamp" field creates integer-valued partition
-            // directories where N = hours since Unix epoch.
-            if let Some(hours_str) = file_path
-                .split('/')
-                .find(|c| c.starts_with("timestamp_hour="))
-                .and_then(|c| c.strip_prefix("timestamp_hour="))
-            {
-                let slot = by_hour.entry(hours_str.to_string()).or_insert((0, 0));
-                slot.0 += 1;
-                slot.1 += file_size;
+            match data_file_partition_hours(data_file) {
+                Some(hours) => {
+                    let slot = by_hour.entry(hours).or_insert((0, 0));
+                    slot.0 += 1;
+                    slot.1 += file_size;
+                }
+                None => {
+                    warn!(
+                        file_path = %data_file.file_path(),
+                        "Data file has no recoverable timestamp_hour partition value; \
+                         excluding it from the partition listing"
+                    );
+                }
             }
         }
 
         let partitions = by_hour
             .into_iter()
-            .filter_map(|(hours_str, (file_count, total_bytes))| {
+            .filter_map(|(hours_since_epoch, (file_count, total_bytes))| {
                 // Convert integer hours-since-epoch to DateTime<Utc>
-                let hours_since_epoch: i64 = hours_str.parse().ok()?;
                 let secs = hours_since_epoch.checked_mul(3600)?;
                 let timestamp = DateTime::from_timestamp(secs, 0)?;
 
@@ -175,7 +233,10 @@ impl PartitionManager {
                 let iso_hour = timestamp.format("%Y-%m-%d-%H").to_string();
                 let mut partition_values = HashMap::new();
                 partition_values.insert("hour".to_string(), iso_hour);
-                partition_values.insert("timestamp_hour".to_string(), hours_str);
+                partition_values.insert(
+                    TIMESTAMP_HOUR_FIELD.to_string(),
+                    hours_since_epoch.to_string(),
+                );
 
                 Some(PartitionInfo {
                     partition_values,
@@ -212,11 +273,111 @@ impl Default for PartitionManager {
     }
 }
 
+/// Test-only helpers for constructing manifest-entry data files, shared
+/// with the retention enforcer's unit tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use iceberg_rust::spec::manifest::{Content, FileFormat};
+    use iceberg_rust::spec::values::Struct;
+
+    /// Build a minimal manifest-entry data file with the given partition
+    /// struct and file path.
+    pub(crate) fn test_data_file(partition: Struct, file_path: &str) -> DataFile {
+        DataFile::builder()
+            .with_content(Content::Data)
+            .with_file_path(file_path.to_string())
+            .with_file_format(FileFormat::Parquet)
+            .with_partition(partition)
+            .with_record_count(1)
+            .with_file_size_in_bytes(1024)
+            .with_column_sizes(None)
+            .with_value_counts(None)
+            .with_null_value_counts(None)
+            .with_nan_value_counts(None)
+            .with_distinct_counts(None)
+            .with_lower_bounds(None)
+            .with_upper_bounds(None)
+            .build()
+            .expect("test data file must build")
+    }
+
+    /// Partition struct with a single `timestamp_hour` field.
+    pub(crate) fn hour_partition(hours: i32) -> Struct {
+        Struct::from_iter([(TIMESTAMP_HOUR_FIELD.to_string(), Some(Value::Int(hours)))])
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_support::{hour_partition, test_data_file};
     use super::*;
     use chrono::Datelike;
     use chrono::Timelike;
+    use iceberg_rust::spec::values::Struct;
+
+    #[test]
+    fn partition_hours_come_from_manifest_entry_not_file_path() {
+        // Path deliberately has NO timestamp_hour= component: any layout
+        // (hash prefixes, custom location providers) must still classify.
+        let data_file = test_data_file(
+            hour_partition(473_364),
+            "s3://bucket/3af9c2/data/00000-0-abc.parquet",
+        );
+
+        assert_eq!(data_file_partition_hours(&data_file), Some(473_364));
+    }
+
+    #[test]
+    fn partition_hours_prefer_manifest_value_over_conflicting_path() {
+        let data_file = test_data_file(
+            hour_partition(473_364),
+            "s3://bucket/data/timestamp_hour=999999/00000-0-abc.parquet",
+        );
+
+        assert_eq!(data_file_partition_hours(&data_file), Some(473_364));
+    }
+
+    #[test]
+    fn partition_hours_accept_long_int_manifest_value() {
+        let partition = Struct::from_iter([(
+            TIMESTAMP_HOUR_FIELD.to_string(),
+            Some(Value::LongInt(473_364)),
+        )]);
+        let data_file = test_data_file(partition, "s3://bucket/data/00000-0-abc.parquet");
+
+        assert_eq!(data_file_partition_hours(&data_file), Some(473_364));
+    }
+
+    #[test]
+    fn partition_hours_fall_back_to_path_when_manifest_value_is_null() {
+        let partition = Struct::from_iter([(TIMESTAMP_HOUR_FIELD.to_string(), None)]);
+        let data_file = test_data_file(
+            partition,
+            "s3://bucket/data/timestamp_hour=473364/00000-0-abc.parquet",
+        );
+
+        assert_eq!(data_file_partition_hours(&data_file), Some(473_364));
+    }
+
+    #[test]
+    fn partition_hours_fall_back_to_path_when_partition_struct_is_empty() {
+        let partition = Struct::from_iter(std::iter::empty::<(String, Option<Value>)>());
+        let data_file = test_data_file(
+            partition,
+            "s3://bucket/data/timestamp_hour=473364/00000-0-abc.parquet",
+        );
+
+        assert_eq!(data_file_partition_hours(&data_file), Some(473_364));
+    }
+
+    #[test]
+    fn partition_hours_none_when_manifest_and_path_both_lack_value() {
+        let partition = Struct::from_iter(std::iter::empty::<(String, Option<Value>)>());
+        let data_file = test_data_file(partition, "s3://bucket/data/00000-0-abc.parquet");
+
+        assert_eq!(data_file_partition_hours(&data_file), None);
+    }
 
     #[test]
     fn test_parse_partition_hour_valid() {
