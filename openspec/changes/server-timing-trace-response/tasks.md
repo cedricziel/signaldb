@@ -12,7 +12,7 @@
 - [x] 2.3 Write failing test for a `ServerTimings` response-extension type: handler inserts named `Duration` pairs, middleware drains them into additional `name;dur=` entries (`cargo test -p common`)
 - [x] 2.4 Implement `ServerTimings` extension draining in the middleware; tests pass
 - [x] 2.5 Add stage timings to one router query endpoint (e.g. Tempo trace lookup or search) via `ServerTimings` as the reference usage, with a test asserting the named entry appears (`cargo test -p router`)
-- [ ] 2.6 Add integration coverage in `tests-integration` asserting both router and acceptor HTTP responses carry the headers in monolithic mode, and that a caller-supplied sampled `traceparent` round-trips its trace id (`cargo test -p tests-integration`)
+- [x] 2.6 Add integration coverage in `tests-integration` asserting both router and acceptor HTTP responses carry the headers in monolithic mode, and that a caller-supplied sampled `traceparent` round-trips its trace id (`cargo test -p tests-integration`)
 
 ## 3. UI consumption: document-load correlation (src/ui)
 
