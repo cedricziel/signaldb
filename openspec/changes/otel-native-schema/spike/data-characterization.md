@@ -12,8 +12,8 @@ largest by size (deduped) + latest Iceberg metadata.json/manifests. See
 | -------------------------- | ------------- | ------------- | ----------------------- |
 | jobradar/production/traces | 18,148        | 210 MB        | **20 GB, 54,531 files** |
 | jobradar/production/logs   | 30,977        | 282 MB        | (similar pathology)     |
-| _system/_monitoring/traces | 28,290        | 452 MB        | —                       |
-| _system/_monitoring/logs   | 82,668        | 864 MB        | dir totals 413 GB       |
+| `_system/_monitoring/traces` | 28,290        | 452 MB        | —                       |
+| `_system/_monitoring/logs`   | 82,668        | 864 MB        | dir totals 413 GB       |
 
 Headline: **metadata dwarfs data by ~100×** on the long-lived tables. #895
 (delete-after-commit) is deployed but the backlog persists. Any spike conclusion
@@ -26,8 +26,8 @@ the live system today.
 | --------------- | ----- | ------- | ------------- | -------- | --------------- |
 | jobradar traces | 4,086 | 6,951   | **1.7**       | 378      | 1.0             |
 | jobradar logs   | 4,049 | 11,493  | **2.8**       | 240      | 1.0             |
-| _system traces  | 4,026 | 155,532 | 38.6          | 5,293    | 1.0             |
-| _system logs    | 4,093 | 539,536 | 131.8         | 41,091   | 1.0             |
+| `_system` traces  | 4,026 | 155,532 | 38.6          | 5,293    | 1.0             |
+| `_system` logs    | 4,093 | 539,536 | 131.8         | 41,091   | 1.0             |
 
 Every file has exactly **one row group** — row-group pruning within a file is
 moot on this population; **file-level pruning is the only pruning that exists**.
@@ -39,8 +39,8 @@ The benchmark's "row-group pruned %" metric collapses into "files pruned %".
 | --------------- | ------------- | ---------- | -------------- | ----------------------- | ------------------------ |
 | jobradar traces | 11,553 B      | 8,563 B    | **74.1%**      | 74.1%                   | n/a (none)               |
 | jobradar logs   | 9,107 B       | 6,758 B    | **74.0%**      | 74.0%                   | n/a (none)               |
-| _system traces  | 17,304 B      | 8,928 B    | 51.4%          | 61.1%                   | 3.9%                     |
-| _system logs    | 11,860 B      | 6,970 B    | 58.9%          | 59.5%                   | 3.0%                     |
+| `_system` traces  | 17,304 B      | 8,928 B    | 51.4%          | 61.1%                   | 3.9%                     |
+| `_system` logs    | 11,860 B      | 6,970 B    | 58.9%          | 59.5%                   | 3.0%                     |
 
 At the realistic small-flush size, **~3/4 of every jobradar file is footer**.
 Any layout change that widens the schema (per-type maps ×4, token index
@@ -65,7 +65,7 @@ severity_text/severity_number/service_name/body` + the three attr maps.
 ## Attribute shape
 
 Distinct keys are small: jobradar traces span=2, resource=1; jobradar logs=17;
-_system traces span=40; _system logs log=66, resource=20. Cardinality is not the
+`_system` traces span=40; `_system` logs log=66, resource=20. Cardinality is not the
 problem on this deployment; typing is.
 
 Observed stringified-value classes per key are almost perfectly clean

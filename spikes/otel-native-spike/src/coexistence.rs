@@ -912,10 +912,17 @@ async fn probe_map_access(ctx: &SessionContext, probes: &mut Vec<Probe>) {
             let rendered = pretty_format_batches(&batches)
                 .map(|d| d.to_string())
                 .unwrap_or_default();
+            // Assert the typed values actually came back, not merely that the
+            // query planned and collected (review follow-up on PR #960).
+            let pass = rendered.contains("200") && rendered.contains("500");
             probes.push(Probe {
                 name: "map_element_access",
-                pass: true,
-                note: format!("working syntax: `{sql}`\n{rendered}"),
+                pass,
+                note: if pass {
+                    format!("working syntax: `{sql}`\n{rendered}")
+                } else {
+                    format!("query ran but expected values 200/500 missing: `{sql}`\n{rendered}")
+                },
             });
         }
         Err(e) => probes.push(Probe::fail(

@@ -211,9 +211,18 @@ fn utf8_column(batch: &RecordBatch, name: &str) -> Result<ArrayRef> {
 }
 
 fn map_column<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a MapArray> {
-    batch
-        .column_by_name(name)
-        .and_then(|c| c.as_any().downcast_ref::<MapArray>())
+    // A present-but-wrongly-typed column is a schema surprise worth failing
+    // loudly on, not silently skipping (review follow-up on PR #960).
+    match batch.column_by_name(name) {
+        None => None,
+        Some(c) => match c.as_any().downcast_ref::<MapArray>() {
+            Some(m) => Some(m),
+            None => panic!(
+                "column {name} exists but is {:?}, not a MapArray — source schema mismatch",
+                c.data_type()
+            ),
+        },
+    }
 }
 
 fn push_map_entries(map: &MapArray, row: usize, into: &mut Vec<(String, String)>) -> Result<()> {
@@ -1051,6 +1060,9 @@ async fn run_once(
 }
 
 fn median(mut v: Vec<f64>) -> f64 {
+    if v.is_empty() {
+        return f64::NAN;
+    }
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     v[v.len() / 2]
 }
@@ -1347,6 +1359,12 @@ pub fn registry_cold_miss(keys_to_insert: usize) -> RegistryStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn median_of_empty_is_nan_not_panic() {
+        assert!(median(Vec::new()).is_nan());
+        assert_eq!(median(vec![3.0, 1.0, 2.0]), 2.0);
+    }
 
     #[test]
     fn classify_matches_registry_rules() {
