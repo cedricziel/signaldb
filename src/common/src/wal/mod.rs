@@ -993,37 +993,91 @@ impl Wal {
     /// Mark a WAL entry as processed and persist the state to disk
     #[tracing::instrument(level = "debug", skip_all, fields(signaldb.wal.entry_id = %entry_id))]
     pub async fn mark_processed(&self, entry_id: Uuid) -> Result<()> {
-        // Search all segments, not just current
-        let segments = self.segments.lock().await;
+        self.mark_processed_many(std::slice::from_ref(&entry_id))
+            .await
+    }
 
-        for segment_arc in segments.iter() {
-            let mut segment = segment_arc.lock().await;
-
-            // Find the entry in this segment
-            for entry in &mut segment.entries {
-                if entry.id == entry_id {
-                    // Count only the unprocessed -> processed transition so
-                    // repeated calls don't skew the metrics.
-                    if !entry.processed {
-                        let metrics = crate::self_monitoring::app_metrics();
-                        metrics.wal_entries_processed.add(1, &[]);
-                        metrics.wal_entries_pending.add(-1, &[]);
-                    }
-                    entry.processed = true;
-
-                    // Persist the processed state to disk
-                    segment.save_index().await?;
-
-                    log::debug!("Marked WAL entry {entry_id} as processed and persisted to index");
-                    return Ok(());
-                }
-            }
+    /// Mark a batch of WAL entries as processed and persist the state to disk.
+    ///
+    /// Mutates all matching entries in memory across segments, then persists
+    /// each *affected* segment's index exactly once — instead of one full
+    /// index rewrite + fsync per entry, which made per-entry marking O(n²)
+    /// in entries per segment (issue #943). The index is an at-least-once
+    /// optimization (losing it only causes reprocessing), so batching the
+    /// fsyncs does not weaken durability.
+    ///
+    /// Ids not found in any segment surface as an error after all found ids
+    /// have been marked and persisted, matching `mark_processed`'s contract
+    /// for unknown ids; marks are idempotent, so the partial progress is
+    /// safe for callers that retry.
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(signaldb.wal.entry_count = entry_ids.len())
+    )]
+    pub async fn mark_processed_many(&self, entry_ids: &[Uuid]) -> Result<()> {
+        if entry_ids.is_empty() {
+            return Ok(());
         }
 
-        anyhow::bail!(
-            "WAL entry {entry_id} not found in any of {} segments",
-            segments.len()
-        )
+        let mut remaining: std::collections::HashSet<Uuid> = entry_ids.iter().copied().collect();
+        // Count only unprocessed -> processed transitions so repeated calls
+        // don't skew the metrics.
+        let mut newly_processed: i64 = 0;
+
+        // Search all segments, not just current
+        let segments = self.segments.lock().await;
+        let segment_count = segments.len();
+
+        for segment_arc in segments.iter() {
+            if remaining.is_empty() {
+                break;
+            }
+
+            let mut segment = segment_arc.lock().await;
+
+            let mut segment_dirty = false;
+            for entry in &mut segment.entries {
+                if remaining.remove(&entry.id) {
+                    if !entry.processed {
+                        entry.processed = true;
+                        newly_processed += 1;
+                        segment_dirty = true;
+                    }
+                    if remaining.is_empty() {
+                        break;
+                    }
+                }
+            }
+
+            // Persist the processed state to disk once per affected segment
+            if segment_dirty {
+                segment.save_index().await?;
+            }
+        }
+        drop(segments);
+
+        if newly_processed > 0 {
+            let metrics = crate::self_monitoring::app_metrics();
+            metrics
+                .wal_entries_processed
+                .add(newly_processed as u64, &[]);
+            metrics.wal_entries_pending.add(-newly_processed, &[]);
+        }
+
+        if !remaining.is_empty() {
+            anyhow::bail!(
+                "{} of {} WAL entries not found in any of {segment_count} segments: {remaining:?}",
+                remaining.len(),
+                entry_ids.len()
+            );
+        }
+
+        log::debug!(
+            "Marked {} WAL entries as processed and persisted indexes",
+            entry_ids.len()
+        );
+        Ok(())
     }
 
     /// Get all unprocessed entries, across all segments
@@ -1730,6 +1784,174 @@ mod tests {
             wal.mark_processed(*id).await.unwrap();
         }
         assert!(wal.get_unprocessed_entries().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn mark_processed_many_marks_all_ids_across_segments_and_persists() {
+        // Batch marking must cover entries living in *different* segments
+        // (sealed + current) and persist each affected segment's index so the
+        // processed state survives a reload — the whole point of the batch
+        // API is one save_index per affected segment instead of one per
+        // entry (issue #943).
+        let temp_dir = TempDir::new().unwrap();
+        let config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            // Small enough that every entry triggers a rotation
+            max_segment_size: 64,
+            max_buffer_entries: 100,
+            flush_interval_secs: 3600,
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+
+        let wal = Wal::new(config.clone()).await.unwrap();
+
+        let mut ids = Vec::new();
+        for i in 0..4 {
+            let payload = format!("payload-{i}-{}", "x".repeat(100)).into_bytes();
+            let id = wal
+                .append(WalOperation::WriteTraces, payload, None)
+                .await
+                .unwrap();
+            wal.flush().await.unwrap();
+            ids.push(id);
+        }
+
+        // One call marks everything, across all segments.
+        wal.mark_processed_many(&ids).await.unwrap();
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "all entries must be marked processed after one batch call"
+        );
+        wal.shutdown().await.unwrap();
+
+        // The processed state must have been persisted to each segment's
+        // index, so a reload sees no unprocessed entries.
+        let reopened = Wal::new(config).await.unwrap();
+        assert!(
+            reopened.get_unprocessed_entries().await.unwrap().is_empty(),
+            "batch-marked processed state must survive a reload"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_processed_many_marks_known_ids_and_errors_on_unknown() {
+        // mark_processed bails on an unknown id; the batch variant preserves
+        // that contract — but marks are idempotent at-least-once state, so
+        // the known ids in the batch must still be marked (and persisted)
+        // before the error is reported.
+        let temp_dir = TempDir::new().unwrap();
+        let config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            max_segment_size: 1024,
+            max_buffer_entries: 10,
+            flush_interval_secs: 3600,
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+        let wal = Wal::new(config).await.unwrap();
+
+        let a = wal
+            .append(WalOperation::WriteTraces, b"a".to_vec(), None)
+            .await
+            .unwrap();
+        let b = wal
+            .append(WalOperation::WriteTraces, b"b".to_vec(), None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        let unknown = Uuid::new_v4();
+        let err = wal
+            .mark_processed_many(&[a, unknown, b])
+            .await
+            .expect_err("an unknown id in the batch must surface an error");
+        assert!(
+            err.to_string().contains("not found"),
+            "error must identify the missing entries, got: {err}"
+        );
+
+        // The known ids were still marked.
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "known ids in the batch must be marked despite the unknown id"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_processed_many_with_empty_slice_is_a_noop() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            max_segment_size: 1024,
+            max_buffer_entries: 10,
+            flush_interval_secs: 3600,
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+        let wal = Wal::new(config).await.unwrap();
+
+        let id = wal
+            .append(WalOperation::WriteTraces, b"x".to_vec(), None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        wal.mark_processed_many(&[]).await.unwrap();
+        let unprocessed = wal.get_unprocessed_entries().await.unwrap();
+        assert_eq!(unprocessed.len(), 1, "empty batch must not mark anything");
+        assert_eq!(unprocessed[0].id, id);
+    }
+
+    #[tokio::test]
+    async fn mark_processed_single_still_marks_and_errors_on_unknown() {
+        // mark_processed is now a thin wrapper over mark_processed_many;
+        // its observable behavior must not change: marks a known entry
+        // (persisted), errors for an unknown one.
+        let temp_dir = TempDir::new().unwrap();
+        let config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            max_segment_size: 1024,
+            max_buffer_entries: 10,
+            flush_interval_secs: 3600,
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+        let wal = Wal::new(config.clone()).await.unwrap();
+
+        let id = wal
+            .append(WalOperation::WriteTraces, b"x".to_vec(), None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        wal.mark_processed(id).await.unwrap();
+        assert!(wal.get_unprocessed_entries().await.unwrap().is_empty());
+
+        // Marking again is idempotent.
+        wal.mark_processed(id).await.unwrap();
+
+        wal.mark_processed(Uuid::new_v4())
+            .await
+            .expect_err("unknown id must error");
+
+        wal.shutdown().await.unwrap();
+
+        // Persisted across reload.
+        let reopened = Wal::new(config).await.unwrap();
+        assert!(reopened.get_unprocessed_entries().await.unwrap().is_empty());
     }
 
     #[tokio::test]

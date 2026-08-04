@@ -526,14 +526,17 @@ impl WalProcessor {
                 .append_batches_with_marker(&wal_writer_id, chunk)
                 .await?;
 
-            for entry_id in &chunk_ids {
-                // On failure the entry stays unprocessed but its id is in
-                // the marker, so the next tick re-marks instead of
-                // re-inserting.
-                wal.mark_processed(*entry_id).await.with_context(|| {
-                    format!("Failed to mark WAL entry {entry_id} as processed after commit")
-                })?;
-            }
+            // One batch call per committed chunk: the WAL persists each
+            // affected segment's index once instead of rewriting and
+            // fsyncing it per entry (issue #943). On failure the entries
+            // stay unprocessed but their ids are in the marker, so the
+            // next tick re-marks instead of re-inserting.
+            wal.mark_processed_many(&chunk_ids).await.with_context(|| {
+                format!(
+                    "Failed to mark {} WAL entries as processed after commit",
+                    chunk_ids.len()
+                )
+            })?;
             processed_ids.extend(chunk_ids);
         }
 
