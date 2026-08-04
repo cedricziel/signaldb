@@ -126,6 +126,56 @@ impl Fleet {
     }
 }
 
+#[cfg(test)]
+impl Fleet {
+    /// Builds the fleet with a shared in-memory span exporter (and inert
+    /// log/metric pipelines) so tests can inspect every finished span.
+    pub(crate) fn build_in_memory(
+        estates: &[&'static Estate],
+    ) -> (Self, opentelemetry_sdk::trace::InMemorySpanExporter) {
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+        let mut services = HashMap::new();
+        let mut order = Vec::new();
+
+        for estate in estates {
+            for spec in estate.services {
+                let key = spec.key(estate);
+                let resource = topology::build_resource(estate, spec);
+                let tracer_provider = SdkTracerProvider::builder()
+                    .with_resource(resource.clone())
+                    .with_simple_exporter(exporter.clone())
+                    .build();
+                let tracer =
+                    opentelemetry::trace::TracerProvider::tracer(&tracer_provider, spec.name);
+                let logger_provider = SdkLoggerProvider::builder().with_resource(resource).build();
+                let logger =
+                    opentelemetry::logs::LoggerProvider::logger(&logger_provider, spec.name);
+                let meter_provider = SdkMeterProvider::builder().build();
+                let meter =
+                    opentelemetry::metrics::MeterProvider::meter(&meter_provider, spec.name);
+                let instruments = build_instruments(&meter);
+
+                order.push(key.clone());
+                services.insert(
+                    key,
+                    ServiceTelemetry {
+                        name: spec.name,
+                        platform: spec.platform,
+                        tracer,
+                        logger,
+                        instruments,
+                        tracer_provider,
+                        logger_provider,
+                        meter_provider,
+                    },
+                );
+            }
+        }
+
+        (Self { services, order }, exporter)
+    }
+}
+
 /// Builds a single service's tracer/logger/meter pipeline against `endpoint`.
 fn build_service(
     endpoint: &str,
