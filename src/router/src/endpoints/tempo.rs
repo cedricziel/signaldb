@@ -15,9 +15,7 @@ use datafusion::arrow::{
 use futures::StreamExt;
 use serde::Deserialize;
 use std::collections::HashMap;
-use tempo_api::{
-    self, MetricsQueryParams, MetricsRangeQueryParams, MetricsResponse, TraceQueryParams,
-};
+use tempo_api::{self, MetricsResponse, TraceQueryParams};
 use tracing::Instrument;
 
 /// Query parameters for v2 tag search
@@ -1278,11 +1276,12 @@ pub async fn search_tag_values_v2<S: RouterState>(
 /// GET /api/metrics/query - Instant TraceQL metrics query
 ///
 /// TraceQL metrics are not implemented. Answer 501 instead of the
-/// fabricated series this endpoint used to return (issue #552).
+/// fabricated series this endpoint used to return (issue #552). No
+/// parameter extraction: a `Query<MetricsQueryParams>` rejection would
+/// answer a plain-text 400 about a missing `q` before the handler runs,
+/// hiding the honest "not implemented" from the caller (#921).
 #[tracing::instrument(skip_all)]
-pub async fn metrics_query(
-    Query(_params): Query<MetricsQueryParams>,
-) -> Result<axum::Json<MetricsResponse>, ApiError> {
+pub async fn metrics_query() -> Result<axum::Json<MetricsResponse>, ApiError> {
     tracing::debug!("TraceQL metrics instant query not implemented");
     Err(ApiError::new(
         axum::http::StatusCode::NOT_IMPLEMENTED,
@@ -1293,11 +1292,10 @@ pub async fn metrics_query(
 /// GET /api/metrics/query_range - Range TraceQL metrics query with time series
 ///
 /// TraceQL metrics are not implemented. Answer 501 instead of the
-/// fabricated series this endpoint used to return (issue #552).
+/// fabricated series this endpoint used to return (issue #552). As with
+/// `metrics_query`, no parameter extraction so the 501 always answers.
 #[tracing::instrument(skip_all)]
-pub async fn metrics_query_range(
-    Query(_params): Query<MetricsRangeQueryParams>,
-) -> Result<axum::Json<MetricsResponse>, ApiError> {
+pub async fn metrics_query_range() -> Result<axum::Json<MetricsResponse>, ApiError> {
     tracing::debug!("TraceQL metrics range query not implemented");
     Err(ApiError::new(
         axum::http::StatusCode::NOT_IMPLEMENTED,
