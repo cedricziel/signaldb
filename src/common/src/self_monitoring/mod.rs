@@ -230,12 +230,15 @@ fn resolve_trace_sampler(
         // a bare ratio sampler drops ~`1 - ratio` of joined external traces and
         // defeats HTTP trace-context join at the query boundary.
         None => Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(ratio))),
+        // An unrecognized name falls back to the same parent-respecting
+        // sampler as the unset default: a typo must not silently reintroduce
+        // head-based sampling that drops joined caller traces.
         Some(other) => {
             tracing::warn!(
                 sampler = %other,
-                "Unsupported OTEL_TRACES_SAMPLER value; falling back to traceidratio"
+                "Unsupported OTEL_TRACES_SAMPLER value; falling back to parentbased_traceidratio"
             );
-            Sampler::TraceIdRatioBased(ratio)
+            Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(ratio)))
         }
     }
 }
@@ -324,9 +327,12 @@ mod tests {
         assert_eq!(format!("{s:?}"), "ParentBased(TraceIdRatioBased(1.0))");
         let s = resolve_trace_sampler(0.1, None, Some("not-a-number".into()));
         assert_eq!(format!("{s:?}"), "ParentBased(TraceIdRatioBased(0.1))");
-        // An explicit but unsupported sampler name falls back to head-based ratio.
+        // An explicit but unsupported sampler name falls back to the same
+        // parent-respecting sampler as the unset default: a typo in
+        // OTEL_TRACES_SAMPLER must not silently reintroduce head-based
+        // sampling that drops joined caller traces.
         let s = resolve_trace_sampler(0.1, Some("bogus".into()), None);
-        assert_eq!(format!("{s:?}"), "TraceIdRatioBased(0.1)");
+        assert_eq!(format!("{s:?}"), "ParentBased(TraceIdRatioBased(0.1))");
     }
 
     #[tokio::test]
