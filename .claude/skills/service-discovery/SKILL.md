@@ -15,13 +15,13 @@ sources:
 
 Services register with specific capabilities for automatic routing:
 
-| Service | Capabilities | Discovery Pattern |
-|---------|-------------|------------------|
-| Acceptor | `TraceIngestion` | Clients connect directly via OTLP |
-| Writer | `TraceIngestion`, `Storage` | Acceptors discover via `Storage` capability |
-| Router | `Routing` | Clients connect directly via HTTP |
-| Querier | `QueryExecution` | Routers discover via `QueryExecution` capability |
-| Compactor | `StorageMaintenance` | Registers for compaction/cleanup coordination |
+| Service   | Capabilities                | Discovery Pattern                                |
+| --------- | --------------------------- | ------------------------------------------------ |
+| Acceptor  | `TraceIngestion`            | Clients connect directly via OTLP                |
+| Writer    | `TraceIngestion`, `Storage` | Acceptors discover via `Storage` capability      |
+| Router    | `Routing`                   | Clients connect directly via HTTP                |
+| Querier   | `QueryExecution`            | Routers discover via `QueryExecution` capability |
+| Compactor | `StorageMaintenance`        | Registers for compaction/cleanup coordination    |
 
 `ServiceCapability` has 6 variants (`src/common/src/flight/transport.rs`):
 `TraceIngestion`, `QueryExecution`, `Routing`, `Storage`, `KafkaIngestion`,
@@ -65,7 +65,7 @@ analyzer plus query-demand counters flushed by the querier, and a promote_streak
 
 ## Discovery Mechanism
 
-- **InMemoryFlightTransport**: Connection pooling (max 50 connections, 30s timeout, 5min expiry) + capability-based client lookup
+- **InMemoryFlightTransport**: Connection pooling (max 50 connections, 30s connect timeout, 5min expiry) + capability-based client lookup. The per-request deadline is separate from the connect timeout and is derived from `querier.query_timeout` plus a grace margin, so the callee's own timeout always fires first.
 - **ServiceRegistry** (Router-specific): Cached HashMap of services, polls catalog at configurable interval
 - **Service selection**: Round-robin across capable services (`AtomicUsize` counter with `fetch_add` in `transport.rs`)
 - **TTL-based cleanup**: Stale services auto-removed
@@ -85,9 +85,9 @@ ttl = "300s"
 
 ## Key Implementation Files
 
-| File | Purpose |
-|------|---------|
-| `src/common/src/catalog.rs` | Catalog trait + implementations |
-| `src/common/src/service_bootstrap.rs` | ServiceBootstrap registration |
-| `src/common/src/flight/transport.rs` | InMemoryFlightTransport, connection pooling |
-| `src/router/src/discovery.rs` | Router's cached service registry |
+| File                                  | Purpose                                     |
+| ------------------------------------- | ------------------------------------------- |
+| `src/common/src/catalog.rs`           | Catalog trait + implementations             |
+| `src/common/src/service_bootstrap.rs` | ServiceBootstrap registration               |
+| `src/common/src/flight/transport.rs`  | InMemoryFlightTransport, connection pooling |
+| `src/router/src/discovery.rs`         | Router's cached service registry            |

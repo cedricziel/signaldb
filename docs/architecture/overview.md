@@ -425,7 +425,7 @@ Each service creates a `ServiceBootstrap` at startup which:
 
 ### Discovery Mechanism
 
-- `InMemoryFlightTransport`: Provides connection pooling (max 50 connections, 30s timeout, 5min expiry) and capability-based client lookup
+- `InMemoryFlightTransport`: Provides connection pooling (max 50 connections, 30s connect timeout, 5min expiry) and capability-based client lookup. The per-request deadline is a separate setting, derived from `querier.query_timeout` plus a grace margin so a slow query is bounded by the callee rather than aborted by the caller
 - `ServiceRegistry` (Router-specific): Cached HashMap of services, polls catalog at configurable interval
 - Service selection: round-robin across healthy instances (stable rotation order sorted by service id)
 - Automatic TTL-based cleanup removes stale services that stop heartbeating

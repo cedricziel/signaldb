@@ -58,7 +58,11 @@ timings (`Server-Timing` with `traceparent`, `querier`/`convert`/`total`
 | 429         | Per-tenant query rate limit exceeded                                         |
 | 501         | Feature not implemented (TraceQL metrics, unindexed tag values)              |
 | 503         | No querier service available                                                 |
-| 504         | Query deadline exceeded                                                      |
+| 504         | Query deadline exceeded (server-side budget, or the caller's own deadline)   |
+
+A query that runs out of time is always a 504, never a 500 — whether the
+querier's `query_timeout` fired or the router's Flight channel deadline did.
+A 500 means a genuine server fault.
 
 ## Tempo gRPC querier protocol
 

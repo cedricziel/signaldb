@@ -345,6 +345,22 @@ Components discover each other via:
 - **Heartbeat monitoring** with automatic TTL-based cleanup
 - **Flight endpoint discovery** with connection pooling
 
+#### Timeouts
+
+Two independent bounds, deliberately not the same value:
+
+| Bound             | Covers                       | Default                             |
+| ----------------- | ---------------------------- | ----------------------------------- |
+| `connect_timeout` | Establishing the channel     | 30s                                 |
+| `request_timeout` | Each request on that channel | `querier.query_timeout` + 30s grace |
+
+tonic's `Endpoint::timeout()` is a **per-request** deadline, not a connect
+timeout — `Endpoint::connect_timeout()` is the latter. Conflating them makes
+the caller abort before the callee's own timeout can fire, which replaces a
+diagnosable `DeadlineExceeded` (HTTP 504) with an opaque `Cancelled`. The
+request deadline is therefore derived from the configured query budget, so
+raising `querier.query_timeout` raises the caller's patience with it.
+
 ## 6. WAL Integration ✅ **Implemented**
 
 Write-Ahead Log provides durability and crash recovery capabilities:
