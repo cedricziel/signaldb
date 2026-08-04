@@ -7,10 +7,10 @@ no coexistence read-path, no legacy safe-cast, no compactor rewrite of old files
 
 ## 0. Spike (blocking — feasibility + benchmark before any layout commit)
 
-- [ ] 0.1 Prototype the warm typed containment index (typed generalization of `attr_tokens`) and prove row-group/file pruning for an unpromoted `key = value` predicate
-- [ ] 0.2 Prove the datafusion-iceberg provider handles the typed layout (per-type maps + binary residue) under one scan, and **field-id promotion evolution** across file generations (pre-promotion files null-fill, no error)
-- [ ] 0.3 Benchmark on real hive traces/logs: string-map vs typed map vs promoted column vs warm-index, across query classes incl. a **conflicted/off-type key**; measure **files-pruned %** (predict ~0 for the bare typed map), footer/metadata % on realistic **small flush files**, residue parse cost, and **per-attribute registry-lookup cost** (not just builder count)
-- [ ] 0.4 Record results; confirm no write-path regression before committing layout. (Variant is out of scope — opaque `Binary`/`unimplemented!` in the fork; no DataFusion type.)
+- [x] 0.1 Prototype the warm typed containment index (typed generalization of `attr_tokens`) and prove row-group/file pruning for an unpromoted `key = value` predicate
+- [x] 0.2 Prove the datafusion-iceberg provider handles the typed layout (per-type maps + binary residue) under one scan, and **field-id promotion evolution** across file generations (pre-promotion files null-fill, no error)
+- [x] 0.3 Benchmark on real hive traces/logs: string-map vs typed map vs promoted column vs warm-index, across query classes incl. a **conflicted/off-type key**; measure **files-pruned %** (predict ~0 for the bare typed map), footer/metadata % on realistic **small flush files**, residue parse cost, and **per-attribute registry-lookup cost** (not just builder count)
+- [x] 0.4 Record results; confirm no write-path regression before committing layout. (Variant is out of scope — opaque `Binary`/`unimplemented!` in the fork; no DataFusion type.)
 
 ## 1. `extract_value` fidelity fix (prereq for any losslessness claim)
 
