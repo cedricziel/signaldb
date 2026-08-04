@@ -289,6 +289,18 @@ rate(compactor_retention_duration_ms_total[5m])
 increase(compactor_bytes_reclaimed_total[24h])
 ```
 
+**Unclassifiable Files:**
+
+Data files whose `timestamp_hour` partition value could not be determined
+from the manifest entry (or the legacy file-path fallback). Such files are
+kept and excluded from retention, so a non-zero value means some data is
+never expired — investigate the table's manifests.
+
+```promql
+# Should be 0; alert if it grows
+increase(compactor_unclassifiable_files_total[24h])
+```
+
 #### Orphan Cleanup
 
 **Storage Reclaimed:**

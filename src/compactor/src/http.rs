@@ -147,6 +147,11 @@ impl ObservabilityState {
             s.retention.bytes_reclaimed(),
         );
         counter(
+            "compactor_unclassifiable_files_total",
+            "Data files whose timestamp_hour partition value could not be determined; kept and excluded from retention",
+            s.retention.unclassifiable_files() as u64,
+        );
+        counter(
             "compactor_retention_duration_ms_total",
             "Cumulative wall-clock milliseconds spent enforcing retention",
             s.retention.total_duration_ms(),
@@ -219,6 +224,7 @@ impl ObservabilityState {
                 "partitions_evaluated": s.retention.partitions_evaluated(),
                 "partitions_dropped": s.retention.partitions_dropped(),
                 "snapshots_expired": s.retention.snapshots_expired(),
+                "unclassifiable_files": s.retention.unclassifiable_files(),
                 "bytes_reclaimed": s.retention.bytes_reclaimed(),
             },
             "orphan_cleanup": {
@@ -272,6 +278,7 @@ mod tests {
         retention.record_partitions_dropped(3);
         retention.record_snapshots_expired(4);
         retention.record_bytes_reclaimed(4096);
+        retention.record_unclassifiable_files(2);
         orphan.record_files_deleted(7);
         orphan.record_bytes_freed(8192);
 
@@ -292,6 +299,7 @@ mod tests {
             "compactor_jobs_succeeded_total 1",
             "compactor_input_files_total 10",
             "compactor_bytes_reclaimed_total 4096",
+            "compactor_unclassifiable_files_total 2",
             "compactor_orphan_cleanup_skipped_total{reason=\"live_files_threshold_exceeded\"} 0",
         ] {
             assert!(rendered.contains(name), "missing `{name}` in:\n{rendered}");
@@ -314,6 +322,7 @@ mod tests {
         let status = test_state().status_json();
         assert_eq!(status["compaction"]["jobs_succeeded"], 1);
         assert_eq!(status["retention"]["partitions_dropped"], 3);
+        assert_eq!(status["retention"]["unclassifiable_files"], 2);
         assert_eq!(status["orphan_cleanup"]["files_deleted"], 7);
         assert!(status["instance_id"].is_string());
     }
