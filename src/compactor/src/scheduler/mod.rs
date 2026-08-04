@@ -37,10 +37,29 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Seam over compaction planning.
+///
+/// `RoundRobinScheduler` depends on this trait rather than the concrete
+/// `CompactionPlanner` so tests can inject a fixed candidate list without
+/// driving a real Iceberg-backed catalog scan, while production code still
+/// exercises the exact `schedule()` implementation.
+#[tonic::async_trait]
+pub trait Planner: Send + Sync {
+    /// Run a planning cycle and return all compaction candidates.
+    async fn plan(&self) -> Result<Vec<CompactionCandidate>>;
+}
+
+#[tonic::async_trait]
+impl Planner for CompactionPlanner {
+    async fn plan(&self) -> Result<Vec<CompactionCandidate>> {
+        CompactionPlanner::plan(self).await
+    }
+}
+
 /// Fair scheduler that distributes compaction work across tenants using
 /// a round-robin policy with per-tenant and total cycle limits.
 pub struct RoundRobinScheduler {
-    planner: Arc<CompactionPlanner>,
+    planner: Arc<dyn Planner>,
     /// Maximum total candidates returned per `schedule()` call.
     /// Set to 0 to disable the total cap.
     max_candidates_per_cycle: usize,
@@ -60,7 +79,7 @@ impl RoundRobinScheduler {
     /// * `max_candidates_per_cycle` – Cap on total candidates per tick (0 = unlimited)
     /// * `max_per_tenant`           – Cap per tenant per tick (0 = unlimited)
     pub fn new(
-        planner: Arc<CompactionPlanner>,
+        planner: Arc<dyn Planner>,
         max_candidates_per_cycle: usize,
         max_per_tenant: usize,
     ) -> Self {
@@ -189,99 +208,32 @@ mod tests {
         }
     }
 
-    /// A mock-like scheduler for testing that seeds a fixed candidate list
-    /// rather than calling the real planner.
-    struct TestScheduler {
+    /// A `Planner` that returns a fixed candidate list instead of scanning a
+    /// real Iceberg catalog. This is the injectable seam the real
+    /// `RoundRobinScheduler` depends on, so tests below exercise the actual
+    /// `schedule()` implementation end to end.
+    struct FakePlanner {
         candidates: Vec<CompactionCandidate>,
-        max_per_cycle: usize,
+    }
+
+    #[tonic::async_trait]
+    impl Planner for FakePlanner {
+        async fn plan(&self) -> Result<Vec<CompactionCandidate>> {
+            Ok(self.candidates.clone())
+        }
+    }
+
+    fn scheduler_with(
+        candidates: Vec<CompactionCandidate>,
+        max_candidates_per_cycle: usize,
         max_per_tenant: usize,
-        last_tenant: Option<String>,
+    ) -> RoundRobinScheduler {
+        let planner: Arc<dyn Planner> = Arc::new(FakePlanner { candidates });
+        RoundRobinScheduler::new(planner, max_candidates_per_cycle, max_per_tenant)
     }
 
-    impl TestScheduler {
-        fn new(
-            candidates: Vec<CompactionCandidate>,
-            max_per_cycle: usize,
-            max_per_tenant: usize,
-        ) -> Self {
-            Self {
-                candidates,
-                max_per_cycle,
-                max_per_tenant,
-                last_tenant: None,
-            }
-        }
-
-        fn schedule(&mut self) -> Vec<CompactionCandidate> {
-            if self.candidates.is_empty() {
-                return vec![];
-            }
-
-            let mut by_tenant: HashMap<String, Vec<CompactionCandidate>> = HashMap::new();
-            for c in &self.candidates {
-                by_tenant
-                    .entry(c.tenant_id.clone())
-                    .or_default()
-                    .push(c.clone());
-            }
-
-            let mut tenant_keys: Vec<String> = by_tenant.keys().cloned().collect();
-            tenant_keys.sort();
-
-            let start = if let Some(last) = &self.last_tenant {
-                tenant_keys
-                    .iter()
-                    .position(|k| k == last)
-                    .map(|pos| (pos + 1) % tenant_keys.len())
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-
-            let total_cap = if self.max_per_cycle == 0 {
-                usize::MAX
-            } else {
-                self.max_per_cycle
-            };
-            let per_tenant_cap = if self.max_per_tenant == 0 {
-                usize::MAX
-            } else {
-                self.max_per_tenant
-            };
-
-            let mut result = Vec::new();
-            let n = tenant_keys.len();
-            let mut last_served: Option<String> = None;
-
-            for i in 0..n {
-                if result.len() >= total_cap {
-                    break;
-                }
-                let tenant = &tenant_keys[(start + i) % n];
-                if let Some(cands) = by_tenant.get(tenant) {
-                    let take = cands
-                        .len()
-                        .min(per_tenant_cap)
-                        .min(total_cap - result.len());
-                    if take > 0 {
-                        result.extend_from_slice(&cands[..take]);
-                        last_served = Some(tenant.clone());
-                    }
-                }
-            }
-            if let Some(last) = last_served {
-                self.last_tenant = Some(last);
-            }
-            result
-        }
-
-        fn reset(&mut self) {
-            self.last_tenant = None;
-        }
-    }
-
-    #[test]
-    fn test_per_tenant_cap_limits_candidates() {
+    #[tokio::test]
+    async fn per_tenant_cap_limits_candidates_taken_from_each_tenant() {
         let candidates = vec![
             make_candidate("alice", "p1"),
             make_candidate("alice", "p2"),
@@ -290,20 +242,19 @@ mod tests {
             make_candidate("bob", "p2"),
         ];
 
-        let mut sched = TestScheduler::new(candidates, 10, 2);
-        let result = sched.schedule();
+        let mut scheduler = scheduler_with(candidates, 10, 2);
+        let result = scheduler.schedule().await.unwrap();
 
-        // alice gets at most 2, bob gets at most 2 → total 4
         let alice_count = result.iter().filter(|c| c.tenant_id == "alice").count();
         let bob_count = result.iter().filter(|c| c.tenant_id == "bob").count();
 
-        assert!(alice_count <= 2, "alice capped at 2, got {alice_count}");
-        assert!(bob_count <= 2, "bob capped at 2, got {bob_count}");
+        assert_eq!(alice_count, 2, "alice capped at 2, got {alice_count}");
+        assert_eq!(bob_count, 2, "bob capped at 2, got {bob_count}");
         assert_eq!(result.len(), 4, "4 total (2 alice + 2 bob)");
     }
 
-    #[test]
-    fn test_total_cap_limits_output() {
+    #[tokio::test]
+    async fn total_cap_limits_overall_output_size() {
         let candidates = vec![
             make_candidate("alice", "p1"),
             make_candidate("alice", "p2"),
@@ -312,66 +263,59 @@ mod tests {
             make_candidate("carol", "p1"),
         ];
 
-        let mut sched = TestScheduler::new(candidates, 3, 5);
-        let result = sched.schedule();
-        assert!(result.len() <= 3, "Total capped at 3, got {}", result.len());
+        let mut scheduler = scheduler_with(candidates, 3, 5);
+        let result = scheduler.schedule().await.unwrap();
+
+        assert_eq!(result.len(), 3, "Total capped at 3, got {}", result.len());
     }
 
-    #[test]
-    fn test_round_robin_advances_position() {
+    #[tokio::test]
+    async fn round_robin_advances_to_a_different_tenant_on_the_next_cycle() {
         let candidates = vec![
             make_candidate("alice", "p1"),
             make_candidate("bob", "p1"),
             make_candidate("carol", "p1"),
         ];
 
-        // Cycle 1 — should start from alice (first alphabetically)
-        let mut sched = TestScheduler::new(candidates.clone(), 1, 1);
-        let first = sched.schedule();
+        // Cycle 1 — should start from alice (first alphabetically).
+        let mut scheduler = scheduler_with(candidates, 1, 1);
+        let first = scheduler.schedule().await.unwrap();
         assert_eq!(first.len(), 1);
-        let first_tenant = first[0].tenant_id.clone();
+        assert_eq!(first[0].tenant_id, "alice");
 
-        // Cycle 2 — should start from tenant AFTER the one served in cycle 1
-        let second = sched.schedule();
+        // Cycle 2 — should start from the tenant after the one served in cycle 1.
+        let second = scheduler.schedule().await.unwrap();
         assert_eq!(second.len(), 1);
-        let second_tenant = second[0].tenant_id.clone();
-
-        assert_ne!(
-            first_tenant, second_tenant,
-            "Round-robin should advance to a different tenant"
-        );
+        assert_eq!(second[0].tenant_id, "bob");
     }
 
-    #[test]
-    fn test_reset_position_restarts_from_beginning() {
+    #[tokio::test]
+    async fn reset_position_restarts_round_robin_from_the_first_tenant() {
         let candidates = vec![make_candidate("alice", "p1"), make_candidate("bob", "p1")];
 
-        let mut sched = TestScheduler::new(candidates, 1, 1);
+        let mut scheduler = scheduler_with(candidates, 1, 1);
 
-        let first = sched.schedule();
-        let first_tenant = first[0].tenant_id.clone();
+        let first = scheduler.schedule().await.unwrap();
+        assert_eq!(first[0].tenant_id, "alice");
 
-        sched.reset();
+        scheduler.reset_position();
 
-        let after_reset = sched.schedule();
-        let after_tenant = after_reset[0].tenant_id.clone();
-
-        // After reset, should start from the same point as the very first call
+        let after_reset = scheduler.schedule().await.unwrap();
         assert_eq!(
-            first_tenant, after_tenant,
+            after_reset[0].tenant_id, "alice",
             "After reset, should serve the same first tenant again"
         );
     }
 
-    #[test]
-    fn test_empty_candidates_returns_empty() {
-        let mut sched = TestScheduler::new(vec![], 20, 5);
-        let result = sched.schedule();
+    #[tokio::test]
+    async fn empty_candidates_returns_empty_result() {
+        let mut scheduler = scheduler_with(vec![], 20, 5);
+        let result = scheduler.schedule().await.unwrap();
         assert!(result.is_empty());
     }
 
-    #[test]
-    fn test_single_tenant_gets_all_up_to_per_tenant_cap() {
+    #[tokio::test]
+    async fn single_tenant_gets_all_candidates_up_to_per_tenant_cap() {
         let candidates = vec![
             make_candidate("alice", "p1"),
             make_candidate("alice", "p2"),
@@ -379,14 +323,14 @@ mod tests {
             make_candidate("alice", "p4"),
         ];
 
-        let mut sched = TestScheduler::new(candidates, 10, 3);
-        let result = sched.schedule();
+        let mut scheduler = scheduler_with(candidates, 10, 3);
+        let result = scheduler.schedule().await.unwrap();
 
         assert_eq!(result.len(), 3, "Single tenant gets up to max_per_tenant=3");
     }
 
-    #[test]
-    fn test_unlimited_caps_returns_all() {
+    #[tokio::test]
+    async fn zero_caps_are_treated_as_unlimited_and_return_all_candidates() {
         let candidates = vec![
             make_candidate("alice", "p1"),
             make_candidate("alice", "p2"),
@@ -395,31 +339,33 @@ mod tests {
             make_candidate("carol", "p1"),
         ];
 
-        let mut sched = TestScheduler::new(candidates, 0, 0); // 0 = unlimited
-        let result = sched.schedule();
+        let mut scheduler = scheduler_with(candidates, 0, 0); // 0 = unlimited
+        let result = scheduler.schedule().await.unwrap();
         assert_eq!(result.len(), 5, "Unlimited caps return all candidates");
     }
 
-    #[test]
-    fn test_fairness_over_multiple_cycles() {
-        // 3 tenants, 2 partitions each, cap 1 per tenant per cycle, 3 total per cycle
+    #[tokio::test]
+    async fn every_tenant_is_served_at_least_once_across_multiple_cycles() {
+        // 3 tenants, 2 partitions each, cap 1 per tenant per cycle, 3 total per cycle.
+        // Since the fake planner returns the same full candidate list every
+        // cycle (like the real planner re-scanning unfinished work), two
+        // cycles of round-robin rotation must reach every tenant.
         let candidates: Vec<_> = ["alice", "bob", "carol"]
             .iter()
             .flat_map(|t| vec![make_candidate(t, "p1"), make_candidate(t, "p2")])
             .collect();
 
-        let mut sched = TestScheduler::new(candidates, 3, 1);
+        let planner: Arc<dyn Planner> = Arc::new(FakePlanner { candidates });
+        let mut scheduler = RoundRobinScheduler::new(planner, 3, 1);
         let mut seen: HashMap<String, usize> = HashMap::new();
 
-        // Run 2 cycles (limited candidates since test scheduler doesn't re-plan)
         for _ in 0..2 {
-            let batch = sched.schedule();
+            let batch = scheduler.schedule().await.unwrap();
             for c in batch {
                 *seen.entry(c.tenant_id).or_insert(0) += 1;
             }
         }
 
-        // Each tenant should have been served at least once
         for tenant in &["alice", "bob", "carol"] {
             assert!(
                 *seen.get(*tenant).unwrap_or(&0) >= 1,

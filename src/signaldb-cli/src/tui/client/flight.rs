@@ -406,23 +406,38 @@ impl FlightSqlClient {
         metric_type: &MetricType,
         filters: &MetricFilters,
     ) -> Result<Vec<RecordBatch>, FlightClientError> {
-        let mut sql = format!(
-            "SELECT * FROM {} WHERE metric_name = '{}'",
-            metric_type.table_name(),
-            metric_name.replace('\'', "''") // Escape single quotes
-        );
-
-        if let Some(ref svc) = filters.service_name {
-            sql.push_str(&format!(
-                " AND service_name = '{}'",
-                svc.replace('\'', "''")
-            ));
-        }
-
-        sql.push_str(&format!(" ORDER BY timestamp DESC LIMIT {}", filters.limit));
-
+        let sql = build_metric_sql(metric_name, metric_type, filters);
         self.query_sql(&sql).await
     }
+}
+
+/// Build the SQL query used by [`FlightSqlClient::query_metric`] to fetch
+/// rows for a specific metric, applying the requested filters.
+///
+/// Single-quote characters in `metric_name` and `filters.service_name` are
+/// escaped by doubling them, to guard against SQL injection via metric or
+/// service names that contain a literal `'`.
+fn build_metric_sql(
+    metric_name: &str,
+    metric_type: &MetricType,
+    filters: &MetricFilters,
+) -> String {
+    let mut sql = format!(
+        "SELECT * FROM {} WHERE metric_name = '{}'",
+        metric_type.table_name(),
+        metric_name.replace('\'', "''") // Escape single quotes
+    );
+
+    if let Some(ref svc) = filters.service_name {
+        sql.push_str(&format!(
+            " AND service_name = '{}'",
+            svc.replace('\'', "''")
+        ));
+    }
+
+    sql.push_str(&format!(" ORDER BY timestamp DESC LIMIT {}", filters.limit));
+
+    sql
 }
 
 fn extract_numeric_value(col: Option<&Arc<dyn Array>>, row: usize) -> Option<u64> {
@@ -595,9 +610,47 @@ mod tests {
     }
 
     #[test]
-    fn query_metric_escapes_single_quotes() {
-        let name = "test's metric";
-        let escaped = name.replace('\'', "''");
-        assert_eq!(escaped, "test''s metric");
+    fn build_metric_sql_escapes_single_quotes_in_metric_name() {
+        let filters = MetricFilters {
+            service_name: None,
+            limit: 500,
+        };
+
+        let sql = build_metric_sql("test's metric", &MetricType::Gauge, &filters);
+
+        assert_eq!(
+            sql,
+            "SELECT * FROM metrics_gauge WHERE metric_name = 'test''s metric' ORDER BY timestamp DESC LIMIT 500"
+        );
+    }
+
+    #[test]
+    fn build_metric_sql_escapes_single_quotes_in_service_name_filter() {
+        let filters = MetricFilters {
+            service_name: Some("o'reilly-svc".into()),
+            limit: 500,
+        };
+
+        let sql = build_metric_sql("requests_total", &MetricType::Sum, &filters);
+
+        assert_eq!(
+            sql,
+            "SELECT * FROM metrics_sum WHERE metric_name = 'requests_total' AND service_name = 'o''reilly-svc' ORDER BY timestamp DESC LIMIT 500"
+        );
+    }
+
+    #[test]
+    fn build_metric_sql_omits_service_filter_when_none() {
+        let filters = MetricFilters {
+            service_name: None,
+            limit: 100,
+        };
+
+        let sql = build_metric_sql("cpu_usage", &MetricType::Histogram, &filters);
+
+        assert_eq!(
+            sql,
+            "SELECT * FROM metrics_histogram WHERE metric_name = 'cpu_usage' ORDER BY timestamp DESC LIMIT 100"
+        );
     }
 }

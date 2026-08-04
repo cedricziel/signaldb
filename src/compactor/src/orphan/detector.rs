@@ -482,82 +482,76 @@ impl OrphanDetector {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_grace_period_filtering() {
+    /// Builds a real `OrphanDetector` backed by an in-memory catalog and
+    /// object store, so tests drive `identify_candidates` itself rather than
+    /// a duplicated copy of its filtering logic.
+    async fn make_detector(config: OrphanCleanupConfig) -> OrphanDetector {
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        OrphanDetector::new(config, catalog_manager, object_store)
+    }
+
+    #[tokio::test]
+    async fn identify_candidates_excludes_files_within_grace_period() {
+        // Arrange
         let config = OrphanCleanupConfig {
             grace_period_hours: 24,
             ..Default::default()
         };
+        let detector = make_detector(config).await;
 
         let live_files: HashSet<String> = HashSet::new();
-
-        // Recent file (within grace period)
         let recent_file = ObjectStoreFile {
             path: "recent.parquet".to_string(),
             size_bytes: 100,
             last_modified: Utc::now() - chrono::Duration::hours(1),
         };
-
-        // Old file (outside grace period)
         let old_file = ObjectStoreFile {
             path: "old.parquet".to_string(),
             size_bytes: 200,
             last_modified: Utc::now() - chrono::Duration::hours(48),
         };
-
         let all_files = vec![recent_file, old_file];
 
-        // Test the identify_candidates logic directly
-        let grace_period = chrono::Duration::from_std(config.grace_period()).unwrap();
-        let cutoff_time = Utc::now() - grace_period;
-        let mut candidates = Vec::new();
+        // Act
+        let candidates = detector
+            .identify_candidates(&live_files, &all_files, "tenant", "dataset", "traces")
+            .unwrap();
 
-        for file in &all_files {
-            if !live_files.contains(&file.path) && file.last_modified <= cutoff_time {
-                candidates.push(file.clone());
-            }
-        }
-
-        // Should only identify the old file
+        // Assert: only the file older than the 24h grace period is a candidate.
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].path, "old.parquet");
     }
 
-    #[test]
-    fn test_live_file_filtering() {
+    #[tokio::test]
+    async fn identify_candidates_excludes_files_still_referenced_by_a_live_snapshot() {
+        // Arrange
         let config = OrphanCleanupConfig::default();
+        let detector = make_detector(config).await;
 
         let mut live_files = HashSet::new();
         live_files.insert("live.parquet".to_string());
 
-        // Old file that is still referenced
+        // Both files are old enough to clear the grace period; only
+        // liveness should distinguish them.
         let live_file = ObjectStoreFile {
             path: "live.parquet".to_string(),
             size_bytes: 100,
             last_modified: Utc::now() - chrono::Duration::hours(48),
         };
-
-        // Old file that is not referenced
         let orphan_file = ObjectStoreFile {
             path: "orphan.parquet".to_string(),
             size_bytes: 200,
             last_modified: Utc::now() - chrono::Duration::hours(48),
         };
-
         let all_files = vec![live_file, orphan_file];
 
-        // Test the filtering logic directly
-        let grace_period = chrono::Duration::from_std(config.grace_period()).unwrap();
-        let cutoff_time = Utc::now() - grace_period;
-        let mut candidates = Vec::new();
+        // Act
+        let candidates = detector
+            .identify_candidates(&live_files, &all_files, "tenant", "dataset", "traces")
+            .unwrap();
 
-        for file in &all_files {
-            if !live_files.contains(&file.path) && file.last_modified <= cutoff_time {
-                candidates.push(file.clone());
-            }
-        }
-
-        // Should only identify the orphan file
+        // Assert: the file still referenced by a live snapshot is excluded.
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].path, "orphan.parquet");
     }
