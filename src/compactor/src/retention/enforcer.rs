@@ -105,6 +105,37 @@ impl RetentionEnforcer {
         tenant_id: &str,
         dataset_id: &str,
     ) -> Result<RetentionRunResult> {
+        use tracing::Instrument;
+
+        let span = common::self_monitoring::spans::job_span(
+            "retention_enforcement",
+            tenant_id,
+            dataset_id,
+            None,
+        );
+        let record_span = span.clone();
+        let result = self
+            .enforce_retention_inner(tenant_id, dataset_id)
+            .instrument(span)
+            .await;
+        if let Ok(run) = &result {
+            record_span.record(
+                "signaldb.job.partitions_dropped",
+                run.total_partitions_dropped as i64,
+            );
+            record_span.record(
+                "signaldb.job.snapshots_expired",
+                run.total_snapshots_expired as i64,
+            );
+        }
+        result
+    }
+
+    async fn enforce_retention_inner(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+    ) -> Result<RetentionRunResult> {
         let run_id = format!("retention_{}", Utc::now().timestamp_millis());
         let started_at = Utc::now();
 
@@ -749,5 +780,55 @@ mod tests {
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].0, "traces");
         assert_eq!(tables[0].1, SignalType::Traces);
+    }
+
+    /// Group 8 (`otel-compliant-self-tracing`): a retention run exports a
+    /// root job span identifying tenant/dataset with affected-object counts.
+    #[tokio::test]
+    async fn retention_run_emits_job_span_with_counts() {
+        use opentelemetry::trace::{SpanKind, TracerProvider as _};
+        use tracing::instrument::WithSubscriber;
+        use tracing_subscriber::prelude::*;
+
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("test");
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        async {
+            let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+            let metrics = RetentionMetrics::new_mock();
+            let enforcer =
+                RetentionEnforcer::new(catalog_manager, create_test_config(), metrics).unwrap();
+            let _ = enforcer.enforce_retention("acme", "prod").await.unwrap();
+        }
+        .with_subscriber(subscriber)
+        .await;
+
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        let names: Vec<_> = spans.iter().map(|s| s.name.to_string()).collect();
+        let span = spans
+            .iter()
+            .find(|s| s.name == "retention_enforcement")
+            .unwrap_or_else(|| panic!("no retention job span; exported = {names:?}"));
+
+        assert_eq!(span.span_kind, SpanKind::Internal);
+        let attr = |key: &str| {
+            span.attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == key)
+                .map(|kv| kv.value.as_str().to_string())
+        };
+        assert_eq!(attr("signaldb.tenant.id").as_deref(), Some("acme"));
+        assert_eq!(attr("signaldb.dataset.id").as_deref(), Some("prod"));
+        assert_eq!(
+            attr("signaldb.job.partitions_dropped").as_deref(),
+            Some("0")
+        );
+        assert_eq!(attr("signaldb.job.snapshots_expired").as_deref(), Some("0"));
     }
 }

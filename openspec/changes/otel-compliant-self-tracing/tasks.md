@@ -83,10 +83,10 @@ independently shippable and TDD-ordered within.
 
 ## 8. Compactor lifecycle job spans
 
-- [ ] 8.1 Write failing tests: retention enforcement, snapshot expiration,
+- [x] 8.1 Write failing tests: retention enforcement, snapshot expiration,
       and orphan cleanup runs each export a root span with tenant/dataset/
       table and affected-object counts
-- [ ] 8.2 Implement via `job_span` in compactor retention/lifecycle modules;
+- [x] 8.2 Implement via `job_span` in compactor retention/lifecycle modules;
       align existing `compaction_job` span fields to `signaldb.*` names
 
 ## 9. Hygiene sweep and construction guard
