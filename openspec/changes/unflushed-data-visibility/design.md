@@ -71,8 +71,29 @@ writes `signaldb.hot.<writer_id>.seq = W` (last contiguously committed
 sequence) via `update_properties` in the **same transaction** as
 `append_data` — the existing idempotency marker already proves properties
 and data commit under one catalog CAS. The marker itself is untouched; the
-watermark is an additional cumulative key, one per writer (writer ids are
-stable per WAL directory), so growth is bounded and multi-writer composes.
+watermark is an additional cumulative key, one per writer, so growth is
+bounded and multi-writer composes.
+
+`writer_id` here is the WAL-persisted identity
+(`Wal::load_or_create_writer_id`), stable across restarts — not the
+per-incarnation ServiceBootstrap UUID. **Sequences stay strictly
+increasing across restarts via an epoch**: a small counter persisted in
+the WAL directory alongside `writer_id` is incremented once per writer
+start, and sequences are `(epoch << 32) | counter`. Replay reassigns
+sequences in the new epoch, so every replayed or fresh batch numbers above
+any watermark a previous incarnation committed — a restart can never
+produce a resident batch whose sequence falls at or below an existing
+watermark. Allocation is atomic per group; the contiguous-prefix rule for
+chunked commits holds within an epoch, which suffices because a drain
+never spans a restart.
+
+**Concurrent watermark commits**: on a catalog CAS conflict, the writer
+reloads the latest table metadata, reapplies only its own
+`signaldb.hot.<writer_id>.seq` key plus its data files, and retries — it
+never rewrites other writers' keys — and after commit verifies the
+committed metadata carries its new watermark. A two-writer race test
+asserts both watermarks and both data sets survive interleaved commits.
+
 Rejected: entry-id sets (unbounded, and nothing in Iceberg can store them
 cumulatively — the marker is replaced every commit).
 
@@ -85,14 +106,34 @@ batches with `seq ≤ W_S[writer]`. Because W_S is read _after_ the hot scan,
 `W_S ≥ W_at_hot_scan_time`: anything at or below W_S is in S (drop from hot
 — no duplicate); anything above W_S was uncommitted and therefore still
 resident when the hot scan ran (returned by hot — no omission; stage 1
-already retains batches until `mark_processed`). A writer with no watermark
-key yields `W = 0` (keep all hot). The boundary is derived per provider
-instance — deriving it from a separately loaded catalog copy reopens the
-race. Rejected: plan-time pin + entry-id filtering (loses rows committed
-between planning and execution — strictly worse than duplicating, and
-invisible in tests); per-query snapshot-reload avoidance via a writer-side
-committed-batch ring (viable fallback if the extra `load_tabular` per scan
-proves expensive on S3, but it adds retention semantics — start simple).
+already retains batches until `mark_processed`). The proof leans on one
+explicit freshness assumption: the catalog load in (b) observes every
+commit that completed before the load began (read-after-commit). The SQL
+catalog provides this — snapshot resolution is a single-row read of the
+current table-metadata pointer — and the spec states it as a requirement
+so an alternative catalog backend cannot silently weaken it.
+
+**Missing-watermark semantics (fail closed on inconsistency):** each hot
+scan response also carries the writer's own last-committed watermark per
+group, `W_writer`. The querier filters against
+`max(W_S[writer], W_writer)` — using the writer's self-report is always
+safe because it only ever excludes rows the writer itself has already
+committed. The two sources also cross-check: no table key and
+`W_writer = 0` means the writer genuinely never committed to this table
+(common in multi-writer: keep all hot — required for first-run
+visibility); no table key but `W_writer > 0` means the table lost its
+watermark metadata — the boundary is unresolvable, that writer's hot
+batches are dropped, and degradation is recorded. `W = 0` is therefore
+reserved for the true never-committed state, never inferred from missing
+metadata alone.
+
+The boundary is derived per provider instance — deriving it from a
+separately loaded catalog copy reopens the race. Rejected: plan-time pin +
+entry-id filtering (loses rows committed between planning and execution —
+strictly worse than duplicating, and invisible in tests); per-query
+snapshot-reload avoidance via a writer-side committed-batch ring (viable
+fallback if the extra `load_tabular` per scan proves expensive on S3, but
+it adds retention semantics — start simple).
 
 ### D3: One chokepoint — a hybrid provider from `LiveIcebergSchema::table()`
 
@@ -127,17 +168,33 @@ proving hot rows survive the `attr_tokens` conjunct, and hot/cold
 
 Time bounds are mandatory in the ticket (extracted from `scan()` filters;
 observability queries always carry them) and the writer prunes
-non-overlapping batches via min/max timestamps tracked per batch at insert;
-responses carry a hard byte cap. Buffered hot bytes are registered against
-the querier's DataFusion memory pool — the hot buffer must not be invisible
-to `session_context_with_limits`. Writer discovery is cached in the querier
-with a TTL tied to the heartbeat interval (today it is a catalog SQL query
-per call — unacceptable per user query, especially on SQLite). Fan-out
-covers **all** Storage-capable writers (ingest round-robins, so every
-writer may hold any table's hot data) with a per-writer timeout;
-timeout/failure → degrade per spec. A per-request table-resolution cache
-keeps multi-reference queries (self-joins, multi-statement trace flows)
-from repeating hot scans.
+non-overlapping batches via min/max timestamps tracked per batch at
+insert. **When `scan()` cannot derive finite time bounds** — raw SQL
+without a time predicate can reach it, and `max_sql_rows` applies after
+planning so it bounds nothing here — the provider contacts no writers:
+the query serves committed data only and records degradation telemetry
+(tested with an unbounded-query case). Responses carry a hard byte cap
+with fail-closed semantics: a writer that would exceed the cap (including
+a single over-cap batch) signals truncation instead of sending a partial
+set, and the querier treats a truncated response as an unresolvable
+boundary for that writer — drop its hot data, record degradation — never
+merging a silently partial hot arm. Continuation/pagination is a possible
+follow-up optimization, not part of this change. Buffered hot bytes are
+registered against the querier's DataFusion memory pool — the hot buffer
+must not be invisible to `session_context_with_limits`. Writer discovery
+is cached in the querier with a TTL at or below the heartbeat interval
+(today it is a catalog SQL query per call — unacceptable per user query,
+especially on SQLite). The TTL bounds a real staleness window: a newly
+joined writer holding acknowledged data is invisible to the fan-out for
+up to one TTL, so read-your-writes for its batches is delayed by at most
+TTL (still far below today's commit-visibility lag); this is documented
+as a bounded degradation and covered by a writer-set-change test rather
+than adding invalidation machinery in this change. Fan-out covers **all**
+Storage-capable writers (ingest round-robins, so every writer may hold
+any table's hot data) with a per-writer timeout; timeout/failure →
+degrade per spec. A per-request table-resolution cache keeps
+multi-reference queries (self-joins, multi-statement trace flows) from
+repeating hot scans.
 
 ### D6: Hot scans are authenticated and scoped
 
@@ -147,7 +204,13 @@ validated against the authenticated caller's scope — presence of _a_
 tenant is not enough. Without this, a writer deployed without
 `internal_service_key` (warned-but-served today) would expose every
 tenant's unflushed data to any network peer. The `_system` tenant's
-anti-loop guard (#760) applies to the scan path.
+anti-loop guard (#760) applies to the scan path. Transport encryption is
+out of scope here: inter-service Flight channels are plaintext today for
+`do_put` and every other RPC, and the hot scan inherits that
+deployment-wide posture rather than forking it per-endpoint — requiring
+TLS/mTLS across all service-to-service Flight links is a real hardening
+item, but it belongs to a dedicated transport-security change covering
+every channel, not a rider on this one.
 
 ### D7: Degradation surfaces through telemetry, not invented response fields
 

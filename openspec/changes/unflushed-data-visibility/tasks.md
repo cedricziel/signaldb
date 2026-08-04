@@ -2,21 +2,30 @@
 
 ## 1. Writer — watermark and hot-scan surface
 
-- [ ] 1.1 Per-group monotonic sequence assigned at memtable insert
-      (`writer_id, tenant, dataset, table`); FIFO drain advances a
+- [ ] 1.1 Per-group epoch-based monotonic sequence assigned at memtable
+      insert (`writer_id, tenant, dataset, table`; epoch persisted in the
+      WAL directory alongside the WAL-persisted `writer_id`, incremented
+      per start, sequence = epoch << 32 | counter); FIFO drain advances a
       contiguously-committed high-water mark, chunked commits advance only
       the contiguous prefix; unit tests for sequence/watermark accounting
+      and restart-after-commit continuity (no resident batch at or below a
+      prior incarnation's watermark)
 - [ ] 1.2 Write `signaldb.hot.<writer_id>.seq` via `update_properties` in
       the same transaction as `append_data` (alongside the existing
-      idempotency marker, unchanged); test: no snapshot has the data
-      without the covering watermark
+      idempotency marker, unchanged); CAS-conflict retry reloads latest
+      metadata and reapplies only the writer's own key; tests: no snapshot
+      has the data without the covering watermark; two-writer concurrent
+      commit race preserves both watermarks and both data sets
 - [ ] 1.3 Track per-batch min/max timestamps at insert for scan pruning
 - [ ] 1.4 Hot-scan `do_get`: ticket types in `common::flight` (tenant/
       dataset/table + mandatory time bounds); internal-service auth
       identical to `do_put`, ticket tenant validated against caller scope,
       unscoped/unauthorized rejected; batches streamed in the table's
-      Arrow schema tagged `(writer_id, seq)`; response byte cap; `_system`
-      anti-loop guard; tests for isolation, auth, pruning, cap
+      Arrow schema tagged `(writer_id, seq)` with the group's
+      writer-side committed watermark in the response; response byte cap
+      with explicit truncation signaling (single over-cap batch included);
+      `_system` anti-loop guard; tests for isolation, auth, pruning, and
+      truncation signaling
 - [ ] 1.5 Replay-in-progress writers report "warming" on the scan surface
 
 ## 2. Compactor — watermark preservation
@@ -26,16 +35,22 @@
 
 ## 3. Querier — hybrid provider
 
-- [ ] 3.1 Cached Storage-writer discovery (TTL tied to heartbeat interval)
-      in the querier; per-request table-resolution cache so multi-reference
-      queries scan hot data once per table
+- [ ] 3.1 Cached Storage-writer discovery (TTL at or below the heartbeat
+      interval) in the querier; per-request table-resolution cache so
+      multi-reference queries scan hot data once per table; test covering
+      a writer-set change between acknowledgement and query (staleness
+      bounded by the TTL)
 - [ ] 3.2 `HybridTableProvider` returned from `LiveIcebergSchema::table()`:
       eager hot fan-out to all Storage-capable writers (per-writer
       timeout), then cold resolution pinning snapshot S and reading
       `W_S[writer]` from the same instance, drop hot batches with
-      `seq ≤ W_S`; `UnionExec` arms with identical schemas; `Inexact`
-      pushdown; unknown statistics; hot bytes registered against the
-      DataFusion memory pool
+      `seq ≤ max(W_S, writer-reported watermark)`; missing table key with
+      nonzero writer-reported watermark → drop that writer's hot arm as
+      unresolvable; no derivable finite time bounds → skip hot fan-out
+      entirely, serve committed only, record degradation (unbounded raw-SQL
+      test); truncated scan responses treated as unresolvable; `UnionExec`
+      arms with identical schemas; `Inexact` pushdown; unknown statistics;
+      hot bytes registered against the DataFusion memory pool
 - [ ] 3.3 Querier-side arm-schema equality: re-coerce hot batches against
       the pinned schema via the shared `common` helpers; assert
       field-for-field equality including nullability and derived columns;

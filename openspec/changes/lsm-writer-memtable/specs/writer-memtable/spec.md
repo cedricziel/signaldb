@@ -9,20 +9,46 @@ the soft/hard memory budget, and the observability operators need.
 
 ## ADDED Requirements
 
-### Requirement: Data enters the memtable only after WAL durability
+### Requirement: Admission precedes durability; durability precedes residency
 
-The writer SHALL insert a decoded batch into the memtable only after the
-covering WAL write has been durably flushed. A WAL flush failure MUST leave
-no memtable entry behind. Durability never depends on the memtable: the
-acknowledgement contract (ack after WAL flush) is unchanged, and a WAL
-entry is marked processed only after the Iceberg commit covering it
-succeeds.
+Ingest SHALL follow one ordering: capacity admission (the hard-ceiling
+check, accounting for concurrent in-flight puts via reservations) runs
+before the WAL append; the WAL append and durable flush run next; the
+memtable insert runs after the flush succeeds and before the
+acknowledgement is returned. A rejection or failure before durability
+leaves no WAL entry and no memtable entry, so upstream redelivery cannot
+create duplicate writer-WAL entries. After durability, the ingest SHALL be
+acknowledged even if a post-durability step (e.g. schema coercion) fails —
+such entries follow the poison-entry path via reconciliation instead of
+erroring the acknowledgement. Durability never depends on the memtable,
+and a WAL entry is marked processed only after the Iceberg commit covering
+it succeeds.
+
+#### Scenario: Rejected ingest leaves no durable entry
+
+- **WHEN** an ingest is rejected by the hard-ceiling admission check
+- **THEN** no WAL entry and no memtable entry exist for it, and the
+  upstream retry redelivers without creating duplicates
 
 #### Scenario: WAL flush failure leaves no resident batch
 
 - **WHEN** the durable WAL flush for an ingested batch fails
 - **THEN** the ingest is rejected as retryable and the memtable contains no
   entry for that batch
+
+#### Scenario: Post-durability failure does not error the acknowledgement
+
+- **WHEN** a batch is durably in the WAL but a subsequent step (such as
+  coercion or insertion) fails
+- **THEN** the ingest is still acknowledged and the entry is handled by
+  the poison/reconciliation path, so the upstream sender does not
+  redeliver a durable entry
+
+#### Scenario: Acknowledged batches are resident before the ack returns
+
+- **WHEN** `do_put` acknowledges a batch during normal operation
+- **THEN** the batch is already resident in the memtable (or already
+  routed to poison handling) at the time the acknowledgement is returned
 
 #### Scenario: Memtable entries always correspond to durable WAL entries
 
@@ -71,14 +97,17 @@ re-reads.
 ### Requirement: Crash recovery rebuilds the memtable within the memory budget
 
 On startup, the writer SHALL replay unprocessed WAL entries into the
-memtable before resuming normal operation, preserving at-least-once
-delivery. Replay SHALL be incremental: when resident bytes reach the
-budget, the writer commits drained groups and continues, so replay memory
-is bounded by the configured budget regardless of backlog size.
-Undeserializable or unroutable entries follow the existing poison-entry
-handling. Routing during replay SHALL agree with routing at ingest: the
-same batch lands in the same `(tenant, dataset, table)` before and after a
-restart.
+memtable, preserving at-least-once delivery. Replay SHALL be incremental:
+when resident bytes reach the budget, the writer commits drained groups
+and continues, so replay memory is bounded by the configured budget
+regardless of backlog size. Replay runs concurrently with live ingest:
+`do_put` remains available, and replay loads and live inserts share the
+same budget accounting and admission check. A replay chunk whose commit or
+mark-processed fails is retained and retried under the normal failure
+budget without halting replay progress. Undeserializable or unroutable
+entries follow the existing poison-entry handling. Routing during replay
+SHALL agree with routing at ingest: the same batch lands in the same
+`(tenant, dataset, table)` before and after a restart.
 
 #### Scenario: Restart with un-committed data loses nothing
 
@@ -95,10 +124,27 @@ restart.
   memory stays bounded by the budget and the full backlog is eventually
   committed
 
+#### Scenario: Ingest during replay shares the budget
+
+- **WHEN** live ingest arrives while startup replay is still loading a
+  backlog
+- **THEN** the ingest is admitted against the same accounting as replay
+  loads, combined residency stays within the configured bounds, and both
+  the replayed and the live batches are eventually committed
+
+#### Scenario: Replay chunk failure does not halt replay
+
+- **WHEN** a commit or mark-processed operation for a replay chunk fails
+- **THEN** the chunk is retained for retry under the normal failure
+  handling and replay continues with subsequent entries
+
 ### Requirement: Soft budget signals, hard ceiling rejects
 
 The writer SHALL enforce a configurable soft memory budget and a
-configurable hard ceiling on total memtable memory. Crossing the soft
+configurable hard ceiling on total memtable memory, both defined over
+accounted Arrow batch bytes (including in-flight admission reservations);
+sizing guidance directs operators to leave headroom for unaccounted
+bookkeeping and allocator overhead. Crossing the soft
 budget SHALL cause the commit loop to flush the largest group first, ahead
 of its coalescing schedule; pressure flushing MUST NOT run inline on the
 ingest path, so ingest acknowledgement latency never couples to catalog

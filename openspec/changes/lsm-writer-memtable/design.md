@@ -107,12 +107,26 @@ Config: `[writer] memtable_soft_bytes` (pressure target),
 `max_uncommitted_rows`, so the global budget is a safety net rather than
 the steady-state trigger — dozens of groups at the row ceiling would
 otherwise sit in permanent pressure). Accounting via Arrow
-`get_array_memory_size` (approximate; ops docs say to leave headroom).
+`get_array_memory_size`. Both budgets are defined over **accounted Arrow
+bytes** — the sum of `get_array_memory_size` across resident (active and
+flushing) batches — not process RSS: group keys, bookkeeping vectors,
+trace links, and decode/coercion temporaries are deliberately excluded, so
+the ceiling is a bound on the dominant term, and ops docs instruct sizing
+with headroom (budgets well below container limits) to absorb the
+unaccounted remainder and allocator overhead. The hard-ceiling admission
+check runs at the top of `do_put`, **before** the WAL append, and counts
+in-flight puts via a reservation for the incoming payload size — a
+rejected put therefore leaves no durable WAL entry, so acceptor
+redelivery cannot create duplicates.
 Crossing the soft budget notifies the commit loop, which flushes
 largest-group-first until under budget; pressure work never runs inline in
 `do_put`. At the hard ceiling, `do_put` returns a retryable gRPC error
 (`RESOURCE_EXHAUSTED`) — the acceptor's WAL retry consumer redelivers, so
-this is flow control, not data loss. Alternatives rejected: inline
+this is flow control, not data loss. Once a batch is durably in the WAL,
+`do_put` no longer fails for memtable reasons: a post-durability failure
+(e.g. coercion) routes the entry to the poison path while the export is
+still acknowledged, precisely so the acceptor does not redeliver a
+durable entry. Alternatives rejected: inline
 pressure flush in `do_put` (couples ack latency to the catalog — the exact
 coupling async ack removed) and unbounded "loop until under budget" (spins
 or OOMs during a catalog outage; today's writer survives outages precisely
@@ -126,28 +140,49 @@ is bounded by the budget regardless of backlog size (this repo has seen
 multi-GB writer backlogs; replay-all-then-start would crash-loop). Payloads
 are read by iterating segments sequentially, not via per-entry
 `read_entry_data` scans (O(P·E) → O(P + segments)). Poison entries follow
-the normal failure path via D3's reconciliation. The writer serves `do_put`
-during replay (WAL durability is independent of the memtable); the replay
-metric exposes progress.
+the normal failure path via D3's reconciliation, and a failed replay
+commit retains its chunk and retries under the normal failure budget
+rather than blocking replay progress. The writer serves `do_put`
+concurrently during replay (WAL durability is independent of the
+memtable): live inserts and replay loads share the same budget accounting
+and admission check, so their combined residency stays bounded; replay is
+complete when the startup backlog has been loaded once, after which D3's
+reconciliation owns any remainder. The replay metric exposes progress.
 
 ### D6: Double-buffered groups; memtable state off the processor mutex
 
 The drain swaps a group's active `Vec<RecordBatch>` into an immutable
-flushing slot under a short lock, commits outside the lock, and clears the
-slot only after `mark_processed` succeeds (restoring it into active on
-failure). Inserts land in a fresh active vector meanwhile, so a
-seconds-long catalog commit never blocks ingest for that group. Memtable
-state lives behind its own lock, not the processor mutex — otherwise every
-insert serializes behind the whole drain.
+flushing slot under a short lock, commits outside the lock, and evicts
+from the flushing slot at **entry granularity**: after a commit, each
+successfully `mark_processed` entry's batches are evicted; entries whose
+mark failed (or whose chunk never committed — commits are chunked at
+`MAX_ENTRIES_PER_COMMIT`) are retained and merged back into the group
+without overwriting inserts that landed in the fresh active vector
+meanwhile. A whole-slot clear or restore cannot represent these partial
+outcomes. A commit that succeeded before its mark failed is covered by
+the existing idempotency marker on the retry path, unchanged. Inserts
+land in a fresh active vector during the flush, so a seconds-long catalog
+commit never blocks ingest for that group. Memtable state lives behind
+its own lock, not the processor mutex — otherwise every insert serializes
+behind the whole drain. Failure-injection tests cover commit failure,
+partial mark-processed failure, and concurrent insert during flush.
 
 ### D7: Coerce to the table's Arrow schema at insert
 
 Insert-time coercion (via `coerce_batch_to_schema` +
 `json_strings_to_map_array` moved into `common`) makes byte accounting
 truthful, commits cheaper, and hands the follow-up visibility change hot
-batches already in the cold schema. The commit path keeps a final coercion
-check for schema drift between insert and commit (attribute promotion can
-change the table's materialized columns while a batch is resident).
+batches already in the cold schema. Coercion on the `do_put` path reads
+the target Arrow schema from a **process-local schema cache only** —
+populated by the commit path (which already resolves tables via
+`ensure_table`) and by replay; `do_put` never touches the catalog or
+object store, keeping ack latency decoupled. On a cache miss (first batch
+for a group since startup) the batch is inserted in v2-transformed form
+and coerced by the commit path exactly as today; on schema drift the
+commit path's final coercion remains authoritative (attribute promotion
+can change the table's materialized columns while a batch is resident).
+A cache refresh failure therefore degrades to today's commit-time
+coercion, never to an ingest error.
 
 ### D8: Self-monitoring within cardinality rules
 

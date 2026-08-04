@@ -19,16 +19,21 @@
 
 ## 2. Ingest and drain paths
 
-- [ ] 2.1 `do_put`: after `wal.flush()` returns Ok, coerce the batch to the
-      table's Arrow schema and insert into the memtable; test that a WAL
-      flush failure leaves no memtable entry; coercion failure follows the
-      poison path
+- [ ] 2.1 `do_put` ordering: hard-ceiling admission (with in-flight
+      reservations) before the WAL append; after `wal.flush()` returns Ok,
+      coerce via the process-local schema cache (never the catalog) and
+      insert into the memtable before acking; tests — rejected ingest
+      leaves no WAL entry, WAL flush failure leaves no memtable entry,
+      post-durability coercion failure follows the poison path while the
+      ack still succeeds
 - [ ] 2.2 Rework `drain_pending`: drain resident groups (swap-out under
       short lock, commit outside it), keep coalescing floor and
-      `Flush`-marker handling; evict only after `mark_processed` succeeds;
-      restore the flushing slot into active on commit failure so retries
-      come from memory; adapt processor tests, keeping the WAL-append-
-      then-drain tests green via 2.3
+      `Flush`-marker handling; entry-granularity eviction — evict each
+      entry only after its `mark_processed` succeeds, retain/merge
+      unprocessed entries back without overwriting concurrent inserts;
+      failure-injection tests for commit failure, partial mark failure,
+      and concurrent insert during flush; adapt processor tests, keeping
+      the WAL-append-then-drain tests green via 2.3
 - [ ] 2.3 Per-tick WAL reconciliation: diff unprocessed entry ids
       (metadata only) against resident ids, lazily load payloads for the
       difference; dead-letter evicts the resident copy and releases bytes;
@@ -39,7 +44,9 @@
       the soft budget, sequential segment iteration instead of per-entry
       `read_entry_data`; integration tests — restart with un-committed
       entries loses nothing; replay of a backlog larger than the budget
-      stays within budget
+      stays within budget; live ingest during replay shares the budget and
+      both datasets commit; a failed replay-chunk commit retries without
+      halting replay
 
 ## 3. Memory budget and backpressure
 

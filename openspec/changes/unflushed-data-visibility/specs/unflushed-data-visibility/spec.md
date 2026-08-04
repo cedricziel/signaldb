@@ -12,11 +12,18 @@ when hot data cannot be served.
 
 ### Requirement: Commit watermark recorded atomically with the data
 
-The writer SHALL assign each resident batch a monotonically increasing
-sequence per `(writer, tenant, dataset, table)` group, and every Iceberg
-commit SHALL record the group's committed high-water sequence in the
-table's metadata within the same atomic commit transaction as the data
-files. Watermarks are namespaced per writer so multiple writers never
+The writer SHALL assign each resident batch a sequence that is atomic,
+unique, and strictly increasing per `(writer, tenant, dataset, table)`
+group — including across writer restarts: the writer identity SHALL be
+the WAL-persisted one (stable across restarts), and sequence allocation
+SHALL guarantee that every batch resident after a restart numbers above
+any watermark a previous incarnation of the same writer committed, before
+any insert is accepted. Every Iceberg commit SHALL record the group's
+committed high-water sequence in the table's metadata within the same
+atomic commit transaction as the data files. On a concurrent-commit
+conflict the writer SHALL retry against the latest table metadata,
+updating only its own watermark key and never removing other writers'
+keys. Watermarks are namespaced per writer so multiple writers never
 contend on one key, and lifecycle operations on the table (compaction,
 snapshot expiration) MUST preserve them.
 
@@ -38,16 +45,36 @@ snapshot expiration) MUST preserve them.
 - **WHEN** the compactor rewrites files or expires snapshots for a table
 - **THEN** the per-writer watermark properties survive unchanged
 
+#### Scenario: Restart after a commit never reuses covered sequences
+
+- **WHEN** a writer restarts after committing a group with watermark W and
+  replays or accepts new batches for that group
+- **THEN** every resident batch carries a sequence strictly above W, so
+  none is incorrectly filtered as already committed
+
+#### Scenario: Concurrent writers do not lose each other's watermarks
+
+- **WHEN** two writers commit to the same table concurrently and one
+  commit retries after a conflict
+- **THEN** the final table metadata carries both writers' watermarks and
+  both data sets
+
 ### Requirement: Writer exposes authenticated, bounded hot scans
 
 The writer SHALL serve a Flight scan over a group's resident batches,
 returned in the table's exact Arrow storage schema and tagged with the
-writer identity and each batch's sequence. The scan SHALL require the same
-internal-service authentication as ingest, and the requested tenant SHALL
-be validated against the authenticated caller's scope — a scan without a
-tenant scope, or for a tenant outside the caller's scope, is rejected.
-Requests SHALL carry time bounds, and the writer SHALL skip batches that do
-not overlap them; responses SHALL be bounded in size.
+writer identity and each batch's sequence, and the response SHALL carry
+the writer's own committed high-water sequence for the group. The scan
+SHALL require the same internal-service authentication as ingest, and the
+requested tenant SHALL be validated against the authenticated caller's
+scope — a scan without a tenant scope, or for a tenant outside the
+caller's scope, is rejected. Requests SHALL carry time bounds, and the
+writer SHALL skip batches that do not overlap them. Responses SHALL be
+bounded in size with fail-closed semantics: when the matching batches
+would exceed the bound (including a single batch alone exceeding it), the
+writer SHALL signal truncation rather than silently returning a subset,
+and a truncated response SHALL NOT be treated by consumers as a complete
+hot arm.
 
 #### Scenario: Scan returns only the requested tenant's pending data
 
@@ -66,6 +93,13 @@ not overlap them; responses SHALL be bounded in size.
 - **WHEN** a scan requests a time range that overlaps only some resident
   batches
 - **THEN** non-overlapping batches are not transferred
+
+#### Scenario: Over-cap results signal truncation, not a silent subset
+
+- **WHEN** the resident batches matching a scan exceed the response size
+  bound
+- **THEN** the writer signals truncation and the consumer treats that
+  writer's hot arm as unresolved rather than merging a partial result
 
 #### Scenario: Hot batches match the cold schema
 
@@ -115,9 +149,16 @@ memtable to Iceberg during the query. To guarantee both, the querier SHALL
 obtain hot results first and only then resolve the committed snapshot and
 its watermarks, discarding hot batches whose sequence is at or below the
 resolved watermark for their writer; batches SHALL remain scannable on the
-writer until their WAL entries are marked processed. (Duplicates arising
-from upstream at-least-once redelivery are out of scope — they exist
-independently of this capability.)
+writer until their WAL entries are marked processed. The committed-snapshot
+resolution SHALL observe every commit that completed before the resolution
+began (read-after-commit freshness) — a catalog read that can serve stale
+snapshots would void the no-omission guarantee. The watermark used to
+filter a writer's hot batches SHALL be at least that writer's
+self-reported committed sequence from the scan response. A missing table
+watermark key SHALL be interpreted as never-committed only when the
+writer's self-report agrees (zero); disagreement is an unresolvable
+boundary. (Duplicates arising from upstream at-least-once redelivery are
+out of scope — they exist independently of this capability.)
 
 #### Scenario: Query concurrent with a flush counts rows once
 
@@ -156,3 +197,18 @@ without one are not extended with non-standard markers.
   writer cannot be resolved
 - **THEN** those hot batches are excluded from the result rather than
   merged unfiltered
+
+#### Scenario: Lost watermark metadata fails closed
+
+- **WHEN** a table's metadata carries no watermark key for a writer whose
+  scan response reports a nonzero committed sequence
+- **THEN** that writer's hot batches are dropped and the degradation is
+  recorded, rather than treating the missing key as never-committed and
+  returning already-committed rows again
+
+#### Scenario: Query without finite time bounds skips hot data
+
+- **WHEN** a query reaches the union without derivable finite time bounds
+  (e.g. raw SQL with no time predicate)
+- **THEN** no writer scan is issued, the query serves committed data only,
+  and the degradation is recorded

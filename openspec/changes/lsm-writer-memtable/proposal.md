@@ -78,8 +78,9 @@ semantics are unchanged by this stage.
   after WAL flush; hard-ceiling rejection); `processor.rs` (drain from
   resident groups + reconciliation; bounded replay; shared routing;
   dead-letter eviction).
-- **common**: `[writer] memtable_max_bytes` / hard-ceiling / per-group byte
-  ceiling config; schema-coercion helpers moved from the writer for reuse;
+- **common**: `[writer]` memory config (`memtable_soft_bytes`,
+  `memtable_hard_bytes`, per-group `max_uncommitted_bytes`);
+  schema-coercion helpers moved from the writer for reuse;
   self-monitoring metrics (resident bytes, pressure flushes, hard-ceiling
   rejections, WAL payload reads by reason, replay volume).
 - **tests-integration**: crash-recovery replay, budget-pressure,

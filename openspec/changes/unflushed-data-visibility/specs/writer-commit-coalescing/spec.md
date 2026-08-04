@@ -8,6 +8,10 @@ The writer SHALL acknowledge an ingest (Flight `do_put`) once the data is durabl
 persisted to the writer's write-ahead log, and MUST NOT block the acknowledgement
 on the Iceberg commit. The Iceberg commit is performed asynchronously by the
 writer's background processing loop, draining the in-memory pending buffer.
+Visibility is part of the acknowledgement contract: a batch SHALL be resident in
+the memtable — and therefore servable by hot scans — before its acknowledgement
+returns, so acknowledged data is queryable immediately without waiting for the
+background commit.
 
 #### Scenario: Ack does not wait for the Iceberg commit
 
@@ -21,6 +25,13 @@ writer's background processing loop, draining the in-memory pending buffer.
 - **THEN** the data is queryable through the unflushed-data path (see
   `unflushed-data-visibility`) without an early Iceberg commit, and it
   SHALL also be queryable from storage once committed
+
+#### Scenario: Query immediately after ack sees the data
+
+- **WHEN** a query for the covering time range executes immediately after a
+  batch's acknowledgement returns, before any background commit and with no
+  force-commit
+- **THEN** the batch's rows are included in the result via the hot scan
 
 #### Scenario: Deferred data survives writer restart
 
