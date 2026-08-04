@@ -103,3 +103,8 @@ advisory **Weaver Live Check** workflow boots the monolithic binary
 against a `weaver registry live-check` listener and reports findings plus
 `registry_coverage` per PR (hardening to a blocking check is tracked in
 #912; further follow-ups: #913, #914, #915, #916).
+
+Spans carry only registry-declared attributes. The tracing→OTel bridge's
+convenience attributes (`busy_ns`, `idle_ns`, `target`, `code.*`) are
+disabled at construction (`common::self_monitoring::otel_span_layer`,
+pinned by the `otel_bridge_attrs` test) — don't build dashboards on them.

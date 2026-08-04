@@ -92,9 +92,8 @@ pub mod utils {
                 .with_schema_url(crate::self_monitoring::SEMCONV_SCHEMA_URL)
                 .build();
             let tracer = telemetry.tracer_provider().tracer_with_scope(scope);
-            let otel_span_layer = tracing_opentelemetry::layer()
-                .with_tracer(tracer)
-                .with_filter(OtelExportFilter);
+            let otel_span_layer =
+                crate::self_monitoring::otel_span_layer(tracer).with_filter(OtelExportFilter);
             let otel_log_layer =
                 opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(
                     telemetry.logger_provider(),
