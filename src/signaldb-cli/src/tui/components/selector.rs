@@ -256,6 +256,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
+    use crate::tui::test_helpers::assert_buffer_contains;
 
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -450,6 +451,22 @@ mod tests {
     }
 
     #[test]
+    fn render_with_items_shows_title_and_labels() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut selector = SelectorPopup::new("Select Tenant");
+        selector.set_items(make_items());
+
+        terminal
+            .draw(|frame| selector.render(frame, frame.area()))
+            .unwrap();
+        assert_buffer_contains(&terminal, "Select Tenant");
+        assert_buffer_contains(&terminal, "Acme Corporation");
+        assert_buffer_contains(&terminal, "Globex Industries");
+        assert_buffer_contains(&terminal, "Initech LLC");
+        assert_buffer_contains(&terminal, "(type to search)");
+    }
+
+    #[test]
     fn snapshot_selector_with_items() {
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut selector = SelectorPopup::new("Select Tenant");
@@ -461,6 +478,22 @@ mod tests {
         let buffer = terminal.backend().buffer().clone();
         let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
         insta::assert_snapshot!("selector_with_items", content);
+    }
+
+    #[test]
+    fn render_filtered_shows_filter_text_and_matching_item_only() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut selector = SelectorPopup::new("Select Tenant");
+        selector.set_items(make_items());
+
+        selector.handle_key(press(KeyCode::Char('a')));
+        selector.handle_key(press(KeyCode::Char('c')));
+
+        terminal
+            .draw(|frame| selector.render(frame, frame.area()))
+            .unwrap();
+        assert_buffer_contains(&terminal, "Filter: ac");
+        assert_buffer_contains(&terminal, "Acme Corporation");
     }
 
     #[test]
@@ -478,6 +511,18 @@ mod tests {
         let buffer = terminal.backend().buffer().clone();
         let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
         insta::assert_snapshot!("selector_filtered", content);
+    }
+
+    #[test]
+    fn render_loading_shows_loading_text() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut selector = SelectorPopup::new("Select Tenant");
+        selector.set_loading(true);
+
+        terminal
+            .draw(|frame| selector.render(frame, frame.area()))
+            .unwrap();
+        assert_buffer_contains(&terminal, "Loading...");
     }
 
     #[test]

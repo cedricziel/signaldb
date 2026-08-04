@@ -3,7 +3,7 @@
 //! This test verifies that the compactor correctly handles compaction of metrics tables,
 //! including different metrics types (gauge, histogram) with proper sorting.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use common::catalog_manager::CatalogManager;
 use common::flight::conversion::conversion_metrics::otlp_metrics_to_arrow;
 use compactor::executor::{CompactionExecutor, ExecutorConfig};
@@ -181,27 +181,18 @@ async fn test_metrics_gauge_compaction() -> Result<()> {
     )
     .await;
 
-    let mut writer = match writer_result {
-        Ok(w) => w,
-        Err(e) => {
-            log::warn!("Could not create writer in test environment: {e}");
-            log::info!("Test skipped due to environment limitations");
-            return Ok(());
-        }
-    };
+    let mut writer =
+        writer_result.context("Failed to create IcebergTableWriter for in-memory test table")?;
 
     // Write 10 small batches (100 rows each = 1000 rows total)
     for i in 0..10 {
         let request = create_gauge_batch(i, 100)?;
         let batch = otlp_metrics_to_arrow(&request);
 
-        if let Err(e) = writer
+        writer
             .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
             .await
-        {
-            log::warn!("Failed to write gauge batch {i}: {e}");
-            return Ok(()); // Skip test if writes fail
-        }
+            .with_context(|| format!("Failed to write gauge batch {i}"))?;
         log::debug!("Wrote gauge batch {i}");
     }
 
@@ -293,27 +284,18 @@ async fn test_metrics_histogram_compaction() -> Result<()> {
     )
     .await;
 
-    let mut writer = match writer_result {
-        Ok(w) => w,
-        Err(e) => {
-            log::warn!("Could not create writer in test environment: {e}");
-            log::info!("Test skipped due to environment limitations");
-            return Ok(());
-        }
-    };
+    let mut writer =
+        writer_result.context("Failed to create IcebergTableWriter for in-memory test table")?;
 
     // Write 10 small batches (100 rows each = 1000 rows total)
     for i in 0..10 {
         let request = create_histogram_batch(i, 100)?;
         let batch = otlp_metrics_to_arrow(&request);
 
-        if let Err(e) = writer
+        writer
             .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
             .await
-        {
-            log::warn!("Failed to write histogram batch {i}: {e}");
-            return Ok(()); // Skip test if writes fail
-        }
+            .with_context(|| format!("Failed to write histogram batch {i}"))?;
         log::debug!("Wrote histogram batch {i}");
     }
 

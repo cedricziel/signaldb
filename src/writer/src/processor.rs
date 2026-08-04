@@ -826,7 +826,6 @@ mod tests {
         let object_store = Arc::new(InMemory::new());
 
         let processor = WalProcessor::new(wal, catalog_manager, object_store);
-        assert_eq!(processor.table_writers.len(), 0);
 
         let stats = processor.get_stats();
         assert_eq!(stats.active_writers, 0);

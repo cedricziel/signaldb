@@ -199,16 +199,39 @@ mod scoped_authorization_tests {
     }
 
     #[test]
-    fn every_ingestion_signal_requires_its_matching_write_scope() {
-        for signal in ["metrics", "logs", "traces", "profiles"] {
-            let allowed = context(Some(vec![format!("{signal}:write")]));
-            assert!(allowed.can_ingest(signal));
-            for other in ["metrics", "logs", "traces", "profiles"] {
-                if other != signal {
-                    assert!(!allowed.can_ingest(other));
-                }
-            }
-        }
+    fn metrics_write_scope_allows_only_metrics_ingestion() {
+        let allowed = context(Some(vec!["metrics:write".into()]));
+        assert!(allowed.can_ingest("metrics"));
+        assert!(!allowed.can_ingest("logs"));
+        assert!(!allowed.can_ingest("traces"));
+        assert!(!allowed.can_ingest("profiles"));
+    }
+
+    #[test]
+    fn logs_write_scope_allows_only_logs_ingestion() {
+        let allowed = context(Some(vec!["logs:write".into()]));
+        assert!(!allowed.can_ingest("metrics"));
+        assert!(allowed.can_ingest("logs"));
+        assert!(!allowed.can_ingest("traces"));
+        assert!(!allowed.can_ingest("profiles"));
+    }
+
+    #[test]
+    fn traces_write_scope_allows_only_traces_ingestion() {
+        let allowed = context(Some(vec!["traces:write".into()]));
+        assert!(!allowed.can_ingest("metrics"));
+        assert!(!allowed.can_ingest("logs"));
+        assert!(allowed.can_ingest("traces"));
+        assert!(!allowed.can_ingest("profiles"));
+    }
+
+    #[test]
+    fn profiles_write_scope_allows_only_profiles_ingestion() {
+        let allowed = context(Some(vec!["profiles:write".into()]));
+        assert!(!allowed.can_ingest("metrics"));
+        assert!(!allowed.can_ingest("logs"));
+        assert!(!allowed.can_ingest("traces"));
+        assert!(allowed.can_ingest("profiles"));
     }
 
     #[test]
@@ -233,16 +256,39 @@ mod scoped_authorization_tests {
     }
 
     #[test]
-    fn every_read_signal_requires_its_matching_read_scope() {
-        for signal in ["metrics", "logs", "traces", "profiles"] {
-            let allowed = context(Some(vec![format!("{signal}:read")]));
-            assert!(allowed.can_read(signal));
-            for other in ["metrics", "logs", "traces"] {
-                if other != signal {
-                    assert!(!allowed.can_read(other));
-                }
-            }
-        }
+    fn metrics_read_scope_allows_only_metrics_reads() {
+        let allowed = context(Some(vec!["metrics:read".into()]));
+        assert!(allowed.can_read("metrics"));
+        assert!(!allowed.can_read("logs"));
+        assert!(!allowed.can_read("traces"));
+        assert!(!allowed.can_read("profiles"));
+    }
+
+    #[test]
+    fn logs_read_scope_allows_only_logs_reads() {
+        let allowed = context(Some(vec!["logs:read".into()]));
+        assert!(!allowed.can_read("metrics"));
+        assert!(allowed.can_read("logs"));
+        assert!(!allowed.can_read("traces"));
+        assert!(!allowed.can_read("profiles"));
+    }
+
+    #[test]
+    fn traces_read_scope_allows_only_traces_reads() {
+        let allowed = context(Some(vec!["traces:read".into()]));
+        assert!(!allowed.can_read("metrics"));
+        assert!(!allowed.can_read("logs"));
+        assert!(allowed.can_read("traces"));
+        assert!(!allowed.can_read("profiles"));
+    }
+
+    #[test]
+    fn profiles_read_scope_allows_only_profiles_reads() {
+        let allowed = context(Some(vec!["profiles:read".into()]));
+        assert!(!allowed.can_read("metrics"));
+        assert!(!allowed.can_read("logs"));
+        assert!(!allowed.can_read("traces"));
+        assert!(allowed.can_read("profiles"));
     }
 
     #[test]

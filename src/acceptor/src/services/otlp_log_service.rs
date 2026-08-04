@@ -172,14 +172,53 @@ mod tests {
         resource::v1::Resource,
     };
 
-    #[tokio::test]
-    async fn test_log_acceptor_service() {
-        let mut mock_handler = MockLogHandler::new();
-        mock_handler.expect_handle_grpc_otlp_logs();
+    /// Handler that always fails before WAL durability
+    struct FailingLogHandler;
 
-        let service = LogAcceptorService::new(mock_handler);
+    #[async_trait::async_trait]
+    impl LogHandlerTrait for FailingLogHandler {
+        async fn handle_grpc_otlp_logs(
+            &self,
+            _tenant_context: &TenantContext,
+            _request: ExportLogsServiceRequest,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("WAL unavailable")
+        }
+    }
 
-        let request = ExportLogsServiceRequest {
+    /// Handler that always succeeds (rate-limit/quota tests must fail before it).
+    struct NoopLogHandler;
+
+    #[async_trait::async_trait]
+    impl LogHandlerTrait for NoopLogHandler {
+        async fn handle_grpc_otlp_logs(
+            &self,
+            _tenant_context: &TenantContext,
+            _request: ExportLogsServiceRequest,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn test_tenant_context() -> TenantContext {
+        TenantContext {
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            tenant_slug: "test-tenant".to_string(),
+            dataset_slug: "test-dataset".to_string(),
+            api_key_name: Some("test-key".to_string()),
+            api_key_scopes: None,
+            api_key_dataset_id: None,
+            user_id: None,
+            role: None,
+            is_instance_admin: false,
+            session_id: None,
+            source: common::auth::TenantSource::Config,
+        }
+    }
+
+    fn sample_logs_request() -> ExportLogsServiceRequest {
+        ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -213,27 +252,120 @@ mod tests {
                 }],
                 schema_url: "".to_string(),
             }],
-        };
+        }
+    }
 
-        // Add TenantContext to request extensions (normally added by auth middleware)
+    #[tokio::test]
+    async fn export_forwards_logs_to_handler_and_succeeds() {
+        let mock_handler = MockLogHandler::new();
+        let service = LogAcceptorService::new(mock_handler);
+
+        let request = sample_logs_request();
         let mut tonic_request = Request::new(request);
-        tonic_request.extensions_mut().insert(TenantContext {
-            tenant_id: "test-tenant".to_string(),
-            dataset_id: "test-dataset".to_string(),
-            tenant_slug: "test-tenant".to_string(),
-            dataset_slug: "test-dataset".to_string(),
-            api_key_name: Some("test-key".to_string()),
-            api_key_scopes: None,
-            api_key_dataset_id: None,
-            user_id: None,
-            role: None,
-            is_instance_admin: false,
-            session_id: None,
-            source: common::auth::TenantSource::Config,
-        });
+        tonic_request.extensions_mut().insert(test_tenant_context());
 
-        let response = service.export(tonic_request).await;
+        let response = service
+            .export(tonic_request)
+            .await
+            .expect("export of valid logs must succeed");
+        assert_eq!(response.into_inner(), ExportLogsServiceResponse::default());
 
-        assert!(response.is_ok());
+        let calls = service.handler.handle_grpc_otlp_logs_calls.lock().await;
+        assert_eq!(calls.len(), 1, "handler must be invoked exactly once");
+        assert_eq!(
+            calls[0].resource_logs[0].scope_logs[0].log_records[0].body,
+            Some(AnyValue {
+                value: Some(Value::StringValue("test log message".to_string())),
+            }),
+            "handler must receive the exact request the client sent"
+        );
+    }
+
+    #[tokio::test]
+    async fn export_rejects_with_unavailable_when_write_path_fails() {
+        let service = LogAcceptorService::new(FailingLogHandler);
+
+        let mut tonic_request = Request::new(ExportLogsServiceRequest::default());
+        tonic_request.extensions_mut().insert(test_tenant_context());
+
+        let status = service
+            .export(tonic_request)
+            .await
+            .expect_err("export must fail when data is not durably accepted");
+
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert!(status.message().contains("durably accept"));
+    }
+
+    #[tokio::test]
+    async fn export_rejects_with_resource_exhausted_when_rate_limited() {
+        use common::config::{AuthConfig, TenantLimits};
+
+        // One request per second: the first export passes, the second is
+        // rejected with the gRPC analog of HTTP 429.
+        let limiter = Arc::new(TenantRateLimiter::from_auth_config(&AuthConfig {
+            default_limits: TenantLimits {
+                max_ingest_requests_per_sec: Some(1),
+                burst_seconds: 1.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let service = LogAcceptorService::new(NoopLogHandler).with_rate_limiter(limiter);
+
+        let mut first = Request::new(ExportLogsServiceRequest::default());
+        first.extensions_mut().insert(test_tenant_context());
+        service
+            .export(first)
+            .await
+            .expect("first request is within budget");
+
+        let mut second = Request::new(ExportLogsServiceRequest::default());
+        second.extensions_mut().insert(test_tenant_context());
+        let status = service
+            .export(second)
+            .await
+            .expect_err("second request must exceed the 1 rps budget");
+
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert!(status.message().contains("request rate"));
+    }
+
+    #[tokio::test]
+    async fn export_rejects_with_resource_exhausted_when_over_storage_quota() {
+        use common::config::{AuthConfig, TenantLimits};
+        use common::storage_usage::StorageUsageTracker;
+        use std::collections::HashMap;
+
+        let tenant_id = test_tenant_context().tenant_id;
+        let tracker = Arc::new(StorageUsageTracker::from_auth_config(&AuthConfig {
+            default_limits: TenantLimits {
+                max_storage_bytes: Some(1_000),
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let service = LogAcceptorService::new(NoopLogHandler).with_storage_quota(tracker.clone());
+
+        // Under quota: export passes.
+        tracker.replace_all(HashMap::from([(tenant_id.clone(), 999)]));
+        let mut under = Request::new(ExportLogsServiceRequest::default());
+        under.extensions_mut().insert(test_tenant_context());
+        service
+            .export(under)
+            .await
+            .expect("export under quota must pass");
+
+        // Usage refresh reports the tenant at its cap: export is rejected.
+        tracker.replace_all(HashMap::from([(tenant_id, 1_000)]));
+        let mut over = Request::new(ExportLogsServiceRequest::default());
+        over.extensions_mut().insert(test_tenant_context());
+        let status = service
+            .export(over)
+            .await
+            .expect_err("export at quota must be rejected");
+
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert!(status.message().contains("quota_exceeded"));
     }
 }

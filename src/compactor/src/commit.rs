@@ -207,34 +207,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_conflict_error() {
-        // Test various conflict error messages
-        let conflict_errors = vec![
-            "snapshot changed from 123 to 456",
-            "Snapshot conflict detected",
-            "concurrent modification on snapshot",
-            "version mismatch in snapshot",
-        ];
+    fn is_conflict_error_detects_snapshot_changed_message() {
+        let error = anyhow::anyhow!("snapshot changed from 123 to 456");
+        assert!(is_conflict_error(&error));
+    }
 
-        for msg in conflict_errors {
-            let error = anyhow::anyhow!("{}", msg);
-            assert!(
-                is_conflict_error(&error),
-                "Should detect conflict in: {}",
-                msg
-            );
-        }
+    #[test]
+    fn is_conflict_error_detects_snapshot_conflict_message() {
+        let error = anyhow::anyhow!("Snapshot conflict detected");
+        assert!(is_conflict_error(&error));
+    }
 
-        // Test non-conflict errors
-        let non_conflict_errors = vec!["file not found", "network timeout", "invalid schema"];
+    #[test]
+    fn is_conflict_error_detects_concurrent_modification_message() {
+        let error = anyhow::anyhow!("concurrent modification on snapshot");
+        assert!(is_conflict_error(&error));
+    }
 
-        for msg in non_conflict_errors {
-            let error = anyhow::anyhow!("{}", msg);
-            assert!(
-                !is_conflict_error(&error),
-                "Should not detect conflict in: {}",
-                msg
-            );
-        }
+    #[test]
+    fn is_conflict_error_detects_version_mismatch_message() {
+        let error = anyhow::anyhow!("version mismatch in snapshot");
+        assert!(is_conflict_error(&error));
+    }
+
+    #[test]
+    fn is_conflict_error_ignores_file_not_found() {
+        let error = anyhow::anyhow!("file not found");
+        assert!(!is_conflict_error(&error));
+    }
+
+    #[test]
+    fn is_conflict_error_ignores_network_timeout() {
+        let error = anyhow::anyhow!("network timeout");
+        assert!(!is_conflict_error(&error));
+    }
+
+    #[test]
+    fn is_conflict_error_ignores_invalid_schema() {
+        let error = anyhow::anyhow!("invalid schema");
+        assert!(!is_conflict_error(&error));
     }
 }

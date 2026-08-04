@@ -145,7 +145,15 @@ mod tests {
     #[tokio::test]
     async fn test_create_retention_context() -> Result<()> {
         let ctx = RetentionTestContext::new_in_memory().await?;
-        assert!(Arc::strong_count(ctx.catalog_manager()) >= 1);
+
+        // Exercise the context end-to-end by creating a real Iceberg table
+        // through it, proving the catalog and storage components are wired
+        // together correctly rather than merely constructed.
+        let writer = ctx
+            .create_table("test_tenant", "test_dataset", "test_table")
+            .await?;
+
+        assert_eq!(writer.table_identifier().name(), "test_table");
         Ok(())
     }
 

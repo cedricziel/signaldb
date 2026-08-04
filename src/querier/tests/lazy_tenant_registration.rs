@@ -79,17 +79,9 @@ async fn database_tenant_is_queryable_without_restart() {
     let ticket = Ticket::new("query_logs_labels:matter-survey:production:0:100000000000");
     let result = service.do_get(Request::new(ticket)).await;
 
-    // With on-demand registration the catalog resolves; the query returns the
-    // known logs labels (empty dataset otherwise). The key invariant is that it
-    // MUST NOT fail with catalog resolution — the exact defect this change
-    // fixes.
-    if let Err(status) = &result {
-        let msg = status.message();
-        assert!(
-            !msg.contains("resolve catalog"),
-            "database tenant query still failed catalog resolution: {msg}"
-        );
-    }
+    // With on-demand registration the catalog resolves and the query must
+    // succeed (returning the known logs labels, empty for a fresh dataset).
+    result.expect("lazily-registered database tenant must be queryable without restart");
 
     // Negative control: a tenant that was never created must still fail catalog
     // resolution. This proves the ticket format genuinely exercises catalog

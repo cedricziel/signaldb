@@ -164,15 +164,30 @@ pub fn create_s3_builder_from_dsn(dsn: &Url) -> Result<AmazonS3Builder> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use object_store::ObjectStoreExt as _;
 
-    #[test]
-    fn test_create_memory_object_store() {
+    #[tokio::test]
+    async fn test_create_memory_object_store() {
         let object_store = create_object_store_from_dsn("memory://").unwrap();
-        assert!(Arc::strong_count(&object_store) == 1);
+
+        let path = object_store::path::Path::from("roundtrip.txt");
+        object_store
+            .put(&path, object_store::PutPayload::from_static(b"hello"))
+            .await
+            .unwrap();
+        let bytes = object_store
+            .get(&path)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+
+        assert_eq!(bytes.as_ref(), b"hello");
     }
 
-    #[test]
-    fn test_create_filesystem_object_store() {
+    #[tokio::test]
+    async fn test_create_filesystem_object_store() {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -180,17 +195,39 @@ mod tests {
         let dsn = format!("file://{path}");
 
         let object_store = create_object_store_from_dsn(&dsn).unwrap();
-        assert!(Arc::strong_count(&object_store) == 1);
+
+        let key = object_store::path::Path::from("roundtrip.txt");
+        object_store
+            .put(&key, object_store::PutPayload::from_static(b"hello"))
+            .await
+            .unwrap();
+        let bytes = object_store.get(&key).await.unwrap().bytes().await.unwrap();
+
+        assert_eq!(bytes.as_ref(), b"hello");
     }
 
-    #[test]
-    fn test_create_object_store_from_config() {
+    #[tokio::test]
+    async fn test_create_object_store_from_config() {
         let storage_config = StorageConfig {
             dsn: "memory://".to_string(),
         };
 
         let object_store = create_object_store(&storage_config).unwrap();
-        assert!(Arc::strong_count(&object_store) == 1);
+
+        let path = object_store::path::Path::from("roundtrip.txt");
+        object_store
+            .put(&path, object_store::PutPayload::from_static(b"hello"))
+            .await
+            .unwrap();
+        let bytes = object_store
+            .get(&path)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+
+        assert_eq!(bytes.as_ref(), b"hello");
     }
 
     #[test]
@@ -373,8 +410,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_create_filesystem_object_store_creates_missing_directory() {
+    #[tokio::test]
+    async fn test_create_filesystem_object_store_creates_missing_directory() {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -382,7 +419,21 @@ mod tests {
         let dsn = format!("file://{}", nested.display());
 
         let object_store = create_object_store_from_dsn(&dsn).unwrap();
-        assert!(Arc::strong_count(&object_store) == 1);
         assert!(nested.is_dir());
+
+        let path = object_store::path::Path::from("roundtrip.txt");
+        object_store
+            .put(&path, object_store::PutPayload::from_static(b"hello"))
+            .await
+            .unwrap();
+        let bytes = object_store
+            .get(&path)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+
+        assert_eq!(bytes.as_ref(), b"hello");
     }
 }

@@ -381,12 +381,14 @@ fn window() -> String {
     )
 }
 
-#[tokio::test]
-async fn logql_end_to_end() {
+/// Boots the full stack and ingests: `api` has an error + an info line;
+/// `web` has one warn line. Force-flushes the writer so reads observe the
+/// data deterministically. Shared arrange step for every LogQL endpoint
+/// test below.
+async fn setup_with_ingested_logs() -> (TestServices, Router) {
     let services = setup().await;
     let ctx = test_tenant_context();
 
-    // Ingest: api has an error + an info line; web has one warn line.
     services
         .log_handler
         .handle_grpc_otlp_logs(
@@ -442,20 +444,31 @@ async fn logql_end_to_end() {
     );
 
     let app = build_router(&services).await;
+    (services, app)
+}
+
+#[tokio::test]
+async fn logql_stream_query_returns_all_lines_for_service() {
+    let (_services, app) = setup_with_ingested_logs().await;
     let w = window();
 
-    // 1. Stream query for one service returns its two lines.
     let (status, body) = get(
         &app,
         &format!("/loki/api/v1/query_range?query=%7Bservice_name%3D%22api%22%7D&{w}"),
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "query_range: {body}");
     assert_eq!(body["data"]["resultType"], "streams");
     let entries = count_stream_entries(&body);
     assert_eq!(entries, 2, "api should have two log lines: {body}");
+}
 
-    // 2. Line filter narrows to the error line.
+#[tokio::test]
+async fn logql_line_filter_narrows_to_matching_lines() {
+    let (_services, app) = setup_with_ingested_logs().await;
+    let w = window();
+
     let (status, body) = get(
         &app,
         &format!(
@@ -463,43 +476,67 @@ async fn logql_end_to_end() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(status, StatusCode::OK, "line filter: {body}");
     assert_eq!(
         count_stream_entries(&body),
         1,
         "line filter should match one: {body}"
     );
+}
 
-    // 3. Labels include the known columns and the ingested attribute key.
+#[tokio::test]
+async fn logql_labels_endpoint_lists_known_and_ingested_attributes() {
+    let (_services, app) = setup_with_ingested_logs().await;
+    let w = window();
+
     let (status, body) = get(&app, &format!("/loki/api/v1/labels?{w}")).await;
-    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(status, StatusCode::OK, "labels: {body}");
     let labels: Vec<String> = serde_json::from_value(body["data"].clone()).unwrap_or_default();
     assert!(labels.contains(&"service_name".to_string()), "{labels:?}");
     assert!(labels.contains(&"region".to_string()), "{labels:?}");
+}
 
-    // 4. Label values for service_name.
+#[tokio::test]
+async fn logql_label_values_endpoint_lists_service_names() {
+    let (_services, app) = setup_with_ingested_logs().await;
+    let w = window();
+
     let (status, body) = get(&app, &format!("/loki/api/v1/label/service_name/values?{w}")).await;
-    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(status, StatusCode::OK, "label values: {body}");
     let values: Vec<String> = serde_json::from_value(body["data"].clone()).unwrap_or_default();
     assert!(
         values.contains(&"api".to_string()) && values.contains(&"web".to_string()),
         "{values:?}"
     );
+}
 
-    // 5. Series matching a selector.
+#[tokio::test]
+async fn logql_series_endpoint_returns_matching_series() {
+    let (_services, app) = setup_with_ingested_logs().await;
+    let w = window();
+
     let (status, body) = get(
         &app,
         &format!("/loki/api/v1/series?match%5B%5D=%7Bservice_name%3D%22api%22%7D&{w}"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(status, StatusCode::OK, "series: {body}");
     let series = body["data"].as_array().cloned().unwrap_or_default();
     assert!(
         series.iter().all(|s| s["service_name"] == "api"),
         "series should all be api: {body}"
     );
+}
 
-    // 6. Metric query: count_over_time returns a matrix.
+#[tokio::test]
+async fn logql_metric_query_count_over_time_returns_matrix() {
+    let (_services, app) = setup_with_ingested_logs().await;
+    let w = window();
+
     let (status, body) = get(
         &app,
         &format!(
@@ -507,6 +544,7 @@ async fn logql_end_to_end() {
         ),
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "metric query: {body}");
     assert_eq!(body["data"]["resultType"], "matrix");
     let total: f64 = matrix_value_sum(&body);

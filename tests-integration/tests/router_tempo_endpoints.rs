@@ -826,13 +826,13 @@ async fn test_tempo_v2_trace_endpoint() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    // Should return 503 (no services) or 200 (if trace found)
-    assert!(
-        response.status() == StatusCode::OK
-            || response.status() == StatusCode::SERVICE_UNAVAILABLE
-            || response.status() == StatusCode::INTERNAL_SERVER_ERROR,
-        "Expected 200, 503, or 500, got: {}",
-        response.status()
+    // No querier is registered with the service registry, so the v2 trace
+    // endpoint must report that dependency as unavailable, not succeed or
+    // fail with an internal error.
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "v2 trace endpoint must return 503 when no querier is registered"
     );
 
     println!("✅ V2 trace endpoint test completed");

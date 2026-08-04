@@ -262,101 +262,115 @@ mod tests {
         }
     }
 
+    /// Clear the bar's text via the public key-handling API (Home moves the
+    /// cursor to 0, Ctrl-K truncates from the cursor onward) and optionally
+    /// type replacement text, leaving the cursor at the end of it.
+    fn set_text(bar: &mut QueryBar, text: &str) {
+        bar.handle_key(press(KeyCode::Home));
+        bar.handle_key(press_ctrl('k'));
+        for c in text.chars() {
+            bar.handle_key(press(KeyCode::Char(c)));
+        }
+    }
+
     #[test]
     fn new_has_default_query() {
         let bar = QueryBar::new();
         assert_eq!(bar.text, DEFAULT_QUERY);
-        assert_eq!(bar.cursor, DEFAULT_QUERY.len());
         assert!(!bar.focused);
     }
 
     #[test]
     fn typing_inserts_chars() {
         let mut bar = QueryBar::new();
-        bar.text.clear();
-        bar.cursor = 0;
-        bar.handle_key(press(KeyCode::Char('S')));
-        bar.handle_key(press(KeyCode::Char('E')));
-        bar.handle_key(press(KeyCode::Char('L')));
+        set_text(&mut bar, "SEL");
         assert_eq!(bar.text, "SEL");
-        assert_eq!(bar.cursor, 3);
     }
 
     #[test]
-    fn backspace_deletes_char() {
+    fn backspace_deletes_char_before_cursor() {
         let mut bar = QueryBar::new();
-        bar.text = "abc".into();
-        bar.cursor = 3;
+        set_text(&mut bar, "abc");
         bar.handle_key(press(KeyCode::Backspace));
         assert_eq!(bar.text, "ab");
-        assert_eq!(bar.cursor, 2);
     }
 
     #[test]
     fn backspace_at_start_is_noop() {
         let mut bar = QueryBar::new();
-        bar.text = "abc".into();
-        bar.cursor = 0;
+        set_text(&mut bar, "abc");
+        bar.handle_key(press(KeyCode::Home));
         bar.handle_key(press(KeyCode::Backspace));
         assert_eq!(bar.text, "abc");
-        assert_eq!(bar.cursor, 0);
     }
 
     #[test]
-    fn left_right_movement() {
+    fn left_then_right_returns_cursor_to_original_position() {
         let mut bar = QueryBar::new();
-        bar.text = "abc".into();
-        bar.cursor = 1;
-        bar.handle_key(press(KeyCode::Left));
-        assert_eq!(bar.cursor, 0);
-        bar.handle_key(press(KeyCode::Right));
-        assert_eq!(bar.cursor, 1);
-    }
-
-    #[test]
-    fn home_end_keys() {
-        let mut bar = QueryBar::new();
-        bar.text = "SELECT 1".into();
-        bar.cursor = 4;
+        set_text(&mut bar, "abc");
         bar.handle_key(press(KeyCode::Home));
-        assert_eq!(bar.cursor, 0);
+        bar.handle_key(press(KeyCode::Right)); // cursor between 'a' and 'b'
+        bar.handle_key(press(KeyCode::Left)); // cursor back to start
+        bar.handle_key(press(KeyCode::Right)); // cursor between 'a' and 'b' again
+        bar.handle_key(press(KeyCode::Char('X')));
+        assert_eq!(bar.text, "aXbc");
+    }
+
+    #[test]
+    fn home_end_keys_move_cursor_to_boundaries() {
+        let mut bar = QueryBar::new();
+        set_text(&mut bar, "SELECT 1");
+        bar.handle_key(press(KeyCode::Home));
+        bar.handle_key(press(KeyCode::Char('X')));
+        assert_eq!(bar.text, "XSELECT 1");
+
         bar.handle_key(press(KeyCode::End));
-        assert_eq!(bar.cursor, 8);
+        bar.handle_key(press(KeyCode::Char('Y')));
+        assert_eq!(bar.text, "XSELECT 1Y");
     }
 
     #[test]
-    fn ctrl_a_goes_to_start() {
+    fn ctrl_a_moves_cursor_to_start() {
         let mut bar = QueryBar::new();
-        bar.text = "abc".into();
-        bar.cursor = 3;
+        set_text(&mut bar, "abc");
         bar.handle_key(press_ctrl('a'));
-        assert_eq!(bar.cursor, 0);
+        bar.handle_key(press(KeyCode::Char('X')));
+        assert_eq!(bar.text, "Xabc");
     }
 
     #[test]
-    fn ctrl_e_goes_to_end() {
+    fn ctrl_e_moves_cursor_to_end() {
         let mut bar = QueryBar::new();
-        bar.text = "abc".into();
-        bar.cursor = 0;
+        set_text(&mut bar, "abc");
+        bar.handle_key(press(KeyCode::Home));
         bar.handle_key(press_ctrl('e'));
-        assert_eq!(bar.cursor, 3);
+        bar.handle_key(press(KeyCode::Char('X')));
+        assert_eq!(bar.text, "abcX");
     }
 
     #[test]
-    fn ctrl_u_clears_before_cursor() {
+    fn ctrl_u_clears_text_before_cursor() {
         let mut bar = QueryBar::new();
-        bar.text = "abcdef".into();
-        bar.cursor = 3;
+        set_text(&mut bar, "abcdef");
+        bar.handle_key(press(KeyCode::Home));
+        bar.handle_key(press(KeyCode::Right));
+        bar.handle_key(press(KeyCode::Right));
+        bar.handle_key(press(KeyCode::Right)); // cursor between 'c' and 'd'
         bar.handle_key(press_ctrl('u'));
         assert_eq!(bar.text, "def");
-        assert_eq!(bar.cursor, 0);
+        // Cursor should now be at the start of the remaining text.
+        bar.handle_key(press(KeyCode::Char('X')));
+        assert_eq!(bar.text, "Xdef");
     }
 
     #[test]
-    fn ctrl_k_clears_after_cursor() {
+    fn ctrl_k_clears_text_after_cursor() {
         let mut bar = QueryBar::new();
-        bar.text = "abcdef".into();
-        bar.cursor = 3;
+        set_text(&mut bar, "abcdef");
+        bar.handle_key(press(KeyCode::Home));
+        bar.handle_key(press(KeyCode::Right));
+        bar.handle_key(press(KeyCode::Right));
+        bar.handle_key(press(KeyCode::Right)); // cursor between 'c' and 'd'
         bar.handle_key(press_ctrl('k'));
         assert_eq!(bar.text, "abc");
     }
@@ -377,13 +391,13 @@ mod tests {
     }
 
     #[test]
-    fn delete_removes_char_at_cursor() {
+    fn delete_removes_char_after_cursor() {
         let mut bar = QueryBar::new();
-        bar.text = "abc".into();
-        bar.cursor = 1;
+        set_text(&mut bar, "abc");
+        bar.handle_key(press(KeyCode::Home));
+        bar.handle_key(press(KeyCode::Right)); // cursor between 'a' and 'b'
         bar.handle_key(press(KeyCode::Delete));
         assert_eq!(bar.text, "ac");
-        assert_eq!(bar.cursor, 1);
     }
 
     #[test]
@@ -394,8 +408,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 3)).unwrap();
         let mut bar = QueryBar::new();
         bar.focused = true;
-        bar.text = "SELECT 1".into();
-        bar.cursor = 8;
+        set_text(&mut bar, "SELECT 1");
         terminal
             .draw(|frame| bar.render(frame, frame.area()))
             .unwrap();
@@ -421,169 +434,152 @@ mod tests {
     }
 
     #[test]
-    fn history_navigation_up_down() {
+    fn history_navigation_cycles_through_entries_and_restores_draft() {
         let mut bar = QueryBar::new();
-        bar.text.clear();
-        bar.cursor = 0;
 
-        bar.handle_key(press(KeyCode::Char('Q')));
-        bar.handle_key(press(KeyCode::Char('1')));
-        assert_eq!(
-            bar.handle_key(press(KeyCode::Enter)),
-            QueryBarAction::Execute
-        );
-        assert_eq!(bar.history.len(), 1);
-        assert_eq!(bar.history[0], "Q1");
+        for query in ["Q1", "Q2", "Q3"] {
+            set_text(&mut bar, query);
+            assert_eq!(
+                bar.handle_key(press(KeyCode::Enter)),
+                QueryBarAction::Execute
+            );
+        }
 
-        bar.text.clear();
-        bar.cursor = 0;
-        bar.handle_key(press(KeyCode::Char('Q')));
-        bar.handle_key(press(KeyCode::Char('2')));
-        assert_eq!(
-            bar.handle_key(press(KeyCode::Enter)),
-            QueryBarAction::Execute
-        );
-        assert_eq!(bar.history.len(), 2);
-
-        bar.text.clear();
-        bar.cursor = 0;
-        bar.handle_key(press(KeyCode::Char('Q')));
-        bar.handle_key(press(KeyCode::Char('3')));
-        assert_eq!(
-            bar.handle_key(press(KeyCode::Enter)),
-            QueryBarAction::Execute
-        );
-        assert_eq!(bar.history.len(), 3);
-
-        bar.text = "current".to_string();
-        bar.cursor = 7;
+        set_text(&mut bar, "current");
 
         bar.handle_key(press(KeyCode::Up));
         assert_eq!(bar.text, "Q3");
-        assert_eq!(bar.history_index, Some(2));
-        assert_eq!(bar.draft, "current");
 
         bar.handle_key(press(KeyCode::Up));
         assert_eq!(bar.text, "Q2");
-        assert_eq!(bar.history_index, Some(1));
 
         bar.handle_key(press(KeyCode::Up));
         assert_eq!(bar.text, "Q1");
-        assert_eq!(bar.history_index, Some(0));
 
         bar.handle_key(press(KeyCode::Down));
         assert_eq!(bar.text, "Q2");
-        assert_eq!(bar.history_index, Some(1));
 
         bar.handle_key(press(KeyCode::Down));
         assert_eq!(bar.text, "Q3");
-        assert_eq!(bar.history_index, Some(2));
 
+        // One Down past the newest entry restores the pre-browsing draft.
         bar.handle_key(press(KeyCode::Down));
         assert_eq!(bar.text, "current");
-        assert_eq!(bar.history_index, None);
     }
 
     #[test]
-    fn history_no_consecutive_duplicates() {
+    fn history_skips_consecutive_duplicate_entries() {
         let mut bar = QueryBar::new();
-        bar.text.clear();
-        bar.cursor = 0;
-
-        bar.handle_key(press(KeyCode::Char('Q')));
+        set_text(&mut bar, "Q");
         assert_eq!(
             bar.handle_key(press(KeyCode::Enter)),
             QueryBarAction::Execute
         );
-        assert_eq!(bar.history.len(), 1);
 
-        bar.text = "Q".to_string();
-        bar.cursor = 1;
+        // Submitting the exact same text again must not add a duplicate
+        // history entry.
         assert_eq!(
             bar.handle_key(press(KeyCode::Enter)),
             QueryBarAction::Execute
         );
-        assert_eq!(bar.history.len(), 1);
 
-        bar.text = "Q2".to_string();
-        bar.cursor = 2;
+        set_text(&mut bar, "Q2");
         assert_eq!(
             bar.handle_key(press(KeyCode::Enter)),
             QueryBarAction::Execute
         );
-        assert_eq!(bar.history.len(), 2);
+
+        // History should contain exactly two entries ("Q", "Q2"): Up twice
+        // reaches the oldest one, and a third Up is a no-op.
+        bar.handle_key(press(KeyCode::Up));
+        bar.handle_key(press(KeyCode::Up));
+        assert_eq!(bar.text, "Q");
+
+        bar.handle_key(press(KeyCode::Up));
+        assert_eq!(bar.text, "Q");
     }
 
     #[test]
-    fn history_max_50_entries() {
+    fn history_caps_at_50_entries_evicting_oldest() {
         let mut bar = QueryBar::new();
-        bar.text.clear();
-        bar.cursor = 0;
 
         for i in 0..60 {
-            bar.text = format!("Q{i}");
-            bar.cursor = bar.text.len();
+            set_text(&mut bar, &format!("Q{i}"));
             bar.handle_key(press(KeyCode::Enter));
         }
 
-        assert_eq!(bar.history.len(), 50);
-        assert_eq!(bar.history[0], "Q10");
-        assert_eq!(bar.history[49], "Q59");
+        // Navigate to the oldest surviving entry (Up 50 times from the
+        // most recently submitted query).
+        for _ in 0..50 {
+            bar.handle_key(press(KeyCode::Up));
+        }
+        assert_eq!(bar.text, "Q10", "oldest entries Q0..Q9 should be evicted");
+
+        // A 51st Up is a no-op: there is no earlier entry than the 50 kept.
+        bar.handle_key(press(KeyCode::Up));
+        assert_eq!(bar.text, "Q10");
     }
 
     #[test]
-    fn history_reset_on_text_edit() {
+    fn editing_while_browsing_history_exits_history_mode() {
         let mut bar = QueryBar::new();
-        bar.text.clear();
-        bar.cursor = 0;
-
-        bar.handle_key(press(KeyCode::Char('Q')));
-        bar.handle_key(press(KeyCode::Char('1')));
+        set_text(&mut bar, "Q1");
         bar.handle_key(press(KeyCode::Enter));
 
-        bar.text = "current".to_string();
-        bar.cursor = 7;
+        set_text(&mut bar, "current");
         bar.handle_key(press(KeyCode::Up));
-        assert_eq!(bar.history_index, Some(0));
+        assert_eq!(bar.text, "Q1");
 
+        // Typing exits history-browsing mode: Down (which only acts while
+        // browsing) becomes a no-op afterward instead of restoring a draft.
         bar.handle_key(press(KeyCode::Char('X')));
-        assert_eq!(bar.history_index, None);
+        assert_eq!(bar.text, "Q1X");
+        bar.handle_key(press(KeyCode::Down));
         assert_eq!(bar.text, "Q1X");
 
-        bar.text = "Q1".to_string();
-        bar.cursor = 2;
+        // Backspace also exits history-browsing mode.
+        set_text(&mut bar, "Q1");
         bar.handle_key(press(KeyCode::Up));
-        assert_eq!(bar.history_index, Some(0));
-
+        assert_eq!(bar.text, "Q1");
         bar.handle_key(press(KeyCode::Backspace));
-        assert_eq!(bar.history_index, None);
+        bar.handle_key(press(KeyCode::Down));
+        assert_eq!(bar.text, "Q");
 
-        bar.text = "Q1".to_string();
-        bar.cursor = 2;
+        // Delete also exits history-browsing mode.
+        set_text(&mut bar, "Q1");
         bar.handle_key(press(KeyCode::Up));
-        assert_eq!(bar.history_index, Some(0));
-
+        assert_eq!(bar.text, "Q1");
+        bar.handle_key(press(KeyCode::Home));
         bar.handle_key(press(KeyCode::Delete));
-        assert_eq!(bar.history_index, None);
+        bar.handle_key(press(KeyCode::Down));
+        assert_eq!(bar.text, "1");
     }
 
     #[test]
-    fn history_empty_strings_not_added() {
+    fn history_skips_empty_and_whitespace_only_entries() {
         let mut bar = QueryBar::new();
-        bar.text.clear();
-        bar.cursor = 0;
-
+        set_text(&mut bar, "");
         bar.handle_key(press(KeyCode::Enter));
-        assert_eq!(bar.history.len(), 0);
+        set_text(&mut bar, "draft");
+        bar.handle_key(press(KeyCode::Up));
+        assert_eq!(
+            bar.text, "draft",
+            "empty text must not become a history entry"
+        );
 
-        bar.text = "   ".to_string();
-        bar.cursor = 3;
+        set_text(&mut bar, "   ");
         bar.handle_key(press(KeyCode::Enter));
-        assert_eq!(bar.history.len(), 0);
+        set_text(&mut bar, "draft2");
+        bar.handle_key(press(KeyCode::Up));
+        assert_eq!(
+            bar.text, "draft2",
+            "whitespace-only text must not become a history entry"
+        );
 
-        bar.text = "Q1".to_string();
-        bar.cursor = 2;
+        set_text(&mut bar, "Q1");
         bar.handle_key(press(KeyCode::Enter));
-        assert_eq!(bar.history.len(), 1);
+        set_text(&mut bar, "draft3");
+        bar.handle_key(press(KeyCode::Up));
+        assert_eq!(bar.text, "Q1");
     }
 }

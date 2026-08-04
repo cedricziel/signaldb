@@ -49,7 +49,16 @@ mod tests {
     #[tokio::test]
     async fn test_create_in_memory_catalog() -> Result<()> {
         let ctx = CatalogTestContext::new_in_memory().await?;
-        assert!(Arc::strong_count(&ctx.catalog_manager) >= 1);
+
+        // The catalog manager should be able to create and load a table,
+        // proving the in-memory catalog is actually wired up and usable
+        // rather than merely constructed.
+        let table = ctx
+            .catalog_manager
+            .ensure_table("test_tenant", "test_dataset", "test_table")
+            .await?;
+
+        assert_eq!(table.identifier().name(), "test_table");
         Ok(())
     }
 }

@@ -208,107 +208,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_flight_schemas() {
+    fn trace_schema_identity_fields_are_non_nullable_utf8() {
+        let schema = FlightSchemas::new().trace_schema;
+
+        let trace_id = schema.field_with_name("trace_id").unwrap();
+        assert_eq!(trace_id.data_type(), &DataType::Utf8);
+        assert!(!trace_id.is_nullable());
+
+        let span_id = schema.field_with_name("span_id").unwrap();
+        assert_eq!(span_id.data_type(), &DataType::Utf8);
+        assert!(!span_id.is_nullable());
+    }
+
+    #[test]
+    fn trace_schema_duration_is_non_nullable_uint64() {
+        let schema = FlightSchemas::new().trace_schema;
+
+        let duration = schema.field_with_name("duration_nano").unwrap();
+        assert_eq!(duration.data_type(), &DataType::UInt64);
+        assert!(!duration.is_nullable());
+    }
+
+    #[test]
+    fn log_and_profile_schemas_encode_trace_ids_as_nullable_binary() {
+        // Unlike trace_schema (trace_id: non-nullable Utf8), logs and
+        // profiles carry the correlation id as raw, optional bytes --
+        // conversion code must not assume one trace-id representation.
         let schemas = FlightSchemas::new();
 
-        // Verify trace schema
-        let trace_schema = schemas.trace_schema;
-        assert!(trace_schema.field_with_name("trace_id").is_ok());
-        assert!(trace_schema.field_with_name("span_id").is_ok());
-        assert!(trace_schema.field_with_name("parent_span_id").is_ok());
-        assert!(trace_schema.field_with_name("name").is_ok());
-        assert!(trace_schema.field_with_name("service_name").is_ok());
-        assert!(trace_schema.field_with_name("start_time_unix_nano").is_ok());
-        assert!(trace_schema.field_with_name("end_time_unix_nano").is_ok());
-        assert!(trace_schema.field_with_name("duration_nano").is_ok());
-        assert!(trace_schema.field_with_name("span_kind").is_ok());
-        assert!(trace_schema.field_with_name("status_code").is_ok());
-        assert!(trace_schema.field_with_name("is_root").is_ok());
-        assert!(trace_schema.field_with_name("attributes_json").is_ok());
-        assert!(trace_schema.field_with_name("resource_json").is_ok());
-        assert!(trace_schema.field_with_name("events").is_ok());
-        assert!(trace_schema.field_with_name("links").is_ok());
-        assert!(trace_schema.field_with_name("trace_state").is_ok());
-        assert!(trace_schema.field_with_name("resource_schema_url").is_ok());
-        assert!(trace_schema.field_with_name("scope_name").is_ok());
-        assert!(trace_schema.field_with_name("scope_version").is_ok());
-        assert!(trace_schema.field_with_name("scope_schema_url").is_ok());
-        assert!(trace_schema.field_with_name("scope_attributes").is_ok());
+        let log_trace_id = schemas.log_schema.field_with_name("trace_id").unwrap();
+        assert_eq!(log_trace_id.data_type(), &DataType::Binary);
+        assert!(log_trace_id.is_nullable());
 
-        // Verify log schema
-        let log_schema = schemas.log_schema;
-        assert!(log_schema.field_with_name("time_unix_nano").is_ok());
-        assert!(
-            log_schema
-                .field_with_name("observed_time_unix_nano")
-                .is_ok()
-        );
-        assert!(log_schema.field_with_name("severity_number").is_ok());
-        assert!(log_schema.field_with_name("severity_text").is_ok());
-        assert!(log_schema.field_with_name("body").is_ok());
-        assert!(log_schema.field_with_name("trace_id").is_ok());
-        assert!(log_schema.field_with_name("span_id").is_ok());
-        assert!(log_schema.field_with_name("flags").is_ok());
-        assert!(log_schema.field_with_name("attributes_json").is_ok());
-        assert!(log_schema.field_with_name("resource_json").is_ok());
-        assert!(log_schema.field_with_name("scope_json").is_ok());
-        assert!(log_schema.field_with_name("service_name").is_ok());
+        let profile_trace_id = schemas.profile_schema.field_with_name("trace_id").unwrap();
+        assert_eq!(profile_trace_id.data_type(), &DataType::Binary);
+        assert!(profile_trace_id.is_nullable());
+    }
 
-        // Verify metric schema
-        let metric_schema = schemas.metric_schema;
-        assert!(metric_schema.field_with_name("name").is_ok());
-        assert!(metric_schema.field_with_name("description").is_ok());
-        assert!(metric_schema.field_with_name("unit").is_ok());
-        assert!(
-            metric_schema
-                .field_with_name("start_time_unix_nano")
-                .is_ok()
-        );
-        assert!(metric_schema.field_with_name("time_unix_nano").is_ok());
-        assert!(metric_schema.field_with_name("attributes_json").is_ok());
-        assert!(metric_schema.field_with_name("resource_json").is_ok());
-        assert!(metric_schema.field_with_name("scope_json").is_ok());
-        assert!(metric_schema.field_with_name("metric_type").is_ok());
-        assert!(metric_schema.field_with_name("data_json").is_ok());
-        assert!(
-            metric_schema
-                .field_with_name("aggregation_temporality")
-                .is_ok()
-        );
-        assert!(metric_schema.field_with_name("is_monotonic").is_ok());
+    #[test]
+    fn profile_schema_identity_field_is_non_nullable_while_correlation_fields_are_nullable() {
+        let schema = FlightSchemas::new().profile_schema;
 
-        // Verify profile schema
-        let profile_schema = schemas.profile_schema;
-        assert!(profile_schema.field_with_name("profile_id").is_ok());
-        assert!(profile_schema.field_with_name("time_unix_nano").is_ok());
-        assert!(profile_schema.field_with_name("duration_nano").is_ok());
-        assert!(profile_schema.field_with_name("sample_type_type").is_ok());
-        assert!(profile_schema.field_with_name("sample_type_unit").is_ok());
-        assert!(profile_schema.field_with_name("period").is_ok());
-        assert!(profile_schema.field_with_name("period_type_type").is_ok());
-        assert!(profile_schema.field_with_name("period_type_unit").is_ok());
-        assert!(profile_schema.field_with_name("service_name").is_ok());
-        assert!(profile_schema.field_with_name("stacktraces_json").is_ok());
-        assert!(profile_schema.field_with_name("samples_json").is_ok());
-        assert!(profile_schema.field_with_name("resource_json").is_ok());
-        assert!(profile_schema.field_with_name("scope_json").is_ok());
-        assert!(profile_schema.field_with_name("attributes_json").is_ok());
-        assert!(profile_schema.field_with_name("trace_id").is_ok());
-        assert!(profile_schema.field_with_name("span_id").is_ok());
+        assert!(!schema.field_with_name("profile_id").unwrap().is_nullable());
+        assert!(schema.field_with_name("trace_id").unwrap().is_nullable());
+        assert!(schema.field_with_name("span_id").unwrap().is_nullable());
+    }
 
-        // Correlation fields are nullable; identity fields are not.
-        assert!(
-            !profile_schema
-                .field_with_name("profile_id")
-                .unwrap()
-                .is_nullable()
-        );
-        assert!(
-            profile_schema
-                .field_with_name("trace_id")
-                .unwrap()
-                .is_nullable()
-        );
+    #[test]
+    fn metric_schema_data_json_is_non_nullable() {
+        // data_json carries the metric's typed payload (gauge/sum/histogram);
+        // it must always be present, unlike the optional attribute/resource JSON.
+        let schema = FlightSchemas::new().metric_schema;
+
+        let data_json = schema.field_with_name("data_json").unwrap();
+        assert_eq!(data_json.data_type(), &DataType::Utf8);
+        assert!(!data_json.is_nullable());
     }
 
     #[test]

@@ -28,19 +28,27 @@ pub struct TagSearchScope {
     pub tags: Vec<String>,
 }
 
+#[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
     use super::*;
+    use serde_json::json;
 
     #[test]
-    fn test_serde_tag_values_response() {
-        let tag_values_response = TagValuesResponse {
-            tag_values: Vec::new(),
+    fn tag_values_response_serializes_to_tag_values_wire_field() {
+        let response = TagValuesResponse {
+            tag_values: vec![TagWithValue {
+                tag: "service.name".to_string(),
+                value: "checkout".to_string(),
+            }],
         };
 
-        let json = serde_json::to_string(&tag_values_response).unwrap();
-        let deserialized: TagValuesResponse = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(tag_values_response, deserialized);
+        assert_eq!(
+            serde_json::to_value(&response).unwrap(),
+            json!({
+                "tagValues": [
+                    {"tag": "service.name", "value": "checkout"}
+                ]
+            })
+        );
     }
 }
