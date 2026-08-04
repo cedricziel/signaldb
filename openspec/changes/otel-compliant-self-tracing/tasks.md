@@ -20,13 +20,13 @@ independently shippable and TDD-ordered within.
 
 ## 2. Span factories and conformance pins (common)
 
-- [ ] 2.1 Write failing InMemorySpanExporter conformance tests for
+- [x] 2.1 Write failing InMemorySpanExporter conformance tests for
       `rpc_server_span` / `rpc_client_span` (name incl. ticket verb, kind,
       `rpc.system.name`, `rpc.method`, `rpc.response.status_code`,
       server/client error asymmetry per spec)
-- [ ] 2.2 Write failing conformance tests for `db_client_span` and
+- [x] 2.2 Write failing conformance tests for `db_client_span` and
       `job_span` (incl. link-count behavior via `add_link_from_fields`)
-- [ ] 2.3 Implement `common::self_monitoring::spans` factories; refactor
+- [x] 2.3 Implement `common::self_monitoring::spans` factories; refactor
       `http_trace_context_middleware` onto `http_server_span`, adding
       `error.type` (status-as-string on 5xx), `server.port`,
       `client.address`; extend `http_span_semconv.rs` accordingly
@@ -112,7 +112,7 @@ independently shippable and TDD-ordered within.
 - [ ] 10.2 Generate `signaldb.*` Rust constants from the registry
       (opentelemetry-rust template set), switch factories to them, add
       `git diff --exit-code` drift gate + `registry diff
-  --baseline-registry` evolution gate
+--baseline-registry` evolution gate
 
 ## 11. Live-check CI harness
 

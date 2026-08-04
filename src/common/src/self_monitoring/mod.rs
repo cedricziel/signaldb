@@ -11,6 +11,7 @@ pub mod profiling;
 #[cfg(not(target_os = "windows"))]
 pub mod self_profiling;
 pub mod span_error;
+pub mod spans;
 pub mod suppress;
 
 pub use app_metrics::{
