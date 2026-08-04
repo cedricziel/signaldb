@@ -66,6 +66,7 @@ nav:
       - users/authentication.md
   - Operating SignalDB:
       - operations/wal-persistence.md
+      - operations/binaries.md
       - operations/dokku.md
       - Compactor:
           - operations/compactor/phase3-configuration.md

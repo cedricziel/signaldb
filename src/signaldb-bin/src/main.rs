@@ -42,9 +42,11 @@ impl Default for SignalDbCommands {
     }
 }
 
-// Heap profiling: install jemalloc as global allocator when built with
-// the jemalloc-profiling feature (see [profiling] config)
-#[cfg(feature = "jemalloc-profiling")]
+// jemalloc as global allocator: the Linux release/Docker builds enable the
+// `jemalloc` feature because musl's (and to a lesser degree glibc's)
+// allocator degrades under multithreaded Arrow allocation churn.
+// `jemalloc-profiling` implies it and adds heap self-profiling.
+#[cfg(feature = "jemalloc")]
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 

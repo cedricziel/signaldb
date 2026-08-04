@@ -101,8 +101,12 @@ RUN mkdir -p src/acceptor/src && echo "fn main() {}" > src/acceptor/src/main.rs 
     mkdir -p tests-integration/src && echo "pub fn dummy() {}" > tests-integration/src/lib.rs && \
     mkdir -p xtask/src && echo "fn main() {}" > xtask/src/main.rs
 
+# Service binaries run with jemalloc: musl's allocator degrades badly under
+# multithreaded Arrow allocation churn (signaldb-cli stays on the default).
+ARG CARGO_FEATURES="acceptor/jemalloc,router/jemalloc,writer/jemalloc,querier/jemalloc,compactor/jemalloc,signaldb-bin/jemalloc,mcp-server/jemalloc"
+
 # Build dependencies only (this layer will be cached)
-RUN cargo build --release \
+RUN cargo build --release --features "${CARGO_FEATURES}" \
     --bin signaldb-acceptor \
     --bin signaldb-router \
     --bin signaldb-writer \
@@ -123,7 +127,7 @@ COPY opentelemetry-proto/ opentelemetry-proto/
 COPY src/ src/
 
 # Build all service binaries in release mode
-RUN cargo build --release \
+RUN cargo build --release --features "${CARGO_FEATURES}" \
     --bin signaldb-acceptor \
     --bin signaldb-router \
     --bin signaldb-writer \
