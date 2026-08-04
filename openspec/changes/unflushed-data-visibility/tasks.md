@@ -1,0 +1,103 @@
+# Tasks: Unflushed Data Visibility (LSM Stage 2)
+
+## 1. Writer — watermark and hot-scan surface
+
+- [ ] 1.1 Per-group epoch-based monotonic sequence assigned at memtable
+      insert (`writer_id, tenant, dataset, table`; epoch persisted in the
+      WAL directory alongside the WAL-persisted `writer_id`, incremented
+      per start, sequence = epoch << 32 | counter); FIFO drain advances a
+      contiguously-committed high-water mark, chunked commits advance only
+      the contiguous prefix; epoch rolls forward durably on counter
+      saturation and allocation fails closed (retryable rejection) at
+      exhaustion; unit tests for sequence/watermark accounting,
+      restart-after-commit continuity (no resident batch at or below a
+      prior incarnation's watermark), and saturation/roll boundaries
+- [ ] 1.2 Write `signaldb.hot.<writer_id>.seq` via `update_properties` in
+      the same transaction as `append_data` (alongside the existing
+      idempotency marker, unchanged); CAS-conflict retry reloads latest
+      metadata and reapplies only the writer's own key; tests: no snapshot
+      has the data without the covering watermark; two-writer concurrent
+      commit race preserves both watermarks and both data sets
+- [ ] 1.3 Track per-batch min/max timestamps at insert for scan pruning
+- [ ] 1.4 Hot-scan `do_get`: ticket types in `common::flight` (tenant/
+      dataset/table + mandatory time bounds); internal-service auth
+      identical to `do_put`, ticket tenant validated against caller scope,
+      unscoped/unauthorized rejected; batches streamed in the table's
+      Arrow schema tagged `(writer_id, seq)` with the group's
+      writer-side committed watermark in the response; response byte cap
+      with explicit truncation signaling (single over-cap batch included);
+      `_system` anti-loop guard; tests for isolation, auth, pruning, and
+      truncation signaling
+- [ ] 1.5 Replay-in-progress writers report "warming" on the scan surface;
+      replay reconciles pending entries covered by the idempotency marker
+      (crash after commit, before mark-processed) as processed before the
+      group becomes servable; crash-after-commit-before-mark test asserts
+      no duplicate rows are served
+
+## 2. Compactor — watermark preservation
+
+- [ ] 2.1 Regression test: compaction and snapshot-expiration commits
+      preserve `signaldb.hot.*` table properties
+
+## 3. Querier — hybrid provider
+
+- [ ] 3.1 Generation-keyed writer discovery cache in the querier:
+      registrations bump a monotonic routing generation in the catalog,
+      the querier re-reads only the generation scalar per query and
+      refetches the writer set on change (no staleness window, no
+      full-discovery SQL per query); per-request table-resolution cache so
+      multi-reference queries scan hot data once per table; test: writer
+      joins, acks a batch, immediate query includes it
+- [ ] 3.2 `HybridTableProvider` returned from `LiveIcebergSchema::table()`:
+      eager hot fan-out to all Storage-capable writers (per-writer
+      timeout), then cold resolution pinning snapshot S and reading
+      `W_S[writer]` from the same instance, drop hot batches with
+      `seq ≤ max(W_S, writer-reported watermark)`; missing table key with
+      nonzero writer-reported watermark → drop that writer's hot arm as
+      unresolvable; no derivable finite time bounds → skip hot fan-out
+      entirely, serve committed only, record degradation (unbounded raw-SQL
+      test); truncated scan responses treated as unresolvable; `UnionExec`
+      arms with identical schemas; `Inexact` pushdown; unknown statistics;
+      hot bytes registered against the DataFusion memory pool and bounded
+      by a query-wide hot-buffer budget (overflow → remaining hot arms
+      unresolved + degradation, tested)
+- [ ] 3.3 Querier-side arm-schema equality: re-coerce hot batches against
+      the pinned schema via the shared `common` helpers; assert
+      field-for-field equality including nullability and derived columns;
+      tests: LogQL attribute-equality query keeps hot rows (`attr_tokens`
+      conjunct), hot/cold `date_bin` bucketing agreement
+- [ ] 3.4 Hot-only provider when the Iceberg table does not exist but hot
+      data does (canonical schema, `W = 0`); integration test: new tenant's
+      first data queryable before first commit
+- [ ] 3.5 Degradation: writer unreachable/warming/boundary-unresolvable →
+      drop hot, serve cold; `querier_hot_scan_failures_total` metric +
+      `signaldb.query.hot_scan_degraded` span attribute; `warnings` on the
+      PromQL path (router plumbing); integration test with no writer
+      running
+
+## 4. Correctness under races
+
+- [ ] 4.1 Integration test: query concurrent with a group flush returns
+      each row exactly once (no-dup) — loop the race window
+- [ ] 4.2 Integration test: commit landing between hot scan and cold
+      resolution loses no rows (no-omission)
+- [ ] 4.3 Read-your-writes integration test: acknowledged data visible via
+      Tempo, LogQL, and PromQL surfaces immediately after ack, no
+      force-commit involved
+
+## 5. Test migration and wrap-up
+
+- [ ] 5.1 Migrate the five flush-barrier integration suites
+      (promql_queries, logql_queries, router_tempo_endpoints, e2e
+      logs/metrics, and the remaining `flush_storage_writers` caller) to
+      memtable visibility; keep `flush_storage_writers` and the flush
+      action for operational/targeted use
+- [ ] 5.2 Config flag to disable the hybrid provider (rollback path);
+      document in signaldb.dist.toml and ops docs, including degradation
+      semantics, the trusted-private-network boundary required for
+      inter-service Flight (until the transport-security change covers
+      `do_get`), and the deliberate follow-up of raising `commit_interval`
+- [ ] 5.3 Full workspace test run, clippy, fmt, cargo machete; update
+      architecture/tempo-api skill docs for the new query flow
+- [ ] 5.4 `openspec validate --strict` passes; sync deltas / archive per
+      workflow
