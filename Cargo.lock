@@ -1352,6 +1352,8 @@ dependencies = [
  "humantime-serde",
  "iceberg-rust",
  "object_store",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -1359,6 +1361,7 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tracing",
+ "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
 ]

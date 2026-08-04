@@ -42,3 +42,8 @@ axum.workspace = true
 name = "signaldb-compactor"
 path = "src/main.rs"
 
+
+[dev-dependencies]
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["trace", "testing"] }
+tracing-opentelemetry.workspace = true

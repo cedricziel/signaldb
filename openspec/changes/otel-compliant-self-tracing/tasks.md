@@ -45,13 +45,13 @@ independently shippable and TDD-ordered within.
 
 ## 4. Flight server spans (querier, writer, compactor)
 
-- [ ] 4.1 Write failing test (querier): `do_get` exports SERVER span
+- [x] 4.1 Write failing test (querier): `do_get` exports SERVER span
       `arrow.flight.protocol.FlightService/DoGet <ticket_verb>` with
       `rpc.*` attrs; `NOT_FOUND` completion does not set status Error
-- [ ] 4.2 Replace `flight_do_get` span in `querier/src/flight.rs` with
+- [x] 4.2 Replace `flight_do_get` span in `querier/src/flight.rs` with
       `rpc_server_span`, preserving suppression scope, parent-before-enter,
       and exception recording
-- [ ] 4.3 Same for writer `do_put` (`flight_iceberg.rs`) and the compactor
+- [x] 4.3 Same for writer `do_put` (`flight_iceberg.rs`) and the compactor
       Flight service, with failing tests first per crate
 
 ## 5. Flight client spans (router, acceptor)

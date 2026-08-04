@@ -111,6 +111,17 @@ successful export response means the data is durable.
 | Metrics  | yes             | yes (`POST /v1/metrics`)             | `metrics_gauge`, `metrics_sum`, `metrics_histogram` tables |
 | Profiles | yes             | yes (`POST /v1development/profiles`) | `profiles` table (see [profiles](profiles.md))             |
 
+## Trace continuity into SignalDB
+
+When the operator has SignalDB's self-monitoring enabled, every ingest
+request is itself traced: the acceptor roots each call in an OpenTelemetry
+semconv SERVER span (`POST /v1/traces` on HTTP, the fully-qualified gRPC
+method on :4317) that **joins your trace** when your exporter propagates W3C
+`traceparent`/`tracestate` (gRPC metadata or HTTP headers). Nothing is
+required on your side beyond standard context propagation — most OTLP
+exporters send `traceparent` automatically when the export happens inside an
+active span.
+
 ## OTLP/HTTP support
 
 The HTTP server on port 4318 ingests **traces** at `POST /v1/traces`,
