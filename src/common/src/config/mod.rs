@@ -1219,6 +1219,9 @@ pub struct QuerierConfig {
     /// queries are rejected with RESOURCE_EXHAUSTED. Unset means
     /// unlimited.
     pub max_concurrent_queries_per_tenant: Option<usize>,
+    /// DataFusion scan/pushdown tuning for the query engine. See
+    /// `[querier.datafusion]` in `signaldb.dist.toml`.
+    pub datafusion: QuerierDataFusionConfig,
 }
 
 impl Default for QuerierConfig {
@@ -1230,6 +1233,42 @@ impl Default for QuerierConfig {
             max_sql_rows: 1_000_000,
             max_search_limit: 1_000,
             max_concurrent_queries_per_tenant: None,
+            datafusion: QuerierDataFusionConfig::default(),
+        }
+    }
+}
+
+/// DataFusion session options the querier sets away from DataFusion's own
+/// defaults.
+///
+/// All three default to `true` here (DataFusion defaults them to `false`):
+/// SignalDB's predicates are typically highly selective (trace-id lookups,
+/// label filters), which is the regime where statistics-based file grouping
+/// and Parquet late materialization pay off. The knobs exist to switch the
+/// behavior off for workloads dominated by unselective scans, where row-level
+/// filter pushdown can regress.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QuerierDataFusionConfig {
+    /// Pack files with non-overlapping statistics into the same file group,
+    /// eliminating sorts when per-file min/max statistics (attached by the
+    /// Iceberg provider) already order the files.
+    pub split_file_groups_by_statistics: bool,
+    /// Apply filter predicates during Parquet decoding (late
+    /// materialization) so non-matching rows never decode the remaining
+    /// columns.
+    pub pushdown_filters: bool,
+    /// Reorder pushed-down filters so cheap, selective predicates are
+    /// evaluated first. Only meaningful when `pushdown_filters` is enabled.
+    pub reorder_filters: bool,
+}
+
+impl Default for QuerierDataFusionConfig {
+    fn default() -> Self {
+        Self {
+            split_file_groups_by_statistics: true,
+            pushdown_filters: true,
+            reorder_filters: true,
         }
     }
 }
@@ -1530,6 +1569,60 @@ mod tests {
             assert_eq!(config.querier.query_timeout, Duration::from_secs(5));
             assert_eq!(config.querier.max_sql_rows, 1000);
             assert_eq!(config.querier.max_search_limit, 50);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn querier_datafusion_options_default_on() {
+        // Defaults ON: SignalDB predicates are typically selective, so
+        // statistics-based grouping and Parquet filter pushdown are the
+        // right default; the knobs exist to opt out.
+        let config = Configuration::default();
+        assert!(config.querier.datafusion.split_file_groups_by_statistics);
+        assert!(config.querier.datafusion.pushdown_filters);
+        assert!(config.querier.datafusion.reorder_filters);
+    }
+
+    #[test]
+    fn querier_datafusion_options_parse_from_toml() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                [querier.datafusion]
+                split_file_groups_by_statistics = false
+                pushdown_filters = false
+                reorder_filters = false
+                "#,
+            )?;
+            let config: Configuration = Figment::new()
+                .merge(Serialized::defaults(Configuration::default()))
+                .merge(figment::providers::Toml::file("signaldb.toml"))
+                .extract()?;
+            assert!(!config.querier.datafusion.split_file_groups_by_statistics);
+            assert!(!config.querier.datafusion.pushdown_filters);
+            assert!(!config.querier.datafusion.reorder_filters);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn querier_datafusion_options_env_overrides_flow_through_figment() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "SIGNALDB__QUERIER__DATAFUSION__SPLIT_FILE_GROUPS_BY_STATISTICS",
+                "false",
+            );
+            jail.set_env("SIGNALDB__QUERIER__DATAFUSION__PUSHDOWN_FILTERS", "false");
+            jail.set_env("SIGNALDB__QUERIER__DATAFUSION__REORDER_FILTERS", "false");
+            let config: Configuration = Figment::new()
+                .merge(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB__").split("__"))
+                .extract()?;
+            assert!(!config.querier.datafusion.split_file_groups_by_statistics);
+            assert!(!config.querier.datafusion.pushdown_filters);
+            assert!(!config.querier.datafusion.reorder_filters);
             Ok(())
         });
     }

@@ -243,6 +243,25 @@ max_search_limit = 1000
 # are rejected with RESOURCE_EXHAUSTED (retryable). Unset = unlimited.
 # max_concurrent_queries_per_tenant = 8
 
+[querier.datafusion]
+# DataFusion scan/pushdown tuning. All three default to true (DataFusion's
+# own defaults are false): SignalDB predicates are typically highly
+# selective (trace-id lookups, label filters), the regime where these
+# options pay off. Disable for workloads dominated by unselective scans,
+# where row-level filter pushdown can regress.
+#
+# Pack files with non-overlapping min/max statistics (attached by the
+# Iceberg provider) into the same file group to eliminate sorts.
+split_file_groups_by_statistics = true
+#
+# Apply filters during Parquet decoding (late materialization) so
+# non-matching rows never decode the remaining columns.
+pushdown_filters = true
+#
+# Evaluate cheap, selective predicates first; only meaningful when
+# pushdown_filters is enabled.
+reorder_filters = true
+
 [writer]
 # Writer commit-coalescing policy — how the writer batches ingested data
 # into Iceberg commits. Coalescing caps the Iceberg snapshot (and catalog
