@@ -392,10 +392,41 @@ impl Lowering<'_> {
             (lit(window.start_ns), lit(window.end_ns))
         };
         let time = col(self.source.time_col);
-        df.filter(time.clone().gt_eq(lo))
+        let mut df = df
+            .filter(time.clone().gt_eq(lo))
             .map_err(QuerierError::QueryFailed)?
             .filter(time.lt_eq(hi))
-            .map_err(QuerierError::QueryFailed)
+            .map_err(QuerierError::QueryFailed)?;
+
+        // When the time column is an integer nanosecond column (traces), the
+        // window filter alone never engages Iceberg partition pruning: the
+        // partition transform is `Hour(timestamp)`. Mirror the bounds onto
+        // the `timestamp` partition column (widened outward, so they never
+        // exclude a row the precise filter keeps) — issue #928.
+        if !self.source.time_is_timestamp {
+            let ts_type = df
+                .schema()
+                .fields()
+                .iter()
+                .find(|f| f.name() == "timestamp")
+                .map(|f| f.data_type().clone());
+            if let Some(ts_type) = ts_type {
+                df = df
+                    .filter(super::trace::timestamp_bound_expr(
+                        window.start_ns,
+                        &ts_type,
+                        false,
+                    )?)
+                    .map_err(QuerierError::QueryFailed)?
+                    .filter(super::trace::timestamp_bound_expr(
+                        window.end_ns,
+                        &ts_type,
+                        true,
+                    )?)
+                    .map_err(QuerierError::QueryFailed)?;
+            }
+        }
+        Ok(df)
     }
 
     fn lower_stage(&mut self, df: DataFrame, stage: &Stage) -> Result<DataFrame, QuerierError> {
@@ -1284,6 +1315,78 @@ mod tests {
         cat.register_schema("d", sp).unwrap();
         ctx.register_catalog("t", cat);
         ctx
+    }
+
+    /// Like [`traces_ctx`], plus the `timestamp` partition column the real v2
+    /// table carries (partition transform: `Hour(timestamp)`).
+    fn traces_partitioned_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::Int64, false),
+            Field::new("duration_nanos", DataType::Int64, false),
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t1", "t2"])),
+                Arc::new(StringArray::from(vec!["s1", "s2"])),
+                Arc::new(StringArray::from(vec!["GET /a", "GET /b"])),
+                Arc::new(StringArray::from(vec!["api", "api"])),
+                Arc::new(Int64Array::from(vec![10_i64, 20])),
+                Arc::new(Int64Array::from(vec![100_i64, 900])),
+                Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    // Issue #928: the IR trace window filters only start_time_unix_nano while
+    // the Iceberg partition transform is Hour(timestamp) — the plan must also
+    // bound the `timestamp` partition column so pruning engages.
+    #[tokio::test]
+    async fn traces_time_window_bounds_partition_column() {
+        let svc = IrService::new(traces_partitioned_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["trace_id", "start_time_unix_nano"],
+            "pipeline": []
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap();
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(
+            plan.contains("start_time_unix_nano >="),
+            "missing precise lower row bound:\n{plan}"
+        );
+        assert!(
+            plan.contains(".timestamp >="),
+            "missing partition-pruning lower bound on `timestamp`:\n{plan}"
+        );
+        assert!(
+            plan.contains(".timestamp <="),
+            "missing partition-pruning upper bound on `timestamp`:\n{plan}"
+        );
+        // Still executes: both in-window rows survive the widened bound.
+        let batches = df.collect().await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 2);
     }
 
     // Task 4.3 — single-signal trace query: filter + topk lowers and executes.

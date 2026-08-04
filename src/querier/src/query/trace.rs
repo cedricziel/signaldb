@@ -10,7 +10,7 @@ use datafusion::{
         datatypes::{DataType, TimeUnit},
     },
     logical_expr::{Expr, col, lit},
-    prelude::SessionContext,
+    prelude::{DataFrame, SessionContext},
     scalar::ScalarValue,
 };
 
@@ -408,111 +408,9 @@ impl TraceService {
             dataset_slug
         );
 
-        // Build safe table reference with tenant and dataset isolation
-        let table_ref = build_table_reference(tenant_slug, dataset_slug, "traces")
-            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
-
-        // Use DataFrame API (prevents SQL injection)
-        let mut df = self.session_context.table(table_ref).await.map_err(|e| {
-            log::error!(
-                "Failed to access table for tenant_slug={}, dataset_slug={}: {}",
-                tenant_slug,
-                dataset_slug,
-                e
-            );
-            QuerierError::QueryFailed(e)
-        })?;
-
-        // Apply time range filters if provided
-        if let Some(start) = query.start {
-            let start_nanos = unix_seconds_to_nanos("start", start)?;
-            df = df
-                .filter(col("start_time_unix_nano").gt_eq(lit(start_nanos)))
-                .map_err(|e| {
-                    log::error!("Failed to apply start time filter: {e}");
-                    QuerierError::QueryFailed(e)
-                })?;
-        }
-        if let Some(end) = query.end {
-            let end_nanos = unix_seconds_to_nanos("end", end)?;
-            df = df
-                .filter(col("start_time_unix_nano").lt_eq(lit(end_nanos)))
-                .map_err(|e| {
-                    log::error!("Failed to apply end time filter: {e}");
-                    QuerierError::QueryFailed(e)
-                })?;
-        }
-
-        // Apply duration filters
-        if let Some(min_dur) = query.min_duration {
-            df = df
-                .filter(col("duration_nanos").gt_eq(lit(min_dur)))
-                .map_err(|e| {
-                    log::error!("Failed to apply min duration filter: {e}");
-                    QuerierError::QueryFailed(e)
-                })?;
-        }
-        if let Some(max_dur) = query.max_duration {
-            df = df
-                .filter(col("duration_nanos").lt_eq(lit(max_dur)))
-                .map_err(|e| {
-                    log::error!("Failed to apply max duration filter: {e}");
-                    QuerierError::QueryFailed(e)
-                })?;
-        }
-
-        // Apply the `q` (TraceQL subset) and `tags` (logfmt) selectors.
-        // Unsupported constructs error out instead of silently returning
-        // unfiltered results (issue #551).
-        let mut conditions = Vec::new();
-        if let Some(q) = query.q.as_deref().filter(|s| !s.trim().is_empty()) {
-            conditions.extend(search_filter::parse_traceql(q)?);
-        }
-        if let Some(tags) = query.tags.as_deref().filter(|s| !s.trim().is_empty()) {
-            conditions.extend(search_filter::parse_tags(tags)?);
-        }
-        let attr_ctx = super::logql::AttrContext {
-            materialized: df
-                .schema()
-                .fields()
-                .iter()
-                .map(|f| f.name().to_string())
-                .filter(|n| n.starts_with("label_"))
-                .collect(),
-            map_attrs: df.schema().fields().iter().any(|f| {
-                f.name() == "span_attributes"
-                    && matches!(
-                        f.data_type(),
-                        datafusion::arrow::datatypes::DataType::Map(_, _)
-                    )
-            }),
-            // Traces tables carry no derived token column (logs only).
-            attr_tokens: false,
-        };
-        // Query demand (epic #737, #733): attribute conditions are
-        // materialization candidates.
-        for condition in &conditions {
-            if let search_filter::Selector::SpanAttribute(key)
-            | search_filter::Selector::ResourceAttribute(key)
-            | search_filter::Selector::AnyAttribute(key) = &condition.selector
-            {
-                common::attr_demand::record(tenant_slug, dataset_slug, "traces", key);
-            }
-        }
-        for condition in &conditions {
-            df = df.filter(condition.to_expr(&attr_ctx)?).map_err(|e| {
-                log::error!("Failed to apply search filter {condition:?}: {e}");
-                QuerierError::QueryFailed(e)
-            })?;
-        }
-
-        // Apply limit — we query for more spans than the requested trace count because
-        // each trace typically contains many spans. This estimate avoids truncating traces.
-        let (limit, span_limit) = clamped_limits(query.limit, self.max_search_limit)?;
-        df = df.limit(0, Some(span_limit)).map_err(|e| {
-            log::error!("Failed to apply limit: {e}");
-            QuerierError::QueryFailed(e)
-        })?;
+        let (df, limit) = self
+            .build_search_dataframe(&query, tenant_slug, dataset_slug)
+            .await?;
 
         let results = df.collect().await.map_err(|e| {
             log::error!(
@@ -712,22 +610,191 @@ impl TraceService {
             }
         }
 
-        // Build trace hierarchies, limited to requested count
-        let mut traces = Vec::new();
-        for (trace_id, span_map) in traces_map {
-            if traces.len() >= limit {
-                break;
-            }
-
-            let root_spans = model::span::build_span_hierarchy(span_map);
-
-            traces.push(model::trace::Trace {
+        // Build trace hierarchies, truncated to the requested count
+        // deterministically (newest first) rather than by HashMap iteration
+        // order.
+        let traces = order_traces_for_truncation(traces_map, limit)
+            .into_iter()
+            .map(|(trace_id, span_map)| model::trace::Trace {
                 trace_id,
-                spans: root_spans,
-            });
-        }
+                spans: model::span::build_span_hierarchy(span_map),
+            })
+            .collect();
 
         Ok(traces)
+    }
+
+    /// Build the search scan for [`TraceService::find_traces_with_tenant`],
+    /// returning the `DataFrame` plus the effective trace-count limit.
+    ///
+    /// Split out from the collect/assembly step so tests can assert on the
+    /// logical plan. The plan shape addresses issue #928:
+    /// - every time bound lands on `start_time_unix_nano` (precise row
+    ///   filter) *and* on the `timestamp` partition column, so Iceberg
+    ///   hour-partition pruning engages (transform: `Hour(timestamp)`);
+    /// - spans are sorted `start_time_unix_nano DESC` before the span limit,
+    ///   so "most recent N traces" keeps the newest spans instead of N
+    ///   arbitrary rows;
+    /// - only [`TRACE_SEARCH_COLUMNS`] are projected, skipping the fat
+    ///   `events`/`links`/`scope_*` columns the search assembly never reads.
+    async fn build_search_dataframe(
+        &self,
+        query: &SearchQueryParams,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<(DataFrame, usize), QuerierError> {
+        // Build safe table reference with tenant and dataset isolation
+        let table_ref = build_table_reference(tenant_slug, dataset_slug, "traces")
+            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+
+        // Use DataFrame API (prevents SQL injection)
+        let mut df = self.session_context.table(table_ref).await.map_err(|e| {
+            log::error!(
+                "Failed to access table for tenant_slug={}, dataset_slug={}: {}",
+                tenant_slug,
+                dataset_slug,
+                e
+            );
+            QuerierError::QueryFailed(e)
+        })?;
+
+        // Apply time range filters if provided. Each bound is applied twice:
+        // a precise `start_time_unix_nano` row filter, plus an equivalent
+        // (widened) predicate on the `timestamp` partition column so Iceberg
+        // can prune whole hour partitions — same dual-bound scheme as
+        // `find_by_id_with_tenant`.
+        let timestamp_type = df
+            .schema()
+            .fields()
+            .iter()
+            .find(|f| f.name() == "timestamp")
+            .map(|f| f.data_type().clone());
+        if let Some(start) = query.start {
+            let start_nanos = unix_seconds_to_nanos("start", start)?;
+            df = df
+                .filter(col("start_time_unix_nano").gt_eq(lit(start_nanos)))
+                .map_err(|e| {
+                    log::error!("Failed to apply start time filter: {e}");
+                    QuerierError::QueryFailed(e)
+                })?;
+            if let Some(ts_type) = &timestamp_type {
+                df = df
+                    .filter(timestamp_bound_expr(start_nanos, ts_type, false)?)
+                    .map_err(|e| {
+                        log::error!("Failed to apply start partition bound: {e}");
+                        QuerierError::QueryFailed(e)
+                    })?;
+            }
+        }
+        if let Some(end) = query.end {
+            let end_nanos = unix_seconds_to_nanos("end", end)?;
+            df = df
+                .filter(col("start_time_unix_nano").lt_eq(lit(end_nanos)))
+                .map_err(|e| {
+                    log::error!("Failed to apply end time filter: {e}");
+                    QuerierError::QueryFailed(e)
+                })?;
+            if let Some(ts_type) = &timestamp_type {
+                df = df
+                    .filter(timestamp_bound_expr(end_nanos, ts_type, true)?)
+                    .map_err(|e| {
+                        log::error!("Failed to apply end partition bound: {e}");
+                        QuerierError::QueryFailed(e)
+                    })?;
+            }
+        }
+
+        // Apply duration filters
+        if let Some(min_dur) = query.min_duration {
+            df = df
+                .filter(col("duration_nanos").gt_eq(lit(min_dur)))
+                .map_err(|e| {
+                    log::error!("Failed to apply min duration filter: {e}");
+                    QuerierError::QueryFailed(e)
+                })?;
+        }
+        if let Some(max_dur) = query.max_duration {
+            df = df
+                .filter(col("duration_nanos").lt_eq(lit(max_dur)))
+                .map_err(|e| {
+                    log::error!("Failed to apply max duration filter: {e}");
+                    QuerierError::QueryFailed(e)
+                })?;
+        }
+
+        // Apply the `q` (TraceQL subset) and `tags` (logfmt) selectors.
+        // Unsupported constructs error out instead of silently returning
+        // unfiltered results (issue #551).
+        let mut conditions = Vec::new();
+        if let Some(q) = query.q.as_deref().filter(|s| !s.trim().is_empty()) {
+            conditions.extend(search_filter::parse_traceql(q)?);
+        }
+        if let Some(tags) = query.tags.as_deref().filter(|s| !s.trim().is_empty()) {
+            conditions.extend(search_filter::parse_tags(tags)?);
+        }
+        let attr_ctx = super::logql::AttrContext {
+            materialized: df
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| f.name().to_string())
+                .filter(|n| n.starts_with("label_"))
+                .collect(),
+            map_attrs: df.schema().fields().iter().any(|f| {
+                f.name() == "span_attributes"
+                    && matches!(
+                        f.data_type(),
+                        datafusion::arrow::datatypes::DataType::Map(_, _)
+                    )
+            }),
+            // Traces tables carry no derived token column (logs only).
+            attr_tokens: false,
+        };
+        // Query demand (epic #737, #733): attribute conditions are
+        // materialization candidates.
+        for condition in &conditions {
+            if let search_filter::Selector::SpanAttribute(key)
+            | search_filter::Selector::ResourceAttribute(key)
+            | search_filter::Selector::AnyAttribute(key) = &condition.selector
+            {
+                common::attr_demand::record(tenant_slug, dataset_slug, "traces", key);
+            }
+        }
+        for condition in &conditions {
+            df = df.filter(condition.to_expr(&attr_ctx)?).map_err(|e| {
+                log::error!("Failed to apply search filter {condition:?}: {e}");
+                QuerierError::QueryFailed(e)
+            })?;
+        }
+
+        // Projection pushdown: only read the columns the search assembly
+        // consumes, so the scan skips the fat `events` / `links` / `scope_*`
+        // columns entirely. Applied after the filters, which may reference
+        // columns outside the projection (e.g. `label_*`).
+        df = df.select_columns(&TRACE_SEARCH_COLUMNS).map_err(|e| {
+            log::error!("Failed to project trace search columns: {e}");
+            QuerierError::QueryFailed(e)
+        })?;
+
+        // Order newest-first before limiting: LIMIT without ORDER BY would
+        // return arbitrary spans, so "most recent N traces" was N arbitrary
+        // traces.
+        df = df
+            .sort(vec![col("start_time_unix_nano").sort(false, false)])
+            .map_err(|e| {
+                log::error!("Failed to apply search ordering: {e}");
+                QuerierError::QueryFailed(e)
+            })?;
+
+        // Apply limit — we query for more spans than the requested trace count because
+        // each trace typically contains many spans. This estimate avoids truncating traces.
+        let (limit, span_limit) = clamped_limits(query.limit, self.max_search_limit)?;
+        df = df.limit(0, Some(span_limit)).map_err(|e| {
+            log::error!("Failed to apply limit: {e}");
+            QuerierError::QueryFailed(e)
+        })?;
+
+        Ok((df, limit))
     }
 }
 
@@ -751,6 +818,55 @@ const TRACE_LOOKUP_COLUMNS: [&str; 13] = [
     "duration_nanos",
     "events",
 ];
+
+/// Columns the search result assembly in
+/// [`TraceService::find_traces_with_tenant`] actually reads (persisted traces
+/// v2 names). [`TRACE_LOOKUP_COLUMNS`] minus `events`: search builds span
+/// summaries without events, so projecting the JSON `events` string away
+/// keeps the scan lean.
+const TRACE_SEARCH_COLUMNS: [&str; 12] = [
+    "trace_id",
+    "span_id",
+    "parent_span_id",
+    "span_attributes",
+    "resource_attributes",
+    "status_code",
+    "is_root",
+    "span_name",
+    "service_name",
+    "span_kind",
+    "start_time_unix_nano",
+    "duration_nanos",
+];
+
+/// Order assembled traces for truncation: most-recent span start descending,
+/// with `trace_id` as the tie-break, then keep the first `limit`.
+///
+/// Search fetches spans newest-first, so this keeps the traces whose spans
+/// topped that stream. Without it, truncation followed `HashMap` iteration
+/// order and "most recent N traces" returned N arbitrary traces (issue #928).
+fn order_traces_for_truncation(
+    traces_map: HashMap<String, HashMap<String, Span>>,
+    limit: usize,
+) -> Vec<(String, HashMap<String, Span>)> {
+    let mut traces: Vec<(u64, String, HashMap<String, Span>)> = traces_map
+        .into_iter()
+        .map(|(trace_id, spans)| {
+            let newest_start = spans
+                .values()
+                .map(|s| s.start_time_unix_nano)
+                .max()
+                .unwrap_or(0);
+            (newest_start, trace_id, spans)
+        })
+        .collect();
+    traces.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    traces.truncate(limit);
+    traces
+        .into_iter()
+        .map(|(_, trace_id, spans)| (trace_id, spans))
+        .collect()
+}
 
 /// Build a literal matching the on-disk `timestamp` partition column so a
 /// time-range filter engages Iceberg hour-partition pruning (the partition
@@ -823,7 +939,10 @@ fn timestamp_bound_scalar(
 }
 
 /// Wrap [`timestamp_bound_scalar`] into a `col("timestamp") >=/<= <literal>` expression.
-fn timestamp_bound_expr(
+///
+/// Shared with the IR planner (`super::ir_planner`), which has the same
+/// partition-pruning obligation for trace scans.
+pub(super) fn timestamp_bound_expr(
     nanos: i64,
     col_type: &DataType,
     round_up: bool,
@@ -940,6 +1059,290 @@ mod tests {
     #[test]
     fn span_limit_uses_default_when_absent() {
         assert_eq!(clamped_limits(None, 1000).unwrap(), (20, 20 * 50));
+    }
+
+    /// Register a traces table with the persisted v2 column names (including
+    /// the `timestamp` partition column and the fat `links`/`scope_*` columns
+    /// that search must never materialize) under `t.d.traces`.
+    fn search_session() -> SessionContext {
+        use datafusion::arrow::array::{
+            ArrayRef, BooleanArray, MapBuilder, MapFieldNames, StringBuilder,
+            TimestampNanosecondArray,
+        };
+        use datafusion::arrow::datatypes::{Field, Fields, Schema};
+        use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
+        use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
+
+        fn map_field(name: &str) -> Field {
+            let entries = Field::new(
+                "entries",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("keys", DataType::Utf8, false),
+                    Field::new("values", DataType::Utf8, true),
+                ])),
+                false,
+            );
+            Field::new(name, DataType::Map(Arc::new(entries), false), true)
+        }
+
+        fn empty_maps(rows: usize) -> ArrayRef {
+            let names = MapFieldNames {
+                entry: "entries".to_string(),
+                key: "keys".to_string(),
+                value: "values".to_string(),
+            };
+            let mut b = MapBuilder::new(Some(names), StringBuilder::new(), StringBuilder::new());
+            for _ in 0..rows {
+                b.append(true).unwrap();
+            }
+            Arc::new(b.finish())
+        }
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("parent_span_id", DataType::Utf8, true),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("span_kind", DataType::Utf8, false),
+            Field::new("status_code", DataType::Utf8, true),
+            Field::new("is_root", DataType::Boolean, false),
+            Field::new("start_time_unix_nano", DataType::Int64, false),
+            Field::new("duration_nanos", DataType::Int64, false),
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            map_field("span_attributes"),
+            map_field("resource_attributes"),
+            Field::new("events", DataType::Utf8, true),
+            Field::new("links", DataType::Utf8, true),
+            Field::new("scope_name", DataType::Utf8, true),
+        ]));
+
+        // Three single-span traces at distinct times (seconds 1, 2, 3).
+        let starts: Vec<i64> = vec![1_000_000_000, 2_000_000_000, 3_000_000_000];
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t-old", "t-mid", "t-new"])),
+                Arc::new(StringArray::from(vec!["s1", "s2", "s3"])),
+                Arc::new(StringArray::from(vec![Some(""), Some(""), Some("")])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+                Arc::new(StringArray::from(vec!["api", "api", "api"])),
+                Arc::new(StringArray::from(vec!["Server", "Server", "Server"])),
+                Arc::new(StringArray::from(vec![Some("Ok"), Some("Ok"), Some("Ok")])),
+                Arc::new(BooleanArray::from(vec![true, true, true])),
+                Arc::new(Int64Array::from(starts.clone())),
+                Arc::new(Int64Array::from(vec![100_i64, 100, 100])),
+                Arc::new(TimestampNanosecondArray::from(starts)),
+                empty_maps(3),
+                empty_maps(3),
+                Arc::new(StringArray::from(vec![Option::<&str>::None; 3])),
+                Arc::new(StringArray::from(vec![Option::<&str>::None; 3])),
+                Arc::new(StringArray::from(vec![Option::<&str>::None; 3])),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    fn search_service() -> TraceService {
+        TraceService::new(search_session(), "traces".to_string())
+    }
+
+    fn search_params() -> SearchQueryParams {
+        SearchQueryParams {
+            q: None,
+            tags: None,
+            min_duration: None,
+            max_duration: None,
+            limit: None,
+            start: None,
+            end: None,
+        }
+    }
+
+    /// Issue #928 defect 1: the search scan must mirror its
+    /// `start_time_unix_nano` bounds onto the `timestamp` partition column so
+    /// Iceberg hour-partition pruning engages (the partition transform is
+    /// `Hour(timestamp)`).
+    #[tokio::test]
+    async fn search_plan_bounds_partition_column() {
+        let service = search_service();
+        let query = SearchQueryParams {
+            start: Some(1),
+            end: Some(3),
+            ..search_params()
+        };
+        let (df, _) = service
+            .build_search_dataframe(&query, "t", "d")
+            .await
+            .unwrap();
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(
+            plan.contains("start_time_unix_nano >="),
+            "missing precise lower row bound:\n{plan}"
+        );
+        assert!(
+            plan.contains("start_time_unix_nano <="),
+            "missing precise upper row bound:\n{plan}"
+        );
+        assert!(
+            plan.contains(".timestamp >="),
+            "missing partition-pruning lower bound on `timestamp`:\n{plan}"
+        );
+        assert!(
+            plan.contains(".timestamp <="),
+            "missing partition-pruning upper bound on `timestamp`:\n{plan}"
+        );
+    }
+
+    /// Issue #928 defect 2 (query shape): LIMIT without ORDER BY returns
+    /// arbitrary spans; the plan must sort newest-first before limiting.
+    #[tokio::test]
+    async fn search_plan_orders_newest_first_before_limit() {
+        let service = search_service();
+        let (df, _) = service
+            .build_search_dataframe(&search_params(), "t", "d")
+            .await
+            .unwrap();
+        let plan = format!("{}", df.logical_plan().display_indent());
+        let sort_pos = plan
+            .find("Sort:")
+            .unwrap_or_else(|| panic!("no Sort in plan:\n{plan}"));
+        let limit_pos = plan
+            .find("Limit:")
+            .unwrap_or_else(|| panic!("no Limit in plan:\n{plan}"));
+        assert!(
+            plan.contains("start_time_unix_nano DESC"),
+            "sort key must be start_time_unix_nano DESC:\n{plan}"
+        );
+        // display_indent prints root-first, so the Limit node (root side)
+        // must appear before the Sort node it wraps.
+        assert!(
+            limit_pos < sort_pos,
+            "Limit must apply on top of Sort:\n{plan}"
+        );
+    }
+
+    /// Issue #928 defect 3: search must project only the columns its result
+    /// assembly reads, skipping the fat `links`/`events`/`scope_*` columns.
+    #[tokio::test]
+    async fn search_plan_projects_only_consumed_columns() {
+        let service = search_service();
+        let (df, _) = service
+            .build_search_dataframe(&search_params(), "t", "d")
+            .await
+            .unwrap();
+        let names: Vec<&str> = df
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect();
+        assert_eq!(
+            names,
+            TRACE_SEARCH_COLUMNS.to_vec(),
+            "search projection drifted"
+        );
+        for fat in ["links", "events", "scope_name"] {
+            assert!(!names.contains(&fat), "search must not materialize `{fat}`");
+        }
+    }
+
+    /// End to end: the "most recent N traces" contract — newest traces, in
+    /// deterministic newest-first order, not N arbitrary HashMap entries.
+    #[tokio::test]
+    async fn search_returns_most_recent_traces_newest_first() {
+        let service = search_service();
+        let query = SearchQueryParams {
+            limit: Some(2),
+            ..search_params()
+        };
+        let traces = service
+            .find_traces_with_tenant(query, "t", "d")
+            .await
+            .unwrap();
+        let ids: Vec<&str> = traces.iter().map(|t| t.trace_id.as_str()).collect();
+        assert_eq!(ids, vec!["t-new", "t-mid"]);
+    }
+
+    fn test_span(trace_id: &str, span_id: &str, start: u64) -> Span {
+        Span {
+            span_id: span_id.to_string(),
+            parent_span_id: String::new(),
+            children: Vec::new(),
+            events: Vec::new(),
+            trace_id: trace_id.to_string(),
+            status: SpanStatus::Unspecified,
+            is_root: true,
+            name: "span".to_string(),
+            service_name: "svc".to_string(),
+            span_kind: SpanKind::Internal,
+            start_time_unix_nano: start,
+            duration_nano: 1,
+            attributes: HashMap::new(),
+            resource: HashMap::new(),
+        }
+    }
+
+    /// Issue #928 defect 2 (truncation): trace truncation must be
+    /// deterministic — most-recent span start descending, trace_id as the
+    /// tie-break — regardless of HashMap iteration order.
+    #[test]
+    fn trace_truncation_is_deterministic_newest_first() {
+        let mut traces_map: HashMap<String, HashMap<String, Span>> = HashMap::new();
+        for (trace_id, starts) in [
+            ("t-old", vec![10_u64, 20]),
+            ("t-new", vec![15, 400]),
+            ("t-mid", vec![300]),
+            ("t-tie", vec![300]),
+        ] {
+            let spans: HashMap<String, Span> = starts
+                .into_iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    let span_id = format!("{trace_id}-{i}");
+                    (span_id.clone(), test_span(trace_id, &span_id, s))
+                })
+                .collect();
+            traces_map.insert(trace_id.to_string(), spans);
+        }
+
+        let ordered = order_traces_for_truncation(traces_map.clone(), 3);
+        let ids: Vec<&str> = ordered.iter().map(|(id, _)| id.as_str()).collect();
+        // t-new has the most recent span (400); the 300-tie breaks on
+        // trace_id; t-old (newest span 20) is truncated away.
+        assert_eq!(ids, vec!["t-new", "t-mid", "t-tie"]);
+
+        // Stable across repeated invocations (HashMap order must not leak).
+        for _ in 0..10 {
+            let again = order_traces_for_truncation(traces_map.clone(), 3);
+            let again_ids: Vec<&str> = again.iter().map(|(id, _)| id.as_str()).collect();
+            assert_eq!(again_ids, ids);
+        }
+    }
+
+    #[test]
+    fn trace_truncation_keeps_everything_under_limit() {
+        let mut traces_map: HashMap<String, HashMap<String, Span>> = HashMap::new();
+        traces_map.insert(
+            "only".to_string(),
+            HashMap::from([("s".to_string(), test_span("only", "s", 1))]),
+        );
+        let ordered = order_traces_for_truncation(traces_map, 20);
+        assert_eq!(ordered.len(), 1);
     }
 
     #[test]
