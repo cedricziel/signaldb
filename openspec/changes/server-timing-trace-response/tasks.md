@@ -16,10 +16,10 @@
 
 ## 3. UI consumption: document-load correlation (src/ui)
 
-- [ ] 3.1 Write failing tests for a `serverTiming` traceparent parser: extracts context from a navigation entry, strict validation (length/hex), rejects malformed `desc`, rejects all-zero ids, preserves trace-flags (`npm test` in src/ui)
-- [ ] 3.2 Implement the parser module in `src/ui/src/telemetry/`; tests pass
-- [ ] 3.3 Write failing tests for a `ServerCorrelationSpanProcessor`: adds a span link with the server context to the document-load root span on start; no-op when no entry, malformed entry, or flags `00` parenting is avoided; initialization never throws
-- [ ] 3.4 Implement the processor and register it in `telemetry/index.ts`; verify the pinned OTel JS SDK supports `span.addLink` (bump the SDK if not, attribute fallback only as last resort); tests pass
+- [x] 3.1 Write failing tests for a `serverTiming` traceparent parser: extracts context from a navigation entry, strict validation (length/hex), rejects malformed `desc`, rejects all-zero ids, preserves trace-flags (`npm test` in src/ui)
+- [x] 3.2 Implement the parser module in `src/ui/src/telemetry/`; tests pass
+- [x] 3.3 Write failing tests for a `ServerCorrelationSpanProcessor`: adds a span link with the server context to the document-load root span on start; no-op when no entry, malformed entry, or flags `00` parenting is avoided; initialization never throws
+- [x] 3.4 Implement the processor and register it in `telemetry/index.ts`; verify the pinned OTel JS SDK supports `span.addLink` (bump the SDK if not, attribute fallback only as last resort); tests pass
 
 ## 4. Docs and surface hygiene
 
