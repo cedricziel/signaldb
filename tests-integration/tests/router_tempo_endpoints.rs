@@ -591,6 +591,10 @@ async fn test_trace_lookup_rejects_millisecond_time_bounds() {
         )))
         .await
         .unwrap();
+    // Status only: this handler returns `Result<Json<_>, StatusCode>`, so
+    // every error response is bodyless and the querier's "expected seconds"
+    // message reaches the server log but not the client. Surfacing these
+    // messages to callers is tracked separately.
     assert_eq!(
         millis_response.status(),
         StatusCode::BAD_REQUEST,
