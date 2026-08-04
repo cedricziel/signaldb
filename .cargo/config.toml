@@ -10,6 +10,15 @@ xtask = "run --package xtask --"
 [env]
 RUST_BACKTRACE = { value = "1", condition = { env_not_set = "RUST_BACKTRACE" } }
 
+# Ubuntu's aarch64-linux-musl-gcc is a spec wrapper around the glibc gcc, so it
+# links the glibc-built libgcc.a whose outline-atomics init (lse-init.o)
+# references __getauxval — a symbol musl doesn't provide. Any C compile+link
+# touching atomics fails, which makes jemalloc's configure conclude the platform
+# has no atomics at all. Disabling outline atomics (LL/SC instead of
+# runtime-dispatched LSE) removes the libgcc dependency. cc-rs reads this
+# target-scoped variable, so it is inert for every other target.
+CFLAGS_aarch64_unknown_linux_musl = { value = "-mno-outline-atomics", condition = { env_not_set = "CFLAGS_aarch64_unknown_linux_musl" } }
+
 # ------------------------------------------------------------
 # CPU target features
 # ------------------------------------------------------------
