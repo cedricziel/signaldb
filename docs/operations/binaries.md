@@ -32,6 +32,14 @@ On an older CPU the binaries fail immediately with an illegal-instruction
 fault (`SIGILL`), not a graceful error. If you must run on such hardware,
 build from source without the target-feature flags.
 
+One carve-out on aarch64 musl builds (the Linux arm64 container images and
+release binaries): their C dependencies — jemalloc included — are compiled
+with `-mno-outline-atomics` (`.cargo/config.toml` sets
+`CFLAGS_aarch64_unknown_linux_musl`), because Ubuntu's musl-tools gcc links
+the glibc-built libgcc whose outline-atomics runtime dispatch requires
+`__getauxval`, a symbol musl doesn't provide. C code in these binaries uses
+LL/SC atomics even on CPUs with LSE; Rust code is unaffected.
+
 ## Memory allocator
 
 Service binaries in the container images (and CI-built musl release binaries)
