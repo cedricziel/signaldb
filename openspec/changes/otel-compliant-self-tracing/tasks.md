@@ -33,14 +33,14 @@ independently shippable and TDD-ordered within.
 
 ## 3. Acceptor becomes a trace boundary
 
-- [ ] 3.1 Write failing integration test (tests-integration): OTLP/HTTP
+- [x] 3.1 Write failing integration test (tests-integration): OTLP/HTTP
       `POST /v1/traces` with `traceparent` yields a child SERVER span named
       `POST /v1/traces`; 4xx response leaves span status unset
-- [ ] 3.2 Mount `http_trace_context_middleware` on acceptor OTLP/HTTP and
+- [x] 3.2 Mount `http_trace_context_middleware` on acceptor OTLP/HTTP and
       remote-write routers (verify `_system` bypass still suppresses)
-- [ ] 3.3 Write failing integration test: OTLP gRPC export call yields a
+- [x] 3.3 Write failing integration test: OTLP gRPC export call yields a
       SERVER span with `rpc.*` attributes, joined to the caller's context
-- [ ] 3.4 Implement tonic tower layer applying `rpc_server_span` +
+- [x] 3.4 Implement tonic tower layer applying `rpc_server_span` +
       `set_parent_from_request` across all four OTLP services
 
 ## 4. Flight server spans (querier, writer, compactor)

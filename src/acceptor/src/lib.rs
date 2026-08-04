@@ -298,6 +298,7 @@ pub async fn serve_otlp_grpc(
         .expect("Unable to send init signal for OTLP/gRPC");
 
     tonic::transport::Server::builder()
+        .layer(crate::middleware::GrpcTraceLayer)
         .add_service(log_server)
         .add_service(trace_server)
         .add_service(metric_server)
@@ -320,6 +321,9 @@ pub fn acceptor_router() -> Router {
         .route("/health", get(health))
         .layer(axum::middleware::from_fn(
             common::self_monitoring::http_metrics_middleware,
+        ))
+        .layer(axum::middleware::from_fn(
+            common::self_monitoring::http_trace_context_middleware,
         ))
 }
 
@@ -357,6 +361,9 @@ pub fn prometheus_router(
         }))
         .layer(middleware::from_fn(
             common::self_monitoring::http_metrics_middleware,
+        ))
+        .layer(middleware::from_fn(
+            common::self_monitoring::http_trace_context_middleware,
         ))
 }
 
@@ -397,6 +404,9 @@ pub fn profiles_http_router(
         }))
         .layer(middleware::from_fn(
             common::self_monitoring::http_metrics_middleware,
+        ))
+        .layer(middleware::from_fn(
+            common::self_monitoring::http_trace_context_middleware,
         ))
 }
 
@@ -478,6 +488,9 @@ fn otlp_signal_router<H: Send + Sync + 'static>(
         }))
         .layer(middleware::from_fn(
             common::self_monitoring::http_metrics_middleware,
+        ))
+        .layer(middleware::from_fn(
+            common::self_monitoring::http_trace_context_middleware,
         ))
 }
 

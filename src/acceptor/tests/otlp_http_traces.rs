@@ -327,3 +327,113 @@ async fn otlp_http_traces_malformed_json_is_bad_request() {
     );
     assert_eq!(traces_wal_entry_count(&wal_manager).await, 0);
 }
+
+/// The ingest endpoint is a trace boundary: it emits a semconv SERVER span
+/// joined to the caller-supplied W3C trace context, and a client error (401)
+/// leaves the span status unset.
+#[tokio::test]
+async fn emits_server_span_joined_to_caller_trace() {
+    use opentelemetry::trace::{SpanKind, Status, TracerProvider as _};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+    use tracing::instrument::WithSubscriber;
+    use tracing_subscriber::prelude::*;
+
+    let (app, _wal_manager, _temp_dir) = setup_traces_test().await;
+
+    // Production installs the W3C propagator in init_telemetry; parent
+    // adoption goes through the global propagator, a no-op by default.
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
+
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let tracer = provider.tracer("test");
+    let subscriber =
+        tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+    let traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+
+    async {
+        let body = sample_trace_request().encode_to_vec();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/traces")
+                    .header(header::CONTENT_TYPE, "application/x-protobuf")
+                    .header("Authorization", format!("Bearer {TEST_API_KEY}"))
+                    .header("X-Tenant-ID", TEST_TENANT)
+                    .header("traceparent", traceparent)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Unauthenticated request: 401 is the caller's problem, span status
+        // stays unset.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/traces")
+                    .header(header::CONTENT_TYPE, "application/x-protobuf")
+                    .body(Body::from(sample_trace_request().encode_to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    .with_subscriber(subscriber)
+    .await;
+
+    provider.force_flush().unwrap();
+    let spans = exporter.get_finished_spans().unwrap();
+    let names: Vec<_> = spans.iter().map(|s| s.name.to_string()).collect();
+
+    let server_spans: Vec<_> = spans
+        .iter()
+        .filter(|s| s.name == "POST /v1/traces")
+        .collect();
+    assert_eq!(
+        server_spans.len(),
+        2,
+        "expected two POST /v1/traces server spans; exported = {names:?}"
+    );
+
+    // The authenticated request's span joins the caller's trace.
+    let joined = server_spans
+        .iter()
+        .find(|s| {
+            s.span_context.trace_id()
+                == opentelemetry::trace::TraceId::from_hex("0af7651916cd43dd8448eb211c80319c")
+                    .unwrap()
+        })
+        .expect("no span joined to the caller trace");
+    assert_eq!(joined.span_kind, SpanKind::Server);
+    assert_eq!(
+        joined.parent_span_id,
+        opentelemetry::trace::SpanId::from_hex("b7ad6b7169203331").unwrap()
+    );
+    assert_eq!(joined.status, Status::Unset);
+
+    // The 401 span: recorded, but not an error for the server.
+    let unauth = server_spans
+        .iter()
+        .find(|s| s.span_context.trace_id() != joined.span_context.trace_id())
+        .expect("no span for the unauthenticated request");
+    assert_eq!(unauth.status, Status::Unset);
+    let status_attr = unauth
+        .attributes
+        .iter()
+        .find(|kv| kv.key.as_str() == "http.response.status_code")
+        .map(|kv| kv.value.as_str().to_string());
+    assert_eq!(status_attr.as_deref(), Some("401"));
+}
