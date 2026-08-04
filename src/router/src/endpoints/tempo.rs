@@ -25,11 +25,20 @@ pub struct TagSearchV2Params {
     pub scope: Option<tempo_api::TagScope>,
 }
 
-/// Query parameters for v2 tag value search
+/// Query parameters for v1 tag value search. `start`/`end` are unix
+/// seconds, per the Tempo API.
+#[derive(Debug, Deserialize)]
+pub struct TagValueSearchParams {
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+/// Query parameters for v2 tag value search. `start`/`end` are unix
+/// seconds, per the Tempo API.
 #[derive(Debug, Deserialize)]
 pub struct TagValueSearchV2Params {
-    pub start: Option<i32>,
-    pub end: Option<i32>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
     pub q: Option<String>,
 }
 
@@ -965,13 +974,92 @@ fn tag_value_column(tag_name: &str) -> Option<&'static str> {
     }
 }
 
+/// Fallback lookback for tag-value discovery when the caller sends no
+/// `start`/`end`: bound the scan to the recent window instead of reading
+/// the whole traces table (#929).
+const DEFAULT_TAG_VALUES_WINDOW_SECS: i64 = 24 * 60 * 60;
+
+/// Cap on distinct values returned per tag.
+const TAG_VALUES_LIMIT: usize = 1000;
+
+/// Resolve the caller's optional `start`/`end` (unix seconds) into a
+/// concrete window: `end` defaults to now, `start` trails `end` by
+/// [`DEFAULT_TAG_VALUES_WINDOW_SECS`].
+fn resolve_tag_values_window(start: Option<i64>, end: Option<i64>, now_secs: i64) -> (i64, i64) {
+    let end = end.unwrap_or(now_secs);
+    let start = start.unwrap_or_else(|| end.saturating_sub(DEFAULT_TAG_VALUES_WINDOW_SECS));
+    (start, end)
+}
+
+/// Convert a caller-supplied unix-**second** timestamp into nanoseconds.
+///
+/// Tempo's `start`/`end` query parameters are unix seconds; anything that
+/// overflows the conversion is not a unix-second timestamp — most often
+/// milliseconds from a client that guessed the unit (the #920 class of
+/// bug). Mirrors the querier's guard so the router answers 400 and names
+/// the problem instead of running a query that matches nothing.
+fn tag_window_seconds_to_nanos(name: &str, seconds: i64) -> Result<i64, String> {
+    seconds.checked_mul(1_000_000_000).ok_or_else(|| {
+        format!(
+            "`{name}` ({seconds}) is out of range: expected a unix timestamp in seconds \
+             (did you send milliseconds?)"
+        )
+    })
+}
+
+/// Build the DISTINCT-values SQL for one traces column, bounded to
+/// `[start_secs, end_secs]`.
+///
+/// The window is applied twice, mirroring the querier's trace lookup path:
+/// a precise `start_time_unix_nano` row bound, plus an equivalent bound on
+/// the `timestamp` partition column so Iceberg can prune whole hour
+/// partitions (the partition transform is `Hour(timestamp)`, so a filter
+/// on `start_time_unix_nano` alone never engages partition pruning —
+/// without it, `LIMIT` above `DISTINCT` reads every Parquet file).
+fn distinct_values_sql(
+    tenant_slug: &str,
+    dataset_slug: &str,
+    column: &str,
+    start_secs: i64,
+    end_secs: i64,
+) -> Result<String, String> {
+    let start_nanos = tag_window_seconds_to_nanos("start", start_secs)?;
+    let end_nanos = tag_window_seconds_to_nanos("end", end_secs)?;
+    // Slugs are validated at authentication time; quote identifiers so
+    // hyphenated slugs parse.
+    Ok(format!(
+        "SELECT DISTINCT \"{column}\" FROM \"{tenant_slug}\".\"{dataset_slug}\".\"traces\" \
+         WHERE \"timestamp\" >= to_timestamp_seconds({start_secs}) \
+         AND \"timestamp\" <= to_timestamp_seconds({end_secs}) \
+         AND start_time_unix_nano >= {start_nanos} \
+         AND start_time_unix_nano <= {end_nanos} \
+         ORDER BY 1 LIMIT {TAG_VALUES_LIMIT}"
+    ))
+}
+
 /// Fetch distinct values of a traces column for the tenant via the
-/// querier's Flight SQL path.
+/// querier's Flight SQL path, bounded to the caller's time window.
 async fn distinct_column_values<S: RouterState>(
     state: &S,
     tenant_ctx: &common::auth::TenantContext,
     column: &str,
+    start: Option<i64>,
+    end: Option<i64>,
 ) -> Result<Vec<String>, axum::http::StatusCode> {
+    let (start_secs, end_secs) =
+        resolve_tag_values_window(start, end, chrono::Utc::now().timestamp());
+    let sql = distinct_values_sql(
+        &tenant_ctx.tenant_slug,
+        &tenant_ctx.dataset_slug,
+        column,
+        start_secs,
+        end_secs,
+    )
+    .map_err(|e| {
+        tracing::warn!(error = %e, "Rejecting tag values query with invalid time bounds");
+        axum::http::StatusCode::BAD_REQUEST
+    })?;
+
     let mut client = state
         .service_registry()
         .get_flight_client_for_capability(ServiceCapability::QueryExecution)
@@ -980,13 +1068,6 @@ async fn distinct_column_values<S: RouterState>(
             tracing::error!(error = %e, "Failed to get Flight client for tag values");
             axum::http::StatusCode::SERVICE_UNAVAILABLE
         })?;
-
-    // Slugs are validated at authentication time; quote identifiers so
-    // hyphenated slugs parse.
-    let sql = format!(
-        "SELECT DISTINCT \"{column}\" FROM \"{}\".\"{}\".\"traces\" ORDER BY 1 LIMIT 1000",
-        tenant_ctx.tenant_slug, tenant_ctx.dataset_slug
-    );
     let mut flight_request = tonic::Request::new(Ticket::new(sql));
     let rpc_span = common::flight::trace_context::do_get_client_span(None, &mut flight_request);
     if let Some(key) = &state.config().auth.internal_service_key {
@@ -1075,19 +1156,26 @@ pub async fn search_tags()
     path = "/tempo/api/search/tag/{tag_name}/values",
     tag = "traces",
     security(("bearerAuth" = [])),
-    params(("tag_name" = String, Path, description = "Tag name to fetch values for")),
+    params(
+        ("tag_name" = String, Path, description = "Tag name to fetch values for"),
+        ("start" = Option<i64>, Query, description = "Window start (unix seconds)"),
+        ("end" = Option<i64>, Query, description = "Window end (unix seconds)"),
+    ),
     responses(
         (status = 200, description = "Values for the tag", body = tempo_api::TagValuesResponse),
+        (status = 400, description = "start/end are not unix-second timestamps"),
         (status = 501, description = "Tag not queryable yet"),
     )
 )]
-#[tracing::instrument(skip(state, tenant_ctx))]
+#[tracing::instrument(skip(state, tenant_ctx, params))]
 pub async fn search_tag_values<S: RouterState>(
     state: State<S>,
     tenant_ctx: TenantContextExtractor,
     Path(tag_name): Path<String>,
+    Query(params): Query<TagValueSearchParams>,
 ) -> Result<axum::Json<tempo_api::TagValuesResponse>, axum::http::StatusCode> {
-    let tag_values = tag_values_for(&state, &tenant_ctx.0, &tag_name).await?;
+    let tag_values =
+        tag_values_for(&state, &tenant_ctx.0, &tag_name, params.start, params.end).await?;
     Ok(axum::Json(tempo_api::TagValuesResponse { tag_values }))
 }
 
@@ -1095,9 +1183,11 @@ async fn tag_values_for<S: RouterState>(
     state: &State<S>,
     tenant_ctx: &common::auth::TenantContext,
     tag_name: &str,
+    start: Option<i64>,
+    end: Option<i64>,
 ) -> Result<Vec<String>, axum::http::StatusCode> {
     if let Some(column) = tag_value_column(tag_name) {
-        return distinct_column_values(&state.0, tenant_ctx, column).await;
+        return distinct_column_values(&state.0, tenant_ctx, column, start, end).await;
     }
     let unscoped = tag_name.trim_start_matches('.');
     if unscoped == "status" || unscoped == "intrinsic.status" {
@@ -1134,14 +1224,15 @@ pub async fn search_tags_v2(
 }
 
 /// GET /api/v2/search/tag/{tag_name}/values
-#[tracing::instrument(skip(state, tenant_ctx))]
+#[tracing::instrument(skip(state, tenant_ctx, params))]
 pub async fn search_tag_values_v2<S: RouterState>(
     state: State<S>,
     tenant_ctx: TenantContextExtractor,
     Path(scoped_tag): Path<String>,
-    Query(_params): Query<TagValueSearchV2Params>,
+    Query(params): Query<TagValueSearchV2Params>,
 ) -> Result<axum::Json<tempo_api::v2::TagValuesResponse>, axum::http::StatusCode> {
-    let values = tag_values_for(&state, &tenant_ctx.0, &scoped_tag).await?;
+    let values =
+        tag_values_for(&state, &tenant_ctx.0, &scoped_tag, params.start, params.end).await?;
     Ok(axum::Json(tempo_api::v2::TagValuesResponse {
         tag_values: values
             .into_iter()
@@ -1256,6 +1347,71 @@ mod tests {
             let status = tonic::Status::new(code, "boom");
             assert_eq!(trace_lookup_status_to_http("abc123", &status), expected);
         }
+    }
+
+    /// Tag-value discovery must never scan the whole traces table (#929):
+    /// the SQL needs a bound on the `timestamp` partition column (so
+    /// Iceberg hour partitions prune) plus the precise
+    /// `start_time_unix_nano` row bound, mirroring the trace lookup path.
+    #[test]
+    fn distinct_values_sql_bounds_scan_by_time_window() {
+        let sql = distinct_values_sql("acme", "prod", "service_name", 1_000, 2_000).unwrap();
+        assert!(
+            sql.contains("SELECT DISTINCT \"service_name\" FROM \"acme\".\"prod\".\"traces\""),
+            "unexpected projection/table: {sql}"
+        );
+        assert!(
+            sql.contains("\"timestamp\" >= to_timestamp_seconds(1000)")
+                && sql.contains("\"timestamp\" <= to_timestamp_seconds(2000)"),
+            "missing partition-column bounds: {sql}"
+        );
+        assert!(
+            sql.contains("start_time_unix_nano >= 1000000000000")
+                && sql.contains("start_time_unix_nano <= 2000000000000"),
+            "missing precise row bounds: {sql}"
+        );
+        assert!(
+            sql.ends_with("ORDER BY 1 LIMIT 1000"),
+            "missing order/limit: {sql}"
+        );
+    }
+
+    /// #920 class of bug: a caller that sends milliseconds must get a 400,
+    /// not a silently empty (or absurd) window. Mirrors the querier's
+    /// `unix_seconds_to_nanos` guard.
+    #[test]
+    fn distinct_values_sql_rejects_millisecond_timestamps() {
+        let err = distinct_values_sql(
+            "acme",
+            "prod",
+            "service_name",
+            1_753_000_000_000, // unix millis, not seconds
+            1_753_000_060_000,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("seconds"),
+            "error must name the expected unit: {err}"
+        );
+    }
+
+    /// Absent `start`/`end` must fall back to a bounded lookback window,
+    /// never an unbounded full-table scan.
+    #[test]
+    fn tag_values_window_defaults_to_bounded_lookback() {
+        let now = 1_754_000_000;
+        assert_eq!(
+            resolve_tag_values_window(None, None, now),
+            (now - DEFAULT_TAG_VALUES_WINDOW_SECS, now)
+        );
+        assert_eq!(resolve_tag_values_window(Some(5), Some(10), now), (5, 10));
+        // end-only: the default start trails the supplied end
+        assert_eq!(
+            resolve_tag_values_window(None, Some(1_000_000), now),
+            (1_000_000 - DEFAULT_TAG_VALUES_WINDOW_SECS, 1_000_000)
+        );
+        // start-only: end defaults to now
+        assert_eq!(resolve_tag_values_window(Some(7), None, now), (7, now));
     }
 
     #[test]
