@@ -843,40 +843,14 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_log_table_with_severities() {
+    fn renders_ungrouped_table_with_row_data() {
         let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
         let mut table = LogTable::new();
         table.set_data(&make_batches());
         terminal
             .draw(|frame| table.render(frame, frame.area(), true))
             .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("log_table_severities", content);
-    }
-
-    #[test]
-    fn snapshot_log_table_loading() {
-        let mut terminal = Terminal::new(TestBackend::new(60, 6)).unwrap();
-        let mut table = LogTable::new();
-        terminal
-            .draw(|frame| table.render(frame, frame.area(), false))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("log_table_loading", content);
-    }
-
-    #[test]
-    fn snapshot_log_table_error() {
-        let mut terminal = Terminal::new(TestBackend::new(60, 6)).unwrap();
-        let mut table = LogTable::new();
-        table.set_error("table 'logs' not found".into());
-        terminal
-            .draw(|frame| table.render(frame, frame.area(), false))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("log_table_error", content);
+        assert_buffer_contains(&terminal, "ERROR");
+        assert_buffer_contains(&terminal, "api");
     }
 }

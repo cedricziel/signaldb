@@ -91,36 +91,6 @@ mod tests {
     }
 
     #[test]
-    fn action_variants_exist() {
-        use crate::tui::state::TimeRange;
-        let actions = vec![
-            Action::Quit,
-            Action::SwitchTab(0),
-            Action::NextTab,
-            Action::PrevTab,
-            Action::ToggleHelp,
-            Action::Refresh,
-            Action::ScrollUp,
-            Action::ScrollDown,
-            Action::Select,
-            Action::Back,
-            Action::Search("test".to_string()),
-            Action::Confirm,
-            Action::Cancel,
-            Action::OpenContextSelector,
-            Action::OpenCommandPalette,
-            Action::OpenTimeRangeSelector,
-            Action::CloseOverlay,
-            Action::SetTenant("acme".to_string()),
-            Action::SetDataset("prod".to_string()),
-            Action::SetTimeRange(TimeRange::default()),
-            Action::ExecuteCommand("refresh".to_string()),
-            Action::None,
-        ];
-        assert_eq!(actions.len(), 22);
-    }
-
-    #[test]
     fn q_maps_to_quit() {
         assert_eq!(map_key_to_action(press(KeyCode::Char('q'))), Action::Quit);
     }

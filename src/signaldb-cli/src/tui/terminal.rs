@@ -56,17 +56,3 @@ impl Tui {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
-    #[test]
-    fn test_backend_can_be_created() {
-        let terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        let size = terminal.size().unwrap();
-        assert_eq!(size.width, 80);
-        assert_eq!(size.height, 24);
-    }
-}

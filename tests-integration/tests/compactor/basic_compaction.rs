@@ -9,7 +9,7 @@ use anyhow::Result;
 use common::catalog_manager::CatalogManager;
 use compactor::executor::{CompactionExecutor, ExecutorConfig};
 use compactor::metrics::CompactionMetrics;
-use compactor::planner::{CompactionCandidate, CompactionPlanner, PartitionStats, PlannerConfig};
+use compactor::planner::{CompactionPlanner, PlannerConfig};
 use object_store::memory::InMemory;
 use std::sync::Arc;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
@@ -176,23 +176,4 @@ async fn test_compaction_empty_table() -> Result<()> {
     log::info!("Empty table compaction test passed");
 
     Ok(())
-}
-
-/// Test compaction candidate creation
-#[test]
-fn test_compaction_candidate_logging() {
-    let candidate = CompactionCandidate {
-        tenant_id: "test".to_string(),
-        dataset_id: "dataset".to_string(),
-        table_name: "traces".to_string(),
-        partition_id: "2026-02-08-14".to_string(),
-        stats: PartitionStats {
-            file_count: 15,
-            total_size_bytes: 30 * 1024 * 1024,
-            avg_file_size_bytes: 2 * 1024 * 1024,
-        },
-    };
-
-    // Just verify logging doesn't panic
-    candidate.log();
 }

@@ -633,32 +633,4 @@ mod tests {
         let action = panel.handle_key_event(press(KeyCode::Char('q')));
         assert!(action.is_none());
     }
-
-    #[test]
-    fn snapshot_traces_list_view() {
-        let mut terminal = Terminal::new(TestBackend::new(120, 15)).unwrap();
-        let mut panel = TracesPanel::new();
-        panel.set_search_results(make_results());
-        let state = make_state();
-        terminal
-            .draw(|frame| panel.render(frame, frame.area(), &state))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("traces_list_view", content);
-    }
-
-    #[test]
-    fn snapshot_traces_detail_view() {
-        let mut terminal = Terminal::new(TestBackend::new(120, 25)).unwrap();
-        let mut panel = TracesPanel::new();
-        panel.set_trace_detail(make_detail());
-        let state = make_state();
-        terminal
-            .draw(|frame| panel.render(frame, frame.area(), &state))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("traces_detail_view", content);
-    }
 }

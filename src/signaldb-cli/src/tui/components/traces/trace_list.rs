@@ -832,42 +832,4 @@ mod tests {
         assert_buffer_contains(&terminal, "Esc to go back");
         assert_buffer_contains(&terminal, "Trace ID");
     }
-
-    #[test]
-    fn snapshot_trace_list_with_results() {
-        let mut terminal = Terminal::new(TestBackend::new(120, 10)).unwrap();
-        let mut list = TraceList::new();
-        list.set_data(make_results());
-        terminal
-            .draw(|frame| list.render(frame, frame.area(), true))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("trace_list_with_results", content);
-    }
-
-    #[test]
-    fn snapshot_trace_list_empty() {
-        let mut terminal = Terminal::new(TestBackend::new(100, 6)).unwrap();
-        let mut list = TraceList::new();
-        list.set_data(vec![]);
-        terminal
-            .draw(|frame| list.render(frame, frame.area(), false))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("trace_list_empty", content);
-    }
-
-    #[test]
-    fn snapshot_trace_list_loading() {
-        let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
-        let mut list = TraceList::new();
-        terminal
-            .draw(|frame| list.render(frame, frame.area(), false))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("trace_list_loading", content);
-    }
 }

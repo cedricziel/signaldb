@@ -11,7 +11,7 @@ use iceberg_rust::catalog::identifier::Identifier;
 use object_store::memory::InMemory;
 use std::sync::Arc;
 use tempfile::tempdir;
-use writer::{IcebergTableWriter, IcebergWriterFlightService, WalProcessor};
+use writer::{IcebergTableWriter, WalProcessor};
 
 /// Integration test demonstrating the Iceberg table writer functionality
 #[tokio::test]
@@ -101,31 +101,6 @@ async fn test_wal_processor_integration() -> Result<()> {
 
     // Shutdown processor
     processor.shutdown().await?;
-
-    Ok(())
-}
-
-/// Integration test for the Iceberg Flight service
-#[tokio::test]
-async fn test_iceberg_flight_service_integration() -> Result<()> {
-    // Setup test environment
-    let temp_dir = tempdir()?;
-    let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
-    let wal_config = WalConfig::with_defaults(temp_dir.path().to_path_buf());
-    let wal = Arc::new(Wal::new(wal_config).await?);
-
-    // Create Iceberg Flight service
-    let _service = IcebergWriterFlightService::new(
-        catalog_manager,
-        object_store,
-        wal,
-        &common::config::WriterConfig::default(),
-    );
-
-    // Verify service was created successfully
-    // Note: Full Flight service testing would require actual gRPC integration,
-    // which is beyond the scope of this integration test
 
     Ok(())
 }

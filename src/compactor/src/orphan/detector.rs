@@ -483,32 +483,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_object_store_file_creation() {
-        let file = ObjectStoreFile {
-            path: "/tenant/dataset/table/data/file.parquet".to_string(),
-            size_bytes: 1024,
-            last_modified: Utc::now(),
-        };
-
-        assert_eq!(file.path, "/tenant/dataset/table/data/file.parquet");
-        assert_eq!(file.size_bytes, 1024);
-    }
-
-    #[test]
-    fn test_orphan_candidate_creation() {
-        let candidate = OrphanCandidate {
-            path: "/tenant/dataset/table/data/orphan.parquet".to_string(),
-            size_bytes: 2048,
-            last_modified: Utc::now(),
-            table_identifier: "tenant/dataset/table".to_string(),
-        };
-
-        assert_eq!(candidate.path, "/tenant/dataset/table/data/orphan.parquet");
-        assert_eq!(candidate.size_bytes, 2048);
-        assert_eq!(candidate.table_identifier, "tenant/dataset/table");
-    }
-
-    #[test]
     fn test_grace_period_filtering() {
         let config = OrphanCleanupConfig {
             grace_period_hours: 24,

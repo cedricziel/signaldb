@@ -593,14 +593,6 @@ mod tests {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
 
     #[tokio::test]
-    async fn test_rewriter_creation() {
-        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let rewriter = ParquetRewriter::new(catalog_manager);
-
-        assert!(std::mem::size_of_val(&rewriter) > 0);
-    }
-
-    #[tokio::test]
     async fn test_merge_batches() {
         let catalog_manager = CatalogManager::new_in_memory().await.unwrap();
         let rewriter = ParquetRewriter::new(Arc::new(catalog_manager));

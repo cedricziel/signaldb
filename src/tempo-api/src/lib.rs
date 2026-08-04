@@ -298,51 +298,14 @@ pub struct TagValuesResponse {
     pub tag_values: Vec<String>,
 }
 
+#[cfg(test)]
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+    use serde_json::json;
 
     #[test]
-    fn test_search_result() {
-        let traces = vec![Trace {
-            trace_id: "2f3e0cee77ae5dc9c17ade3689eb2e54".to_string(),
-            root_service_name: "shop-backend".to_string(),
-            root_trace_name: "update-billing".to_string(),
-            start_time_unix_nano: "1684778327699392724".to_string(),
-            duration_ms: 557,
-            span_sets: vec![SpanSet {
-                spans: vec![Span {
-                    span_id: "563d623c76514f8e".to_string(),
-                    start_time_unix_nano: "1684778327735077898".to_string(),
-                    duration_nanos: "446979497".to_string(),
-                    name: None,
-                    parent_span_id: None,
-                    service_name: None,
-                    status: None,
-                    attributes: vec![Attribute {
-                        key: "status".to_string(),
-                        value: Value::StringValue("error".to_string()),
-                    }]
-                    .into_iter()
-                    .map(|attr| (attr.key.clone(), attr))
-                    .collect(),
-                    events: Vec::new(),
-                }],
-                matched: 1,
-            }],
-            profiles: None,
-        }];
-
-        let metrics = vec![("error".to_string(), 1)].into_iter().collect();
-
-        let search_result = SearchResult { traces, metrics };
-
-        assert_eq!(search_result.traces.len(), 1);
-        assert_eq!(search_result.metrics.len(), 1);
-    }
-
-    #[test]
-    fn test_trace() {
+    fn trace_serializes_to_tempo_wire_format() {
         let trace = Trace {
             trace_id: "2f3e0cee77ae5dc9c17ade3689eb2e54".to_string(),
             root_service_name: "shop-backend".to_string(),
@@ -358,13 +321,13 @@ mod tests {
                     parent_span_id: None,
                     service_name: None,
                     status: None,
-                    attributes: vec![Attribute {
-                        key: "status".to_string(),
-                        value: Value::StringValue("error".to_string()),
-                    }]
-                    .into_iter()
-                    .map(|attr| (attr.key.clone(), attr))
-                    .collect(),
+                    attributes: HashMap::from([(
+                        "status".to_string(),
+                        Attribute {
+                            key: "status".to_string(),
+                            value: Value::StringValue("error".to_string()),
+                        },
+                    )]),
                     events: Vec::new(),
                 }],
                 matched: 1,
@@ -372,82 +335,67 @@ mod tests {
             profiles: None,
         };
 
-        assert_eq!(trace.trace_id, "2f3e0cee77ae5dc9c17ade3689eb2e54");
-        assert_eq!(trace.root_service_name, "shop-backend");
-        assert_eq!(trace.root_trace_name, "update-billing");
-        assert_eq!(trace.start_time_unix_nano, "1684778327699392724");
-        assert_eq!(trace.duration_ms, 557);
-        assert_eq!(trace.span_sets.len(), 1);
-    }
-
-    #[test]
-    fn test_span_set() {
-        let span_set = SpanSet {
-            spans: vec![Span {
-                span_id: "563d623c76514f8e".to_string(),
-                start_time_unix_nano: "1684778327735077898".to_string(),
-                duration_nanos: "446979497".to_string(),
-                name: None,
-                parent_span_id: None,
-                service_name: None,
-                status: None,
-                attributes: vec![Attribute {
-                    key: "status".to_string(),
-                    value: Value::StringValue("error".to_string()),
+        // Pins the Tempo-compatible field names (traceID, rootServiceName,
+        // spanID, durationNanos, ...) and that unset optional fields
+        // (name, parentSpanID, serviceName, status, events, profiles) are
+        // omitted rather than serialized as null, per the Grafana Tempo
+        // datasource contract.
+        assert_eq!(
+            serde_json::to_value(&trace).unwrap(),
+            json!({
+                "traceID": "2f3e0cee77ae5dc9c17ade3689eb2e54",
+                "rootServiceName": "shop-backend",
+                "rootTraceName": "update-billing",
+                "startTimeUnixNano": "1684778327699392724",
+                "durationMs": 557,
+                "spanSets": [{
+                    "spans": [{
+                        "spanID": "563d623c76514f8e",
+                        "startTimeUnixNano": "1684778327735077898",
+                        "durationNanos": "446979497",
+                        "attributes": {
+                            "status": {"key": "status", "value": {"stringValue": "error"}}
+                        }
+                    }],
+                    "matched": 1
                 }]
-                .into_iter()
-                .map(|attr| (attr.key.clone(), attr))
-                .collect(),
-                events: Vec::new(),
-            }],
-            matched: 1,
-        };
-
-        assert_eq!(span_set.spans.len(), 1);
-        assert_eq!(span_set.matched, 1);
+            })
+        );
     }
 
     #[test]
-    fn test_span() {
-        let span = Span {
-            span_id: "563d623c76514f8e".to_string(),
-            start_time_unix_nano: "1684778327735077898".to_string(),
-            duration_nanos: "446979497".to_string(),
-            name: None,
-            parent_span_id: None,
-            service_name: None,
-            status: None,
-            attributes: vec![Attribute {
-                key: "status".to_string(),
-                value: Value::StringValue("error".to_string()),
-            }]
-            .into_iter()
-            .map(|attr| (attr.key.clone(), attr))
-            .collect(),
-            events: Vec::new(),
+    fn search_result_serializes_to_tempo_wire_format() {
+        let search_result = SearchResult {
+            traces: vec![],
+            metrics: HashMap::from([("inspectedTraces".to_string(), 42u16)]),
         };
 
-        assert_eq!(span.span_id, "563d623c76514f8e");
-        assert_eq!(span.start_time_unix_nano, "1684778327735077898");
-        assert_eq!(span.duration_nanos, "446979497");
-        assert_eq!(span.attributes.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&search_result).unwrap(),
+            json!({"traces": [], "metrics": {"inspectedTraces": 42}})
+        );
     }
 
     #[test]
-    fn test_attribute() {
-        let attribute = Attribute {
-            key: "status".to_string(),
-            value: Value::StringValue("error".to_string()),
-        };
-
-        assert_eq!(attribute.key, "status");
-        assert_eq!(attribute.value, Value::StringValue("error".to_string()));
-    }
-
-    #[test]
-    fn test_value() {
-        let value = Value::StringValue("error".to_string());
-
-        assert_eq!(value, Value::StringValue("error".to_string()));
+    fn value_variants_serialize_to_tempo_wire_format() {
+        // Each Value variant must externally tag as its Tempo attribute
+        // kind (stringValue/intValue/boolValue/doubleValue), matching the
+        // shape Grafana's Tempo datasource parses.
+        assert_eq!(
+            serde_json::to_value(Value::StringValue("error".to_string())).unwrap(),
+            json!({"stringValue": "error"})
+        );
+        assert_eq!(
+            serde_json::to_value(Value::IntValue(42)).unwrap(),
+            json!({"intValue": 42})
+        );
+        assert_eq!(
+            serde_json::to_value(Value::BoolValue(true)).unwrap(),
+            json!({"boolValue": true})
+        );
+        assert_eq!(
+            serde_json::to_value(Value::DoubleValue(1.5)).unwrap(),
+            json!({"doubleValue": 1.5})
+        );
     }
 }

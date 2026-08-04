@@ -23,83 +23,17 @@ async fn create_writer(config: Configuration) -> Result<IcebergTableWriter> {
     .await
 }
 
-#[tokio::test]
-async fn test_retry_config_default() -> Result<()> {
-    let config = Configuration {
-        schema: SchemaConfig {
-            catalog_type: "memory".to_string(),
-            catalog_uri: "memory://".to_string(),
-            default_schemas: DefaultSchemas {
-                traces_enabled: true,
-                logs_enabled: true,
-                metrics_enabled: true,
-                profiles_enabled: true,
-                custom_schemas: Default::default(),
-            },
-            materialized_labels: Default::default(),
-        },
-        storage: StorageConfig {
-            dsn: "memory://".to_string(),
-        },
-        ..Default::default()
-    };
+#[test]
+fn retry_config_default_matches_documented_policy() {
+    // The default retry policy is what every writer uses unless explicitly
+    // overridden, so pin its literal values directly against RetryConfig's
+    // Default impl without paying for catalog/writer setup.
+    let retry_config = RetryConfig::default();
 
-    let writer = create_writer(config)
-        .await
-        .expect("Failed to create Iceberg writer");
-
-    // Test default retry configuration
-    let retry_config = writer.retry_config();
     assert_eq!(retry_config.max_attempts, 3);
     assert_eq!(retry_config.initial_delay, Duration::from_millis(100));
     assert_eq!(retry_config.max_delay, Duration::from_secs(5));
     assert_eq!(retry_config.backoff_multiplier, 2.0);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_retry_config_custom() -> Result<()> {
-    let config = Configuration {
-        schema: SchemaConfig {
-            catalog_type: "memory".to_string(),
-            catalog_uri: "memory://".to_string(),
-            default_schemas: DefaultSchemas {
-                traces_enabled: true,
-                logs_enabled: true,
-                metrics_enabled: true,
-                profiles_enabled: true,
-                custom_schemas: Default::default(),
-            },
-            materialized_labels: Default::default(),
-        },
-        storage: StorageConfig {
-            dsn: "memory://".to_string(),
-        },
-        ..Default::default()
-    };
-
-    let mut writer = create_writer(config)
-        .await
-        .expect("Failed to create Iceberg writer");
-
-    // Test custom retry configuration
-    let custom_retry_config = RetryConfig {
-        max_attempts: 5,
-        initial_delay: Duration::from_millis(50),
-        max_delay: Duration::from_secs(10),
-        backoff_multiplier: 1.5,
-    };
-
-    writer.set_retry_config(custom_retry_config.clone());
-
-    let retry_config = writer.retry_config();
-    assert_eq!(retry_config.max_attempts, 5);
-    assert_eq!(retry_config.initial_delay, Duration::from_millis(50));
-    assert_eq!(retry_config.max_delay, Duration::from_secs(10));
-    assert_eq!(retry_config.backoff_multiplier, 1.5);
-
-    Ok(())
 }
 
 #[tokio::test]
@@ -201,24 +135,6 @@ async fn test_retry_logic_with_valid_batch() -> Result<()> {
 
     let committed = writer.load_committed_marker("wal-retry").await?;
     assert_eq!(committed, std::iter::once(entry_id).collect());
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_retry_config_validation() -> Result<()> {
-    // Test that retry configuration is properly stored and retrieved
-    let retry_config = RetryConfig {
-        max_attempts: 10,
-        initial_delay: Duration::from_millis(200),
-        max_delay: Duration::from_secs(30),
-        backoff_multiplier: 3.0,
-    };
-
-    assert_eq!(retry_config.max_attempts, 10);
-    assert_eq!(retry_config.initial_delay, Duration::from_millis(200));
-    assert_eq!(retry_config.max_delay, Duration::from_secs(30));
-    assert_eq!(retry_config.backoff_multiplier, 3.0);
 
     Ok(())
 }

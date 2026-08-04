@@ -1,10 +1,10 @@
 //! Flight client for connecting to SignalDB router.
 
+use arrow::datatypes::Schema;
+use arrow::record_batch::RecordBatch;
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow::datatypes::Schema;
-use arrow::record_batch::RecordBatch;
 use futures::TryStreamExt;
 use futures::stream::StreamExt;
 use std::sync::Arc;
@@ -216,12 +216,5 @@ mod tests {
         } else {
             panic!("Expected Connection error");
         }
-    }
-
-    #[test]
-    fn test_client_debug() {
-        // This test just verifies the Debug impl compiles
-        // We can't actually create a client without a connection
-        let _ = format!("{:?}", FlightClientError::Connection("test".to_string()));
     }
 }

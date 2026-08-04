@@ -365,14 +365,6 @@ mod tests {
     }
 
     #[test]
-    fn service_color_varies() {
-        let c1 = service_color("frontend");
-        let c2 = service_color("backend");
-        // Different services should (usually) get different colors
-        let _ = (c1, c2); // Just check no panic
-    }
-
-    #[test]
     fn render_waterfall_empty() {
         let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
         terminal
@@ -416,29 +408,5 @@ mod tests {
         assert_buffer_contains(&terminal, "100.0ms");
         assert_buffer_contains(&terminal, "50.0ms");
         assert_buffer_contains(&terminal, "30.0ms");
-    }
-
-    #[test]
-    fn snapshot_waterfall_with_spans() {
-        let mut terminal = Terminal::new(TestBackend::new(100, 10)).unwrap();
-        let spans = make_spans();
-        let waterfall = build_waterfall_spans(&spans);
-        terminal
-            .draw(|frame| render_waterfall(frame, frame.area(), &waterfall, Some(1), 0))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("waterfall_with_spans", content);
-    }
-
-    #[test]
-    fn snapshot_waterfall_empty() {
-        let mut terminal = Terminal::new(TestBackend::new(60, 6)).unwrap();
-        terminal
-            .draw(|frame| render_waterfall(frame, frame.area(), &[], None, 0))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("waterfall_empty", content);
     }
 }

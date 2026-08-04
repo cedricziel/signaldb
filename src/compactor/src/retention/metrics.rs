@@ -159,11 +159,4 @@ mod tests {
         metrics.record_duration_ms(1500);
         assert_eq!(metrics.total_duration_ms(), 1500);
     }
-
-    #[test]
-    fn test_mock_metrics() {
-        let metrics = RetentionMetrics::new_mock();
-        metrics.record_cutoff_computed();
-        assert_eq!(metrics.cutoffs_computed(), 1);
-    }
 }

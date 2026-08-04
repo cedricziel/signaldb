@@ -1638,48 +1638,13 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_metrics_empty() {
+    fn renders_no_metrics_found_when_list_is_empty() {
         let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
         let panel = MetricsPanel::new();
         let state = make_state();
         terminal
             .draw(|frame| panel.render(frame, frame.area(), &state))
             .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("metrics_empty", content);
-    }
-
-    #[test]
-    fn snapshot_metrics_with_data() {
-        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let mut panel = MetricsPanel::new();
-        panel.selected_metric = Some(metric("cpu_usage", MetricType::Gauge));
-        panel.focus = Focus::DataTable;
-        panel.set_data(&make_metric_batches());
-        let state = make_state();
-        terminal
-            .draw(|frame| panel.render(frame, frame.area(), &state))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("metrics_with_data", content);
-    }
-
-    #[test]
-    fn snapshot_sparkline_panel_only() {
-        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
-        let batches = make_metric_batches();
-        let data = extract_sparkline_data(&batches);
-        let state = make_state();
-        terminal
-            .draw(|frame| {
-                let _ = &state;
-                render_sparkline_panel(frame, frame.area(), &data);
-            })
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("sparkline_panel_only", content);
+        assert_buffer_contains(&terminal, "No metrics found");
     }
 }

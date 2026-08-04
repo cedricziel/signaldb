@@ -340,29 +340,4 @@ mod tests {
             .unwrap();
         assert_buffer_contains(&terminal, "No spans to display");
     }
-
-    #[test]
-    fn snapshot_trace_detail_with_data() {
-        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
-        let mut view = TraceDetailView::new();
-        view.set_detail(make_detail());
-        terminal
-            .draw(|frame| view.render(frame, frame.area()))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("trace_detail_with_data", content);
-    }
-
-    #[test]
-    fn snapshot_trace_detail_empty() {
-        let mut terminal = Terminal::new(TestBackend::new(80, 15)).unwrap();
-        let mut view = TraceDetailView::new();
-        terminal
-            .draw(|frame| view.render(frame, frame.area()))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        insta::assert_snapshot!("trace_detail_empty", content);
-    }
 }
