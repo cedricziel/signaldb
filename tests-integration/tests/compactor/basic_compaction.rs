@@ -86,8 +86,7 @@ async fn test_basic_compaction() -> Result<()> {
     // Create compaction planner
     let planner_config = PlannerConfig {
         file_count_threshold: 3, // Low threshold for testing (above post-compaction steady state)
-        min_input_file_size_bytes: 100,
-        max_files_per_job: 50,
+        max_input_file_size_bytes: 64 * 1024 * 1024,
         target_file_size_bytes: 128 * 1024 * 1024,
     };
 
@@ -160,8 +159,7 @@ async fn test_compaction_empty_table() -> Result<()> {
 
     let planner_config = PlannerConfig {
         file_count_threshold: 10,
-        min_input_file_size_bytes: 1024 * 1024,
-        max_files_per_job: 50,
+        max_input_file_size_bytes: 64 * 1024 * 1024,
         target_file_size_bytes: 128 * 1024 * 1024,
     };
 

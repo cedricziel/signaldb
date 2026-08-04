@@ -69,8 +69,7 @@ async fn seed_and_plan() -> (CompactionExecutor, CompactionCandidate) {
 
     let planner_config = PlannerConfig {
         file_count_threshold: 3,
-        min_input_file_size_bytes: 100,
-        max_files_per_job: 50,
+        max_input_file_size_bytes: 64 * 1024 * 1024,
         target_file_size_bytes: 128 * 1024 * 1024,
     };
     let planner = CompactionPlanner::new(catalog_manager.clone(), planner_config.clone());

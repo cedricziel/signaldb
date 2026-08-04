@@ -387,13 +387,14 @@ pub struct CompactorConfig {
     /// Env: SIGNALDB__COMPACTOR__FILE_COUNT_THRESHOLD
     pub file_count_threshold: usize,
 
-    /// Minimum input file size in KB to consider for compaction
-    /// Env: SIGNALDB__COMPACTOR__MIN_INPUT_FILE_SIZE_KB
-    pub min_input_file_size_kb: u64,
-
-    /// Maximum files to include in a single compaction job
-    /// Env: SIGNALDB__COMPACTOR__MAX_FILES_PER_JOB
-    pub max_files_per_job: usize,
+    /// Maximum input file size in KB to consider for compaction.
+    ///
+    /// Files at or above this size are treated as already compacted and are
+    /// left alone; only smaller files count toward `file_count_threshold`.
+    /// Defaults to 65536 (64 MB) — half of the default 128 MB target output
+    /// size — so small ingest files are always eligible.
+    /// Env: SIGNALDB__COMPACTOR__MAX_INPUT_FILE_SIZE_KB
+    pub max_input_file_size_kb: u64,
 
     /// Retention enforcement configuration (Phase 3)
     /// Env: SIGNALDB__COMPACTOR__RETENTION__*
@@ -463,8 +464,7 @@ impl Default for CompactorConfig {
             tick_interval: Duration::from_secs(300), // 5 minutes
             target_file_size_mb: 128,
             file_count_threshold: 10,
-            min_input_file_size_kb: 1024, // 1MB
-            max_files_per_job: 50,
+            max_input_file_size_kb: 65536, // 64MB (half the default target size)
             retention: RetentionConfig::default(),
             orphan_cleanup: OrphanCleanupConfig::default(),
             attr_promotion: AttrPromotionConfig::default(),
@@ -1805,8 +1805,7 @@ mod tests {
             jail.set_env("SIGNALDB__COMPACTOR__TICK_INTERVAL", "10m");
             jail.set_env("SIGNALDB__COMPACTOR__TARGET_FILE_SIZE_MB", "256");
             jail.set_env("SIGNALDB__COMPACTOR__FILE_COUNT_THRESHOLD", "20");
-            jail.set_env("SIGNALDB__COMPACTOR__MIN_INPUT_FILE_SIZE_KB", "2048");
-            jail.set_env("SIGNALDB__COMPACTOR__MAX_FILES_PER_JOB", "100");
+            jail.set_env("SIGNALDB__COMPACTOR__MAX_INPUT_FILE_SIZE_KB", "2048");
 
             let config = Figment::from(Serialized::defaults(Configuration::default()))
                 .merge(Env::prefixed("SIGNALDB_").split("_"))
@@ -1818,8 +1817,7 @@ mod tests {
             assert_eq!(config.compactor.tick_interval, Duration::from_secs(600)); // 10 minutes
             assert_eq!(config.compactor.target_file_size_mb, 256);
             assert_eq!(config.compactor.file_count_threshold, 20);
-            assert_eq!(config.compactor.min_input_file_size_kb, 2048);
-            assert_eq!(config.compactor.max_files_per_job, 100);
+            assert_eq!(config.compactor.max_input_file_size_kb, 2048);
 
             Ok(())
         });

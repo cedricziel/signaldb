@@ -276,8 +276,7 @@ enabled = true                        # Enable compactor service (enabled by def
 tick_interval = "5m"                  # Interval between compaction planning cycles
 target_file_size_mb = 128             # Target file size after compaction (MB)
 file_count_threshold = 5              # Minimum files to trigger compaction
-min_input_file_size_kb = 1024         # Minimum input file size for compaction (KB)
-max_files_per_job = 20                # Maximum files per compaction job
+max_input_file_size_kb = 65536        # Maximum input file size for compaction (KB); larger files are left alone
 
 # Phase 4: Multi-Instance Safety + Scheduling
 # Multiple compactor instances coordinate through distributed leases in the

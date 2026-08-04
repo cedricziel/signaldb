@@ -85,8 +85,7 @@ impl RetentionTestContext {
         let storage = StorageTestContext::new_in_memory().await?;
         let planner_config = PlannerConfig {
             file_count_threshold: 10,
-            min_input_file_size_bytes: 1024 * 1024,
-            max_files_per_job: 50,
+            max_input_file_size_bytes: 64 * 1024 * 1024,
             target_file_size_bytes: 128 * 1024 * 1024,
         };
         let metrics = CompactionMetrics::new();
