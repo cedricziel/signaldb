@@ -39,6 +39,9 @@ use crate::sdk_client_for;
 #[derive(Clone)]
 pub struct McpServer {
     router_base_url: String,
+    /// Overall timeout for each forwarded request, so a hung router fails the
+    /// tool call instead of hanging it indefinitely (issue #885).
+    router_timeout: std::time::Duration,
 }
 
 /// Parameters for `search_traces`.
@@ -150,9 +153,30 @@ struct QueryIrParams {
 
 #[tool_router]
 impl McpServer {
-    /// Construct a handler that forwards to `router_base_url`.
-    pub fn new(router_base_url: String) -> Self {
-        Self { router_base_url }
+    /// Construct a handler that forwards to `router_base_url`, bounding each
+    /// forwarded request by `router_timeout`.
+    pub fn new(router_base_url: String, router_timeout: std::time::Duration) -> Self {
+        Self {
+            router_base_url,
+            router_timeout,
+        }
+    }
+
+    /// Build the per-request forwarding client, surfacing a construction
+    /// failure as a clean MCP error instead of silently dropping the caller's
+    /// credential headers.
+    fn router_client(
+        &self,
+        parts: &Parts,
+        dataset_override: Option<&str>,
+    ) -> Result<signaldb_sdk::Client, ErrorData> {
+        sdk_client_for(
+            parts,
+            &self.router_base_url,
+            dataset_override,
+            self.router_timeout,
+        )
+        .map_err(|e| ErrorData::internal_error(format!("failed to build router client: {e}"), None))
     }
 
     #[tool(
@@ -189,7 +213,7 @@ impl McpServer {
         Parameters(p): Parameters<SearchTracesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = sdk_client_for(&parts, &self.router_base_url, p.dataset.as_deref());
+        let client = self.router_client(&parts, p.dataset.as_deref())?;
         let mut req = client.search();
         if let Some(v) = p.query {
             req = req.q(v);
@@ -230,7 +254,7 @@ impl McpServer {
         Parameters(p): Parameters<GetTraceParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = sdk_client_for(&parts, &self.router_base_url, p.dataset.as_deref());
+        let client = self.router_client(&parts, p.dataset.as_deref())?;
         let mut req = client.query_single_trace().trace_id(p.trace_id);
         if let Some(v) = p.start {
             req = req.start(v);
@@ -250,7 +274,7 @@ impl McpServer {
         Parameters(p): Parameters<DiscoverAttributesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = sdk_client_for(&parts, &self.router_base_url, p.dataset.as_deref());
+        let client = self.router_client(&parts, p.dataset.as_deref())?;
         match p.tag {
             Some(tag) => {
                 let resp = client
@@ -280,7 +304,7 @@ impl McpServer {
         Parameters(p): Parameters<QueryMetricsParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = sdk_client_for(&parts, &self.router_base_url, p.dataset.as_deref());
+        let client = self.router_client(&parts, p.dataset.as_deref())?;
         let mut req = client.promql_query().query(p.query);
         if let Some(v) = p.time {
             req = req.time(v);
@@ -300,7 +324,7 @@ impl McpServer {
         Parameters(p): Parameters<SearchLogsParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = sdk_client_for(&parts, &self.router_base_url, p.dataset.as_deref());
+        let client = self.router_client(&parts, p.dataset.as_deref())?;
         let mut req = client.logql_query().query(p.query);
         if let Some(v) = p.limit {
             req = req.limit(v);
@@ -325,7 +349,7 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(p.query)
             .map_err(|e| ErrorData::invalid_params(format!("invalid IR document: {e}"), None))?;
-        let client = sdk_client_for(&parts, &self.router_base_url, p.dataset.as_deref());
+        let client = self.router_client(&parts, p.dataset.as_deref())?;
         let resp = client
             .query_ir()
             .body(request)
@@ -342,7 +366,7 @@ impl McpServer {
         &self,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = sdk_client_for(&parts, &self.router_base_url, None);
+        let client = self.router_client(&parts, None)?;
         let resp = client
             .ops_compact()
             .send()
@@ -358,7 +382,7 @@ impl McpServer {
         &self,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = sdk_client_for(&parts, &self.router_base_url, None);
+        let client = self.router_client(&parts, None)?;
         let resp = client
             .ops_compact_status()
             .send()
@@ -374,7 +398,7 @@ impl McpServer {
         &self,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = sdk_client_for(&parts, &self.router_base_url, None);
+        let client = self.router_client(&parts, None)?;
         let resp = client
             .ops_compact_dry_run()
             .send()
