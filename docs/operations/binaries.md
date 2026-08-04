@@ -25,7 +25,7 @@ The resulting requirement:
 - **x86-64**: Intel Westmere (2010) / AMD Bulldozer (2011) or newer — any CPU
   with SSE4.2 and AES-NI. This includes low-power homelab parts (Intel N100
   class, old Xeons from the same era onward).
-- **aarch64**: ARMv8 with the crypto extension — Raspberry Pi 4/5, Apple
+- **aarch64**: ARMv8 with the crypto extension — Raspberry Pi 5, Apple
   Silicon, and all server ARM cores qualify.
 
 On an older CPU the binaries fail immediately with an illegal-instruction
