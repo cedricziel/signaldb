@@ -1,5 +1,5 @@
 //! End-to-end verification that a failing Flight `do_get` records the reason on
-//! the `flight_do_get` span as an OpenTelemetry `exception` event with an error
+//! the DoGet server span as an OpenTelemetry `exception` event with an error
 //! status — the signal that lets an operator diagnose a query failure from the
 //! self-monitoring trace after the router has stripped it to a bare HTTP code.
 //!
@@ -63,8 +63,11 @@ async fn failing_do_get_records_exception_on_span() {
     let spans = exporter.get_finished_spans().unwrap();
     let span = spans
         .iter()
-        .find(|s| s.name == "flight_do_get")
-        .expect("flight_do_get span exported");
+        .find(|s| {
+            s.name
+                .starts_with("arrow.flight.protocol.FlightService/DoGet")
+        })
+        .expect("DoGet RPC server span exported");
 
     let event = span
         .events

@@ -1,6 +1,6 @@
 //! End-to-end verification that a Flight `do_get` failure on the *ticket-parse*
 //! path — rejected before any query executes — still records an OpenTelemetry
-//! `exception` event and an error status on the `flight_do_get` span.
+//! `exception` event and an error status on the DoGet server span.
 //!
 //! The companion `do_get_span_exception` test covers the execution error
 //! boundary; this one covers the earlier parse guards, together exercising the
@@ -58,7 +58,7 @@ async fn parse_rejected_do_get_records_exception_on_span() {
     let service = QuerierFlightService::new(object_store, flight_transport);
 
     // A ticket whose payload is not the JSON the query_logs handler expects. It
-    // is rejected during ticket parsing — inside the flight_do_get span but well
+    // is rejected during ticket parsing — inside the DoGet server span but well
     // before execution — so it exercises the parse guard, not the execution
     // boundary the companion test covers.
     let ticket = Ticket::new("query_logs:acme:prod:not-json");
@@ -76,8 +76,11 @@ async fn parse_rejected_do_get_records_exception_on_span() {
     let spans = exporter.get_finished_spans().unwrap();
     let span = spans
         .iter()
-        .find(|s| s.name == "flight_do_get")
-        .expect("flight_do_get span exported");
+        .find(|s| {
+            s.name
+                .starts_with("arrow.flight.protocol.FlightService/DoGet")
+        })
+        .expect("DoGet RPC server span exported");
 
     let event = span
         .events
