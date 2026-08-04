@@ -479,13 +479,39 @@ mod tests {
     }
 
     #[test]
-    fn sync_selected_tenant_passes_to_sub_tabs() {
+    fn sync_selected_tenant_passes_to_api_keys_panel() {
+        let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
         let mut panel = AdminPanel::new();
         panel.tenants.set_data(sample_tenants());
         panel.sync_selected_tenant();
-        // api_keys and datasets have private tenant_id, verify indirectly by switching tab
-        panel.handle_key_event(press(KeyCode::Char('K')));
-        assert_eq!(panel.sub_tab, AdminSubTab::Keys);
+        panel.sub_tab = AdminSubTab::Keys;
+        let state = make_admin_state();
+
+        terminal
+            .draw(|frame| panel.render(frame, frame.area(), &state))
+            .unwrap();
+
+        // The selected tenant ("acme") must reach the api_keys sub-panel, which
+        // renders it in its block title as "[acme]".
+        assert_buffer_contains(&terminal, "[acme]");
+    }
+
+    #[test]
+    fn sync_selected_tenant_passes_to_datasets_panel() {
+        let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+        let mut panel = AdminPanel::new();
+        panel.tenants.set_data(sample_tenants());
+        panel.sync_selected_tenant();
+        panel.sub_tab = AdminSubTab::Datasets;
+        let state = make_admin_state();
+
+        terminal
+            .draw(|frame| panel.render(frame, frame.area(), &state))
+            .unwrap();
+
+        // The selected tenant ("acme") must reach the datasets sub-panel, which
+        // renders it in its block title as "[acme]".
+        assert_buffer_contains(&terminal, "[acme]");
     }
 
     #[test]

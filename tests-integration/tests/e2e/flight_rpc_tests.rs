@@ -36,8 +36,14 @@ async fn setup_router_flight_service() -> Channel {
         .serve(addr);
     tokio::spawn(server);
 
-    // Wait for server to start
-    sleep(Duration::from_millis(200)).await;
+    // Wait until the listener accepts connections instead of a fixed sleep,
+    // so this isn't flaky under load.
+    for _ in 0..50 {
+        if tokio::net::TcpStream::connect(addr).await.is_ok() {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
 
     // Create Flight client channel
     let endpoint = format!("http://{addr}");
@@ -433,6 +439,13 @@ async fn test_schema_consistency_traces() {
     // Both should return non-empty schemas
     assert!(!flight_info.schema.is_empty());
     assert!(!schema_result.schema.is_empty());
+
+    // get_flight_info and get_schema must agree on the wire schema for the
+    // same query type, not merely both be non-empty.
+    assert_eq!(
+        flight_info.schema, schema_result.schema,
+        "get_flight_info and get_schema should return the same schema for traces"
+    );
 
     println!(
         "✅ Schema consistency for traces: flight_info={} bytes, get_schema={} bytes",

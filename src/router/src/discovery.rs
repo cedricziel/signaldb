@@ -263,7 +263,6 @@ impl ServiceRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn mock_ingester(address: &str) -> common::catalog::Ingester {
         common::catalog::Ingester {
@@ -329,36 +328,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_service_registry_health_check_logic() {
-        // Test the health check logic by directly testing the HashMap
-        let services = Arc::new(RwLock::new(HashMap::new()));
+        // Exercise ServiceRegistry::is_healthy() itself, not a throwaway
+        // HashMap, so a regression in the real logic fails this test.
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let registry = ServiceRegistry::new(catalog);
 
         // Should be unhealthy with no services
-        {
-            let services_guard = services.read().await;
-            assert!(services_guard.is_empty());
-        }
+        assert!(!registry.is_healthy().await);
 
-        // Add a mock service
+        // Add a mock service directly into the registry's map
+        let mock_ingester = mock_ingester("test:8080");
         {
-            let mut services_guard = services.write().await;
-            let mock_ingester = common::catalog::Ingester {
-                id: uuid::Uuid::new_v4(),
-                address: "test:8080".to_string(),
-                last_seen: chrono::Utc::now(),
-                service_type: common::service_bootstrap::ServiceType::Writer,
-                capabilities: vec![
-                    common::flight::transport::ServiceCapability::TraceIngestion,
-                    common::flight::transport::ServiceCapability::Storage,
-                ],
-            };
+            let mut services_guard = registry.services.write().await;
             services_guard.insert(mock_ingester.id, mock_ingester);
         }
 
         // Should be healthy with services
-        {
-            let services_guard = services.read().await;
-            assert!(!services_guard.is_empty());
-        }
+        assert!(registry.is_healthy().await);
     }
 
     #[tokio::test]

@@ -573,6 +573,50 @@ mod tests {
         assert_ne!(res.status(), StatusCode::FORBIDDEN);
     }
 
+    /// Spawns a one-shot mock HTTP server, returning its address and a handle
+    /// that resolves to the raw request bytes it received once a client has
+    /// connected and sent a request.
+    async fn spawn_header_capturing_server()
+    -> (std::net::SocketAddr, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock server");
+        let addr = listener.local_addr().expect("mock server local addr");
+
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept connection");
+            let mut received = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = socket.read(&mut buf).await.expect("read request");
+                if n == 0 {
+                    break;
+                }
+                received.extend_from_slice(&buf[..n]);
+                if received.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let body = b"{\"tenants\":[]}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response headers");
+            socket.write_all(body).await.expect("write response body");
+            socket.shutdown().await.ok();
+            String::from_utf8_lossy(&received).to_string()
+        });
+
+        (addr, handle)
+    }
+
     #[tokio::test]
     async fn sdk_client_forwards_caller_headers() {
         let parts = RequestBuilder::new()
@@ -584,7 +628,61 @@ mod tests {
             .unwrap()
             .into_parts()
             .0;
-        let _client = sdk_client_for(&parts, "http://localhost:3000", None);
-        let _with_dataset = sdk_client_for(&parts, "http://localhost:3000", Some("prod"));
+
+        let (addr, handle) = spawn_header_capturing_server().await;
+        let client = sdk_client_for(&parts, &format!("http://{addr}"), None);
+        client
+            .list_tenants()
+            .send()
+            .await
+            .expect("mock server responds to list_tenants");
+
+        let received_request = handle.await.expect("mock server task panicked");
+        assert!(
+            received_request
+                .to_lowercase()
+                .contains("authorization: bearer sk-tenant-key"),
+            "expected forwarded authorization header on the wire, got request:\n{received_request}"
+        );
+        assert!(
+            received_request
+                .to_lowercase()
+                .contains("x-tenant-id: acme"),
+            "expected forwarded x-tenant-id header on the wire, got request:\n{received_request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sdk_client_forwards_dataset_override_header() {
+        let parts = RequestBuilder::new()
+            .method("POST")
+            .uri("/mcp")
+            .header("authorization", "Bearer sk-tenant-key")
+            .header("x-tenant-id", "acme")
+            .header("x-dataset-id", "staging")
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+
+        let (addr, handle) = spawn_header_capturing_server().await;
+        let client = sdk_client_for(&parts, &format!("http://{addr}"), Some("prod"));
+        client
+            .list_tenants()
+            .send()
+            .await
+            .expect("mock server responds to list_tenants");
+
+        let received_request = handle.await.expect("mock server task panicked");
+        let lower = received_request.to_lowercase();
+        // dataset_override must win over the caller's incoming X-Dataset-ID.
+        assert!(
+            lower.contains("x-dataset-id: prod"),
+            "expected dataset_override to set x-dataset-id, got request:\n{received_request}"
+        );
+        assert!(
+            !lower.contains("x-dataset-id: staging"),
+            "expected dataset_override to replace the caller's x-dataset-id, got request:\n{received_request}"
+        );
     }
 }
