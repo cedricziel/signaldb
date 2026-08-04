@@ -36,4 +36,5 @@ cargo-husky.workspace = true
 ignored = ["cargo-husky"]
 
 [features]
-jemalloc-profiling = ["common/jemalloc-profiling", "dep:tikv-jemallocator"]
+jemalloc = ["dep:tikv-jemallocator"]
+jemalloc-profiling = ["jemalloc", "common/jemalloc-profiling"]

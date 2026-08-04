@@ -48,4 +48,5 @@ tempfile.workspace = true
 ignored = ["tokio-test"]
 
 [features]
-jemalloc-profiling = ["common/jemalloc-profiling", "dep:tikv-jemallocator"]
+jemalloc = ["dep:tikv-jemallocator"]
+jemalloc-profiling = ["jemalloc", "common/jemalloc-profiling"]

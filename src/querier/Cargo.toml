@@ -50,4 +50,5 @@ name = "signaldb-querier"
 path = "src/main.rs"
 
 [features]
-jemalloc-profiling = ["common/jemalloc-profiling", "dep:tikv-jemallocator"]
+jemalloc = ["dep:tikv-jemallocator"]
+jemalloc-profiling = ["jemalloc", "common/jemalloc-profiling"]
