@@ -28,6 +28,7 @@ use pyroscope_api::{
     Flamebearer, FlamebearerMetadata, LabelsResponse, ProfileType, RenderResponse,
 };
 use serde::Deserialize;
+use tracing::Instrument;
 
 pub fn router<S: RouterState>() -> Router<S> {
     Router::new()
@@ -184,17 +185,20 @@ async fn execute_ticket<S: RouterState>(
             StatusCode::SERVICE_UNAVAILABLE
         })?;
 
+    let verb = common::self_monitoring::spans::ticket_verb(&ticket_content).map(str::to_owned);
     let ticket = Ticket::new(ticket_content);
     let mut flight_request = tonic::Request::new(ticket);
-    common::flight::trace_context::inject_context_into_request(&mut flight_request);
+    let rpc_span =
+        common::flight::trace_context::do_get_client_span(verb.as_deref(), &mut flight_request);
     if let Some(key) = &state.config().auth.internal_service_key {
         common::flight::auth::attach_internal_auth(&mut flight_request, key);
     }
 
     let mut stream = client
         .do_get(flight_request)
+        .instrument(rpc_span.clone())
         .await
-        .map_err(|e| flight_status_to_http(&e))?
+        .map_err(|e| rpc_span.in_scope(|| flight_status_to_http(&e)))?
         .into_inner();
 
     let mut data = Vec::new();
@@ -206,6 +210,11 @@ async fn execute_ticket<S: RouterState>(
 }
 
 fn flight_status_to_http(status: &tonic::Status) -> StatusCode {
+    common::self_monitoring::spans::record_rpc_result(
+        &tracing::Span::current(),
+        common::self_monitoring::spans::RpcBoundary::Client,
+        status.code(),
+    );
     match status.code() {
         tonic::Code::NotFound => StatusCode::NOT_FOUND,
         tonic::Code::InvalidArgument => StatusCode::BAD_REQUEST,

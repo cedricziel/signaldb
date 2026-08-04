@@ -1350,15 +1350,8 @@ impl FlightService for QuerierFlightService {
         // The ticket verb disambiguates the span name only when it looks
         // like a verb: raw-SQL tickets have no `op:` prefix, so their first
         // `:`-segment is query text and must stay out of the span name.
-        let span_ticket_verb = ticket_content
-            .split(':')
-            .next()
-            .filter(|v| {
-                !v.is_empty()
-                    && v.len() <= 32
-                    && v.chars().all(|c| c.is_ascii_lowercase() || c == '_')
-            })
-            .map(str::to_owned);
+        let span_ticket_verb =
+            common::self_monitoring::spans::ticket_verb(&ticket_content).map(str::to_owned);
         let make_span = || {
             common::self_monitoring::spans::rpc_server_span(
                 common::self_monitoring::spans::FLIGHT_DO_GET,
@@ -1381,7 +1374,7 @@ impl FlightService for QuerierFlightService {
                     // `return Err` in the body below flattens into a transport
                     // `Status` that the router strips down to a bare HTTP code,
                     // losing the reason. Recording it here — inside the
-                    // instrumented `flight_do_get` span (the current span) — as an
+                    // instrumented DoGet server span (the current span) — as an
                     // OTel `exception` event is the one place that cause survives
                     // for after-the-fact diagnosis, and covers every internal
                     // failure path (ticket parsing, tenant checks, execution,

@@ -56,13 +56,13 @@ independently shippable and TDD-ordered within.
 
 ## 5. Flight client spans (router, acceptor)
 
-- [ ] 5.1 Write failing integration test: router→querier query produces
+- [x] 5.1 Write failing integration test: router→querier query produces
       CLIENT span parenting the querier SERVER span; non-OK status marks
       the CLIENT span Error
-- [ ] 5.2 Wrap the 8 router Flight call sites
+- [x] 5.2 Wrap the 8 router Flight call sites
       (`endpoints/{flight,logql,promql,pyroscope,query,tempo}.rs`) in
       `rpc_client_span` so injection reads the client span's context
-- [ ] 5.3 Wrap acceptor→writer `do_put` call sites in `rpc_client_span`
+- [x] 5.3 Wrap acceptor→writer `do_put` call sites in `rpc_client_span`
 
 ## 6. Catalog DB client spans
 

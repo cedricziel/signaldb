@@ -101,13 +101,25 @@ fn rpc_client_span_any_non_ok_is_an_error() {
     // The same NOT_FOUND that leaves a server span unset fails the client
     // span: per RPC semconv, clients treat every non-OK code as an error.
     let spans = capture_spans(|| {
-        let span = rpc_client_span(FLIGHT_DO_GET, Some("querier.example:50054"));
+        let span = rpc_client_span(
+            FLIGHT_DO_GET,
+            Some("find_trace"),
+            Some("querier.example:50054"),
+        );
         let _guard = span.enter();
         spans::record_rpc_result(&span, RpcBoundary::Client, tonic::Code::NotFound);
     });
     let span = &spans[0];
-    assert_eq!(span.name, "arrow.flight.protocol.FlightService/DoGet");
+    // Client spans take the same low-cardinality detail as server spans.
+    assert_eq!(
+        span.name,
+        "arrow.flight.protocol.FlightService/DoGet find_trace"
+    );
     assert_eq!(span.span_kind, SpanKind::Client);
+    assert_eq!(
+        attr(span, "signaldb.flight.ticket_verb").as_deref(),
+        Some("find_trace")
+    );
     assert_eq!(attr(span, "rpc.system.name").as_deref(), Some("grpc"));
     assert_eq!(
         attr(span, "server.address").as_deref(),
@@ -125,7 +137,7 @@ fn rpc_client_span_any_non_ok_is_an_error() {
 #[test]
 fn rpc_client_span_ok_leaves_status_unset() {
     let spans = capture_spans(|| {
-        let span = rpc_client_span(FLIGHT_DO_PUT, None);
+        let span = rpc_client_span(FLIGHT_DO_PUT, None, None);
         let _guard = span.enter();
         spans::record_rpc_result(&span, RpcBoundary::Client, tonic::Code::Ok);
     });

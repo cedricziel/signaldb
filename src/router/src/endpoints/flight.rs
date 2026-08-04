@@ -13,6 +13,7 @@ use futures::stream::BoxStream;
 use futures::{StreamExt, stream};
 use std::collections::HashMap;
 use tonic::{Request, Response, Status, Streaming};
+use tracing::Instrument;
 
 use crate::RouterState;
 
@@ -189,12 +190,21 @@ impl<S: RouterState> SignalDBFlightService<S> {
             }
         }
 
-        common::flight::trace_context::inject_context_into_request(&mut request);
+        let rpc_span = common::flight::trace_context::do_get_client_span(None, &mut request);
 
-        let response = client.do_get(request).await.map_err(|e| {
-            log::error!("Querier query failed: {}", e.message());
-            Status::new(e.code(), e.message())
-        })?;
+        let response = client
+            .do_get(request)
+            .instrument(rpc_span.clone())
+            .await
+            .map_err(|e| {
+                common::self_monitoring::spans::record_rpc_result(
+                    &rpc_span,
+                    common::self_monitoring::spans::RpcBoundary::Client,
+                    e.code(),
+                );
+                log::error!("Querier query failed: {}", e.message());
+                Status::new(e.code(), e.message())
+            })?;
 
         let upstream = response.into_inner();
         let proxied: BoxStream<'static, Result<FlightData, Status>> = upstream

@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use tempo_api::{
     self, MetricsQueryParams, MetricsRangeQueryParams, MetricsResponse, TraceQueryParams,
 };
+use tracing::Instrument;
 
 /// Query parameters for v2 tag search
 #[derive(Debug, Deserialize)]
@@ -671,14 +672,20 @@ pub async fn query_single_trace<S: RouterState>(
             end.map(|v| v.to_string()).unwrap_or_default()
         ),
     };
+    let verb = common::self_monitoring::spans::ticket_verb(&ticket_content).map(str::to_owned);
     let ticket = Ticket::new(ticket_content);
     let mut flight_request = tonic::Request::new(ticket);
-    common::flight::trace_context::inject_context_into_request(&mut flight_request);
+    let rpc_span =
+        common::flight::trace_context::do_get_client_span(verb.as_deref(), &mut flight_request);
     if let Some(key) = &state.config().auth.internal_service_key {
         common::flight::auth::attach_internal_auth(&mut flight_request, key);
     }
 
-    match client.do_get(flight_request).await {
+    match client
+        .do_get(flight_request)
+        .instrument(rpc_span.clone())
+        .await
+    {
         Ok(response) => {
             let mut stream = response.into_inner();
             let mut trace_data = Vec::new();
@@ -689,7 +696,9 @@ pub async fn query_single_trace<S: RouterState>(
                 match flight_data {
                     Ok(data) => trace_data.push(data),
                     Err(e) => {
-                        return Err(trace_lookup_status_to_http(&trace_id, &e));
+                        return Err(
+                            rpc_span.in_scope(|| trace_lookup_status_to_http(&trace_id, &e))
+                        );
                     }
                 }
             }
@@ -731,7 +740,7 @@ pub async fn query_single_trace<S: RouterState>(
             }
         }
         Err(e) => {
-            return Err(trace_lookup_status_to_http(&trace_id, &e));
+            return Err(rpc_span.in_scope(|| trace_lookup_status_to_http(&trace_id, &e)));
         }
     }
 
@@ -744,6 +753,11 @@ pub async fn query_single_trace<S: RouterState>(
 /// Not-found is an expected outcome and logged at info; everything else is
 /// an error.
 fn trace_lookup_status_to_http(trace_id: &str, status: &tonic::Status) -> axum::http::StatusCode {
+    common::self_monitoring::spans::record_rpc_result(
+        &tracing::Span::current(),
+        common::self_monitoring::spans::RpcBoundary::Client,
+        status.code(),
+    );
     match status.code() {
         tonic::Code::NotFound => {
             tracing::info!(trace_id = %trace_id, "Trace not found");
@@ -829,12 +843,19 @@ pub async fn search<S: RouterState>(
         tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
     ));
     let mut flight_request = tonic::Request::new(ticket);
-    common::flight::trace_context::inject_context_into_request(&mut flight_request);
+    let rpc_span = common::flight::trace_context::do_get_client_span(
+        Some("search_traces"),
+        &mut flight_request,
+    );
     if let Some(key) = &state.config().auth.internal_service_key {
         common::flight::auth::attach_internal_auth(&mut flight_request, key);
     }
 
-    match client.do_get(flight_request).await {
+    match client
+        .do_get(flight_request)
+        .instrument(rpc_span.clone())
+        .await
+    {
         Ok(response) => {
             let mut stream = response.into_inner();
             let mut search_results = Vec::new();
@@ -924,15 +945,21 @@ async fn distinct_column_values<S: RouterState>(
         tenant_ctx.tenant_slug, tenant_ctx.dataset_slug
     );
     let mut flight_request = tonic::Request::new(Ticket::new(sql));
-    common::flight::trace_context::inject_context_into_request(&mut flight_request);
+    let rpc_span = common::flight::trace_context::do_get_client_span(None, &mut flight_request);
     if let Some(key) = &state.config().auth.internal_service_key {
         common::flight::auth::attach_internal_auth(&mut flight_request, key);
     }
 
     let mut stream = client
         .do_get(flight_request)
+        .instrument(rpc_span.clone())
         .await
         .map_err(|e| {
+            common::self_monitoring::spans::record_rpc_result(
+                &rpc_span,
+                common::self_monitoring::spans::RpcBoundary::Client,
+                e.code(),
+            );
             tracing::error!(error = %e, "Tag values query failed");
             axum::http::StatusCode::INTERNAL_SERVER_ERROR
         })?
