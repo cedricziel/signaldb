@@ -605,6 +605,26 @@ async fn verify_data_persistence(services: &TestServices, processing_delay: Dura
     println!("✅ Data successfully persisted to object store");
 }
 
+/// Poll the object store until it has persisted data or the timeout elapses.
+///
+/// This replaces fixed `sleep()` waits with a deterministic condition check:
+/// the test proceeds as soon as data lands, and only waits the full timeout
+/// when persistence has genuinely failed - avoiding both flakiness on slow
+/// CI runners and needless fixed delays on fast ones.
+async fn wait_for_objects_persisted(
+    object_store: &Arc<dyn ObjectStore>,
+    timeout_duration: Duration,
+) -> Vec<object_store::ObjectMeta> {
+    let start_time = std::time::Instant::now();
+    loop {
+        let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
+        if !objects.is_empty() || start_time.elapsed() >= timeout_duration {
+            return objects;
+        }
+        sleep(Duration::from_millis(200)).await;
+    }
+}
+
 /// Validate that queried trace data matches the original trace
 async fn validate_trace_query_data(
     services: &TestServices,
@@ -816,60 +836,18 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
     // Verify data persistence and WAL processing
     verify_data_persistence(&services, Duration::from_secs(5)).await;
 
-    // Test querying the trace back and validate the returned data
-    match validate_trace_query_data(&services, &trace_id, "end-to-end-test-span").await {
-        Ok(()) => {
-            println!(
-                "✅ Step 3: Successfully queried and validated trace data via Flight protocol"
-            );
-        }
-        Err(e) => {
-            println!("⚠️  Query validation failed: {e}");
-            println!("⚠️  Query functionality may still be under development");
-
-            // Fallback to basic query test for development
-            let mut query_client = services
-                .flight_transport
-                .get_client_for_capability(ServiceCapability::QueryExecution)
-                .await
-                .expect("Failed to get querier client");
-
-            let query_ticket = arrow_flight::Ticket::new(format!(
-                "find_trace:default:default:{}",
-                hex::encode(&trace_id)
-            ));
-            let query_result =
-                timeout(Duration::from_secs(10), query_client.do_get(query_ticket)).await;
-
-            match query_result {
-                Ok(Ok(response)) => {
-                    let mut stream = response.into_inner();
-                    let mut flight_data_count = 0;
-
-                    while let Some(flight_data_result) = stream.next().await {
-                        match flight_data_result {
-                            Ok(_data) => {
-                                flight_data_count += 1;
-                            }
-                            Err(e) => {
-                                println!("⚠️  Error reading flight data: {e}");
-                            }
-                        }
-                    }
-
-                    println!(
-                        "✅ Basic query test: Received {flight_data_count} flight data chunks"
-                    );
-                }
-                Ok(Err(e)) => {
-                    println!("❌ Flight query failed: {e}");
-                }
-                Err(_) => {
-                    println!("❌ Flight query timed out");
-                }
-            }
-        }
-    }
+    // Test querying the trace back and validate the returned data.
+    //
+    // This is the primary correctness check of the test: the ingested
+    // trace_id/span_name must actually round-trip through Flight query.
+    // A failure here must fail the test, not be downgraded to a warning.
+    validate_trace_query_data(&services, &trace_id, "end-to-end-test-span")
+        .await
+        .expect(
+            "Step 3: trace query validation failed - queried data did not match the \
+             ingested trace (trace_id/span_name did not round-trip via Flight query)",
+        );
+    println!("✅ Step 3: Successfully queried and validated trace data via Flight protocol");
 
     // Test router-based query
     println!("🔍 Testing router-based trace query...");
@@ -993,34 +971,19 @@ async fn test_monolithic_mode_trace_pipeline() {
     // Verify data persistence
     verify_data_persistence(&services, Duration::from_secs(4)).await;
 
-    // Test query with data validation
-    match validate_trace_query_data(&services, &trace_id, "monolithic-test-span").await {
-        Ok(()) => {
-            println!("✅ Query and data validation successful in monolithic mode");
-        }
-        Err(e) => {
-            println!("⚠️  Query validation failed in monolithic mode: {e}");
-
-            // Fallback to basic query test
-            let mut query_client = services
-                .flight_transport
-                .get_client_for_capability(ServiceCapability::QueryExecution)
-                .await
-                .expect("Failed to get querier client");
-
-            let query_ticket = arrow_flight::Ticket::new(format!(
-                "find_trace:default:default:{}",
-                hex::encode(&trace_id)
-            ));
-            let query_result =
-                timeout(Duration::from_secs(5), query_client.do_get(query_ticket)).await;
-
-            match query_result {
-                Ok(Ok(_)) => println!("✅ Basic query successful in monolithic mode"),
-                _ => println!("⚠️  Query may need additional implementation"),
-            }
-        }
-    }
+    // Test query with data validation.
+    //
+    // This is the primary correctness check of the test: the ingested
+    // trace_id/span_name must actually round-trip through Flight query in
+    // monolithic mode. A failure here must fail the test, not be downgraded
+    // to a warning.
+    validate_trace_query_data(&services, &trace_id, "monolithic-test-span")
+        .await
+        .expect(
+            "trace query validation failed in monolithic mode - queried data did not match \
+             the ingested trace (trace_id/span_name did not round-trip via Flight query)",
+        );
+    println!("✅ Query and data validation successful in monolithic mode");
 
     println!("🎯 MONOLITHIC MODE TEST SUMMARY:");
     println!("✅ All services running in single process space");
@@ -1089,17 +1052,18 @@ async fn test_flight_communication_performance() {
 
     let ingestion_duration = start_time.elapsed();
 
-    // Allow processing to complete - extra time for performance test
-    sleep(Duration::from_secs(6)).await;
+    // Wait deterministically for processing to complete instead of a fixed
+    // sleep: proceed as soon as data is persisted, bounded by a generous
+    // timeout so a genuine persistence failure still fails the test promptly.
+    let objects =
+        wait_for_objects_persisted(&services.object_store, Duration::from_secs(30)).await;
 
-    let objects: Vec<_> = services
-        .object_store
-        .list(None)
-        .try_collect()
-        .await
-        .unwrap();
-
-    println!("🎯 PERFORMANCE TEST RESULTS:");
+    // Throughput numbers are informational only - they are not asserted on,
+    // since wall-clock timing on a shared CI runner is not a reliable
+    // correctness signal and no baseline has been established to compare
+    // against. What this test verifies is that ingestion completes and data
+    // is durably persisted.
+    println!("🎯 PERFORMANCE TEST RESULTS (informational, not asserted):");
     println!("📈 Ingested {num_traces} traces in {ingestion_duration:?}");
     println!(
         "📈 Average per trace: {:?}",
@@ -1111,9 +1075,10 @@ async fn test_flight_communication_performance() {
     );
     println!("📦 Objects stored: {}", objects.len());
 
-    // Performance assertions
-    assert!(ingestion_duration.as_secs() < 30, "Ingestion took too long");
-    assert!(!objects.is_empty(), "No data was stored");
+    assert!(
+        !objects.is_empty(),
+        "No data was stored after ingesting {num_traces} traces"
+    );
 
     println!("✅ Flight communication performance test PASSED");
 }

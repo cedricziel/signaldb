@@ -3,13 +3,16 @@
 //! This test verifies that the compactor correctly consolidates small log files
 //! and applies appropriate sorting for query performance.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use common::catalog_manager::CatalogManager;
 use common::flight::conversion::conversion_logs::otlp_logs_to_arrow;
-use compactor::executor::{CompactionExecutor, ExecutorConfig};
+use compactor::executor::{CompactionExecutor, CompactionStatus, ExecutorConfig};
 use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionCandidate, PartitionStats};
+use datafusion::arrow::array::{Array, Int64Array, StringArray};
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::prelude::SessionContext;
+use iceberg_rust::catalog::tabular::Tabular;
 use object_store::memory::InMemory;
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
@@ -154,25 +157,16 @@ async fn test_logs_table_compaction() -> Result<()> {
     )
     .await;
 
-    let mut writer = match writer_result {
-        Ok(w) => w,
-        Err(e) => {
-            log::warn!("Could not create writer in test environment: {e}");
-            log::info!("Test skipped due to environment limitations");
-            return Ok(());
-        }
-    };
+    let mut writer =
+        writer_result.context("Failed to create IcebergTableWriter for in-memory test table")?;
 
     // Write 10 small batches (100 rows each = 1000 logs total)
     for i in 0..10 {
         let batch = create_logs_batch(i, 100);
-        if let Err(e) = writer
+        writer
             .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
             .await
-        {
-            log::warn!("Failed to write log batch {i}: {e}");
-            return Ok(()); // Skip test if writes fail
-        }
+            .with_context(|| format!("Failed to write log batch {i}"))?;
         log::debug!("Wrote log batch {i}");
     }
 
@@ -206,35 +200,36 @@ async fn test_logs_table_compaction() -> Result<()> {
     // Phase 4: Verify results
     log::info!("Phase 4: Verifying results");
 
-    match result {
-        Ok(result) => {
-            log::info!("Compaction completed with status: {:?}", result.status);
-            log::info!("Duration: {:?}", result.duration);
-            log::info!(
-                "Files: {} input -> {} output",
-                result.input_files_count,
-                result.output_files_count
-            );
+    let result = result.context("Compaction execution failed")?;
+    log::info!("Compaction completed with status: {:?}", result.status);
+    log::info!("Duration: {:?}", result.duration);
+    log::info!(
+        "Files: {} input -> {} output",
+        result.input_files_count,
+        result.output_files_count
+    );
 
-            // Verify consolidation happened
-            if result.input_files_count > 0 {
-                assert!(
-                    result.output_files_count < result.input_files_count,
-                    "Should consolidate files: {} input files -> {} output files",
-                    result.input_files_count,
-                    result.output_files_count
-                );
-                log::info!("✓ File consolidation verified");
-            }
+    assert_eq!(
+        result.status,
+        CompactionStatus::Success,
+        "Compaction must succeed: {:?}",
+        result.error
+    );
+    assert!(
+        result.error.is_none(),
+        "Successful compaction must not report an error: {:?}",
+        result.error
+    );
 
-            if let Some(error) = result.error {
-                log::warn!("Compaction reported error: {error}");
-            }
-        }
-        Err(e) => {
-            log::error!("Compaction failed: {e:?}");
-            return Err(e);
-        }
+    // Verify consolidation happened
+    if result.input_files_count > 0 {
+        assert!(
+            result.output_files_count < result.input_files_count,
+            "Should consolidate files: {} input files -> {} output files",
+            result.input_files_count,
+            result.output_files_count
+        );
+        log::info!("✓ File consolidation verified");
     }
 
     // Check metrics
@@ -256,7 +251,12 @@ async fn test_logs_table_compaction() -> Result<()> {
     Ok(())
 }
 
-/// Test logs compaction with concurrent writes scenario
+/// Test that logs compaction produces data sorted by
+/// (timestamp ASC, service_name ASC, severity_text ASC) for query
+/// performance, per `ParquetRewriter::get_sort_columns`. Batches are
+/// written deliberately out of timestamp order so that observing sorted
+/// output afterward can only be explained by the compactor's sort step,
+/// not by insertion order happening to already be sorted.
 #[tokio::test]
 async fn test_logs_compaction_with_sorting_verification() -> Result<()> {
     init_test_logging();
@@ -271,36 +271,32 @@ async fn test_logs_compaction_with_sorting_verification() -> Result<()> {
     let table_name = "logs";
 
     // Create writer and write varied severity logs
-    let writer_result = IcebergTableWriter::new(
+    let mut writer = IcebergTableWriter::new(
         &catalog_manager,
         object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
     )
-    .await;
+    .await
+    .context("Failed to create IcebergTableWriter for in-memory test table")?;
 
-    let mut writer = match writer_result {
-        Ok(w) => w,
-        Err(e) => {
-            log::warn!("Could not create writer: {e}");
-            return Ok(());
-        }
-    };
-
-    // Write batches with different severity distributions
-    for i in 0..10 {
+    // Write batches out of timestamp order (batch 9 first, batch 0 last).
+    // `create_logs_batch` derives each row's timestamp from `batch_num`, so
+    // inserting batches in descending `batch_num` order means the raw,
+    // unsorted data files are NOT already timestamp-ordered by insertion
+    // sequence. Any post-compaction ordering we observe below can therefore
+    // only be explained by the compactor's explicit sort step, not by
+    // insertion order happening to line up.
+    for i in (0..10).rev() {
         let batch = create_logs_batch(i, 100);
-        if let Err(e) = writer
+        writer
             .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
             .await
-        {
-            log::warn!("Write failed: {e}");
-            return Ok(());
-        }
+            .with_context(|| format!("Failed to write log batch {i}"))?;
     }
 
-    log::info!("Wrote 10 batches with mixed severities");
+    log::info!("Wrote 10 batches (out of timestamp order) with mixed severities");
 
     // Execute compaction
     let executor_config = ExecutorConfig::default();
@@ -320,14 +316,100 @@ async fn test_logs_compaction_with_sorting_verification() -> Result<()> {
         },
     };
 
-    let result = executor.execute_candidate(candidate).await?;
+    let result = executor
+        .execute_candidate(candidate)
+        .await
+        .context("Compaction execution failed")?;
 
     log::info!("Compaction result: {:?}", result.status);
+    assert_eq!(
+        result.status,
+        CompactionStatus::Success,
+        "Compaction must succeed: {:?}",
+        result.error
+    );
+    assert!(
+        result.error.is_none(),
+        "Successful compaction must not report an error: {:?}",
+        result.error
+    );
 
     // Verify metrics tracked the compaction
     let summary = metrics.summary();
     assert_eq!(summary.jobs_started, 1);
     assert_eq!(summary.jobs_succeeded, 1);
+
+    // Verify the compacted table's rows are actually sorted by
+    // (timestamp ASC, service_name ASC, severity_text ASC), per
+    // `ParquetRewriter::get_sort_columns` for the "logs" table. The SELECT
+    // below has no ORDER BY, so this reflects the physical row order the
+    // compactor wrote to Parquet, not an order DataFusion imposed for us.
+    let identifier = catalog_manager.build_table_identifier(tenant_id, dataset_id, table_name);
+    let tabular = catalog_manager
+        .catalog()
+        .load_tabular(&identifier)
+        .await
+        .context("Failed to load compacted logs table")?;
+    let table = match tabular {
+        Tabular::Table(table) => table,
+        _ => anyhow::bail!("expected a table, got a view"),
+    };
+
+    let ctx = SessionContext::new();
+    let provider = Arc::new(datafusion_iceberg::DataFusionTable::new(
+        Tabular::Table(table),
+        None,
+        None,
+        None,
+    )) as Arc<dyn datafusion::datasource::TableProvider>;
+    ctx.register_table(table_name, provider)?;
+
+    let batches = ctx
+        .sql("SELECT arrow_cast(timestamp, 'Int64') AS ts, service_name, severity_text FROM logs")
+        .await?
+        .collect()
+        .await?;
+
+    let mut prev: Option<(i64, String, String)> = None;
+    let mut row_count = 0usize;
+    for batch in &batches {
+        let ts = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("timestamp column should cast to Int64Array");
+        let service = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("service_name column should be StringArray");
+        let severity = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("severity_text column should be StringArray");
+
+        for row in 0..batch.num_rows() {
+            let current = (
+                ts.value(row),
+                service.value(row).to_string(),
+                severity.value(row).to_string(),
+            );
+            if let Some(prev_key) = &prev {
+                assert!(
+                    prev_key <= &current,
+                    "compacted logs table is not sorted by (timestamp, service_name, severity_text): {prev_key:?} appears before {current:?}"
+                );
+            }
+            prev = Some(current);
+            row_count += 1;
+        }
+    }
+
+    assert_eq!(
+        row_count, 1000,
+        "expected all 1000 rows to survive compaction"
+    );
 
     log::info!("✓ Sorting verification test completed");
 

@@ -1,13 +1,17 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use common::CatalogManager;
 use common::config::{
     AuthConfig, Configuration, DatasetConfig, SchemaConfig, StorageConfig, TenantConfig,
 };
+use common::iceberg::names::build_table_identifier;
 use common::wal::{Wal, WalConfig, WalOperation, record_batch_to_bytes};
 use datafusion::arrow::array::{Int64Array, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::prelude::SessionContext;
+use datafusion_iceberg::DataFusionTable;
 use iceberg_rust::catalog::identifier::Identifier;
+use iceberg_rust::catalog::tabular::Tabular;
 use object_store::memory::InMemory;
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -21,29 +25,120 @@ async fn test_iceberg_writer_integration() -> Result<()> {
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
     let object_store = Arc::new(InMemory::new());
 
-    // Test that we can create an Iceberg writer (should work now with table creation)
-    let result = IcebergTableWriter::new(
+    // Creating an Iceberg writer against a fresh in-memory catalog must
+    // deterministically succeed (it creates the "traces" table on demand).
+    let writer = IcebergTableWriter::new(
         &catalog_manager,
         object_store.clone(),
         "default".to_string(),
         "default".to_string(),
         "traces".to_string(),
     )
-    .await;
+    .await
+    .context("IcebergTableWriter::new should succeed against a fresh in-memory catalog")?;
 
-    // Table creation is now implemented, but may fail due to test environment
-    if let Err(e) = result {
-        // Should not fail due to "not implemented" anymore
-        assert!(!e.to_string().contains("Table creation not yet implemented"));
-        println!("Expected test environment failure: {}", e);
-    } else {
-        println!("Successfully created Iceberg writer in test environment");
-    }
+    assert_eq!(writer.table_identifier().name(), "traces");
 
     Ok(())
 }
 
-/// Integration test for WAL processor with Iceberg integration
+/// Build a batch in the `metrics_gauge` storage schema (the same shape the
+/// writer expects on the WAL→Iceberg commit path).
+fn metrics_gauge_batch(values: &[f64]) -> Result<RecordBatch> {
+    use datafusion::arrow::array::{Date32Array, Float64Array, Int32Array};
+    use datafusion::arrow::datatypes::TimeUnit;
+
+    let n = values.len();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(
+            "start_timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            true,
+        ),
+        Field::new("service_name", DataType::Utf8, false),
+        Field::new("metric_name", DataType::Utf8, false),
+        Field::new("metric_description", DataType::Utf8, true),
+        Field::new("metric_unit", DataType::Utf8, true),
+        Field::new("value", DataType::Float64, false),
+        Field::new("flags", DataType::Int32, true),
+        Field::new("resource_schema_url", DataType::Utf8, true),
+        Field::new("resource_attributes", DataType::Utf8, true),
+        Field::new("scope_name", DataType::Utf8, true),
+        Field::new("scope_version", DataType::Utf8, true),
+        Field::new("scope_schema_url", DataType::Utf8, true),
+        Field::new("scope_attributes", DataType::Utf8, true),
+        Field::new("scope_dropped_attr_count", DataType::Int32, true),
+        Field::new("attributes", DataType::Utf8, true),
+        Field::new("exemplars", DataType::Utf8, true),
+        Field::new("date_day", DataType::Date32, false),
+        Field::new("hour", DataType::Int32, false),
+    ]));
+
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(datafusion::arrow::array::TimestampNanosecondArray::from(
+                (0..n).map(|i| 1_000_000_000 + i as i64).collect::<Vec<_>>(),
+            )),
+            Arc::new(datafusion::arrow::array::TimestampNanosecondArray::from(
+                vec![None::<i64>; n],
+            )),
+            Arc::new(StringArray::from(vec!["test-service"; n])),
+            Arc::new(StringArray::from(vec!["cpu.usage"; n])),
+            Arc::new(StringArray::from(vec![None::<&str>; n])),
+            Arc::new(StringArray::from(vec![Some("%"); n])),
+            Arc::new(Float64Array::from(values.to_vec())),
+            Arc::new(Int32Array::from(vec![None::<i32>; n])),
+            Arc::new(StringArray::from(vec![None::<&str>; n])),
+            Arc::new(StringArray::from(vec![None::<&str>; n])),
+            Arc::new(StringArray::from(vec![None::<&str>; n])),
+            Arc::new(StringArray::from(vec![None::<&str>; n])),
+            Arc::new(StringArray::from(vec![None::<&str>; n])),
+            Arc::new(StringArray::from(vec![None::<&str>; n])),
+            Arc::new(Int32Array::from(vec![None::<i32>; n])),
+            Arc::new(StringArray::from(vec![None::<&str>; n])),
+            Arc::new(StringArray::from(vec![None::<&str>; n])),
+            Arc::new(Date32Array::from(vec![19000; n])),
+            Arc::new(Int32Array::from(vec![10; n])),
+        ],
+    )?;
+    Ok(batch)
+}
+
+/// Count rows in a table by loading it fresh from the catalog and running
+/// `SELECT COUNT(*)`.
+async fn count_rows(catalog_manager: &CatalogManager, table_name: &str) -> Result<i64> {
+    let ident = build_table_identifier("default", "default", table_name);
+    let tabular = catalog_manager
+        .catalog()
+        .load_tabular(&ident)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to load table {ident}: {e}"))?;
+    let table = match tabular {
+        Tabular::Table(table) => table,
+        _ => anyhow::bail!("Expected a table for {ident}"),
+    };
+
+    let ctx = SessionContext::new();
+    ctx.register_table("t", Arc::new(DataFusionTable::from(table)))?;
+    let batches = ctx.sql("SELECT COUNT(*) FROM t").await?.collect().await?;
+    let count = batches[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("COUNT(*) should be Int64")
+        .value(0);
+    Ok(count)
+}
+
+/// Integration test for WAL processor with Iceberg integration: a WAL entry
+/// force-committed through the processor must land as a real row in the
+/// target Iceberg table, not merely "not error".
 #[tokio::test]
 async fn test_wal_processor_integration() -> Result<()> {
     // Setup test environment
@@ -54,27 +149,12 @@ async fn test_wal_processor_integration() -> Result<()> {
     let object_store = Arc::new(InMemory::new());
 
     // Create WAL processor
-    let mut processor = WalProcessor::new(wal.clone(), catalog_manager, object_store);
+    let mut processor = WalProcessor::new(wal.clone(), catalog_manager.clone(), object_store);
 
-    // Create a test record batch
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("trace_id", DataType::Utf8, false),
-        Field::new("span_id", DataType::Utf8, false),
-        Field::new("timestamp", DataType::Int64, false),
-    ]));
-
-    let batch = RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(StringArray::from(vec!["trace-1", "trace-2"])),
-            Arc::new(StringArray::from(vec!["span-1", "span-2"])),
-            Arc::new(Int64Array::from(vec![1234567890, 1234567891])),
-        ],
-    )?;
-
-    // Serialize batch and write to WAL
+    // Serialize a schema-correct metrics batch and write it to WAL.
+    let batch = metrics_gauge_batch(&[1.0, 2.0])?;
     let batch_bytes = record_batch_to_bytes(&batch)?;
-    wal.append(WalOperation::WriteTraces, batch_bytes, None)
+    wal.append(WalOperation::WriteMetrics, batch_bytes, None)
         .await?;
     wal.flush().await?;
 
@@ -82,22 +162,23 @@ async fn test_wal_processor_integration() -> Result<()> {
     let stats = processor.get_stats();
     assert_eq!(stats.active_writers, 0);
 
-    // Force-commit the pending entry (the read-your-writes drain). The test
-    // batch uses a minimal schema, so the commit may fail in this environment —
-    // that is tolerated; it must only not regress to the obsolete
-    // "not implemented" path.
-    let result = processor
+    // Force-commit the pending entry (the read-your-writes drain) and require
+    // it to succeed outright — a real regression in the WAL→Iceberg commit
+    // path must fail this test, not print a "tolerated" message.
+    processor
         .force_commit_pending(writer::FlushScope {
             tenant_id: "default".to_string(),
             dataset_id: Some("default".to_string()),
         })
-        .await;
-    if let Err(e) = result {
-        assert!(!e.to_string().contains("Table creation not yet implemented"));
-        println!("Expected test environment failure in processing: {}", e);
-    } else {
-        println!("Successfully processed WAL entry with Iceberg writer");
-    }
+        .await
+        .context("force_commit_pending should succeed for a well-formed WAL entry")?;
+
+    // The committed batch must actually be visible as rows in the table.
+    assert_eq!(
+        count_rows(&catalog_manager, "metrics_gauge").await?,
+        2,
+        "force-committed WAL entry should land as rows in the metrics_gauge table"
+    );
 
     // Shutdown processor
     processor.shutdown().await?;

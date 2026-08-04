@@ -631,45 +631,36 @@ async fn test_tempo_search_endpoint() {
 
     let response = app.clone().oneshot(request).await.unwrap();
 
-    // Accept 200, 503, or 500 during testing
-    println!("Search response status: {}", response.status());
-
-    if response.status() == StatusCode::INTERNAL_SERVER_ERROR {
-        // Log the error for debugging
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let error_msg = std::str::from_utf8(&body).unwrap_or("Non-UTF8 error");
-        println!("🐛 Search internal server error: {error_msg}");
-        println!(
-            "⚠️  Internal error during development - this indicates the querier connection is working"
-        );
-        return; // Consider this a successful connection test
-    }
-
-    assert!(
-        response.status() == StatusCode::OK || response.status() == StatusCode::SERVICE_UNAVAILABLE,
-        "Expected 200, 503, or 500, got: {}",
-        response.status()
+    // setup_test_services() only returns once the querier, writer, and
+    // acceptor are all registered with the service registry, so a search
+    // against real, persisted data must succeed outright. Tolerating a 500
+    // or 503 here previously let a completely broken search endpoint pass
+    // this test.
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "search endpoint must succeed with a registered querier and persisted data, got {status}: {}",
+        std::str::from_utf8(&body).unwrap_or("<non-utf8 body>")
     );
+    let search_result: tempo_api::SearchResult =
+        serde_json::from_slice(&body).expect("search response should be valid JSON");
 
-    if response.status() == StatusCode::OK {
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let search_result: tempo_api::SearchResult =
-            serde_json::from_slice(&body).expect("Should be valid JSON");
-
-        // Search result should be valid (may be empty in test environment)
-        println!(
-            "Search result: {} traces, {} metrics",
-            search_result.traces.len(),
-            search_result.metrics.len()
-        );
-        println!("✅ Search endpoint returned valid results");
-    } else {
-        println!("⚠️  Service unavailable during search test");
-    }
+    // We sent one trace for this tenant/dataset before querying; the search
+    // must actually find it, not just return an empty-but-well-formed body.
+    assert!(
+        !search_result.traces.is_empty(),
+        "search should return the trace sent for this tenant, got 0 traces"
+    );
+    println!(
+        "Search result: {} traces, {} metrics",
+        search_result.traces.len(),
+        search_result.metrics.len()
+    );
+    println!("✅ Search endpoint returned valid results");
 
     // Tag values: supported tags come from real data, unsupported tags
     // are an explicit 501 (issue #552).
@@ -1258,8 +1249,22 @@ async fn test_read_path_tenant_isolation() {
     .await;
     println!("✅ Globex trace sent: {globex_trace_id}");
 
-    // Wait for data persistence
-    wait_for_data_persistence(&services).await;
+    // Wait for data persistence. `wait_for_data_persistence` hardcodes a
+    // flush scope of "test-tenant", which doesn't exist in this multi-tenant
+    // setup (only "acme" and "globex" are configured) and would silently
+    // flush nothing. Flush each tenant's own pending writes explicitly so
+    // the self-query assertions below can require success deterministically
+    // instead of tolerating 404 as "maybe not committed yet".
+    common::testing::flush_storage_writers(&services.flight_transport, "acme", Some("production"))
+        .await
+        .expect("flush acme writer");
+    common::testing::flush_storage_writers(
+        &services.flight_transport,
+        "globex",
+        Some("production"),
+    )
+    .await
+    .expect("flush globex writer");
 
     // Test 1: Acme can query their own trace
     println!("🔍 Test 1: Acme queries their own trace");
@@ -1271,17 +1276,24 @@ async fn test_read_path_tenant_isolation() {
         .unwrap();
 
     let response = app.clone().oneshot(request).await.unwrap();
-    println!("Acme self-query status: {}", response.status());
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    println!("Acme self-query status: {status}");
 
-    // We expect either 200 OK or 404 (if Iceberg table doesn't exist yet)
-    // The important part is that it's authenticated and routed correctly
-    assert!(
-        response.status() == StatusCode::OK
-            || response.status() == StatusCode::NOT_FOUND
-            || response.status() == StatusCode::INTERNAL_SERVER_ERROR,
-        "Expected 200, 404, or 500, got: {}",
-        response.status()
+    // Data was explicitly flushed above, so the trace must be found. Silently
+    // tolerating 404/500 here let this test pass even when the read path
+    // couldn't find data that was definitely persisted.
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Acme should find its own trace after an explicit flush, got {status}: {}",
+        std::str::from_utf8(&body).unwrap_or("<non-utf8 body>")
     );
+    let acme_trace: tempo_api::Trace =
+        serde_json::from_slice(&body).expect("Acme trace response should be valid JSON");
+    assert_eq!(acme_trace.trace_id, acme_trace_id);
 
     // Test 2: Globex can query their own trace
     println!("🔍 Test 2: Globex queries their own trace");
@@ -1293,15 +1305,21 @@ async fn test_read_path_tenant_isolation() {
         .unwrap();
 
     let response = app.clone().oneshot(request).await.unwrap();
-    println!("Globex self-query status: {}", response.status());
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    println!("Globex self-query status: {status}");
 
-    assert!(
-        response.status() == StatusCode::OK
-            || response.status() == StatusCode::NOT_FOUND
-            || response.status() == StatusCode::INTERNAL_SERVER_ERROR,
-        "Expected 200, 404, or 500, got: {}",
-        response.status()
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Globex should find its own trace after an explicit flush, got {status}: {}",
+        std::str::from_utf8(&body).unwrap_or("<non-utf8 body>")
     );
+    let globex_trace: tempo_api::Trace =
+        serde_json::from_slice(&body).expect("Globex trace response should be valid JSON");
+    assert_eq!(globex_trace.trace_id, globex_trace_id);
 
     // Test 3: Acme CANNOT query Globex's trace (tenant isolation)
     println!("🔍 Test 3: Acme attempts to query Globex's trace (should fail)");
@@ -1313,14 +1331,18 @@ async fn test_read_path_tenant_isolation() {
         .unwrap();
 
     let response = app.clone().oneshot(request).await.unwrap();
-    println!("Acme cross-tenant query status: {}", response.status());
+    let status = response.status();
+    println!("Acme cross-tenant query status: {status}");
 
-    // Should return 404 Not Found since it won't exist in acme's namespace
-    assert!(
-        response.status() == StatusCode::NOT_FOUND
-            || response.status() == StatusCode::INTERNAL_SERVER_ERROR,
-        "Expected 404 or 500 (tenant isolation), got: {}",
-        response.status()
+    // A 500 does not demonstrate isolation held: an unrelated crash could
+    // occur before any leak check, so a regression that leaks data in a 500
+    // response body would still pass a test that accepted INTERNAL_SERVER_ERROR.
+    // The only status that actually proves Globex's trace is invisible to
+    // Acme is a clean 404.
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "Acme must get exactly 404 for Globex's trace (tenant isolation), got: {status}"
     );
 
     // Test 4: Globex CANNOT query Acme's trace (tenant isolation)
@@ -1333,13 +1355,13 @@ async fn test_read_path_tenant_isolation() {
         .unwrap();
 
     let response = app.clone().oneshot(request).await.unwrap();
-    println!("Globex cross-tenant query status: {}", response.status());
+    let status = response.status();
+    println!("Globex cross-tenant query status: {status}");
 
-    assert!(
-        response.status() == StatusCode::NOT_FOUND
-            || response.status() == StatusCode::INTERNAL_SERVER_ERROR,
-        "Expected 404 or 500 (tenant isolation), got: {}",
-        response.status()
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "Globex must get exactly 404 for Acme's trace (tenant isolation), got: {status}"
     );
 
     println!("✅ Multi-tenant read path isolation test completed!");
