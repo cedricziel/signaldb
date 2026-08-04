@@ -186,7 +186,7 @@ impl WalProcessor {
     /// Immediately commit the pending groups covered by `scope`, ignoring the
     /// coalescing floor for them only. Groups outside the scope keep normal
     /// coalescing. The read-your-writes drain used by the force-commit primitive.
-    #[tracing::instrument(level = "debug", skip_all, fields(tenant_id = %scope.tenant_id))]
+    #[tracing::instrument(level = "debug", skip_all, fields(signaldb.tenant.id = %scope.tenant_id))]
     pub async fn force_commit_pending(&mut self, scope: FlushScope) -> Result<()> {
         self.drain_pending(vec![scope]).await
     }
@@ -446,10 +446,10 @@ impl WalProcessor {
     #[tracing::instrument(
         skip_all,
         fields(
-            tenant_id = %tenant_id,
-            dataset_id = %dataset_id,
-            table_name = %table_name,
-            entry_count = entries.len()
+            signaldb.tenant.id = %tenant_id,
+            signaldb.dataset.id = %dataset_id,
+            signaldb.table = %table_name,
+            signaldb.wal.entry_count = entries.len()
         )
     )]
     async fn process_batch_for_table(
@@ -464,19 +464,7 @@ impl WalProcessor {
         // entries it commits. The processor fans work in from many ingest
         // requests, so a single parent can't represent them all — links keep
         // each source trace reachable. No-op when self-monitoring is disabled.
-        let span = tracing::Span::current();
-        let mut linked = std::collections::HashSet::new();
-        for (traceparent, tracestate) in &trace_contexts {
-            if let Some(traceparent) = traceparent
-                && linked.insert(traceparent.clone())
-            {
-                common::flight::trace_context::add_link_from_fields(
-                    &span,
-                    Some(traceparent),
-                    tracestate.as_deref(),
-                );
-            }
-        }
+        link_batch_origins(&tracing::Span::current(), &trace_contexts);
 
         let writer_key = format!("{tenant_id}:{dataset_id}:{table_name}");
 
@@ -691,6 +679,24 @@ impl WalProcessor {
 pub struct ProcessorStats {
     pub active_writers: usize,
     pub writer_keys: Vec<String>,
+}
+
+/// Add one span link per distinct ingest trace context. The WAL batch fans
+/// in entries from many independent requests, so the batch span links to
+/// each origin instead of electing a parent (the semconv batch model).
+pub(crate) fn link_batch_origins(span: &tracing::Span, trace_contexts: &[EntryTraceContext]) {
+    let mut linked = std::collections::HashSet::new();
+    for (traceparent, tracestate) in trace_contexts {
+        if let Some(traceparent) = traceparent
+            && linked.insert(traceparent.clone())
+        {
+            common::flight::trace_context::add_link_from_fields(
+                span,
+                Some(traceparent),
+                tracestate.as_deref(),
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1374,6 +1380,67 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e.operation, WalOperation::Flush)),
             "Flush marker must be retained when its forced drain fails"
+        );
+    }
+
+    /// Pins the WAL fan-in model (`otel-compliant-self-tracing` group 9): a
+    /// batch span links to each distinct source ingest trace — one link per
+    /// origin, deduplicated, never a parent.
+    #[tokio::test]
+    async fn batch_span_links_each_distinct_origin() {
+        use opentelemetry::trace::TracerProvider as _;
+        use tracing_subscriber::prelude::*;
+
+        opentelemetry::global::set_text_map_propagator(
+            opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+        );
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("test");
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        let contexts: Vec<super::EntryTraceContext> = vec![
+            (
+                Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()),
+                None,
+            ),
+            (
+                Some("00-1bf7651916cd43dd8448eb211c80319d-c7ad6b7169203332-01".into()),
+                None,
+            ),
+            // Duplicate of the first — must dedupe.
+            (
+                Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()),
+                None,
+            ),
+            (
+                Some("00-2cf7651916cd43dd8448eb211c80319e-d7ad6b7169203333-01".into()),
+                None,
+            ),
+            // No context recorded for this entry.
+            (None, None),
+        ];
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("batch");
+            super::link_batch_origins(&span, &contexts);
+            let _guard = span.enter();
+        });
+
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        let span = spans
+            .iter()
+            .find(|s| s.name == "batch")
+            .expect("batch span");
+        assert_eq!(span.links.len(), 3, "one link per distinct origin trace");
+        assert_eq!(
+            span.parent_span_id,
+            opentelemetry::trace::SpanId::INVALID,
+            "batch span must not adopt any origin as parent"
         );
     }
 }

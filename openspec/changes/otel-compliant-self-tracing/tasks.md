@@ -91,17 +91,17 @@ independently shippable and TDD-ordered within.
 
 ## 9. Hygiene sweep and construction guard
 
-- [ ] 9.1 Convert all bare `#[tracing::instrument]` sites (router
+- [x] 9.1 Convert all bare `#[tracing::instrument]` sites (router
       `tempo.rs`, `tenant.rs`, querier `services/tempo.rs`) to
       `skip_all` + explicit bounded fields
-- [ ] 9.2 Rename SignalDB-local span fields to registry names
+- [x] 9.2 Rename SignalDB-local span fields to registry names
       (`signaldb.tenant.id`, `signaldb.dataset.id`, `signaldb.wal.*`)
       across acceptor/router/writer/querier/compactor
-- [ ] 9.3 Spike clippy `disallowed-macros` for raw span macros /
+- [x] 9.3 Spike clippy `disallowed-macros` for raw span macros /
       `#[instrument]` in boundary modules; wire whichever works (clippy or
       grep-based lint job step) into CI; document the rule in
       `docs/contributing/rust.md`
-- [ ] 9.4 Add writer test pinning WAL link semantics (3 ingest traces → 3
+- [x] 9.4 Add writer test pinning WAL link semantics (3 ingest traces → 3
       links, no parent) — pins existing behavior against regression
 
 ## 10. Weaver registry and static gates

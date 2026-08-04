@@ -214,6 +214,21 @@ async move {
 }.instrument(span).await
 ```
 
+### Boundary Spans Come From the Factories
+
+Spans at remote boundaries (HTTP server, gRPC/Flight server or client, SQL
+catalog, background jobs) MUST be opened through the factories in
+`common::self_monitoring::spans` — the single place that knows the OTel
+semconv names, span kinds, and status-mapping rules. Free-form
+`#[instrument(skip_all, fields(...))]` spans stay fine for in-process
+(INTERNAL) work. CI enforces two invariants:
+
+- no bare `#[tracing::instrument]` — always `skip_all` (or `skip`) plus
+  explicit, bounded-cardinality fields; auto-recorded arguments leak
+  cardinality and PII into telemetry
+- `otel.kind` never appears outside `common::self_monitoring` — setting a
+  span kind *is* boundary-span construction, so route it through a factory
+
 ### Log Level Guidelines
 
 - `trace`: Detailed debugging (data dumps, internal state)

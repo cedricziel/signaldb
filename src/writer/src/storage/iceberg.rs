@@ -260,9 +260,9 @@ impl IcebergTableWriter {
     #[tracing::instrument(
         skip_all,
         fields(
-            tenant_id = %self.tenant_id,
-            dataset_id = %self.dataset_id,
-            entry_count = entries.len()
+            signaldb.tenant.id = %self.tenant_id,
+            signaldb.dataset.id = %self.dataset_id,
+            signaldb.wal.entry_count = entries.len()
         )
     )]
     pub async fn append_batches_with_marker(

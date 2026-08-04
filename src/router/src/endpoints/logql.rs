@@ -150,8 +150,8 @@ fn validate_direction(direction: &str) -> Result<(), ApiError> {
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(
-        tenant_id = %tenant_ctx.0.tenant_id,
-        dataset_id = %tenant_ctx.0.dataset_id
+        signaldb.tenant.id = %tenant_ctx.0.tenant_id,
+        signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
 pub async fn query<S: RouterState>(
@@ -201,8 +201,8 @@ pub async fn query<S: RouterState>(
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(
-        tenant_id = %tenant_ctx.0.tenant_id,
-        dataset_id = %tenant_ctx.0.dataset_id
+        signaldb.tenant.id = %tenant_ctx.0.tenant_id,
+        signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
 pub async fn query_range<S: RouterState>(
@@ -245,8 +245,8 @@ pub async fn query_range<S: RouterState>(
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(
-        tenant_id = %tenant_ctx.0.tenant_id,
-        dataset_id = %tenant_ctx.0.dataset_id
+        signaldb.tenant.id = %tenant_ctx.0.tenant_id,
+        signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
 pub async fn labels<S: RouterState>(
@@ -269,8 +269,8 @@ pub async fn labels<S: RouterState>(
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(
-        tenant_id = %tenant_ctx.0.tenant_id,
-        dataset_id = %tenant_ctx.0.dataset_id,
+        signaldb.tenant.id = %tenant_ctx.0.tenant_id,
+        signaldb.dataset.id = %tenant_ctx.0.dataset_id,
         label = %name
     )
 )]
@@ -298,8 +298,8 @@ pub async fn label_values<S: RouterState>(
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(
-        tenant_id = %tenant_ctx.0.tenant_id,
-        dataset_id = %tenant_ctx.0.dataset_id
+        signaldb.tenant.id = %tenant_ctx.0.tenant_id,
+        signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
 pub async fn series<S: RouterState>(
@@ -348,8 +348,8 @@ pub struct DetectedFieldsParams {
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(
-        tenant_id = %tenant_ctx.0.tenant_id,
-        dataset_id = %tenant_ctx.0.dataset_id
+        signaldb.tenant.id = %tenant_ctx.0.tenant_id,
+        signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
 pub async fn detected_fields<S: RouterState>(

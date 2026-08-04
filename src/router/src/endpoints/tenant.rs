@@ -30,7 +30,7 @@ pub fn router<S: RouterState>() -> Router<S> {
 /// GET /tenants
 ///
 /// List all configured tenants
-#[tracing::instrument]
+#[tracing::instrument(skip_all)]
 pub async fn list_tenants<S: RouterState>(
     state: State<S>,
     TenantContextExtractor(ctx): TenantContextExtractor,
@@ -47,7 +47,7 @@ pub async fn list_tenants<S: RouterState>(
 /// GET /tenants/:tenant_id
 ///
 /// Get information about a specific tenant
-#[tracing::instrument]
+#[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
 pub async fn get_tenant<S: RouterState>(
     state: State<S>,
     Path(tenant_id): Path<String>,
@@ -78,7 +78,7 @@ pub async fn get_tenant<S: RouterState>(
 /// GET /tenants/:tenant_id/tables
 ///
 /// List all tables for a specific tenant
-#[tracing::instrument]
+#[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
 pub async fn list_tenant_tables<S: RouterState>(
     state: State<S>,
     Path(tenant_id): Path<String>,
@@ -109,7 +109,7 @@ pub async fn list_tenant_tables<S: RouterState>(
 /// POST /tenants/:tenant_id/tables/create
 ///
 /// Create default tables for a tenant
-#[tracing::instrument]
+#[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
 pub async fn create_tenant_tables<S: RouterState>(
     state: State<S>,
     Path(tenant_id): Path<String>,
@@ -150,7 +150,7 @@ pub async fn create_tenant_tables<S: RouterState>(
 /// GET /tenants/:tenant_id/schemas
 ///
 /// List available table schemas for a tenant
-#[tracing::instrument]
+#[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
 pub async fn list_tenant_schemas<S: RouterState>(
     state: State<S>,
     Path(tenant_id): Path<String>,
@@ -188,7 +188,7 @@ fn forbidden_tenant() -> (StatusCode, Json<serde_json::Value>) {
 /// GET /schemas/available
 ///
 /// List all available table schema types
-#[tracing::instrument]
+#[tracing::instrument(skip_all)]
 pub async fn list_available_schemas() -> Json<serde_json::Value> {
     let schemas = TenantApi::get_available_table_schemas();
     Json(json!({

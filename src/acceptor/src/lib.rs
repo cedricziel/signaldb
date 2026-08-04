@@ -662,8 +662,8 @@ where
 #[tracing::instrument(
     skip_all,
     fields(
-        tenant_id = %tenant_context.tenant_id,
-        dataset_id = %tenant_context.dataset_id
+        signaldb.tenant.id = %tenant_context.tenant_id,
+        signaldb.dataset.id = %tenant_context.dataset_id
     )
 )]
 async fn handle_http_traces(
@@ -696,8 +696,8 @@ async fn handle_http_traces(
 #[tracing::instrument(
     skip_all,
     fields(
-        tenant_id = %tenant_context.tenant_id,
-        dataset_id = %tenant_context.dataset_id
+        signaldb.tenant.id = %tenant_context.tenant_id,
+        signaldb.dataset.id = %tenant_context.dataset_id
     )
 )]
 async fn handle_http_logs(
@@ -730,8 +730,8 @@ async fn handle_http_logs(
 #[tracing::instrument(
     skip_all,
     fields(
-        tenant_id = %tenant_context.tenant_id,
-        dataset_id = %tenant_context.dataset_id
+        signaldb.tenant.id = %tenant_context.tenant_id,
+        signaldb.dataset.id = %tenant_context.dataset_id
     )
 )]
 async fn handle_http_metrics(
@@ -774,8 +774,8 @@ fn otlp_http_content_type_is_json(headers: &axum::http::HeaderMap) -> bool {
 #[tracing::instrument(
     skip_all,
     fields(
-        tenant_id = %tenant_context.tenant_id,
-        dataset_id = %tenant_context.dataset_id
+        signaldb.tenant.id = %tenant_context.tenant_id,
+        signaldb.dataset.id = %tenant_context.dataset_id
     )
 )]
 async fn handle_http_profiles(
@@ -860,8 +860,8 @@ fn otlp_http_error(
 #[tracing::instrument(
     skip_all,
     fields(
-        tenant_id = %tenant_context.tenant_id,
-        dataset_id = %tenant_context.dataset_id
+        signaldb.tenant.id = %tenant_context.tenant_id,
+        signaldb.dataset.id = %tenant_context.dataset_id
     )
 )]
 async fn handle_prometheus_write_with_ext(
