@@ -5,42 +5,42 @@ independently shippable and TDD-ordered within.
 
 ## 1. Foundations: semconv pin, resource, sampler
 
-- [ ] 1.1 Add `opentelemetry-semantic-conventions` (features
+- [x] 1.1 Add `opentelemetry-semantic-conventions` (features
       `semconv_experimental`) to workspace deps; add a single
       `SEMCONV_SCHEMA_URL` constant in `common::self_monitoring`
-- [ ] 1.2 Write failing test in `common` asserting exported resource carries
+- [x] 1.2 Write failing test in `common` asserting exported resource carries
       `service.namespace=signaldb`, per-process `service.instance.id`,
       `deployment.environment.name`, schema_url — and NOT the deprecated
       `deployment.environment`
-- [ ] 1.3 Implement resource changes in `init_telemetry` (config-sourced
+- [x] 1.3 Implement resource changes in `init_telemetry` (config-sourced
       environment name, UUID instance id, schema_url on resource + scope)
-- [ ] 1.4 Write failing test: unrecognized `OTEL_TRACES_SAMPLER` value falls
+- [x] 1.4 Write failing test: unrecognized `OTEL_TRACES_SAMPLER` value falls
       back to ParentBased sampling
-- [ ] 1.5 Fix `resolve_trace_sampler` unrecognized-name arm to ParentBased
+- [x] 1.5 Fix `resolve_trace_sampler` unrecognized-name arm to ParentBased
 
 ## 2. Span factories and conformance pins (common)
 
-- [ ] 2.1 Write failing InMemorySpanExporter conformance tests for
+- [x] 2.1 Write failing InMemorySpanExporter conformance tests for
       `rpc_server_span` / `rpc_client_span` (name incl. ticket verb, kind,
       `rpc.system.name`, `rpc.method`, `rpc.response.status_code`,
       server/client error asymmetry per spec)
-- [ ] 2.2 Write failing conformance tests for `db_client_span` and
+- [x] 2.2 Write failing conformance tests for `db_client_span` and
       `job_span` (incl. link-count behavior via `add_link_from_fields`)
-- [ ] 2.3 Implement `common::self_monitoring::spans` factories; refactor
+- [x] 2.3 Implement `common::self_monitoring::spans` factories; refactor
       `http_trace_context_middleware` onto `http_server_span`, adding
       `error.type` (status-as-string on 5xx), `server.port`,
       `client.address`; extend `http_span_semconv.rs` accordingly
 
 ## 3. Acceptor becomes a trace boundary
 
-- [ ] 3.1 Write failing integration test (tests-integration): OTLP/HTTP
+- [x] 3.1 Write failing integration test (tests-integration): OTLP/HTTP
       `POST /v1/traces` with `traceparent` yields a child SERVER span named
       `POST /v1/traces`; 4xx response leaves span status unset
-- [ ] 3.2 Mount `http_trace_context_middleware` on acceptor OTLP/HTTP and
+- [x] 3.2 Mount `http_trace_context_middleware` on acceptor OTLP/HTTP and
       remote-write routers (verify `_system` bypass still suppresses)
-- [ ] 3.3 Write failing integration test: OTLP gRPC export call yields a
+- [x] 3.3 Write failing integration test: OTLP gRPC export call yields a
       SERVER span with `rpc.*` attributes, joined to the caller's context
-- [ ] 3.4 Implement tonic tower layer applying `rpc_server_span` +
+- [x] 3.4 Implement tonic tower layer applying `rpc_server_span` +
       `set_parent_from_request` across all four OTLP services
 
 ## 4. Flight server spans (querier, writer, compactor)
@@ -112,7 +112,7 @@ independently shippable and TDD-ordered within.
 - [ ] 10.2 Generate `signaldb.*` Rust constants from the registry
       (opentelemetry-rust template set), switch factories to them, add
       `git diff --exit-code` drift gate + `registry diff
-    --baseline-registry` evolution gate
+--baseline-registry` evolution gate
 
 ## 11. Live-check CI harness
 

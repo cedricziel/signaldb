@@ -768,6 +768,10 @@ fn default_trace_sample_ratio() -> f64 {
     0.1
 }
 
+fn default_deployment_environment() -> String {
+    "production".to_string()
+}
+
 fn default_frontend_service_name() -> String {
     "signaldb-ui".to_string()
 }
@@ -851,6 +855,11 @@ pub struct SelfMonitoringConfig {
     /// `OTEL_TRACES_SAMPLER_ARG` when set.
     #[serde(default = "default_trace_sample_ratio")]
     pub trace_sample_ratio: f64,
+    /// Value of the `deployment.environment.name` resource attribute on
+    /// self-monitoring telemetry. Use the semconv well-known values where
+    /// they apply: `production`, `staging`, `development`, `test`.
+    #[serde(default = "default_deployment_environment")]
+    pub environment: String,
     /// Profile this process's CPU and export OTLP profiles to `endpoint`
     /// under the self-monitoring tenant/dataset. Mutually exclusive with
     /// `[profiling]` (both use the SIGPROF-based sampler): when both are
@@ -887,6 +896,7 @@ impl Default for SelfMonitoringConfig {
             tenant_id: default_self_monitoring_tenant(),
             dataset_id: default_self_monitoring_dataset(),
             trace_sample_ratio: default_trace_sample_ratio(),
+            environment: default_deployment_environment(),
             profiles_enabled: false,
             profile_sample_rate_hz: default_profile_sample_rate_hz(),
             profile_interval: default_profile_interval(),

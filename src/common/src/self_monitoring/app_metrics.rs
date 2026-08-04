@@ -358,11 +358,28 @@ pub async fn http_trace_context_middleware(
         .get::<axum::extract::MatchedPath>()
         .map(|m| m.as_str().to_owned());
     let scheme = request.uri().scheme_str().unwrap_or("http").to_owned();
-    let server_address = request
+    // Host header splits into `server.address` / `server.port`.
+    let (server_address, server_port) = match request
         .headers()
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
+    {
+        Some(host) => match host.rsplit_once(':') {
+            Some((addr, port)) if port.chars().all(|c| c.is_ascii_digit()) => {
+                (Some(addr.to_owned()), Some(port.to_owned()))
+            }
+            _ => (Some(host.to_owned()), None),
+        },
+        None => (None, None),
+    };
+    // Client-most X-Forwarded-For entry, when a proxy supplies one.
+    let client_address = request
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty());
     let user_agent = request
         .headers()
         .get(axum::http::header::USER_AGENT)
@@ -382,9 +399,12 @@ pub async fn http_trace_context_middleware(
         url.path = %request.uri().path(),
         url.scheme = %scheme,
         server.address = tracing::field::Empty,
+        server.port = tracing::field::Empty,
+        client.address = tracing::field::Empty,
         network.protocol.version = network_protocol_version(request.version()),
         user_agent.original = tracing::field::Empty,
         http.response.status_code = tracing::field::Empty,
+        error.r#type = tracing::field::Empty,
     );
     span.record(
         "otel.name",
@@ -396,6 +416,12 @@ pub async fn http_trace_context_middleware(
     if let Some(server_address) = &server_address {
         span.record("server.address", server_address.as_str());
     }
+    if let Some(server_port) = &server_port {
+        span.record("server.port", server_port.as_str());
+    }
+    if let Some(client_address) = &client_address {
+        span.record("client.address", client_address.as_str());
+    }
     if let Some(user_agent) = &user_agent {
         span.record("user_agent.original", user_agent.as_str());
     }
@@ -406,8 +432,11 @@ pub async fn http_trace_context_middleware(
 
     let status = response.status();
     span.record("http.response.status_code", status.as_u16());
+    // Server spans fail only on 5xx (a 4xx is the caller's problem);
+    // `error.type` is the status code as a string, per HTTP semconv.
     if status.is_server_error() {
         span.record("otel.status_code", "ERROR");
+        span.record("error.type", status.as_u16().to_string().as_str());
     }
     response
 }
