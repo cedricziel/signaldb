@@ -13,7 +13,7 @@
 # fields (busy_ns, idle_ns, target, code.*), log-bridge records (log.*,
 # "log event"), and per-callsite tracing event names. Real violations the
 # smoke run caught (fixed since): string-typed http.response.status_code
-# and server.port.
+# and server.port. Filters + flip-to-blocking tracked in #912.
 name: Weaver Live Check
 
 on:
