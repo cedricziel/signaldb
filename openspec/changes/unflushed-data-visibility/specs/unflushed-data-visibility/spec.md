@@ -15,10 +15,11 @@ when hot data cannot be served.
 The writer SHALL assign each resident batch a sequence that is atomic,
 unique, and strictly increasing per `(writer, tenant, dataset, table)`
 group — including across writer restarts: the writer identity SHALL be
-the WAL-persisted one (stable across restarts), and sequence allocation
-SHALL guarantee that every batch resident after a restart numbers above
-any watermark a previous incarnation of the same writer committed, before
-any insert is accepted. Sequence allocation SHALL NOT wrap: at counter
+the WAL-persisted one (stable across restarts), and after a restart
+sequence allocation SHALL resume strictly above every sequence the writer
+ever assigned — committed or not, including sequences held by replayable
+WAL entries — not merely above the committed watermark, before any insert
+is accepted. Sequence allocation SHALL NOT wrap: at counter
 exhaustion the allocator advances durably (preserving monotonicity) and,
 if no monotone continuation exists, rejects further inserts retryably
 rather than emitting a sequence at or below an existing watermark. During
@@ -128,8 +129,10 @@ hot arm.
 
 - **WHEN** the combined hot results across all scanned writers would
   exceed the querier's per-query hot-buffer budget
-- **THEN** the querier stops buffering at the budget, treats the
-  remaining writers' hot arms as unresolved, and records the degradation
+- **THEN** the querier admits only complete writer hot arms that fit
+  within the remaining budget; a writer whose complete arm does not fit
+  has its hot rows discarded whole, its arm marked unresolved, and the
+  degradation recorded — never a partially buffered arm
 
 #### Scenario: Hot batches match the cold schema
 
@@ -159,7 +162,7 @@ alone using the table's canonical schema.
 #### Scenario: A newly joined writer's data is visible immediately
 
 - **WHEN** a writer joins the deployment, acknowledges a batch, and a
-  query over the covering range executes immediately afterwards
+  query over the covering range executes immediately afterward
 - **THEN** the fan-out includes the new writer and the query returns the
   batch's rows — writer-set caching never introduces a visibility window
   for acknowledged data

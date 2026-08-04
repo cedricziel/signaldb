@@ -199,13 +199,16 @@ set, and the querier treats a truncated response as an unresolvable
 boundary for that writer — drop its hot data, record degradation — never
 merging a silently partial hot arm. Continuation/pagination is a possible
 follow-up optimization, not part of this change. On top of the per-writer
-cap there is a **query-wide hot-buffer budget**: fan-out buffers up to
-`writer_count × per_writer_cap` bytes, so the provider enforces a total
-byte budget per query and fails closed when it would be exceeded —
-further writers' hot arms are treated as unresolved (degradation
-recorded) rather than buffered past the budget; DataFusion memory-pool
-registration accounts the bytes but does not define admission, so the
-budget does. Writer discovery avoids the per-query catalog discovery SQL
+cap there is a **query-wide hot-buffer budget** — a fixed absolute
+configuration value, deliberately independent of writer count (without
+it, exposure would scale as `writer_count × per_writer_cap`). Admission
+is atomic per writer arm: the provider reserves a response's bytes before
+buffering it and admits a writer's hot arm only if it fits completely
+within the remaining budget; an arm that does not fit is discarded whole
+and marked unresolved (degradation recorded) — a partially buffered arm
+would silently omit acknowledged rows without marking that writer
+degraded. DataFusion memory-pool registration accounts the bytes but does
+not define admission, so the budget does. Writer discovery avoids the per-query catalog discovery SQL
 (unacceptable per user query, especially on SQLite) **without a staleness
 window**: registrations bump a monotonic routing generation in the
 catalog; the querier caches the writer set keyed by that generation and
