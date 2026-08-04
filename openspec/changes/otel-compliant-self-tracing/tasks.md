@@ -66,10 +66,10 @@ independently shippable and TDD-ordered within.
 
 ## 6. Catalog DB client spans
 
-- [ ] 6.1 Write failing test: a catalog operation under a traced request
+- [x] 6.1 Write failing test: a catalog operation under a traced request
       exports a CLIENT span with `db.system.name`, `db.operation.name`,
       `db.namespace`
-- [ ] 6.2 Instrument catalog/discovery sqlx call paths in
+- [x] 6.2 Instrument catalog/discovery sqlx call paths in
       `common/src/catalog.rs` + `service_bootstrap.rs` via `db_client_span`
 
 ## 7. Query execution stage spans (querier)

@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{PgPool, Row, SqlitePool, query};
 use std::str::FromStr;
+use tracing::Instrument;
 use uuid::Uuid;
 
 /// Helper to parse RFC3339 datetime strings (SQLite stores timestamps as text)
@@ -49,6 +50,16 @@ pub enum Catalog {
 }
 
 impl Catalog {
+    /// Semconv DB CLIENT span for a catalog operation (`db.operation.name`
+    /// is the SQL verb; the catalog is one logical namespace).
+    fn db_span(&self, operation: &str) -> tracing::Span {
+        let system = match self {
+            Catalog::Sqlite(_) => "sqlite",
+            Catalog::Postgres(_) => "postgresql",
+        };
+        crate::self_monitoring::spans::db_client_span(system, operation, "signaldb-catalog")
+    }
+
     /// Create an in-memory SQLite catalog for fast tests.
     ///
     /// This is equivalent to `Catalog::new("sqlite::memory:")` and provides
@@ -702,6 +713,18 @@ impl Catalog {
         service_type: ServiceType,
         capabilities: &[ServiceCapability],
     ) -> Result<(), sqlx::Error> {
+        self.register_ingester_inner(id, address, service_type, capabilities)
+            .instrument(self.db_span("INSERT"))
+            .await
+    }
+
+    async fn register_ingester_inner(
+        &self,
+        id: Uuid,
+        address: &str,
+        service_type: ServiceType,
+        capabilities: &[ServiceCapability],
+    ) -> Result<(), sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
                 let now = Utc::now().to_rfc3339();
@@ -774,6 +797,12 @@ impl Catalog {
     /// Update heartbeat timestamp for an ingester.
     #[tracing::instrument(level = "debug", skip_all, fields(service_id = %id))]
     pub async fn heartbeat(&self, id: Uuid) -> Result<(), sqlx::Error> {
+        self.heartbeat_inner(id)
+            .instrument(self.db_span("UPDATE"))
+            .await
+    }
+
+    async fn heartbeat_inner(&self, id: Uuid) -> Result<(), sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
                 let now = Utc::now().to_rfc3339();
@@ -804,6 +833,12 @@ impl Catalog {
     /// List all ingesters in the catalog.
     #[tracing::instrument(level = "debug", skip_all)]
     pub async fn list_ingesters(&self) -> Result<Vec<Ingester>, sqlx::Error> {
+        self.list_ingesters_inner()
+            .instrument(self.db_span("SELECT"))
+            .await
+    }
+
+    async fn list_ingesters_inner(&self) -> Result<Vec<Ingester>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
                 let rows = query(
@@ -1106,6 +1141,12 @@ impl Catalog {
     /// Deregister an ingester instance, removing it from the catalog.
     #[tracing::instrument(level = "debug", skip_all, fields(service_id = %id))]
     pub async fn deregister_ingester(&self, id: Uuid) -> Result<(), sqlx::Error> {
+        self.deregister_ingester_inner(id)
+            .instrument(self.db_span("DELETE"))
+            .await
+    }
+
+    async fn deregister_ingester_inner(&self, id: Uuid) -> Result<(), sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
                 let id_str = id.to_string();
