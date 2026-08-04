@@ -265,8 +265,8 @@ fn decode_json_result<T: serde::de::DeserializeOwned>(
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(
-        tenant_id = %tenant_ctx.0.tenant_id,
-        dataset_id = %tenant_ctx.0.dataset_id
+        signaldb.tenant.id = %tenant_ctx.0.tenant_id,
+        signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
 pub async fn render<S: RouterState>(
@@ -311,8 +311,8 @@ pub async fn render<S: RouterState>(
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(
-        tenant_id = %tenant_ctx.0.tenant_id,
-        dataset_id = %tenant_ctx.0.dataset_id
+        signaldb.tenant.id = %tenant_ctx.0.tenant_id,
+        signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
 pub async fn render_diff<S: RouterState>(
@@ -520,8 +520,8 @@ pub(crate) async fn fetch_profiles_for_trace<S: RouterState>(
 #[tracing::instrument(
     skip(state, tenant_ctx),
     fields(
-        tenant_id = %tenant_ctx.0.tenant_id,
-        dataset_id = %tenant_ctx.0.dataset_id
+        signaldb.tenant.id = %tenant_ctx.0.tenant_id,
+        signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
 pub async fn profiles_by_trace<S: RouterState>(

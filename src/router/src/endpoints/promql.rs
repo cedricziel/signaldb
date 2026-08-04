@@ -98,7 +98,7 @@ pub struct MetadataParams {
 )]
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
-    fields(tenant_id = %tenant_ctx.0.tenant_id, dataset_id = %tenant_ctx.0.dataset_id)
+    fields(signaldb.tenant.id = %tenant_ctx.0.tenant_id, signaldb.dataset.id = %tenant_ctx.0.dataset_id)
 )]
 pub async fn query_range<S: RouterState>(
     State(state): State<S>,
@@ -143,7 +143,7 @@ pub async fn query_range<S: RouterState>(
 )]
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
-    fields(tenant_id = %tenant_ctx.0.tenant_id, dataset_id = %tenant_ctx.0.dataset_id)
+    fields(signaldb.tenant.id = %tenant_ctx.0.tenant_id, signaldb.dataset.id = %tenant_ctx.0.dataset_id)
 )]
 pub async fn query<S: RouterState>(
     State(state): State<S>,

@@ -592,7 +592,7 @@ fn flight_data_to_search_results(
 /// GET /api/echo
 ///
 /// See https://grafana.com/docs/tempo/latest/api_docs/#query-echo-endpoint
-#[tracing::instrument]
+#[tracing::instrument(skip_all)]
 pub async fn echo() -> &'static str {
     "echo"
 }
@@ -617,8 +617,8 @@ pub async fn echo() -> &'static str {
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(
-        tenant_id = %tenant_ctx.0.tenant_id,
-        dataset_id = %tenant_ctx.0.dataset_id
+        signaldb.tenant.id = %tenant_ctx.0.tenant_id,
+        signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
 pub async fn query_single_trace<S: RouterState>(
@@ -798,8 +798,8 @@ fn trace_lookup_status_to_http(trace_id: &str, status: &tonic::Status) -> axum::
 #[tracing::instrument(
     skip(state, tenant_ctx, query),
     fields(
-        tenant_id = %tenant_ctx.0.tenant_id,
-        dataset_id = %tenant_ctx.0.dataset_id
+        signaldb.tenant.id = %tenant_ctx.0.tenant_id,
+        signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
 pub async fn search<S: RouterState>(
@@ -1009,7 +1009,7 @@ async fn distinct_column_values<S: RouterState>(
         (status = 200, description = "Searchable tag names", body = tempo_api::TagSearchResponse),
     )
 )]
-#[tracing::instrument]
+#[tracing::instrument(skip_all)]
 pub async fn search_tags()
 -> Result<axum::Json<tempo_api::TagSearchResponse>, axum::http::StatusCode> {
     let response = tempo_api::TagSearchResponse {
@@ -1071,7 +1071,7 @@ async fn tag_values_for<S: RouterState>(
 }
 
 /// GET /api/v2/search/tags?scope=<resource|span|intrinsic>
-#[tracing::instrument]
+#[tracing::instrument(skip_all)]
 pub async fn search_tags_v2(
     Query(_params): Query<TagSearchV2Params>,
 ) -> Result<axum::Json<tempo_api::v2::TagSearchResponse>, axum::http::StatusCode> {
@@ -1114,7 +1114,7 @@ pub async fn search_tag_values_v2<S: RouterState>(
 ///
 /// TraceQL metrics are not implemented. Answer 501 instead of the
 /// fabricated series this endpoint used to return (issue #552).
-#[tracing::instrument]
+#[tracing::instrument(skip_all)]
 pub async fn metrics_query(
     Query(_params): Query<MetricsQueryParams>,
 ) -> Result<axum::Json<MetricsResponse>, axum::http::StatusCode> {
@@ -1126,7 +1126,7 @@ pub async fn metrics_query(
 ///
 /// TraceQL metrics are not implemented. Answer 501 instead of the
 /// fabricated series this endpoint used to return (issue #552).
-#[tracing::instrument]
+#[tracing::instrument(skip_all)]
 pub async fn metrics_query_range(
     Query(_params): Query<MetricsRangeQueryParams>,
 ) -> Result<axum::Json<MetricsResponse>, axum::http::StatusCode> {

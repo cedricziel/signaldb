@@ -9249,6 +9249,7 @@ dependencies = [
  "log",
  "object_store",
  "opentelemetry",
+ "opentelemetry_sdk",
  "rand 0.10.2",
  "serde_json",
  "tempfile",
@@ -9257,6 +9258,8 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
  "uuid",
 ]
 

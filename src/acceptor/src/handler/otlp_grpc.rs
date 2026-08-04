@@ -77,8 +77,8 @@ impl TraceHandler {
     #[tracing::instrument(
         skip_all,
         fields(
-            tenant_id = %tenant_context.tenant_id,
-            dataset_id = %tenant_context.dataset_id
+            signaldb.tenant.id = %tenant_context.tenant_id,
+            signaldb.dataset.id = %tenant_context.dataset_id
         )
     )]
     pub async fn handle_grpc_otlp_traces(

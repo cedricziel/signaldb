@@ -778,7 +778,7 @@ impl Wal {
     #[tracing::instrument(
         level = "debug",
         skip_all,
-        fields(operation = ?operation, data_size = data.len())
+        fields(signaldb.wal.operation = ?operation, signaldb.wal.data_size = data.len())
     )]
     pub async fn append(
         &self,
@@ -991,7 +991,7 @@ impl Wal {
     }
 
     /// Mark a WAL entry as processed and persist the state to disk
-    #[tracing::instrument(level = "debug", skip_all, fields(entry_id = %entry_id))]
+    #[tracing::instrument(level = "debug", skip_all, fields(signaldb.wal.entry_id = %entry_id))]
     pub async fn mark_processed(&self, entry_id: Uuid) -> Result<()> {
         // Search all segments, not just current
         let segments = self.segments.lock().await;
