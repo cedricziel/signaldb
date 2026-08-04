@@ -10,7 +10,36 @@ xtask = "run --package xtask --"
 [env]
 RUST_BACKTRACE = { value = "1", condition = { env_not_set = "RUST_BACKTRACE" } }
 
+# ------------------------------------------------------------
+# CPU target features
+# ------------------------------------------------------------
+# +aes switches ahash (DataFusion's group-by/join/repartition hasher) from its
+# fallback mixer to hardware AES rounds — ahash gates this at compile time, so
+# without the flag every binary ships the slow path. The SSE4/NEON set lets
+# Arrow kernels and simdutf8 take their vectorized branches without runtime
+# dispatch. Requires post-2010 x86 (Westmere) / ARMv8-with-crypto CPUs; binaries
+# fault with SIGILL on anything older. aarch64-apple-darwin needs no section:
+# its baseline already includes aes+neon.
+
 # Faster linking on Linux (requires mold linker to be installed)
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+rustflags = [
+    "-C", "link-arg=-fuse-ld=mold",
+    "-C", "target-feature=+aes,+sse2,+ssse3,+sse4.1,+sse4.2",
+]
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+aes,+sse2,+ssse3,+sse4.1,+sse4.2"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+aes,+neon"]
+
+[target.aarch64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+aes,+neon"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "target-feature=+aes,+sse2,+ssse3,+sse4.1,+sse4.2"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+aes,+sse2,+ssse3,+sse4.1,+sse4.2"]
