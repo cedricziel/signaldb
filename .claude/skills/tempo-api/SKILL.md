@@ -47,7 +47,7 @@ depends on them.
 4. Router sends Flight `do_get` ticket to Querier
 5. Ticket format: `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}[:{start}:{end}]` (unix-second time hints, appended only when present) or `search_traces:{tenant_slug}:{dataset_slug}:{params}`
 6. Querier executes DataFusion SQL against Iceberg tables
-7. Results stream back as Arrow RecordBatches (trace not found -> Flight `not_found` status -> HTTP 404)
+7. Results stream back as Arrow RecordBatches (trace not found -> Flight `not_found` status -> HTTP 404; `deadline_exceeded` or `cancelled` -> HTTP 504, never 500)
 8. Router formats as Tempo JSON response
 
 Responses carry the server span's trace context and stage timings

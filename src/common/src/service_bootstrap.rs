@@ -266,12 +266,12 @@ impl ServiceBootstrap {
     pub fn create_flight_transport_with_config(
         self,
         max_pool_size: usize,
-        connection_timeout: u64,
+        connect_timeout: std::time::Duration,
     ) -> crate::flight::transport::InMemoryFlightTransport {
         crate::flight::transport::InMemoryFlightTransport::with_pool_config(
             self,
             max_pool_size,
-            connection_timeout,
+            connect_timeout,
         )
     }
 
