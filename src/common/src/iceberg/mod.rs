@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use iceberg_rust::catalog::Catalog as IcebergCatalog;
 use iceberg_rust::object_store::ObjectStoreBuilder;
 use iceberg_sql_catalog::SqlCatalog;
+use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
 use sqlx::{ConnectOptions, Connection};
 use std::str::FromStr;
@@ -35,56 +36,69 @@ pub(crate) fn create_object_store_builder_from_config(
             Ok(ObjectStoreBuilder::filesystem(path))
         }
         "memory" => Ok(ObjectStoreBuilder::memory()),
-        "s3" => {
-            // ObjectStoreBuilder has limited S3 configurability
-            // It reads from environment variables, so we need to set them
-            // based on the DSN before creating the builder
-
-            // Extract credentials from DSN
-            let access_key = url.username();
-            let secret_key = url.password().unwrap_or("");
-
-            if !access_key.is_empty() {
-                unsafe {
-                    std::env::set_var("AWS_ACCESS_KEY_ID", access_key);
-                    std::env::set_var("AWS_SECRET_ACCESS_KEY", secret_key);
-                }
-            }
-
-            // For MinIO, we'd need to set the endpoint URL via env var
-            let host = url.host_str().unwrap_or("localhost");
-            if !host.contains("amazonaws.com") {
-                // This is MinIO or S3-compatible
-                let port = url.port().unwrap_or(9000);
-                let endpoint = format!("http://{host}:{port}");
-                log::info!("Setting AWS_ENDPOINT_URL for MinIO: {endpoint}");
-                unsafe {
-                    std::env::set_var("AWS_ENDPOINT_URL", endpoint);
-                }
-            }
-
-            // Set region
-            unsafe {
-                std::env::set_var("AWS_DEFAULT_REGION", "us-east-1");
-            }
-
-            // Set bucket name - extract from DSN path
-            let bucket = url.path().trim_start_matches('/');
-            if !bucket.is_empty() {
-                log::info!("Setting AWS bucket from DSN: {bucket}");
-                unsafe {
-                    std::env::set_var("AWS_BUCKET", bucket);
-                    std::env::set_var("AWS_BUCKET_NAME", bucket);
-                }
-            }
-
-            Ok(ObjectStoreBuilder::s3())
-        }
+        "s3" => Ok(create_s3_object_store_builder(&url)),
         scheme => Err(anyhow::anyhow!(
             "Unsupported storage scheme for catalog: {}. Supported: file, memory, s3",
             scheme
         )),
     }
+}
+
+/// Build an S3-backed [`ObjectStoreBuilder`] from an `s3://` storage DSN.
+///
+/// DSN format: `s3://[access_key:secret_key@]host[:port]/bucket`.
+///
+/// The builder starts from the real process environment
+/// ([`AmazonS3Builder::from_env`]), so standard AWS variables
+/// (`AWS_ACCESS_KEY_ID`, `AWS_ENDPOINT_URL`, `AWS_REGION`,
+/// `AWS_SESSION_TOKEN`, ...) keep working whenever the DSN does not carry the
+/// corresponding value. DSN-provided values are then applied on top and win
+/// over the environment. The process environment is never read *mutably*:
+/// configuration flows into the builder instance only, so concurrent catalog
+/// constructions (e.g. per-tenant stores with different credentials) cannot
+/// race each other through global state.
+fn create_s3_object_store_builder(url: &Url) -> ObjectStoreBuilder {
+    let mut builder = AmazonS3Builder::from_env();
+
+    // Credentials from the DSN override the environment.
+    let access_key = url.username();
+    if !access_key.is_empty() {
+        builder = builder
+            .with_access_key_id(access_key)
+            .with_secret_access_key(url.password().unwrap_or(""));
+    }
+
+    // Non-AWS hosts are MinIO or another S3-compatible store: derive an
+    // explicit endpoint from the DSN (default MinIO port 9000) and use
+    // path-style requests over plain HTTP.
+    let host = url.host_str().unwrap_or("localhost");
+    if !host.contains("amazonaws.com") {
+        let port = url.port().unwrap_or(9000);
+        let endpoint = format!("http://{host}:{port}");
+        log::info!("Using S3-compatible endpoint from storage DSN: {endpoint}");
+        builder = builder
+            .with_endpoint(endpoint)
+            .with_allow_http(true)
+            .with_virtual_hosted_style_request(false);
+    }
+
+    // Default region when neither DSN nor environment provided one.
+    if builder
+        .get_config_value(&AmazonS3ConfigKey::Region)
+        .is_none()
+    {
+        builder = builder.with_region("us-east-1");
+    }
+
+    // Bucket from the DSN path. The catalog re-derives the bucket from each
+    // table location at build time, but setting it keeps the builder usable
+    // as-is and preserves the previous behavior.
+    let bucket = url.path().trim_start_matches('/');
+    if !bucket.is_empty() {
+        builder = builder.with_bucket_name(bucket);
+    }
+
+    ObjectStoreBuilder::S3(Box::new(builder))
 }
 
 /// Create an Iceberg catalog from full configuration
@@ -328,5 +342,130 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(mode.to_lowercase(), "wal");
+    }
+
+    fn s3_builder_from_dsn(dsn: &str) -> Box<AmazonS3Builder> {
+        let config = StorageConfig {
+            dsn: dsn.to_string(),
+        };
+        match create_object_store_builder_from_config(&config).expect("s3 DSN should build") {
+            ObjectStoreBuilder::S3(builder) => builder,
+            other => panic!("expected S3 object store builder, got {other:?}"),
+        }
+    }
+
+    /// S3 settings from the DSN must be applied to the returned builder
+    /// directly — not routed through process-global environment variables,
+    /// which is racy across threads and prevents per-tenant credentials.
+    #[test]
+    fn s3_dsn_configures_builder_without_mutating_process_env() {
+        // Sentinel values that cannot legitimately exist in the environment.
+        let builder = s3_builder_from_dsn(
+            "s3://sentinel-key-948:sentinel-secret-948@minio.sentinel.internal:9123/sentinel-bucket-948",
+        );
+
+        assert_eq!(
+            builder.get_config_value(&AmazonS3ConfigKey::AccessKeyId),
+            Some("sentinel-key-948".to_string())
+        );
+        assert_eq!(
+            builder.get_config_value(&AmazonS3ConfigKey::SecretAccessKey),
+            Some("sentinel-secret-948".to_string())
+        );
+        assert_eq!(
+            builder.get_config_value(&AmazonS3ConfigKey::Endpoint),
+            Some("http://minio.sentinel.internal:9123".to_string())
+        );
+        assert_eq!(
+            builder.get_config_value(&AmazonS3ConfigKey::Bucket),
+            Some("sentinel-bucket-948".to_string())
+        );
+
+        // The DSN values must never leak into the process environment.
+        assert_ne!(
+            std::env::var("AWS_ACCESS_KEY_ID").ok().as_deref(),
+            Some("sentinel-key-948")
+        );
+        assert_ne!(
+            std::env::var("AWS_SECRET_ACCESS_KEY").ok().as_deref(),
+            Some("sentinel-secret-948")
+        );
+        assert_ne!(
+            std::env::var("AWS_ENDPOINT_URL").ok().as_deref(),
+            Some("http://minio.sentinel.internal:9123")
+        );
+        assert_ne!(
+            std::env::var("AWS_BUCKET").ok().as_deref(),
+            Some("sentinel-bucket-948")
+        );
+        assert_ne!(
+            std::env::var("AWS_BUCKET_NAME").ok().as_deref(),
+            Some("sentinel-bucket-948")
+        );
+    }
+
+    /// A non-AWS host without an explicit port gets the MinIO default (9000).
+    #[test]
+    fn s3_dsn_defaults_custom_endpoint_port_to_9000() {
+        let builder = s3_builder_from_dsn("s3://minio.sentinel.internal/bucket");
+        assert_eq!(
+            builder.get_config_value(&AmazonS3ConfigKey::Endpoint),
+            Some("http://minio.sentinel.internal:9000".to_string())
+        );
+    }
+
+    /// A real AWS host must not get a DSN-derived custom endpoint.
+    #[test]
+    fn s3_dsn_with_amazonaws_host_gets_no_custom_endpoint() {
+        let builder = s3_builder_from_dsn("s3://s3.amazonaws.com/bucket");
+        let endpoint = builder.get_config_value(&AmazonS3ConfigKey::Endpoint);
+        assert!(
+            endpoint
+                .as_deref()
+                .is_none_or(|e| !e.contains("s3.amazonaws.com")),
+            "amazonaws.com host must not become a custom endpoint, got {endpoint:?}"
+        );
+    }
+
+    /// When the DSN carries no credentials, the environment remains the
+    /// fallback (matching the previous `from_env`-based behavior).
+    #[test]
+    fn s3_dsn_without_credentials_falls_back_to_environment() {
+        let builder = s3_builder_from_dsn("s3://minio.sentinel.internal:9000/bucket");
+        assert_eq!(
+            builder.get_config_value(&AmazonS3ConfigKey::AccessKeyId),
+            std::env::var("AWS_ACCESS_KEY_ID").ok()
+        );
+        assert_eq!(
+            builder.get_config_value(&AmazonS3ConfigKey::SecretAccessKey),
+            std::env::var("AWS_SECRET_ACCESS_KEY").ok()
+        );
+        // A region is always resolved (env value or the us-east-1 default).
+        assert!(
+            builder
+                .get_config_value(&AmazonS3ConfigKey::Region)
+                .is_some()
+        );
+    }
+
+    /// file:// DSNs keep producing filesystem-backed builders.
+    #[test]
+    fn file_dsn_builds_filesystem_object_store_builder() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = StorageConfig {
+            dsn: format!("file://{}", dir.path().display()),
+        };
+        let builder = create_object_store_builder_from_config(&config).unwrap();
+        assert!(matches!(builder, ObjectStoreBuilder::Filesystem(_)));
+    }
+
+    /// memory:// DSNs keep producing in-memory builders.
+    #[test]
+    fn memory_dsn_builds_memory_object_store_builder() {
+        let config = StorageConfig {
+            dsn: "memory://".to_string(),
+        };
+        let builder = create_object_store_builder_from_config(&config).unwrap();
+        assert!(matches!(builder, ObjectStoreBuilder::Memory(_)));
     }
 }
