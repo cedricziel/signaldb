@@ -8,6 +8,7 @@ sources:
   - src/router/src/endpoints/tenant.rs
   - src/router/src/endpoints/session.rs
   - src/common/src/auth/session.rs
+  - src/common/src/bootstrap.rs
 ---
 
 # Authentication reference
@@ -87,8 +88,14 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
 
 ## Getting an API key
 
-Tenants, datasets, and API keys are managed by your SignalDB operator via
-one of:
+**First boot:** when the monolithic `signaldb` binary starts with no
+tenants at all (none in `signaldb.toml`, none in the catalog), it
+auto-provisions a `default` tenant with a `default` dataset and prints a
+fresh API key once in the startup logs. The key is stored hashed and never
+shown again; if any tenant already exists, nothing is generated.
+
+Beyond that, tenants, datasets, and API keys are managed by your SignalDB
+operator via one of:
 
 | Method        | Where                                                                                                                                                            |
 | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
