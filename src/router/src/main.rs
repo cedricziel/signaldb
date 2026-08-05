@@ -163,28 +163,23 @@ async fn main() -> Result<()> {
     let flight_handle = tokio::spawn(async move {
         tracing::info!(address = %flight_addr, "Starting Flight service");
 
-        let serve =
-            match flight_auth {
-                Some(interceptor) => Server::builder()
-                    .add_service(
-                        arrow_flight::flight_service_server::FlightServiceServer::with_interceptor(
-                            flight_service,
-                            move |req| interceptor.intercept(req),
-                        ),
-                    )
+        let serve = match flight_auth {
+            Some(interceptor) => {
+                Server::builder()
+                    .add_service(common::flight::flight_service_server_with_interceptor(
+                        flight_service,
+                        move |req| interceptor.intercept(req),
+                    ))
                     .serve(flight_addr)
-                    .await,
-                None => {
-                    Server::builder()
-                        .add_service(
-                            arrow_flight::flight_service_server::FlightServiceServer::new(
-                                flight_service,
-                            ),
-                        )
-                        .serve(flight_addr)
-                        .await
-                }
-            };
+                    .await
+            }
+            None => {
+                Server::builder()
+                    .add_service(common::flight::flight_service_server(flight_service))
+                    .serve(flight_addr)
+                    .await
+            }
+        };
         match serve {
             Ok(_) => tracing::info!("Flight service stopped"),
             Err(e) => tracing::error!(error = %e, "Flight service error"),

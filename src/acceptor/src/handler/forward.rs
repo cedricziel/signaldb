@@ -6,8 +6,8 @@
 //! initial forward failed.
 
 use anyhow::Context;
-use arrow_flight::utils::batches_to_flight_data;
 use bytes::Bytes;
+use common::flight::batches_to_compressed_flight_data;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::{StreamExt, stream};
@@ -92,7 +92,7 @@ async fn forward_batch_to_writer_inner(
         .map_err(|e| anyhow::anyhow!("Failed to get Flight client for storage service: {e}"))?;
 
     let schema = record_batch.schema();
-    let mut flight_data = batches_to_flight_data(&schema, vec![record_batch])
+    let mut flight_data = batches_to_compressed_flight_data(&schema, vec![record_batch])
         .context("Failed to convert batch to flight data")?;
 
     // Add metadata to the first FlightData message (which contains the

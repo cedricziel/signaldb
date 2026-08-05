@@ -1274,13 +1274,21 @@ impl Wal {
     }
 }
 
-/// Utility to convert RecordBatch to bytes for WAL storage
+/// Utility to convert RecordBatch to bytes for WAL storage.
+///
+/// Buffers are zstd-compressed (#945): WAL payloads are dominated by
+/// repeated JSON attribute strings, so higher-ratio zstd wins over lz4 on
+/// this durability (not latency) path. Compression is recorded per IPC
+/// message, so [`bytes_to_record_batch`] transparently reads both these
+/// and legacy uncompressed segments.
 pub fn record_batch_to_bytes(batch: &RecordBatch) -> Result<Vec<u8>> {
-    use datafusion::arrow::ipc::writer::StreamWriter;
+    use datafusion::arrow::ipc::CompressionType;
+    use datafusion::arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
 
+    let options = IpcWriteOptions::default().try_with_compression(Some(CompressionType::ZSTD))?;
     let mut buffer = Vec::new();
     {
-        let mut writer = StreamWriter::try_new(&mut buffer, &batch.schema())?;
+        let mut writer = StreamWriter::try_new_with_options(&mut buffer, &batch.schema(), options)?;
         writer.write(batch)?;
         writer.finish()?;
     }
@@ -2008,5 +2016,69 @@ mod tests {
         // Verify
         assert_eq!(batch.num_rows(), recovered_batch.num_rows());
         assert_eq!(batch.num_columns(), recovered_batch.num_columns());
+    }
+
+    /// A batch shaped like real WAL payloads: highly repetitive JSON strings.
+    fn repetitive_string_batch() -> RecordBatch {
+        use datafusion::arrow::array::StringArray;
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "resource_json",
+            DataType::Utf8,
+            false,
+        )]));
+        let resource = "{\"service.name\":\"checkout\",\"deployment.environment\":\"prod\"}";
+        let array = Arc::new(StringArray::from(vec![resource; 2048]));
+        RecordBatch::try_new(schema, vec![array]).unwrap()
+    }
+
+    #[test]
+    fn record_batch_round_trips_with_full_data_equality() {
+        let batch = repetitive_string_batch();
+        let bytes = record_batch_to_bytes(&batch).unwrap();
+        let recovered = bytes_to_record_batch(&bytes).unwrap();
+        assert_eq!(recovered, batch);
+    }
+
+    #[test]
+    fn bytes_to_record_batch_reads_legacy_uncompressed_payloads() {
+        use datafusion::arrow::ipc::writer::StreamWriter;
+
+        // Encode exactly like the pre-compression WAL writer did:
+        // StreamWriter with default (uncompressed) options.
+        let batch = repetitive_string_batch();
+        let mut buffer = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut buffer, &batch.schema()).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let recovered = bytes_to_record_batch(&buffer).unwrap();
+        assert_eq!(recovered, batch);
+    }
+
+    #[test]
+    fn record_batch_to_bytes_compresses_repetitive_payloads() {
+        use datafusion::arrow::ipc::writer::StreamWriter;
+
+        let batch = repetitive_string_batch();
+        let compressed = record_batch_to_bytes(&batch).unwrap();
+
+        // Reference: default (uncompressed) IPC encoding of the same batch.
+        let mut uncompressed = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut uncompressed, &batch.schema()).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+
+        assert!(
+            compressed.len() < uncompressed.len(),
+            "zstd-compressed WAL payload ({} bytes) should be smaller than the \
+             uncompressed encoding ({} bytes) for repetitive data",
+            compressed.len(),
+            uncompressed.len()
+        );
     }
 }

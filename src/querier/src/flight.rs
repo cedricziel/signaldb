@@ -1,6 +1,5 @@
 use anyhow::Context;
 use arrow_flight::flight_service_server::FlightService;
-use arrow_flight::utils::batches_to_flight_data;
 use arrow_flight::{
     FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse, PutResult,
     SchemaResult, Ticket,
@@ -8,6 +7,7 @@ use arrow_flight::{
 use bytes::Bytes;
 use common::CatalogManager;
 use common::config::QuerierConfig;
+use common::flight::batches_to_compressed_flight_data;
 use common::flight::schema::{FlightSchemas, create_span_batch_schema};
 use common::flight::transport::InMemoryFlightTransport;
 use common::storage::create_object_store_from_dsn;
@@ -2094,8 +2094,8 @@ impl FlightService for QuerierFlightService {
 
                         // Convert results to Flight data
                         let schema = batches[0].schema();
-                        let flight_data =
-                            batches_to_flight_data(&schema, batches).map_err(|e| {
+                        let flight_data = batches_to_compressed_flight_data(&schema, batches)
+                            .map_err(|e| {
                                 Status::internal(format!("Failed to convert results: {e}"))
                             })?;
 

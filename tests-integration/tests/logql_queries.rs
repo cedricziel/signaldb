@@ -8,7 +8,6 @@
 
 use acceptor::handler::WalManager;
 use acceptor::handler::otlp_log_handler::LogHandler;
-use arrow_flight::flight_service_server::FlightServiceServer;
 use axum::{
     Router,
     body::Body,
@@ -156,7 +155,7 @@ async fn setup() -> TestServices {
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()
-            .add_service(FlightServiceServer::new(writer_service))
+            .add_service(common::flight::flight_service_server(writer_service))
             .serve(writer_addr),
     );
     let writer_bootstrap =
@@ -191,7 +190,7 @@ async fn setup() -> TestServices {
     drop(querier_listener);
     tokio::spawn(
         Server::builder()
-            .add_service(FlightServiceServer::new(querier_service))
+            .add_service(common::flight::flight_service_server(querier_service))
             .serve(querier_addr),
     );
     let querier_bootstrap = ServiceBootstrap::new(

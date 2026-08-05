@@ -1,7 +1,6 @@
 use acceptor::handler::WalManager;
 use acceptor::handler::otlp_grpc::TraceHandler;
 use acceptor::services::otlp_trace_service::TraceAcceptorService;
-use arrow_flight::flight_service_server::FlightServiceServer;
 use axum::{
     Router,
     body::Body,
@@ -159,7 +158,7 @@ async fn setup_test_services() -> TestServices {
     let _writer_bg_handle = writer_service.start_background_processing();
 
     let writer_server = Server::builder()
-        .add_service(FlightServiceServer::new(writer_service))
+        .add_service(common::flight::flight_service_server(writer_service))
         .serve(writer_addr);
     tokio::spawn(writer_server);
 
@@ -202,7 +201,7 @@ async fn setup_test_services() -> TestServices {
     drop(querier_listener);
 
     let querier_server = Server::builder()
-        .add_service(FlightServiceServer::new(querier_service))
+        .add_service(common::flight::flight_service_server(querier_service))
         .serve(querier_addr);
     tokio::spawn(querier_server);
 
@@ -985,7 +984,7 @@ async fn setup_multi_tenant_test_services() -> TestServices {
     let _writer_bg_handle = writer_service.start_background_processing();
 
     let writer_server = Server::builder()
-        .add_service(FlightServiceServer::new(writer_service))
+        .add_service(common::flight::flight_service_server(writer_service))
         .serve(writer_addr);
     tokio::spawn(writer_server);
 
@@ -1026,7 +1025,7 @@ async fn setup_multi_tenant_test_services() -> TestServices {
     drop(querier_listener);
 
     let querier_server = Server::builder()
-        .add_service(FlightServiceServer::new(querier_service))
+        .add_service(common::flight::flight_service_server(querier_service))
         .serve(querier_addr);
     tokio::spawn(querier_server);
 

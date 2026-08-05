@@ -1,7 +1,6 @@
 use acceptor::handler::otlp_log_handler::LogHandler;
 use acceptor::handler::otlp_metrics_handler::MetricsHandler;
 use acceptor::handler::WalManager;
-use arrow_flight::flight_service_server::FlightServiceServer;
 use common::CatalogManager;
 use common::auth::{TenantContext, TenantSource};
 use common::config::Configuration;
@@ -150,7 +149,7 @@ async fn setup_logs_metrics_services() -> TestServices {
         );
     let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
-        .add_service(FlightServiceServer::new(writer_service))
+        .add_service(common::flight::flight_service_server(writer_service))
         .serve_with_incoming(TcpListenerStream::new(writer_listener));
     tokio::spawn(writer_server);
 

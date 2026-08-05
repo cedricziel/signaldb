@@ -1,7 +1,6 @@
 use acceptor::handler::otlp_grpc::TraceHandler;
 use acceptor::services::otlp_trace_service::TraceAcceptorService;
 use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::flight_service_server::FlightServiceServer;
 use common::config::Configuration;
 use common::flight::transport::{FlightServiceMetadata, InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
@@ -201,7 +200,7 @@ async fn test_acceptor_writer_flow() {
         );
     let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
-        .add_service(FlightServiceServer::new(writer_service))
+        .add_service(common::flight::flight_service_server(writer_service))
         .serve(writer_addr);
 
     tokio::spawn(writer_server);
@@ -404,7 +403,7 @@ async fn test_querier_integration() {
     let querier_service = QuerierFlightService::new(object_store.clone(), flight_transport.clone());
 
     let querier_server = Server::builder()
-        .add_service(FlightServiceServer::new(querier_service))
+        .add_service(common::flight::flight_service_server(querier_service))
         .serve(querier_addr);
 
     tokio::spawn(querier_server);
@@ -511,7 +510,7 @@ async fn test_end_to_end_pipeline() {
     drop(writer_listener);
 
     let writer_server = Server::builder()
-        .add_service(FlightServiceServer::new(writer_service))
+        .add_service(common::flight::flight_service_server(writer_service))
         .serve(writer_addr);
     tokio::spawn(writer_server);
 
@@ -530,7 +529,7 @@ async fn test_end_to_end_pipeline() {
     drop(querier_listener);
 
     let querier_server = Server::builder()
-        .add_service(FlightServiceServer::new(querier_service))
+        .add_service(common::flight::flight_service_server(querier_service))
         .serve(querier_addr);
     tokio::spawn(querier_server);
 
@@ -693,7 +692,7 @@ async fn test_direct_acceptor_writer_flight() {
     drop(writer_listener);
 
     let writer_server = Server::builder()
-        .add_service(FlightServiceServer::new(writer_service))
+        .add_service(common::flight::flight_service_server(writer_service))
         .serve(writer_addr);
     tokio::spawn(writer_server);
 
