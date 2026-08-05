@@ -92,11 +92,11 @@ Key details:
 - **Microservices**: Independent binaries, shared catalog (PostgreSQL or SQLite)
 - **Hybrid**: Mix of co-located and distributed services
 
-**Note**: Monolithic mode integrates the Compactor service (Phases 1-3 complete) when `[compactor].enabled = true` (the default; retention enforcement is also on by default with 30d per signal). The compactor provides:
+**Note**: Monolithic mode runs the same compactor lifecycle loop as the standalone service (`compactor::service::CompactorService`) when `[compactor].enabled = true` (the default; retention enforcement is also on by default with 30d per signal), and serves the compactor Flight endpoint (50055) plus observability HTTP on `[compactor].metrics_addr`. The lifecycle loop covers:
 
-- **Phase 1**: Dry-run compaction planning
-- **Phase 2**: Active Parquet file compaction for storage efficiency
-- **Phase 3**: Retention enforcement, snapshot expiration, and orphan file cleanup
+- Compaction planning and execution (Parquet rewrite for storage efficiency)
+- Retention enforcement, snapshot expiration, and orphan file cleanup
+- Distributed-lease expiry for multi-instance safety
 
 Each rewrite also runs a read-only attribute-stats pass logging per-key presence/cardinality + advisory materialization candidates (epic #737 L4a). The compactor runs concurrent background loops for compaction, retention enforcement, and orphan cleanup, all using tokio::select! for non-blocking execution. Every rewrite also runs the advisory attribute-stats pass (persisted to the catalog's `attribute_stats` table; dry-run promotion decisions under `[compactor.attr_promotion]` — epic #737 Layer 4).
 
