@@ -80,6 +80,24 @@ A query that runs out of time is always a 504, never a 500 — whether the
 querier's `query_timeout` fired or the router's Flight channel deadline did.
 A 500 means a genuine server fault.
 
+Error responses are never bodyless: every failure carries a JSON body in
+the same shape the [LogQL](logql-reference.md) and PromQL endpoints use,
+with the reason in `error` (Grafana's Tempo datasource surfaces it in the
+error popup):
+
+```json
+{
+  "status": "error",
+  "errorType": "bad_data",
+  "error": "start/end look like unix milliseconds; did you send milliseconds where unix seconds were expected?"
+}
+```
+
+`errorType` is `bad_data` (400), `not_found` (404), `rate_limited` (429),
+`timeout` (504), `unavailable` (503, no querier), `not_implemented` (501),
+or `internal` (500). Note this is a JSON envelope where upstream Tempo
+returns `text/plain` bodies; the message content is equivalent.
+
 ## Tempo gRPC querier protocol
 
 A standalone querier also serves Tempo's internal `tempopb.Querier` gRPC
