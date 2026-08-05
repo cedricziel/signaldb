@@ -18,6 +18,7 @@ querier = { path = "../src/querier" }
 router = { path = "../src/router" }
 writer = { path = "../src/writer" }
 tempo-api = { path = "../src/tempo-api" }
+pyroscope-api = { path = "../src/pyroscope-api" }
 signaldb-sdk = { path = "../src/signaldb-sdk" }
 signaldb-cli = { path = "../src/signaldb-cli" }
 mcp-server = { path = "../src/mcp-server" }
@@ -115,6 +116,10 @@ path = "tests/e2e/flight_rpc_tests.rs"
 [[test]]
 name = "end_to_end_trace_tests"
 path = "tests/e2e/end_to_end_trace_tests.rs"
+
+[[test]]
+name = "end_to_end_profiles_tests"
+path = "tests/e2e/end_to_end_profiles_tests.rs"
 
 [[test]]
 name = "component_integration_tests"
