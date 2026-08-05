@@ -43,6 +43,19 @@ groups:
         stability: development
         brief: The background job kind.
         examples: ["compaction", "retention_enforcement", "orphan_cleanup"]
+      - id: signaldb.job.run_id
+        type: string
+        stability: development
+        brief: Unique identifier of a background job run.
+        examples: ["retention_1754287200000"]
+      - id: signaldb.job.dry_run
+        type: boolean
+        stability: development
+        brief: Whether the job ran in dry-run mode (planned actions logged, nothing deleted).
+      - id: signaldb.job.tables_processed
+        type: int
+        stability: development
+        brief: Tables processed by a retention run.
       - id: signaldb.job.partitions_dropped
         type: int
         stability: development
@@ -54,7 +67,15 @@ groups:
       - id: signaldb.job.files_deleted
         type: int
         stability: development
-        brief: Files deleted by an orphan-cleanup batch.
+        brief: Files deleted by a lifecycle job (partition drop or orphan cleanup).
+      - id: signaldb.job.bytes_reclaimed
+        type: int
+        stability: development
+        brief: Bytes reclaimed by a lifecycle job, from dropped or deleted files.
+      - id: signaldb.job.duration_ms
+        type: int
+        stability: development
+        brief: Wall-clock duration of the job run, in milliseconds.
       - id: signaldb.job.candidates
         type: int
         stability: development

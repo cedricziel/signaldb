@@ -261,7 +261,10 @@ jq '.snapshots | length' \
 # 2. Check snapshots_to_keep config
 grep "snapshots_to_keep" signaldb.toml
 
-# 3. Check logs for snapshot expiration (stdout/journalctl/monolithic.log)
+# 3. Check logs for snapshot expiration (stdout/journalctl/monolithic.log).
+#    "Expired old snapshots" is info-level; the "No snapshots to expire" /
+#    "Found snapshots to expire" checks are debug-level
+#    (RUST_LOG=info,compactor::retention=debug)
 journalctl -u signaldb-compactor | \
   grep -E "(Expired old snapshots|No snapshots to expire|Found snapshots to expire)" | tail -20
 ```
@@ -729,7 +732,7 @@ find .data/storage -name "*.parquet" -mtime -1 -ls
 **Full Message:**
 
 ```
-WARN compactor::retention::enforcer: Table retention enforcement failed tenant_id=acme dataset_id=prod table_name=traces error=Failed to commit partition drop: ...
+WARN compactor::retention::enforcer: Table retention enforcement failed signaldb.tenant.id=acme signaldb.dataset.id=prod signaldb.table=traces error=Failed to commit partition drop: ...
 ```
 
 **Causes:**
